@@ -13,6 +13,7 @@ from mangadl.cli import build_parser, main
 from mangadl.cli_core import _interactive_auth_site, _prompt_auth_target
 from mangadl.gallery_auth import ProfileStore
 from mangadl.gallery_auth import TargetStore
+from mangadl.repair_pages import PageRepairPlan
 
 
 def test_all_public_options_have_short_and_long_forms() -> None:
@@ -613,6 +614,194 @@ def test_repair_pages_fails_closed_before_requests_for_custom_gallery_config(tmp
         ])
     assert exc_info.value.code == 2
     assert "archive table and key overrides cannot be proven" in capsys.readouterr().err
+
+
+def test_batch_repair_report_builds_and_prints_plan_without_required_plan_file(
+    tmp_path, capsys, monkeypatch
+) -> None:
+    destination = tmp_path / "library"
+    folder = destination / "nhentai-123 - Example"
+    folder.mkdir(parents=True)
+    corrupt = folder / "2.jpg"
+    corrupt.write_bytes(b"bad")
+    report = tmp_path / "audit.json"
+    report.write_text(json.dumps({
+        "schema": 1,
+        "kind": "mangadl-audit-report",
+        "mode": "url-file",
+        "destinations": [str(destination)],
+        "items": [{
+            "canonical_url": "https://nhentai.net/g/123/",
+            "status": "matched",
+            "folders": [str(folder)],
+            "completeness": "incomplete",
+            "image_integrity": "issues",
+        }],
+    }), encoding="utf-8")
+    fake = PageRepairPlan(
+        url="https://nhentai.net/g/123/",
+        folder=folder,
+        expected_count=2,
+        damaged_pages=(2,),
+        page_keys={1: "key1", 2: "key2"},
+        corrupt_files=(corrupt,),
+        archive_rows_found=("key2",),
+        archive_table="archive",
+    )
+    monkeypatch.setattr("mangadl.cli_core._fresh_page_plan", lambda *_args, **_kwargs: (
+        fake, destination / ".mangadl" / "archive.sqlite3"
+    ))
+
+    assert main(["repair", "-r", str(report)]) == 0
+
+    output = capsys.readouterr().out
+    assert "Repair plan" in output
+    assert "Repair 1 page(s)" in output
+    assert "Confirmation token:" in output
+
+
+def test_batch_repair_missing_gallery_uses_single_report_destination(tmp_path, capsys) -> None:
+    destination = tmp_path / "library"
+    destination.mkdir()
+    report = tmp_path / "audit.json"
+    report.write_text(json.dumps({
+        "schema": 1,
+        "kind": "mangadl-audit-report",
+        "mode": "url-file",
+        "destinations": [str(destination)],
+        "items": [{
+            "canonical_url": "https://nhentai.net/g/123/",
+            "status": "missing",
+            "folders": [],
+            "completeness": "unknown",
+            "image_integrity": "unverified",
+        }],
+    }), encoding="utf-8")
+
+    assert main(["repair", "-r", str(report), "-j"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["action_count"] == 1
+    assert payload["actions"][0]["kind"] == "download_gallery"
+    assert payload["actions"][0]["destination"] == str(destination)
+
+
+def test_batch_repair_rejects_stale_missing_gallery_after_folder_appears(tmp_path, capsys) -> None:
+    destination = tmp_path / "library"
+    (destination / "nhentai-123 - Example").mkdir(parents=True)
+    report = tmp_path / "audit.json"
+    report.write_text(json.dumps({
+        "schema": 1,
+        "kind": "mangadl-audit-report",
+        "mode": "url-file",
+        "destinations": [str(destination)],
+        "items": [{
+            "canonical_url": "https://nhentai.net/g/123/",
+            "status": "missing",
+            "folders": [],
+            "completeness": "unknown",
+            "image_integrity": "unverified",
+        }],
+    }), encoding="utf-8")
+
+    assert main(["repair", "-r", str(report), "-j"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["actions"] == []
+    assert "report is stale" in payload["unsupported"][0]["reason"]
+
+
+def test_batch_repair_reports_unknown_completion_as_unsupported(tmp_path, capsys) -> None:
+    destination = tmp_path / "library"
+    folder = destination / "Unknown Series"
+    folder.mkdir(parents=True)
+    report = tmp_path / "audit.json"
+    report.write_text(json.dumps({
+        "schema": 1,
+        "kind": "mangadl-audit-report",
+        "mode": "url-file",
+        "destinations": [str(destination)],
+        "items": [{
+            "canonical_url": "https://example.test/series",
+            "status": "matched",
+            "folders": [str(folder)],
+            "completeness": "unknown",
+            "image_integrity": "unverified",
+        }],
+    }), encoding="utf-8")
+
+    assert main(["repair", "-r", str(report), "-j"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["actions"] == []
+    assert "completion is unknown" in payload["unsupported"][0]["reason"]
+
+
+def test_batch_repair_apply_requires_current_plan_token(tmp_path, capsys) -> None:
+    destination = tmp_path / "library"
+    destination.mkdir()
+    report = tmp_path / "audit.json"
+    report.write_text(json.dumps({
+        "schema": 1,
+        "kind": "mangadl-audit-report",
+        "mode": "url-file",
+        "destinations": [str(destination)],
+        "items": [{
+            "canonical_url": "https://nhentai.net/g/123/",
+            "status": "missing",
+            "folders": [],
+            "completeness": "unknown",
+            "image_integrity": "unverified",
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(SystemExit) as exc_info:
+        main(["repair", "-r", str(report), "-f", "-C", "stale-token"])
+
+    assert exc_info.value.code == 2
+    assert "token from the current exact repair preview" in capsys.readouterr().err
+
+
+def test_batch_repair_success_backfills_source_mapping(tmp_path, capsys, monkeypatch) -> None:
+    destination = tmp_path / "library"
+    destination.mkdir()
+    report = tmp_path / "audit.json"
+    report.write_text("{}", encoding="utf-8")
+    action = {
+        "kind": "download_gallery",
+        "url": "https://nhentai.net/g/123/",
+        "backend": "gallery-dl",
+        "destination": str(destination),
+    }
+    plan = {
+        "schema": 1,
+        "kind": "mangadl-repair-plan",
+        "mode": "apply",
+        "actions": [action],
+        "unsupported": [],
+        "action_count": 1,
+        "unsupported_count": 0,
+        "confirmation_token": "current-token",
+    }
+    backfilled = []
+    monkeypatch.setattr("mangadl.cli_core._build_batch_repair_plan", lambda _args: (plan, {}))
+    monkeypatch.setattr("mangadl.cli_core._run_nested", lambda _args: 0)
+    monkeypatch.setattr(
+        "mangadl.cli_core._backfill_repaired_source",
+        lambda url, root: backfilled.append((url, root)) or {"created": 1},
+    )
+
+    class _Audit:
+        details = {"https://nhentai.net/g/123/": {"completeness": "complete"}}
+
+    monkeypatch.setattr("mangadl.cli_core.audit_destinations", lambda *_args, **_kwargs: _Audit())
+
+    assert main(["repair", "-r", str(report), "-f", "-C", "current-token", "-j"]) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert backfilled == [("https://nhentai.net/g/123/", destination)]
+    assert payload["results"][0]["index_backfill"] == {"created": 1}
+    assert payload["results"][0]["verified"] is True
 
 
 def test_inspect_reports_hdporncomics_manhwa_classification(capsys) -> None:

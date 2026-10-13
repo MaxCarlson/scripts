@@ -120,7 +120,9 @@ def test_audit_url_file_short_option_is_read_only_and_marks_completeness_unknown
     assert payload["items"][0]["repair_eligible"] is False
     assert payload["missing_output"] is None
     assert payload["duplicates_output"] is None
-    assert set(path.name for path in destination.iterdir()) == {"nhentai-7 - Present"}
+    assert set(path.name for path in destination.iterdir()) == {
+        "nhentai-7 - Present", "mangadl-urls-audit-report.json",
+    }
 
 
 def test_audit_url_file_long_alias_and_ambiguous_match(tmp_path: Path, capsys, monkeypatch) -> None:
@@ -238,3 +240,103 @@ def test_url_file_audit_can_explicitly_skip_index_backfill(tmp_path: Path, capsy
     payload = json.loads(capsys.readouterr().out)
     assert payload["index_backfill"] is None
     assert read_source_manifest(folder) is None
+
+
+def test_audit_url_directory_deduplicates_across_files_and_writes_report(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    (inputs / "url-one.txt").write_text("1\nhttps://example.test/a\n", encoding="utf-8")
+    (inputs / "URL-two.TXT").write_text("1\nnot-a-url\n", encoding="utf-8")
+    (inputs / "other.txt").write_text("https://example.test/ignored\n", encoding="utf-8")
+    report = tmp_path / "reports" / "audit.json"
+
+    assert main([
+        "audit", "-F", str(inputs), "-d", str(destination), "-r", str(report), "-q", "-x",
+    ]) == 0
+
+    output = capsys.readouterr().out
+    written_report = report.with_name("audit-url-one-and-1-more.json")
+    payload = json.loads(written_report.read_text(encoding="utf-8"))
+    assert "Input entries: 4 (2 unique, 1 duplicate, 1 rejected/invalid)" in output
+    assert "MISSING: https://nhentai.net/g/1/" in output
+    assert "No matching gallery folder was found." in output
+    assert payload["kind"] == "mangadl-audit-report"
+    assert payload["schema"] == 1
+    assert payload["input_urls"] == 2
+    assert payload["duplicate_url_lines"] == 1
+    assert payload["invalid_url_lines"] == 1
+    assert payload["issue_urls"] == 2
+    assert [Path(path).name for path in payload["input_files"]] == ["url-one.txt", "URL-two.TXT"]
+
+
+def test_audit_auto_report_uses_input_name_and_preserves_existing_reports(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    urls = tmp_path / "urls33.txt"
+    urls.write_text("https://example.test/missing\n", encoding="utf-8")
+    args = ["audit", "-i", str(urls), "-d", str(destination), "-j", "-q", "-x"]
+
+    assert main(args) == 0
+    first = json.loads(capsys.readouterr().out)
+    report = destination / "mangadl-urls33-audit-report.json"
+    assert first["report_output"] == str(report)
+    original = report.read_bytes()
+
+    assert main(args) == 0
+    second = json.loads(capsys.readouterr().out)
+    numbered_report = destination / "mangadl-urls33-audit-report-1.json"
+    assert second["report_output"] == str(numbered_report)
+    assert json.loads(numbered_report.read_text(encoding="utf-8"))["input_urls"] == 1
+    assert report.read_bytes() == original
+
+
+def test_audit_explicit_report_adds_input_name_without_repeating_it(tmp_path: Path, capsys) -> None:
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    urls = tmp_path / "urls33.txt"
+    urls.write_text("https://example.test/missing\n", encoding="utf-8")
+    base = tmp_path / "custom.json"
+    assert main([
+        "audit", "-i", str(urls), "-d", str(destination), "-r", str(base), "-j", "-q", "-x",
+    ]) == 0
+    report = Path(json.loads(capsys.readouterr().out)["report_output"])
+    assert report.name == "custom-urls33.json"
+
+    assert main([
+        "audit", "-i", str(urls), "-d", str(destination), "-r", str(report), "-j", "-q", "-x",
+    ]) == 0
+    assert Path(json.loads(capsys.readouterr().out)["report_output"]).name == "custom-urls33-1.json"
+
+
+def test_audit_console_identifies_truncated_gallery_even_with_duplicate_input(
+    tmp_path: Path, capsys, monkeypatch
+) -> None:
+    destination = tmp_path / "downloads"
+    folder = destination / "nhentai-633374 - Paradise"
+    folder.mkdir(parents=True)
+    for page in range(159, 193):
+        Image.new("RGB", (1, 1), "white").save(folder / f"{page}.webp", format="WEBP")
+    urls = tmp_path / "urls32.txt"
+    urls.write_text("633374\n633374\nnot-a-url\n", encoding="utf-8")
+    calls: list[str] = []
+
+    def metadata(gallery_id: str):
+        calls.append(gallery_id)
+        return type("Metadata", (), {"page_count": 192})()
+
+    monkeypatch.setattr(cli_core, "resolve_nhentai_metadata", metadata)
+
+    assert main(["audit", "-i", str(urls), "-d", str(destination), "-x"]) == 0
+
+    captured = capsys.readouterr()
+    assert "1 duplicate line(s); 1 rejected/invalid line(s)" in captured.err
+    assert "INCOMPLETE: https://nhentai.net/g/633374/" in captured.out
+    assert "Images: 34/192 valid, 34 files present" in captured.out
+    assert "Missing pages: 1-158 (158)" in captured.out
+    assert "not-a-url" in captured.out
+    assert calls == ["633374"]
+    report = json.loads((destination / "mangadl-urls32-audit-report.json").read_text(encoding="utf-8"))
+    assert report["items"][0]["missing_pages"] == list(range(1, 159))
+    assert report["duplicate_url_lines"] == 1

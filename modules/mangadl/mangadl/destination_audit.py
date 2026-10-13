@@ -238,7 +238,8 @@ def audit_destinations(
         details[item.canonical_url] = base
     if progress:
         progress(
-            f"Matching complete: {len(resolved)} found, {len(unresolved)} missing, {len(duplicates)} duplicate group(s)"
+            f"Matching complete: {len(resolved)} found, {len(unresolved)} missing, "
+            f"{len(duplicates)} duplicate folder group(s)"
         )
     matched_paths = {path for paths in resolved.values() for path in paths}
     untracked = sorted({row.path for row in library if row.path not in matched_paths and _has_images(row.path)})

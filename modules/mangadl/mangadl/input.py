@@ -47,7 +47,7 @@ def _extract_input_value(line: str) -> str:
 def collect_inputs(files: list[Path], urls: list[str]) -> tuple[list[InputUrl], list[dict[str, object]]]:
     found: list[InputUrl] = []
     rejected: list[dict[str, object]] = []
-    seen: set[str] = set()
+    seen: dict[str, InputUrl] = {}
     values: list[tuple[str, str, int]] = [(url, "<cli>", num) for num, url in enumerate(urls, 1)]
     for path in files:
         text = path.read_text(encoding="utf-8", errors="replace")
@@ -62,8 +62,17 @@ def collect_inputs(files: list[Path], urls: list[str]) -> tuple[list[InputUrl], 
             rejected.append({"value": value, "source": source, "line": line, "reason": str(exc)})
             continue
         if canonical in seen:
-            rejected.append({"value": value, "source": source, "line": line, "reason": "duplicate"})
+            original = seen[canonical]
+            rejected.append({
+                "value": value,
+                "canonical_url": canonical,
+                "source": source,
+                "line": line,
+                "reason": "duplicate",
+                "duplicate_of": {"source": original.source, "line": original.line},
+            })
             continue
-        seen.add(canonical)
-        found.append(InputUrl(value, canonical, source, line))
+        item = InputUrl(value, canonical, source, line)
+        seen[canonical] = item
+        found.append(item)
     return found, rejected

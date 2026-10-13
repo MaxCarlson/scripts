@@ -1,6 +1,29 @@
 # mangadl Immediate Project Handoff
 
-## Current branch planning handoff — 2026-10-09
+## Current branch planning handoff — 2026-10-12
+
+Branch: `codex/mangadl-generalized-audit-repair`.
+
+The active plan is [generalized audit and batch repair](plans/20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
+MangaDL 1.26.0 accepts repeatable URL files/globs plus top-level `url*.txt`
+directory discovery, records cross-file duplicate provenance, writes a
+versioned audit report automatically with input-based names and numbered
+collisions, prints per-URL page findings and separate duplicate/invalid counts,
+and builds a visible batch repair plan directly from
+that report. `repair -p` is optional output only; `repair -r REPORT` always
+creates and displays the plan. Apply remains token-guarded and limited to
+proven individual nhentai page repair plus normal downloads for wholly missing
+non-collection galleries. Successful actions re-audit and backfill exact source
+identity. Unsupported or ambiguous items remain report-only. Repository
+validation passed (264 MangaDL tests and 42 focused scripts-help tests). The
+user confirmed the live audit findings and authorized committing this usable
+1.26.0 state. Live progress and colored summaries are deferred at the user's
+request. Live repair acceptance is pending; no live library repair, push, or
+merge has been performed.
+
+---
+
+## Prior branch planning handoff — 2026-10-09
 
 Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
 

@@ -457,7 +457,7 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 ## Other operations
 
 Audit all recognized manga folders without a URL file, or compare a URL file to
-one or more destination roots. Folder-only audits are read-only. URL-file audits
+one or more destination roots. Folder-only audits do not change gallery contents. URL-file audits
 also backfill a missing `.mangadl-source.json` for unique, image-bearing matches
 established by exact source metadata or deterministic backend identity. They
 never index ambiguous, conflicting, empty, or unresolved matches. The sidecar
@@ -467,6 +467,9 @@ does not alter images, archives, download state, or Kavita collections. Use
 ```powershell
 mangadl audit -u .\URLFILE.txt -d .\downloads -j
 mangadl audit -i .\URLFILE.txt -d .\downloads -o .\missing.txt -p .\duplicates.json
+mangadl audit -F .\url-lists -d .\downloads -r .\audit-report.json
+mangadl audit -i .\urls-a.txt -i .\urls-b.txt -d .\downloads -r .\audit-report.json
+mangadl audit -i .\urls32.txt -d . -x
 mangadl audit -d .\downloads -j
 mangadl audit -i .\urls.txt -d .\downloads -j -x
 ```
@@ -482,7 +485,51 @@ totals remain unknown. URL-file audits also report untracked populated folders.
 Audit does not repair or download files. For original URL lists, pass each file
 (or a file glob) with repeatable `-i` and the matching library root with
 repeatable `-d`; JSON includes created, already-indexed, ambiguous, unresolved,
-and conflicting index counts.
+and conflicting index counts. `-F/--url-directory` loads every top-level
+`url*.txt` file in a directory (case-insensitive). Inputs are canonicalized and
+deduplicated across every selected file; the report retains the source file and
+line for invalid and duplicate entries, including the first occurrence of each
+duplicate. Loading progress and the final summary show separate duplicate and
+rejected/invalid counts. The console also lists each URL requiring attention,
+its matched folder, valid/expected image totals, and missing/corrupt/duplicate
+page ranges. A found folder can still be incomplete; image integrity describes
+the files present, while completeness checks whether expected pages are missing.
+
+Every audit writes a complete versioned JSON report automatically. For a single
+`urls32.txt` input and `-d .`, the default is
+`mangadl-urls32-audit-report.json` in the destination folder. Existing reports
+are preserved: later runs use `mangadl-urls32-audit-report-1.json`, `-2.json`,
+and so on. Multiple input files use the first filename plus `-and-N-more`;
+multiple destination roots place the report in the first root. Folder-only
+audits use `mangadl-folder-audit-report.json`. `-r/--report-output` optionally
+sets the filename base and directory; MangaDL appends the input label if absent
+and still chooses an unused numbered filename. The actual report path is
+printed to the console and included as `report_output` in JSON output.
+`-x/--no-index-backfill` prevents source-manifest writes; the report is still
+created.
+
+Use the audit report with `repair`. A normal invocation always builds and
+prints the current plan; no separate plan file is required. `-p/--plan-output`
+only saves an optional machine-readable copy. Applying a plan requires both
+`-f/--apply` and the exact confirmation token printed by a fresh preview:
+
+```powershell
+mangadl repair -r .\audit-report.json
+mangadl repair -r .\audit-report.json -p .\repair-plan.json
+mangadl repair -r .\audit-report.json -f -C <preview-token>
+```
+
+Batch repair currently performs the proven operations only: exact-page repair
+for individual nhentai galleries and normal MangaDL downloads for wholly
+missing, non-collection gallery URLs. It rechecks current folder/page identity,
+refuses active MangaDL runs, quarantines corrupt files where applicable,
+re-audits the result, and backfills `.mangadl-source.json` only for a unique,
+populated match. Ambiguous matches, broad collection URLs, unknown exact page
+identity, unsupported backends, and unverifiable results remain prominently
+report-only and cause apply mode to return a nonzero status. If a folder has
+appeared since the audit marked its URL missing, repair asks for a fresh audit
+instead of scheduling another download. Unknown completion is shown as report
+only, not silently treated as complete.
 
 For supported individual nhentai galleries, `repair-pages` previews the exact
 missing/corrupt pages, archive keys, and quarantine targets. Apply requires
