@@ -1,4 +1,4 @@
-# compresser 0.7.0
+# compresser 0.8.0
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -44,14 +44,23 @@ Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
 The dashboard reports requested/effective/active workers and the CPU/memory/requested
 limiter, with up to two active image names, dimensions, conservative memory estimate
 and elapsed time. JSON and summaries expose worker_diagnostics too. These are actual
-worker activity counters, not OS CPU utilization. The current largest-image cap still
-includes oversized images; this is shown explicitly, pending scheduler correction.
+worker activity counters, not OS CPU utilization. Per-job reservations allow small
+images to overlap with large ones when they fit; rejected oversized images never
+cap valid jobs. Reserved bytes are estimates, not actual RSS or an OS reservation.
+`-B/--memory-budget-mib` sets aggregate batch scheduling allowance64..4096MiB
+(default512). It does not raise the512MiB per-image decode allowance or pixel limit.
+Use a larger allowance only when sufficient RAM is available; independent batches
+have independent budgets. Bounded FIFO-head bypass prevents large-job starvation.
+Diagnostics include peak reserved bytes and total dispatch waiting from batch start,
+separate from exclusive worker phase seconds. Increasing workers is still CPU/memory
+bounded and cannot accelerate one single-core high-effort native encode.
 Active images show their current phase. Reports/JSON expose exclusive phase
 worker-seconds: source decode, encoding, candidate decode, similarity, verification,
 cache and publication when applicable. Parallel worker times add and are not CPU
 time or whole-run elapsed time. Cached trials record only current lookup work.
 Encoding includes codec preparation/bookkeeping outside separately instrumented
-decode/metric calls. Uninstrumented overhead/queue wait is not fabricated.
+decode/metric calls. Uninstrumented overhead is not fabricated; dispatch wait is
+reported separately and includes preflight/admission delay, not codec CPU work.
 Narrow terminals use stacked comparison records; wide terminals keep the matrix.
 Stage/gallery bars reset for each strategy; the aligned overall bar and elapsed
 timer cover all image-strategy trials (60 images x4 strategies =240 trials).

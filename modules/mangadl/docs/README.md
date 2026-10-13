@@ -17,7 +17,7 @@
 
 ### `mangadl compress`
 
-MangaDL1.35.0 integrates compresser0.7.0. Both CLIs default to lossless;
+MangaDL1.36.0 integrates compresser0.8.0. Both CLIs default to lossless;
 lossy/perceptual writes require `-w -L`. Analysis never mutates pending recovery.
 PNG/WebP/JPEG candidates are measured; original files remain if nothing smaller
 passes verification. AVIF is explicit lossy only. Exact URL/folder selection,
@@ -43,8 +43,11 @@ Ctrl+C shows a stopping state, prevents new jobs and cancels between candidates;
 an active native encoder must return before stopping. Interrupted runs exit130.
 Lock contention fails immediately, names the lock and explicitly says "Not waiting".
 Live diagnostics show requested/effective/active workers, limit reasons and active
-image dimensions/estimated memory/elapsed time. Scheduling is not changed yet;
-oversized images affecting its global memory cap are explicitly labeled.
+image dimensions/estimated memory/elapsed time. Per-job memory reservations now
+allow smaller jobs alongside large ones and exclude preflight-rejected images.
+`-B/--memory-budget-mib` controls aggregate batch scheduling allowance64..4096MiB,
+default512; per-image512MiB/pixel safety limits remain. Reserved/peak bytes and
+dispatch waiting are estimates/worker statistics, not OS RAM reservations or CPU time.
 Active images show current phases; report/JSON worker diagnostics include exclusive
 phase wall times, not CPU utilization. Cache hits show current lookup work rather
 than historical encoding durations. Narrow comparison output uses readable records.

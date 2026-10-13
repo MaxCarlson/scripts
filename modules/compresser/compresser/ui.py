@@ -202,6 +202,8 @@ class CompresserDashboard:
                 f"Limiter: {activity['limiter']} | Budget: {format_bytes_decimal(activity['memory_budget_bytes'])} | "
                 f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
                 + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
+                f"Reserved: {format_bytes_decimal(activity.get('reserved_bytes', 0))} | "
+                f"Preflight rejected: {activity.get('preflight_rejected_images', 0)}",
                 "Active: "
                 + (" | ".join(descriptions) or "none")
                 + (f" | +{activity['active_workers'] - 2} more" if activity["active_workers"] > 2 else ""),
@@ -366,6 +368,12 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 f"effective {row.worker_diagnostics['effective_workers']}; limiter: {row.worker_diagnostics['limiter']}."
             )
             timings = row.worker_diagnostics.get("phase_seconds", {})
+            if "peak_reserved_bytes" in row.worker_diagnostics:
+                print(
+                    f"    Peak reserved estimate: {format_bytes_decimal(row.worker_diagnostics['peak_reserved_bytes'])}; "
+                    f"preflight rejected: {row.worker_diagnostics.get('preflight_rejected_images', 0)}; "
+                    f"accumulated dispatch wait: {row.worker_diagnostics.get('dispatch_wait_seconds', 0):.2f} task-seconds."
+                )
             if timings:
                 print(
                     "    Phase worker-seconds (exclusive; parallel workers add): "

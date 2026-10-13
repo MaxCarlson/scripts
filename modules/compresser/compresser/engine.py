@@ -20,6 +20,7 @@ from PIL import Image
 from .cache import AnalysisCache
 from .cancellation import cancellation_scope, check_cancelled
 from .timing import phase, timed, timing_scope
+from .scheduler import MemoryScheduler
 from .codecs import (
     BaseCodec,
     discover_available_codecs,
@@ -83,7 +84,10 @@ def recover_interrupted_transactions(directory: Path, *, apply: bool = False) ->
 class CompressionEngine:
     """Engine managing codec dispatch, benchmark caching, and atomic application."""
 
-    def __init__(self, cache: AnalysisCache | None = None) -> None:
+    def __init__(self, cache: AnalysisCache | None = None, *, memory_budget_bytes: int = MEMORY_BUDGET_BYTES) -> None:
+        if not 64 * 1024**2 <= memory_budget_bytes <= 4096 * 1024**2:
+            raise ValueError("Aggregate memory budget must be64..4096MiB; per-image decode limits remain unchanged")
+        self.memory_budget_bytes = memory_budget_bytes
         self.codecs = discover_available_codecs()
         self.cache = cache or AnalysisCache()
         self._publication_lock = threading.Lock()
@@ -239,6 +243,8 @@ class CompressionEngine:
                 raise RuntimeError("Source changed since scan; rescan before compression")
             source_digest = digest(path) if write_mode else ""
             with phase("source_decode"), Image.open(path) as im:
+                if im.size != (meta.width, meta.height):
+                    raise RuntimeError("Source dimensions differ from scan metadata; rescan before compression")
                 if im.width * im.height > 40_000_000:
                     raise ValueError("Image exceeds enforced 40-million-pixel decode limit")
                 if im.width * im.height * ESTIMATED_BYTES_PER_PIXEL > MEMORY_BUDGET_BYTES:
@@ -416,22 +422,55 @@ class CompressionEngine:
                 if (directory / JOURNAL_FILENAME).exists():
                     raise RuntimeError(f"Pending compression transaction requires explicit recovery: {directory}")
 
-        largest_working_set = max(img.width * img.height * ESTIMATED_BYTES_PER_PIXEL for img in images)
-        memory_workers = max(1, MEMORY_BUDGET_BYTES // max(1, largest_working_set))
-        max_workers = max(1, min(threads, os.cpu_count() or 4, memory_workers))
+        jobs, rejected = [], []
+        for img in images:
+            cost = img.width * img.height * ESTIMATED_BYTES_PER_PIXEL
+            reason = None
+            if img.width <= 0 or img.height <= 0 or img.width * img.height > 40_000_000:
+                reason = "Image exceeds enforced40-million-pixel decode limit or has invalid dimensions"
+            elif cost > MEMORY_BUDGET_BYTES:
+                reason = "Image exceeds conservative 512MiB per-image working-memory budget"
+            elif cost > self.memory_budget_bytes:
+                reason = "Image cannot fit selected aggregate scheduling budget; increase -B/--memory-budget-mib"
+            if reason:
+                rejected.append(
+                    ImageResult(
+                        img.path,
+                        img.path,
+                        img.size_bytes,
+                        img.size_bytes,
+                        img.format,
+                        img.format,
+                        skipped=True,
+                        error=reason,
+                    )
+                )
+            else:
+                jobs.append((img, cost))
+        largest_working_set = max((cost for _, cost in jobs), default=0)
+        memory_workers = self.memory_budget_bytes // min((cost for _, cost in jobs), default=self.memory_budget_bytes)
+        max_workers = min(threads, os.cpu_count() or 4, memory_workers, len(jobs))
+        scheduler = MemoryScheduler(jobs, self.memory_budget_bytes, max_workers)
         diagnostics = {
             "requested_workers": threads,
             "effective_workers": max_workers,
             "cpu_limit": os.cpu_count() or 4,
             "memory_worker_limit": memory_workers,
-            "memory_budget_bytes": MEMORY_BUDGET_BYTES,
+            "memory_budget_bytes": self.memory_budget_bytes,
+            "per_image_limit_bytes": MEMORY_BUDGET_BYTES,
+            "preflight_rejected_images": len(rejected),
             "largest_estimated_image_bytes": largest_working_set,
             "limiter": (
-                "memory"
-                if memory_workers < threads and memory_workers <= (os.cpu_count() or 4)
-                else "cpu" if (os.cpu_count() or 4) < threads else "requested"
+                "no eligible jobs"
+                if not jobs
+                else (
+                    "memory"
+                    if largest_working_set * max_workers > self.memory_budget_bytes
+                    or memory_workers < min(threads, len(jobs))
+                    else "cpu" if (os.cpu_count() or 4) < threads else "requested"
+                )
             ),
-            "includes_oversized_images": largest_working_set > MEMORY_BUDGET_BYTES,
+            "includes_oversized_images": False,
         }
         active = {}
         finished = 0
@@ -445,13 +484,13 @@ class CompressionEngine:
                         "active_workers": len(active),
                         "completed_workers": finished,
                         "remaining_images": max(0, total - finished - len(active)),
-                        "active_images": list(active.values()),
+                        "active_images": [dict(item) for item in active.values()],
+                        "reserved_bytes": scheduler.reserved_bytes,
                     }
                 )
 
         report_activity()
-        with ThreadPoolExecutor(max_workers=max_workers) as pool:
-            remaining_images = iter(images)
+        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
             cancelled = threading.Event()
 
             def work(img):
@@ -473,7 +512,9 @@ class CompressionEngine:
                                 active[str(img.path)]["phase"] = name
                                 report_activity()
 
-                        return self._measure_image(img, strategy, write_mode=write_mode, phase_callback=phase_changed)
+                        dispatched = time.monotonic() - start_time
+                        result = self._measure_image(img, strategy, write_mode=write_mode, phase_callback=phase_changed)
+                        return replace(result, dispatch_wait_s=dispatched)
                     finally:
                         nonlocal finished
                         with activity_lock:
@@ -481,34 +522,44 @@ class CompressionEngine:
                             finished += 1
                             report_activity()
 
-            def submit_next() -> None:
-                img = next(remaining_images, None)
-                if img is not None:
-                    futures.add(pool.submit(work, img))
+            def fill_slots() -> None:
+                while len(futures) < max_workers:
+                    job = scheduler.next_job()
+                    if job is None:
+                        break
+                    img, cost = job
+                    futures[pool.submit(work, img)] = cost
 
-            futures = set()
+            def consume(res):
+                nonlocal orig_bytes_total, comp_bytes_total, failed_cnt, skipped_cnt, applied_cnt
+                results.append(res)
+                orig_bytes_total += res.original_bytes
+                comp_bytes_total += res.compressed_bytes
+                if res.error:
+                    failed_cnt += 1
+                elif res.skipped:
+                    skipped_cnt += 1
+                elif res.applied:
+                    applied_cnt += 1
+                if res.ssim is not None:
+                    ssim_scores.append(res.ssim)
+                if progress_callback:
+                    progress_callback(len(results), total, res)
+
+            futures = {}
             try:
-                for _ in range(max_workers):
-                    submit_next()
+                for res in rejected:
+                    finished += 1
+                    consume(res)
+                report_activity()
+                fill_slots()
                 while futures:
                     completed, _ = wait(futures, return_when=FIRST_COMPLETED)
                     fut = next(iter(completed))
-                    futures.remove(fut)
+                    scheduler.release(futures.pop(fut))
                     res = fut.result()
-                    results.append(res)
-                    orig_bytes_total += res.original_bytes
-                    comp_bytes_total += res.compressed_bytes
-                    if res.error:
-                        failed_cnt += 1
-                    elif res.skipped:
-                        skipped_cnt += 1
-                    elif res.applied:
-                        applied_cnt += 1
-                    if res.ssim is not None:
-                        ssim_scores.append(res.ssim)
-                    if progress_callback:
-                        progress_callback(len(results), total, res)
-                    submit_next()
+                    consume(res)
+                    fill_slots()
             except KeyboardInterrupt:
                 cancelled.set()
                 for future in futures:
@@ -525,6 +576,8 @@ class CompressionEngine:
                 raise
 
         elapsed = time.monotonic() - start_time
+        diagnostics["peak_reserved_bytes"] = scheduler.peak_reserved_bytes
+        diagnostics["dispatch_wait_seconds"] = sum(result.dispatch_wait_s for result in results)
         diagnostics["phase_seconds"] = {
             name: sum(result.phase_seconds.get(name, 0.0) for result in results)
             for name in {name for result in results for name in result.phase_seconds}

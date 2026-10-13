@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+Current P3: MangaDL1.36.0/compresser0.8.0. Shared per-job memory reservations,
+preflight exclusions and aggregate -B allowance64..4096MiB, default512 unchanged.
+Per-image decode limit still512MiB. Full83 compression,15 integration,55 help pass.
+Actual read-only two-image test shows native threading gain3.735s->1.968s when
+budget permits two jobs. No production writes. Publish checkpoint before P4/P5.
+
 Current P2 phase slice: MangaDL1.35.0/compresser0.7.0. Shared active phase labels,
 exclusive aggregate phase timings in summary/JSON, narrow stacked comparisons.
 Compression75 and integration15 tests pass; setup refreshed. Source benchmark

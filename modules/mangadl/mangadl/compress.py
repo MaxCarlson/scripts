@@ -144,6 +144,8 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if args.write and args.mode != "lossless" and not args.allow_lossy:
             raise ValueError("Lossy/perceptual writes require --allow-lossy")
         cache_path = getattr(args, "cache_file", None)
+        if not 64 <= args.memory_budget_mib <= 4096:
+            raise ValueError("Aggregate scheduling budget must be64..4096MiB")
         if cache_path and (cache_path.resolve() == dest or dest in cache_path.resolve().parents):
             raise ValueError("Analysis cache must be outside the destination tree")
         cache = AnalysisCache(path=cache_path)
@@ -207,7 +209,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         )
 
         eval_images = select_sample(all_images, args.sample) if getattr(args, "sample", None) else all_images
-        engine = CompressionEngine(cache=cache)
+        engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
         # Comparison Mode
         if getattr(args, "compare", False):

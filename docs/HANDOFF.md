@@ -4,6 +4,12 @@ Last updated: 2026-10-13 02:00 -07:00
 
 ## Current cross-repository work
 
+Current P3 checkpoint: compresser0.8.0/MangaDL1.36.0. Per-job memory reservations,
+preflight exclusions, bounded fairness and -B aggregate budget.83/15/55 tests pass,
+setup refreshed. Read-only native threading test~1.9x speedup for two eligible jobs
+when1024MiB permits overlap; default512MiB and per-image safety unchanged.
+Publish before P4 inventory/projections and P5 automatic-cache features.
+
 Current P2 checkpoint: compresser0.7.0/MangaDL1.35.0, exclusive phase timings and
 readable narrow reports, compresser75/integration15 pass. Bounded screenshot-image
 read-only benchmark:45.6s wall/45.5s CPU,45.3s encoding; effort0 takes1.8s but

@@ -87,6 +87,7 @@ class ImageResult:
     cache_hit: bool = False
     candidate_bytes: int | None = None
     phase_seconds: dict[str, float] = field(default_factory=dict)
+    dispatch_wait_s: float = 0.0
 
     @property
     def saved_bytes(self) -> int:

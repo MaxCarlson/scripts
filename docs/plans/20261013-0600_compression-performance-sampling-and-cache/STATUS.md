@@ -1,5 +1,22 @@
 # Status
 
+Current P3 checkpoint: compresser0.8.0/MangaDL1.36.0. Per-job memory reservations,
+bounded FIFO-head bypass, preflight memory/pixel rejections excluded from pool cap,
+active/reserved/peak/dispatch-wait diagnostics, and -B/--memory-budget-mib64..4096.
+Default aggregate allowance512MiB unchanged; independent512MiB per-image/40M-pixel
+decode limits retained, actual source dimensions must match scan metadata before
+decode. Larger aggregate budgets do not admit unsupported oversized images.
+Full compresser83, integration/ownership15 and help55 pass; lint/format checks pass;
+editable installs refreshed. Remaining: publish P3, then P4 inventory/sampling/
+projection, P5 automatic cache and P6 gallery/reader acceptance.
+
+Read-only two-image threading check, WebP lossless effort0, same screenshots'
+gallery files001 and003:512MiB gives peak active1, wall3.735s/CPU3.719s,
+peak reserved467262432 B;1024MiB gives peak active2, wall1.968s/CPU3.516s,
+peak reserved899089632 B, zero failures. Native WebP work can run concurrently;
+about1.9x speedup for this bounded test. Actual RSS not measured; estimates are
+not OS memory reservations. No source image changes or automatic default increase.
+
 Current P2 phase/narrow-report slice: compresser0.7.0/MangaDL1.35.0. Per-image
 exclusive wall phases and active phase labels implemented, aggregate phase seconds
 in summaries/comparison/JSON. Cached hits measure current lookup work only. AUTO/

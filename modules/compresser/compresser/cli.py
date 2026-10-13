@@ -23,7 +23,7 @@ from .models import (
 from .scanner import scan_directory, select_sample
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.7.0"
+__version__ = "0.8.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,6 +133,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-ui",
         action="store_true",
         help="Disable the live terminal dashboard.",
+    )
+    parser.add_argument(
+        "-B",
+        "--memory-budget-mib",
+        type=int,
+        default=512,
+        help="Aggregate scheduling allowance64..4096MiB; per-image decode limit stays512MiB.",
     )
     parser.add_argument(
         "-J",
@@ -260,6 +267,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Quality must be 1..100 and perceptual target 0.80..1.00")
     if args.threads < 1 or args.sample is not None and args.sample < 1:
         parser.error("Threads and sample must be positive")
+    if not 64 <= args.memory_budget_mib <= 4096:
+        parser.error("Aggregate scheduling budget must be64..4096MiB")
     if args.write and args.compare:
         parser.error("Comparison is read-only; omit --write")
     if args.write and not args.recover and args.mode != "lossless" and not args.allow_lossy:
@@ -286,7 +295,7 @@ def main(argv: list[str] | None = None) -> int:
 
         # Handle sample selection
         eval_images = select_sample(images, args.sample) if args.sample else images
-        engine = CompressionEngine(cache=cache)
+        engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
         if args.compare:
             comp_rows = run_comparison(

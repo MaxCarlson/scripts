@@ -1,5 +1,13 @@
 # Compresser handoff
 
+Current P3:0.8.0/MangaDL1.36.0. Per-job reservations/preflight/fair bounded bypass,
+aggregate -B64..4096MiB (default512), per-image512MiB/pixel limits unchanged.
+Source dimensions verified against metadata before decoding. Full83 tests,
+integration15/help55 pass; setup refreshed. Two real read-only effort0 encodes:
+512MiB one active3.735s;1024MiB two active1.968s, zero failures. Peak reservations
+bounded; actual RSS not measured. Next publish P3, then P4 inventory/projections,
+P5 automatic cache prompts and P6 integrity/reader acceptance.
+
 Current0.7.0 / MangaDL1.35.0: exclusive per-image phases/current active labels,
 aggregate wall-time phase seconds and readable narrow comparison records.
 Cache hits never replay old encoder timings; nested AUTO/perceptual phases exclusive.
