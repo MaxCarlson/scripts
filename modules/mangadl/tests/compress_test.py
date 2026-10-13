@@ -10,8 +10,14 @@ from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
 def test_compress_cli_help(capsys):
+    import pytest
+
     parser = build_parser(["compress", "--help"])
     assert parser is not None
+    with pytest.raises(SystemExit) as result:
+        parser.parse_args(["compress", "--help"])
+    assert result.value.code == 0
+    assert "N images total" in capsys.readouterr().out
 
 
 def test_discover_gallery_targets(tmp_path: Path):

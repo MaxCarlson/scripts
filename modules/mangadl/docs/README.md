@@ -17,7 +17,7 @@
 
 ### `mangadl compress`
 
-MangaDL1.31.1 integrates compresser0.3.1. Both CLIs default to lossless;
+MangaDL1.31.2 integrates compresser0.3.1. Both CLIs default to lossless;
 lossy/perceptual writes require `-w -L`. Analysis never mutates pending recovery.
 PNG/WebP/JPEG candidates are measured; original files remain if nothing smaller
 passes verification. AVIF is explicit lossy only. Exact URL/folder selection,

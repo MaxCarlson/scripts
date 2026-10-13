@@ -50,6 +50,11 @@ excluded), per-item three-row progress for both URL and folder modes.
 
 ## Next
 
+Shared ownership checkpoint pushed as c78fbf8. Final documentation/help correction:
+MangaDL1.31.2 clarifies that -s is a total sample across selected galleries, not
+N per gallery. Compresser remains0.3.1; -s also limits write scope, so full applies
+must omit it. Root README version and setup are refreshed.
+
 Previous continuation verification: full MangaDL296 and compresser61 pass separately;
 focused integration/CLI/ownership52 pass; Ruff passes. Combined collection failed
 because both packages have cli_test.py; separate suites are authoritative.

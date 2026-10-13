@@ -1,4 +1,4 @@
-# compresser 0.2.0
+# compresser 0.3.1
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -49,6 +49,9 @@ collisions are preserved. Same-extension replacement uses an atomic rename;
 cross-extension changes are journaled and are NOT one atomic operation.
 The persistent `.compress.lock` is an OS-owned lock released on process death;
 do not remove it. It is harmless when no process holds it.
+Established MangaDL libraries additionally share `.mangadl/operation.lock` with
+MangaDL run/repair/compression. Unrelated external tools must not write concurrently.
+`-s` limits the total images processed, including with `-w`; omit it for a full apply.
 
 Pending journals block new writes; analysis never applies recovery. Preview one
 exact gallery (not the whole library), then apply its current token:
