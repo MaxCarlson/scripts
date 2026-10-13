@@ -68,6 +68,9 @@ def test_comparison_uses_one_dashboard_and_closes_on_failure(monkeypatch):
         def begin_stage(self, index):
             events.append(index)
 
+        def update_activity(self, event):
+            pass
+
         def close(self):
             events.append("closed")
 

@@ -343,6 +343,7 @@ class CompressionEngine:
         threads: int = 4,
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
         cancellation_callback: Callable[[int], None] | None = None,
+        activity_callback: Callable[[dict], None] | None = None,
     ) -> BatchResult:
         """Hold managed-library ownership until all image workers have finished."""
         with managed_write_guard({image.path.parent for image in images}) if write_mode else nullcontext():
@@ -353,6 +354,7 @@ class CompressionEngine:
                 threads=threads,
                 progress_callback=progress_callback,
                 cancellation_callback=cancellation_callback,
+                activity_callback=activity_callback,
             )
 
     def _compress_batch_owned(
@@ -364,6 +366,7 @@ class CompressionEngine:
         threads: int = 4,
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
         cancellation_callback: Callable[[int], None] | None = None,
+        activity_callback: Callable[[dict], None] | None = None,
     ) -> BatchResult:
         """Process a collection of images using thread concurrency."""
         if threads < 1:
@@ -406,6 +409,37 @@ class CompressionEngine:
         largest_working_set = max(img.width * img.height * ESTIMATED_BYTES_PER_PIXEL for img in images)
         memory_workers = max(1, MEMORY_BUDGET_BYTES // max(1, largest_working_set))
         max_workers = max(1, min(threads, os.cpu_count() or 4, memory_workers))
+        diagnostics = {
+            "requested_workers": threads,
+            "effective_workers": max_workers,
+            "cpu_limit": os.cpu_count() or 4,
+            "memory_worker_limit": memory_workers,
+            "memory_budget_bytes": MEMORY_BUDGET_BYTES,
+            "largest_estimated_image_bytes": largest_working_set,
+            "limiter": (
+                "memory"
+                if memory_workers < threads and memory_workers <= (os.cpu_count() or 4)
+                else "cpu" if (os.cpu_count() or 4) < threads else "requested"
+            ),
+            "includes_oversized_images": largest_working_set > MEMORY_BUDGET_BYTES,
+        }
+        active = {}
+        finished = 0
+        activity_lock = threading.RLock()
+
+        def report_activity():
+            if activity_callback:
+                activity_callback(
+                    {
+                        **diagnostics,
+                        "active_workers": len(active),
+                        "completed_workers": finished,
+                        "remaining_images": max(0, total - finished - len(active)),
+                        "active_images": list(active.values()),
+                    }
+                )
+
+        report_activity()
         with ThreadPoolExecutor(max_workers=max_workers) as pool:
             remaining_images = iter(images)
             cancelled = threading.Event()
@@ -413,7 +447,23 @@ class CompressionEngine:
             def work(img):
                 with cancellation_scope(cancelled):
                     check_cancelled()
-                    return self._compress_image_owned(img, strategy, write_mode=write_mode)
+                    with activity_lock:
+                        active[str(img.path)] = {
+                            "path": str(img.path),
+                            "width": img.width,
+                            "height": img.height,
+                            "estimated_bytes": img.width * img.height * ESTIMATED_BYTES_PER_PIXEL,
+                            "started": time.monotonic(),
+                        }
+                        report_activity()
+                    try:
+                        return self._compress_image_owned(img, strategy, write_mode=write_mode)
+                    finally:
+                        nonlocal finished
+                        with activity_lock:
+                            active.pop(str(img.path), None)
+                            finished += 1
+                            report_activity()
 
             def submit_next() -> None:
                 img = next(remaining_images, None)
@@ -482,4 +532,5 @@ class CompressionEngine:
             failed_count=failed_cnt,
             dry_run=not write_mode,
             results=results,
+            worker_diagnostics=diagnostics,
         )

@@ -17,7 +17,7 @@
 
 ### `mangadl compress`
 
-MangaDL1.33.0 integrates compresser0.5.0. Both CLIs default to lossless;
+MangaDL1.34.0 integrates compresser0.6.0. Both CLIs default to lossless;
 lossy/perceptual writes require `-w -L`. Analysis never mutates pending recovery.
 PNG/WebP/JPEG candidates are measured; original files remain if nothing smaller
 passes verification. AVIF is explicit lossy only. Exact URL/folder selection,
@@ -42,6 +42,9 @@ failure reasons distinguish genuine zero savings from unsupported encoding.
 Ctrl+C shows a stopping state, prevents new jobs and cancels between candidates;
 an active native encoder must return before stopping. Interrupted runs exit130.
 Lock contention fails immediately, names the lock and explicitly says "Not waiting".
+Live diagnostics show requested/effective/active workers, limit reasons and active
+image dimensions/estimated memory/elapsed time. Scheduling is not changed yet;
+oversized images affecting its global memory cap are explicitly labeled.
 
 Integrates the reusable `compresser` module to analyze, benchmark, and compress gallery images within downloaded libraries.
 

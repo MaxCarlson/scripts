@@ -5,6 +5,8 @@
 - [x] P1 stopping and nonblocking lock feedback implemented/tested; setup refreshed.
 - [x] P1 commit/push checkpoint.
 - [ ] P2 phase diagnosis, effective/active worker UI, readable narrow reports, commit/push.
+  - [x] Worker-visibility slice: actual counts, limiter and active image details, tested/setup.
+  - [ ] Phase timings and narrow comparison fallback.
 - [ ] P3 memory-aware scheduling and bounded resource configuration, commit/push.
 - [ ] P4 inventory, proportional percentage sampling and coverage-aware projections, commit/push.
 - [ ] P5 automatic MangaDL cache and interactive/noninteractive policy, commit/push.

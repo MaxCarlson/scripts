@@ -118,6 +118,7 @@ class BatchResult:
     failed_count: int
     dry_run: bool
     results: list[ImageResult] = field(default_factory=list)
+    worker_diagnostics: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,3 +141,4 @@ class ComparisonRow:
     error_summary: tuple[str, ...] = ()
     candidate_bytes: int | None = None
     original_bytes: int = 0
+    worker_diagnostics: dict = field(default_factory=dict)

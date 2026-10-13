@@ -241,6 +241,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "error_summary": r.error_summary,
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
+                        "worker_diagnostics": r.worker_diagnostics,
                     }
                     for r in comp_rows
                 ]
@@ -285,6 +286,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 threads=getattr(args, "threads", 4),
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
+                activity_callback=dash.update_activity if dash else None,
             )
         finally:
             if dash:
@@ -305,6 +307,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "skipped_count": batch_result.skipped_count,
                 "failed_count": batch_result.failed_count,
                 "cache_hits": sum(item.cache_hit for item in batch_result.results),
+                "worker_diagnostics": batch_result.worker_diagnostics,
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,

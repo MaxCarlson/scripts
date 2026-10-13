@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Latest P2 worker-visibility slice: MangaDL1.34.0 / compresser0.6.0. Shared UI and
+JSON expose requested/effective/active workers, limiter and active image details.
+Full compression71 and integration/ownership15 tests pass. Scheduler/memory budget
+unchanged; phase timers, readable narrow summaries and automatic cache are pending.
+
 Active performance/cache continuation: MangaDL1.33.0 / compresser0.5.0.
 Cooperative cancellation/STOPPING and exit130 implemented, lock errors explicitly
 fail fast. Plan at ../../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/;

@@ -1,5 +1,11 @@
 # Compresser handoff
 
+Latest worker diagnostics slice:0.6.0 (MangaDL1.34.0), full71 tests and MangaDL
+integration/ownership15 pass. UI/summary/JSON report requested/effective/active
+workers, limiter, budget/largest estimate and active image dimensions/time.
+No scheduling or budget change; rejected oversized images still affect cap and
+are explicitly flagged. Next: publish slice, then P2 phase timers/narrow report.
+
 Active performance/cache plan: ../../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/.
 P1 source0.5.0: cooperative Ctrl+C between encodes and before publication,
 STOPPING notice/active count, no new jobs, exit130, explicit nonblocking lock error.

@@ -9,6 +9,7 @@ import os
 import sys
 import time
 from collections import Counter, deque
+from pathlib import Path
 from typing import Sequence
 
 from termdash.progress import ProgressBar, render_horizontal_bar
@@ -46,6 +47,7 @@ class CompresserDashboard:
         self.block = LiveBlock(stream=sys.stderr, enabled=enabled)
         self.interactive = self.block.interactive
         self.workers = workers
+        self.activity = {}
         self.start_time = time.monotonic()
         self.stage_start = self.start_time
         self.stages = tuple(stages) or (strategy_name,)
@@ -75,6 +77,7 @@ class CompresserDashboard:
         self.current_savings = 0
         self.total_orig_bytes = 0
         self.gallery_done.clear()
+        self.activity = {}
         self.batch_bar.set(0)
         if self.enabled:
             self.block.update(self._lines)
@@ -103,6 +106,11 @@ class CompresserDashboard:
         if now - self.last_render >= 0.08 or done_count == self.total_images:
             self.block.update(self._lines)
             self.last_render = now
+
+    def update_activity(self, event: dict) -> None:
+        self.activity = event
+        if self.enabled and self.interactive:
+            self.block.update(self._lines)
 
     def _render_plain(self) -> None:
         pct = (self.processed / self.total_images) * 100.0
@@ -176,6 +184,26 @@ class CompresserDashboard:
             f"Stage    {self.batch_bar} {self.processed}/{self.total_images}",
             f"Overall  {overall_bar} {self.overall_processed}/{self.overall_total} image-strategy trials",
         ]
+        activity = self.activity
+        if activity:
+            descriptions = [
+                f"{Path(item['path']).name} ({item['width']}x{item['height']}, "
+                f"{format_bytes_decimal(item['estimated_bytes'])} estimated, {now-item['started']:.1f}s)"
+                for item in activity["active_images"][:2]
+            ]
+            lines[1] = (
+                f"Compresser | Mode: {'STOPPING' if self.stopping else self.mode} | Strategy: {self.strategy_name}"
+            )
+            lines[2:2] = [
+                f"Workers: requested {activity['requested_workers']} | effective {activity['effective_workers']} | "
+                f"active {activity['active_workers']} | remaining {activity['remaining_images']}",
+                f"Limiter: {activity['limiter']} | Budget: {format_bytes_decimal(activity['memory_budget_bytes'])} | "
+                f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
+                + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
+                "Active: "
+                + (" | ".join(descriptions) or "none")
+                + (f" | +{activity['active_workers'] - 2} more" if activity["active_workers"] > 2 else ""),
+            ]
         return lines
 
     def close(self) -> None:
@@ -221,6 +249,11 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
         ["Files Applied", str(result.applied_count)],
         ["Files Skipped", str(result.skipped_count)],
         ["Cache Hits", str(sum(item.cache_hit for item in result.results))],
+        [
+            "Workers requested / effective",
+            f"{result.worker_diagnostics.get('requested_workers', '?')} / "
+            f"{result.worker_diagnostics.get('effective_workers', '?')} ({result.worker_diagnostics.get('limiter', 'unknown')})",
+        ],
         ["Failures / Errors", color_text(str(result.failed_count), "red" if result.failed_count > 0 else "default")],
     ]
 
@@ -309,6 +342,11 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
         "Trials count images once per strategy; AUTO may test several encoders internally. Trial rate is not successful encoding speed."
     )
     for row in rows:
+        if row.worker_diagnostics:
+            print(
+                f"  {row.strategy_name}: workers requested {row.worker_diagnostics['requested_workers']}, "
+                f"effective {row.worker_diagnostics['effective_workers']}; limiter: {row.worker_diagnostics['limiter']}."
+            )
         if row.candidate_bytes is not None and row.original_bytes:
             change = (row.candidate_bytes / row.original_bytes - 1) * 100
             print(

@@ -1,5 +1,16 @@
 # Status
 
+P1 pushed faf8822. P2 worker-visibility slice implemented and tested: requested,
+effective and active worker counts, limiter/budget/largest-image estimates, active
+image names/dimensions/estimated bytes and ticking elapsed durations. UI/summary/
+JSON share diagnostics. Scheduling and memory budget are unchanged; oversized
+images affecting the current cap are explicitly flagged. Full compresser71 and
+MangaDL compression/ownership15 pass, lint/format/whitespace checks pass, editable
+installs refreshed to0.6.0/1.34.0. Publish this usable slice before further edits.
+P2 phase timings and narrow comparison fallback still open. No live image writes.
+Docs freshness20 for changed modules,0 for unchanged termdash; current doc changes
+explicitly retain scheduler/cache/phase/reader gates rather than imply completion.
+
 Branch: compression-module-mangadl-20261013-0151, baseline df9e0d4.
 User approved continuous implementation and scoped commit/push per usable feature.
 Plan committed/pushed as c76df28. P1 implemented, fixture-verified and ready to publish:

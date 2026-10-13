@@ -1,4 +1,4 @@
-# compresser 0.5.0
+# compresser 0.6.0
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -41,6 +41,12 @@ separate sample bytes/savings, population inventory and projected covered saving
 Unrepresented/failed strata remain unestimated; projections are not confidence
 intervals. Comparison rows retain failure, skipped and cache-hit counts.
 Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
+The dashboard reports requested/effective/active workers and the CPU/memory/requested
+limiter, with up to two active image names, dimensions, conservative memory estimate
+and elapsed time. JSON and summaries expose worker_diagnostics too. These are actual
+worker activity counters, not OS CPU utilization. The current largest-image cap still
+includes oversized images; this is shown explicitly, pending scheduler correction.
+Codec/verification/similarity phase timers are not implemented yet.
 Stage/gallery bars reset for each strategy; the aligned overall bar and elapsed
 timer cover all image-strategy trials (60 images x4 strategies =240 trials).
 Completed stages are green, active blue, pending yellow, with textual status when

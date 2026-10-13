@@ -23,7 +23,7 @@ from .models import (
 from .scanner import scan_directory, select_sample
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.5.0"
+__version__ = "0.6.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -208,6 +208,7 @@ def run_comparison(
                 threads=threads,
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
+                activity_callback=dash.update_activity if dash else None,
             )
             q_disp = (
                 f"SSIM>={strat.perceptual_target:.3f}"
@@ -237,6 +238,7 @@ def run_comparison(
                         else None
                     ),
                     original_bytes=res.original_bytes,
+                    worker_diagnostics=res.worker_diagnostics,
                 )
             )
     finally:
@@ -317,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
                         "error_summary": r.error_summary,
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
+                        "worker_diagnostics": r.worker_diagnostics,
                     }
                     for r in comp_rows
                 ]
@@ -361,6 +364,7 @@ def main(argv: list[str] | None = None) -> int:
                 threads=args.threads,
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
+                activity_callback=dash.update_activity if dash else None,
             )
         finally:
             if dash:
@@ -381,6 +385,7 @@ def main(argv: list[str] | None = None) -> int:
                 "skipped_count": batch_result.skipped_count,
                 "failed_count": batch_result.failed_count,
                 "cache_hits": sum(item.cache_hit for item in batch_result.results),
+                "worker_diagnostics": batch_result.worker_diagnostics,
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,

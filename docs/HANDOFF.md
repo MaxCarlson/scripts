@@ -4,6 +4,13 @@ Last updated: 2026-10-13 02:00 -07:00
 
 ## Current cross-repository work
 
+Current checkpoint: P2 worker-visibility slice, compresser0.6.0/MangaDL1.34.0.
+Full compression71 and integration/ownership15 pass; setup refreshed. Plan remains
+docs/plans/20261013-0600_compression-performance-sampling-and-cache/; requested/
+effective/active workers and image details are usable. No scheduler/budget change.
+Next: publish slice, then phase timings/narrow reports, memory-aware scheduling,
+sampling projections and automatic cache, committing each usable feature.
+
 Active follow-up: docs/plans/20261013-0600_compression-performance-sampling-and-cache/.
 Plan pushed c76df28; P1 stopping/lock feedback implemented, compresser0.5.0 and
 MangaDL1.33.0, compresser69 and MangaDL compression/ownership15 tests pass.
