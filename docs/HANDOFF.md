@@ -36,7 +36,7 @@ The missing-only bootstrap implementation is complete and awaiting user validati
 
 ## Module-Specific Work
 
-The user-approved scheduler log explorer and shared `script_logging` package are implemented in the current uncommitted worktree. See `docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md` for validation and limitations.
+The scheduler log explorer, shared `script_logging` package, and startup console/import fixes are committed and merged into main. See `docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/STATUS.md` for automated validation and the remaining manual TUI check.
 
 RRBackup consolidation remains tracked separately under:
 
@@ -44,12 +44,12 @@ RRBackup consolidation remains tracked separately under:
 modules/rrbackup/docs/plans/20260729-0700_rrbackup-consolidation-viewer-alerting/
 ```
 
-## Proposed Cross-Module Work
+## Approved Cross-Module Work
 
-The scheduler log explorer and reusable logging/history library are proposed under:
+The scheduler log explorer and reusable logging/history library are implemented
+and merged into main. The approved plan and its remaining manual TUI check are
+tracked under:
 
-```text
+```
 docs/plans/20261009-0941_scheduler-log-explorer-and-shared-logging/
 ```
-
-The plan awaits user approval; implementation has not started.

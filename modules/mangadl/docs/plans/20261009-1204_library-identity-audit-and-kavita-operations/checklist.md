@@ -63,4 +63,4 @@
 - Kavita full suite: 16 passed.
 - Repository dispatcher `& .\\Invoke-Tests.ps1 -Target @('mangadl','kavita') -SkipBootstrap -MaxHistoryAgeDays 3650 -MaxHistoryPerTarget 10`: both targets passed compile, Ruff, CLI help (MangaDL), and pytest (Kavita: 16 tests).
 - Repository dispatcher refreshed the tracked `docs/test-results/{mangadl,kavita}/LATEST*` reports. The generated progress-diff artifacts contain intentional blank-line whitespace, so `git diff --check` reports whitespace only in those reports.
-- Live acceptance remains outstanding; branch reconciliation and merge are proceeding with user approval.
+- Live acceptance remains unverified; the branch was merged on 2026-10-12. No live repair or Kavita collection write was performed.

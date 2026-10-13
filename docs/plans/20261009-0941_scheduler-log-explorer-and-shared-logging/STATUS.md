@@ -1,6 +1,6 @@
 # Status
 
-Approved by the user. Features and automated validation are complete in the uncommitted worktree. Manual TUI interaction with the configured machine is pending. No live Windows scheduled tasks were changed.
+Approved features and automated validation are merged into main. Manual TUI interaction with the configured machine is pending. No live Windows scheduled tasks were changed.
 
 ## Stages
 
@@ -26,4 +26,4 @@ Approved by the user. Features and automated validation are complete in the unco
 - Existing text logs retain only a configured number of runs, so older history may be unavailable for import.
 - Existing filename sanitization can map distinct task names to the same log path.
 - Shift+Esc may not be distinguishable from Esc in some terminal/curses combinations; a Home fallback is included in the design.
-- The worktree currently contains other uncommitted scheduler changes that must be preserved and reconciled before implementation.
+- The scheduler startup-console and import fixes were separately committed and merged with this work. The implementation branch is merged into main; final repository handoff updates are committed separately.

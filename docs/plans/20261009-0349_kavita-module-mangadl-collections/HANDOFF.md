@@ -1,6 +1,6 @@
 # Handoff
 
-Active stage: implementation and validation complete; the user explicitly authorized committing, pushing, and merging this branch into main on 2026-10-12.
+Active stage: implementation, validation, commit, push, and merge to main completed on 2026-10-12.
 
 Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
 

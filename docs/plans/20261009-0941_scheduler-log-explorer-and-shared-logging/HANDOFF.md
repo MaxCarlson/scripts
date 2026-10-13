@@ -2,7 +2,7 @@
 
 ## Approval State
 
-The user approved implementation. All six stages are implemented; 105 scheduler tests and 3 shared logger tests pass. Manual TUI interaction on the configured machine remains. No live Windows tasks were modified. No commit has been approved or created.
+The user approved implementation, commit, push, and merge. All six stages are merged; 105 scheduler tests and 3 shared logger tests pass. Manual TUI interaction on the configured machine remains. No live Windows tasks were modified.
 
 ## Scope
 
@@ -14,4 +14,4 @@ Review the feature in the TUI with the user's existing schedules, then report an
 
 ## Current Worktree Notes
 
-The repository contained uncommitted Windows runner/order changes before this plan; they remain preserved. The shared logger, scheduler history, analytics, and TUI log browser were added on top. Retained legacy text can be imported only when its filename identifies one task. Earlier recurrence edits and removed text runs cannot be reconstructed. Shift+Escape depends on terminal key reporting; `H` returns home reliably.
+Windows runner/order and startup-console/import changes are merged. The shared logger, scheduler history, analytics, and TUI log browser are included. Retained legacy text can be imported only when its filename identifies one task. Earlier recurrence edits and removed text runs cannot be reconstructed. Shift+Escape depends on terminal key reporting; `H` returns home reliably.

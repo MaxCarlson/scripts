@@ -6,4 +6,4 @@ Official Kavita source reviewed: `CollectionController` supports `GET /api/colle
 
 Verification: Kavita dispatcher target passed (compile, Ruff, 15 tests); MangaDL full suite passed (228 tests); focused tests, CLI help, compileall, Ruff, JSON validation, and `git diff --check` passed. See repository validation report under `docs/test-results/kavita/` and stage checklist.
 
-Next: finish branch reconciliation and merge the user-approved feature branch into main.
+Merged into main on 2026-10-12. Live acceptance limits are recorded in the active MangaDL plan.
