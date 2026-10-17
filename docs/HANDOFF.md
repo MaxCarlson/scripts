@@ -4,6 +4,14 @@ Last updated: 2026-10-16
 
 ## Compression merge checkpoint
 
+2026-10-16 follow-up: compresser0.9.0/MangaDL1.37.0 implement combined -b comparison,
+gallery-weighted random -s/-P sampling with -z seed, coverage/inventory and weighted
+projections/approximate uncertainty in text/JSON. Explicit -K persists trials during
+analysis (tested from a fresh reader before batch completion). Full compresser87,
+full MangaDL suite, help55 and final report subset6 pass; local editable installs
+refreshed. No production image writes or broad library benchmark. Automatic cache
+policy and reader acceptance remain open; see active P4/P5 plan.
+
 - User authorized merging `compression-module-mangadl-20261013-0151` into `main` after verification. Fresh origin refs, ancestry, patch equivalence, tracked files, and CLI checks confirmed it was not already integrated. Merge applied without conflicts, preserving newer main commits.
 - Validation: compresser 83 tests passed; full MangaDL suite passed; termdash live/table/horizontal-bar 17 tests passed; scripts_help 55 tests passed. File-publication tests required running outside the sandbox because hardlinks were denied there. Both compression CLI smoke checks passed. Source-path staged whitespace check passed; imported historical test artifacts and some docs retain existing whitespace warnings.
 - No production images changed. `-s N` is still a global format/size-stratified sample, not guaranteed per-gallery coverage. Pending user requests: per-gallery byte-weighted sampling and full lossless/lossy comparison at selected quality. Broader remaining work: `docs/plans/20261013-0600_compression-performance-sampling-and-cache/`.

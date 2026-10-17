@@ -453,6 +453,8 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
             "Dry-run analysis is the default; use -w/--write to apply modifications."
         ),
     )
+    from compresser.sampling import add_analysis_arguments
+    add_analysis_arguments(compress)
     compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
     compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
     compress.add_argument("-R", "--recover", action="store_true", help="Preview compression recovery in one exact directory; -w applies.")

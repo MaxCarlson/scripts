@@ -1,5 +1,29 @@
 # mangadl
 
+## Representative compression comparison
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -b -q 80 -P 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
+```
+
+Read-only: inventory eligible pages once, then compare full lossless and lossy
+strategy sets on the same random sample. `-P 2` selects 2% of images (rounded up
+to cover every eligible gallery); alternatively `-s N` sets a total sample budget
+which must be at least the gallery count. Quotas combine gallery image counts
+and bytes; nested chapters stay with their parent manga. Same seed reproduces
+selection. Inventorying all pages still takes time, but only sampled pages are
+encoded. `-K` commits cache entries during analysis and reuses matching results.
+Use the same cache, seed and settings on repeat checks. Completed trials survive
+interruption; changing quality or effort invalidates their reuse.
+
+The report separates measured savings from gallery-weighted projections and
+approximate uncertainty. Failures block a full projection; one-image samples in
+non-census galleries block an uncertainty interval. Increase sampling for rare
+formats or heterogeneous galleries. Add `-J` to emit a JSON report (no live UI),
+for example append `-J > .\compression-report.json` from outside the target tree.
+See [compression details](../compresser/README.md) for limits. Do not add `-w`:
+sampled comparisons are analysis-only.
+
 `mangadl` is a concurrent, resumable manager for manga and image-gallery downloads. It uses gallery-dl as its broad backend, routes HDPornComics manhwa URLs to the dedicated downloader, provides a native Manga18FX series downloader, and can fall back to an installed native `nhentai` CLI.
 
 The normal dashboard replaces line-per-image output. Each worker receives a fixed-width status row and a second progress/activity row. The header reports active/target workers, Manga18FX image threads per newly started worker, aggregate concurrency, and the logical-CPU budget.

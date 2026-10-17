@@ -19,10 +19,9 @@ from compresser import (
     ImageMetadata,
     ScanSummary,
     scan_directory,
-    select_sample,
 )
 from compresser.cli import run_comparison
-from compresser.estimates import estimate_savings
+from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
@@ -125,6 +124,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
     url_filters = getattr(args, "url", None) or ()
 
     try:
+        validate_analysis_arguments(args)
         if args.write:
             _assert_library_idle(dest)
         if getattr(args, "confirm_recovery", None) and not getattr(args, "recover", False):
@@ -160,6 +160,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
 
         # Collect all images across target galleries
         all_images: list[ImageMetadata] = []
+        gallery_keys = {}
         format_counts: dict[str, int] = {}
         format_bytes: dict[str, int] = {}
         total_bytes = 0
@@ -182,6 +183,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 sum(img.is_grayscale for img in imgs),
             )
             all_images.extend(imgs)
+            gallery_keys.update({image.path: str(gal) for image in imgs})
             total_bytes += s.total_bytes
             tall_count += s.tall_images_count
             gray_count += s.grayscale_count
@@ -208,7 +210,17 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             grayscale_count=gray_count,
         )
 
-        eval_images = select_sample(all_images, args.sample) if getattr(args, "sample", None) else all_images
+        sampling_plan = gallery_sample(
+            all_images,
+            dest,
+            sample_size=args.sample,
+            percent=getattr(args, "sample_percent", None),
+            seed=getattr(args, "sample_seed", 0),
+            gallery_keys=gallery_keys,
+        )
+        eval_images = sampling_plan.images
+        if not args.json:
+            print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
         # Comparison Mode
@@ -223,6 +235,8 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 perceptual_target=args.perceptual_target,
                 encoder=getattr(args, "algorithm", "auto"),
                 effort=getattr(args, "effort", 6),
+                compare_both=getattr(args, "compare_both", False),
+                sampling_plan=sampling_plan,
             )
             if getattr(args, "json", False):
                 data = [
@@ -244,6 +258,8 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
                         "worker_diagnostics": r.worker_diagnostics,
+                        "sampling": r.sampling,
+                        "estimate": r.estimate,
                     }
                     for r in comp_rows
                 ]
@@ -313,12 +329,13 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,
-                "estimate": estimate_savings(all_images, batch_result.results),
+                "estimate": sampling_plan.estimate(batch_result.results),
+                "sampling": sampling_plan.summary(),
             }
             print(json.dumps(out, indent=2))
         else:
             print_single_summary(batch_result, scan=summary)
-            estimate = estimate_savings(all_images, batch_result.results)
+            estimate = sampling_plan.estimate(batch_result.results)
             if estimate["scope"] != "full":
                 print(
                     f"Projected savings for covered strata: {estimate['projected_covered_saved_bytes']:,} bytes; "

@@ -299,6 +299,7 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
         "Failures",
         "Kept",
         "Cached",
+        "Projected Saved",
     ]
 
     table_rows = []
@@ -321,6 +322,11 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 str(r.failed_count),
                 str(r.skipped_count),
                 str(r.cache_hits),
+                (
+                    format_bytes_decimal(r.estimate["projected_total_saved_bytes"])
+                    if r.estimate.get("projected_total_saved_bytes") is not None
+                    else "N/A"
+                ),
             ]
         )
 
@@ -352,10 +358,28 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                     "right",
                     "right",
                     "right",
+                    "right",
                 ],
                 style="rule",
             )
         )
+    for row in rows:
+        if row.estimate:
+            estimate = row.estimate
+            value = estimate["projected_total_saved_bytes"]
+            display = format_bytes_decimal(value) if value is not None else "unavailable (failed/unmeasured galleries)"
+            interval = estimate["approximate_95_percent_interval_bytes"]
+            bounds = (
+                (
+                    f"; approximate 95% interval {format_bytes_decimal(interval[0])}.."
+                    f"{format_bytes_decimal(interval[1])}"
+                )
+                if interval is not None
+                else "; uncertainty interval unavailable"
+            )
+            print(f"  {row.strategy_name}: projected whole-target savings {display}{bounds}")
+    if any(row.estimate for row in rows):
+        print(rows[0].estimate["uncertainty"])
     print("Savings use retained size: originals stay when candidates are not smaller or a trial fails.")
     print("Kept excludes failures; SSIM describes retained results, including unchanged originals.")
     print(

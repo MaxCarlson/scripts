@@ -9,6 +9,20 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_combined_gallery_sample_report(tmp_path, capsys):
+    for gallery in ("small", "large"):
+        directory = tmp_path / gallery / "chapter"
+        directory.mkdir(parents=True)
+        for i in range(3 if gallery == "small" else 9):
+            Image.new("RGB", (40, 40), "white").save(directory / f"{i}.png")
+    assert main(["compress", "-d", str(tmp_path), "-b", "-P", "50", "-q", "75", "-e", "0", "-J"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 7
+    assert all(row["sampling"]["galleries"] == 2 for row in rows)
+    assert all(row["measured_images"] == 6 for row in rows)
+    assert all("estimate" in row for row in rows)
+
+
 def test_compress_cli_help(capsys):
     import pytest
 

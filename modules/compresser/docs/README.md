@@ -8,6 +8,11 @@ ImageResult, BatchResult, ComparisonRow, AnalysisCache, CompressionEngine,
 analyze_collection, compare_strategies, compress_collection, scan_directory,
 select_sample and discover_available_codecs.
 
+The CLI now uses `compresser.sampling.gallery_sample` for seeded per-gallery
+random sampling and design-weighted projections; legacy `select_sample` retains
+its earlier format/size behavior. `run_comparison` accepts `compare_both=True`
+and a `sampling_plan` to attach coverage/estimates to each ComparisonRow.
+
 ```python
 from pathlib import Path
 from compresser import AnalysisCache, CompressionEngine, CompressionStrategy, scan_directory

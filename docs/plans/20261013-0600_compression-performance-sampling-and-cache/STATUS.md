@@ -1,5 +1,24 @@
 # Status
 
+2026-10-16 P4 implementation: compresser0.9.0/MangaDL1.37.0 on main after
+authorized merge3122931. Shared -b/--compare-both executes seven unique lossless/
+lossy strategies on one inventory/sample. -P/--sample-percent and -z/--sample-seed
+provide reproducible gallery-stratified random sampling; -s is a strict total
+budget requiring gallery coverage. Reserve one per gallery (two if total budget
+permits), distribute remaining quotas by equal image-count and byte weighting,
+then sample uniformly without replacement within galleries. MangaDL explicitly
+assigns nested chapter pages to their gallery. CLI sampled writes are rejected.
+Projection uses gallery expansion weights; finite-population variance gives an
+approximate normal95% interval only when every non-census gallery has >=2 trials
+and no failures. Small/skewed samples remain a limitation, not claimed accuracy.
+Inventory/coverage and projection appear in text/JSON; table includes projected
+saved bytes. Existing -K persistence writes completed trials during processing;
+a fresh cache reader inside a completion callback verifies real-time durability.
+Full compression87 and focused MangaDL16 tests passed before final formatting;
+final verification recorded in handoffs. P5 automatic cache policy is still open:
+use explicit -K outside target; default capacity20000 can evict large inventories.
+No production images changed. Historical checkpoint notes below remain context.
+
 Current P3 checkpoint: compresser0.8.0/MangaDL1.36.0. Per-job memory reservations,
 bounded FIFO-head bypass, preflight memory/pixel rejections excluded from pool cap,
 active/reserved/peak/dispatch-wait diagnostics, and -B/--memory-budget-mib64..4096.

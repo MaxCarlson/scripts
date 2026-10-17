@@ -1,5 +1,17 @@
 # Compresser handoff
 
+2026-10-16:0.9.0 adds CLI -b combined lossless/lossy comparison, -P percent and
+-z seed. New sampling.py provides per-gallery coverage, count/byte-weighted quotas,
+uniform random selection and design-weighted projections with approximate95%
+intervals/explicit gaps. Legacy select_sample API unchanged. Nested gallery IDs
+come from MangaDL. One shared inventory/sample, seven trials per selected image.
+-K cache commits each finished trial immediately; live reader fixture verifies
+durability before batch completion. Automatic cache/default prompt remains open.
+README documents limits and ready-to-run commands. No production image writes.
+Verification: full compresser87; full MangaDL suite; scripts_help55 passed.
+Final report/cache/UI subset6 passed after adding per-gallery JSON inventory.
+ruff and source whitespace checks passed; editable installs refreshed successfully.
+
 Current P3:0.8.0/MangaDL1.36.0. Per-job reservations/preflight/fair bounded bypass,
 aggregate -B64..4096MiB (default512), per-image512MiB/pixel limits unchanged.
 Source dimensions verified against metadata before decoding. Full83 tests,

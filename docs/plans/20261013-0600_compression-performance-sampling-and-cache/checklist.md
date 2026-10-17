@@ -11,6 +11,9 @@
 - [x] P3 memory-aware scheduling and bounded resource configuration, tests/setup.
 - [x] Publish P3 checkpoint before P4.
 - [ ] P4 inventory, proportional percentage sampling and coverage-aware projections, commit/push.
+  - [x] Gallery-stratified seeded random sampling, count/byte-weighted quotas, percent selection, and explicit coverage limits.
+  - [x] Seven-strategy combined lossless/lossy comparison on one shared sample; text/JSON projections and uncertainty.
+  - [x] Explicit persistent cache writes/reuse verified during an active analysis; automatic cache policy remains P5.
 - [ ] P5 automatic MangaDL cache and interactive/noninteractive policy, commit/push.
 - [ ] P6 MangaDL gallery integrity and terminal/reader acceptance, commit/push.
 

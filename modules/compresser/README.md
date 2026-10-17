@@ -36,10 +36,39 @@ animation, unsupported color/bit depth, changed source and metadata/alpha loss
 are refused. Estimated aggregate decoded working memory is capped at512MiB;
 this is conservative scheduling, not an OS memory reservation.
 
-Samples are stratified by format, size and WebP dimension eligibility. Reports
-separate sample bytes/savings, population inventory and projected covered savings.
-Unrepresented/failed strata remain unestimated; projections are not confidence
-intervals. Comparison rows retain failure, skipped and cache-hit counts.
+CLI samples are seeded random samples within each gallery. `-s N` is a total
+budget and must cover every eligible gallery; `-P PERCENT` automatically raises
+the count to at least one per gallery. If the budget permits, two images per
+non-singleton gallery are reserved before allocating the remainder equally by
+image-count and byte shares. Within each gallery every image has equal selection
+probability. `-z SEED` reproduces selection (default 0). Nested chapters belong
+to their manga in MangaDL; standalone input groups by first-level directory.
+
+`-b/--compare-both` compares PNG/WebP/JPEG/AUTO lossless and WebP/JPEG/AUTO lossy
+using `-q QUALITY`, one inventory and one shared sample: seven strategy trials per
+sampled image, not one encode. No source images are changed.
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -b -q 80 -P 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
+```
+
+Reports separate measured sample savings from projected whole-target savings.
+Each gallery's mean saved bytes per sampled image is expanded by its population
+count, correcting unequal sampling rates. Approximate 95% normal intervals use
+within-gallery sample variance and finite-population correction, not guaranteed
+accuracy. Small/skewed samples may understate uncertainty. Non-census galleries
+with one sample prevent interval calculation; failed/unmeasured galleries prevent
+a full projection. Rare formats may be missed: inspect format coverage, increase
+the sample or repeat with another seed. The legacy public `select_sample` API
+remains format/size-stratified.
+
+`-K` enables real-time persistent caching: unchanged metadata and completed trials
+are committed as they finish, reusable on matching checks and after interruption.
+Active encodes have no reusable result yet. Keys include file timestamps/identity,
+strategy settings and codec/runtime identity; quality/effort changes need new trials.
+The cache must be outside the input tree. Storage is bounded (20,000 entries by
+default), so large scans may evict old entries. Without `-K`, reuse is in-memory
+for this invocation only. Sampling never applies writes.
 Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
 The dashboard reports requested/effective/active workers and the CPU/memory/requested
 limiter, with up to two active image names, dimensions, conservative memory estimate

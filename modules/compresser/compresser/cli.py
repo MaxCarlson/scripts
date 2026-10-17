@@ -14,16 +14,16 @@ from typing import Any, Sequence
 
 from .engine import CompressionEngine
 from .cache import AnalysisCache
-from .estimates import estimate_savings
 from .models import (
     ComparisonRow,
     CompressionStrategy,
     ImageMetadata,
 )
-from .scanner import scan_directory, select_sample
+from .scanner import scan_directory
+from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.8.0"
+__version__ = "0.9.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -154,6 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=0,
         help="Increase diagnostic logging output.",
     )
+    add_analysis_arguments(parser)
     return parser
 
 
@@ -168,20 +169,24 @@ def run_comparison(
     perceptual_target: float = 0.990,
     encoder: str = "auto",
     effort: int = 6,
+    compare_both: bool = False,
+    sampling_plan=None,
 ) -> list[ComparisonRow]:
     """Execute benchmarks across standard competing compression configurations."""
     formats = ["png", "webp", "jpeg", "auto"]
     candidate_strategies = [
         CompressionStrategy(
-            name=f"{fmt}-{'lossless' if fmt == 'png' else mode}",
+            name=f"{fmt}-{'lossless' if fmt == 'png' else selected_mode}",
             format=fmt,
-            mode="lossless" if fmt == "png" else mode,
+            mode="lossless" if fmt == "png" else selected_mode,
             quality=quality,
             perceptual_target=perceptual_target,
             encoder=encoder,
             method=effort,
         )
+        for selected_mode in (["lossless", "lossy"] if compare_both else [mode])
         for fmt in formats
+        if not (compare_both and selected_mode == "lossy" and fmt == "png")
     ]
 
     from collections import Counter
@@ -246,6 +251,8 @@ def run_comparison(
                     ),
                     original_bytes=res.original_bytes,
                     worker_diagnostics=res.worker_diagnostics,
+                    sampling=sampling_plan.summary() if sampling_plan else {},
+                    estimate=sampling_plan.estimate(res.results) if sampling_plan else {},
                 )
             )
     finally:
@@ -257,6 +264,10 @@ def run_comparison(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        validate_analysis_arguments(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     if args.confirm_recovery and not args.recover:
         parser.error("--confirm-recovery requires --recover")
     if args.recover and (args.compare or args.sample):
@@ -294,7 +305,12 @@ def main(argv: list[str] | None = None) -> int:
             return 1
 
         # Handle sample selection
-        eval_images = select_sample(images, args.sample) if args.sample else images
+        sampling_plan = gallery_sample(
+            images, args.input, sample_size=args.sample, percent=args.sample_percent, seed=args.sample_seed
+        )
+        eval_images = sampling_plan.images
+        if not args.json:
+            print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
         if args.compare:
@@ -308,6 +324,8 @@ def main(argv: list[str] | None = None) -> int:
                 perceptual_target=args.perceptual_target,
                 encoder=args.algorithm,
                 effort=args.effort,
+                compare_both=args.compare_both,
+                sampling_plan=sampling_plan,
             )
             if args.json:
                 data = [
@@ -329,6 +347,8 @@ def main(argv: list[str] | None = None) -> int:
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
                         "worker_diagnostics": r.worker_diagnostics,
+                        "sampling": r.sampling,
+                        "estimate": r.estimate,
                     }
                     for r in comp_rows
                 ]
@@ -398,12 +418,13 @@ def main(argv: list[str] | None = None) -> int:
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,
-                "estimate": estimate_savings(images, batch_result.results),
+                "estimate": sampling_plan.estimate(batch_result.results),
+                "sampling": sampling_plan.summary(),
             }
             print(json.dumps(out, indent=2))
         else:
             print_single_summary(batch_result, scan=summary)
-            estimate = estimate_savings(images, batch_result.results)
+            estimate = sampling_plan.estimate(batch_result.results)
             if estimate["scope"] != "full":
                 print(
                     f"Projected savings for covered strata: {estimate['projected_covered_saved_bytes']:,} bytes; "

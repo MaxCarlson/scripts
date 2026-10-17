@@ -144,3 +144,5 @@ class ComparisonRow:
     candidate_bytes: int | None = None
     original_bytes: int = 0
     worker_diagnostics: dict = field(default_factory=dict)
+    sampling: dict = field(default_factory=dict)
+    estimate: dict = field(default_factory=dict)

@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+2026-10-16:1.37.0/compresser0.9.0: -b compares full lossless/lossy sets using -q;
+-P percentage and -z seed sample across all discovered galleries, preserving
+nested-chapter ownership. Counts and bytes jointly weight quotas; projections
+correct unequal sampling rates. Reports expose coverage/uncertainty and persistent
+-K cache hits. Sampled writes rejected. User library untouched; commands in README.
+
 Current P3: MangaDL1.36.0/compresser0.8.0. Shared per-job memory reservations,
 preflight exclusions and aggregate -B allowance64..4096MiB, default512 unchanged.
 Per-image decode limit still512MiB. Full83 compression,15 integration,55 help pass.
