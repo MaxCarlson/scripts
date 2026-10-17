@@ -1,4 +1,4 @@
-# compresser 0.22.0
+# compresser 0.23.0
 
 ## Pilot sample-size advisor, coverage gaps, and confirmation sampling
 
@@ -60,7 +60,7 @@ Fingerprints are not content hashes or an integrity audit. Trust cannot be combi
 with source writes, recovery, inventory-only or previews. No prompt is required.
 JSON includes `inventory_snapshot` and `population_warning` alongside estimates.
 
-## Cache visibility
+## Cache visibility and indexed invalidation causes
 
 Normal analyses show the persistent cache creation date and last result-save date
 at startup. Legacy caches without recorded dates explicitly show unknown creation
@@ -68,12 +68,15 @@ time; tracking starts when first opened by this version, not retroactively. Cach
 dates persist independently of trial eviction. Only successfully committed trial
 saves advance the last-result timestamp.
 
-Text summaries and JSON `cache` objects include current-run trial lookup hits/misses
-and miss categories: refresh-policy bypass, no matching entry, or invalid record.
-These include AUTO candidate probes, so they are not counts of images processed or
-successful encodes. An opaque missing key cannot prove whether an entry was never
-measured, evicted, or invalidated by source/settings changes; the report does not
-invent a more specific reason. Memory-only caches have no persistent creation date.
+Text summaries and JSON `cache` objects include current-run trial lookup hits/misses,
+`miss_reasons`, and `invalidation_causes` indexed via `trial_index`:
+`no_matching_entry`/`never_measured` (path never recorded in the trial index),
+`source_changed` (file size, mtime, or ctime changed since measurement),
+`settings_changed` (different format/mode/quality/effort/encoder for an already-measured
+source), `runtime_changed` (codec/Pillow/metric identity changed), `evicted` (previously
+recorded in `trial_index` for the exact source, settings, and runtime before `entries`
+pruning), `refresh_policy`, and `invalid_record`. Memory-only caches have no persistent
+creation date.
 
 ## Fast extension/size inventory
 

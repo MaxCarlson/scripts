@@ -74,6 +74,7 @@ class AnalysisCache:
             raise ValueError("Cache capacity must be positive")
         self._entries: dict[str, ImageResult] = {}
         self._metadata: dict[str, ImageMetadata] = {}
+        self._trial_index: dict[str, dict[str, dict[str, str]]] = {}
         self._lock = threading.RLock()
         self.reuse_persistent = reuse_persistent
         self._connection: sqlite3.Connection | None = None
@@ -82,6 +83,7 @@ class AnalysisCache:
         self._prune_interval = min(256, max_entries)
         self._lookup_hits = 0
         self._miss_reasons: Counter[str] = Counter()
+        self._invalidation_causes: Counter[str] = Counter()
         self._dates = {"created_at": None, "tracking_started_at": None, "last_result_saved_at": None}
         self.path = path.expanduser().resolve() if path else None
         self.identity = json.dumps(_runtime_identity(), sort_keys=True)
@@ -94,6 +96,12 @@ class AnalysisCache:
                     "CREATE TABLE IF NOT EXISTS entries (kind TEXT, key TEXT, data TEXT, PRIMARY KEY(kind,key))"
                 )
                 self._connection.execute("CREATE TABLE IF NOT EXISTS cache_metadata (key TEXT PRIMARY KEY,value TEXT)")
+                self._connection.execute(
+                    "CREATE TABLE IF NOT EXISTS trial_index ("
+                    "path_hash TEXT, strategy_hash TEXT, entry_key TEXT, "
+                    "source_stamp TEXT, runtime_hash TEXT, updated_at TEXT, "
+                    "PRIMARY KEY(path_hash, strategy_hash))"
+                )
                 now = datetime.now(timezone.utc).isoformat()
                 initial = {
                     "created_at": None if existing else now,
@@ -127,6 +135,7 @@ class AnalysisCache:
                 "lookup_hits": self._lookup_hits,
                 "lookup_misses": sum(self._miss_reasons.values()),
                 "miss_reasons": dict(self._miss_reasons),
+                "invalidation_causes": dict(self._invalidation_causes),
                 "counter_scope": "current run trial lookups, including AUTO candidate probes; not image counts",
             }
 
@@ -146,11 +155,31 @@ class AnalysisCache:
         return self._connection
 
     def _prune(self) -> None:
-        self._database().execute(
+        db = self._database()
+        db.execute(
             "DELETE FROM entries WHERE rowid IN (SELECT rowid FROM entries ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
             (self.max_entries,),
         )
+        index_cap = max(100_000, self.max_entries * 10)
+        db.execute(
+            "DELETE FROM trial_index WHERE rowid IN (SELECT rowid FROM trial_index ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+            (index_cap,),
+        )
         self._writes_since_prune = 0
+
+    def _trial_components(
+        self, path: Path, strategy: CompressionStrategy, *, legacy: bool = False
+    ) -> tuple[str, str, str, str]:
+        resolved = str(path.resolve())
+        path_hash = hashlib.sha256(resolved.encode("utf-8")).hexdigest()
+        try:
+            stat = path.stat()
+            source_stamp = f"{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}"
+        except OSError:
+            source_stamp = "missing"
+        strategy_hash = hashlib.sha256(_strategy_key(strategy, legacy=legacy).encode("utf-8")).hexdigest()
+        runtime_hash = hashlib.sha256(self.identity.encode("utf-8")).hexdigest()
+        return path_hash, strategy_hash, source_stamp, runtime_hash
 
     def _make_key(self, path: Path, strategy: CompressionStrategy, *, legacy: bool = False) -> str:
         try:
@@ -159,6 +188,35 @@ class AnalysisCache:
         except OSError:
             ident = f"{path.resolve()}:{self.identity}:{_strategy_key(strategy, legacy=legacy)}"
         return hashlib.sha256(ident.encode("utf-8")).hexdigest()
+
+    def _classify_miss(self, path: Path, strategy: CompressionStrategy) -> tuple[str, str]:
+        if self.path and not self.reuse_persistent:
+            return "refresh_policy", "refresh_policy"
+        path_hash, strategy_hash, source_stamp, runtime_hash = self._trial_components(path, strategy)
+        known_by_strat = dict(self._trial_index.get(path_hash, {}))
+        if self.path and not self._closed:
+            rows = self._database().execute(
+                "SELECT strategy_hash, entry_key, source_stamp, runtime_hash FROM trial_index WHERE path_hash=?",
+                (path_hash,),
+            ).fetchall()
+            for s_hash, entry_key, s_stamp, r_hash in rows:
+                known_by_strat[s_hash] = {
+                    "entry_key": entry_key,
+                    "source_stamp": s_stamp,
+                    "runtime_hash": r_hash,
+                }
+        if not known_by_strat:
+            return "no_matching_entry", "never_measured"
+        exact_strat = known_by_strat.get(strategy_hash)
+        if exact_strat is not None:
+            if exact_strat["source_stamp"] != source_stamp:
+                return "source_changed", "source_changed"
+            if exact_strat["runtime_hash"] != runtime_hash:
+                return "runtime_changed", "runtime_changed"
+            return "evicted", "evicted"
+        if any(item["source_stamp"] != source_stamp for item in known_by_strat.values()):
+            return "source_changed", "source_changed"
+        return "settings_changed", "settings_changed"
 
     @timed("cache")
     def get(self, path: Path, strategy: CompressionStrategy) -> ImageResult | None:
@@ -181,24 +239,37 @@ class AnalysisCache:
                         self._entries[key] = cached
                     except (KeyError, TypeError, ValueError):
                         self._miss_reasons["invalid_record"] += 1
+                        self._invalidation_causes["invalid_record"] += 1
                         return None
             if cached is not None:
                 self._lookup_hits += 1
             else:
-                reason = "refresh_policy" if self.path and not self.reuse_persistent else "no_matching_entry"
+                reason, cause = self._classify_miss(path, strategy)
                 self._miss_reasons[reason] += 1
+                self._invalidation_causes[cause] += 1
             return replace(cached, cache_hit=True) if cached else None
 
     @timed("cache")
     def set(self, path: Path, strategy: CompressionStrategy, result: ImageResult) -> None:
         key = self._make_key(path, strategy)
+        path_hash, strategy_hash, source_stamp, runtime_hash = self._trial_components(path, strategy)
         with self._lock:
             if len(self._entries) >= self.max_entries:
                 keys = list(self._entries.keys())[: max(1, self.max_entries // 5)]
                 for k in keys:
                     self._entries.pop(k, None)
             self._entries[key] = result
-            self._save("trial", key, asdict(result))
+            self._trial_index.setdefault(path_hash, {})[strategy_hash] = {
+                "entry_key": key,
+                "source_stamp": source_stamp,
+                "runtime_hash": runtime_hash,
+            }
+            self._save(
+                "trial",
+                key,
+                asdict(result),
+                index_row=(path_hash, strategy_hash, key, source_stamp, runtime_hash),
+            )
 
     def _load(self, kind: str, key: str) -> dict | None:
         if not self.path:
@@ -212,7 +283,14 @@ class AnalysisCache:
                 return None
         return None
 
-    def _save(self, kind: str, key: str, data: dict) -> None:
+    def _save(
+        self,
+        kind: str,
+        key: str,
+        data: dict,
+        *,
+        index_row: tuple[str, str, str, str, str] | None = None,
+    ) -> None:
         if not self.path:
             return
         connection = self._database()
@@ -220,6 +298,12 @@ class AnalysisCache:
             connection.execute(
                 "INSERT OR REPLACE INTO entries VALUES(?,?,?)", (kind, key, json.dumps(data, default=str))
             )
+            if kind == "trial" and index_row is not None:
+                saved_at = datetime.now(timezone.utc).isoformat()
+                connection.execute(
+                    "INSERT OR REPLACE INTO trial_index VALUES(?,?,?,?,?,?)",
+                    (*index_row, saved_at),
+                )
             self._writes_since_prune += 1
             if self._writes_since_prune >= self._prune_interval:
                 self._prune()
@@ -273,9 +357,11 @@ class AnalysisCache:
         with self._lock:
             self._entries.clear()
             self._metadata.clear()
+            self._trial_index.clear()
             if self.path:
                 connection = self._database()
                 connection.execute("DELETE FROM entries")
+                connection.execute("DELETE FROM trial_index")
                 connection.commit()
 
 

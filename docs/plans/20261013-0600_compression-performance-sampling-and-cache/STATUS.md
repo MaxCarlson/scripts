@@ -1,5 +1,12 @@
 # Status
 
+I2d2 compresser0.23.0/MangaDL1.49.0: `AnalysisCache` indexes `(path_hash, strategy_hash)`
+with `source_stamp` and `runtime_hash` in `trial_index` (and in-memory `_trial_index`),
+enabling `diagnostics()` to classify cache misses and `invalidation_causes` into
+`no_matching_entry`/`never_measured`, `source_changed`, `settings_changed`,
+`runtime_changed`, `evicted`, `refresh_policy`, and `invalid_record`. 141 compression
+(1 skip)/307 MangaDL/55 help pass; ruff clean.
+
 I3b compresser0.22.0/MangaDL1.48.0: `GallerySample.summary()` and `estimate()`
 distinguish `coverage_minimum_images` from `variance_minimum_images` and report
 `unsampled_formats`, top-decile `unsampled_large_images`, `unsampled_tall_webp_images`

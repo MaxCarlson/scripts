@@ -9,12 +9,12 @@
   - [x] Trusted completed header snapshots and selected-file validation without whole-target enumeration (-U trust).
   - [x] Readable inventory-only summary requested2026-10-16; preserve clean explicit JSON.
   - [x] Reusable per-folder read/write locks (`cross_platform 0.7.0`), `mangadl lock -s|-u -d TARGET [-j]` (`mangadl 1.47.0`), and live in-place `InventoryProgress` (`compresser 0.21.0`).
-- [ ] I2 bounded persistent cache improvements and reusable encoder candidates.
+- [x] I2 bounded persistent cache improvements and reusable encoder candidates.
   - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
   - [x] I2b effective candidate identity and AUTO analysis reuse;95 compression/17 integration pass.
   - [x] I2c automatic per-library use/refresh/off trial-cache policies and path/policy reporting;96 compression/17 integration/55 help pass.
   - [x] I2d1 persistent cache dates (legacy creation unknown) and scoped run lookup diagnostics;113 compression/302 MangaDL/55 help pass.
-  - [ ] Detailed per-source/settings/eviction miss explanations need additional indexing; generic misses are not overinterpreted.
+  - [x] Detailed per-source/settings/runtime/eviction miss explanations via `trial_index` (`compresser 0.23.0` / `mangadl 1.49.0`).
 - [x] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
   - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
   - [x] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations (`compresser 0.22.0` / `mangadl 1.48.0`).

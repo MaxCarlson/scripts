@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+I2d2 compresser0.23.0/MangaDL1.49.0 indexes `(path_hash, strategy_hash)` metadata in
+`AnalysisCache` (`trial_index`) to classify cache misses and `invalidation_causes`
+into `never_measured`, `source_changed`, `settings_changed`, `runtime_changed`,
+`evicted`, `refresh_policy`, and `invalid_record`. 141 compression (1 skip)/307 MangaDL/55 help pass.
+
 I3b compresser0.22.0/MangaDL1.48.0 adds rare-format/top-decile-large/tall-WebP
 coverage-gap diagnostics, pilot-informed variance & runtime sample-size advisor
 (`advise_sample_size`), two-stage Bonferroni-adjusted 95% intervals, disjoint
