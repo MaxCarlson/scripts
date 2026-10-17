@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+MangaDL1.46.1 validates shared compression mode before acquiring writer ownership;
+rejected trust/write combination leaves target unchanged.306 MangaDL/55 help pass.
+Inventory footer010bc54 pushed. Background live index still needs final stats posted.
+
 Inventory stats0.20.0/1.46.0: readable footer for both CLIs/depths; JSON redirects
 preserved, explicit -J clean.134 compression/305 MangaDL/55 help pass,1 privilege
 skip. Snapshot1689ffb pushed. User-authorized background header index in B:\Hent\

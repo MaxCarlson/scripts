@@ -218,3 +218,13 @@ stdout retains JSON with the human summary on stderr unless -J is specified.
 3. Run full compression/MangaDL/help suites and lint/format checks, update versions/
    documentation/status/install, commit and push feature branch. Expected: all pass,
    clean synchronized branch; no production scan.
+
+## Task 5: reject invalid analysis policies before acquiring writer ownership
+
+Follow-up discovered while reviewing I1b2: MangaDL validates shared arguments inside
+the writer guard, so rejected -U trust -w may create library controls unnecessarily.
+1. Add a real CLI regression asserting rejected trusted/write mode leaves the target
+   unchanged. Expected: RED because the lock/control directory is created.
+2. Validate shared mode policy before entering writer ownership; do not weaken any
+   valid write guard. Expected: focused test GREEN, full MangaDL/help suites GREEN.
+3. Patch version/docs/status, commit/push this bounded fix; no production writes.

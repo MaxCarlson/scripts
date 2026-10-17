@@ -1,5 +1,11 @@
 # Status
 
+MangaDL1.46.1: invalid analysis policies rejected before writer guard acquisition;
+-U trust -w no longer creates .mangadl controls before returning an error. RED->GREEN
+source-preservation regression;306 MangaDL/55 help pass. Compression code unchanged
+from0.20.0 checkpoint010bc54, which is committed/pushed with134 tests/1 privilege skip.
+Live header inventory is still running; no final counts claimed yet.
+
 Inventory summary compresser0.20.0/MangaDL1.46.0: shared concise terminal footer
 for header and file-only -l. Gallery/image counts, file bytes, extension shares,
 format/header diagnostics, errors/exclusions and saved path; unknown totals stay

@@ -76,6 +76,15 @@ def test_inventory_summary_shared_with_standalone(tmp_path, capsys, depth):
     assert json.loads(output.out)["galleries"]
 
 
+def test_rejected_trusted_write_does_not_create_library_controls(tmp_path, capsys):
+    Image.new("RGB", (40, 40)).save(tmp_path / "01.png")
+    before = {path.name: path.read_bytes() for path in tmp_path.iterdir()}
+    assert main(["compress", "-d", str(tmp_path), "-U", "trust", "-w"]) == 2
+    assert "read-only analysis only" in capsys.readouterr().err
+    assert {path.name for path in tmp_path.iterdir()} == {"01.png"}
+    assert (tmp_path / "01.png").read_bytes() == before["01.png"]
+
+
 def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, capsys):
     gallery = tmp_path / "library" / "manga" / "chapter"
     gallery.mkdir(parents=True)

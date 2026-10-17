@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+1.46.1 follow-up: shared compression argument validation now precedes library
+writer guard acquisition. Rejected -U trust -w leaves a pristine target unchanged
+(no .mangadl controls). RED->GREEN regression; full306 MangaDL/55 help pass. Valid
+write guards unchanged. Existing live -l -J header inventory continues externally.
+
 Inventory footer1.46.0/compresser0.20.0: -l and -l -D files have shared readable
 stats/error/type summary; terminal avoids full JSON dump, redirection retains JSON
 with stderr footer, -J suppresses footer.134 compression/305 MangaDL/55 help pass,

@@ -126,6 +126,7 @@ def discover_gallery_targets(
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
+        validate_analysis_arguments(args)
         destination = args.destination.expanduser()
         if not destination.is_dir() or destination.is_symlink():
             raise ValueError("Compression requires an existing, unlinked destination directory")
@@ -144,7 +145,6 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
     cache = None
 
     try:
-        validate_analysis_arguments(args)
         if getattr(args, "inventory_depth", "headers") == "files":
             from compresser.file_inventory import scan_file_inventory
             from compresser.scanner import IMAGE_EXTENSIONS
