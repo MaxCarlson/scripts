@@ -7,11 +7,20 @@ import json
 import os
 import tempfile
 import threading
+import sys
 from contextlib import contextmanager, ExitStack
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from PIL import Image
+
+try:
+    from cross_platform.locks import directory_lock as _cross_platform_directory_lock
+except ModuleNotFoundError:  # pragma: no cover
+    _modules_root = str(Path(__file__).resolve().parents[2])
+    if _modules_root not in sys.path:
+        sys.path.insert(0, _modules_root)
+    from cross_platform.locks import directory_lock as _cross_platform_directory_lock
 
 JOURNAL_FILENAME = ".compress_journal.json"
 LOCK_FILENAME = ".compress.lock"
@@ -25,7 +34,7 @@ def managed_library_root(directory: Path) -> Path | None:
 
 
 @contextmanager
-def library_write_guard(root: Path) -> Iterator[None]:
+def library_write_guard(root: Path, *, operation: str = "") -> Iterator[None]:
     """Shared operation ownership, reentrant only on the invoking thread."""
     root = root.expanduser().resolve()
     held = getattr(_library_owners, "roots", None)
@@ -38,7 +47,7 @@ def library_write_guard(root: Path) -> Iterator[None]:
     if controls.is_symlink():
         raise ValueError(f"Refusing linked library controls: {controls}")
     controls.mkdir(parents=True, exist_ok=True)
-    with directory_lock(controls, filename="operation.lock"):
+    with directory_lock(controls, filename="operation.lock", operation=operation, target=root):
         held.add(root)
         try:
             yield
@@ -47,12 +56,12 @@ def library_write_guard(root: Path) -> Iterator[None]:
 
 
 @contextmanager
-def managed_write_guard(directories) -> Iterator[None]:
+def managed_write_guard(directories, *, operation: str = "") -> Iterator[None]:
     """Coordinate standalone writes with established MangaDL library owners."""
     roots = {root for directory in directories if (root := managed_library_root(directory)) is not None}
     with ExitStack() as owners:
         for root in sorted(roots):
-            owners.enter_context(library_write_guard(root))
+            owners.enter_context(library_write_guard(root, operation=operation))
         yield
 
 
@@ -65,60 +74,28 @@ def digest(path: Path) -> str:
 
 
 @contextmanager
-def directory_lock(directory: Path, *, create: bool = True, filename: str = LOCK_FILENAME) -> Iterator[None]:
+def directory_lock(
+    directory: Path,
+    *,
+    create: bool = True,
+    filename: str = LOCK_FILENAME,
+    operation: str = "",
+    target: Path | str | None = None,
+) -> Iterator[None]:
     """Persistent lock inode with OS ownership, released even on process death.
 
     Never unlink a lock inode: another process may already have opened it.
     Read-only previews only open an existing lock and never create a control.
     """
-    if Path(filename).name != filename or filename in {"", ".", ".."}:
-        raise ValueError("Lock filename must be one local filename")
-    lock = directory / filename
-    if lock.is_symlink():
-        raise RuntimeError(f"Refusing linked compression lock: {lock}")
-    if not create and not lock.exists():
+    with _cross_platform_directory_lock(
+        directory,
+        create=create,
+        filename=filename,
+        mode="write",
+        operation=operation,
+        target=target if target is not None else directory,
+    ):
         yield
-        return
-    handle = lock.open("a+b" if create else "r+b")
-    locked = False
-    try:
-        if handle.seek(0, os.SEEK_END) == 0 and create:
-            handle.write(b"\0")
-            handle.flush()
-            os.fsync(handle.fileno())
-        handle.seek(0)
-        try:
-            import msvcrt
-        except ImportError:
-            import fcntl
-
-            def acquire() -> None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-            def release() -> None:
-                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
-
-        else:
-
-            def acquire() -> None:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
-
-            def release() -> None:
-                msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
-
-        try:
-            acquire()
-            locked = True
-        except OSError as exc:
-            raise RuntimeError(
-                f"Write directory is locked by another operation: {lock}. Not waiting; retry after it finishes. Do not delete the lock file."
-            ) from exc
-        yield
-    finally:
-        if locked:
-            handle.seek(0)
-            release()
-        handle.close()
 
 
 def _save_record(journal: Path, record: dict) -> None:

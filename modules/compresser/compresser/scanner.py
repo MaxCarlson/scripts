@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections import defaultdict
 import os
 from pathlib import Path
-from typing import Callable, Sequence
+from typing import Any, Callable, Sequence
 
 from PIL import Image
 
@@ -57,6 +57,7 @@ def scan_directory(
     progress_callback: Callable[[int, Path], None] | None = None,
     cache: AnalysisCache | None = None,
     inventory: InventoryStore | None = None,
+    progress: Any | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """Refresh membership and reuse unchanged headers from a durable inventory."""
     if inventory is None:
@@ -66,6 +67,7 @@ def scan_directory(
             check_grayscale=check_grayscale,
             progress_callback=progress_callback,
             cache=cache,
+            progress=progress,
         )
     with inventory.scan(target_path, recursive) as session:
         return _scan_directory(
@@ -74,6 +76,7 @@ def scan_directory(
             check_grayscale=check_grayscale,
             progress_callback=progress_callback,
             cache=session,
+            progress=progress,
         )
 
 
@@ -84,6 +87,7 @@ def _scan_directory(
     check_grayscale: bool = False,
     progress_callback: Callable[[int, Path], None] | None = None,
     cache: AnalysisCache | None = None,
+    progress: Any | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """
     Recursively scan target_path for all image files and compile aggregate statistics.
@@ -125,14 +129,31 @@ def _scan_directory(
 
     # Sort files naturally for consistent batch ordering
     file_candidates.sort(key=lambda p: str(p).casefold())
+    if progress is not None and file_candidates:
+        progress.add_total_files(len(file_candidates))
 
     for idx, path in enumerate(file_candidates, 1):
         meta = cache.get_metadata(path, check_grayscale) if cache else None
+        reused = meta is not None
+        inspected = False
         if meta is None:
+            inspected = True
             meta = inspect_image_file(path, check_grayscale=check_grayscale)
             if meta and cache:
                 cache.set_metadata(meta, check_grayscale)
         if meta is None:
+            if progress is not None:
+                try:
+                    raw_size = path.stat().st_size
+                except OSError:
+                    raw_size = 0
+                progress.advance_file(
+                    path,
+                    size_bytes=raw_size,
+                    reused=False,
+                    inspected=inspected,
+                    unreadable=True,
+                )
             continue
         images.append(meta)
         fmt = meta.format.upper()
@@ -144,6 +165,14 @@ def _scan_directory(
         if meta.is_grayscale:
             gray_count += 1
 
+        if progress is not None:
+            progress.advance_file(
+                path,
+                size_bytes=meta.size_bytes,
+                reused=reused,
+                inspected=inspected,
+                unreadable=False,
+            )
         if progress_callback:
             progress_callback(idx, path)
 

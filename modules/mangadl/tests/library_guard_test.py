@@ -67,3 +67,66 @@ def test_invalid_write_destination_is_not_created(tmp_path):
     destination = tmp_path / "missing"
     assert main(["compress", "-d", str(destination), "-w", "-N"]) == 2
     assert not destination.exists()
+
+
+def test_mangadl_lock_status_and_unlock_cli(tmp_path, capsys, monkeypatch):
+    import json
+    import sqlite3
+    from mangadl.library_guard import library_read_guard, library_write_guard
+
+    monkeypatch.setenv("CROSS_PLATFORM_LOCK_DIR", str(tmp_path / "ext_locks"))
+    folder_a = tmp_path / "tmphent3"
+    folder_b = tmp_path / "hent1image"
+    folder_a.mkdir()
+    folder_b.mkdir()
+
+    # 1. Idle folder status
+    assert main(["lock", "-s", "-d", str(folder_a), "-j"]) == 0
+    idle_data = json.loads(capsys.readouterr().out)
+    assert idle_data["engaged"] is False
+    assert idle_data["write_locked"] is False
+    assert idle_data["read_locked"] is False
+
+    # 2. Active read lock on folder_a does not touch folder_a or lock folder_b
+    with library_read_guard(folder_a, operation="mangadl compress -l -D headers"):
+        assert list(folder_a.iterdir()) == []
+        assert main(["lock", "-s", "-d", str(folder_a), "-j"]) == 0
+        read_data = json.loads(capsys.readouterr().out)
+        assert read_data["engaged"] is True
+        assert read_data["read_locked"] is True
+        assert read_data["write_locked"] is False
+        assert any(lk["operation"] == "mangadl compress -l -D headers" for lk in read_data["locks"])
+
+        assert main(["lock", "-s", "-d", str(folder_b), "-j"]) == 0
+        b_data = json.loads(capsys.readouterr().out)
+        assert b_data["engaged"] is False
+
+    # 3. Stale repair.lock and running state row require explicit -u/--unlock
+    controls = folder_a / ".mangadl"
+    controls.mkdir(parents=True, exist_ok=True)
+    repair_lock = controls / "repair.lock"
+    repair_lock.write_text("stale-token", encoding="utf-8")
+    state_db = controls / "state.sqlite3"
+    with sqlite3.connect(state_db) as conn:
+        conn.execute("CREATE TABLE runs (id TEXT PRIMARY KEY, started TEXT, finished TEXT, status TEXT)")
+        conn.execute("INSERT INTO runs VALUES ('run-99', '2026-10-16T00:00:00Z', NULL, 'running')")
+        conn.commit()
+
+    assert main(["lock", "-s", "-d", str(folder_a), "-j"]) == 0
+    stale_status = json.loads(capsys.readouterr().out)
+    assert stale_status["engaged"] is False
+    assert stale_status["stale_count"] == 2
+    assert repair_lock.exists()
+
+    assert main(["lock", "-u", "-d", str(folder_a), "-j"]) == 0
+    unlocked_res = json.loads(capsys.readouterr().out)
+    assert len(unlocked_res["unlocked"]) == 2
+    assert unlocked_res["refused_active"] == []
+    assert not repair_lock.exists()
+
+    # 4. Active write lock refuses -u/--unlock
+    with library_write_guard(folder_a, operation="mangadl run"):
+        assert main(["lock", "-u", "-d", str(folder_a), "-j"]) == 1
+        refused = json.loads(capsys.readouterr().out)
+        assert len(refused["refused_active"]) >= 1
+

@@ -30,6 +30,7 @@ def scan_file_inventory(
     *,
     exclude_stems: Iterable[str] = (),
     single_gallery: bool = False,
+    progress=None,
 ) -> dict:
     """Refresh extension/size statistics and atomically save a complete enumeration."""
     if _linked(source):
@@ -62,6 +63,8 @@ def scan_file_inventory(
             ]
             excluded_directories += len(dirs) - len(kept)
             dirs[:] = kept
+            if progress is not None:
+                progress.start_folder(Path(parent))
             for name in names:
                 yield Path(parent) / name
 
@@ -70,6 +73,8 @@ def scan_file_inventory(
             continue
         if path.name.startswith(".") or path.stem.casefold() in excluded:
             excluded_files += 1
+            if progress is not None:
+                progress.advance_file(path, size_bytes=0, unreadable=True)
             continue
         relative = path.relative_to(root) if directory else Path(path.name)
         gallery = root.name if single_gallery or len(relative.parts) == 1 else relative.parts[0]
@@ -87,6 +92,8 @@ def scan_file_inventory(
             info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
                 excluded_files += 1
+                if progress is not None:
+                    progress.advance_file(path, size_bytes=0, unreadable=True)
                 continue
             if not stat.S_ISREG(info.st_mode):
                 continue
@@ -95,6 +102,8 @@ def scan_file_inventory(
             row["error"] = str(exc)
             errors.append({"relative_path": str(relative), "error": str(exc)})
         files.append(row)
+        if progress is not None:
+            progress.advance_file(path, size_bytes=int(row["bytes"] or 0), unreadable="error" in row)
     files.sort(key=lambda row: row["relative_path"].casefold())
     grouped = defaultdict(list)
     for row in files:

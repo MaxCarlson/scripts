@@ -1,8 +1,33 @@
 # mangadl
 
-## Readable compression inventory summary
+## Folder lock inspection and recovery (`mangadl lock`)
 
-`mangadl compress -d TARGET -l` shows a final stats summary: eligible gallery folders,
+```powershell
+mangadl lock -s -d 'B:\Hent\tmphent3'
+mangadl lock -u -d 'B:\Hent\tmphent3'
+mangadl lock -s -d 'B:\Hent\tmphent3' -j
+```
+
+`mangadl` and `compresser` use per-folder locking via `cross_platform.locks` so
+separate library folders (e.g., `B:\Hent\tmphent3` and `B:\Hent\hent1image`) lock
+independently and can run concurrently. Write operations (`mangadl run`, `repair`,
+`compress -w`) hold exclusive OS byte-range locks (`.mangadl/operation.lock`,
+`.compress.lock`) with embedded holder metadata (`PID`, process start time,
+command, target); read-only operations (`compress -l`, `-c`, `-b`) hold shared
+OS-backed read locks in external state without modifying the target folder.
+`mangadl lock -s -d TARGET` inspects active write/read locks and live processes
+(with PID + creation-time verification to avoid PID-reuse false positives) and
+automatically cleans harmless stale metadata when the OS lock is free. Explicit
+`mangadl lock -u -d TARGET` clears stale `repair.lock` and stale `state.sqlite3`
+`running` records only when no live process holds a lock.
+
+## Readable compression inventory summary & live progress
+
+`mangadl compress -d TARGET -l` displays a live in-place `termdash` progress block
+on `stderr` during folder discovery and header/file scanning (folders processed,
+files processed, reused vs. inspected headers, total bytes processed, rolling
+files/s and MB/s rate, elapsed time, and ETA; disable with `-N/--no-ui`), then
+shows a final stats summary: eligible gallery folders,
 page/header counts, bytes, per-extension counts/sizes/shares, detected formats,
 header reuse/inspection and unreadable candidates. `-l -D files` instead labels
 unverified extension candidates and reports stat errors/exclusions. Unknown totals

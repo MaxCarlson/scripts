@@ -8,6 +8,7 @@
   - [x] I1b1 filesystem-only -l -D files, separate durable unverified snapshots, totals/error handling and MangaDL exclusions.
   - [x] Trusted completed header snapshots and selected-file validation without whole-target enumeration (-U trust).
   - [x] Readable inventory-only summary requested2026-10-16; preserve clean explicit JSON.
+  - [x] Reusable per-folder read/write locks (`cross_platform 0.7.0`), `mangadl lock -s|-u -d TARGET [-j]` (`mangadl 1.47.0`), and live in-place `InventoryProgress` (`compresser 0.21.0`).
 - [ ] I2 bounded persistent cache improvements and reusable encoder candidates.
   - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
   - [x] I2b effective candidate identity and AUTO analysis reuse;95 compression/17 integration pass.

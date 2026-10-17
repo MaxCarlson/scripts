@@ -489,6 +489,41 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
     compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
     compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")
+
+    lock = subparsers.add_parser(
+        "lock",
+        help="Inspect or unlock read/write locks and active processes for a target folder.",
+        description=(
+            "Inspect OS byte-range write locks, shared read locks, repair token locks, "
+            "state database running records, and live mangadl/compresser processes for a folder."
+        ),
+    )
+    lock.add_argument(
+        "-d",
+        "--destination",
+        type=_path,
+        required=True,
+        help="Target library or gallery folder to inspect.",
+    )
+    lock_action = lock.add_mutually_exclusive_group()
+    lock_action.add_argument(
+        "-s",
+        "--status",
+        action="store_true",
+        help="Show lock status and auto-clean harmless stale metadata (default).",
+    )
+    lock_action.add_argument(
+        "-u",
+        "--unlock",
+        action="store_true",
+        help="Clear stale repair.lock and stale running state rows if no live process holds a lock.",
+    )
+    lock.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON output.",
+    )
     return parser
 
 
@@ -662,7 +697,7 @@ def _run(args: argparse.Namespace) -> int:
     _resolve_run_paths(args)
     _resolve_storage_policy(args)
     _validate_run(args)
-    with library_write_guard(args.destination) if not args.dry_run else nullcontext():
+    with library_write_guard(args.destination, operation="mangadl run") if not args.dry_run else nullcontext():
         return _run_owned(args)
 
 
@@ -2523,6 +2558,114 @@ def _compress(args: argparse.Namespace) -> int:
     return run_compress_cli(args)
 
 
+def _format_lock_table(locks) -> str:
+    from termdash.table import render_table
+    from termdash.utils import fmt_hms, format_bytes_decimal
+
+    rows: list[list[str]] = []
+    for rec in locks:
+        status_str = "ENGAGED" if rec.engaged else ("STALE" if rec.stale else ("CLEANED" if rec.auto_cleaned else "IDLE"))
+        proc = rec.process
+        pid_str = str(proc.pid) if proc and proc.pid else (str(rec.holder.get("pid")) if rec.holder and rec.holder.get("pid") else "-")
+        proc_state = "-"
+        if proc is not None:
+            parts = [proc.state]
+            if proc.cpu_seconds is not None:
+                parts.append(f"cpu={proc.cpu_seconds:.1f}s")
+            if proc.memory_rss_bytes:
+                parts.append(f"mem={format_bytes_decimal(proc.memory_rss_bytes)}")
+            proc_state = " ".join(parts)
+        elapsed_detail = rec.detail
+        if proc is not None and proc.elapsed_seconds is not None:
+            elapsed_detail = f"{fmt_hms(proc.elapsed_seconds)} ({rec.detail})" if rec.detail else fmt_hms(proc.elapsed_seconds)
+        rows.append([
+            rec.name,
+            rec.mode.upper(),
+            status_str,
+            pid_str,
+            proc_state,
+            rec.operation or "-",
+            elapsed_detail,
+        ])
+    return render_table(
+        headers=["Lock", "Mode", "Status", "PID", "Process", "Operation", "Detail"],
+        rows=rows,
+        alignments=["left", "left", "left", "right", "left", "left", "left"],
+    )
+
+
+def _lock(args: argparse.Namespace) -> int:
+    from .library_guard import inspect_library_locks, unlock_library_locks
+    from cross_platform.locks import LockRecord, ProcessStatus
+
+    dest = args.destination.expanduser()
+    if not dest.exists() or not dest.is_dir():
+        raise ValueError(f"Lock target directory does not exist: {dest}")
+
+    if getattr(args, "unlock", False):
+        result = unlock_library_locks(dest)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2, sort_keys=True))
+        else:
+            rep = result["report"]
+            print(styled("MangaDL Folder Lock Unlock", "cyan"))
+            print(field("Target", result["target"]))
+            if result["library_root"] != result["target"]:
+                print(field("Library root", result["library_root"]))
+            if result["unlocked"]:
+                print(styled(f"Unlocked {len(result['unlocked'])} stale lock artifact(s):", "green"))
+                for item in result["unlocked"]:
+                    print(f"  - {item['name']}: {item['action']} ({item['path']})")
+            else:
+                print("No stale locks needed unlocking.")
+            if result["refused_active"]:
+                print(styled(f"Refused to unlock {len(result['refused_active'])} active lock(s) held by running process(es):", "red"))
+                for item in result["refused_active"]:
+                    pid = (item.get("process") or {}).get("pid") or (item.get("holder") or {}).get("pid") or "unknown"
+                    print(f"  - {item['name']} ({item['mode'].upper()}): held by PID {pid} ({item.get('operation') or 'active'})")
+            if rep.get("locks"):
+                reconstructed = [
+                    LockRecord(
+                        **{
+                            **lk,
+                            "process": ProcessStatus(**lk["process"]) if lk.get("process") else None,
+                        }
+                    )
+                    for lk in rep["locks"]
+                ]
+                print(_format_lock_table(reconstructed))
+        return 1 if result["refused_active"] else 0
+
+    report = inspect_library_locks(dest, auto_clean=True)
+    if getattr(args, "json", False):
+        print(json.dumps(report.to_dict(), indent=2, sort_keys=True))
+        return 0
+
+    if report.write_locked:
+        headline = styled("ENGAGED (WRITE LOCK)", "yellow")
+    elif report.read_locked:
+        headline = styled("ENGAGED (READ LOCK)", "cyan")
+    elif report.stale_count > 0:
+        headline = styled(f"UNLOCKED ({report.stale_count} STALE LOCK(S) DETECTED)", "red")
+    else:
+        headline = styled("UNLOCKED (IDLE)", "green")
+
+    print(styled("MangaDL Folder Lock Status", "cyan"))
+    print(field("Target", report.target))
+    if report.library_root != report.target:
+        print(field("Library root", report.library_root))
+    print(field("State", headline))
+    if report.auto_cleaned_count > 0:
+        print(field("Auto-cleaned", f"{report.auto_cleaned_count} stale lock metadata record(s)"))
+    if report.locks:
+        print(_format_lock_table(report.locks))
+    else:
+        print("No lock files or active mangadl/compresser processes found for this folder.")
+    if report.stale_count > 0:
+        print(styled(f"Hint: run `mangadl lock -u -d \"{report.target}\"` to clear stale locks.", "yellow"))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -2553,6 +2696,7 @@ def main(argv: list[str] | None = None) -> int:
             "auth": _auth,
             "favorites": _favorites,
             "compress": _compress,
+            "lock": _lock,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))

@@ -6,6 +6,7 @@ Command-line interface for the standalone compresser module.
 from __future__ import annotations
 
 import argparse
+from contextlib import nullcontext
 import json
 import os
 import sys
@@ -32,7 +33,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.20.1"
+__version__ = "0.21.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -314,31 +315,57 @@ def main(argv: list[str] | None = None) -> int:
             from .recovery import run_recovery
 
             return run_recovery(args.input, apply=args.write, confirmation=args.confirm_recovery, as_json=args.json)
-        if args.inventory_only and args.inventory_depth == "files":
-            from .file_inventory import scan_file_inventory
+        from .inventory_ui import InventoryProgress
+        from cross_platform.locks import folder_read_lock
 
-            report = scan_file_inventory(args.input, inventory_path(args, args.input))
-            emit_inventory_report(report, as_json=args.json)
-            return 0
-        if args.cache_file and (
-            args.cache_file.resolve() == args.input.resolve()
-            or args.input.resolve() in args.cache_file.resolve().parents
-        ):
-            raise ValueError("Analysis cache must be outside the input tree")
-        cache = None if args.inventory_only or args.preview_dir else create_analysis_cache(args, args.input)
-        store = InventoryStore(inventory_path(args, args.input))
-        snapshot = SelectionSnapshot(store, args.input, owner="compresser")
-        if args.inventory_policy == "trust":
-            images, _ = snapshot.load()
-            summary = summarize_images(args.input, images)
-        else:
-            summary, images = scan_directory(args.input, recursive=True, cache=cache, inventory=store)
-            snapshot.publish(images)
-        if args.inventory_only:
-            report = inventory_report(images, args.input.expanduser().resolve())
-            report.update(store.diagnostics())
-            emit_inventory_report(report, as_json=args.json)
-            return 0
+        read_guard = (
+            folder_read_lock(
+                args.input,
+                operation=(
+                    f"compresser -l -D {args.inventory_depth}"
+                    if args.inventory_only
+                    else "compresser"
+                ),
+            )
+            if not args.write and args.input.expanduser().exists()
+            else nullcontext()
+        )
+        with read_guard:
+            if args.inventory_only and args.inventory_depth == "files":
+                from .file_inventory import scan_file_inventory
+
+                prog = InventoryProgress(args.input, depth="files", enabled=not args.no_ui and not args.json)
+                try:
+                    report = scan_file_inventory(args.input, inventory_path(args, args.input), progress=prog)
+                finally:
+                    prog.close()
+                emit_inventory_report(report, as_json=args.json)
+                return 0
+            if args.cache_file and (
+                args.cache_file.resolve() == args.input.resolve()
+                or args.input.resolve() in args.cache_file.resolve().parents
+            ):
+                raise ValueError("Analysis cache must be outside the input tree")
+            cache = None if args.inventory_only or args.preview_dir else create_analysis_cache(args, args.input)
+            store = InventoryStore(inventory_path(args, args.input))
+            snapshot = SelectionSnapshot(store, args.input, owner="compresser")
+            if args.inventory_policy == "trust":
+                images, _ = snapshot.load()
+                summary = summarize_images(args.input, images)
+            else:
+                prog = InventoryProgress(args.input, depth="headers", enabled=not args.no_ui and not args.json)
+                try:
+                    summary, images = scan_directory(
+                        args.input, recursive=True, cache=cache, inventory=store, progress=prog
+                    )
+                finally:
+                    prog.close()
+                snapshot.publish(images)
+            if args.inventory_only:
+                report = inventory_report(images, args.input.expanduser().resolve())
+                report.update(store.diagnostics())
+                emit_inventory_report(report, as_json=args.json)
+                return 0
         if not images:
             if args.json:
                 print(json.dumps({"error": "No image files found in target path"}))

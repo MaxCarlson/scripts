@@ -1,5 +1,15 @@
 # Status
 
+Locking & live scan progress cross_platform0.7.0/compresser0.21.0/MangaDL1.47.0:
+per-folder OS byte-range write locks with offset-1 holder metadata (PID, create_time,
+operation, target) and external shared read locks (no target folder mutation) in
+`cross_platform.locks`; `mangadl lock -s|-u -d TARGET [-j]` inspects write/read/repair/
+state-run locks and live processes, auto-cleaning harmless stale metadata on status
+and requiring explicit `-u` for stale `repair.lock`/`state.sqlite3` running rows;
+`InventoryProgress` live `termdash` progress block on `stderr` for `-l` (`-D headers`
+and `-D files`) and initial header scans. 6 cross_platform lock tests, 137 compression
+(1 skip), 307 MangaDL, 55 help pass; ruff clean.
+
 Snapshot sampling compresser0.20.1/MangaDL1.46.2: gallery_sample uses lexical
 absolute paths and rejects noncanonical '..' parts, avoiding population-wide
 filesystem resolution on Windows during -U trust sampling. RED->GREEN2 tests;

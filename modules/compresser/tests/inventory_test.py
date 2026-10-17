@@ -63,3 +63,36 @@ def test_inventory_only_reports_extensions_separately(tmp_path, capsys):
     assert main(["-i", str(root), "-l", "-I", str(root / "bad.sqlite3")]) == 2
     with pytest.raises(SystemExit):
         main(["-i", str(root), "-l", "-b"])
+
+
+def test_inventory_progress_tracks_folders_files_bytes_and_rates(tmp_path):
+    import io
+    from compresser.inventory_ui import InventoryProgress
+
+    root = tmp_path / "library"
+    gal_a = root / "gal_a"
+    gal_b = root / "gal_b"
+    gal_a.mkdir(parents=True)
+    gal_b.mkdir(parents=True)
+    Image.new("RGB", (40, 40)).save(gal_a / "01.png")
+    Image.new("RGB", (40, 40)).save(gal_b / "02.png")
+    (gal_b / "corrupt.jpg").write_bytes(b"bad")
+
+    buf = io.StringIO()
+    prog = InventoryProgress(root, depth="headers", enabled=True, stream=buf, interactive=False)
+    store = InventoryStore(tmp_path / "inv.sqlite3")
+    scan_directory(root, inventory=store, progress=prog)
+    prog._maybe_render(force=True)
+    prog.close()
+
+    assert prog.folders_processed == 2
+    assert prog.files_processed == 3
+    assert prog.headers_inspected == 3
+    assert prog.headers_reused == 0
+    assert prog.excluded_or_unreadable == 1
+    assert prog.bytes_processed > 0
+    output = buf.getvalue()
+    assert "Folders: 2" in output
+    assert "Files: 3/3" in output
+    assert "files/s" in output
+

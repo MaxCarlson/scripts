@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+1.47.0/compresser0.21.0/cross_platform0.7.0: reusable per-folder read/write locks
+with PID+create_time matching in `cross_platform.locks`, `mangadl lock -s|-u -d TARGET [-j]`
+status/unlock CLI, and live in-place `InventoryProgress` (`termdash.live.LiveBlock`)
+during folder discovery and header/file inventory scans. 6 lock/137 compression
+(1 skip)/307 MangaDL/55 help pass.
+
 1.46.2/compresser0.20.1: trusted snapshot sampling uses lexical absolute paths
 without resolving every unselected source file on Windows, and rejects '..' paths.
 136 compression (1 skip)/306 MangaDL/55 help pass.

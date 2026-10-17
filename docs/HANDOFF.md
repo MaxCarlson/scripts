@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+cross_platform0.7.0/compresser0.21.0/MangaDL1.47.0 adds reusable per-folder read/write
+locking (`cross_platform.locks`) with PID+create_time verification, `mangadl lock -s|-u -d TARGET [-j]`,
+and live in-place `InventoryProgress` (`termdash.live.LiveBlock` on `stderr`) for
+inventory/header scans. 6 lock/137 compression (1 skip)/307 MangaDL/55 help pass.
+
 Task 6 compresser0.20.1/MangaDL1.46.2 avoids population-wide Path.resolve() during
 snapshot sampling and refuses noncanonical '..' metadata paths. 136 compression
 (1 skip)/306 MangaDL/55 help pass.

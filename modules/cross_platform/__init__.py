@@ -26,6 +26,22 @@ from .tmux_utils import TmuxManager
 from .path_utils import expand_path, to_posix_path, to_native_path
 from .powershell import PowerShellResult, run_powershell, run_powershell_text
 from .storage import StorageMedia, StorageMediaKind, storage_media_for_path
+from .locks import (
+     DEFAULT_LOCK_FILENAME,
+     OPERATION_LOCK_FILENAME,
+    FolderLockReport,
+    LockRecord,
+    ProcessStatus,
+    current_process_identity,
+    directory_lock,
+    discover_folder_processes,
+    external_target_lock_dir,
+    folder_read_lock,
+    inspect_folder_locks,
+    inspect_process,
+    probe_byte_range_lock,
+    unlock_folder_locks,
+)
 
 # Debugging and logging utilities
 from . import debug_utils
@@ -57,4 +73,18 @@ __all__ = [
     "StorageMedia",
     "StorageMediaKind",
     "storage_media_for_path",
+    "DEFAULT_LOCK_FILENAME",
+    "OPERATION_LOCK_FILENAME",
+    "FolderLockReport",
+    "LockRecord",
+    "ProcessStatus",
+    "current_process_identity",
+    "directory_lock",
+    "discover_folder_processes",
+    "external_target_lock_dir",
+    "folder_read_lock",
+    "inspect_folder_locks",
+    "inspect_process",
+    "probe_byte_range_lock",
+    "unlock_folder_locks",
 ]

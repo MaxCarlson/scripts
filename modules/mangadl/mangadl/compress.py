@@ -8,7 +8,6 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -23,7 +22,7 @@ from compresser import (
 from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
-from compresser.inventory_ui import emit_inventory_report
+from compresser.inventory_ui import InventoryProgress, emit_inventory_report
 from compresser.snapshots import SelectionSnapshot
 from compresser.cache import create_analysis_cache
 from compresser.ui import (
@@ -35,13 +34,22 @@ from compresser.ui import (
 )
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
-from .library_guard import library_write_guard
+from .library_guard import library_read_guard, library_write_guard
 
 COVER_STEMS = frozenset({"cover", "folder", "front", "back", "poster"})
 
 
-def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recursive: bool = True, inventory=None):
-    summary, images = scan_directory(directory, recursive=recursive, cache=cache, inventory=inventory)
+def _gallery_images(
+    directory: Path,
+    cache: AnalysisCache | None = None,
+    *,
+    recursive: bool = True,
+    inventory=None,
+    progress=None,
+):
+    summary, images = scan_directory(
+        directory, recursive=recursive, cache=cache, inventory=inventory, progress=progress
+    )
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
         image
@@ -70,6 +78,7 @@ def discover_gallery_targets(
     cache: AnalysisCache | None = None,
     inventory=None,
     collected=None,
+    progress=None,
 ) -> list[Path]:
     """Find gallery directories under destination root."""
     if destination.expanduser().is_symlink():
@@ -81,7 +90,7 @@ def discover_gallery_targets(
         raise ValueError("Compression cannot target hidden controls or partial downloads")
 
     # Check if destination itself directly contains images
-    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory)
+    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory, progress=progress)
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
     is_gallery = bool(direct_images) or read_source_manifest(dest) is not None
@@ -112,13 +121,21 @@ def discover_gallery_targets(
 
     # Gallery ownership stays first-level; pages may be nested beneath it.
     galleries: list[Path] = []
-    for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold()):
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink():
-            summary, imgs = _gallery_images(entry, cache, inventory=inventory)
-            if imgs:
-                galleries.append(entry)
-                if collected is not None:
-                    collected[entry] = (summary, imgs)
+    entries = [
+        entry
+        for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold())
+        if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink()
+    ]
+    if progress is not None and entries:
+        progress.set_folder_total(len(entries))
+    for idx, entry in enumerate(entries, 1):
+        if progress is not None:
+            progress.start_folder(entry, folders_done=idx, total_folders=len(entries))
+        summary, imgs = _gallery_images(entry, cache, inventory=inventory, progress=progress)
+        if imgs:
+            galleries.append(entry)
+            if collected is not None:
+                collected[entry] = (summary, imgs)
 
     return galleries
 
@@ -132,7 +149,21 @@ def run_cli(args: argparse.Namespace) -> int:
             raise ValueError("Compression requires an existing, unlinked destination directory")
         if destination.resolve().name.startswith(".") or destination.resolve().name == "_partial":
             raise ValueError("Compression cannot target hidden controls or partial downloads")
-        with library_write_guard(args.destination) if args.write else nullcontext():
+        op_desc = (
+            "mangadl compress -w"
+            if args.write
+            else (
+                f"mangadl compress -l -D {getattr(args, 'inventory_depth', 'headers')}"
+                if getattr(args, "inventory_only", False)
+                else "mangadl compress"
+            )
+        )
+        guard = (
+            library_write_guard(args.destination, operation=op_desc)
+            if args.write
+            else library_read_guard(args.destination, operation=op_desc)
+        )
+        with guard:
             return _run_cli_owned(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Error in mangadl compress: {exc}", file=sys.stderr)
@@ -157,9 +188,21 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 and path.stem.casefold() not in COVER_STEMS
                 for path in dest.iterdir()
             )
-            report = scan_file_inventory(
-                dest, inventory_path(args, dest), exclude_stems=COVER_STEMS, single_gallery=single_gallery
+            prog = InventoryProgress(
+                dest,
+                depth="files",
+                enabled=not getattr(args, "no_ui", False) and not getattr(args, "json", False),
             )
+            try:
+                report = scan_file_inventory(
+                    dest,
+                    inventory_path(args, dest),
+                    exclude_stems=COVER_STEMS,
+                    single_gallery=single_gallery,
+                    progress=prog,
+                )
+            finally:
+                prog.close()
             emit_inventory_report(report, as_json=getattr(args, "json", False))
             return 0
         if args.write:
@@ -193,66 +236,84 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         store = InventoryStore(inventory_path(args, dest))
         snapshot = SelectionSnapshot(store, dest, owner="mangadl-pages", filters=url_filters)
         discovered = {}
-        if getattr(args, "inventory_policy", "refresh") == "trust":
-            saved_images, saved_keys = snapshot.load()
-            if saved_images and saved_keys is None:
-                raise ValueError("Snapshot is missing manga ownership; use -U refresh")
-            for image in saved_images:
-                gal = Path(saved_keys[image.path])
-                if gal not in discovered:
-                    discovered[gal] = (None, [])
-                discovered[gal][1].append(image)
-            gallery_paths = list(discovered)
-        else:
-            gallery_paths = discover_gallery_targets(
-                dest, url_filters, cache=cache, inventory=store, collected=discovered
-            )
-        if not gallery_paths:
-            if getattr(args, "inventory_only", False):
-                report = inventory_report([], dest)
-                report.update(store.diagnostics())
-                emit_inventory_report(report, as_json=getattr(args, "json", False))
-                return 0
-            msg = f"No manga gallery directories with images found in: {dest}"
-            if getattr(args, "json", False):
-                print(json.dumps({"error": msg}))
+        prog = InventoryProgress(
+            dest,
+            depth="headers",
+            enabled=getattr(args, "inventory_policy", "refresh") != "trust"
+            and not getattr(args, "no_ui", False)
+            and not getattr(args, "json", False),
+        )
+        try:
+            if getattr(args, "inventory_policy", "refresh") == "trust":
+                saved_images, saved_keys = snapshot.load()
+                if saved_images and saved_keys is None:
+                    raise ValueError("Snapshot is missing manga ownership; use -U refresh")
+                for image in saved_images:
+                    gal = Path(saved_keys[image.path])
+                    if gal not in discovered:
+                        discovered[gal] = (None, [])
+                    discovered[gal][1].append(image)
+                gallery_paths = list(discovered)
             else:
-                print(msg, file=sys.stderr)
-            return 1
+                gallery_paths = discover_gallery_targets(
+                    dest, url_filters, cache=cache, inventory=store, collected=discovered, progress=prog
+                )
+            if not gallery_paths:
+                prog.close()
+                if getattr(args, "inventory_only", False):
+                    report = inventory_report([], dest)
+                    report.update(store.diagnostics())
+                    emit_inventory_report(report, as_json=getattr(args, "json", False))
+                    return 0
+                msg = f"No manga gallery directories with images found in: {dest}"
+                if getattr(args, "json", False):
+                    print(json.dumps({"error": msg}))
+                else:
+                    print(msg, file=sys.stderr)
+                return 1
 
-        # Collect all images across target galleries
-        all_images: list[ImageMetadata] = []
-        gallery_keys = {}
-        format_counts: dict[str, int] = {}
-        format_bytes: dict[str, int] = {}
-        total_bytes = 0
-        tall_count = 0
-        gray_count = 0
+            # Collect all images across target galleries
+            all_images: list[ImageMetadata] = []
+            gallery_keys = {}
+            format_counts: dict[str, int] = {}
+            format_bytes: dict[str, int] = {}
+            total_bytes = 0
+            tall_count = 0
+            gray_count = 0
 
-        for gal in gallery_paths:
-            s, imgs = discovered[gal] if gal in discovered else _gallery_images(gal, cache, inventory=store)
-            # Rebuild counts after cover exclusions; no excluded bytes count as savings.
-            s = ScanSummary(
-                gal,
-                len(imgs),
-                sum(img.size_bytes for img in imgs),
-                {fmt: sum(img.format.upper() == fmt for img in imgs) for fmt in {img.format.upper() for img in imgs}},
-                {
-                    fmt: sum(img.size_bytes for img in imgs if img.format.upper() == fmt)
-                    for fmt in {img.format.upper() for img in imgs}
-                },
-                sum(img.is_tall_for_webp for img in imgs),
-                sum(img.is_grayscale for img in imgs),
-            )
-            all_images.extend(imgs)
-            gallery_keys.update({image.path: str(gal) for image in imgs})
-            total_bytes += s.total_bytes
-            tall_count += s.tall_images_count
-            gray_count += s.grayscale_count
-            for fmt, cnt in s.format_counts.items():
-                format_counts[fmt] = format_counts.get(fmt, 0) + cnt
-            for fmt, b_cnt in s.format_bytes.items():
-                format_bytes[fmt] = format_bytes.get(fmt, 0) + b_cnt
+            for idx, gal in enumerate(gallery_paths, 1):
+                if gal in discovered:
+                    s, imgs = discovered[gal]
+                else:
+                    prog.start_folder(gal, folders_done=idx, total_folders=len(gallery_paths))
+                    s, imgs = _gallery_images(gal, cache, inventory=store, progress=prog)
+                # Rebuild counts after cover exclusions; no excluded bytes count as savings.
+                s = ScanSummary(
+                    gal,
+                    len(imgs),
+                    sum(img.size_bytes for img in imgs),
+                    {
+                        fmt: sum(img.format.upper() == fmt for img in imgs)
+                        for fmt in {img.format.upper() for img in imgs}
+                    },
+                    {
+                        fmt: sum(img.size_bytes for img in imgs if img.format.upper() == fmt)
+                        for fmt in {img.format.upper() for img in imgs}
+                    },
+                    sum(img.is_tall_for_webp for img in imgs),
+                    sum(img.is_grayscale for img in imgs),
+                )
+                all_images.extend(imgs)
+                gallery_keys.update({image.path: str(gal) for image in imgs})
+                total_bytes += s.total_bytes
+                tall_count += s.tall_images_count
+                gray_count += s.grayscale_count
+                for fmt, cnt in s.format_counts.items():
+                    format_counts[fmt] = format_counts.get(fmt, 0) + cnt
+                for fmt, b_cnt in s.format_bytes.items():
+                    format_bytes[fmt] = format_bytes.get(fmt, 0) + b_cnt
+        finally:
+            prog.close()
 
         if getattr(args, "inventory_policy", "refresh") != "trust":
             snapshot.publish(all_images, gallery_keys)

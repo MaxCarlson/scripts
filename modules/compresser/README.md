@@ -1,8 +1,12 @@
-# compresser 0.20.1
+# compresser 0.21.0
 
-## Inventory statistics summary
+## Live inventory scan progress and statistics summary
 
-`compresser -i TARGET -l` ends with a concise, color-aware summary: eligible gallery
+`compresser -i TARGET -l` displays a live in-place `termdash` progress block on
+`stderr` while discovering folders and scanning files/headers (folders processed,
+files processed, reused vs. inspected headers, total file bytes processed, rolling
+files/s and MB/s throughput, elapsed time, and ETA; disable with `-N/--no-ui`), and
+ends with a concise, color-aware summary: eligible gallery
 folders, image headers/extension candidates, total file bytes, extension counts/sizes
 and count/byte shares, plus header reuse/unreadable or stat/exclusion counts as available.
 Detected formats are separate from extensions. No per-gallery dump in a terminal.
