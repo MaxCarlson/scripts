@@ -146,3 +146,4 @@ class ComparisonRow:
     worker_diagnostics: dict = field(default_factory=dict)
     sampling: dict = field(default_factory=dict)
     estimate: dict = field(default_factory=dict)
+    retained_formats: tuple[str, ...] = ()

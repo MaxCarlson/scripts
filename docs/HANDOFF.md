@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+Repair Task5 compresser0.26.3/MangaDL1.52.3: weighted complete projections,
+failure-honest recommendations, warm-cache speed exclusion and actual retained
+format evidence. Task4 pushed8f729e2. User says finish Task5 then STOP; do not start
+Task6. Real terminal/reader acceptance still manual. No production image writes.
+
 Repair Task4 compresser0.26.2/MangaDL1.52.2: bounded diagnostic cache RAM,
 durable queried miss history and honest legacy/forgotten causes.185 compression
 (1 skip)/308 MangaDL/55 help pass. Task3 pushed7600196. Next Task5 recommendations.

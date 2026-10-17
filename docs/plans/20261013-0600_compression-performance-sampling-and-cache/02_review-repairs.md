@@ -81,6 +81,7 @@ Interfaces: versioned external pilot/confirmation plan contains population ident
 
 ## Current status
 
-Tasks1/2/3 committed/pushed7dea9b3/ee4696a/7600196. Task4 bounded cache history passes
-185 compression (1 platform skip),308 MangaDL and55 help tests. Next Task5 weighted
-recommendations, then Task6 CLI confirmation workflow. No production images changed.
+Tasks1-4 committed/pushed7dea9b3/ee4696a/7600196/8f729e2. Task5 weighted recommendations
+implemented/tested:197 compression (1 platform skip),308 MangaDL/55 help pass. User explicitly requests
+STOP after Task5. Task6 has NOT started. Manual real reader/terminal acceptance and
+final whole-plan review remain open. No production images changed.

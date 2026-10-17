@@ -35,7 +35,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.26.2"
+__version__ = "0.26.3"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -281,6 +281,9 @@ def run_comparison(
                     worker_diagnostics=res.worker_diagnostics,
                     sampling=sampling_plan.summary() if sampling_plan else {},
                     estimate=sampling_plan.estimate(res.results) if sampling_plan else {},
+                    retained_formats=tuple(
+                        sorted({item.output_format.upper() for item in res.results if not item.error})
+                    ),
                 )
             )
     finally:
@@ -433,6 +436,7 @@ def main(argv: list[str] | None = None) -> int:
                         "failed_count": r.failed_count,
                         "skipped_count": r.skipped_count,
                         "cache_hits": r.cache_hits,
+                        "retained_formats": list(r.retained_formats),
                         "error_summary": r.error_summary,
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,

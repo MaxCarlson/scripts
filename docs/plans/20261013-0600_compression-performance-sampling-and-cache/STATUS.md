@@ -1,5 +1,14 @@
 # Status
 
+Repair Task5 compresser0.26.3/MangaDL1.52.3: recommendations rank complete target
+projections, exclude failed/unestimated/nonpositive rows, require measured lossy
+SSIM>=0.98 and retained-format reader eligibility; warm/mixed cache disables speed
+ranking. Manual Windows terminal/reader acceptance remains open. User explicitly
+requests STOP after Task5; Task6 has NOT started. Final197 compression passed/1
+platform skip,308 MangaDL/55 help passed; black/ruff/whitespace checks pass.
+Stable Task5 checkpoint; user-requested stop. Publication gate is recorded in the
+execution ledger. Do not start Task6 without renewed direction.
+
 Repair Task4 compresser0.26.2/MangaDL1.52.2 bounds diagnostic history in RAM,
 queries exact/existence durable rows; legacy/forgotten history is unavailable,
 not never-measured.185 compression passed/1 skip,308 MangaDL/55 help pass.

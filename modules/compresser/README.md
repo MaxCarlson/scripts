@@ -1,4 +1,4 @@
-# compresser 0.26.2
+# compresser 0.26.3
 
 ## Review repair status
 
@@ -169,8 +169,16 @@ Without -Q, -q continues to select the single lossy quality. Per-quality stage n
 sample projections and cache hits are reported separately. Comparison output (and JSON
 `recommendations`) explicitly separates `maximum_savings`, `best_lossless` (pixel-exact),
 and `practical_tradeoff` (balancing byte savings, trial throughput, SSIM >= 0.98, and
-reader compatibility across WebP/JPEG/PNG), with a fidelity caveat noting that SSIM is
-an approximate structural metric rather than a guarantee against visible artifacts.
+reader compatibility across retained WebP/JPEG/PNG). Sampled runs rank complete
+design-weighted whole-target projections, not unweighted sample savings. Failed,
+unestimated or nonpositive-savings rows cannot be fallback winners. Practical
+eligibility requires measured SSIM>=0.98 for lossy rows (lossless verification is
+separate); warm/mixed cache rates disable the speed term for the comparison.
+AUTO is not automatically reader-compatible: observed retained formats determine
+conditional eligibility, not the strategy label. Real Windows terminal/reader
+acceptance is still manual; generated integrity fixtures are not that acceptance.
+Point-estimate rankings are not statistically proven winners, and SSIM is an
+approximate structural metric rather than a guarantee against visible artifacts.
 Comparison writes no image copies; use -O for visual preview output. More qualities mean more encoder trials.
 
 ## Full-resolution compression previews

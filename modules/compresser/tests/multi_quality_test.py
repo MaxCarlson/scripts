@@ -17,6 +17,7 @@ def test_multi_quality_comparison_shares_lossless_baseline(tmp_path, capsys):
     assert {r["quality"] for r in rows if r["mode"] == "lossy"} == {"q=90", "q=80"}
     assert len({r["strategy"] for r in rows}) == 10
     assert {r["measured_images"] for r in rows} == {1}
+    assert all(r["retained_formats"] for r in rows if not r["failed_count"])
     assert source.read_bytes() == before
     assert main(args) == 0
     warm = json.loads(capsys.readouterr().out)
@@ -38,7 +39,9 @@ def test_multi_quality_recommendations_separate_max_savings_from_practical_trade
     for y in range(120):
         for x in range(120):
             im.putpixel((x, y), ((x * 7) % 256, (y * 11) % 256, ((x + y) * 5) % 256))
-    im.save(source)
+    # An intentionally unoptimized source provides genuine positive savings;
+    # zero-savings rows must no longer receive fallback recommendations.
+    im.save(source, compress_level=0)
 
     args = ["-i", str(source), "-b", "-Q", "92", "75", "-e", "0"]
     assert main(args + ["-J"]) == 0
@@ -55,4 +58,3 @@ def test_multi_quality_recommendations_separate_max_savings_from_practical_trade
     assert "Maximum storage savings:" in text_out
     assert "Best lossless (pixel-exact):" in text_out
     assert "Practical speed/fidelity/reader trade-off:" in text_out
-

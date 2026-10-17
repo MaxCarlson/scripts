@@ -1,6 +1,6 @@
 # mangadl
 
-Review repairs in progress (1.52.2/compresser0.26.2): conditional confirmation
+Review repairs in progress (1.52.3/compresser0.26.3): conditional confirmation
 estimates retain measured pilot contributions and use remaining-population finite
 correction. The unsupported two-stage interval field is now null, and CLI advisor
 output is explicitly planning-only (ordinary -s does not apply recommended quotas).
@@ -115,7 +115,12 @@ each requested quality. -Q also accepts0.9/0.8 notation. Matching trials reuse t
 automatic cache. Comparison output (and JSON `recommendations`) separates
 `maximum_savings`, `best_lossless` (pixel-exact), and `practical_tradeoff`
 (balancing storage reduction, throughput, SSIM >= 0.98, and reader compatibility),
-alongside a fidelity caveat. This is read-only analysis; no preview images are
+using complete whole-target projections for sampled runs. No failed/unestimated/
+nonpositive fallback winners; warm-cache rates are not encoder speed. Practical
+lossy rows require measured SSIM>=0.98 and observed retained JPEG/PNG/WebP formats
+(including AUTO). Reader compatibility remains conditional; real Windows terminal/
+reader acceptance is manual, not established by integrity fixtures. This is
+read-only analysis; no preview images are
 written without -O. More qualities add trials, not repeated inventories/lossless baselines.
 
 ## Visual compression previews

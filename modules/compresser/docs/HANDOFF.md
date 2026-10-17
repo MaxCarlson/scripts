@@ -1,5 +1,12 @@
 # Compresser handoff
 
+Repair Task5 0.26.3/MangaDL1.52.3 ranks complete design-weighted target projections,
+no failed/unestimated/nonpositive fallback winners. Practical lossy eligibility
+requires measured SSIM>=0.98 and observed retained JPEG/PNG/WebP (AUTO conditional).
+Warm/mixed cache disables speed term across comparison. JSON includes retained
+formats/ranking scope; text says when unavailable. User STOP after this checkpoint;
+Task6 not started. Real Windows terminal/reader acceptance remains manual.
+
 Repair Task4 0.26.2: diagnostic RAM LRU bounded across paths/settings, persistent
 exact-key/existence queries without materializing all settings. SQLite history
 survives result eviction (disk growth explicit); legacy/forgotten memory history

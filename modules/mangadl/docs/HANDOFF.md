@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Repair Task5 1.52.3/compresser0.26.3: complete projected-savings ranking, no failed/
+unestimated/nonpositive fallback, measured lossy fidelity and retained formats for
+conditional practical eligibility. Warm-cache speed excluded. User STOP after
+Task5 commit/push; Task6 not started. Real reader/terminal acceptance remains manual.
+
 Repair Task4 1.52.2 requires compresser0.26.2 bounded diagnostic RAM history;
 SQLite history remains until explicitly cleared.185 compression (1 skip)/308
 MangaDL/55 help pass; no live writes. Next recommendations/confirmation CLI.

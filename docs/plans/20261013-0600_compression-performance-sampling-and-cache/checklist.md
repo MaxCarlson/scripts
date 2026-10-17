@@ -6,7 +6,7 @@
 - [x] Real reader/writer exclusion, including nested targets and standalone full-run ownership (0.26.0/1.52.0/cross_platform0.8.0).
 - [x] Bounded streaming scratch/reservations and partial-write/manifest cleanup (0.26.1/1.52.1).
 - [x] Bounded diagnostic cache memory with durable history lookup (0.26.2/1.52.2).
-- [ ] Design-weighted failure-honest recommendations.
+- [x] Design-weighted failure-honest recommendations (0.26.3/1.52.3); manual reader acceptance remains open.
 - [ ] Actual CLI plan consumption, runtime budget semantics and conditional simulations.
 - [ ] Whole-branch review; real terminal/reader acceptance remains manual, not replaced by fixtures.
 

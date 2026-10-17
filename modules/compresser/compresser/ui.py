@@ -9,6 +9,7 @@ import os
 import sys
 import time
 import shutil
+import math
 from collections import Counter, deque
 from pathlib import Path
 from typing import Sequence
@@ -301,12 +302,40 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
 
 
 def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
-    """Return structured recommendations separating max savings, best lossless, and practical trade-off."""
-    valid = [r for r in rows if r.failed_count == 0 and r.measured_images > 0]
-    if not valid:
-        valid = list(rows)
+    """Rank complete same-scope evidence; unsupported rows have no fallback winner."""
+    projected_scope = any(r.estimate or r.sampling for r in rows)
+    ranking_scope = "whole_target_projection" if projected_scope else "measured_input_set"
 
-    def _serialize(row: ComparisonRow | None) -> dict | None:
+    def savings(row: ComparisonRow) -> float | None:
+        if row.failed_count or row.measured_images <= 0:
+            return None
+        if projected_scope:
+            value = row.estimate.get("projected_total_saved_bytes")
+            if row.estimate.get("unestimated_images", 0) or row.estimate.get("unestimated_bytes", 0):
+                return None
+        else:
+            value = row.saved_bytes
+        return value if isinstance(value, (int, float)) and math.isfinite(value) and value > 0 else None
+
+    valid = [r for r in rows if savings(r) is not None]
+    reader_friendly = {"WEBP", "JPEG", "JPG", "PNG"}
+
+    def compatible(row: ComparisonRow) -> bool:
+        return bool(row.retained_formats) and set(row.retained_formats) <= reader_friendly
+
+    practical_candidates = [
+        r
+        for r in valid
+        if compatible(r) and (r.mode == "lossless" or r.average_ssim is not None and r.average_ssim >= 0.98)
+    ]
+    # A warm/mixed cache rate measures lookups, not an encoder benchmark. Drop
+    # the speed term for the entire comparison if rates aren't comparable.
+    use_speed = bool(practical_candidates) and all(
+        r.cache_hits == 0 and math.isfinite(r.throughput_images_per_s) and r.throughput_images_per_s > 0
+        for r in practical_candidates
+    )
+
+    def _serialize(row: ComparisonRow | None, *, uses_speed: bool = False) -> dict | None:
         if row is None:
             return None
         return {
@@ -319,48 +348,56 @@ def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
             "projected_total_saved_bytes": row.estimate.get("projected_total_saved_bytes"),
             "average_ssim": row.average_ssim,
             "speed_img_per_s": row.throughput_images_per_s,
+            "ranking_scope": ranking_scope,
+            "ranking_saved_bytes": savings(row),
+            "encoder_speed_used": uses_speed,
+            "reader_compatibility": (
+                "conditional: sampled retained formats are JPEG/PNG/WebP; verify your reader and unsampled pages"
+                if compatible(row)
+                else "unverified retained formats"
+            ),
+            "retained_formats": list(row.retained_formats),
         }
 
     max_savings_row = max(
         valid,
-        key=lambda r: (r.saved_bytes, r.average_ssim or 0.0, r.throughput_images_per_s),
+        key=lambda r: (savings(r), r.strategy_name),
         default=None,
     )
     lossless_candidates = [r for r in valid if r.mode == "lossless"]
     best_lossless_row = max(
         lossless_candidates,
-        key=lambda r: (r.saved_bytes, r.throughput_images_per_s),
+        key=lambda r: (savings(r), r.strategy_name),
         default=None,
     )
 
-    reader_friendly = {"webp", "jpeg", "png", "auto"}
-    practical_candidates = [
-        r
-        for r in valid
-        if r.output_format.lower() in reader_friendly and (r.average_ssim is None or r.average_ssim >= 0.98)
-    ]
-    if not practical_candidates:
-        practical_candidates = [r for r in valid if r.output_format.lower() in reader_friendly] or valid
-
     max_rate = max((r.throughput_images_per_s for r in practical_candidates), default=1.0) or 1.0
-    max_saved = max((max(0, r.saved_bytes) for r in practical_candidates), default=1) or 1
+    max_saved = max((savings(r) for r in practical_candidates), default=1)
 
-    def _practical_score(row: ComparisonRow) -> tuple[float, int, float]:
-        savings_norm = max(0.0, row.saved_bytes) / max_saved
-        speed_norm = min(1.0, row.throughput_images_per_s / max_rate)
-        ssim_norm = row.average_ssim if row.average_ssim is not None else 1.0
-        reader_bonus = 0.08 if row.output_format.lower() in {"webp", "jpeg", "png"} else 0.0
-        return (0.55 * savings_norm + 0.25 * speed_norm + 0.20 * ssim_norm + reader_bonus, row.saved_bytes, speed_norm)
+    def _practical_score(row: ComparisonRow) -> tuple[float, float, float]:
+        savings_norm = savings(row) / max_saved
+        speed_norm = min(1.0, row.throughput_images_per_s / max_rate) if use_speed else 0.0
+        fidelity = 1.0 if row.mode == "lossless" else row.average_ssim
+        return (
+            (0.55 if use_speed else 0.80) * savings_norm + 0.25 * speed_norm + 0.20 * fidelity,
+            savings(row),
+            speed_norm,
+        )
 
     practical_row = max(practical_candidates, key=_practical_score, default=None)
 
     return {
         "maximum_savings": _serialize(max_savings_row),
         "best_lossless": _serialize(best_lossless_row),
-        "practical_tradeoff": _serialize(practical_row),
+        "practical_tradeoff": _serialize(practical_row, uses_speed=use_speed),
+        "ranking_scope": ranking_scope,
+        "unavailable_reason": "No eligible positive-savings evidence" if not valid else None,
         "fidelity_caveat": (
             "Recommendations separate maximum byte reduction from a practical reader-compatible "
-            "speed/fidelity trade-off. SSIM is an approximate structural metric, not a guarantee "
+            "speed/fidelity trade-off, using complete target projections for samples. Point-estimate rankings "
+            "are not statistically proven winners. Failed/unestimated/nonpositive rows are excluded; "
+            "warm-cache rates are not encoder speed. Reader compatibility is conditional on observed retained "
+            "formats; real Windows terminal/reader acceptance is still manual. SSIM is an approximate structural metric, not a guarantee "
             "against visible ringing or banding on text/screentones; inspect full-resolution previews (-O) "
             "before lossy writes."
         ),
@@ -475,9 +512,11 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
             ssim_txt = f"{entry['average_ssim']:.3f}" if entry["average_ssim"] is not None else "N/A"
             print(
                 f"  {label}: {entry['strategy']} ({entry['format'].upper()} {entry['quality']}, "
-                f"saved {format_bytes_decimal(entry['saved_bytes'])} / {entry['savings_percent']:.1f}%, "
+                f"{entry['ranking_scope']}: saved {format_bytes_decimal(entry['ranking_saved_bytes'])}, "
                 f"SSIM {ssim_txt}, {entry['speed_img_per_s']:.1f} img/s)"
             )
+        else:
+            print(f"  {label}: unavailable (no eligible positive-savings evidence)")
     print(f"  Note: {recommendations['fidelity_caveat']}")
     print("Savings use retained size: originals stay when candidates are not smaller or a trial fails.")
     print("Kept excludes failures; SSIM describes retained results, including unchanged originals.")
