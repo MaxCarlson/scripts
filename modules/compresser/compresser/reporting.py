@@ -312,7 +312,7 @@ def build_comparison_report(rows: Sequence[ComparisonRow], *, context: ReportCon
         (
             "Format-ratio extrapolation applies observed byte-savings ratios to inventory bytes; unsampled formats use an explicitly marked overall-ratio fallback.",
             "Estimates are not guaranteed savings or confidence bounds. Small samples and gallery variation can change outcomes.",
-        "Failed trials retain originals; larger candidates are retained only when explicitly allowed. Unchanged excludes failures; cached counts overlap outcomes.",
+            "Failed trials retain originals; larger candidates are retained only when explicitly allowed. Unchanged excludes failures; cached counts overlap outcomes.",
             "Mean SSIM includes unchanged originals and can hide individual poor results. Lossless means pixel preservation, not identical file bytes.",
             "Trial rates include failures and cache reuse; they are not encoder speed. Reserved memory is an estimate, not process RAM.",
             "Inspect full-resolution previews (-O) before lossy writes. Increase sampling to refine estimates; -U refresh updates inventory membership.",

@@ -1,4 +1,4 @@
-# compresser 1.2.0
+# compresser 1.3.0
 
 Comparison reports now lead with source-format coverage and estimated whole-target
 impact. Tables split into matching column panels and wrap instead of truncating

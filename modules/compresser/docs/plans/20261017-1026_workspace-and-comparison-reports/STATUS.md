@@ -19,6 +19,9 @@ Task2 gate complete298compression/1skip,316MangaDL,55help. Task3 shared immutabl
 sections and opt-in full-value TermDash panels implemented;305compression/1skip,
 316MangaDL,55help pass plus full TermDash suite. Replaced contradictory hero/write
 banner; wrapped records and binary units. Next Task4 durable Markdown publication.
+Task4 Markdown renderer/publisher implemented;6publication tests,311compression/1skip,
+316MangaDL,55help pass. Archive isolation, concurrent uniqueness, latest safety and
+failure injection verified. Next Task5 connects automatic publication to all operations.
 No production data touched.
 
 Documentation drift: compresser/MangaDL80/100 stale, TermDash60/100 needs review;
