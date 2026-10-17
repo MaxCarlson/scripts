@@ -37,13 +37,13 @@ class ReportSession:
             }.get(operation)
             if operation
             else (
-            "inventory"
-            if args.inventory_only
-            else (
-                "preview"
-                if args.preview_dir
-                else "comparison" if args.compare else "write" if args.write else "analysis"
-            )
+                "inventory"
+                if args.inventory_only
+                else (
+                    "preview"
+                    if args.preview_dir
+                    else "comparison" if args.compare else "write" if args.write else "analysis"
+                )
             )
         )
         self.context = ReportContext(
@@ -194,6 +194,29 @@ class ReportSession:
             print(
                 render_plan_summary(
                     build_plan_summary(plan, population_count=population_count),
+                    report_path=artifacts.get("latest"),
+                    width=shutil.get_terminal_size().columns,
+                    color=reporting.stdout_color_enabled(),
+                ),
+                flush=True,
+            )
+        return report, artifacts
+
+    def estimate(self, plan, result, *, population_count):
+        report = reporting.build_estimate_report(plan, result, population_count=population_count, context=self.context)
+        artifacts = self.save(report)
+        if self.args.json:
+            return report, artifacts
+        if self.args.verbose:
+            self.render(report)
+        else:
+            import shutil
+
+            from .plan_reporting import build_estimate_summary, render_estimate_summary
+
+            print(
+                render_estimate_summary(
+                    build_estimate_summary(plan, result, population_count=population_count),
                     report_path=artifacts.get("latest"),
                     width=shutil.get_terminal_size().columns,
                     color=reporting.stdout_color_enabled(),

@@ -10,7 +10,7 @@ from pathlib import Path
 from termdash.table import render_table_panels, wrap_display_text
 from termdash.utils import color_text
 
-from .estimation_models import EstimationPlan
+from .estimation_models import EstimationPlan, EstimationResult
 
 _FORMAT_ORDER = ("auto", "webp", "jpeg", "avif", "png", "keep")
 _FORMAT_NAMES = {"auto": "AUTO", "webp": "WebP", "jpeg": "JPEG", "avif": "AVIF", "png": "PNG", "keep": "Keep"}
@@ -242,4 +242,129 @@ def render_plan_summary(
     if report_path is not None:
         lines.extend(wrap_display_text(f"Report   {report_path}", width))
     lines.extend(wrap_display_text("Planning only; no images encoded.", width))
+    return "\n".join(lines)
+
+
+@dataclass(frozen=True, slots=True)
+class EstimateSummary:
+    title: str
+    overview: tuple[str, ...]
+    headers: tuple[str, ...]
+    rows: tuple[tuple[str, ...], ...]
+    annotations: tuple[str, ...]
+    warnings: tuple[str, ...]
+    plan_id: str
+    stopping_reason: str
+
+
+def build_estimate_summary(
+    plan: EstimationPlan,
+    result: EstimationResult,
+    *,
+    population_count: int,
+    now: datetime | None = None,
+) -> EstimateSummary:
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    completed = datetime.fromisoformat(plan.inventory_completed)
+    if completed.tzinfo is None:
+        completed = completed.replace(tzinfo=timezone.utc)
+
+    overview = (
+        f"Target   {Path(plan.root).name or str(plan.root)} · {_count_label(population_count, 'member')}",
+        f"Status   {result.stopping_reason} ({result.stage}) · {_count_label(result.total_observations, 'observation')} in plan",
+        f"Runs     {result.new_encodes:,} new encodes · {result.cache_hits:,} cache hits · {result.newly_admitted_sources:,} sources admitted",
+    )
+
+    headers = ["Recipe", "Format", "Mode", "Quality", "Est. Saved", "Savings %", "StdDev", "Gaps"]
+    rows = []
+    recipes_by_id = {r.identity: r for r in plan.recipes}
+    for est in result.estimates:
+        r = recipes_by_id.get(est.recipe_id)
+        fmt = _format_name(r.format) if r else "—"
+        mode = r.mode if r else "—"
+        q = str(r.quality) if r and r.quality is not None else "—"
+        from .reporting import binary_bytes
+
+        saved = binary_bytes(round(est.estimated_saved_bytes)) if est.estimated_saved_bytes is not None else "—"
+        pct = f"{est.savings_percent:.1f}%" if est.savings_percent is not None else "—"
+        stddev = (
+            f"±{binary_bytes(round(math.sqrt(est.variance)))}"
+            if est.variance is not None and est.variance >= 0
+            else "—"
+        )
+        gaps = ", ".join(est.gaps) if est.gaps else "none"
+        rows.append(
+            [
+                f"{fmt} {mode}" + (f" {q}" if q != "—" else ""),
+                fmt,
+                mode,
+                q,
+                saved,
+                pct,
+                stddev,
+                gaps,
+            ]
+        )
+
+    annotations = [
+        "Fixed-design stratified estimate; variance represents sample variation.",
+    ]
+    if result.stopping_reason != "complete":
+        annotations.append(
+            f"Incomplete run ({result.stopping_reason}); rerun estimate with additional budget to continue."
+        )
+
+    warnings = []
+    if plan.coverage_gaps:
+        warnings.append(f"Coverage gaps: {', '.join(plan.coverage_gaps)}")
+
+    return EstimateSummary(
+        title=f"Compression estimate · {Path(plan.root).name}",
+        overview=overview,
+        headers=tuple(headers),
+        rows=tuple(tuple(r) for r in rows),
+        annotations=tuple(annotations),
+        warnings=tuple(warnings),
+        plan_id=plan.plan_id,
+        stopping_reason=result.stopping_reason,
+    )
+
+
+def render_estimate_summary(
+    summary: EstimateSummary,
+    *,
+    report_path: str | Path | None,
+    width: int,
+    color: bool,
+) -> str:
+    width = max(2, width)
+    paint = color_text if color else lambda text, _tone: text
+    lines = wrap_display_text(paint(summary.title, "cyan"), width)
+    for index, fact in enumerate(summary.overview):
+        if index == 2:
+            lines.append("")
+        lines.extend(wrap_display_text(fact, width))
+
+    lines.append("")
+    if summary.rows:
+        table = render_table_panels(
+            summary.headers,
+            summary.rows,
+            identity_columns=(0,),
+            max_width=width,
+            alignments=["left", "left", "left", "right", "right", "right", "right", "left"],
+        )
+        for panel in table:
+            lines.extend(panel.splitlines())
+    for annotation in summary.annotations:
+        lines.extend(wrap_display_text(annotation, width))
+    for warning in summary.warnings:
+        lines.extend(wrap_display_text(paint(f"WARNING: {warning}", "yellow"), width))
+
+    lines.append("")
+    lines.extend(wrap_display_text(f"Plan     {summary.plan_id}", width))
+    if report_path is not None:
+        lines.extend(wrap_display_text(f"Report   {report_path}", width))
     return "\n".join(lines)

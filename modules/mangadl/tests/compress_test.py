@@ -58,6 +58,37 @@ def test_combined_all_format_plan_persists_one_budget_and_resumes(tmp_path, caps
     assert resumed["design_identity"] == plan["design_identity"]
 
 
+def test_mangadl_compress_estimate_runs_and_resumes(tmp_path, capsys):
+    target = tmp_path / "hent1imageperpage"
+    target.mkdir()
+    Image.new("RGB", (32, 32), "white").save(target / "01.png")
+    base = ["-I", str(tmp_path), "-d", str(target), "-J", "-N"]
+    assert _main(["compress", "inventory", *base]) == 0
+    capsys.readouterr()
+
+    # Create plan
+    plan_args = ["compress", "plan", *base, "-f", "webp", "-m", "lossy", "-q", "80"]
+    assert _main(plan_args) == 0
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    plan_id = plan["plan_id"]
+
+    # Run estimate with -r plan_id
+    est_args = ["compress", "estimate", *base, "-r", plan_id]
+    assert _main(est_args) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["operation"] == "estimate"
+    assert out["stopping_reason"] == "complete"
+    assert out["new_encodes"] > 0
+    assert len(out["estimates"]) == 1
+    assert out["estimates"][0]["estimated_saved_bytes"] is not None
+
+    # Resume estimate with -r plan_id
+    assert _main(est_args) == 0
+    out2 = json.loads(capsys.readouterr().out)
+    assert out2["operation"] == "estimate"
+    assert out2["new_encodes"] == 0
+
+
 def main(argv):
     """Keep older engine-integration vectors while passing canonical CLI syntax.
 
@@ -71,7 +102,9 @@ def main(argv):
         return _main(values)
     explicit = values[1] if values[1] in operations else None
     flags = values[2:] if explicit else values[1:]
-    if explicit and not (explicit == "inventory" and any(flag in flags for flag in ("-f", "-m", "-w", "-c", "-b", "-O", "-B"))):
+    if explicit and not (
+        explicit == "inventory" and any(flag in flags for flag in ("-f", "-m", "-w", "-c", "-b", "-O", "-B"))
+    ):
         return _main(values)
     if "-R" in flags or "-C" in flags or "--confirm-recovery" in flags:
         operation = "recover"
@@ -113,9 +146,7 @@ def main(argv):
 
 
 @pytest.mark.parametrize("direct", [False, True])
-def test_inventory_enumerates_each_directory_once(
-    tmp_path, monkeypatch, capsys, direct
-):
+def test_inventory_enumerates_each_directory_once(tmp_path, monkeypatch, capsys, direct):
     import os
     from collections import Counter
 
@@ -149,9 +180,7 @@ def test_inventory_enumerates_each_directory_once(
     assert calls == {root: 1, root / "manga": 1, chapter: 1}
 
 
-def test_compress_rejects_junction_root_before_resolution(
-    tmp_path, monkeypatch, capsys
-):
+def test_compress_rejects_junction_root_before_resolution(tmp_path, monkeypatch, capsys):
     import stat
     from types import SimpleNamespace
 
@@ -206,9 +235,7 @@ def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
     assert report["settings"]["inventory_effective_workers"] == 1
 
 
-def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(
-    tmp_path, monkeypatch, capsys
-):
+def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(tmp_path, monkeypatch, capsys):
     import io
     import mangadl.compress as adapter
     from compresser.inventory_ui import InventoryProgress
@@ -237,9 +264,7 @@ def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(
     assert states[-1]["overall_percent"] == 100
 
 
-def test_interactive_inventory_publishes_snapshot_and_prints_summary(
-    tmp_path, monkeypatch, capsys
-):
+def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, monkeypatch, capsys):
     import io
     import sys
 
@@ -280,9 +305,7 @@ def test_interactive_inventory_publishes_snapshot_and_prints_summary(
     assert image.read_bytes() == original
 
 
-def test_trusted_snapshot_preserves_nested_gallery_selection(
-    tmp_path, monkeypatch, capsys
-):
+def test_trusted_snapshot_preserves_nested_gallery_selection(tmp_path, monkeypatch, capsys):
     import mangadl.compress as adapter
 
     root = tmp_path / "library"
@@ -305,7 +328,24 @@ def test_trusted_snapshot_preserves_nested_gallery_selection(
     assert report["sampling"]["galleries"] == 2
     assert report["inventory_snapshot"]["selected_files_validated"] == 2
     assert report["estimate"]["population_warning"]
-    assert main(["compress", "analyze", "-d", str(root), "-I", str(tmp_path / "state"), "-U", "snapshot", "-u", "manga-a", "-J"]) == 2
+    assert (
+        main(
+            [
+                "compress",
+                "analyze",
+                "-d",
+                str(root),
+                "-I",
+                str(tmp_path / "state"),
+                "-U",
+                "snapshot",
+                "-u",
+                "manga-a",
+                "-J",
+            ]
+        )
+        == 2
+    )
     assert "refresh" in capsys.readouterr().err.lower()
 
 
@@ -418,26 +458,29 @@ def test_preview_accepts_multiple_explicit_formats(tmp_path, capsys):
     root.mkdir()
     Image.new("RGB", (40, 40), "white").save(root / "01.png")
     output = tmp_path / "previews"
-    assert main(
-        [
-            "compress",
-            "preview",
-            "-d",
-            str(root),
-            "-O",
-            str(output),
-            "-f",
-            "webp",
-            "auto",
-            "-q",
-            "85",
-            "-n",
-            "1",
-            "-e",
-            "0",
-            "-J",
-        ]
-    ) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "preview",
+                "-d",
+                str(root),
+                "-O",
+                str(output),
+                "-f",
+                "webp",
+                "auto",
+                "-q",
+                "85",
+                "-n",
+                "1",
+                "-e",
+                "0",
+                "-J",
+            ]
+        )
+        == 0
+    )
     report = json.loads(capsys.readouterr().out)
     variants = report["images"][0]["variants"]
     assert {variant["name"] for variant in variants} == {
@@ -452,7 +495,26 @@ def test_preview_accepts_multiple_explicit_formats(tmp_path, capsys):
 def test_multi_quality_gallery_comparison(tmp_path, capsys):
     Image.new("RGB", (40, 40), "white").save(tmp_path / "01.png")
     assert (
-        main(["compress", "compare", "-d", str(tmp_path), "-f", "webp", "jpeg", "auto", "-m", "both", "-q", "90", "80", "-e", "0", "-J"])
+        main(
+            [
+                "compress",
+                "compare",
+                "-d",
+                str(tmp_path),
+                "-f",
+                "webp",
+                "jpeg",
+                "auto",
+                "-m",
+                "both",
+                "-q",
+                "90",
+                "80",
+                "-e",
+                "0",
+                "-J",
+            ]
+        )
         == 0
     )
     rows = json.loads(capsys.readouterr().out)
@@ -652,9 +714,7 @@ def test_compress_audit_defect_non_regression(tmp_path: Path):
     im.save(gal / "003.jpg", format="JPEG", quality=90)
 
     # Pre-audit check
-    findings_before = _inspect_pages(
-        gal, expected_count=3, image_validator=_validate_image
-    )
+    findings_before = _inspect_pages(gal, expected_count=3, image_validator=_validate_image)
     assert findings_before["completeness"] == "incomplete"
     assert findings_before["missing_pages"] == [2]
 
@@ -678,9 +738,7 @@ def test_compress_audit_defect_non_regression(tmp_path: Path):
     assert ret == 0
 
     # Post-audit check: incomplete status preserved, page 2 still missing, zero duplicate pages
-    findings_after = _inspect_pages(
-        gal, expected_count=3, image_validator=_validate_image
-    )
+    findings_after = _inspect_pages(gal, expected_count=3, image_validator=_validate_image)
     assert findings_after["completeness"] == "incomplete"
     assert findings_after["missing_pages"] == [2]
     assert len(findings_after["duplicate_pages"]) == 0
@@ -720,9 +778,7 @@ def test_exact_url_selection_and_cover_exclusion(tmp_path):
     Image.new("RGB", (40, 40)).save(cover)
     before = cover.read_bytes()
     write_source_manifest(gallery, "https://nhentai.net/g/633374/", "gallery-dl")
-    assert discover_gallery_targets(destination, ["https://nhentai.net/g/633374/"]) == [
-        gallery
-    ]
+    assert discover_gallery_targets(destination, ["https://nhentai.net/g/633374/"]) == [gallery]
     import pytest
 
     with pytest.raises(ValueError, match="unresolved"):
@@ -777,9 +833,7 @@ def test_nested_gallery_selection_and_analysis(tmp_path, capsys):
 
     assert discover_gallery_targets(root) == [gallery]
     assert discover_gallery_targets(gallery) == [gallery]
-    assert discover_gallery_targets(gallery, ["https://nhentai.net/g/633374/"]) == [
-        gallery
-    ]
+    assert discover_gallery_targets(gallery, ["https://nhentai.net/g/633374/"]) == [gallery]
     assert main(["compress", "analyze", "-d", str(root), "-J", "-N"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["inventory_images"] == 1
@@ -793,9 +847,7 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
     for name in ("chapter-1", "chapter-2"):
         chapter = gallery / name
         chapter.mkdir(parents=True)
-        Image.new("RGB", (120, 120), (80, 120, 160)).save(
-            chapter / "001.jpg", quality=90
-        )
+        Image.new("RGB", (120, 120), (80, 120, 160)).save(chapter / "001.jpg", quality=90)
     assert (
         main(
             [
@@ -820,9 +872,7 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
             assert image.size == (120, 120)
 
 
-def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recommendations(
-    tmp_path, capsys
-):
+def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recommendations(tmp_path, capsys):
     from mangadl.library_index import read_source_manifest, write_source_manifest
 
     library = tmp_path / "library"
@@ -890,10 +940,7 @@ def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recom
         )
         == 0
     )
-    assert (
-        read_source_manifest(gallery)["canonical_url"]
-        == "https://nhentai.net/g/633374/"
-    )
+    assert read_source_manifest(gallery)["canonical_url"] == "https://nhentai.net/g/633374/"
     assert cover.read_bytes() == cover_bytes
     assert archive.read_bytes() == b"PK\x03\x04dummy-cbz"
     assert sidecar.read_text(encoding="utf-8") == '{"series": "Alpha"}'

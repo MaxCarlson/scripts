@@ -194,8 +194,6 @@ def run_cli(args: argparse.Namespace) -> int:
         from compresser.arguments import normalize_compression_arguments
 
         options = normalize_compression_arguments(args)
-        if options.operation == "estimate":
-            raise ValueError("The estimate workflow is not available yet; use plan to prepare a bounded design")
         args = options.legacy_namespace(args)
         from compresser.workspace import configure_workspace, initialize_workspace
 
@@ -261,6 +259,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             from compresser.sampling_plan import execute_plan_operation
 
             return execute_plan_operation(args, args._compression_options, owner="mangadl")
+        if getattr(args, "_compression_options", None) and args._compression_options.operation == "estimate":
+            from compresser.estimation import execute_estimate_operation
+
+            return execute_estimate_operation(args, args._compression_options, owner="mangadl")
         if getattr(args, "inventory_depth", "headers") == "files":
             from compresser.file_inventory import scan_file_inventory
             from compresser.scanner import IMAGE_EXTENSIONS

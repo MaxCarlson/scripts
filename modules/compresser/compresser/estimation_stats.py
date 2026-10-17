@@ -95,7 +95,7 @@ def _index_observations(plan, observations, allowed, *, require_terminal_pilot=F
             raise ValueError("Observation is not a prescribed member/recipe job")
         member, recipe = members[row.member_id], recipes[row.recipe_id]
         if (
-            row.fingerprint != member.fingerprint
+            tuple(row.fingerprint) != tuple(member.fingerprint)
             or row.input_bytes != member.size_bytes
             or row.runtime_identity != recipe.runtime_identity
         ):

@@ -14,7 +14,7 @@
 - [x] Task5: fixed estimators and numerical validation; Sol Medium checkpoint completed.
 - [x] User-requested follow-up: combined lossless/lossy plan, all-format alias, shared budget, saved-plan resume and installed-command validation (3.1.0).
 - [x] Task6: actual encode admission and selected recipe jobs.
-- [ ] Task7: estimation/resume/report integration and Windows visual gate.
+- [x] Task7: estimation/resume/report integration and Windows visual gate (manual visual gate recorded pending).
 - [ ] Task8: certified repeated accuracy stopping.
 - [ ] Task9: optional quality interpolation and exact-quality confirmation.
 - [ ] Task10: empirical benchmark, docs, full checks and final review.

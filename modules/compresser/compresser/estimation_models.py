@@ -150,6 +150,8 @@ class RecipeObservation:
     state: str = "measured"
 
     def __post_init__(self) -> None:
+        if not isinstance(self.fingerprint, tuple):
+            object.__setattr__(self, "fingerprint", tuple(self.fingerprint))
         if self.state not in ("measured", "retained_by_policy", "failed", "not_started", "interrupted"):
             raise ValueError("Unsupported observation state")
         if type(self.input_bytes) is not int or self.input_bytes < 0:
@@ -276,6 +278,35 @@ class RecipeEstimate:
 
 
 @dataclass(frozen=True, slots=True)
+class EstimationProgress:
+    sequence: int
+    stage: str
+    phase: str
+    active_recipe: str = ""
+    completed_sources: int = 0
+    total_sources: int = 0
+    new_encodes: int = 0
+    cache_hits: int = 0
+    remaining_trials: int = 0
+    remaining_seconds: float = 0.0
+    estimates: tuple[RecipeEstimate, ...] = ()
+    stopping_reason: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class EstimationResult:
+    plan: EstimationPlan
+    estimates: tuple[RecipeEstimate, ...]
+    stopping_reason: str
+    stage: str
+    cache_hits: int
+    new_encodes: int
+    newly_admitted_sources: int
+    total_observations: int
+    last_complete_estimates: tuple[RecipeEstimate, ...] = ()
+
+
+@dataclass(frozen=True, slots=True)
 class EstimationPlan:
     plan_id: str
     design_identity: str
@@ -362,7 +393,14 @@ class EstimationPlan:
             for row in data["recipe_quotas"]
         )
         data["coverage_gaps"] = tuple(data.get("coverage_gaps", ()))
-        data["measurements"] = tuple(data.get("measurements", ()))
+        data["measurements"] = tuple(
+            (
+                {**row, "fingerprint": tuple(row["fingerprint"])}
+                if isinstance(row, dict) and "fingerprint" in row and not isinstance(row["fingerprint"], tuple)
+                else row
+            )
+            for row in data.get("measurements", ())
+        )
         data["confirmation"] = ConfirmationDesign.from_dict(data["confirmation"]) if data.get("confirmation") else None
         return cls(**data)
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from contextlib import contextmanager
 from dataclasses import replace
 import json
 import os
@@ -124,3 +125,34 @@ def append_plan_measurements(
         _unlinked(path)
         _atomic_write(path, updated.to_dict())
     return updated
+
+
+@contextmanager
+def plan_execution_lock(workspace: CompressionWorkspace, plan_id: str):
+    """Hold an OS-backed per-plan exclusive lock covering read/validate/update/execute."""
+    _plan_path(workspace, plan_id)
+    lock_path = workspace.plans_dir / f"{plan_id}.lock"
+    _unlinked(lock_path)
+    if lock_path.exists() and (not lock_path.is_file() or lock_path.stat().st_nlink > 1):
+        raise ValueError("Plan lock must be an owned regular file without hardlinks")
+
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    handle = lock_path.open("a+b", buffering=0)
+    try:
+        from cross_platform.locks import _acquire_os_byte_lock, _release_os_byte_lock
+
+        handle.seek(0)
+        try:
+            _acquire_os_byte_lock(handle.fileno())
+        except OSError as exc:
+            raise RuntimeError(f"Plan {plan_id} is locked by another running operation") from exc
+        try:
+            yield
+        finally:
+            handle.seek(0)
+            try:
+                _release_os_byte_lock(handle.fileno())
+            except OSError:
+                pass
+    finally:
+        handle.close()

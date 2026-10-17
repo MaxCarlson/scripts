@@ -1,5 +1,22 @@
 # Status
 
+2026-10-17 Task 7 checkpoint: Fixed-design estimation controller, plan resume, adapters, and reports/UI
+implemented and validated on `compression-inventory-estimation-20261017`.
+Added `run_estimation` and `execute_estimate_operation` in `modules/compresser/compresser/estimation.py`.
+Added `plan_execution_lock` non-blocking byte-0 file lock per plan in `plan_store.py` to serialize
+concurrent workers on the same plan. Resumption maintains stored selections and coefficients without
+re-encoding existing observations; observations and provisional states are persisted atomically per batch.
+Explicit accuracy requests (`--accuracy-pp`) reject cleanly before work pending Task 8 certification.
+`EstimationProgressUI` renders bounded multi-line `LiveBlock` progress without line-per-trial terminal growth,
+and `ReportSession.estimate` publishes structured Markdown reports and console summaries.
+CLI operations wired in `compresser/cli.py` and `mangadl/compress.py`.
+
+Validation: 86 focused tests passed (including estimation_test.py, estimation_ui_test.py, cli_test.py,
+trial_budget_test.py, measurement_test.py, mangadl/tests/compress_test.py).
+Full compresser suite: 499 passed, 1 skipped. MangaDL suite: exit 0. scripts-help: 55 passed.
+Ruff lint and Black 120 format passed. Help entrypoints verified (`mangadl compress estimate -h`,
+`compresser estimate -h`). Manual Windows visual gate recorded pending user review.
+
 2026-10-17 Task 6 checkpoint: Actual encode accounting and image-recipe measurement
 implemented and validated on `compression-inventory-estimation-20261017`.
 Added `TrialBudget`, `TrialPermit`, `trial_entry` across Pillow WebP, JPEG, PNG, AVIF,

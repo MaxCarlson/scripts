@@ -173,6 +173,88 @@ def build_plan_report(plan, *, population_count: int, context: ReportContext) ->
     )
 
 
+def build_estimate_report(
+    plan,
+    result,
+    *,
+    population_count: int,
+    context: ReportContext,
+) -> CompressionReport:
+    from datetime import datetime, timezone
+    import math
+
+    completed = datetime.fromisoformat(plan.inventory_completed)
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - completed).total_seconds())
+    overview = [
+        ["Plan ID", plan.plan_id],
+        ["Immutable design identity", plan.design_identity],
+        ["Population ID", plan.population_id],
+        ["Inventory depth", plan.depth],
+        ["Snapshot age (seconds)", f"{age_seconds:.1f}"],
+        ["Population members", f"{population_count:,}"],
+        ["Stopping reason", result.stopping_reason],
+        ["Final stage", result.stage],
+        ["Total plan observations", f"{result.total_observations:,}"],
+        ["New encodes (invocation)", f"{result.new_encodes:,}"],
+        ["Cache hits (invocation)", f"{result.cache_hits:,}"],
+        ["Admitted sources (invocation)", f"{result.newly_admitted_sources:,}"],
+        ["Selected image cap", f"{plan.budget.max_images:,}"],
+        ["New encode budget", f"{plan.budget.max_new_encodes:,}"],
+    ]
+
+    recipes_by_id = {r.identity: r for r in plan.recipes}
+    estimate_rows = []
+    for est in result.estimates:
+        r = recipes_by_id.get(est.recipe_id)
+        fmt = r.format if r else "—"
+        mode = r.mode if r else "—"
+        q = str(r.quality) if r and r.quality is not None else "—"
+        saved = binary_bytes(round(est.estimated_saved_bytes)) if est.estimated_saved_bytes is not None else "—"
+        pct = f"{est.savings_percent:.1f}%" if est.savings_percent is not None else "—"
+        stddev = (
+            f"±{binary_bytes(round(math.sqrt(est.variance)))}"
+            if est.variance is not None and est.variance >= 0
+            else "—"
+        )
+        gaps = ", ".join(est.gaps) if est.gaps else "None"
+        estimate_rows.append(
+            [
+                est.recipe_id,
+                fmt,
+                mode,
+                q,
+                saved,
+                pct,
+                stddev,
+                gaps,
+            ]
+        )
+
+    sections = tuple(_context_sections(context)) + (section("ESTIMATION SUMMARY", ("Metric", "Value"), overview),)
+    if estimate_rows:
+        sections = sections + (
+            section(
+                "RECIPE SAVINGS ESTIMATES",
+                ("Identity", "Format", "Mode", "Quality", "Est. Saved", "Saved %", "StdDev", "Gaps"),
+                estimate_rows,
+            ),
+        )
+
+    notes = (
+        "Estimates are derived from fixed-design stratified sampling of the population.",
+        "Without certified repeated-stopping accuracy (--accuracy-pp), variance indicates sample spread rather than statistical bounds.",
+        "Failed trials retain originals; larger candidates are retained only when explicitly allowed.",
+    )
+    return CompressionReport(
+        "ESTIMATION REPORT",
+        "estimate",
+        context.status,
+        clean(context.target),
+        sections,
+        notes,
+    )
+
+
 def build_preview_report(payload: dict, *, context: ReportContext) -> CompressionReport:
     return CompressionReport(
         "COMPRESSION PREVIEW",

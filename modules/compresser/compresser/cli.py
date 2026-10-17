@@ -46,6 +46,7 @@ def build_parser() -> argparse.ArgumentParser:
     build_operation_parsers(parser, owner="compresser")
     return parser
 
+
 def run_comparison(
     images: Sequence[ImageMetadata],
     engine: CompressionEngine,
@@ -76,8 +77,7 @@ def run_comparison(
     candidate_strategies = (
         [
             CompressionStrategy(
-                name=f"{spec.format}-{spec.mode}"
-                + (f"-q{spec.quality}" if spec.quality is not None else ""),
+                name=f"{spec.format}-{spec.mode}" + (f"-q{spec.quality}" if spec.quality is not None else ""),
                 format=spec.format,
                 mode=spec.mode,
                 quality=spec.quality if spec.quality is not None else quality,
@@ -89,21 +89,25 @@ def run_comparison(
         ]
         if recipe_specs is not None
         else [
-        CompressionStrategy(
-            name=f"{fmt}-{'lossless' if fmt == 'png' else selected_mode}"
-            + (f"-q{trial_quality}" if selected_mode == "lossy" and fmt != "png" and len(quality_values) > 1 else ""),
-            format=fmt,
-            mode="lossless" if fmt == "png" else selected_mode,
-            quality=trial_quality,
-            perceptual_target=perceptual_target,
-            encoder=encoder,
-            method=effort,
-        )
-        for selected_mode in (["lossless", "lossy"] if compare_both else [mode])
-        for quality_index, trial_quality in enumerate(quality_values if selected_mode == "lossy" else [quality])
-        for fmt in formats
-        if not (compare_both and selected_mode == "lossy" and fmt == "png")
-        and not (selected_mode == "lossy" and quality_index > 0 and fmt == "png")
+            CompressionStrategy(
+                name=f"{fmt}-{'lossless' if fmt == 'png' else selected_mode}"
+                + (
+                    f"-q{trial_quality}"
+                    if selected_mode == "lossy" and fmt != "png" and len(quality_values) > 1
+                    else ""
+                ),
+                format=fmt,
+                mode="lossless" if fmt == "png" else selected_mode,
+                quality=trial_quality,
+                perceptual_target=perceptual_target,
+                encoder=encoder,
+                method=effort,
+            )
+            for selected_mode in (["lossless", "lossy"] if compare_both else [mode])
+            for quality_index, trial_quality in enumerate(quality_values if selected_mode == "lossy" else [quality])
+            for fmt in formats
+            if not (compare_both and selected_mode == "lossy" and fmt == "png")
+            and not (selected_mode == "lossy" and quality_index > 0 and fmt == "png")
         ]
     )
 
@@ -210,8 +214,6 @@ def main(argv: list[str] | None = None) -> int:
         options = normalize_compression_arguments(parsed)
     except ValueError as exc:
         parser.error(str(exc))
-    if options.operation == "estimate":
-        parser.error("The estimate workflow is not available yet; use plan to prepare a bounded design")
     args = options.legacy_namespace(parsed)
     from .workspace import configure_workspace
 
@@ -290,6 +292,10 @@ def main(argv: list[str] | None = None) -> int:
             from .sampling_plan import execute_plan_operation
 
             return execute_plan_operation(args, options, owner="compresser")
+        if options.operation == "estimate":
+            from .estimation import execute_estimate_operation
+
+            return execute_estimate_operation(args, options, owner="compresser")
         # Keep ownership in resources through discovery and the final encoder trial.
         with nullcontext():
             if args.inventory_only and args.inventory_depth == "files":
