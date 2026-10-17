@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 from contextlib import ExitStack
 import json
+import os
 import sys
 from pathlib import Path
 from typing import Any, Sequence
@@ -24,6 +25,7 @@ from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.inventory_ui import InventoryProgress, emit_inventory_report
+from compresser.inventory_pipeline import linked
 from compresser.snapshots import SelectionSnapshot
 from compresser.timing import configure_pipeline, pipeline_report, profile_pipeline
 from compresser.cache import create_analysis_cache
@@ -50,6 +52,7 @@ def _gallery_images(
     inventory=None,
     progress=None,
     threads=4,
+    _root_entries=None,
 ):
     summary, images = scan_directory(
         directory,
@@ -59,6 +62,7 @@ def _gallery_images(
         progress=progress,
         gallery_key=directory,
         threads=threads,
+        _root_entries=_root_entries,
     )
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
@@ -92,7 +96,7 @@ def discover_gallery_targets(
     threads=4,
 ) -> list[Path]:
     """Find gallery directories under destination root."""
-    if destination.expanduser().is_symlink():
+    if linked(destination.expanduser().lstat()):
         raise ValueError("Compression cannot target a linked gallery")
     dest = destination.expanduser().resolve()
     if not dest.is_dir():
@@ -102,8 +106,12 @@ def discover_gallery_targets(
 
     # Check if destination itself directly contains images
     # This discovery probe is not a completed logical gallery (chapters may follow).
+    # Keep this short-lived listing on the coordinator; workers receive only
+    # immutable file observations, never DirEntry objects/iterators.
+    with os.scandir(dest) as listing:
+        root_entries = tuple(listing)
     _, direct_images = _gallery_images(
-        dest, cache, recursive=False, inventory=inventory, progress=None, threads=threads
+        dest, cache, recursive=False, inventory=inventory, progress=None, threads=threads, _root_entries=root_entries
     )
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
@@ -129,16 +137,27 @@ def discover_gallery_targets(
                 raise ValueError("Selected URL does not identify the explicitly targeted gallery")
             if not target.is_symlink() and target not in selected:
                 selected.append(target)
+        if is_gallery and collected is not None:
+            collected[dest] = _gallery_images(
+                dest, cache, inventory=inventory, progress=progress, threads=threads, _root_entries=root_entries
+            )
         return selected
     if is_gallery:
+        if collected is not None:
+            collected[dest] = _gallery_images(
+                dest, cache, inventory=inventory, progress=progress, threads=threads, _root_entries=root_entries
+            )
         return [dest]
 
     # Gallery ownership stays first-level; pages may be nested beneath it.
     galleries: list[Path] = []
     entries = [
-        entry
-        for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold())
-        if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink()
+        Path(entry.path)
+        for entry in sorted(root_entries, key=lambda entry: entry.name.casefold())
+        if entry.is_dir(follow_symlinks=False)
+        and not entry.name.startswith(".")
+        and entry.name != "_partial"
+        and not linked(entry.stat(follow_symlinks=False))
     ]
     if progress is not None:
         progress.set_folder_total(len(entries))
@@ -168,7 +187,7 @@ def run_cli(args: argparse.Namespace) -> int:
         )
         validate_analysis_arguments(args)
         destination = args.destination.expanduser()
-        if not destination.is_dir() or destination.is_symlink():
+        if not destination.is_dir() or linked(destination.lstat()):
             raise ValueError("Compression requires an existing, unlinked destination directory")
         if destination.resolve().name.startswith(".") or destination.resolve().name == "_partial":
             raise ValueError("Compression cannot target hidden controls or partial downloads")

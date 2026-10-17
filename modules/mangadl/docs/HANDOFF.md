@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P2b MangaDL1.55.1/compresser0.29.1 removes duplicate root discovery listings
+for libraries/single galleries. Cached DirEntry tuple remains on coordinator only,
+with per-file source checks retained. Reparse roots rejected before resolution.
+Task3 full gate/publication follows; then P3 trusted-source/cache preparation.
+
 Plan03 P2a MangaDL1.55.0/compresser0.29.0: shared inventory run connection/header
 pool across galleries, bounded changed-header jobs/batched SQL, short write scopes,
 source-ID fingerprints requiring -U refresh once before trusting old selections.

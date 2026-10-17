@@ -1,5 +1,10 @@
 # Compresser handoff
 
+Plan03 P2b compresser0.29.1/MangaDL1.55.1 reuses coordinator-only root discovery
+entries through classification/scanning; regression counts each relevant directory
+once for library/single-gallery paths. MangaDL rejects reparse-point roots before
+resolution/locking. Task3 final gate follows; P3 trust/cache preparation next.
+
 Plan03 P2a compresser0.29.0/MangaDL1.55.0: bounded SQL-free header workers,
 <=2*workers pending, ready-result collection, one selection connection/pool,
 <=256-key lookups/cache flushes and short write transactions. No-follow scandir

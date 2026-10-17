@@ -1,5 +1,9 @@
 # mangadl
 
+Checkpoint1.55.1/compresser0.29.1 reuses root discovery entries during inventory,
+avoiding a second root listing for both libraries and single galleries. The
+short-lived listing remains coordinator-owned; source identity is still checked.
+
 Compression inventory checkpoint1.55.0/compresser0.29.0 shares one inventory
 connection/header pool across gallery scopes and batches cache SQL. `-t` caps
 header concurrency for larger scopes; scopes<=64 candidates stay serial to avoid

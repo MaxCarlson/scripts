@@ -1,5 +1,13 @@
 # Status
 
+Plan03 P2b compresser0.29.1/MangaDL1.55.1 completes root discovery reuse: coordinator
+entry listing passed through probe/full scan, directory-once fixtures for libraries
+and single galleries, reparse roots rejected before resolution/locking.224 compression
+passed/1 platform skip;314 MangaDL/55 help passed including final junction fixture;
+targeted14 warm-cache/inventory tests pass after deduplicating validation. Lint,
+format, whitespace and installed CLI versions pass; post-commit task3 gate follows.
+P3 trusted-source/cache preparation is next.
+
 Plan03 P2a compresser0.29.0/MangaDL1.55.0: one coordinator-owned run connection,
 shared bounded header pool, <=2*workers futures, <=256 scoped SQL lookups/cache
 flushes, short write transactions and completed-selection preservation. No-follow

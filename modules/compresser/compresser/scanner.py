@@ -66,6 +66,7 @@ def scan_directory(
     progress: Any | None = None,
     gallery_key: Path | None = None,
     threads: int = 4,
+    _root_entries=None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """Refresh membership and reuse unchanged headers from a durable inventory."""
     if inventory is None:
@@ -78,6 +79,7 @@ def scan_directory(
             progress=progress,
             gallery_key=gallery_key,
             threads=threads,
+            _root_entries=_root_entries,
         )
     with inventory.scan(target_path, recursive) as session, inventory.header_pipeline(threads) as pipeline:
         return _scan_directory(
@@ -90,6 +92,7 @@ def scan_directory(
             gallery_key=gallery_key,
             threads=threads,
             pipeline=pipeline,
+            _root_entries=_root_entries,
         )
 
 
@@ -104,6 +107,7 @@ def _scan_directory(
     gallery_key: Path | None = None,
     threads: int = 4,
     pipeline: HeaderPipeline | None = None,
+    _root_entries=None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """
     Recursively scan target_path for all image files and compile aggregate statistics.
@@ -124,6 +128,7 @@ def _scan_directory(
             extensions=IMAGE_EXTENSIONS,
             gallery=gallery_key,
             visited=getattr(cache, "visited", None),
+            root_entries=_root_entries,
         )
     increment("scanned_candidates", len(observations))
     # P0/P2 generated64-file scans are faster serial than with pool overhead.

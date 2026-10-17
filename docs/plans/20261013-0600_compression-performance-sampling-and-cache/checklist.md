@@ -4,9 +4,9 @@
 
 - [x] P0 current-run phase/counter baseline and generated repeatable benchmark (0.27.0/1.53.0).
 - [x] P1 accurate gallery/file progress and estimated ETA (real terminal visual acceptance still manual).
-- [ ] P2 reduced I/O and bounded header concurrency.
+- [x] P2 reduced I/O and bounded header concurrency.
   - [x] P2a shared run connection/pool, bounded changed-header work/SQL, short transactions, identity/visited-scope safety.
-  - [ ] P2b root discovery reuse and final failure/admission review/task3 gate.
+  - [x] P2b root discovery reuse and failure/admission review; task3 post-commit gate follows.
 - [ ] P3 trusted-source/cache preparation optimization.
 - [ ] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
 - [ ] P5 verified AUTO candidate reuse/measurement-gated CPU optimization.

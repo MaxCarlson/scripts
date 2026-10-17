@@ -1,4 +1,4 @@
-# compresser 0.29.0
+# compresser 0.29.1
 
 Header inventory now shares one coordinator-owned database connection and header
 pool across scan scopes. Selection-scoped cache lookups and writes are batched

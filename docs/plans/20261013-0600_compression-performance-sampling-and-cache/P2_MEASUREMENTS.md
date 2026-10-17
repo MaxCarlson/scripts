@@ -26,5 +26,7 @@ Windows `DirEntry.stat()` gives zero device/file IDs. Candidate identity lookup
 must remain even when cached directory metadata supplies classification and size.
 Verified locally and against [Python3.12 os.DirEntry.stat documentation](https://docs.python.org/3.12/library/os.html#os.DirEntry.stat).
 
-Remaining P2: eliminate redundant root discovery/probe work, finish failure/admission
-review, and run the task-level post-commit gate. P2a is a usable slice, not task3 completion.
+P2b subsequently eliminates redundant root discovery/probe listings and checks
+reparse-point roots before resolution. Directory-once tests cover library and single
+gallery paths. Final task-level gate is recorded in the execution ledger; the
+measurements above remain the earlier P2a checkpoint, not a final P2b speed claim.

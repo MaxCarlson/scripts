@@ -1,5 +1,9 @@
 # Repository-Wide Plans Handoff
 
+Plan03 P2b compresser0.29.1/MangaDL1.55.1 finishes root discovery reuse and reparse
+admission check; task3 gate then P3 trusted-source/cache preparation. Main unpushed,
+Task6 pilot CLI excluded; manual terminal/reader gates and final branch review open.
+
 Plan03 P2a usable pipeline slice compresser0.29.0/MangaDL1.55.0 validated;
 shared run connection, bounded changed-header jobs/SQL, source identity and safe
 completed-selection preservation. Task3/P2 remains open for root discovery reuse

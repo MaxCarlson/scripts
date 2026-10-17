@@ -294,7 +294,8 @@ class InventorySession:
             }
             row = rows.get(str(item.path))
             if row and row[0] == fingerprint:
-                item.validate()
+                # The scanner validates the observation immediately before
+                # accepting this hint; do not repeat that filesystem lookup here.
                 data = json.loads(row[1])
                 data["path"] = Path(data["path"])
                 meta = ImageMetadata(**data)

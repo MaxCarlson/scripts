@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+Plan03 P2b root-discovery reuse implemented/tested, compresser0.29.1/MangaDL1.55.1.
+Directory-once fixtures preserve library/single-gallery grouping; linked/reparse
+roots rejected before resolution. Task3 gate/publication then P3 trust/cache next.
+
 Plan03 P2a inventory pipeline checkpoint: compresser0.29.0/MangaDL1.55.0, bounded
 header workers, batched SQL and one run connection, short transactions and no-follow
 identity checks.224 compression/1 skip,311 MangaDL/55 help pass. P2 still open for

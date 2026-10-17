@@ -10,6 +10,61 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+@pytest.mark.parametrize("direct", [False, True])
+def test_inventory_enumerates_each_directory_once(tmp_path, monkeypatch, capsys, direct):
+    import os
+    from collections import Counter
+
+    root = tmp_path / "library"
+    chapter = root / "manga" / "chapter"
+    chapter.mkdir(parents=True)
+    Image.new("RGB", (40, 40)).save(chapter / "01.png")
+    if direct:
+        Image.new("RGB", (40, 40)).save(root / "01.png")
+    original = os.scandir
+    original_listdir = os.listdir
+    calls = Counter()
+
+    def observed(path):
+        resolved = Path(path).resolve()
+        if resolved == root or root in resolved.parents:
+            calls[resolved] += 1
+        return original(path)
+
+    monkeypatch.setattr(os, "scandir", observed)
+
+    def listed(path):
+        resolved = Path(path).resolve()
+        if resolved == root or root in resolved.parents:
+            calls[resolved] += 1
+        return original_listdir(path)
+
+    monkeypatch.setattr(os, "listdir", listed)
+    assert main(["compress", "-d", str(root), "-l", "-J"]) == 0
+    assert json.loads(capsys.readouterr().out)["images"] == (2 if direct else 1)
+    assert calls == {root: 1, root / "manga": 1, chapter: 1}
+
+
+def test_compress_rejects_junction_root_before_resolution(tmp_path, monkeypatch, capsys):
+    import stat
+    from types import SimpleNamespace
+
+    root = tmp_path / "library"
+    root.mkdir()
+    original = Path.lstat
+
+    def junction(path, *args, **kwargs):
+        if path == root:
+            return SimpleNamespace(
+                st_mode=stat.S_IFDIR, st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 1024)
+            )
+        return original(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "lstat", junction)
+    assert main(["compress", "-d", str(root), "-l", "-J"]) == 2
+    assert "unlinked destination" in capsys.readouterr().err
+
+
 def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
     root = tmp_path / "library"
     (root / "manga").mkdir(parents=True)

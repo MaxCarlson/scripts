@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from contextlib import nullcontext
 from contextvars import copy_context
 from dataclasses import dataclass
 import os
@@ -48,7 +49,13 @@ def _observation(path: Path, gallery: Path, info: os.stat_result) -> FileObserva
 
 
 def observe_files(
-    root: Path, *, recursive: bool, extensions: set[str], gallery: Path | None = None, visited: set[Path] | None = None
+    root: Path,
+    *,
+    recursive: bool,
+    extensions: set[str],
+    gallery: Path | None = None,
+    visited: set[Path] | None = None,
+    root_entries=None,
 ) -> list[FileObservation]:
     """Classify each scandir entry once; never follow directory links/junctions."""
     root_info = root.lstat()
@@ -63,7 +70,8 @@ def observe_files(
         current = directory.lstat()
         if linked(current) or not stat.S_ISDIR(current.st_mode) or current.st_ino != expected:
             raise RuntimeError(f"Directory changed during inventory: {directory}")
-        with os.scandir(directory) as entries:
+        context = nullcontext(root_entries) if directory == root and root_entries is not None else os.scandir(directory)
+        with context as entries:
             for entry in entries:
                 if entry.name.startswith("."):
                     continue
