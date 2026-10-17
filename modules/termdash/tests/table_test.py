@@ -58,7 +58,9 @@ def test_empty_table():
 
 
 def test_width_enforced_and_long_color_clipped():
-    rendered = render_table(headers=["Folder", "State"], rows=[["\033[32m" + "a" * 100 + "\033[0m", "ok"]], max_width=30)
+    rendered = render_table(
+        headers=["Folder", "State"], rows=[["\033[32m" + "a" * 100 + "\033[0m", "ok"]], max_width=30
+    )
     assert max(_visible_len(line) for line in rendered.splitlines()) <= 30
     assert "…" in rendered
 
@@ -74,3 +76,17 @@ def test_tiny_terminal_and_multiline_cell():
     rendered = render_table(headers=["A", "B"], rows=[["long\nvalue", "text"]], max_width=5)
     assert all(_visible_len(line) <= 5 for line in rendered.splitlines())
     assert len(rendered.splitlines()) == 2
+
+
+def test_panel_renderer_preserves_all_values_unicode_and_color():
+    from termdash.table import render_table_panels, _visible_len
+
+    headers = ["ID", "Strategy", "Estimated retained", "Estimated saved", "Mean SSIM"]
+    rows = [["01", "\x1b[34m漫画-e\u0301-lossless\x1b[0m", "128.00 GiB", "42.00 GiB", "0.983"]]
+    for width in (12, 40, 60, 80, 160):
+        panels = render_table_panels(headers, rows, identity_columns=(0, 1), max_width=width)
+        output = "\n".join(panels)
+        assert "…" not in output
+        for value in ("128.00 GiB", "42.00 GiB", "0.983"):
+            assert value in output
+        assert all(_visible_len(line) <= width for line in output.splitlines())

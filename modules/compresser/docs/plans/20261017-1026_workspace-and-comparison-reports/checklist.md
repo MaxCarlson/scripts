@@ -6,7 +6,7 @@
 - [x] User reviews written plan before implementation.
 - [x] Task1: workspace ownership/path compatibility and wrapper migration.
 - [x] Task2: format-weighted extrapolation and sample coverage.
-- [ ] Task3: shared report model and responsive console tables.
+- [x] Task3: shared report model and responsive console tables.
 - [ ] Task4: automatic durable Markdown reports.
 - [ ] Task5: inventory/all summary paths, integration/docs, final review and validation.
 - [ ] Real Windows terminal resize/color acceptance (manual).

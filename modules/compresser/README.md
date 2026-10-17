@@ -1,4 +1,10 @@
-# compresser 1.1.0
+# compresser 1.2.0
+
+Comparison reports now lead with source-format coverage and estimated whole-target
+impact. Tables split into matching column panels and wrap instead of truncating
+identifiers/numbers. Mean SSIM is not an imperceptibility guarantee; cached trial
+rates are not encoder-speed benchmarks. Qualified highlights replace duplicate
+hero/recommendation banners. Detailed phase/candidate summaries are verbose-only.
 
 Comparison JSON now includes `extrapolation` (`format_ratio_v1`) alongside the
 unchanged design-based `estimate`. Each source format's sampled byte-savings ratio

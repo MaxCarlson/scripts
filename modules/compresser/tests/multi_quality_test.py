@@ -54,7 +54,7 @@ def test_multi_quality_recommendations_separate_max_savings_from_practical_trade
 
     assert main(args + ["-N"]) == 0
     text_out = capsys.readouterr().out
-    assert "Comparison Recommendations:" in text_out
-    assert "Maximum storage savings:" in text_out
-    assert "Best lossless (pixel-exact):" in text_out
-    assert "Practical speed/fidelity/reader trade-off:" in text_out
+    assert "QUALIFIED HIGHLIGHTS" in text_out
+    assert "Largest target reduction" in text_out
+    assert "Lossless alternative" in text_out
+    assert "Higher-SSIM" in text_out

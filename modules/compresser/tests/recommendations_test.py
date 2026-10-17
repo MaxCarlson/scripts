@@ -86,6 +86,5 @@ def test_text_explicitly_reports_unavailable_winners(capsys):
 
     print_comparison_matrix([_row(saved_bytes=0)])
     output = capsys.readouterr().out
-    assert "Maximum storage savings: unavailable" in output
-    assert "Best lossless (pixel-exact): unavailable" in output
-    assert "Practical speed/fidelity/reader trade-off: unavailable" in output
+    assert "No eligible positive-savings" in output
+    assert "READY TO COMPRESS" not in output

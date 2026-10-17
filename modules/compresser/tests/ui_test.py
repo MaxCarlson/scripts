@@ -84,68 +84,15 @@ def test_comparison_uses_one_dashboard_and_closes_on_failure(monkeypatch):
     assert events == ["created", 0, "closed"]
 
 
-def test_print_comparison_matrix_executive_summary_and_hero_banner(monkeypatch, capsys):
+def test_comparison_facade_has_no_write_banner_or_quality_promises(monkeypatch, capsys):
     import shutil
-    from compresser.models import ComparisonRow
     from compresser.ui import print_comparison_matrix
+    from reporting_test import sample_row
 
-    monkeypatch.setattr(shutil, "get_terminal_size", lambda *args, **kwargs: __import__("os").terminal_size((120, 24)))
-    row = ComparisonRow(
-        strategy_name="webp-lossy-q80",
-        output_format="webp",
-        mode="lossy",
-        quality_display="q=80",
-        compressed_bytes=700,
-        original_bytes=1000,
-        savings_percent=30.0,
-        average_ssim=0.985,
-        throughput_images_per_s=4.5,
-        measured_images=10,
-        saved_bytes=300,
-        retained_formats=("WEBP",),
-        estimate={"projected_total_saved_bytes": 30000, "approximate_95_percent_interval_bytes": [28000, 32000], "uncertainty": "Design-weighted estimate"},
-    )
-    print_comparison_matrix([row], target_path=Path("B:/Hent/308191"), workers=8, runner="mangadl")
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *a, **k: __import__("os").terminal_size((80, 24)))
+    print_comparison_matrix([sample_row()], target_path=Path("library"), workers=8)
     output = capsys.readouterr().out
-    assert "COMPRESSION BENCHMARK RESULTS" in output
-    assert "RECOMMENDED STRATEGY" in output
-    assert "webp-lossy-q80" in output
-    assert "Quality Badges:" in output
-    assert "READY TO COMPRESS?" in output
-    assert "mangadl compress -d 'B:\\Hent\\308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output or "mangadl compress -d 'B:/Hent/308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output
-
-
-def test_print_comparison_matrix_sample_fallback_hero_and_responsive_table(monkeypatch, capsys):
-    import shutil
-    from compresser.models import ComparisonRow
-    from compresser.ui import print_comparison_matrix
-
-    monkeypatch.setattr(shutil, "get_terminal_size", lambda *args, **kwargs: __import__("os").terminal_size((80, 24)))
-    # Row has positive sample savings, but estimate projection is unavailable (e.g. singleton galleries or preflight rejects)
-    row = ComparisonRow(
-        strategy_name="auto-lossy-q70",
-        output_format="auto",
-        mode="lossy",
-        quality_display="q=70",
-        compressed_bytes=41820000,
-        original_bytes=50430000,
-        savings_percent=17.1,
-        average_ssim=0.971,
-        throughput_images_per_s=4.7,
-        measured_images=50,
-        saved_bytes=8610000,
-        retained_formats=("WEBP",),
-        failed_count=4,
-        estimate={"projected_total_saved_bytes": None, "unestimated_images": 4},
-        worker_diagnostics={"requested_workers": 12, "effective_workers": 12, "limiter": "requested", "phase_seconds": {"encoding": 1.5}},
-    )
-    print_comparison_matrix([row], target_path=Path("B:/Hent/hent1imageperpage"), workers=12, runner="mangadl")
-    output = capsys.readouterr().out
-    assert "COMPRESSION BENCHMARK RESULTS" in output
-    assert "RECOMMENDED STRATEGY (Sample Winner)" in output
-    assert "auto-lossy-q70" in output
-    assert "Whole-target projections: unavailable" in output
-    assert "READY TO COMPRESS?" in output
-    assert "HARDWARE & WORKER PERFORMANCE" in output
-    assert "mangadl compress -d 'B:\\Hent\\hent1imageperpage' -f auto -m lossy -q 70 -B auto -t 12 -w" in output or "mangadl compress -d 'B:/Hent/hent1imageperpage' -f auto -m lossy -q 70 -B auto -t 12 -w" in output
-
+    assert "COMPRESSION COMPARISON" in output
+    assert "auto-lossy-q85" in output and "512.00 MiB" in output
+    assert "READY TO COMPRESS" not in output
+    assert "imperceptible" not in output.lower()

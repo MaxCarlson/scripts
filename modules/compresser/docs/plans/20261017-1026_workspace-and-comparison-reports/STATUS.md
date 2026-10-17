@@ -15,8 +15,11 @@ workspace resolution/ownership, directory-I/legacy compatibility, optional bare-
 major1.0.0/2.0.0 wrappers reinstalled.291compression/1skip,316MangaDL,55help pass.
 Task2 implemented: independent format_ratio_v1 extrapolation, failed-original policy,
 unsampled-format fallback, signed growth and completed-census calculated totals.
-298compression/1skip,316MangaDL pass; help/gate publication follows. Next Task3 shared
-report and responsive panels. No production data touched.
+Task2 gate complete298compression/1skip,316MangaDL,55help. Task3 shared immutable report
+sections and opt-in full-value TermDash panels implemented;305compression/1skip,
+316MangaDL,55help pass plus full TermDash suite. Replaced contradictory hero/write
+banner; wrapped records and binary units. Next Task4 durable Markdown publication.
+No production data touched.
 
 Documentation drift: compresser/MangaDL80/100 stale, TermDash60/100 needs review;
 Task5 updates user docs and current handoffs. No tests claimed for planning-only edits.

@@ -1,5 +1,11 @@
 # TermDash Handoff
 
+2026-10-17:0.8.0 adds opt-in render_table_panels and wrap_display_text; old render_table
+truncation contract unchanged. Full-value column panels repeat identity columns,
+wrap long cells and use records when extremely narrow; ANSI/CJK/combining aware.
+Current compression/report plan owns integration. Manual Windows resize acceptance
+is still unverified.
+
 ## Current reviewed compression work — 2026-10-13
 
 Branch `compression-module-mangadl-20261013-0151`; source0.7.0 adds report tables

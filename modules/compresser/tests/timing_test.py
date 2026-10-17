@@ -58,8 +58,8 @@ def test_narrow_reports_preserve_strategy_and_numbers(tmp_path, monkeypatch, cap
     _, images = scan_directory(tmp_path)
     monkeypatch.setattr(shutil, "get_terminal_size", lambda *args, **kwargs: __import__("os").terminal_size((80, 24)))
     rows = run_comparison(images, CompressionEngine(), no_ui=True)
-    print_comparison_matrix(rows)
+    print_comparison_matrix(rows, verbose=True)
     output = capsys.readouterr().out
-    assert "webp-lossless" in output and "Retained:" in output
-    assert "Failures:" in output and "Phase worker-seconds" in output
+    assert "webp-lossless" in output and "Calculated retained" in output
+    assert "Failed" in output and "PHASE WORKER-SECONDS" in output
     assert "St…" not in output and "\x1b[" not in output

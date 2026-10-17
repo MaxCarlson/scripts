@@ -28,10 +28,10 @@ def test_lossless_growth_is_measured_but_original_retained(tmp_path, capsys):
     assert png.compressed_bytes == len(before)
     assert rows[2].failed_count == 1 and rows[2].candidate_bytes is None
     assert rows[2].error_summary
-    print_comparison_matrix(rows)
+    print_comparison_matrix(rows, verbose=True)
     output = capsys.readouterr().out
-    assert "Savings use retained size" in output and "Kept excludes failures" in output
-    assert "encoded candidates" in output and "failed:" in output
+    assert "Unchanged excludes failures" in " ".join(output.split())
+    assert "RAW CANDIDATES" in output and "ERRORS / RETAINED ORIGINALS" in output
     assert "\x1b[" not in output
     assert source.read_bytes() == before
 

@@ -283,3 +283,112 @@ def render_table(
     if rows:
         t.add_rows(rows)
     return t.render(max_width=max_width)
+
+
+def wrap_display_text(text: str, width: int) -> list[str]:
+    """Wrap full cells at word boundaries, preserving SGR style and Unicode."""
+    width = max(2, width)
+    lines, current, active = [], [], []
+    used = 0
+
+    def flush():
+        nonlocal current, used
+        lines.append("".join(current).rstrip() + ("\x1b[0m" if active else ""))
+        current, used = list(active), 0
+
+    for word in re.findall(r"\S+|\s+", str(text)):
+        if not word.isspace() and used and _visible_len(word) <= width and used + _visible_len(word) > width:
+            flush()
+        for match in _ANSI_OR_CHAR.finditer(word):
+            ansi, char = match.groups()
+            if ansi:
+                active = [] if ansi in ("\x1b[0m", "\x1b[m") else active + [ansi]
+                current.append(ansi)
+                continue
+            if char == "\n":
+                flush()
+                continue
+            if unicodedata.category(char).startswith("C"):
+                char = repr(char)[1:-1]
+            for token in char:
+                size = _char_width(token)
+                if used + size > width:
+                    flush()
+                if token == " " and not used:
+                    continue
+                current.append(token)
+                used += size
+    if current or not lines:
+        lines.append("".join(current) + ("\x1b[0m" if active else ""))
+    return lines
+
+
+def render_table_panels(headers, rows, *, identity_columns=(0,), alignments=None, max_width: int) -> list[str]:
+    """Opt-in lossless column panels; fall back to wrapped records if a panel cannot fit."""
+    width = max(2, max_width)
+    headers = [str(h) for h in headers]
+    rows = [[str(c) if c is not None else "—" for c in row] for row in rows]
+    if any(len(row) != len(headers) for row in rows):
+        raise ValueError("Panel rows must match headers")
+    identity = list(identity_columns)
+    if len(set(identity)) != len(identity) or any(i < 0 or i >= len(headers) for i in identity):
+        raise ValueError("Invalid identity columns")
+    lengths = [max([_visible_len(h)] + [_visible_len(row[i]) for row in rows]) for i, h in enumerate(headers)]
+
+    def fits(indices):
+        return sum(lengths[i] for i in indices) + 3 * len(indices) + 1 <= width
+
+    remaining = [i for i in range(len(headers)) if i not in identity]
+    if not fits(identity) or (remaining and sum(lengths[i] for i in identity) + 3 * (len(identity) + 1) + 5 > width):
+        records = []
+        for number, row in enumerate(rows, 1):
+            records.extend(wrap_display_text(f"Record {number}", width))
+            for h, cell in zip(headers, row):
+                records.extend(wrap_display_text(f"{h}:", width))
+                records.extend(wrap_display_text(cell, width))
+            records.append("")
+        return ["\n".join(records)]
+    groups, current = [], list(identity)
+    for index in remaining:
+        if not fits(current + [index]) and current != identity:
+            groups.append(current)
+            current = list(identity)
+        current.append(index)
+    if current:
+        groups.append(current)
+    panels = []
+    for group in groups:
+        sizes = {i: lengths[i] for i in group}
+        available = width - (3 * len(group) + 1)
+        while sum(sizes.values()) > available:
+            adjustable = [i for i in group if i not in identity]
+            largest = max(adjustable, key=lambda i: sizes[i])
+            sizes[largest] -= 1
+
+        def rule(left, middle, right):
+            return left + middle.join("─" * (sizes[i] + 2) for i in group) + right
+
+        def physical(row):
+            cells = [wrap_display_text(row[i], sizes[i]) for i in group]
+            output = []
+            for line in range(max(map(len, cells))):
+                output.append(
+                    "│"
+                    + "│".join(
+                        " "
+                        + _pad_cell(
+                            cell[line] if line < len(cell) else "", sizes[i], alignments[i] if alignments else "left"
+                        )
+                        + " "
+                        for i, cell in zip(group, cells)
+                    )
+                    + "│"
+                )
+            return output
+
+        rendered = [rule("┌", "┬", "┐"), *physical(headers), rule("├", "┼", "┤")]
+        for row in rows:
+            rendered.extend(physical(row))
+        rendered.append(rule("└", "┴", "┘"))
+        panels.append("\n".join(rendered))
+    return panels
