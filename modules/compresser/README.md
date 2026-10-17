@@ -1,4 +1,4 @@
-# compresser 0.20.0
+# compresser 0.20.1
 
 ## Inventory statistics summary
 

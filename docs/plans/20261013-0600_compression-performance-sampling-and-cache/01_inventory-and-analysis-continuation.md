@@ -228,3 +228,15 @@ the writer guard, so rejected -U trust -w may create library controls unnecessar
 2. Validate shared mode policy before entering writer ownership; do not weaken any
    valid write guard. Expected: focused test GREEN, full MangaDL/help suites GREEN.
 3. Patch version/docs/status, commit/push this bounded fix; no production writes.
+
+## Task 6: avoid population-wide filesystem resolution during snapshot sampling
+
+Follow-up: gallery_sample resolves every metadata path, which can reopen population
+members on Windows even though trust is meant to validate selected files only.
+1. Add a regression recording actual path-resolution calls during real trusted CLI
+   analysis: one selected image out of five must not resolve all five. Add explicit
+   rejection of noncanonical '..' metadata paths. Expected: both RED.
+2. Use lexical absolute paths for gallery ownership, preserving selected-source
+   validation and cache identities. No estimator, quota, seed or codec changes.
+   Expected: focused GREEN, full compression/MangaDL/help GREEN.
+3. Patch versions/docs/status; commit/push checkpoint. Continue pilot advisor next.

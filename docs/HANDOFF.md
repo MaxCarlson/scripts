@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+Task 6 compresser0.20.1/MangaDL1.46.2 avoids population-wide Path.resolve() during
+snapshot sampling and refuses noncanonical '..' metadata paths. 136 compression
+(1 skip)/306 MangaDL/55 help pass.
+
 MangaDL1.46.1 validates shared compression mode before acquiring writer ownership;
 rejected trust/write combination leaves target unchanged.306 MangaDL/55 help pass.
 Inventory footer010bc54 pushed. Background live index still needs final stats posted.

@@ -32,6 +32,12 @@ def test_coverage_weights_seed_and_percentage(tmp_path):
         gallery_sample(images, tmp_path, sample_size=2)
 
 
+def test_sampling_refuses_noncanonical_parent_paths(tmp_path):
+    image = ImageMetadata(tmp_path / ".." / tmp_path.name / "01.jpg", "JPEG", 40, 40, 100)
+    with pytest.raises(ValueError, match="canonical"):
+        gallery_sample([image], tmp_path)
+
+
 def test_weighted_estimate_failures_and_uncertainty(tmp_path):
     images = population(tmp_path)
     plan = gallery_sample(images, tmp_path, sample_size=30)

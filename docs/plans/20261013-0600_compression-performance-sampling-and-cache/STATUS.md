@@ -1,5 +1,10 @@
 # Status
 
+Snapshot sampling compresser0.20.1/MangaDL1.46.2: gallery_sample uses lexical
+absolute paths and rejects noncanonical '..' parts, avoiding population-wide
+filesystem resolution on Windows during -U trust sampling. RED->GREEN2 tests;
+full136 compression (1 privilege skip)/306 MangaDL/55 help pass.
+
 MangaDL1.46.1: invalid analysis policies rejected before writer guard acquisition;
 -U trust -w no longer creates .mangadl controls before returning an error. RED->GREEN
 source-preservation regression;306 MangaDL/55 help pass. Compression code unchanged

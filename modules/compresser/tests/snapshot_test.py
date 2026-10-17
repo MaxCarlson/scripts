@@ -2,6 +2,7 @@
 
 import json
 import os
+from pathlib import Path
 import sqlite3
 
 import pytest
@@ -171,3 +172,27 @@ def test_trusted_text_warns_about_snapshot_age_and_membership(tmp_path, capsys):
     report = capsys.readouterr().out
     assert "Trusted snapshot:" in report and "age:" in report
     assert report.rstrip().endswith("Use -U refresh to update.")
+
+
+def test_trusted_sampling_does_not_resolve_every_unselected_source(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "library"
+    root.mkdir()
+    for index in range(5):
+        Image.new("RGB", (40, 40)).save(root / f"{index}.png")
+    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    assert main([*args, "-l"]) == 0
+    capsys.readouterr()
+    resolve = Path.resolve
+    resolved_images = set()
+
+    def no_image_resolution(path, *a, **k):
+        if path.suffix == ".png":
+            resolved_images.add(path)
+        return resolve(path, *a, **k)
+
+    monkeypatch.setattr(Path, "resolve", no_image_resolution)
+    assert main([*args, "-U", "trust", "-s", "1", "-f", "png", "-e", "0", "-J"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["total_images"] == 1
+    assert report["inventory_snapshot"]["selected_files_validated"] == 1
+    assert len(resolved_images) == 1  # Cache identities may resolve selected sources, never the other four.

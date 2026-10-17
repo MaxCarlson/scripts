@@ -1,5 +1,9 @@
 # mangadl Immediate Project Handoff
 
+1.46.2/compresser0.20.1: trusted snapshot sampling uses lexical absolute paths
+without resolving every unselected source file on Windows, and rejects '..' paths.
+136 compression (1 skip)/306 MangaDL/55 help pass.
+
 1.46.1 follow-up: shared compression argument validation now precedes library
 writer guard acquisition. Rejected -U trust -w leaves a pristine target unchanged
 (no .mangadl controls). RED->GREEN regression; full306 MangaDL/55 help pass. Valid

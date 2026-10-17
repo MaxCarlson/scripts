@@ -32,7 +32,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.20.0"
+__version__ = "0.20.1"
 
 
 def build_parser() -> argparse.ArgumentParser:

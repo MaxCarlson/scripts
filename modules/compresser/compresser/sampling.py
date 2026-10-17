@@ -210,7 +210,11 @@ def gallery_sample(
     root = root.resolve()
     is_directory = root.is_dir()
     for image in images:
-        relative = image.path.resolve().relative_to(root) if is_directory else Path(image.path.name)
+        # Scanner/snapshot paths are absolute. Resolving all population members
+        # can reopen them on Windows, defeating selected-only snapshot validation.
+        if ".." in image.path.parts:
+            raise ValueError("Sampling requires canonical image paths without '..'")
+        relative = image.path.absolute().relative_to(root) if is_directory else Path(image.path.name)
         key = (
             gallery_keys[image.path]
             if gallery_keys is not None
