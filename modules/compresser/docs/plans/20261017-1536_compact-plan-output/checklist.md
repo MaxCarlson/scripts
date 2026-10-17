@@ -8,4 +8,5 @@
 - [x] Task1: pure compact summary composer/renderer and presentation checks (22 passed; commit f6e784ac).
 - [x] Task2: CLI routing, detailed artifact preservation, release/docs/checkpoint.
 - [ ] Windows80/120/160-column/color acceptance.
-- [ ] Final independent review, verified commit/push; pause before estimator Task6.
+- [x] Final independent review; important unequal-allocation visibility finding fixed with RED/GREEN regression.
+- [ ] Verified review-fix commit/push; pause before estimator Task6.

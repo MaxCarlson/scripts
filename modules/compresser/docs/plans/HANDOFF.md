@@ -1,6 +1,6 @@
 # Active module plan
 
-Presentation follow-up: [Compact plan output](20261017-1536_compact-plan-output/plan.md). Tasks1/2 implemented; compresser/MangaDL3.2.0. Full module tests and installed CLI smoke pass; see plan STATUS.md. Manual Windows visual review at80/120/160 remains open. The broader inventory/estimation plan remains paused before Task6.
+Presentation follow-up: [Compact plan output](20261017-1536_compact-plan-output/plan.md). Tasks1/2 implemented; compresser/MangaDL3.2.0. Final review's unequal pilot-allocation visibility finding is fixed and regression-tested; see plan STATUS.md. Manual Windows visual review at80/120/160 remains open. The broader inventory/estimation plan remains paused before Task6.
 
 Follow-up3.1.0: combined plan/estimate mode and all-format alias implemented at user
 request; see active STATUS.md. Compresser435/1 skip, full MangaDL exit0, help55 and

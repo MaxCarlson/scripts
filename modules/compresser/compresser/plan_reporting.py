@@ -151,6 +151,28 @@ def build_plan_summary(
     )
 
     annotations = _recipe_annotations(plan)
+    quota_totals = {quota.recipe_id: quota.total for quota in plan.recipe_quotas}
+    if quota_totals and len(set(quota_totals.values())) > 1:
+        recipes_by_identity = {recipe.identity: recipe for recipe in plan.recipes}
+        allocations = []
+        for identity, total in quota_totals.items():
+            recipe = recipes_by_identity.get(identity)
+            if recipe is None:
+                continue
+            descriptor = f"{_format_name(recipe.format)} {recipe.mode}"
+            if recipe.quality is not None:
+                descriptor += f" {recipe.quality}"
+            elif recipe.mode == "perceptual":
+                descriptor += f" SSIM ≥ {recipe.perceptual_target:.3f}"
+            if recipe.encoder != _DEFAULT_ENCODER or recipe.effort != _DEFAULT_EFFORT:
+                descriptor += f" ({recipe.encoder}, effort {recipe.effort})"
+            allocations.append(f"{descriptor}: {total:,}")
+        if allocations:
+            annotations.append(
+                "Pilot allocations: "
+                + "; ".join(allocations)
+                + f" ({_count_label(sum(quota_totals.values()), 'image/recipe measurement')})."
+            )
     if any(recipe.format.casefold() == "jpeg" and recipe.mode == "lossless" for recipe in plan.recipes):
         annotations.append("* JPEG lossless requires jpegtran and JPEG source images.")
     if plan.filters:

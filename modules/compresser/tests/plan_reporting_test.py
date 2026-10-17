@@ -216,6 +216,47 @@ def test_unequal_quota_sum_and_actual_pilot_below_ceiling():
     assert any("19 image/recipe measurements" in warning for warning in summary.warnings)
 
 
+def test_unequal_pilot_allocations_are_visible_below_warning_threshold():
+    plan = make_plan(
+        recipes=(recipe("webp", "lossless"), recipe("png", "lossless")),
+        budget=EstimationBudget(
+            max_images=20,
+            max_new_encodes=100,
+            max_runtime_seconds=900,
+            pilot_images=64,
+        ),
+    )
+    quotas = tuple(
+        replace(
+            quota,
+            per_stratum=quota.per_stratum[:-1]
+            + ((quota.per_stratum[-1][0], quota.per_stratum[-1][1] - index),),
+        )
+        for index, quota in enumerate(plan.recipe_quotas)
+    )
+    inputs = {
+        field.name: getattr(plan, field.name)
+        for field in fields(EstimationPlan)
+        if field.name
+        not in {
+            "plan_id",
+            "design_identity",
+            "design_payload",
+            "measurements",
+            "confirmation",
+        }
+    }
+    inputs["recipe_quotas"] = quotas
+    altered = EstimationPlan.create(**inputs)
+    summary = build_plan_summary(altered, population_count=200, now=NOW)
+    text = " ".join(summary.annotations)
+    assert not any("Encode budget is tight" in warning for warning in summary.warnings)
+    assert "Pilot allocations" in text
+    assert "WebP lossless: 20" in text
+    assert "PNG lossless: 19" in text
+    assert "39 image/recipe measurements" in text
+
+
 def test_future_snapshot_age_clamps_to_zero():
     plan = make_plan()
     summary = build_plan_summary(plan, population_count=200, now=datetime(2026, 10, 17, tzinfo=timezone.utc))
