@@ -15,7 +15,7 @@ def test_combined_all_format_plan_persists_one_budget_and_resumes(tmp_path, caps
     target.mkdir()
     Image.new("RGB", (32, 32), "white").save(target / "01.png")
     base = ["-I", str(tmp_path), "-d", str(target), "-J", "-N"]
-    assert _main(["compress", "inventory", *base, "-D", "files"]) == 0
+    assert _main(["compress", "inventory", *base]) == 0
     capsys.readouterr()
     args = [
         "compress",

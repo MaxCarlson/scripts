@@ -1,6 +1,6 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (3.1.0)
+## Compression workspace, estimates and saved reports (3.1.1)
 
 Compression now uses explicit operation subcommands. `inventory` refreshes the
 descriptive snapshot, `analyze` measures one recipe, `compare` benchmarks named

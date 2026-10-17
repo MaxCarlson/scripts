@@ -1,5 +1,20 @@
 # Status
 
+2026-10-17 follow-up bug: user reported plan could not find the completed inventory
+in the exact `.mangadl/<target>/` workspace. Inspection confirmed a complete header
+snapshot for B:\Hent\hent1imageperpage with 66,233 images. Root cause: `load_population`
+passed `owner="mangadl"` to SelectionSnapshot while MangaDL publishes under
+`owner="mangadl-pages"`, producing different policy keys. The normal header-path
+integration regression reproduced the failure and passed after mapping the owner.
+The normal header-path integration regression reproduced the failure (RED), then
+passed with the owner mapping fix (GREEN). Validation: compresser435/1 skip; MangaDL
+full suite exit0; scripts-help55. Ruff and Black120 passed. Direct loader now reads
+66,233 header members from the user's workspace. Retried the exact plan successfully;
+saved `plan-60b15df8fb2aa29c2c22` in the user's `.mangadl` workspace with12 recipes,
+caps200/750/900s and zero measurements. Compresser/MangaDL source and installed
+metadata3.1.1. This creates only the requested plan and report; no source image encoded
+or changed. Checkpoint push verified; pause before Task6.
+
 2026-10-17 user-requested bounded follow-up (3.1.0): plan/estimate now accept
 `-m both`; plan/estimate/compare accept `-f all`. This registers supported
 AUTO/WebP/JPEG/AVIF/PNG recipes once, with PNG lossless only and AVIF lossy only,

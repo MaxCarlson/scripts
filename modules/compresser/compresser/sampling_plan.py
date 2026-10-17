@@ -202,7 +202,8 @@ def load_population(workspace, *, owner: str, filters: tuple[str, ...]) -> Popul
                 completed=report["completed"],
                 members=members,
             )
-        snapshot = SelectionSnapshot(store, workspace.target, owner=owner, filters=filters)
+        snapshot_owner = "mangadl-pages" if owner == "mangadl" else owner
+        snapshot = SelectionSnapshot(store, workspace.target, owner=snapshot_owner, filters=filters)
         try:
             images, gallery_keys = snapshot.load()
             records = []

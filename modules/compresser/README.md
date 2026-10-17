@@ -1,4 +1,4 @@
-# compresser 3.1.0
+# compresser 3.1.1
 
 `plan`, `estimate`, and `compare` accept `-m both` and `-f all`.
 `all` expands to AUTO, WebP, JPEG, AVIF and PNG (not the explicit `keep` policy).
@@ -8,6 +8,7 @@ requested quality. PNG is lossless only; AVIF is lossy only. JPEG lossless requi
 share the plan's image, encoding-attempt and time budgets. Single-mode `all` requests
 include only compatible formats. Analyze/apply still require one exact recipe.
 The saved-plan schema is unchanged; estimate execution remains pending Tasks6/7.
+MangaDL header inventories now load under the same owner identity they were saved with.
 
 ## Operation-based CLI
 

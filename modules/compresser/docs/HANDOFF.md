@@ -1,5 +1,16 @@
 # Compresser handoff
 
+2026-10-17 snapshot lookup fix: header inventory was published with MangaDL owner
+`mangadl-pages`, but the plan loader queried under `mangadl`; this made a valid saved
+header inventory look absent. `sampling_plan.load_population` now maps the adapter
+label to the persisted owner label. Regression was observed RED/GREEN in the MangaDL
+header inventory plan/resume test. Full compresser435/1 skip, full MangaDL suite and
+help55 passed; Ruff and Black checks passed. Read-only loader found66,233 rows in the
+user's exact header snapshot. Their plan was then successfully saved as
+`plan-60b15df8fb2aa29c2c22` with12 recipes and caps200/750/900s; zero measurements.
+Compresser/MangaDL source and installed versions3.1.1 match. Checkpoint published at
+the next commit; pause before Task6. No image encodes or source changes occurred.
+
 2026-10-17 bounded follow-up: user requested combined planning and `-f all`.
 Compresser/MangaDL3.1.0 plan/estimate/compare normalize supported recipes into one
 design/budget; PNG lossless only, AVIF lossy only; AUTO included, keep explicit.

@@ -442,3 +442,12 @@ push, continued integration work, and the final merge were approved on
 chapters (702 images, 22,438,146 bytes) without a retry. The user explicitly
 deferred S7 and its potentially large complete-series gate to a follow-up
 branch.
+# MangaDL handoff
+
+2026-10-17 fix: compression planning now queries MangaDL header inventory using the
+persisted `mangadl-pages` owner key. Regression covered inventory -> combined plan ->
+resume. Full MangaDL suite passed; shared compresser435/1 skip and help55 passed.
+User inventory contains66,233 eligible header rows. Successfully created saved plan
+`plan-60b15df8fb2aa29c2c22` (12 recipes; caps200 images,750 encodes,900 seconds).
+Compresser/MangaDL source and installed versions3.1.1. No image encodes. Fix pushed
+on `compression-inventory-estimation-20261017`; work paused before Task6.
