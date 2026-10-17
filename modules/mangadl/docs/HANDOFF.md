@@ -1,5 +1,9 @@
 # mangadl Immediate Project Handoff
 
+I2d1 1.44.0/compresser0.18.0: cache dates/lookup diagnostics at startup and in text/
+JSON summaries. Probe counts not image counts; legacy age not fabricated.113
+compression/302 MangaDL/55 help pass. Remaining trust/advisor/scratch/reader gates open.
+
 I1b1 1.43.0/compresser0.17.0: -l -D files shared fast extension/size inventory,
 preserving manga ownership/exclusions without image opens. Explicit unverified
 totals and separate snapshots. First slice rejects -u (direct gallery targets work).

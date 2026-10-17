@@ -1,4 +1,19 @@
-# compresser 0.17.0
+# compresser 0.18.0
+
+## Cache visibility
+
+Normal analyses show the persistent cache creation date and last result-save date
+at startup. Legacy caches without recorded dates explicitly show unknown creation
+time; tracking starts when first opened by this version, not retroactively. Cache
+dates persist independently of trial eviction. Only successfully committed trial
+saves advance the last-result timestamp.
+
+Text summaries and JSON `cache` objects include current-run trial lookup hits/misses
+and miss categories: refresh-policy bypass, no matching entry, or invalid record.
+These include AUTO candidate probes, so they are not counts of images processed or
+successful encodes. An opaque missing key cannot prove whether an entry was never
+measured, evicted, or invalidated by source/settings changes; the report does not
+invent a more specific reason. Memory-only caches have no persistent creation date.
 
 ## Fast extension/size inventory
 

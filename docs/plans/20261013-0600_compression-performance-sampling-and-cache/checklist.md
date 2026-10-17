@@ -11,7 +11,8 @@
   - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
   - [x] I2b effective candidate identity and AUTO analysis reuse;95 compression/17 integration pass.
   - [x] I2c automatic per-library use/refresh/off trial-cache policies and path/policy reporting;96 compression/17 integration/55 help pass.
-  - [ ] Detailed invalidation-cause diagnostics and historical cache timestamps.
+  - [x] I2d1 persistent cache dates (legacy creation unknown) and scoped run lookup diagnostics;113 compression/302 MangaDL/55 help pass.
+  - [ ] Detailed per-source/settings/eviction miss explanations need additional indexing; generic misses are not overinterpreted.
 - [ ] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
   - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
   - [ ] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations.

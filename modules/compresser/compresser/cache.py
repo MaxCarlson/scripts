@@ -10,7 +10,9 @@ import json
 import shutil
 import sqlite3
 import threading
+from collections import Counter
 from dataclasses import asdict, replace
+from datetime import datetime, timezone
 from pathlib import Path
 
 import PIL
@@ -78,15 +80,28 @@ class AnalysisCache:
         self._closed = False
         self._writes_since_prune = 0
         self._prune_interval = min(256, max_entries)
+        self._lookup_hits = 0
+        self._miss_reasons: Counter[str] = Counter()
+        self._dates = {"created_at": None, "tracking_started_at": None, "last_result_saved_at": None}
         self.path = path.expanduser().resolve() if path else None
         self.identity = json.dumps(_runtime_identity(), sort_keys=True)
         if self.path:
+            existing = self.path.exists()
             self.path.parent.mkdir(parents=True, exist_ok=True)
             self._connection = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
             try:
                 self._connection.execute(
                     "CREATE TABLE IF NOT EXISTS entries (kind TEXT, key TEXT, data TEXT, PRIMARY KEY(kind,key))"
                 )
+                self._connection.execute("CREATE TABLE IF NOT EXISTS cache_metadata (key TEXT PRIMARY KEY,value TEXT)")
+                now = datetime.now(timezone.utc).isoformat()
+                initial = {
+                    "created_at": None if existing else now,
+                    "tracking_started_at": now,
+                    "last_result_saved_at": None,
+                }
+                self._connection.executemany("INSERT OR IGNORE INTO cache_metadata VALUES(?,?)", initial.items())
+                self._dates.update(dict(self._connection.execute("SELECT key,value FROM cache_metadata")))
                 self._prune()
                 self._connection.commit()
             except BaseException:
@@ -100,6 +115,20 @@ class AnalysisCache:
                 self._connection.close()
                 self._connection = None
             self._closed = True
+
+    def diagnostics(self) -> dict:
+        """Return run trial-lookup counters and trustworthy persisted cache dates."""
+        with self._lock:
+            if self.path and not self._closed:
+                self._dates.update(dict(self._database().execute("SELECT key,value FROM cache_metadata")))
+            return {
+                "file": str(self.path) if self.path else None,
+                **self._dates,
+                "lookup_hits": self._lookup_hits,
+                "lookup_misses": sum(self._miss_reasons.values()),
+                "miss_reasons": dict(self._miss_reasons),
+                "counter_scope": "current run trial lookups, including AUTO candidate probes; not image counts",
+            }
 
     def __enter__(self):
         return self
@@ -151,7 +180,13 @@ class AnalysisCache:
                             self._entries.pop(next(iter(self._entries)))
                         self._entries[key] = cached
                     except (KeyError, TypeError, ValueError):
+                        self._miss_reasons["invalid_record"] += 1
                         return None
+            if cached is not None:
+                self._lookup_hits += 1
+            else:
+                reason = "refresh_policy" if self.path and not self.reuse_persistent else "no_matching_entry"
+                self._miss_reasons[reason] += 1
             return replace(cached, cache_hit=True) if cached else None
 
     @timed("cache")
@@ -188,7 +223,14 @@ class AnalysisCache:
             self._writes_since_prune += 1
             if self._writes_since_prune >= self._prune_interval:
                 self._prune()
+            if kind == "trial":
+                saved_at = datetime.now(timezone.utc).isoformat()
+                connection.execute(
+                    "INSERT OR REPLACE INTO cache_metadata VALUES(?,?)", ("last_result_saved_at", saved_at)
+                )
             connection.commit()
+            if kind == "trial":
+                self._dates["last_result_saved_at"] = saved_at
         except BaseException:
             connection.rollback()
             raise

@@ -27,6 +27,22 @@ def color_text(text: str, color: str) -> str:
     return text
 
 
+def print_cache_diagnostics(report: dict, *, startup: bool = False) -> None:
+    """Distinguish persistent cache dates/run lookups from per-image trial totals."""
+    if startup:
+        if report["file"]:
+            print(
+                f"Cache dates (UTC): created {report['created_at'] or 'unknown (legacy cache)'}; "
+                f"last result saved {report['last_result_saved_at'] or 'none recorded'}"
+            )
+        return
+    reasons = ", ".join(f"{name}={count}" for name, count in sorted(report["miss_reasons"].items())) or "none"
+    print(
+        f"Cache lookups this run: {report['lookup_hits']} hits, {report['lookup_misses']} misses ({reasons}). "
+        "Includes AUTO candidate probes; not image counts."
+    )
+
+
 class CompresserDashboard:
     """Live in-place multi-line progress dashboard powered by TermDash concepts."""
 

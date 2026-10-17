@@ -1,5 +1,10 @@
 # Compresser handoff
 
+I2d1 0.18.0/MangaDL1.44.0: durable cache dates and run-scoped trial lookup counters,
+shared text/JSON diagnostics. Legacy creation date unknown, refresh/no-match/invalid
+record categories only (no invented source/settings cause). Dates commit with results,
+separate from eviction.113 compression/302 MangaDL/55 help pass; RED->GREEN API/CLI.
+
 I1b1 0.17.0/MangaDL1.43.0: shared file_inventory scanner via -l -D files, no image
 opens/encodes. Explicit candidate/unknown totals, gallery/extension sizes/shares,
 durable separate completed file snapshots; aborted walk preserves prior snapshot.

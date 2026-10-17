@@ -1,5 +1,11 @@
 # mangadl
 
+Compression reports now show cache creation/last-saved dates and run lookup
+hits/misses in text/JSON. Legacy creation dates remain unknown. Lookup counts include
+AUTO candidate probes and differ from processed-image/cache-hit trial counts.
+Refresh-policy bypass is distinguished from no matching entry; detailed source/
+settings/eviction causes require further indexing and are not guessed.
+
 ## Quick file-extension and size inventory
 
 ```powershell

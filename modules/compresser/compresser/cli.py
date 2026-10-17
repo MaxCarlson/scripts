@@ -22,9 +22,15 @@ from .models import (
 )
 from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
-from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
+from .ui import (
+    CompresserDashboard,
+    print_comparison_matrix,
+    print_single_summary,
+    report_cancellation,
+    print_cache_diagnostics,
+)
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -343,6 +349,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.json:
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")
+            print_cache_diagnostics(cache.diagnostics(), startup=True)
             print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
@@ -383,13 +390,14 @@ def main(argv: list[str] | None = None) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
-                        "cache": {"file": str(cache.path) if cache.path else None, "policy": args.cache_policy},
+                        "cache": {**cache.diagnostics(), "policy": args.cache_policy},
                     }
                     for r in comp_rows
                 ]
                 print(json.dumps(data, indent=2))
             else:
                 print_comparison_matrix(comp_rows)
+                print_cache_diagnostics(cache.diagnostics())
             return 0
 
         # Single Strategy Execution
@@ -455,7 +463,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
-                "cache": {"file": str(cache.path) if cache.path else None, "policy": args.cache_policy},
+                "cache": {**cache.diagnostics(), "policy": args.cache_policy},
             }
             print(json.dumps(out, indent=2))
         else:
@@ -467,6 +475,7 @@ def main(argv: list[str] | None = None) -> int:
                     f"{estimate['unestimated_images']} images remain unestimated."
                 )
                 print(estimate["uncertainty"])
+            print_cache_diagnostics(cache.diagnostics())
 
         return 0 if batch_result.failed_count == 0 else 1
 

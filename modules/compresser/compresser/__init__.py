@@ -21,7 +21,7 @@ from .models import (
 )
 from .scanner import inspect_image_file, scan_directory, select_sample
 
-__version__ = "0.17.0"
+__version__ = "0.18.0"
 
 
 def analyze_collection(

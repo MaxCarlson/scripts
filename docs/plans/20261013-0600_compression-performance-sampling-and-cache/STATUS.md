@@ -1,5 +1,14 @@
 # Status
 
+I2d1 compresser0.18.0/MangaDL1.44.0: persistent creation/tracking/last-result-save
+dates, run trial lookup hit/miss counters and refresh/no-match/invalid-record labels.
+Text/JSON expose dates/counters without conflating probes with image counts. Legacy
+creation remains unknown; successful trial commits advance last-save time. Separate
+metadata table is not subject to trial eviction. RED->GREEN observed for missing API
+and missing CLI report fields.113 compression/302 MangaDL/55 help pass, lint/format/
+whitespace checks pass. Source validation/keys/policies unchanged. Detailed hashed-key
+invalidation causes not claimed. I1b1 573aa11 pushed. No production library run.
+
 I1b1 compresser0.17.0/MangaDL1.43.0: -l -D files counts extension candidates/bytes
 without opening image content, reports known versus unknown totals, gallery shares/
 size distributions and stat errors, and persists completed unverified snapshots in

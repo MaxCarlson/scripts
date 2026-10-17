@@ -161,3 +161,21 @@ header scans, preview selection, trial cache and estimators must remain unchange
 4. Run focused tests, full compression suite, full MangaDL suite and help registry.
    Expected: all pass. Update versions/help/docs/status, refresh installs, commit
    and push this feature branch only. Expected: clean synchronized branch.
+
+## Task 2: I2d1 cache dates and lookup diagnostics
+
+Interfaces: AnalysisCache supplies a JSON-safe diagnostic snapshot consumed by
+both CLI report paths; optional cache metadata table remains outside trial eviction.
+No encoder keys, source validation, sample selection or persistence policy changes.
+
+1. Write failing tests for creation/last-result timestamps across cache reopen,
+   unknown creation time on legacy DB, and actual lookup hit/miss/refresh counters.
+   Expected: RED because diagnostic API and dates are absent.
+2. Store trustworthy dates in a separate tiny metadata table. Track run lookup
+   counters in memory; distinguish refresh-policy misses from no matching entry,
+   without claiming to know changed-source/settings/eviction causes from opaque keys.
+   Dates commit with saved trials. Never fabricate age for pretracking caches.
+3. Expose dates at CLI startup and run lookup summaries in text/JSON, clearly
+   separate from processed-image/cache-hit trial counts. Preserve file/policy fields.
+4. Run full compression, MangaDL, help and lint/format/whitespace checks; refresh
+   installs, commit/push feature branch. Expected: all green and branch synchronized.

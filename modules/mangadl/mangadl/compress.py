@@ -24,7 +24,13 @@ from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.cache import create_analysis_cache
-from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
+from compresser.ui import (
+    CompresserDashboard,
+    print_comparison_matrix,
+    print_single_summary,
+    report_cancellation,
+    print_cache_diagnostics,
+)
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
 from .library_guard import library_write_guard
@@ -274,6 +280,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if not args.json:
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")
+            print_cache_diagnostics(cache.diagnostics(), startup=True)
             print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
@@ -316,7 +323,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "sampling": r.sampling,
                         "estimate": r.estimate,
                         "cache": {
-                            "file": str(cache.path) if cache.path else None,
+                            **cache.diagnostics(),
                             "policy": getattr(args, "cache_policy", "use"),
                         },
                     }
@@ -325,6 +332,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 print(json.dumps(data, indent=2))
             else:
                 print_comparison_matrix(comp_rows)
+                print_cache_diagnostics(cache.diagnostics())
             return 0
 
         # Compression / Analysis Mode
@@ -391,7 +399,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
                 "cache": {
-                    "file": str(cache.path) if cache.path else None,
+                    **cache.diagnostics(),
                     "policy": getattr(args, "cache_policy", "use"),
                 },
             }
@@ -405,6 +413,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                     f"{estimate['unestimated_images']} images remain unestimated."
                 )
                 print(estimate["uncertainty"])
+            print_cache_diagnostics(cache.diagnostics())
 
         return 0 if batch_result.failed_count == 0 else 1
 

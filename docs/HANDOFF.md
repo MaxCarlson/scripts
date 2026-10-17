@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+Current0.18.0/1.44.0 cache dates/lookup diagnostics checkpoint follows pushed573aa11
+fast filesystem inventory.113 compression/302 MangaDL/55 help pass. Same feature
+branch, no production library changes. Remaining plan work is not marked complete.
+
 I1b1 current checkpoint: compresser0.17.0/MangaDL1.43.0 on existing compression
 feature branch. -l -D files provides filesystem-only extension/size inventory,
 clearly unverified and persisted separately.109 compression/302 MangaDL/55 help
