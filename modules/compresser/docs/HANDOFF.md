@@ -1,5 +1,13 @@
 # Compresser handoff
 
+Plan03 P3a compresser0.29.2/MangaDL1.55.2: deduplicate shared ancestor lstat work
+per256-page validation batch, compare directory IDs before/after and between batches,
+no trust retained across comparison stages. Leaf lstat/fingerprint remains mandatory;
+ancestor replacement during validation now rejected. RED checks8->2 shared-parent
+visits and missed replacement -> GREEN;227 compression/1 skip,314 MangaDL/55 help
+pass. Task4 NOT complete: bounded scalar-equivalent cache probes, overlapping
+preparation/encoding, thread measurement/cancellation/startup-latency tests remain.
+
 Plan03 P2b compresser0.29.1/MangaDL1.55.1 reuses coordinator-only root discovery
 entries through classification/scanning; regression counts each relevant directory
 once for library/single-gallery paths. MangaDL rejects reparse-point roots before

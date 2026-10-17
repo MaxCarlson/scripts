@@ -1,4 +1,10 @@
-# compresser 0.29.1
+# compresser 0.29.2
+
+Trusted selected-source validation now checks shared ancestors before/after bounded
+256-page batches, retaining directory identity only for that validation call. Every
+selected file still needs a no-follow identity/fingerprint check. Ancestor replacement
+or link insertion invalidates the operation; this does not eliminate adversarial
+filesystem races or turn a trusted old population into current membership evidence.
 
 Header inventory now shares one coordinator-owned database connection and header
 pool across scan scopes. Selection-scoped cache lookups and writes are batched

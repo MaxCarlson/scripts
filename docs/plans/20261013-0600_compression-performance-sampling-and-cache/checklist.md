@@ -8,6 +8,8 @@
   - [x] P2a shared run connection/pool, bounded changed-header work/SQL, short transactions, identity/visited-scope safety.
   - [x] P2b root discovery reuse and failure/admission review; task3 post-commit gate follows.
 - [ ] P3 trusted-source/cache preparation optimization.
+  - [x] P3a deduplicated operation-local ancestor validation and replacement checks;227 compression/314 MangaDL/55 help pass.
+  - [ ] P3b bounded cache preparation/dispatch overlap and remaining task4 verification.
 - [ ] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
 - [ ] P5 verified AUTO candidate reuse/measurement-gated CPU optimization.
 - [ ] P6 explicit auto memory policy; default remains512MiB.

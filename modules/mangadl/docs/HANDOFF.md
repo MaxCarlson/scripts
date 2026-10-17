@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P3a MangaDL1.55.2/compresser0.29.2 improves shared trusted validation:
+ancestor identity checked at bounded batch boundaries, selected pages still checked
+individually, no retained trust between stages.227 compression/1 skip,314 MangaDL/
+55 help pass. Task4 cache batching/startup overlap remains open; no production work.
+
 Plan03 P2b MangaDL1.55.1/compresser0.29.1 removes duplicate root discovery listings
 for libraries/single galleries. Cached DirEntry tuple remains on coordinator only,
 with per-file source checks retained. Reparse roots rejected before resolution.

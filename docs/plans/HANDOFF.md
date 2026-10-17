@@ -1,5 +1,10 @@
 # Repository-Wide Plans Handoff
 
+Plan03 Task4/P3a validated: shared ancestor validation deduplicated, directory IDs
+checked at batch boundaries; compresser0.29.2/MangaDL1.55.2. Remaining Task4:
+bounded cache lookups/preparation overlap, measured stat concurrency and startup/
+cancellation checks. Do not mark Task4 complete or start sampling profile work yet.
+
 Plan03 P2b compresser0.29.1/MangaDL1.55.1 finishes root discovery reuse and reparse
 admission check; task3 gate then P3 trusted-source/cache preparation. Main unpushed,
 Task6 pilot CLI excluded; manual terminal/reader gates and final branch review open.

@@ -1,5 +1,14 @@
 # Status
 
+Plan03 P3a compresser0.29.2/MangaDL1.55.2 implemented/tested: shared selected-source
+ancestors checked before/after256-page batches with operation-local directory IDs;
+individual leaf lstat/identity/fingerprint retained, no trust between stages. RED
+8 repeated-parent checks->2 and previously missed ancestor replacement->rejection.
+227 compression passed/1 platform skip,314 MangaDL/55 help passed; formatter/lint/
+whitespace pass. Task4/P3 remains open: bounded scalar-equivalent cache get_many,
+preparation/encode overlap, measurement-gated stat workers, startup/cancellation/
+source-change boundary tests. BASE0d8d30d20be436a09c18145b811d6216d0942bb6 retained.
+
 Plan03 P2b compresser0.29.1/MangaDL1.55.1 completes root discovery reuse: coordinator
 entry listing passed through probe/full scan, directory-once fixtures for libraries
 and single galleries, reparse roots rejected before resolution/locking.224 compression

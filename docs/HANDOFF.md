@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+Plan03 P3a trusted validation checkpoint0.29.2/1.55.2: shared ancestor checks at
+bounded batch boundaries, directory identity guard, selected file checks retained.
+227 compression/1 skip,314 MangaDL/55 help pass. Task4 remains open for bounded
+cache preparation/dispatch overlap and performance/cancellation tests. Main unpushed.
+
 Plan03 P2b root-discovery reuse implemented/tested, compresser0.29.1/MangaDL1.55.1.
 Directory-once fixtures preserve library/single-gallery grouping; linked/reparse
 roots rejected before resolution. Task3 gate/publication then P3 trust/cache next.

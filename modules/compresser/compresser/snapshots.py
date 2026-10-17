@@ -166,15 +166,43 @@ class SelectionSnapshot:
         """Validate before any engine/cache fast path. No unselected-file probing."""
         if self.report.get("policy") != "trust":
             return
-        for image in images:
+        self.report["selected_files_validated"] = 0
+        # Trust is local to this operation, never retained across stages. Bound
+        # the interval between ancestor rechecks without revisiting shared deep
+        # parents for every individual page. This is not a filesystem transaction.
+        identities = {}
+
+        def check_parent(path):
+            info = path.lstat()
+            if not stat.S_ISDIR(info.st_mode) or getattr(info, "st_file_attributes", 0) & getattr(
+                stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0
+            ):
+                raise ValueError(f"Linked or non-directory ancestor: {path}")
+            identity = (info.st_dev, info.st_ino)
+            if path in identities and identities[path] != identity:
+                raise ValueError(f"Ancestor changed: {path}")
+            identities[path] = identity
+
+        for start in range(0, len(images), 256):
+            batch = images[start : start + 256]
+            parents = sorted(
+                {parent for image in batch for parent in image.path.parents}, key=lambda path: len(path.parts)
+            )
             try:
-                _unlinked(image.path)
-                info = image.path.stat()
-                fingerprint = header_fingerprint(info)
-                if not stat.S_ISREG(info.st_mode) or fingerprint != self.fingerprints[image.path]:
-                    raise ValueError("source changed")
+                for parent in parents:
+                    check_parent(parent)
+                for image in batch:
+                    info = image.path.lstat()
+                    if (
+                        not stat.S_ISREG(info.st_mode)
+                        or getattr(info, "st_file_attributes", 0) & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+                        or header_fingerprint(info) != self.fingerprints[image.path]
+                    ):
+                        raise ValueError(f"Source changed or linked: {image.path}")
+                for parent in parents:
+                    check_parent(parent)
             except (OSError, ValueError, KeyError) as exc:
-                raise ValueError(f"Snapshot source no longer matches: {image.path} ({exc}); use -U refresh") from exc
+                raise ValueError(f"Snapshot source no longer matches ({exc}); use -U refresh") from exc
         self.report["selected_files_validated"] = len(images)
 
     def print_warning(self) -> None:

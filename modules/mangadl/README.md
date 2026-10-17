@@ -1,5 +1,9 @@
 # mangadl
 
+Checkpoint1.55.2/compresser0.29.2 reduces repeated ancestor checks in trusted
+compression selections while checking directory identity at batch boundaries.
+Selected pages are still checked individually; trust is not retained across stages.
+
 Checkpoint1.55.1/compresser0.29.1 reuses root discovery entries during inventory,
 avoiding a second root listing for both libraries and single galleries. The
 short-lived listing remains coordinator-owned; source identity is still checked.
