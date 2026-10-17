@@ -8,7 +8,7 @@ import pytest
 from PIL import Image
 
 from compresser import AnalysisCache, CompressionEngine, CompressionStrategy, scan_directory
-from compresser.cli import main, run_comparison
+from cli_test_support import main, run_comparison
 
 
 def test_lossless_growth_is_measured_but_original_retained(tmp_path, capsys):

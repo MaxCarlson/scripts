@@ -6,8 +6,8 @@ import threading
 from PIL import Image
 import pytest
 
-from compresser.cli import main
-from compresser.preview import parse_preview_quality
+from cli_test_support import main
+from compresser.arguments import parse_quality as parse_preview_quality
 
 
 def test_preview_outputs_original_lossless_and_quality_variants(tmp_path, capsys):
@@ -43,7 +43,7 @@ def test_preview_outputs_original_lossless_and_quality_variants(tmp_path, capsys
 
 def test_preview_validation_does_not_write_to_sources(tmp_path):
     Image.new("RGB", (40, 40)).save(tmp_path / "01.png")
-    for extra in (["-n", "0"], ["-w"], ["-c"], ["-s", "1"], ["-f", "png"]):
+    for extra in (["-n", "0"], ["-w"], ["-s", "1"]):
         with pytest.raises(SystemExit):
             main(["-i", str(tmp_path), "-O", str(tmp_path.parent / "preview"), *extra])
     with pytest.raises(SystemExit):

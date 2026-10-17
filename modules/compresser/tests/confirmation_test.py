@@ -105,7 +105,7 @@ def test_conditional_estimator_simulation_with_pilot_driven_confirmation_size(tm
 
 def test_cli_does_not_advertise_an_unapplied_precision_allocation(tmp_path, capsys):
     from PIL import Image
-    from compresser.cli import main
+    from cli_test_support import main
 
     for n in range(3):
         Image.new("RGB", (40, 40)).save(tmp_path / f"{n}.png")

@@ -4,7 +4,7 @@ import pytest
 from PIL import Image
 
 from compresser import AnalysisCache, CompressionEngine, CompressionStrategy, scan_directory
-from compresser.cli import main
+from cli_test_support import main
 
 
 def test_cache_hits_bypass_memory_scheduler_admission(tmp_path):

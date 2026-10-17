@@ -54,7 +54,7 @@ def test_refresh_lookup_is_not_counted_as_missing_compatible_data(tmp_path):
 
 
 def test_cli_exposes_cache_dates_and_run_lookup_scope(tmp_path, capsys):
-    from compresser.cli import main
+    from cli_test_support import main
 
     source = tmp_path / "01.png"
     Image.new("RGB", (40, 40), "white").save(source)

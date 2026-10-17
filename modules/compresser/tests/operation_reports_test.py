@@ -17,18 +17,15 @@ def test_inventory_creation_and_refresh_save_detailed_report(
     tmp_path, capsys, manga, depth
 ):
     target = make_target(tmp_path)
-    from compresser.cli import main as standalone
+    from cli_test_support import main as standalone
     from mangadl.cli import main as mangadl
 
     main = mangadl if manga else standalone
-    flags = (["compress", "-d"] if manga else ["-i"]) + [
-        str(target),
-        "-I",
-        str(tmp_path / "state"),
-        "-l",
-        depth,
-        "-J",
-    ]
+    flags = (
+        ["compress", "inventory", "-d", str(target)]
+        if manga
+        else ["inventory", "-i", str(target)]
+    ) + ["-I", str(tmp_path / "state"), "-D", depth, "-J"]
     for _ in range(2):
         assert main(flags) == 0
         payload = json.loads(capsys.readouterr().out)
@@ -51,13 +48,16 @@ def test_inventory_creation_and_refresh_save_detailed_report(
 def test_json_operations_save_reports_and_implicit_inventory(
     tmp_path, capsys, operation
 ):
-    from compresser.cli import main
+    from cli_test_support import main
 
     target = make_target(tmp_path)
-    flags = ["-i", str(target), "-J", "-e", "0"]
+    flags = [
+        {"analysis": "analyze", "comparison": "compare", "preview": "preview"}[operation],
+        "-i", str(target), "-J", "-e", "0",
+    ]
     flags += {
         "analysis": ["-f", "png"],
-        "comparison": ["-b", "-Q", "85", "70"],
+        "comparison": ["-f", "png", "webp", "jpeg", "auto", "-m", "both", "-q", "85", "70"],
         "preview": ["-O", "-n", "1", "-f", "webp"],
     }[operation]
     assert main(flags) == 0
@@ -74,7 +74,7 @@ def test_report_failure_returns_error_without_breaking_json(
     tmp_path, capsys, monkeypatch
 ):
     import compresser.markdown_report as publication
-    from compresser.cli import main
+    from cli_test_support import main
 
     target = make_target(tmp_path)
     monkeypatch.setattr(
@@ -82,14 +82,14 @@ def test_report_failure_returns_error_without_breaking_json(
         "publish_markdown_report",
         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
-    assert main(["-i", str(target), "-l", "-J"]) == 2
+    assert main(["inventory", "-i", str(target), "-J"]) == 2
     captured = capsys.readouterr()
     assert "disk full" in json.loads(captured.out)["report_artifacts"]["error"]
     assert "Report could not be saved" in captured.err
 
 
 def test_cancelled_operation_saves_partial_report(tmp_path, capsys, monkeypatch):
-    from compresser.cli import main
+    from cli_test_support import main
     from compresser.engine import CompressionEngine
 
     target = make_target(tmp_path)
@@ -98,7 +98,7 @@ def test_cancelled_operation_saves_partial_report(tmp_path, capsys, monkeypatch)
         "compress_batch",
         lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
     )
-    assert main(["-i", str(target), "-f", "png", "-N"]) == 130
+    assert main(["analyze", "-i", str(target), "-f", "png", "-N"]) == 130
     text = (tmp_path / ".compresser" / "book" / "reports" / "latest.md").read_text(
         encoding="utf-8"
     )
@@ -106,18 +106,18 @@ def test_cancelled_operation_saves_partial_report(tmp_path, capsys, monkeypatch)
 
 
 def test_invalid_arguments_create_no_workspace(tmp_path):
-    from compresser.cli import main
+    from cli_test_support import main
 
     target = make_target(tmp_path)
     with pytest.raises(SystemExit):
-        main(["-i", str(target), "-w", "-s", "1"])
+        main(["apply", "-i", str(target), "-w", "-s", "1"])
     assert not (tmp_path / ".compresser" / "book").exists()
 
 
 def test_applied_write_report_failure_warns_without_undoing_source(
     tmp_path, capsys, monkeypatch
 ):
-    from compresser.cli import main
+    from cli_test_support import main
     import compresser.markdown_report as publication
 
     target = make_target(tmp_path)
@@ -127,7 +127,7 @@ def test_applied_write_report_failure_warns_without_undoing_source(
         "publish_markdown_report",
         lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
-    assert main(["-i", str(target), "-f", "png", "-w", "-J"]) == 2
+    assert main(["apply", "-i", str(target), "-f", "png", "-w", "-J"]) == 2
     captured = capsys.readouterr()
     assert json.loads(captured.out)["applied_count"] == 1
     assert "may already have been modified" in captured.err
@@ -144,14 +144,12 @@ def test_manga_small_sample_trust_cache_scratch_and_report_scope(tmp_path, capsy
         directory.mkdir(parents=True)
         Image.new("RGB", (48, 48), "red").save(directory / "01.png", compress_level=0)
     before = {p: p.read_bytes() for p in target.rglob("*.png")}
-    common = ["compress", "-d", str(target), "-I", str(tmp_path / "state"), "-J"]
-    assert main(common + ["-l"]) == 0
+    common = ["compress", "inventory", "-d", str(target), "-I", str(tmp_path / "state"), "-J"]
+    assert main(common) == 0
     capsys.readouterr()
-    flags = common + [
-        "-U",
-        "trust",
-        "-b",
-        "-Q",
+    flags = ["compress", "compare", "-d", str(target), "-I", str(tmp_path / "state"), "-J",
+        "-U", "snapshot", "-f", "png", "webp", "jpeg", "auto", "-m", "both",
+        "-q",
         "85",
         "70",
         "-s",

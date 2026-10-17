@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
-from decimal import Decimal, InvalidOperation
 import hashlib
 import json
 import os
@@ -14,45 +13,6 @@ from typing import Sequence
 from uuid import uuid4
 
 from .models import ImageMetadata
-
-
-def parse_preview_quality(value: str) -> int:
-    """Accept integer quality 1..100 or exact decimal fractions, e.g.0.9 ->90."""
-    try:
-        number = Decimal(value)
-        if "." in value and 0 < number <= 1:
-            number *= 100
-        if not number.is_finite() or number != number.to_integral_value() or not 1 <= number <= 100:
-            raise ValueError
-        return int(number)
-    except (InvalidOperation, ValueError):
-        raise argparse.ArgumentTypeError("Use quality 1..100 or a fraction such as 0.9 (90)") from None
-
-
-def add_preview_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument(
-        "-O",
-        "--preview-dir",
-        type=Path,
-        nargs="?",
-        const=Path("__workspace_preview__"),
-        help="Generate lossless/lossy preview copies in a new run folder outside the source tree.",
-    )
-    parser.add_argument(
-        "-n",
-        "--preview-count",
-        type=int,
-        help="Number of preview source images (default: 3); not a whole-library estimate.",
-    )
-    parser.add_argument(
-        "-Q",
-        "--qualities",
-        "--preview-qualities",
-        dest="preview_qualities",
-        type=parse_preview_quality,
-        nargs="+",
-        help="Preview/comparison lossy qualities, e.g.90 80 or0.9 0.8. Preview default:90 80; comparison default:-q.",
-    )
 
 
 def validate_preview_arguments(args: argparse.Namespace) -> None:
@@ -83,8 +43,9 @@ def validate_preview_arguments(args: argparse.Namespace) -> None:
         )
     if args.mode != "lossless":
         raise ValueError("Preview includes lossless and fixed lossy qualities; omit -m and use -Q")
-    if args.format not in ("auto", "webp", "jpeg", "avif"):
-        raise ValueError("Preview target must be auto, webp, jpeg or avif; PNG has no lossy-quality setting")
+    formats = getattr(args, "preview_formats", ()) or (args.format,)
+    if any(image_format not in ("auto", "webp", "jpeg", "avif", "png") for image_format in formats):
+        raise ValueError("Preview formats must be auto, webp, jpeg, avif or png")
     source = getattr(args, "input", None) or getattr(args, "destination", None)
     if source is not None:
         root = source.expanduser().resolve()
@@ -142,12 +103,27 @@ def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], r
     if not selected:
         raise ValueError("No eligible images available for preview")
     qualities = list(dict.fromkeys(args.preview_qualities or [90, 80]))
+    formats = tuple(dict.fromkeys(getattr(args, "preview_formats", ()) or (args.format,)))
     base.mkdir(parents=True, exist_ok=True)
     run = base / (datetime.now(timezone.utc).strftime("preview-%Y%m%d-%H%M%S-") + uuid4().hex[:8])
     run.mkdir()
-    variants = [{"name": "lossless", "mode": "lossless", "quality": None, "status": "pending"}] + [
-        {"name": f"lossy-q{q}", "mode": "lossy", "quality": q, "status": "pending"} for q in qualities
-    ]
+    variants = []
+    for image_format in formats:
+        prefix = f"{image_format}-" if len(formats) > 1 else ""
+        variants.append(
+            {"name": f"{prefix}lossless", "format": image_format, "mode": "lossless", "quality": None, "status": "pending"}
+        )
+        if image_format != "png":
+            variants.extend(
+                {
+                    "name": f"{prefix}lossy-q{quality}",
+                    "format": image_format,
+                    "mode": "lossy",
+                    "quality": quality,
+                    "status": "pending",
+                }
+                for quality in qualities
+            )
     report = {
         "schema": 1,
         "status": "running",

@@ -68,7 +68,7 @@ def test_ctrl_c_stops_new_jobs_and_publication(tmp_path, monkeypatch):
 
 
 def test_cli_interrupt_returns_130(tmp_path, monkeypatch, capsys):
-    from compresser.cli import main
+    from cli_test_support import main
 
     Image.new("RGB", (30, 30)).save(tmp_path / "001.png")
 

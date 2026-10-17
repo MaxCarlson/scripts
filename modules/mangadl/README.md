@@ -1,16 +1,27 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (2.4.1)
+## Compression workspace, estimates and saved reports (3.0.0)
+
+Compression now uses explicit operation subcommands. `inventory` refreshes the
+descriptive snapshot, `analyze` measures one recipe, `compare` benchmarks named
+recipes, `preview` creates external copies, `apply` requires `--write`, and `recover`
+requires both `--write` and a fresh `--confirm TOKEN` to mutate. The old flat compression
+flags are removed without aliases. `plan` reads an existing completed inventory and
+saves a bounded reproducible design under `plans/`; it never refreshes inventory,
+opens the trial database, or encodes images. `estimate` execution/resume remains in
+the next implementation checkpoint.
 
 ```powershell
 # Inventory and its Markdown report. -I selects the workspace PARENT.
-mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -l
+mangadl compress inventory -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent'
+# Plan from that completed snapshot without opening trials or source images.
+mangadl compress plan -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -m lossy -f webp -q 85 -s 512 -T 2000 -M 5m
 # Reuse that snapshot/cache; compare lossless and lossy q85/q70 on a sample.
-mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2
+mangadl compress compare -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -f webp avif -m both -q 85 70 -s 200 -t 12 -B 40% -e 2
 # Same analysis with uncached inputs staged on SSD.
-mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2 -X 'E:\Temp\compression'
+mangadl compress compare -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -f webp avif -m both -q 85 70 -s 200 -t 12 -B 40% -e 2 -X 'E:\Temp\compression'
 # Opt-in previews, automatically placed in the workspace.
-mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -O -n 3 -Q 85 70 -t 4
+mangadl compress preview -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -f webp -O -n 3 -q 85 70 -t 4
 ```
 
 Workspace: `B:\Hent\.mangadl\hent1imageperpage\`. Inventory is
@@ -59,13 +70,10 @@ Checkpoint1.58.0/compresser0.32.0 reuses successful verified AUTO candidates for
 later matching explicit-format analysis, respecting retained originals and failures.
 Cached sizes do not replace actual preview encoding or safe write publication.
 
-Checkpoint1.57.0/compresser0.31.0 adds explicit `-s auto` using a matching saved
-gallery metadata profile. It preserves nested chapter ownership and uniform page
-draws within each gallery. Starter coverage is not a guaranteed statistical minimum.
-Use `mangadl compress -d TARGET -l -I EXTERNAL.sqlite3` to refresh the inventory,
-then `mangadl compress -d TARGET -I EXTERNAL.sqlite3 -U trust -s auto -c`.
-These are read-only; `-I` alone never enables sampling. Older trusted selections
-without a matching profile need one refresh. Numeric -s/-P remain balanced for now.
+Historical checkpoint 1.57.0/compresser 0.31.0 introduced `-s auto` from an inventory
+profile. That heuristic and its flat CLI syntax have been removed; current inventory
+profiles are descriptive only, and exact analysis accepts an explicit sample size or
+percentage. Use `plan` for bounded estimation sample selection.
 
 Checkpoint1.56.0/compresser0.30.0 starts compression workers before later cache
 probes finish. Cache-hit bypass and source validation remain in place; no extra
@@ -169,8 +177,8 @@ via `-I` and explicit `-U trust`; normal runs default to validated refresh.
 ## Reuse a completed compression inventory
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -l
-mangadl compress -d 'B:\Hent\hent1imageperpage' -U trust -b -Q 90 80 -P 2 -z 42
+mangadl compress inventory -d 'B:\Hent\hent1imageperpage'
+mangadl compress compare -d 'B:\Hent\hent1imageperpage' -U snapshot -f png webp jpeg auto -m both -q 90 80 -s 2 -z 42
 ```
 
 `-U/--inventory-policy trust` skips library discovery using a completed header
@@ -194,7 +202,7 @@ metadata classifies `source_changed`, `settings_changed`, `runtime_changed`, and
 ## Quick file-extension and size inventory
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp' > 'E:\Temp\file-inventory.json'
+mangadl compress inventory -d 'B:\Hent\hent1imageperpage' -D files -I 'E:\Temp' -J > 'E:\Temp\file-inventory.json'
 ```
 
 No image headers/pixels are opened. JSON reports candidate counts/bytes per gallery
@@ -208,7 +216,7 @@ filters: target a gallery directly or use default header inventory for exact fil
 ## Compare lossless and several lossy qualities
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -B 1024
+mangadl compress compare -d 'B:\Hent\hent1imageperpage' -f png webp jpeg auto -m both -q 90 80 70 -s 2 -z 42 -t 4 -B 1024
 ```
 
 One shared sampled inventory, four lossless strategies, then WebP/JPEG/AUTO at
@@ -227,7 +235,7 @@ written without -O. More qualities add trials, not repeated inventories/lossless
 ## Visual compression previews
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -Q 0.9 0.8 -e 2
+mangadl compress preview -d 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -q 0.9 0.8 -e 2
 ```
 
 Creates an external run folder with up to3 selected page originals, a lossless
@@ -245,7 +253,7 @@ Cached size-only trial records cannot provide output bytes, so previews re-encod
 ## Inventory without compression
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp' > 'E:\Temp\mangadl-inventory.json'
+mangadl compress inventory -d 'B:\Hent\hent1imageperpage' -I 'E:\Temp' -J > 'E:\Temp\mangadl-inventory.json'
 ```
 
 `-l` runs no encoders. The JSON report groups eligible pages by gallery, preserving
@@ -272,7 +280,7 @@ different revisions or changing libraries. This is not yet a statistical advisor
 ## Representative compression comparison
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -b -q 80 -P 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
+mangadl compress compare -d 'B:\Hent\hent1imageperpage' -f png webp jpeg auto -m both -q 80 -s 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
 ```
 
 Read-only: inventory eligible pages once, then compare full lossless and lossy
@@ -752,9 +760,9 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 Image compression/analysis is available through the reusable compresser library:
 
 ```powershell
-mangadl compress -d . -m lossless -s 60 -N
-mangadl compress -d . -c -m lossless -s 60 -N
-mangadl compress -d . -f webp -A pillow-webp -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
+mangadl compress analyze -d . -m lossless -s 60 -N
+mangadl compress compare -d . -f png webp jpeg auto -m lossless -s 60 -N
+mangadl compress analyze -d . -f webp -A pillow-webp -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
 ```
 
 These commands are read-only (except the explicitly separate cache). Reports

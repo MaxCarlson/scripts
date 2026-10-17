@@ -9,7 +9,7 @@ import sys
 import pytest
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 @pytest.mark.parametrize("depth", ["headers", "files"])

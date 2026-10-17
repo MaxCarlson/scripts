@@ -14,7 +14,7 @@ import time
 
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 def _fixtures(base: Path) -> dict[str, Path]:

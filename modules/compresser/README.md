@@ -1,8 +1,31 @@
-# compresser 1.4.1
+# compresser 2.0.0
+
+## Operation-based CLI
+
+Compression commands now name an operation before their options. `compresser inventory`
+refreshes the descriptive snapshot; `analyze` measures one recipe, `compare` benchmarks
+explicit recipes, `preview` writes external copies, `apply` requires `--write`, and
+`recover` requires a fresh confirmation token when writing. `plan` reads an existing
+completed inventory and saves a bounded reproducible design under `plans/`; `estimate`
+execution/resume remains in the next checkpoint. Planning never refreshes inventory,
+opens the trial database, or encodes images.
+The old flat switches (`-l`, `-c`, `-b`, `-P`, `-Q`, `-R`, and `--output-dir`) and
+explicit inventory-file alias are rejected without compatibility aliases.
+
+```powershell
+compresser inventory -i 'B:\Hent\book' -I 'B:\Analysis'
+compresser plan -i 'B:\Hent\book' -I 'B:\Analysis' -f webp -m lossy -q 85 -s 512 -T 2000 -M 5m
+compresser plan -i 'B:\Hent\book' -I 'B:\Analysis' -r plan-0123456789abcdef0123
+compresser analyze -i 'B:\Hent\book' -I 'B:\Analysis' -f webp -m lossy -q 85
+compresser compare -i 'B:\Hent\book' -I 'B:\Analysis' -f webp avif -m both -q 85 70 -s 200
+compresser preview -i 'B:\Hent\book' -I 'B:\Analysis' -f webp -q 85 70 -n 3
+compresser apply -i 'B:\Hent\book' -f webp -m lossless -w
+compresser recover -i 'B:\Hent\book' -w -C TOKEN
+```
 
 ## Workspace and automatic reports
 
-Every CLI inventory create/refresh, comparison, analysis/write and preview saves a
+Every CLI inventory create/refresh, plan, comparison, analysis/write and preview saves a
 Markdown summary automatically. Implicit header inventory refreshes during other
 operations also save an inventory report. No report is created for invalid CLI
 arguments. Cancelled/failed operations save a clearly marked partial summary when
@@ -10,21 +33,22 @@ possible. Recovery journals remain unchanged and are outside this reporting scop
 
 ```powershell
 # Inventory + inventory report; workspace defaults beside the target.
-compresser -i 'B:\Hent\book' -l
+compresser inventory -i 'B:\Hent\book'
 # Choose a parent for the single target-named workspace.
-compresser -i 'B:\Hent\book' -I 'B:\Analysis' -l
+compresser inventory -i 'B:\Hent\book' -I 'B:\Analysis'
 # Small-sample lossless + multiple lossy qualities; existing inventory and cache.
-compresser -i 'B:\Hent\book' -I 'B:\Analysis' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2
+compresser compare -i 'B:\Hent\book' -I 'B:\Analysis' -f webp avif -m both -q 85 70 -s 200 -t 12 -B 40% -e 2
 # Optional external SSD staging for uncached read-only trials.
-compresser -i 'B:\Hent\book' -I 'B:\Analysis' -U trust -b -Q 85 70 -s 200 -X 'E:\Temp\compression' -t 12 -e 2
+compresser compare -i 'B:\Hent\book' -I 'B:\Analysis' -f webp avif -m both -q 85 70 -s 200 -X 'E:\Temp\compression' -t 12 -e 2
 # Preview copies inside the workspace; no source writes.
-compresser -i 'B:\Hent\book' -I 'B:\Analysis' -O -n 3 -Q 85 70 -t 4
+compresser preview -i 'B:\Hent\book' -I 'B:\Analysis' -f webp -O -n 3 -q 85 70 -t 4
 ```
 
 The second example uses `B:\Analysis\.compresser\book\` containing
 `inventory.sqlite3`, `trials.sqlite3`,
 `workspace.json`, `reports\<unique UTC run>-<operation>.md`, `reports\latest.md`,
-plans under `plans`, and preview runs under `previews`. **-I takes the parent**, not the generated
+plan JSON under `plans`, and preview runs under `previews`. Plan creation does not create
+`trials.sqlite3`. **-I takes the parent**, not the generated
 workspace folder. Nonempty unowned/foreign workspaces are refused. No old files
 are automatically moved. For a single input file, its full filename including extension names the workspace.
 
@@ -261,8 +285,8 @@ snapshot, separately from file-only scans and trial caches. Subsequent read-only
 analysis can skip discovery and header scans with `-U/--inventory-policy trust`:
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -l
-compresser -i 'B:\Hent\hent1imageperpage' -U trust -b -Q 90 80 -P 2 -z 42
+compresser inventory -i 'B:\Hent\hent1imageperpage'
+compresser compare -i 'B:\Hent\hent1imageperpage' -U snapshot -f png webp jpeg auto -m both -q 90 80 -s 2 -z 42
 ```
 
 Use the same root and `-I`/`-K` inventory location. The snapshot records scanner policy,
@@ -306,7 +330,7 @@ a forgotten trial was never measured. Durable history grows on disk until explic
 ## Fast extension/size inventory
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp' > 'E:\Temp\file-inventory.json'
+compresser inventory -i 'B:\Hent\hent1imageperpage' -D files -I 'E:\Temp' -J > 'E:\Temp\file-inventory.json'
 ```
 
 `-D/--inventory-depth files` is an inventory-only pass using directory entries and
@@ -327,7 +351,7 @@ depth requires -l and cannot drive sampled compression or source writes.
 ## Multi-quality comparison and recommendations
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -B 1024
+compresser compare -i 'B:\Hent\hent1imageperpage' -f png webp jpeg auto -m both -q 90 80 70 -s 2 -z 42 -t 4 -B 1024
 ```
 
 `-Q/--qualities` also works in comparisons (the existing --preview-qualities spelling
@@ -354,7 +378,7 @@ Comparison writes no image copies; use -O for visual preview output. More qualit
 ## Full-resolution compression previews
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -Q 0.9 0.8 -e 2
+compresser preview -i 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -q 0.9 0.8 -e 2
 ```
 
 `-O/--preview-dir` creates a unique run folder outside the source tree. `-n` chooses
@@ -385,7 +409,7 @@ combined with -w/-c/-b/-s/-P/-l/recovery. Add -J for a JSON-only final report.
 ## Persistent inventory
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp' > 'E:\Temp\image-inventory.json'
+compresser inventory -i 'B:\Hent\hent1imageperpage' -I 'E:\Temp' -J > 'E:\Temp\image-inventory.json'
 ```
 
 `-l/--inventory-only` refreshes inventory without encoding. JSON is emitted with -J
@@ -409,9 +433,9 @@ not yet accepted; see the [reviewed plan](../../docs/plans/20261013-0151_compres
 ## Usage
 
 ```powershell
-compresser -i B:\Hent\hent1imageperpage -s 60 -N
-compresser -i B:\Hent\hent1imageperpage -c -m lossless -s 60 -N
-compresser -i B:\Hent\hent1imageperpage -f webp -A pillow-webp -e 6 -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
+compresser analyze -i B:\Hent\hent1imageperpage -s 60 -N
+compresser compare -i B:\Hent\hent1imageperpage -f png webp jpeg auto -m lossless -s 60 -N
+compresser analyze -i B:\Hent\hent1imageperpage -f webp -A pillow-webp -e 6 -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
 ```
 
 Analysis changes no source images, journals or source manifests. An optional
@@ -461,7 +485,7 @@ using `-q QUALITY`, one inventory and one shared sample: seven strategy trials p
 sampled image, not one encode. No source images are changed.
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -b -q 80 -P 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
+compresser compare -i 'B:\Hent\hent1imageperpage' -f png webp jpeg auto -m both -q 80 -s 2 -z 42 -t 4 -B 1024 -K 'E:\Temp\compression-cache.sqlite3'
 ```
 
 Reports separate measured sample savings from projected whole-target savings.
@@ -552,8 +576,8 @@ Pending journals block new writes; analysis never applies recovery. Preview one
 exact gallery (not the whole library), then apply its current token:
 
 ```powershell
-compresser -i "B:\Hent\hent1imageperpage\GALLERY" -R
-compresser -i "B:\Hent\hent1imageperpage\GALLERY" -R -w -C TOKEN
+compresser recover -i "B:\Hent\hent1imageperpage\GALLERY"
+compresser recover -i "B:\Hent\hent1imageperpage\GALLERY" -w -C TOKEN
 ```
 
 Recovery validates containment, hashes and published-image geometry. Legacy,

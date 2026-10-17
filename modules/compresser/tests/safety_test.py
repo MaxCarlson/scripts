@@ -11,7 +11,7 @@ import pytest
 from PIL import Image
 
 from compresser import CompressionEngine, CompressionStrategy, scan_directory
-from compresser.cli import main
+from cli_test_support import main
 from compresser.codecs.external_cli import ExternalCliCodec
 from compresser.engine import validate_image_file
 from compresser.perceptual import calculate_ssim, find_optimal_quality

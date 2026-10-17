@@ -1,7 +1,7 @@
 import pytest
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 from compresser.engine import CompressionEngine
 from compresser.transactions import library_write_guard
 

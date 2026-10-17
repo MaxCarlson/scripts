@@ -1,10 +1,14 @@
 # Status
 
-2026-10-17 execution update: Tasks 1 and 2 are complete in the isolated worktree
-`.worktrees/compression-inventory-estimation-20261017` on branch
-`compression-inventory-estimation-20261017`. Local main was fast-forwarded to 8cdc7fe
-before this branch was created. User authorized a first-stage commit and push.
-No installs or production operations occurred.
+2026-10-17 execution update: Tasks 1 through 4 are implemented on branch
+`compression-inventory-estimation-20261017`. The original checkout at
+`C:\Users\mcarls\src\scripts` now has this branch checked out and contains the current
+Tasks 3/4 changes. A detached copy remains at
+`.worktrees/compression-inventory-estimation-20261017` as a safety copy. Earlier local
+planning edits are preserved in the named Git stash
+`preserve pre-feature planning edits before feature checkout`. The first stage was
+already pushed; Tasks 3/4 are authorized for commit and push after verification. No
+production operations occurred.
 
 User requested a stronger-model design pass before switching to Luna Medium/High.
 That pass is recorded in [execution-review.md](execution-review.md), including exact
@@ -26,10 +30,23 @@ pass had Black120 passing before the final test-only fixture addition. The READM
 documents target-named workspaces and rejects file-valued `-I`; old SQLite-path examples
 were corrected. The Windows resize/color/manual reader gate remains pending.
 
-Next: commit and push this authorized first stage. Then continue Tasks 3 and 4 on Luna
-High and stop before Task 5 for Sol Medium review, as specified in execution-review.md.
-Task 7 resume behavior, the manual Windows visual acceptance, and final whole-change
-review also remain stronger-model/manual gates.
+Task 3 replaces the public flat CLI with shared operation subcommands, frozen normalized
+options, clean-break argument rejection, MangaDL adapter routing and updated help/docs.
+Task 4 removes profile-driven sampling advice and adds deterministic bounded plans,
+immutable recipe/population identities, atomic plan persistence, mismatch checks, and
+shared text/Markdown/JSON plan reporting. Plan creation reads existing inventory only;
+it does not open source images, codecs or the trial database.
+
+Validation: compresser402 passed/1 skipped; MangaDL full suite passed; scripts-help55
+passed; Ruff and `git diff --check` passed. Focused persistent-plan checks12 passed,
+including atomic interruption, serialized updates, hardlink rejection, recipe/seed/budget/
+runtime mismatch and changed-population refusal. Windows resize/color and reader review
+remain pending.
+
+Next: commit and push Tasks 3/4 as authorized. Then stop before Task 5 and ask the user
+to switch back to Sol Medium for the fixed-design numerical estimator. Task 7 resume/crash
+review, Task 8 sequential certification, the Windows visual gate and final whole-change
+review remain stronger-model/manual gates.
 
 Historical planning status follows; superseded by the update above.
 

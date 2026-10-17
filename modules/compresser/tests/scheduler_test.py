@@ -75,7 +75,7 @@ def test_larger_aggregate_budget_does_not_remove_decode_limit():
 
 
 def test_invalid_cli_budget_rejected_before_scanning(tmp_path):
-    from compresser.cli import main
+    from cli_test_support import main
 
     with pytest.raises(SystemExit) as result:
         main(["-i", str(tmp_path / "does-not-exist"), "-B", "63"])

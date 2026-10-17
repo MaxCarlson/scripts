@@ -62,7 +62,7 @@ def test_pipeline_collects_real_worker_scopes_without_shared_trace_stacks(monkey
 
 
 def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, capsys):
-    from compresser.cli import main
+    from cli_test_support import main
 
     root = tmp_path / "library"
     root.mkdir()
@@ -91,7 +91,7 @@ def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, 
 def test_compression_json_reports_actual_worker_phases_not_old_cache_timings(
     tmp_path, capsys
 ):
-    from compresser.cli import main
+    from cli_test_support import main
 
     source = tmp_path / "01.png"
     Image.new("RGB", (40, 40)).save(source)
@@ -106,7 +106,7 @@ def test_compression_json_reports_actual_worker_phases_not_old_cache_timings(
 
 
 def test_file_only_pipeline_reports_stats_without_header_reads(tmp_path, capsys):
-    from compresser.cli import main
+    from cli_test_support import main
 
     root = tmp_path / "library"
     root.mkdir()

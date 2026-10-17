@@ -5,7 +5,7 @@ from pathlib import Path
 from PIL import Image
 import pytest
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 def test_files_inventory_counts_bytes_without_opening_images(
@@ -54,14 +54,14 @@ def test_files_inventory_counts_bytes_without_opening_images(
 
 def test_files_depth_is_inventory_only(tmp_path):
     from compresser.cli import build_parser
-    from compresser.sampling import validate_analysis_arguments
+    from compresser.arguments import normalize_compression_arguments
 
     source = tmp_path / "01.png"
     source.write_bytes(b"not verified")
-    args = build_parser().parse_args(["-i", str(source), "-w"])
+    args = build_parser().parse_args(["analyze", "-i", str(source)])
     args.inventory_depth = "files"
     with pytest.raises(ValueError):
-        validate_analysis_arguments(args)
+        normalize_compression_arguments(args)
 
 
 def test_stat_failure_reports_unknown_totals_instead_of_zero(

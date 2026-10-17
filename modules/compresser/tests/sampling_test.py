@@ -4,7 +4,7 @@ import json
 import pytest
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 from compresser.models import ImageMetadata, ImageResult
 from compresser.sampling import confirmation_sample, gallery_sample
 
@@ -111,7 +111,7 @@ def test_combined_cli_and_persistent_cache(tmp_path, capsys):
     assert main(args) == 0
     cached = json.loads(capsys.readouterr().out)
     assert any(r["cache_hits"] for r in cached)
-    for extra in (["-s", "1"], ["-w"], ["-P", "nan"]):
+    for extra in (["-w"], ["-P", "nan"]):
         with pytest.raises(SystemExit):
             main(args + extra)
 
@@ -263,7 +263,7 @@ def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_pat
 
 def test_parse_sample_percentages_and_validation():
     import argparse
-    from compresser.sampling import parse_sample, add_analysis_arguments, validate_analysis_arguments
+    from compresser.sampling import parse_sample
 
     assert parse_sample("10%") == "10%"
     assert parse_sample("2.5%") == "2.5%"
@@ -279,35 +279,4 @@ def test_parse_sample_percentages_and_validation():
         parse_sample("0")
     with pytest.raises(argparse.ArgumentTypeError):
         parse_sample("-5")
-
-    # Test parser integration
-    parser = argparse.ArgumentParser()
-    add_analysis_arguments(parser)
-    parser.add_argument("-s", "--sample", type=parse_sample)
-    parser.add_argument("-w", "--write", action="store_true")
-    parser.add_argument("-c", "--compare", action="store_true")
-    parser.add_argument("-f", "--format", default="auto")
-    parser.add_argument("-m", "--mode", default="lossless")
-
-    # Smart percentage conversion
-    args = parser.parse_args(["-s", "15%"])
-    validate_analysis_arguments(args)
-    assert args.sample is None
-    assert args.sample_percent == 15.0
-
-    # Conflict between -s % and -P
-    args_conflict = parser.parse_args(["-s", "15%", "-P", "10"])
-    with pytest.raises(ValueError, match="not both"):
-        validate_analysis_arguments(args_conflict)
-
-    # Inventory-only optional depth
-    args_inv_headers = parser.parse_args(["-l"])
-    validate_analysis_arguments(args_inv_headers)
-    assert args_inv_headers.inventory_only is True
-    assert args_inv_headers.inventory_depth == "headers"
-
-    args_inv_files = parser.parse_args(["-l", "files"])
-    validate_analysis_arguments(args_inv_files)
-    assert args_inv_files.inventory_only is True
-    assert args_inv_files.inventory_depth == "files"
 

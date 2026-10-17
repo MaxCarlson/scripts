@@ -43,7 +43,7 @@ def test_other_process_blocks_download_and_compression_then_releases(tmp_path, m
         monkeypatch.setattr(cli_core, "_run_owned", lambda args: 42)
         with pytest.raises(RuntimeError, match="locked"):
             cli_core._run(args)
-        assert main(["compress", "-d", str(tmp_path), "-w", "-N"]) == 2
+        assert main(["compress", "apply", "-d", str(tmp_path), "-w", "-N"]) == 2
         # Dry-run bypasses ownership, and cannot launch a writer here.
         args.dry_run = True
         assert cli_core._run(args) == 42
@@ -59,13 +59,13 @@ def test_analysis_does_not_create_library_controls(tmp_path, capsys):
     from PIL import Image
 
     Image.new("RGB", (40, 40)).save(tmp_path / "001.png")
-    assert main(["compress", "-d", str(tmp_path), "-J", "-N"]) == 0
+    assert main(["compress", "analyze", "-d", str(tmp_path), "-J", "-N"]) == 0
     assert not (tmp_path / ".mangadl").exists()
 
 
 def test_invalid_write_destination_is_not_created(tmp_path):
     destination = tmp_path / "missing"
-    assert main(["compress", "-d", str(destination), "-w", "-N"]) == 2
+    assert main(["compress", "apply", "-d", str(destination), "-w", "-N"]) == 2
     assert not destination.exists()
 
 

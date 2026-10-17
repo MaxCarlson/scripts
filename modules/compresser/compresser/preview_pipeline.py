@@ -125,18 +125,19 @@ def _source_preview(index, template, meta, folder, run, args, engine, events, ca
                     variant["status"] = "running"
                     emit()
                     try:
+                        target_format = variant.get("format", args.format)
                         strategy = CompressionStrategy(
                             variant["name"],
-                            format=args.format,
+                            format=target_format,
                             mode=variant["mode"],
                             quality=variant["quality"] or 100,
                             method=args.effort,
                             encoder=args.algorithm,
                         )
-                        if args.format == "auto":
+                        if target_format == "auto":
                             fmt, payload, score, encoder = engine._encode_auto(image, meta, strategy)
                         else:
-                            fmt = args.format
+                            fmt = target_format
                             payload, score, encoder = engine._encode_verified(image, fmt, strategy)
                         destination = folder / f"{variant['name']}.{'jpg' if fmt == 'jpeg' else fmt}"
 

@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+2026-10-17 active checkpoint: shared compression CLI is on branch
+`compression-inventory-estimation-20261017`, checked out in the original scripts
+repository. MangaDL delegates to canonical compression operations; full MangaDL tests
+passed. Tasks3/4 are authorized for commit/push after final combined verification.
+Continue with the compresser plan ledger; no production operations occurred.
+
 2026-10-17 compression workspace redesign: shared workspace files now use
 `.mangadl/<target>/inventory.sqlite3` and `trials.sqlite3`; old sibling paths are
 untouched and never migrated. See the compresser active plan and its isolated branch

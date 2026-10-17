@@ -2,7 +2,7 @@ import json
 
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 def test_automatic_cache_use_refresh_and_off(tmp_path, capsys):

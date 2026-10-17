@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 from compresser.recovery import recovery_plan, run_recovery
 from compresser.transactions import JOURNAL_FILENAME, LOCK_FILENAME, directory_lock
 

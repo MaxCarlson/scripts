@@ -20,7 +20,7 @@ def population(root):
     ]
 
 
-def test_variance_proxy_and_starter_are_honest_and_order_invariant(tmp_path):
+def test_descriptive_profile_revision_has_no_sampling_advice_and_is_order_invariant(tmp_path):
     images = population(tmp_path / "library")
     profile = SamplingProfile.from_images(images, tmp_path / "library", policy="test")
     reverse = SamplingProfile.from_images(
@@ -28,15 +28,10 @@ def test_variance_proxy_and_starter_are_honest_and_order_invariant(tmp_path):
     )
     assert profile.identity == reverse.identity
     rows = profile.data["galleries"]
-    assert (
-        rows[str(tmp_path / "library" / "varied")]["proxy_weight"]
-        > rows[str(tmp_path / "library" / "flat")]["proxy_weight"]
-    )
-    assert profile.data["starter_samples"] == 4
-    assert (
-        "not" in profile.data["limitations"]
-        and "accuracy" in profile.data["limitations"]
-    )
+    assert profile.data["profile_revision"] == 2
+    assert "starter_samples" not in profile.data
+    assert all("proxy_weight" not in row for row in rows.values())
+    assert "precision" not in profile.data["limitations"].lower()
 
 
 def test_profile_sampling_exact_monotone_uniform_gallery_prefixes(tmp_path):
@@ -52,12 +47,10 @@ def test_profile_sampling_exact_monotone_uniform_gallery_prefixes(tmp_path):
         assert previous <= chosen
         assert len(chosen) == budget
         assert min(sample.quotas.values()) >= 1
-        assert sample.summary()["allocation_method"] == "metadata_proxy"
+        assert sample.summary()["allocation_method"] == "balanced"
         previous = chosen
-    assert (
-        len(gallery_sample(images, root, sample_size="auto", profile=profile).images)
-        == 4
-    )
+    with pytest.raises(ValueError, match="positive integer"):
+        gallery_sample(images, root, sample_size="auto", profile=profile)
     assert len(gallery_sample(images, root).images) == 20
     sub = gallery_sample(images, root, sample_size=1, profile=profile)
     assert len(sub.images) == 1
@@ -68,17 +61,17 @@ def test_profile_sampling_exact_monotone_uniform_gallery_prefixes(tmp_path):
 def test_stale_or_absent_profile_never_silently_falls_back(tmp_path):
     root = tmp_path / "library"
     images = population(root)
-    with pytest.raises(ValueError, match="refresh"):
+    with pytest.raises(ValueError, match="positive integer"):
         gallery_sample(images, root, sample_size="auto")
     profile = SamplingProfile.from_images(images, root)
     changed = [replace(images[0], size_bytes=500), *images[1:]]
     with pytest.raises(ValueError, match="refresh"):
-        gallery_sample(changed, root, sample_size="auto", profile=profile)
+        gallery_sample(changed, root, sample_size=2, profile=profile)
 
 
 def test_cli_publishes_profile_with_selection_and_reuses_for_auto(tmp_path, capsys):
     from PIL import Image
-    from compresser.cli import main
+    from cli_test_support import main
 
     root = tmp_path / "library"
     root.mkdir()
@@ -86,18 +79,19 @@ def test_cli_publishes_profile_with_selection_and_reuses_for_auto(tmp_path, caps
         Image.new("RGB", (40, 40)).save(root / f"{n}.png")
     database = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
     args = ["-i", str(root), "-I", str(tmp_path / "state"), "-J"]
-    assert main([*args, "-l"]) == 0
+    assert main(["inventory", *args]) == 0
     inventory = json.loads(capsys.readouterr().out)
-    assert inventory["sampling_profile"]["starter_samples"] == 2
+    assert inventory["sampling_profile"]["profile_revision"] == 2
+    assert "starter_samples" not in inventory["sampling_profile"]
     with sqlite3.connect(database) as db:
         assert (
             db.execute("SELECT COUNT(*) FROM inventory_sampling_profiles").fetchone()[0]
             == 1
         )
-    assert main([*args, "-U", "trust", "-s", "auto", "-f", "png", "-e", "0"]) == 0
+    assert main(["analyze", *args, "-U", "snapshot", "-s", "2", "-f", "png", "-e", "0"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["total_images"] == 2
-    assert report["sampling"]["allocation_method"] == "metadata_proxy"
+    assert report["sampling"]["allocation_method"] == "balanced"
 
 
 def test_failed_profile_publication_preserves_selection_and_profile(
@@ -167,13 +161,13 @@ def test_equal_metadata_does_not_certify_outcomes_and_estimates_remain_weighted(
         savings.values()
     )
     assert profile.identity == SamplingProfile.from_images(images, root).identity
-    assert "not compression-outcome" in profile.data["limitations"]
+    assert "does not predict compression outcomes" in profile.data["limitations"]
 
 
 def test_file_profile_never_supplies_verified_format_or_dimension_claims(
     tmp_path, capsys
 ):
-    from compresser.cli import main
+    from cli_test_support import main
 
     root = tmp_path / "library"
     root.mkdir()

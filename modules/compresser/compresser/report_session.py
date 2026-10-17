@@ -22,13 +22,28 @@ class ReportSession:
     def __init__(self, args):
         self.args = args
         self.workspace = args._workspace
+        options = getattr(args, "_compression_options", None)
+        operation = options.operation if options else None
         self.operation = (
+            {
+                "inventory": "inventory",
+                "plan": "plan",
+                "estimate": "estimate",
+                "analyze": "analysis",
+                "compare": "comparison",
+                "preview": "preview",
+                "apply": "write",
+                "recover": "recovery",
+            }.get(operation)
+            if operation
+            else (
             "inventory"
             if args.inventory_only
             else (
                 "preview"
                 if args.preview_dir
                 else "comparison" if args.compare else "write" if args.write else "analysis"
+            )
             )
         )
         self.context = ReportContext(
@@ -52,7 +67,34 @@ class ReportSession:
                     "cache_policy",
                     "scratch_dir",
                 )
-            },
+            }
+            | (
+                {
+                    "operation": options.operation,
+                    "recipes": [
+                        {
+                            "format": recipe.format,
+                            "mode": recipe.mode,
+                            "quality": recipe.quality,
+                            "perceptual_target": recipe.perceptual_target,
+                            "encoder": recipe.encoder,
+                            "effort": recipe.effort,
+                        }
+                        for recipe in options.recipes
+                    ],
+                    "filters": list(options.filters),
+                    "sample": options.sample,
+                    "seed": options.seed,
+                    "plan_id": options.plan_id,
+                    "max_images": options.max_images,
+                    "max_new_encodes": options.max_trials,
+                    "max_runtime_seconds": options.max_time_seconds,
+                    "accuracy_pp": options.accuracy_pp,
+                    "allow_larger": options.allow_larger,
+                }
+                if options
+                else {}
+            ),
             operation=self.operation,
         )
         self.finished = False
@@ -136,6 +178,13 @@ class ReportSession:
     def inventory(self, payload, *, implicit=False):
         report = reporting.build_inventory_report(payload, context=self.context)
         return self.save(report, final=not implicit)
+
+    def plan(self, plan, *, population_count):
+        report = reporting.build_plan_report(plan, population_count=population_count, context=self.context)
+        artifacts = self.save(report)
+        if not self.args.json:
+            self.render(report)
+        return report, artifacts
 
     def finish(self, status):
         if not self.finished:

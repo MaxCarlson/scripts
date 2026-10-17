@@ -480,10 +480,7 @@ def print_inventory_summary(report: dict) -> None:
         print("Detected formats: " + ", ".join(f"{fmt}: {n:,}" for fmt, n in sorted(formats.items())), file=stream)
     profile = report.get("sampling_profile")
     if profile:
-        print(
-            f"Sampling guidance: {profile['method']} revision{profile['profile_revision']}; starter {profile['starter_samples']:,} images.",
-            file=stream,
-        )
+        print(f"Descriptive inventory profile: revision{profile['profile_revision']} ({profile['method']}).", file=stream)
         print(profile["limitations"], file=stream)
     print(
         (

@@ -6,7 +6,8 @@ from PIL import Image
 
 from compresser.inventory import InventoryStore
 from compresser.scanner import scan_directory
-from compresser.cli import main
+from cli_test_support import main
+from compresser.cli import main as _main
 
 
 def test_refresh_reuses_headers_and_removes_deleted_files(tmp_path, monkeypatch):
@@ -75,7 +76,7 @@ def test_inventory_only_reports_extensions_separately(tmp_path, capsys):
     assert scan["unreadable_images"] == 1
     assert main(["-i", str(root), "-l", "-I", str(root / "bad.sqlite3")]) == 2
     with pytest.raises(SystemExit):
-        main(["-i", str(root), "-l", "-b"])
+        _main(["inventory", "-i", str(root), "-b"])
 
 
 def test_inventory_progress_tracks_folders_files_bytes_and_rates(tmp_path):

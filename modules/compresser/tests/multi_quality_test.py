@@ -2,7 +2,7 @@ import json
 
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 def test_multi_quality_comparison_shares_lossless_baseline(tmp_path, capsys):
@@ -24,13 +24,13 @@ def test_multi_quality_comparison_shares_lossless_baseline(tmp_path, capsys):
     assert all(r["cache_hits"] == r["measured_images"] for r in warm if not r["failed_count"])
 
 
-def test_lossy_only_quality_sweep_has_one_png_baseline(tmp_path, capsys):
+def test_lossy_only_quality_sweep_measures_requested_formats(tmp_path, capsys):
     source = tmp_path / "01.png"
     Image.new("RGB", (40, 40), "white").save(source)
-    assert main(["-i", str(source), "-c", "-m", "lossy", "--qualities", "90", "80", "-e", "0", "-J"]) == 0
+    assert main(["compare", "-i", str(source), "-f", "webp", "jpeg", "auto", "-m", "lossy", "-q", "90", "80", "-e", "0", "-J"]) == 0
     rows = json.loads(capsys.readouterr().out)
-    assert len(rows) == 7
-    assert [r["format"] for r in rows].count("png") == 1
+    assert len(rows) == 6
+    assert {r["format"] for r in rows} == {"webp", "jpeg", "auto"}
 
 
 def test_multi_quality_recommendations_separate_max_savings_from_practical_tradeoff(tmp_path, capsys):

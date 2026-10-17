@@ -1,5 +1,13 @@
 # Compresser handoff
 
+2026-10-17 active checkpoint: Tasks 1-4 implemented on
+`compression-inventory-estimation-20261017`, now checked out in the original
+`C:\Users\mcarls\src\scripts` checkout. Tasks 3/4 replace the flat CLI and add
+descriptive inventory profiles plus deterministic persisted plans. Compresser402/1 skip,
+MangaDL full suite, help55, Ruff and diff checks passed. Tasks3/4 are authorized for
+commit/push; stop before Task5 for Sol Medium. Windows visual review and later stronger
+model gates remain open. No production operations occurred.
+
 2026-10-17 execution/model handoff: Tasks1/2 complete in isolated worktree
 `.worktrees/compression-inventory-estimation-20261017`, branch
 `compression-inventory-estimation-20261017`. Workspace paths now use

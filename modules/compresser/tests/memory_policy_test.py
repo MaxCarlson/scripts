@@ -120,7 +120,7 @@ def test_engine_pressure_wait_recovers_or_cancels_without_starting_owners(tmp_pa
 def test_cli_auto_resolves_once_and_reports_policy(tmp_path, monkeypatch, capsys):
     import json
     from PIL import Image
-    from compresser.cli import main
+    from cli_test_support import main
     import compresser.memory_policy as module
 
     Image.new("RGB", (40, 40)).save(tmp_path / "01.png")

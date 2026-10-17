@@ -447,50 +447,12 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
 
     compress = subparsers.add_parser(
         "compress",
-        help="Analyze, compare, and optimize manga/manhwa images using perceptual compression.",
-        description=(
-            "Recursively analyze and compress downloaded manga collections. "
-            "Dry-run analysis is the default; use -w/--write to apply modifications."
-        ),
+        help="Manage compression inventory, estimates, analysis, previews and recovery.",
+        description="Choose an explicit compression operation. Bare `mangadl compress` only prints help.",
     )
-    from compresser.sampling import add_analysis_arguments, parse_sample
-    from compresser.memory_policy import parse_memory_budget
-    add_analysis_arguments(compress)
-    compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
-    compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
-    compress.add_argument("-R", "--recover", action="store_true", help="Preview compression recovery in one exact directory; -w applies.")
-    compress.add_argument("-C", "--confirm-recovery", help="Exact recovery preview token required with -R -w.")
-    compress.add_argument("-A", "--algorithm", choices=("auto", "pillow-jpeg", "pillow-webp", "pillow-png", "pillow-avif", "cli-jpegtran"), default="auto", help="Select a verified encoder (default: auto).")
-    compress.add_argument("-e", "--effort", type=int, choices=range(7), default=6, help="PNG/WebP encoding effort 0..6 (default: 6).")
-    compress.add_argument("-K", "--cache-file", type=_path, help="Optional persistent analysis cache outside the destination tree.")
-    compress.add_argument(
-        "-f",
-        "--format",
-        choices=("auto", "webp", "jpeg", "avif", "png", "keep"),
-        default="auto",
-        help="Target image format (default: auto).",
-    )
-    compress.add_argument(
-        "-m",
-        "--mode",
-        choices=("perceptual", "lossless", "lossy"),
-        default="lossless",
-        help="Compression strategy mode (default: lossless).",
-    )
-    compress.add_argument("-q", "--quality", type=int, default=80, help="Quality setting 1..100 for lossy mode (default: 80).")
-    compress.add_argument("-p", "--perceptual-target", type=float, default=0.990, help="Minimum SSIM quality threshold (default: 0.990).")
-    compress.add_argument("-c", "--compare", action="store_true", help="Benchmark comparison matrix across multiple strategies.")
-    compress.add_argument("-s", "--sample", type=parse_sample, help="Sample N images total, or auto starter coverage from a matching metadata profile.")
-    compress.add_argument("-w", "--write", action="store_true", help="Apply compression and write changes to disk (default: dry-run).")
-    compress.add_argument("-L", "--allow-lossy", action="store_true", help="Explicitly permit lossy compression in write mode.")
-    compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
-    compress.add_argument("-t", "--threads", type=int, default=4, help="Worker thread concurrency (default: 4).")
-    compress.add_argument("-B", "--memory-budget-mib", type=parse_memory_budget, default=512,
-                         help="Aggregate allowance: integer MiB, units (e.g. 16G, 8192M), percentage (e.g. 50%%), or auto (20%% available); default 512.")
-    compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
-    compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
-    compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")
+    from compresser.arguments import build_operation_parsers
 
+    build_operation_parsers(compress, owner="mangadl")
     lock = subparsers.add_parser(
         "lock",
         help="Inspect or unlock read/write locks and active processes for a target folder.",
@@ -2672,6 +2634,11 @@ def main(argv: list[str] | None = None) -> int:
     shape = normalize_command_shape(raw_argv)
     parser = build_parser(raw_argv)
     args = parser.parse_args(list(shape.argv))
+    if args.command == "compress" and not getattr(args, "operation", None):
+        for action in parser._actions:
+            if isinstance(action, argparse._SubParsersAction) and "compress" in action.choices:
+                action.choices["compress"].print_help()
+                return 0
     if args.command == "run":
         args.run_mode = shape.run_mode
         args.advanced_config = shape.advanced_config

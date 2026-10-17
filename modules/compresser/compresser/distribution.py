@@ -1,4 +1,4 @@
-"""Versioned input-metadata sampling heuristics, not measured precision advice."""
+"""Versioned descriptive inventory profiles, separate from estimation designs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-import math
 from pathlib import Path
 from statistics import mean, variance
 
@@ -61,26 +60,19 @@ class SamplingProfile:
                     "min_height": min(image.height for image in members),
                     "max_height": max(image.height for image in members),
                 },
-                "proxy_weight": len(members) * max(math.sqrt(spread), 0.15 * average, 1),
             }
-        count = len(images)
         return cls(
             {
                 "schema": 1,
-                "profile_revision": 1,
-                "sampler_revision": 3,
+                "profile_revision": 2,
                 "root": str(root),
                 "policy": policy,
                 "depth": "headers",
                 "completed": datetime.now(timezone.utc).isoformat(),
                 "population_identity": _digest(population),
                 "galleries": galleries,
-                "starter_samples": min(
-                    count, max(sum(min(2, row["count"]) for row in galleries.values()), math.ceil(0.01 * count))
-                ),
-                "method": "metadata_proxy",
-                "variance_floor": 0.15,
-                "limitations": "Input-size variation is not compression-outcome variation. Starter coverage is not a statistical minimum or an accuracy guarantee; equal-sized pages can compress differently.",
+                "method": "descriptive_metadata",
+                "limitations": "File metadata summarizes the inventory; it does not predict compression outcomes, estimate savings, or recommend sample sizes.",
             }
         )
 
@@ -107,7 +99,6 @@ class SamplingProfile:
         for name, members in sorted(groups.items()):
             sizes = [row["bytes"] for row in members if row["bytes"] is not None]
             known = len(sizes) == len(members)
-            average = mean(sizes) if sizes else 0
             spread = variance(sizes) if len(sizes) > 1 else 0
             galleries[name] = {
                 "count": len(members),
@@ -117,25 +108,18 @@ class SamplingProfile:
                 "tall_webp_images": None,
                 "dimensions": None,
                 "extensions": dict(Counter(row["extension"] for row in members)),
-                "proxy_weight": len(members) * max(math.sqrt(spread), 0.15 * average, 1) if known else None,
             }
-        count = report["candidate_images"]
         return cls(
             {
                 "schema": 1,
-                "profile_revision": 1,
-                "sampler_revision": 3,
+                "profile_revision": 2,
                 "root": report["root"],
                 "policy": "files:" + policy,
                 "depth": "files",
                 "completed": report["completed"],
                 "population_identity": _digest(report["files"]),
                 "galleries": galleries,
-                "starter_samples": min(
-                    count, max(sum(min(2, row["count"]) for row in galleries.values()), math.ceil(0.01 * count))
-                ),
-                "method": "metadata_proxy_unverified",
-                "variance_floor": 0.15,
-                "limitations": "Extension/size candidates only: formats and dimensions unknown. Not a trusted compression selection or an accuracy guarantee; refresh headers before compression sampling.",
+                "method": "descriptive_metadata_unverified",
+                "limitations": "Extension and size candidates only; formats and dimensions are unknown. This profile does not predict compression outcomes, estimate savings, or recommend sample sizes.",
             }
         )

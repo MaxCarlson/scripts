@@ -191,8 +191,12 @@ def discover_gallery_targets(
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
-        if getattr(args, "confirm_recovery", None) and not getattr(args, "recover", False):
-            raise ValueError("--confirm-recovery requires --recover")
+        from compresser.arguments import normalize_compression_arguments
+
+        options = normalize_compression_arguments(args)
+        if options.operation == "estimate":
+            raise ValueError("The estimate workflow is not available yet; use plan to prepare a bounded design")
+        args = options.legacy_namespace(args)
         from compresser.workspace import configure_workspace, initialize_workspace
 
         if not args.recover:
@@ -253,6 +257,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
     resources = ExitStack()
 
     try:
+        if getattr(args, "_compression_options", None) and args._compression_options.operation == "plan":
+            from compresser.sampling_plan import execute_plan_operation
+
+            return execute_plan_operation(args, args._compression_options, owner="mangadl")
         if getattr(args, "inventory_depth", "headers") == "files":
             from compresser.file_inventory import scan_file_inventory
             from compresser.scanner import IMAGE_EXTENSIONS
@@ -483,6 +491,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 compare_both=getattr(args, "compare_both", False),
                 sampling_plan=sampling_plan,
                 qualities=getattr(args, "preview_qualities", None),
+                recipe_specs=args._compression_options.recipes,
                 source_validator=snapshot.validate_selected,
                 scratch_dir=getattr(args, "scratch_dir", None),
             )

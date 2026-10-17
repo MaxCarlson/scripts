@@ -123,6 +123,52 @@ def build_inventory_report(payload: dict, *, context: ReportContext) -> Compress
     )
 
 
+def build_plan_report(plan, *, population_count: int, context: ReportContext) -> CompressionReport:
+    from datetime import datetime, timezone
+
+    completed = datetime.fromisoformat(plan.inventory_completed)
+    age_seconds = max(0.0, (datetime.now(timezone.utc) - completed).total_seconds())
+    overview = [
+        ["Plan ID", plan.plan_id],
+        ["Immutable design identity", plan.design_identity],
+        ["Population ID", plan.population_id],
+        ["Inventory depth", plan.depth],
+        ["Inventory completed UTC", plan.inventory_completed],
+        ["Snapshot age (seconds)", f"{age_seconds:.1f}"],
+        ["Population members", f"{population_count:,}"],
+        ["Selected distinct image cap", f"{plan.budget.max_images:,}"],
+        ["Pilot images per recipe", f"{plan.budget.pilot_images:,}"],
+        ["New encode budget", f"{plan.budget.max_new_encodes:,}"],
+        ["Active runtime budget (seconds)", f"{plan.budget.max_runtime_seconds:g}"],
+        ["Accuracy target", context.settings.get("accuracy_pp") or "None"],
+        ["Uncovered groups", ", ".join(plan.coverage_gaps) or "None"],
+    ]
+    recipes = [
+        [row.identity, row.format, row.mode, row.quality if row.quality is not None else "lossless", row.encoder, row.effort]
+        for row in plan.recipes
+    ]
+    strata = [
+        [row.key, f"{row.member_count:,}", binary_bytes(row.total_bytes), f"{len(row.selected_prefix):,}"]
+        for row in plan.strata
+    ]
+    quotas = [
+        [recipe.recipe_id, f"{recipe.total:,}", "; ".join(f"{key}={count}" for key, count in recipe.per_stratum)]
+        for recipe in plan.recipe_quotas
+    ]
+    return CompressionReport(
+        "ESTIMATION PLAN",
+        "plan",
+        context.status,
+        clean(context.target),
+        tuple(_context_sections(context))
+        + (
+            section("PLAN BUDGET AND SNAPSHOT", ("Metric", "Value"), overview),
+            section("REQUESTED RECIPES", ("Identity", "Format", "Mode", "Quality", "Encoder", "Effort"), recipes),
+            section("POPULATION STRATA", ("Group", "Inventory members", "Bytes", "Selected prefix"), strata),
+            section("PER-RECIPE PILOT QUOTAS", ("Recipe identity", "Pilot images", "Per-group quotas"), quotas),
+        ),
+        ("Plan creation does not encode images or open the trial database.",),
+    )
 def build_preview_report(payload: dict, *, context: ReportContext) -> CompressionReport:
     return CompressionReport(
         "COMPRESSION PREVIEW",

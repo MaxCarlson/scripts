@@ -8,7 +8,7 @@ import sqlite3
 import pytest
 from PIL import Image
 
-from compresser.cli import main
+from cli_test_support import main
 
 
 def test_trusted_analysis_skips_discovery_and_labels_saved_population(
@@ -83,12 +83,20 @@ def test_missing_and_file_only_snapshots_cannot_be_trusted(tmp_path, capsys):
     assert "refresh" in capsys.readouterr().err.lower()
 
 
-@pytest.mark.parametrize("extra", [["-w"], ["-l"], ["-R"], ["-O", "preview"]])
-def test_trust_is_only_for_read_only_analysis(tmp_path, capsys, extra):
+@pytest.mark.parametrize(
+    "operation,extra,match",
+    [
+        ("apply", ["-U", "snapshot", "-w"], "apply requires inventory refresh"),
+        ("inventory", ["-U", "snapshot"], "unrecognized arguments"),
+        ("recover", ["-U", "snapshot"], "unrecognized arguments"),
+        ("preview", ["-U", "snapshot"], "preview requires inventory refresh"),
+    ],
+)
+def test_snapshot_reuse_is_only_available_to_analysis(tmp_path, capsys, operation, extra, match):
     with pytest.raises(SystemExit) as result:
-        main(["-i", str(tmp_path), "-U", "trust", *extra])
+        main([operation, "-i", str(tmp_path), *extra])
     assert result.value.code == 2
-    assert "read-only analysis only" in capsys.readouterr().err
+    assert match in capsys.readouterr().err
 
 
 @pytest.mark.parametrize("damage", ["status", "policy", "escape", "metadata"])
