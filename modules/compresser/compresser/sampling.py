@@ -16,6 +16,9 @@ from .models import ImageMetadata, ImageResult
 
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
+    from .preview import add_preview_arguments
+
+    add_preview_arguments(parser)
     parser.add_argument(
         "-k",
         "--cache-policy",
@@ -53,6 +56,9 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
+    from .preview import validate_preview_arguments
+
+    validate_preview_arguments(args)
     if getattr(args, "inventory_only", False) and (
         args.write
         or args.compare

@@ -158,7 +158,11 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             raise ValueError("Aggregate scheduling budget must be64..4096MiB")
         if cache_path and (cache_path.resolve() == dest or dest in cache_path.resolve().parents):
             raise ValueError("Analysis cache must be outside the destination tree")
-        cache = None if getattr(args, "inventory_only", False) else create_analysis_cache(args, dest)
+        cache = (
+            None
+            if getattr(args, "inventory_only", False) or getattr(args, "preview_dir", None)
+            else create_analysis_cache(args, dest)
+        )
         store = InventoryStore(inventory_path(args, dest))
         discovered = {}
         gallery_paths = discover_gallery_targets(dest, url_filters, cache=cache, inventory=store, collected=discovered)
@@ -232,6 +236,11 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             tall_images_count=tall_count,
             grayscale_count=gray_count,
         )
+
+        if getattr(args, "preview_dir", None):
+            from compresser.preview import run_preview_cli
+
+            return run_preview_cli(args, all_images, dest)
 
         sampling_plan = gallery_sample(
             all_images,

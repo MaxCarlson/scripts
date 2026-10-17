@@ -10,6 +10,41 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, capsys):
+    gallery = tmp_path / "library" / "manga" / "chapter"
+    gallery.mkdir(parents=True)
+    Image.new("RGB", (40, 40), "white").save(gallery / "01.png")
+    Image.new("RGB", (40, 40), "white").save(gallery / "cover.png")
+    before = {p.name: p.read_bytes() for p in gallery.iterdir()}
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(gallery.parents[1]),
+                "-O",
+                str(tmp_path / "previews"),
+                "-n",
+                "2",
+                "-Q",
+                "0.9",
+                "0.8",
+                "-f",
+                "webp",
+                "-e",
+                "0",
+                "-J",
+            ]
+        )
+        == 0
+    )
+    report = json.loads(capsys.readouterr().out)
+    assert report["status"] == "complete"
+    assert len(report["images"]) == 1
+    assert report["images"][0]["source"].endswith("01.png")
+    assert {p.name: p.read_bytes() for p in gallery.iterdir()} == before
+
+
 def test_inventory_only_reuses_nested_headers(tmp_path, capsys, monkeypatch):
     import compresser.scanner as scanner
 

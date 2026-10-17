@@ -1,5 +1,12 @@
 # Compresser handoff
 
+I5a0.15.0/MangaDL1.41.0 preview: -O external unique run,-n base count,-Q integer/
+decimal quality list (defaults90/80), lossless always included. Full-resolution
+verified candidate bytes + checksum original copy; actual sizes even if larger.
+Atomic manifest tracks sources/settings/errors/cancellation. Serial safety-bounded
+execution; summary caches not reused as image bytes. Existing inventory reused.
+103 full compression/18 focused MangaDL tests pass. No production images changed.
+
 I3a0.14.0/MangaDL1.40.0: stable seeded file ranking + monotone gallery quotas;
 larger samples retain earlier selections on unchanged population/seed. Persisted
 sample plans/population identity in separate inventory_samples table. Revision2

@@ -1,5 +1,9 @@
 # mangadl Immediate Project Handoff
 
+I5a1.41.0/compresser0.15.0: shared preview -O/-n/-Q, exact gallery filters and nested
+page/cover exclusions preserved. External candidate copies only, serial; full-res
+manifest/checksums/failure/cancellation evidence.103 compression/18 integration pass.
+
 Current1.40.0/compresser0.14.0 on compression-inventory-and-analysis-20261016.
 Inventory -l/-I, automatic trial -k use/refresh/off, compatible AUTO reuse and stable
 growing sample plans implemented.98 compression/full MangaDL/55 help pass; local

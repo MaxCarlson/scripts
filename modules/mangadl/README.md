@@ -1,5 +1,23 @@
 # mangadl
 
+## Visual compression previews
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -Q 0.9 0.8 -e 2
+```
+
+Creates an external run folder with up to3 selected page originals, a lossless
+candidate, and lossy quality90/80 candidates per page. `-Q 90 80` is equivalent;
+quality is not a fidelity/savings percentage. `-z` controls selection; exact -u
+gallery filters can narrow the input. Nested pages are eligible; covers and partial
+controls remain excluded. Originals are untouched. A manifest records paths,
+settings, sizes, SSIM and errors. Candidates remain available even when larger.
+Open each numbered output folder to compare at full resolution. Each run gets a
+new folder; cancelled partial previews are preserved. This first version is serial,
+not a library-wide estimate or write-mode operation; -t does not affect it. Preview
+uses -Q, not -q, and is incompatible with comparison/sampling/write/recovery flags.
+Cached size-only trial records cannot provide output bytes, so previews re-encode.
+
 ## Inventory without compression
 
 ```powershell

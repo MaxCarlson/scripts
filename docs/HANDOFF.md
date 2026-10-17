@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+Latest visual preview checkpoint: compresser0.15.0/MangaDL1.41.0 on existing
+compression-inventory-and-analysis-20261016. -O external run directory,-n base
+image count,-Q qualities produce originals/lossless/lossy candidates with manifest.
+103 compression/18 focused MangaDL/55 help pass; no production images changed.
+I5a added to existing official continuation; remaining advisor/scratch/reader gates
+are not complete. User asks continued per-feature tested commits/pushes.
+
 Current compression continuation branch: compression-inventory-and-analysis-20261016.
 User requested commit existing work before branching, then test/commit/push each
 major feature. I1a83b6735, I2a7e0e8a9, I2bd097138, I2c1f51b92 published on feature

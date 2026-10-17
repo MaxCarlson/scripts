@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -297,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             or args.input.resolve() in args.cache_file.resolve().parents
         ):
             raise ValueError("Analysis cache must be outside the input tree")
-        cache = None if args.inventory_only else create_analysis_cache(args, args.input)
+        cache = None if args.inventory_only or args.preview_dir else create_analysis_cache(args, args.input)
         store = InventoryStore(inventory_path(args, args.input))
         summary, images = scan_directory(args.input, recursive=True, cache=cache, inventory=store)
         if args.inventory_only:
@@ -311,6 +311,11 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print(f"No image files found in target: {args.input}", file=sys.stderr)
             return 1
+
+        if args.preview_dir:
+            from .preview import run_preview_cli
+
+            return run_preview_cli(args, images, args.input)
 
         # Handle sample selection
         sampling_plan = gallery_sample(

@@ -105,6 +105,24 @@ and regressions. Live benchmarks require explicit scoped approval.
 
 ## I5 - richer comparisons and MangaDL acceptance
 
+### I5a - user-requested visual previews (added2026-10-16)
+
+Small seeded base-image selection, external unique run folder, original copies and
+full-resolution lossless/multiple fixed-quality lossy candidates. Accept integer
+and decimal quality notation, documenting that quality is not fidelity percentage.
+Keep larger candidates for inspection. Manifest source paths/checksums, settings,
+actual sizes, similarity and failures; no source writes or summary-cache publication.
+Preserve partial output/cancelled status. Initially serial with existing memory,
+pixel, source-change, decoded-sample and metadata verification. MangaDL exclusions
+and exact gallery filters remain authoritative. Multi-format UI/contact sheets and
+parallel preview/scratch are follow-ups, not acceptance claims for the first slice.
+
+Acceptance: full-res files decode, lossless pixels match, original bytes unchanged,
+external output enforced, repeat runs do not overwrite, cancellation/failures explicit,
+MangaDL nested pages/cover exclusions tested, JSON stdout clean.
+
+### Remaining I5 work
+
 - Multiple quality levels in one run; share lossless baseline/candidates/inventory.
 - Show measured savings, projected totals/percent, uncertainty, failures, coverage,
   runtime, cache and scratch overhead. Recommend best savings separately from a

@@ -1,4 +1,35 @@
-# compresser 0.14.0
+# compresser 0.15.0
+
+## Full-resolution compression previews
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -O 'E:\Temp\compression-previews' -n 3 -f webp -Q 0.9 0.8 -e 2
+```
+
+`-O/--preview-dir` creates a unique run folder outside the source tree. `-n` chooses
+how many base images (default3, capped by availability); `-z` controls reproducible
+selection. This small preview subset is not a representative savings estimate and
+does not require one image per gallery. Each numbered image directory contains a
+checksum-verified original copy, lossless candidate and lossy candidates for `-Q`
+(default90/80). Integer90 and decimal0.9 both mean encoder quality90, not90% fidelity
+or10% storage savings. Previews use -Q, not the analysis-mode -q setting.
+
+Targets are -f auto/webp/jpeg/avif; AUTO can select a different format per variant.
+Lossless JPEG needs jpegtran and lossless AVIF is unsupported: failures are explicit
+in manifest.json. PNG has no lossy quality setting and is not an explicit preview
+target. Full-resolution candidate files are retained even if larger than originals;
+manifest sizes/savings describe actual candidates, not normal retained-original rules.
+The manifest maps source paths/settings/encoders/SSIM, sizes and failures. SSIM is
+not a visual-quality guarantee. Open numbered folders in an image viewer to compare.
+
+No source files, page names, manifests or archives are changed. Repeated runs create
+new folders and do not overwrite previous previews. Cancellation preserves partial
+output and records cancelled status. Existing safety/metadata checks apply, source
+changes are detected, and oversized/unsupported inputs are reported. Preview is
+serial (-t is not used), with one source/candidate at a time; native encoder work can
+delay Ctrl+C until it returns. Summary-only trial caches cannot supply image bytes,
+so variants are regenerated; inventory headers are still reused. Preview cannot be
+combined with -w/-c/-b/-s/-P/-l/recovery. Add -J for a JSON-only final report.
 
 ## Persistent inventory
 

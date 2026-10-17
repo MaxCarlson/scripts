@@ -1,5 +1,15 @@
 # Status
 
+I5a compresser0.15.0/MangaDL1.41.0: new user-requested full-resolution previews
+(-O external output,-n base count,-Q quality list; lossless plus default90/80).
+Checksum-verified original copies and verified encoded candidates, unique run
+folders/atomic manifest, explicit larger-output sizes, failures and cancellation.
+Serial bounded memory/pixels; no source changes or summary-cache image publication.
+103 full compression/18 integration/55 help tests pass; lint/format/whitespace pass.
+This is a visual subset, not statistical coverage/advisor. Documented in READMEs
+and approved continuation. Existing broader plan remains open (advisor/snapshots/
+scratch/multi-quality analysis/reader acceptance). No production library run.
+
 I3a compresser0.14.0/MangaDL1.40.0: seeded hash priorities and monotone divisor quota
 extension keep earlier selections when -s/-P grows on unchanged inventory/seed.
 Sampling revision2 differs from revision1. Selection plans in inventory_samples
