@@ -1,5 +1,11 @@
 # Compresser handoff
 
+I2c:0.13.0/MangaDL1.39.0 automatic per-library trial cache, -k use/refresh/off,
+-K override. Refresh ignores old disk trials but reuses this run's work; off keeps
+memory only. Inventory-only opens no trial DB. Text/JSON report path/policy; CLI
+finally closes handles.96 compression/17 integration/55 help tests pass. Next I3a
+stable expanding samples. Miss-cause detail, cache timestamps/advisor still open.
+
 I2b:0.12.0 effective candidate keys/legacy fallback, read-only AUTO candidate reuse.
 Complete compatible candidates required; unavailable lossless JPEG optimizer excluded.
 Missing candidates fall back; summary caches never publish image bytes.95 compression

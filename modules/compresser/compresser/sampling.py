@@ -16,6 +16,13 @@ from .models import ImageMetadata, ImageResult
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-k",
+        "--cache-policy",
+        choices=("use", "refresh", "off"),
+        default="use",
+        help="Trial cache policy: validated reuse (default), fresh trials, or no disk cache.",
+    )
+    parser.add_argument(
         "-I",
         "--inventory-file",
         type=Path,

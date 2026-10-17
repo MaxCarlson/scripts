@@ -66,13 +66,14 @@ def _strategy_key(strategy: CompressionStrategy, *, legacy: bool = False) -> str
 class AnalysisCache:
     """Thread-safe in-memory cache for repeated compression benchmarks."""
 
-    def __init__(self, max_entries: int = 20_000, *, path: Path | None = None) -> None:
+    def __init__(self, max_entries: int = 20_000, *, path: Path | None = None, reuse_persistent: bool = True) -> None:
         self.max_entries = max_entries
         if max_entries < 1:
             raise ValueError("Cache capacity must be positive")
         self._entries: dict[str, ImageResult] = {}
         self._metadata: dict[str, ImageMetadata] = {}
         self._lock = threading.RLock()
+        self.reuse_persistent = reuse_persistent
         self._connection: sqlite3.Connection | None = None
         self._closed = False
         self._writes_since_prune = 0
@@ -135,7 +136,7 @@ class AnalysisCache:
         key = self._make_key(path, strategy)
         with self._lock:
             cached = self._entries.get(key)
-            if cached is None and self.path:
+            if cached is None and self.path and self.reuse_persistent:
                 data = self._load("trial", key)
                 if data is None:
                     # Previous versions included display labels and irrelevant
@@ -202,7 +203,7 @@ class AnalysisCache:
         key = self._metadata_key(path, check_grayscale)
         with self._lock:
             result = self._metadata.get(key)
-            if result is None:
+            if result is None and self.reuse_persistent:
                 data = self._load("metadata", key)
                 if data:
                     try:
@@ -234,3 +235,22 @@ class AnalysisCache:
                 connection = self._database()
                 connection.execute("DELETE FROM entries")
                 connection.commit()
+
+
+def create_analysis_cache(args, root: Path) -> AnalysisCache:
+    """Choose per-library persistence; refreshed trials remain reusable in-run."""
+    from .inventory import inventory_path
+
+    policy = getattr(args, "cache_policy", "use")
+    if policy == "off":
+        return AnalysisCache()
+    explicit = getattr(args, "cache_file", None)
+    path = (
+        Path(explicit).expanduser().resolve() if explicit else inventory_path(args, root).with_suffix(".trials.sqlite3")
+    )
+    target = root.resolve()
+    if path == target or (target.is_dir() and target in path.parents):
+        raise ValueError("Analysis cache must be outside the input tree")
+    if path == inventory_path(args, root):
+        raise ValueError("Inventory and trial cache must use different files")
+    return AnalysisCache(path=path, reuse_persistent=policy == "use")

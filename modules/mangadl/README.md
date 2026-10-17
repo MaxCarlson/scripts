@@ -14,6 +14,12 @@ inventory too; use the same `-I` path to reuse this one. Without `-I`, explicit 
 gets a companion inventory file; otherwise a per-library user-cache path is selected.
 Membership is checked each run and unchanged headers reused; sources are not changed.
 
+Compression trials also persist automatically beside inventory. Use `-k use`
+(default), `-k refresh` (ignore older trials, retain new ones), or `-k off` (in-run
+memory only). `-K` still overrides the trial-cache file. Policies never delete
+unrelated data or skip source/settings fingerprint checks. Inventory-only does not
+open a trial cache, and disabling trials does not disable inventory persistence.
+
 ## Representative compression comparison
 
 ```powershell

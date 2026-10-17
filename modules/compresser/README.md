@@ -1,4 +1,4 @@
-# compresser 0.12.0
+# compresser 0.13.0
 
 ## Persistent inventory
 
@@ -97,8 +97,15 @@ avoiding repeated encodes; incomplete candidate sets fall back to normal encodin
 An unavailable lossless JPEG optimizer is excluded from that candidate set. Cached
 size summaries are never used as replacement image data in write mode.
 Library callers can use `AnalysisCache` as a context manager or call `close()`.
-Without `-K`, reuse is in-memory
-for this invocation only. Sampling never applies writes.
+CLI trial caching is now automatic per library, beside the inventory. `-K` overrides
+the location. `-k/--cache-policy use` (default) validates and reuses persisted trials;
+`refresh` bypasses older trial entries but reuses new in-run work and persists it;
+`off` disables trial disk caching but retains in-run memory reuse. Inventory remains
+independently persistent. No interactive prompt is required for fingerprint-validated
+reuse; trusting stale population snapshots is not implemented. CLI paths/policies
+appear in text and JSON reports. Inventory-only runs do not open a trial cache.
+Direct `AnalysisCache()` API callers remain memory-only unless passed a path.
+Sampling never applies writes.
 Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
 The dashboard reports requested/effective/active workers and the CPU/memory/requested
 limiter, with up to two active image names, dimensions, conservative memory estimate

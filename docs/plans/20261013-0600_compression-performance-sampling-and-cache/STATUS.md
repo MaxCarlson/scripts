@@ -1,5 +1,14 @@
 # Status
 
+I2c compresser0.13.0/MangaDL1.39.0: automatic per-library trial persistence beside
+inventory, -k/--cache-policy use/refresh/off, -K override preserved. Refresh ignores
+prior disk entries but permits new in-run reuse; off is memory-only for trials and
+does not disable inventory. Inventory-only opens no trial cache. Text/JSON report
+path/policy; CLI finally closes cache after workers stop.96 compression/17 integration/
+55 help tests pass; ruff/whitespace checks pass. No stale snapshots implicitly trusted.
+I2b d097138 pushed; next publish I2c, then stable expanding samples (I3a). Detailed
+miss reasons/timestamps, pilot advisor and remaining I1b/I4/I5 acceptance stay open.
+
 I2b compresser0.12.0: effective trial keys ignore display labels and unused valid
 lossless quality, with exact legacy-key fallback. Analysis AUTO composes from a
 complete measured candidate set and excludes unavailable lossless JPEG optimizer;

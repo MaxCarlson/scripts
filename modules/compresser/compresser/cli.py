@@ -13,7 +13,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .engine import CompressionEngine
-from .cache import AnalysisCache
+from .cache import create_analysis_cache
 from .inventory import InventoryStore, inventory_path, inventory_report
 from .models import (
     ComparisonRow,
@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.12.0"
+__version__ = "0.13.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -286,6 +286,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.write and not args.recover and args.mode != "lossless" and not args.allow_lossy:
         parser.error("Lossy/perceptual writes require --allow-lossy")
 
+    cache = None
     try:
         if args.recover:
             from .recovery import run_recovery
@@ -296,7 +297,7 @@ def main(argv: list[str] | None = None) -> int:
             or args.input.resolve() in args.cache_file.resolve().parents
         ):
             raise ValueError("Analysis cache must be outside the input tree")
-        cache = AnalysisCache(path=args.cache_file)
+        cache = None if args.inventory_only else create_analysis_cache(args, args.input)
         store = InventoryStore(inventory_path(args, args.input))
         summary, images = scan_directory(args.input, recursive=True, cache=cache, inventory=store)
         if args.inventory_only:
@@ -318,6 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         eval_images = sampling_plan.images
         if not args.json:
             print(f"Inventory: {store.path}")
+            print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")
             print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
@@ -357,6 +359,7 @@ def main(argv: list[str] | None = None) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "cache": {"file": str(cache.path) if cache.path else None, "policy": args.cache_policy},
                     }
                     for r in comp_rows
                 ]
@@ -428,6 +431,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
+                "cache": {"file": str(cache.path) if cache.path else None, "policy": args.cache_policy},
             }
             print(json.dumps(out, indent=2))
         else:
@@ -452,6 +456,9 @@ def main(argv: list[str] | None = None) -> int:
             traceback.print_exc()
         print(f"Error: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if cache is not None:
+            cache.close()
 
 
 if __name__ == "__main__":

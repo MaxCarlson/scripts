@@ -23,6 +23,7 @@ from compresser import (
 from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
+from compresser.cache import create_analysis_cache
 from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
@@ -130,6 +131,7 @@ def run_cli(args: argparse.Namespace) -> int:
 def _run_cli_owned(args: argparse.Namespace) -> int:
     dest = args.destination.expanduser().resolve()
     url_filters = getattr(args, "url", None) or ()
+    cache = None
 
     try:
         validate_analysis_arguments(args)
@@ -156,7 +158,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             raise ValueError("Aggregate scheduling budget must be64..4096MiB")
         if cache_path and (cache_path.resolve() == dest or dest in cache_path.resolve().parents):
             raise ValueError("Analysis cache must be outside the destination tree")
-        cache = AnalysisCache(path=cache_path)
+        cache = None if getattr(args, "inventory_only", False) else create_analysis_cache(args, dest)
         store = InventoryStore(inventory_path(args, dest))
         discovered = {}
         gallery_paths = discover_gallery_targets(dest, url_filters, cache=cache, inventory=store, collected=discovered)
@@ -242,6 +244,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         eval_images = sampling_plan.images
         if not args.json:
             print(f"Inventory: {store.path}")
+            print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")
             print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 
@@ -282,6 +285,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "cache": {
+                            "file": str(cache.path) if cache.path else None,
+                            "policy": getattr(args, "cache_policy", "use"),
+                        },
                     }
                     for r in comp_rows
                 ]
@@ -353,6 +360,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
+                "cache": {
+                    "file": str(cache.path) if cache.path else None,
+                    "policy": getattr(args, "cache_policy", "use"),
+                },
             }
             print(json.dumps(out, indent=2))
         else:
@@ -377,3 +388,6 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             traceback.print_exc()
         print(f"Error in mangadl compress: {exc}", file=sys.stderr)
         return 2
+    finally:
+        if cache is not None:
+            cache.close()

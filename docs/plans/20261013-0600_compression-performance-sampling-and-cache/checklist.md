@@ -8,7 +8,8 @@
 - [ ] I2 bounded persistent cache improvements and reusable encoder candidates.
   - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
   - [x] I2b effective candidate identity and AUTO analysis reuse;95 compression/17 integration pass.
-  - [ ] Automatic trial-cache policy and invalidation diagnostics.
+  - [x] I2c automatic per-library use/refresh/off trial-cache policies and path/policy reporting;96 compression/17 integration/55 help pass.
+  - [ ] Detailed invalidation-cause diagnostics and historical cache timestamps.
 - [ ] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
 - [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
