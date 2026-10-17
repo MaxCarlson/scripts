@@ -122,7 +122,17 @@ class ScratchWorkspace:
                 json.dump(payload, file, indent=2)
                 file.flush()
                 os.fsync(file.fileno())
-            os.replace(temporary, self.manifest_path)
+            for attempt in range(4):
+                check_cancelled()
+                try:
+                    os.replace(temporary, self.manifest_path)
+                    break
+                except PermissionError as exc:
+                    # Windows indexers/virus scanners can briefly hold a manifest.
+                    # Never retry arbitrary I/O failures or wait indefinitely.
+                    if getattr(exc, "winerror", None) not in (5, 32, 33) or attempt == 3:
+                        raise
+                    time.sleep(0.05)
         finally:
             if temporary.exists():
                 temporary.unlink()

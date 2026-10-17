@@ -11,6 +11,33 @@ from compresser.models import ImageMetadata
 from compresser.scratch import ScratchWorkspace, SCRATCH_MANIFEST
 
 
+@pytest.mark.parametrize("permanent", [False, True])
+def test_manifest_replace_retries_only_bounded_windows_sharing_errors(tmp_path, monkeypatch, permanent):
+    import compresser.scratch as scratch
+
+    meta = _source(tmp_path)
+    original = scratch.os.replace
+    calls = []
+
+    def replace(source, target):
+        calls.append(source)
+        if permanent or len(calls) == 1:
+            error = PermissionError("fixture Windows sharing violation")
+            error.winerror = 32
+            raise error
+        return original(source, target)
+
+    monkeypatch.setattr(scratch.os, "replace", replace)
+    if permanent:
+        with pytest.raises(PermissionError, match="sharing"):
+            ScratchWorkspace(tmp_path / "scratch", meta.path.parent)
+        assert len(calls) == 4
+        assert not list((tmp_path / "scratch").iterdir())
+    else:
+        with ScratchWorkspace(tmp_path / "scratch", meta.path.parent):
+            assert len(calls) == 2
+
+
 def _source(tmp_path):
     source = tmp_path / "library" / "01.png"
     source.parent.mkdir()
