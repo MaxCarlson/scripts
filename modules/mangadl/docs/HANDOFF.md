@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Review Task1 1.51.1/compresser0.25.1: correct conditional confirmation API; unsupported
+two-stage interval null, CLI pilot advice planning-only until quota plans are applied.
+Remaining review repairs tracked in repo02_review-repairs.md; previous I1-I5 complete
+claims reopened. Do not run concurrent writes or broad scratch analysis until repaired.
+
 1.47.0/compresser0.21.0/cross_platform0.7.0: reusable per-folder read/write locks
 with PID+create_time matching in `cross_platform.locks`, `mangadl lock -s|-u -d TARGET [-j]`
 status/unlock CLI, and live in-place `InventoryProgress` (`termdash.live.LiveBlock`)

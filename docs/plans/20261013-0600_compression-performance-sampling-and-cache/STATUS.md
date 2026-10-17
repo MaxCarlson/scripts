@@ -1,5 +1,21 @@
 # Status
 
+Repair Task1 compresser0.25.1/MangaDL1.51.1: conditional confirmation requires measured
+pilot results, adds known pilot totals plus residual estimate/FPC, preserves census
+singletons and refuses unreliable pilot data. Deprecated two-stage interval null;
+unsupported adaptive pooling claim removed. Misleading CLI -s precision tip replaced
+by planning-only caveat pending Task6. RED9 initial cases, RED CLI advice fixture,
+then focused conditional/variance/adaptive-size simulation and full158 compression
+passed (1 symlink skip). Remaining repairs not complete. No production operations.
+Full308 MangaDL/55 help pass; black/ruff/whitespace checks pass.
+
+2026-10-17 review REOPENS I2/I3/I4/I5 acceptance. Fresh145 compression/308 MangaDL/
+55 help/6 lock tests passed (1 symlink skip), but counterexamples exposed invalid
+confirmation inference, unsupported adaptive interval claims, unused advisor quotas,
+raw-sample recommendation ranking, nonexcluding reader/writer locks, unbounded scratch
+reads/failure orphans and unbounded cache diagnostic memory. Corrective execution:
+[02_review-repairs.md](02_review-repairs.md). No production images changed.
+
 I5c compresser0.25.0/MangaDL1.51.0 (Continuation Plan I1-I5 Complete):
 `recommend_comparison_strategies()` in `compresser.ui` and `print_comparison_matrix()`
 (plus JSON `recommendations` in `compresser` and `mangadl compress`) separate

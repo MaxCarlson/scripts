@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+2026-10-17 REVIEW REPAIRS supersede prior completion claims. Active plan:
+docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md.
+Task1 corrects conditional confirmation totals/FPC and removes unsupported adaptive
+interval/CLI advice. Next lock exclusion, bounded scratch/cache, weighted recommendations,
+then persisted CLI confirmation plans. Same feature branch, user authorizes per-checkpoint
+tests/commits/pushes. No production images changed.
+
 I5c compresser0.25.0/MangaDL1.51.0 completes the I1-I5 compression continuation plan on
 branch `compression-inventory-and-analysis-20261016`: comparison output and JSON
 `recommendations` separate `maximum_savings`, `best_lossless` (pixel-exact), and

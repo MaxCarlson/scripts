@@ -1,5 +1,12 @@
 # mangadl
 
+Review repairs in progress (1.51.1/compresser0.25.1): conditional confirmation
+estimates retain measured pilot contributions and use remaining-population finite
+correction. The unsupported two-stage interval field is now null, and CLI advisor
+output is explicitly planning-only (ordinary -s does not apply recommended quotas).
+Avoid concurrent writes and large SSD scratch runs until their repair checkpoints.
+See the [repair plan](../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
+
 ## Folder lock inspection and recovery (`mangadl lock`)
 
 ```powershell
@@ -30,8 +37,8 @@ images into an owned manifest-tracked run directory while preserving original pa
 paths in results and caches.
 Sampled `mangadl compress` runs report coverage gaps (unsampled rare formats,
 unsampled top-decile large pages, unsampled >16,383px tall WebP pages, and
-singleton non-census galleries), two-stage Bonferroni-adjusted 95% intervals
-(`two_stage_adjusted_95_percent_interval_bytes`), and a pilot-informed sample-size
+singleton non-census galleries), approximate fixed-design intervals (not adaptive
+pooling guarantees), and a pilot-informed sample-size
 advisor (`pilot_advisor`) that uses observed per-gallery variance and encoding
 latency to recommend total and additional confirmation samples.
 

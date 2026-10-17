@@ -1,5 +1,13 @@
 # Compresser handoff
 
+Review Task1 compresser0.25.1/MangaDL1.51.1: confirmation_sample requires measured
+pilot_results, stores known pilot observations, and estimate adds pilot totals plus
+residual-population estimate/FPC. Missing/failed/duplicate/mismatched pilot refused;
+unknown residuals remain unknown. Deprecated two-stage interval null, unsupported
+pooling advice removed; ordinary -s no longer advertised as implementing advice.
+158 compression passed/1 symlink skip. Remaining repairs in repo plan02_review-repairs:
+locks, scratch, diagnostic bounds, recommendations and exact CLI plan consumption.
+
 Inventory footer0.20.0/MangaDL1.46.0: shared emitter keeps redirected JSON while
 showing stats on stderr (terminal gets summary only); -J suppresses footer. Header/
 file modes report eligible gallery counts, bytes, extension shares and error/scan

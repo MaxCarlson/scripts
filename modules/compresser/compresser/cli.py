@@ -34,7 +34,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.25.0"
+__version__ = "0.25.1"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -324,11 +324,7 @@ def main(argv: list[str] | None = None) -> int:
         read_guard = (
             folder_read_lock(
                 args.input,
-                operation=(
-                    f"compresser -l -D {args.inventory_depth}"
-                    if args.inventory_only
-                    else "compresser"
-                ),
+                operation=(f"compresser -l -D {args.inventory_depth}" if args.inventory_only else "compresser"),
             )
             if not args.write and args.input.expanduser().exists()
             else nullcontext()
@@ -529,10 +525,11 @@ def main(argv: list[str] | None = None) -> int:
                 advisor = estimate.get("pilot_advisor")
                 if advisor and not advisor["precision_met"]:
                     print(
-                        f"Pilot advisor: recommend -s {advisor['recommended_total_samples']} "
+                        f"Pilot advisor (planning only): {advisor['recommended_total_samples']} total trials "
                         f"(+{advisor['recommended_additional_confirmation_samples']} samples, "
                         f"~{advisor['estimated_additional_runtime_seconds']:.1f}s) for "
-                        f"+/-{advisor['target_margin_percent']:g}% target margin."
+                        f"+/-{advisor['target_margin_percent']:g}% target margin under its proposed quotas. "
+                        "Ordinary -s does not apply those quotas; this is not a precision guarantee."
                     )
                 print(estimate["uncertainty"])
             print_cache_diagnostics(cache.diagnostics())

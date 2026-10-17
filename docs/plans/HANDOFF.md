@@ -2,6 +2,11 @@
 
 ## Current branch
 
+Review repairs2026-10-17 reopen prior I1-I5 completion; execute
+[02_review-repairs](20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
+Task1 confirmation statistics first, then real locks, bounded scratch/cache, weighted
+recommendations and CLI plans. User authorizes tested feature-branch checkpoints.
+
 Readable inventory footer checkpoint0.20.0/1.46.0 follows pushed1689ffb.134
 compression/305 MangaDL/55 help pass,1 Windows privilege skip. User requested
 one live read-only header index and final stats pasted into chat; see active STATUS.

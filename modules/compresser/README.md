@@ -1,4 +1,11 @@
-# compresser 0.25.0
+# compresser 0.25.1
+
+## Review repair status
+
+The 2026-10-17 review reopened statistical/locking/scratch/cache/recommendation
+acceptance; see the [repair plan](../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
+Until subsequent checkpoints fix them, avoid concurrent library writes and large
+scratch runs; recommendation labels and advisor precision claims remain provisional.
 
 ## Pre-admission cache bypass and opt-in SSD scratch staging (`-X/--scratch-dir`)
 
@@ -22,11 +29,21 @@ exceeding WebP's 16,383px dimension limit, and `singleton_non_census_galleries`)
 On sampled runs, `GallerySample.advise_sample_size()` uses observed within-gallery
 savings variance and per-image runtime (`elapsed_s`) to recommend total and
 additional confirmation sample sizes and Neyman-weighted gallery quotas for a target
-margin or runtime budget. Because stopping early based on a pilot interval can
-understate uncertainty, `estimate()` reports both `approximate_95_percent_interval_bytes`
-and `two_stage_adjusted_95_percent_interval_bytes` (Bonferroni two-look adjustment),
-and `confirmation_sample()` draws a strictly disjoint confirmation sample from the
-remaining seeded permutation in each gallery.
+margin or runtime budget. These are planning heuristics: ordinary `-s N` does not
+apply the advised per-gallery quotas. Exact CLI plan consumption is being repaired.
+
+`confirmation_sample(pilot, root, pilot_results=measured_pilot, ...)` now requires
+successful one-to-one observations for the pilot. Its estimator adds the known
+pilot total to an estimate over only the remaining population, with the residual
+finite-population correction. Pilot-censused galleries stay known. Fix confirmation
+quotas before looking at its outcomes; do not arbitrarily pool outcome-adaptive
+top-ups using a fixed-design interval. Caller must use compatible settings/source
+population for pilot and confirmation; persisted CLI provenance validation is pending.
+
+`approximate_95_percent_interval_bytes` remains an approximation, not a guarantee,
+especially for small/skewed samples. The unsupported
+`two_stage_adjusted_95_percent_interval_bytes` field is retained as null for JSON
+compatibility; a larger multiplier alone does not validate adaptive inference.
 
 ## Live inventory scan progress and statistics summary
 

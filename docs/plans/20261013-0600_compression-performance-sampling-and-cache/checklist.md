@@ -1,5 +1,15 @@
 # Checkpoints
 
+## Review repairs (2026-10-17) — earlier completion claims are conditional
+
+- [x] Correct conditional confirmation estimator and remove unsupported adaptive pooling claim (0.25.1/1.51.1).
+- [ ] Real reader/writer exclusion, including nested targets and standalone full-run ownership.
+- [ ] Bounded streaming scratch/reservations and partial-write/manifest cleanup.
+- [ ] Bounded diagnostic cache memory with durable history lookup.
+- [ ] Design-weighted failure-honest recommendations.
+- [ ] Actual CLI plan consumption, runtime budget semantics and conditional simulations.
+- [ ] Whole-branch review; real terminal/reader acceptance remains manual, not replaced by fixtures.
+
 ## Approved continuation (2026-10-16)
 
 - [x] Reconcile baseline/completed work and record approved I1-I5 plan including SSD scratch.

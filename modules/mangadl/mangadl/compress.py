@@ -507,10 +507,11 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 advisor = estimate.get("pilot_advisor")
                 if advisor and not advisor["precision_met"]:
                     print(
-                        f"Pilot advisor: recommend -s {advisor['recommended_total_samples']} "
+                        f"Pilot advisor (planning only): {advisor['recommended_total_samples']} total trials "
                         f"(+{advisor['recommended_additional_confirmation_samples']} samples, "
                         f"~{advisor['estimated_additional_runtime_seconds']:.1f}s) for "
-                        f"+/-{advisor['target_margin_percent']:g}% target margin."
+                        f"+/-{advisor['target_margin_percent']:g}% target margin under its proposed quotas. "
+                        "Ordinary -s does not apply those quotas; this is not a precision guarantee."
                     )
                 print(estimate["uncertainty"])
             print_cache_diagnostics(cache.diagnostics())

@@ -83,7 +83,9 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
     scratch_dir = getattr(args, "scratch_dir", None)
     if scratch_dir is not None:
         if any(getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")):
-            raise ValueError("Scratch staging is read-only analysis only; omit writes, recovery, inventory-only, and preview")
+            raise ValueError(
+                "Scratch staging is read-only analysis only; omit writes, recovery, inventory-only, and preview"
+            )
         target = getattr(args, "input", None) or getattr(args, "destination", None)
         if target is not None:
             from .scratch import validate_scratch_dir
@@ -121,10 +123,9 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
         raise ValueError("Sampling and comparison are analysis-only; omit --write")
 
 
-TWO_STAGE_BONFERRONI_Z = 2.241402727604947
-
-
-def _rank_gallery_members(members: Sequence[ImageMetadata], root: Path, is_directory: bool, seed: int) -> list[ImageMetadata]:
+def _rank_gallery_members(
+    members: Sequence[ImageMetadata], root: Path, is_directory: bool, seed: int
+) -> list[ImageMetadata]:
     return sorted(
         members,
         key=lambda image: hashlib.sha256(
@@ -141,6 +142,8 @@ class GallerySample:
     seed: int
     population_warning: str = ""
     sampling_stage: str = "primary"
+    pilot_images: tuple[ImageMetadata, ...] = ()
+    pilot_observations: tuple[ImageResult, ...] = ()
 
     def _coverage_diagnostics(self) -> dict:
         formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0})
@@ -289,8 +292,7 @@ class GallerySample:
         precision_met = current_margin is not None and current_margin <= margin_target
 
         rec_quotas = {
-            key: min(len(members), max(self.quotas[key], min(2, len(members))))
-            for key, members in self.groups.items()
+            key: min(len(members), max(self.quotas[key], min(2, len(members)))) for key, members in self.groups.items()
         }
 
         def _projected_margin(quotas_map: Mapping[str, int]) -> float:
@@ -302,9 +304,7 @@ class GallerySample:
                     total_v += pop**2 * (1 - nh / pop) * stratum_var[key] / max(1, nh)
             return 1.96 * math.sqrt(total_v)
 
-        additional_ms = sum(
-            max(0, rec_quotas[key] - self.quotas[key]) * stratum_ms[key] for key in self.groups
-        )
+        additional_ms = sum(max(0, rec_quotas[key] - self.quotas[key]) * stratum_ms[key] for key in self.groups)
         max_ms = max_runtime_seconds * 1000.0 if max_runtime_seconds is not None else None
         budget_capped = False
 
@@ -348,12 +348,16 @@ class GallerySample:
             "adaptive_stopping_note": (
                 "Inventory coverage minimum only guarantees one image per gallery, not statistical accuracy. "
                 "Because inspecting a pilot interval before choosing whether to stop can understate uncertainty, "
-                "either evaluate an independent disjoint confirmation_sample() or use "
-                "two_stage_adjusted_95_percent_interval_bytes when pooling pilot and top-up trials."
+                "evaluate a disjoint confirmation_sample() with measured pilot_results and quotas fixed before "
+                "examining confirmation outcomes. Do not pool outcome-adaptive top-up trials using a fixed-design interval."
             ),
         }
 
     def estimate(self, results: Sequence[ImageResult]) -> dict:
+        if self.sampling_stage == "disjoint_confirmation":
+            from .confirmation import estimate_confirmation
+
+            return estimate_confirmation(self, results)
         measured = {r.input_path: r for r in results}
         chosen = {i.path for i in self.images}
         projected = 0.0
@@ -380,7 +384,6 @@ class GallerySample:
         point = min(total - unknown_bytes, round(projected))
         std_error = math.sqrt(variance_total)
         margin = 1.96 * std_error
-        two_stage_margin = TWO_STAGE_BONFERRONI_Z * std_error
         diag = self._coverage_diagnostics()
         is_full = len(self.images) == sum(map(len, self.groups.values()))
         return {
@@ -394,11 +397,7 @@ class GallerySample:
             "approximate_95_percent_interval_bytes": (
                 [max(0, round(point - margin)), min(total, round(point + margin))] if ci_available else None
             ),
-            "two_stage_adjusted_95_percent_interval_bytes": (
-                [max(0, round(point - two_stage_margin)), min(total, round(point + two_stage_margin))]
-                if ci_available
-                else None
-            ),
+            "two_stage_adjusted_95_percent_interval_bytes": None,
             "coverage_gaps": diag["coverage_gaps"],
             "unsampled_formats": diag["unsampled_formats"],
             "unsampled_large_images": diag["unsampled_large_images"],
@@ -411,7 +410,9 @@ class GallerySample:
         }
 
 
-def _allocate_quotas(groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int) -> dict[str, int]:
+def _allocate_quotas(
+    groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int
+) -> dict[str, int]:
     active_keys = [key for key in groups if capacities[key] > 0]
     if target < len(active_keys):
         raise ValueError(
@@ -422,10 +423,7 @@ def _allocate_quotas(groups: Mapping[str, Sequence[ImageMetadata]], capacities: 
     all_images = [i for g in groups.values() for i in g]
     count = max(1, len(all_images))
     total_bytes = max(1, sum(i.size_bytes for i in all_images))
-    weights = {
-        k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes
-        for k, v in groups.items()
-    }
+    weights = {k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes for k, v in groups.items()}
     remaining = target - sum(quotas.values())
     second = sorted((key for key in active_keys if capacities[key] > 1), key=lambda key: (-weights[key], key))
     for key in second[:remaining]:
@@ -498,21 +496,30 @@ def confirmation_sample(
     *,
     sample_size: int | None = None,
     target_quotas: Mapping[str, int] | None = None,
+    pilot_results: Sequence[ImageResult] | None = None,
 ) -> GallerySample:
     """Draw a disjoint confirmation sample from the remaining unselected items per gallery."""
+    from .confirmation import validate_pilot_results
+
+    if pilot.sampling_stage != "primary":
+        raise ValueError("Confirmation requires a primary measured pilot, not nested confirmation")
+    validate_pilot_results(pilot.images, pilot_results)
     root = root.resolve()
     is_directory = root.is_dir()
     remaining_by_gallery: dict[str, list[ImageMetadata]] = {}
     for key, members in pilot.groups.items():
         ranked = _rank_gallery_members(members, root, is_directory, pilot.seed)
-        remaining_by_gallery[key] = ranked[pilot.quotas[key] :]
+        selected_pilot = {image.path for image in pilot.images}
+        remaining_by_gallery[key] = [image for image in ranked if image.path not in selected_pilot]
     capacities = {key: len(rem) for key, rem in remaining_by_gallery.items()}
     total_remaining = sum(capacities.values())
     if total_remaining == 0:
         raise ValueError("No unselected images remain for a disjoint confirmation sample")
     if target_quotas is not None:
         quotas = {
-            key: min(capacities[key], max(1 if capacities[key] > 0 else 0, target_quotas.get(key, 0) - pilot.quotas[key]))
+            key: min(
+                capacities[key], max(1 if capacities[key] > 0 else 0, target_quotas.get(key, 0) - pilot.quotas[key])
+            )
             for key in pilot.groups
         }
     else:
@@ -529,6 +536,8 @@ def confirmation_sample(
         pilot.seed,
         population_warning=pilot.population_warning,
         sampling_stage="disjoint_confirmation",
+        pilot_images=tuple(pilot.images),
+        pilot_observations=tuple(pilot_results),
     )
 
 
@@ -561,4 +570,3 @@ def print_sampling(plan: GallerySample) -> None:
             f"Warning: {report['singleton_sample_galleries']} non-census galleries have only one sample; "
             "uncertainty cannot be calculated. Increase -s/-P."
         )
-

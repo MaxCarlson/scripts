@@ -142,10 +142,7 @@ def test_cache_is_persisted_before_batch_finishes(tmp_path):
 
 
 def test_coverage_gaps_rare_format_large_and_tall_images(tmp_path):
-    images = [
-        ImageMetadata(tmp_path / "g1" / f"{i:02d}.jpg", "JPEG", 80, 80, 100)
-        for i in range(18)
-    ] + [
+    images = [ImageMetadata(tmp_path / "g1" / f"{i:02d}.jpg", "JPEG", 80, 80, 100) for i in range(18)] + [
         ImageMetadata(tmp_path / "g1" / "large.jpg", "JPEG", 80, 80, 50_000),
         ImageMetadata(tmp_path / "g1" / "rare.gif", "GIF", 80, 80, 200),
         ImageMetadata(tmp_path / "g1" / "tall.png", "PNG", 80, 17_000, 500),
@@ -171,12 +168,8 @@ def test_coverage_gaps_rare_format_large_and_tall_images(tmp_path):
 
 
 def test_pilot_advisor_and_disjoint_confirmation_sample(tmp_path):
-    images = [
-        ImageMetadata(tmp_path / "steady" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000)
-        for i in range(40)
-    ] + [
-        ImageMetadata(tmp_path / "volatile" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000)
-        for i in range(40)
+    images = [ImageMetadata(tmp_path / "steady" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000) for i in range(40)] + [
+        ImageMetadata(tmp_path / "volatile" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000) for i in range(40)
     ]
     pilot = gallery_sample(images, tmp_path, sample_size=6, seed=7)
     pilot_results = []
@@ -207,11 +200,10 @@ def test_pilot_advisor_and_disjoint_confirmation_sample(tmp_path):
 
     est = pilot.estimate(pilot_results)
     assert est["pilot_advisor"]["recommended_total_samples"] == advisor["recommended_total_samples"]
-    lo_95, hi_95 = est["approximate_95_percent_interval_bytes"]
-    lo_2s, hi_2s = est["two_stage_adjusted_95_percent_interval_bytes"]
-    assert (hi_2s - lo_2s) >= (hi_95 - lo_95)
+    assert est["approximate_95_percent_interval_bytes"] is not None
+    assert est["two_stage_adjusted_95_percent_interval_bytes"] is None
 
-    confirm = confirmation_sample(pilot, tmp_path, sample_size=12)
+    confirm = confirmation_sample(pilot, tmp_path, sample_size=12, pilot_results=pilot_results)
     assert len(confirm.images) == 12
     assert {i.path for i in pilot.images}.isdisjoint({i.path for i in confirm.images})
     confirm_results = [
@@ -220,7 +212,7 @@ def test_pilot_advisor_and_disjoint_confirmation_sample(tmp_path):
     ]
     confirm_est = confirm.estimate(confirm_results)
     assert confirm_est["sampling_stage"] == "disjoint_confirmation"
-    assert confirm_est["projected_total_saved_bytes"] == 80 * 4_500
+    assert confirm_est["projected_total_saved_bytes"] == 362010
 
 
 def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_path):
@@ -241,7 +233,6 @@ def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_pat
     true_total = sum(true_saved_by_path.values())
     estimates = []
     covered_standard = 0
-    covered_two_stage = 0
     runs = 150
     for seed in range(runs):
         plan = gallery_sample(images, tmp_path, sample_size=30, seed=seed)
@@ -262,12 +253,8 @@ def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_pat
         lo, hi = est["approximate_95_percent_interval_bytes"]
         if lo <= true_total <= hi:
             covered_standard += 1
-        lo2, hi2 = est["two_stage_adjusted_95_percent_interval_bytes"]
-        if lo2 <= true_total <= hi2:
-            covered_two_stage += 1
+        assert est["two_stage_adjusted_95_percent_interval_bytes"] is None
 
     mean_estimate = sum(estimates) / len(estimates)
     assert abs(mean_estimate - true_total) / true_total < 0.01
     assert covered_standard / runs >= 0.90
-    assert covered_two_stage >= covered_standard
-
