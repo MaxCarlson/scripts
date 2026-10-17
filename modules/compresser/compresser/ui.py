@@ -23,9 +23,10 @@ from .models import BatchResult, ComparisonRow, ImageResult, ScanSummary
 
 
 def color_text(text: str, color: str) -> str:
-    if sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb":
+    if (sys.stdout.isatty() or sys.stderr.isatty()) and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb":
         return _color_text(text, color)
     return text
+
 
 
 def print_cache_diagnostics(report: dict, *, startup: bool = False) -> None:
@@ -181,33 +182,49 @@ class CompresserDashboard:
         gallery_count = self.gallery_done[gallery] if gallery else 0
         gallery_total = self.gallery_totals.get(gallery, 0)
         gallery_bar = ProgressBar("gallery", gallery_total or 1, gallery_count, width=28, charset="block")
-        stage_labels = []
+        gallery_bar_str = color_text(str(gallery_bar), "magenta")
+
+        stage_bar_str = color_text(str(self.batch_bar), "cyan")
+
         completed_stages = self.stage_index + int(self.processed == self.total_images)
+        stage_labels = []
         for index, name in enumerate(self.stages):
             state = "done" if index < completed_stages else "running" if index == self.stage_index else "pending"
             label = f"{name} ({state})"
             if self.interactive and "NO_COLOR" not in os.environ:
                 label = _color_text(label, {"done": "green", "running": "blue", "pending": "yellow"}[state])
             stage_labels.append(label)
-        overall_bar = ProgressBar("overall", self.overall_total, self.overall_processed, width=28, charset="block")
+
+        trial_bar = ProgressBar("trial", self.overall_total, self.overall_processed, width=28, charset="block")
+        trial_bar_str = color_text(str(trial_bar), "yellow")
+
+        overall_bar = ProgressBar("overall", len(self.stages), completed_stages, width=28, charset="block")
+        overall_bar_str = color_text(str(overall_bar), "green")
+
         phase_title = "[PHASE 2/2: EXECUTING COMPRESSION]" if self.mode == "WRITE" else "[PHASE 2/2: COMPRESSION BENCHMARK]"
-        phase_badge = color_text(phase_title, "green") if self.interactive else phase_title
+        phase_badge = color_text(phase_title, "cyan")
+
         lines = [
             f"{phase_badge} Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
-            f"{color_text('Compresser', 'bright')} | Mode: {'STOPPING' if self.stopping else self.mode} | Strategy: {self.strategy_name} | Worker limit: {self.workers}",
+            f"{color_text('Compresser', 'bright')} | Mode: {color_text('STOPPING' if self.stopping else self.mode, 'cyan')} | Strategy: {color_text(self.strategy_name, 'bright')} | Worker limit: {self.workers}",
             file_line,
-            f"Stage trials: {self.processed}/{self.total_images} | Rate: {rate_img:.1f} img/s ({format_rate_bps(rate_bytes)})",
-            f"Elapsed (entire run): {fmt_hms(elapsed)} | Overall ETA: {eta} (rolling rate; encoder speeds vary)",
+            f"Stage trials: {self.processed}/{self.total_images} | Rate: {color_text(f'{rate_img:.1f} img/s', 'yellow')} ({format_rate_bps(rate_bytes)})",
+            f"Elapsed (entire run): {fmt_hms(elapsed)} | Overall ETA: {color_text(eta, 'green')} (rolling rate; encoder speeds vary)",
             f"Stage savings: {color_text(format_bytes_decimal(self.current_savings), 'green')} / {format_bytes_decimal(self.total_orig_bytes)} ({savings_pct:.1f}%)",
-            f"Gallery: {gallery.name if gallery else 'waiting for first completion'}",
-            f"Gallery  {gallery_bar} {gallery_count}/{gallery_total or '?'} (current stage)",
-            f"Stage    {self.batch_bar} {self.processed}/{self.total_images}",
-            f"Overall  {overall_bar} {self.overall_processed}/{self.overall_total} image-strategy trials",
+            f"Gallery: {color_text(gallery.name if gallery else 'waiting for first completion', 'bright')}",
+            f"Gallery  {gallery_bar_str} {gallery_count}/{gallery_total or '?'} (current stage)",
+            f"Stage    {stage_bar_str} {self.processed}/{self.total_images}",
         ]
+        if len(self.stages) > 1:
+            lines.append(f"Trial    {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials")
+            lines.append(f"Overall  {overall_bar_str} {completed_stages}/{len(self.stages)} stages complete")
+        else:
+            lines.append(f"Overall  {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials")
+
         activity = self.activity
         if activity:
             descriptions = [
-                f"{Path(item['path']).name} ({item['width']}x{item['height']}, "
+                f"{color_text(Path(item['path']).name, 'bright')} ({item['width']}x{item['height']}, "
                 f"{format_bytes_decimal(item['estimated_bytes'])}, {now-item['started']:.1f}s, "
                 f"{item.get('phase', 'starting')})"
                 for item in activity["active_images"][:2]
@@ -217,20 +234,24 @@ class CompresserDashboard:
                 if activity["effective_workers"] > 0
                 else 0.0
             )
+            eff_color = "green" if eff >= 60 else "yellow" if eff >= 25 else "red"
+            eff_str = color_text(f"{eff:.0f}%", eff_color)
             waiting = activity.get("waiting_reason") or "none"
             if waiting != "none" and self.interactive:
                 waiting = color_text(f"WAIT_MEM ({waiting})", "yellow")
+            else:
+                waiting = color_text("none", "green")
             lines[1] = (
-                f"{color_text('Compresser', 'bright')} | Mode: {'STOPPING' if self.stopping else self.mode} | "
-                f"Strategy: {self.strategy_name} | Pool Efficiency: {eff:.0f}% ({activity['active_workers']}/{activity['effective_workers']} active)"
+                f"{color_text('Compresser', 'bright')} | Mode: {color_text('STOPPING' if self.stopping else self.mode, 'cyan')} | "
+                f"Strategy: {color_text(self.strategy_name, 'bright')} | Pool Efficiency: {eff_str} ({activity['active_workers']}/{activity['effective_workers']} active)"
             )
             lines[2:2] = [
                 f"Workers: requested {activity['requested_workers']} | effective {activity['effective_workers']} | "
-                f"active {activity['active_workers']} | remaining {activity['remaining_images']}",
-                f"Limiter: {activity['limiter']} | Budget: {format_bytes_decimal(activity['memory_budget_bytes'])} | "
+                f"active {color_text(str(activity['active_workers']), 'cyan')} | remaining {activity['remaining_images']}",
+                f"Limiter: {activity['limiter']} | Budget: {color_text(format_bytes_decimal(activity['memory_budget_bytes']), 'green')} | "
                 f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
                 + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
-                f"Reserved: {format_bytes_decimal(activity.get('reserved_bytes', 0))} | "
+                f"Reserved: {color_text(format_bytes_decimal(activity.get('reserved_bytes', 0)), 'green')} | "
                 f"Preflight rejected: {activity.get('preflight_rejected_images', 0)} | Waiting: {waiting}",
                 "Active: "
                 + (" | ".join(descriptions) or "none")

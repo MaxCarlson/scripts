@@ -38,19 +38,19 @@ def test_comparison_progress_never_resets_overall(monkeypatch):
     lines = dash._lines()
     assert "Stages 1/4 complete" in lines[0]
     assert "png (done)" in lines[0] and "webp (running)" in lines[0] and "auto (pending)" in lines[0]
-    assert "2/8 image-strategy trials" in lines[-1]
+    assert any("2/8 image-strategy trials" in line for line in lines)
     assert "00:00:05" in lines[4]
     clock[0] = 110
     dash.update(1, result)
     lines = dash._lines()
-    bars = [line for line in lines if line.startswith(("Gallery  ", "Stage    ", "Overall  "))]
-    assert len(bars) == 3
+    bars = [line for line in lines if line.startswith(("Gallery  ", "Stage    ", "Trial    ", "Overall  "))]
+    assert len(bars) == 4
     assert len({line.index("[") for line in bars}) == 1
     assert "Kept original" in lines[2]
     dash.begin_stage(3)
     dash.update(2, result)
     assert "Stages 4/4 complete" in dash._lines()[0]
-    assert "8/8 image-strategy trials" in dash._lines()[-1]
+    assert any("8/8 image-strategy trials" in line for line in dash._lines())
     dash.close()
 
 

@@ -46,25 +46,34 @@ def _pad_cell(text: str, width: int, align: Alignment = "left") -> str:
         return text + (" " * diff)
 
 
+_ANSI_OR_CHAR = re.compile(r"(\x1b\[[0-9;]*m)|(.)", re.DOTALL)
+
+
 def _truncate_cell(text: str, max_chars: int) -> str:
-    """Truncate string to visual length max_chars, appending '…' if clipped."""
+    """Truncate string to visual length max_chars, appending '…' if clipped, preserving ANSI styling."""
     if max_chars <= 0:
         return ""
     if _visible_len(text) <= max_chars:
         return text
 
-    # Strip ANSI or truncate carefully if needed
-    plain = _strip_ansi(text)
-    if len(plain) <= max_chars:
-        return text
+    has_ansi = bool(_ANSI_RE.search(text))
     result = []
     used = 0
-    for char in plain:
-        used += _char_width(char)
-        if used > max_chars - 1:
+    target_limit = max_chars - 1
+    for match in _ANSI_OR_CHAR.finditer(text):
+        ansi_seq, char = match.groups()
+        if ansi_seq:
+            result.append(ansi_seq)
+            continue
+        w = _char_width(char)
+        if used + w > target_limit:
             break
+        used += w
         result.append(char)
-    return "".join(result) + "…"
+    result.append("…")
+    if has_ansi:
+        result.append("\x1b[0m")
+    return "".join(result)
 
 
 # Border presets
