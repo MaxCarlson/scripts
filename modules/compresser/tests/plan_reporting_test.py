@@ -222,6 +222,33 @@ def test_future_snapshot_age_clamps_to_zero():
     assert any("saved 0m ago" in line for line in summary.overview)
 
 
+def test_subminute_runtime_budget_rounds_up_to_one_minute():
+    plan = make_plan(
+        budget=EstimationBudget(max_images=200, max_new_encodes=2000, max_runtime_seconds=30, pilot_images=64)
+    )
+    summary = build_plan_summary(plan, population_count=200, now=NOW)
+    assert "1 min active time" in summary.overview[2]
+
+
+def test_summary_uses_singular_counts_for_one_image_recipe_and_group():
+    plan = make_plan(
+        recipes=(recipe("webp", "lossless"),),
+        budget=EstimationBudget(max_images=1, max_new_encodes=100, max_runtime_seconds=900, pilot_images=64),
+    )
+    summary = build_plan_summary(plan, population_count=1, now=NOW)
+    assert summary.overview[0] == "1 image · 1 recipe · 1 group covered"
+    assert summary.overview[3] == "Pilot    1 shared image across 1 recipe"
+
+
+def test_budget_line_uses_singular_image_and_encode_counts():
+    plan = make_plan(
+        recipes=(recipe("webp", "lossless"),),
+        budget=EstimationBudget(max_images=1, max_new_encodes=1, max_runtime_seconds=60, pilot_images=64),
+    )
+    summary = build_plan_summary(plan, population_count=1, now=NOW)
+    assert summary.overview[2] == "Limits   1 image · 1 new encode · 1 min active time"
+
+
 @pytest.mark.parametrize("width", [40, 80, 120, 160])
 @pytest.mark.parametrize("color", [False, True])
 def test_renderer_wraps_without_losing_values_or_ansi_when_disabled(summary, width, color):

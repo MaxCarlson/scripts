@@ -182,8 +182,24 @@ class ReportSession:
     def plan(self, plan, *, population_count):
         report = reporting.build_plan_report(plan, population_count=population_count, context=self.context)
         artifacts = self.save(report)
-        if not self.args.json:
+        if self.args.json:
+            return report, artifacts
+        if self.args.verbose:
             self.render(report)
+        else:
+            import shutil
+
+            from .plan_reporting import build_plan_summary, render_plan_summary
+
+            print(
+                render_plan_summary(
+                    build_plan_summary(plan, population_count=population_count),
+                    report_path=artifacts.get("latest"),
+                    width=shutil.get_terminal_size().columns,
+                    color=reporting.stdout_color_enabled(),
+                ),
+                flush=True,
+            )
         return report, artifacts
 
     def finish(self, status):

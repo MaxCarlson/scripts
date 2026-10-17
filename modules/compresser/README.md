@@ -1,4 +1,4 @@
-# compresser 3.1.1
+# compresser 3.2.0
 
 `plan`, `estimate`, and `compare` accept `-m both` and `-f all`.
 `all` expands to AUTO, WebP, JPEG, AVIF and PNG (not the explicit `keep` policy).
@@ -25,6 +25,13 @@ numerical core is implemented and tested, but bounded measurement and CLI estima
 integration are still pending; its approximate intervals do not certify an accuracy target.
 The old flat switches (`-l`, `-c`, `-b`, `-P`, `-Q`, `-R`, and `--output-dir`) and
 explicit inventory-file alias are rejected without compatibility aliases.
+
+Plan commands use a compact recipe summary by default, showing the actual shared
+pilot allocation and one report path. Add `-v` for the detailed console tables;
+Markdown and `-J` retain identities, per-group quotas, settings and full plan data.
+The tight-budget warning compares nominal pilot measurements with 80% of the encode
+cap. It is a planning heuristic: cached work may reduce new encodes, while AUTO may
+need multiple encodes for a measurement.
 
 ```powershell
 compresser inventory -i 'B:\Hent\book' -I 'B:\Analysis'

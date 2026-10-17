@@ -1,6 +1,6 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (3.1.1)
+## Compression workspace, estimates and saved reports (3.2.0)
 
 Compression now uses explicit operation subcommands. `inventory` refreshes the
 descriptive snapshot, `analyze` measures one recipe, `compare` benchmarks named
@@ -39,6 +39,11 @@ timestamped unique Markdown archives and `latest.md`. Inventory creation/refresh
 (even implicit refresh during comparison), analysis/write, comparison and preview
 summaries are saved. Detailed summary diagnostics remain in Markdown when console
 output is compact. Add -J for pure JSON stdout with report artifact paths.
+Plan commands show the actual shared pilot size and a compact recipe table by default;
+`-v` restores the detailed console tables. The Markdown archive and `-J` keep full
+recipe identities, per-group quotas, settings and plan data. A tight-budget warning
+uses the 80% nominal measurement threshold as a heuristic; cache reuse can reduce new
+encodes, and AUTO may encode multiple candidates per measurement.
 Omit -I to use the same target-named workspace beside the target. Do not pass the generated workspace itself
 as -I. File-valued -I arguments are rejected. Old sibling workspaces and inventory files are left untouched and never read or migrated; rebuild inventory in the new layout.
 Same-name targets/foreign workspace identities cannot silently share databases.

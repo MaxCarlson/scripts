@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import math
 from pathlib import Path
+
 from termdash.table import render_table_panels, wrap_display_text
 from termdash.utils import color_text
 
@@ -30,7 +32,7 @@ class PlanSummary:
 
 
 def _duration(seconds: float) -> str:
-    minutes = max(0, round(seconds / 60))
+    minutes = max(1, math.ceil(seconds / 60))
     hours, minutes = divmod(minutes, 60)
     if hours:
         return f"{hours}h {minutes}m" if minutes else f"{hours}h"
@@ -48,6 +50,10 @@ def _age(seconds: float) -> str:
 def _format_name(value: str) -> str:
     normalized = value.casefold()
     return _FORMAT_NAMES.get(normalized, value.upper())
+
+
+def _count_label(count: int, singular: str, plural: str | None = None) -> str:
+    return f"{count:,} {singular if count == 1 else plural or singular + 's'}"
 
 
 def _format_order(formats: set[str]) -> tuple[str, ...]:
@@ -133,13 +139,15 @@ def build_plan_summary(
     pilot_count = len(plan.pilot_member_ids)
     nominal_measurements = sum(quota.total for quota in plan.recipe_quotas)
     overview = (
-        f"{population_count:,} images · {recipe_count} recipes · {covered} groups covered",
+        f"{_count_label(population_count, 'image')} · {_count_label(recipe_count, 'recipe')} · "
+        f"{_count_label(covered, 'group')} covered",
         f"Inventory: {plan.depth} · saved {_age(elapsed)} ago",
         (
-            f"Limits   {plan.budget.max_images:,} images · {plan.budget.max_new_encodes:,} new encodes · "
+            f"Limits   {_count_label(plan.budget.max_images, 'image')} · "
+            f"{_count_label(plan.budget.max_new_encodes, 'new encode')} · "
             f"{_duration(plan.budget.max_runtime_seconds)} active time"
         ),
-        f"Pilot    {pilot_count} shared images across {recipe_count} recipes",
+        f"Pilot    {_count_label(pilot_count, 'shared image')} across {_count_label(recipe_count, 'recipe')}",
     )
 
     annotations = _recipe_annotations(plan)

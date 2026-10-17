@@ -35,6 +35,15 @@ def test_combined_all_format_plan_persists_one_budget_and_resumes(tmp_path, caps
         "-M",
         "15m",
     ]
+    normal_args = [value for value in args if value != "-J"]
+    assert _main(normal_args) == 0
+    compact = capsys.readouterr()
+    assert "12 recipes" in compact.out
+    assert all(value in compact.out for value in ("AUTO", "WebP", "JPEG", "AVIF", "PNG"))
+    assert str(tmp_path / ".mangadl" / target.name / "reports" / "latest.md") in compact.out.replace("\n", "")
+    assert "Report saved:" not in compact.out + compact.err
+    assert "COMPLETED — plan" not in compact.out
+
     assert _main(args) == 0
     plan = json.loads(capsys.readouterr().out)["plan"]
     assert len(plan["recipes"]) == 12

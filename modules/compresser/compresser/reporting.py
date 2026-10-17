@@ -137,14 +137,16 @@ def build_plan_report(plan, *, population_count: int, context: ReportContext) ->
         ["Snapshot age (seconds)", f"{age_seconds:.1f}"],
         ["Population members", f"{population_count:,}"],
         ["Selected distinct image cap", f"{plan.budget.max_images:,}"],
-        ["Pilot images per recipe", f"{plan.budget.pilot_images:,}"],
+        ["Pilot image ceiling per recipe", f"{plan.budget.pilot_images:,}"],
+        ["Actual shared pilot images", f"{len(plan.pilot_member_ids):,}"],
+        ["Nominal pilot image/recipe measurements", f"{sum(quota.total for quota in plan.recipe_quotas):,}"],
         ["New encode budget", f"{plan.budget.max_new_encodes:,}"],
         ["Active runtime budget (seconds)", f"{plan.budget.max_runtime_seconds:g}"],
         ["Accuracy target", context.settings.get("accuracy_pp") or "None"],
         ["Uncovered groups", ", ".join(plan.coverage_gaps) or "None"],
     ]
     recipes = [
-        [row.identity, row.format, row.mode, row.quality if row.quality is not None else "lossless", row.encoder, row.effort]
+        [row.identity, row.format, row.mode, row.quality if row.quality is not None else "—", row.encoder, row.effort]
         for row in plan.recipes
     ]
     strata = [
@@ -169,6 +171,8 @@ def build_plan_report(plan, *, population_count: int, context: ReportContext) ->
         ),
         ("Plan creation does not encode images or open the trial database.",),
     )
+
+
 def build_preview_report(payload: dict, *, context: ReportContext) -> CompressionReport:
     return CompressionReport(
         "COMPRESSION PREVIEW",

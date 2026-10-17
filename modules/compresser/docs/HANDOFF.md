@@ -1,5 +1,7 @@
 # Compresser handoff
 
+2026-10-17 compact plan output: Task1 composer/tests committed at f6e784ac; Task2 routes default plan output through the compact summary while preserving -v, Markdown and JSON. Source/docs target3.2.0. Compresser464/1 skip, MangaDL exit0, scripts-help55, changed-range Black/Ruff and installed CLI smoke checks pass. Windows visual acceptance at80/120/160 remains open because this session has no native desktop window access. Broader estimator Task6 remains paused.
+
 2026-10-17 snapshot lookup fix: header inventory was published with MangaDL owner
 `mangadl-pages`, but the plan loader queried under `mangadl`; this made a valid saved
 header inventory look absent. `sampling_plan.load_population` now maps the adapter
@@ -335,4 +337,3 @@ Continuation verification: full compresser63 and MangaDL296 pass separately;
 MangaDL nested-gallery/operation guard implemented and fixture-tested. Next:
 terminal/reader acceptance, then manual repair
 mapping. No production compression or merge.
-
