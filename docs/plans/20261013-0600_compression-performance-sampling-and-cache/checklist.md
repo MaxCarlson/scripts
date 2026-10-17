@@ -10,7 +10,7 @@
 - [x] P3 trusted-source/cache preparation optimization (serial validation/streaming scalar dispatch rulings recorded).
   - [x] P3a deduplicated operation-local ancestor validation and replacement checks;227 compression/314 MangaDL/55 help pass.
   - [x] P3b bounded cache preparation/dispatch overlap and bulk lookup parity; final gate follows.
-- [ ] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
+- [x] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
 - [ ] P5 verified AUTO candidate reuse/measurement-gated CPU optimization.
 - [ ] P6 explicit auto memory policy; default remains512MiB.
 - [ ] P7 bounded parallel previews and single manifest owner.

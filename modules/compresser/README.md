@@ -1,4 +1,16 @@
-# compresser 0.30.0
+# compresser 0.31.0
+
+`-s auto` explicitly selects a metadata-profile starter sample. Header inventories
+publish versioned gallery counts/bytes/variance, formats and dimension diagnostics,
+with weights `N * max(sd(bytes), 0.15 * mean(bytes), 1)`. The starter budget is
+`min(N, max(sum(min(2,N_gallery)), ceil(0.01*N)))`: coverage guidance, not a
+statistical minimum or accuracy guarantee. Input-size variance is not measured
+compression-savings variance. Seeded uniform draws within galleries and weighted
+estimation remain intact; failures/rare formats/small samples retain caveats.
+Numeric `-s` and legacy `-P` keep balanced allocation until the CLI migration.
+No sampling occurs merely because `-I` is supplied. Trust auto requires a matching
+saved profile; use `-U refresh` once for older inventories. Profiles publish with
+completed selections atomically. File-only profiles cannot supply compression inputs.
 
 Analysis dispatch probes cache entries incrementally while admitted encoders run,
 instead of probing the entire selection before the first encode. Cache hits bypass

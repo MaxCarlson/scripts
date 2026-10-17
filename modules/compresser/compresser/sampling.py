@@ -15,6 +15,18 @@ from typing import Mapping, Sequence
 from .models import ImageMetadata, ImageResult
 
 
+def parse_sample(value: str):
+    if value == "auto":
+        return value
+    try:
+        result = int(value)
+        if result < 1:
+            raise ValueError
+        return result
+    except ValueError:
+        raise argparse.ArgumentTypeError("Sample must be a positive integer or auto") from None
+
+
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-U",
@@ -144,6 +156,8 @@ class GallerySample:
     sampling_stage: str = "primary"
     pilot_images: tuple[ImageMetadata, ...] = ()
     pilot_observations: tuple[ImageResult, ...] = ()
+    allocation_method: str = "balanced"
+    profile_identity: str = ""
 
     def _coverage_diagnostics(self) -> dict:
         formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0})
@@ -198,10 +212,16 @@ class GallerySample:
         return {
             "method": "gallery-stratified simple random sampling without replacement",
             "sampling_stage": self.sampling_stage,
+            "allocation_method": self.allocation_method,
+            "profile_identity": self.profile_identity,
             "population_warning": self.population_warning,
-            "allocation": "one per gallery (two where budget permits), then equal image-count and byte weighting",
+            "allocation": (
+                "gallery coverage then input-size variance proxy (0.15 mean floor; heuristic, not precision)"
+                if self.allocation_method == "metadata_proxy"
+                else "one per gallery (two where budget permits), then equal image-count and byte weighting"
+            ),
             "seed": self.seed,
-            "sampling_revision": 2,
+            "sampling_revision": 3 if self.allocation_method == "metadata_proxy" else 2,
             "inventory_images": sum(map(len, self.groups.values())),
             "inventory_bytes": sum(i.size_bytes for g in self.groups.values() for i in g),
             "sample_images": len(self.images),
@@ -402,7 +422,9 @@ class GallerySample:
             "unsampled_formats": diag["unsampled_formats"],
             "unsampled_large_images": diag["unsampled_large_images"],
             "unsampled_tall_webp_images": diag["unsampled_tall_webp_images"],
-            "pilot_advisor": None if is_full else self.advise_sample_size(results),
+            "pilot_advisor": (
+                None if is_full or self.allocation_method == "metadata_proxy" else self.advise_sample_size(results)
+            ),
             "uncertainty": "Design-weighted estimate; normal-approximation interval, not a guarantee. "
             "Small or highly skewed samples can understate uncertainty. "
             "Interval unavailable when a non-census gallery has only one sample or a trial fails. "
@@ -411,7 +433,7 @@ class GallerySample:
 
 
 def _allocate_quotas(
-    groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int
+    groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int, proxy_weights=None
 ) -> dict[str, int]:
     active_keys = [key for key in groups if capacities[key] > 0]
     if target < len(active_keys):
@@ -424,6 +446,8 @@ def _allocate_quotas(
     count = max(1, len(all_images))
     total_bytes = max(1, sum(i.size_bytes for i in all_images))
     weights = {k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes for k, v in groups.items()}
+    if proxy_weights is not None:
+        weights = proxy_weights
     remaining = target - sum(quotas.values())
     second = sorted((key for key in active_keys if capacities[key] > 1), key=lambda key: (-weights[key], key))
     for key in second[:remaining]:
@@ -445,18 +469,25 @@ def gallery_sample(
     images: Sequence[ImageMetadata],
     root: Path,
     *,
-    sample_size: int | None = None,
+    sample_size: int | str | None = None,
     percent: float | None = None,
     seed: int = 0,
     gallery_keys: Mapping[Path, str] | None = None,
+    profile=None,
 ) -> GallerySample:
     """Allocate deterministic quotas, then draw uniform random samples within galleries."""
-    if sample_size is not None and sample_size < 1:
+    if sample_size is not None and sample_size != "auto" and sample_size < 1:
         raise ValueError("Sample size must be positive")
     if percent is not None and (not math.isfinite(percent) or not 0 < percent <= 100):
         raise ValueError("Sample percentage must be greater than 0 and at most 100")
     if sample_size is not None and percent is not None:
         raise ValueError("Choose sample size or percentage, not both")
+    if sample_size == "auto" and profile is None:
+        raise ValueError("Automatic sampling needs a matching completed header profile; use -U refresh")
+    if profile is not None:
+        profile.validate(images, root, gallery_keys)
+        if sample_size == "auto":
+            sample_size = profile.data["starter_samples"]
     groups = defaultdict(list)
     root = root.resolve()
     is_directory = root.is_dir()
@@ -480,14 +511,24 @@ def gallery_sample(
         else (min(count, max(len(groups), math.ceil(count * percent / 100))) if percent is not None else count)
     )
     capacities = {key: len(members) for key, members in groups.items()}
-    quotas = _allocate_quotas(groups, capacities, target)
+    weights = (
+        {key: row["proxy_weight"] for key, row in profile.data["galleries"].items()} if profile is not None else None
+    )
+    quotas = _allocate_quotas(groups, capacities, target, weights)
     selected = []
     for key, members in groups.items():
         # Seeded file priorities give a stable pseudorandom permutation; selecting
         # a longer prefix retains all earlier samples for an unchanged population.
         ranked = _rank_gallery_members(members, root, is_directory, seed)
         selected.extend(ranked[: quotas[key]])
-    return GallerySample(sorted(selected, key=lambda i: str(i.path).casefold()), groups, quotas, seed)
+    return GallerySample(
+        sorted(selected, key=lambda i: str(i.path).casefold()),
+        groups,
+        quotas,
+        seed,
+        allocation_method="metadata_proxy" if profile else "balanced",
+        profile_identity=profile.identity if profile else "",
+    )
 
 
 def confirmation_sample(
@@ -549,8 +590,12 @@ def print_sampling(plan: GallerySample) -> None:
     )
     print(
         f"Allocation: per-gallery coverage (minimum {report['coverage_minimum_images']} images; "
-        f"{report['variance_minimum_images']} for within-gallery variance), then equal image-count and byte shares."
+        f"{report['variance_minimum_images']} for within-gallery variance). {report['allocation']}."
     )
+    if plan.allocation_method == "metadata_proxy":
+        print(
+            "Design: metadata_proxy revision3; input-size proxy with0.15 mean floor. Starter coverage is not a statistical minimum or accuracy guarantee."
+        )
     for fmt, row in report["formats"].items():
         print(f"  {fmt}: {row['images']} images, {row['bytes']} bytes; {row['sample_images']} sampled")
     if report["unsampled_formats"]:

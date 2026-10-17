@@ -14,6 +14,7 @@ from typing import Iterable
 
 from .scanner import IMAGE_EXTENSIONS
 from .inventory import connect_inventory
+from .distribution import SamplingProfile
 from .timing import configure_pipeline, increment, phase, phase_iter
 
 
@@ -194,7 +195,10 @@ def scan_file_inventory(
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     policy = json.dumps({"schema": 1, "exclude_stems": sorted(excluded), "single_gallery": single_gallery})
+    profile = SamplingProfile.from_file_report(report, policy)
+    report["sampling_profile"] = profile.data
     with phase("publication"), closing(connect_inventory(destination, timeout=5)) as connection, connection:
+        profile.save(connection)
         connection.execute(
             "CREATE TABLE IF NOT EXISTS inventory_file_snapshots "
             "(root TEXT,policy TEXT,completed TEXT,report TEXT,PRIMARY KEY(root,policy))"

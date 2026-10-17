@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+Plan03 P4 implemented: compresser0.31.0/MangaDL1.57.0, atomic versioned metadata
+profiles with input-size variance proxy, explicit -s auto starter coverage, stable
+uniform-within-gallery prefixes and design-weighted estimates. Numeric -s/-P stay
+balanced until P8; census unchanged. File-only profiles remain unverified, no pilot.
+Full gate/publication follows; P5 verified AUTO candidate reuse next.
+
+
 Plan03 P3 completed: compresser0.30.0/MangaDL1.56.0, incremental pre-admission
 cache probes overlap encodes; bounded preparation, source checks and cancellation
 retained. Bulk validated library lookup preserves scalar legacy/diagnostic behavior.

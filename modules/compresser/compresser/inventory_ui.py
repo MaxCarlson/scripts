@@ -390,6 +390,13 @@ def print_inventory_summary(report: dict) -> None:
         )
     if formats:
         print("Detected formats: " + ", ".join(f"{fmt}: {n:,}" for fmt, n in sorted(formats.items())), file=stream)
+    profile = report.get("sampling_profile")
+    if profile:
+        print(
+            f"Sampling guidance: {profile['method']} revision{profile['profile_revision']}; starter {profile['starter_samples']:,} images.",
+            file=stream,
+        )
+        print(profile["limitations"], file=stream)
     print(
         (
             "Extension candidates only; image content is unverified."

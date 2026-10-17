@@ -15,6 +15,7 @@ from PIL import __version__ as pillow_version
 from .inventory import InventoryStore, header_fingerprint
 from .models import ImageMetadata, ScanSummary
 from .timing import timed
+from .distribution import SamplingProfile
 
 STALE_WARNING = (
     "Totals and projections describe the saved snapshot, not verified current library membership. "
@@ -60,6 +61,7 @@ class SelectionSnapshot:
         self.policy = json.dumps([2, owner, sorted(set(filters)), pillow_version])
         self.report: dict = {}
         self.fingerprints: dict[Path, list[int]] = {}
+        self.profile: SamplingProfile | None = None
 
     @timed("publication")
     def publish(self, images: list[ImageMetadata], gallery_keys: dict | None = None) -> None:
@@ -86,17 +88,22 @@ class SelectionSnapshot:
             "completed": datetime.now(timezone.utc).isoformat(),
             "images": entries,
         }
+        profile = SamplingProfile.from_images(images, self.root, gallery_keys=gallery_keys, policy=self.policy)
+        profile.data["completed"] = report["completed"]
+        report["profile_identity"] = profile.identity
         self.store.path.parent.mkdir(parents=True, exist_ok=True)
         with self.store.connection() as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_selections "
                 "(root TEXT, policy TEXT, report TEXT, PRIMARY KEY(root,policy))"
             )
+            profile.save(db)
             db.execute(
                 "INSERT OR REPLACE INTO inventory_selections VALUES(?,?,?)",
                 (str(self.root), self.policy, json.dumps(report, default=str)),
             )
         self.report = {"policy": "refresh", "completed": report["completed"], "membership_verified": True}
+        self.profile = profile
 
     @timed("snapshot_load")
     def load(self) -> tuple[list[ImageMetadata], dict | None]:
@@ -111,6 +118,24 @@ class SelectionSnapshot:
             if row is None:
                 raise ValueError("No completed snapshot matches this root/selection/policy")
             data = json.loads(row[0])
+            self.profile = None
+            if data.get("profile_identity"):
+                with self.store.connection(readonly=True) as db:
+                    saved = db.execute(
+                        "SELECT identity,report FROM inventory_sampling_profiles WHERE root=? AND policy=?",
+                        (str(self.root), self.policy),
+                    ).fetchone()
+                if saved is None:
+                    raise ValueError("Missing matching sampling profile")
+                profile = SamplingProfile(json.loads(saved[1]))
+                if (
+                    profile.identity != saved[0]
+                    or profile.identity != data["profile_identity"]
+                    or profile.data.get("root") != str(self.root)
+                    or profile.data.get("policy") != self.policy
+                ):
+                    raise ValueError("Incompatible sampling profile")
+                self.profile = profile
             if (data["schema"], data["status"], data["root"], data["policy"]) != (
                 1,
                 "complete",

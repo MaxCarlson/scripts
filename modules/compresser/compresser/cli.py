@@ -26,7 +26,7 @@ from .models import (
 )
 from .scanner import scan_directory
 from .timing import configure_pipeline, pipeline_report, profile_pipeline
-from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
+from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling, parse_sample
 from .ui import (
     CompresserDashboard,
     print_comparison_matrix,
@@ -36,7 +36,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.30.0"
+__version__ = "0.31.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -113,8 +113,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-s",
         "--sample",
-        type=int,
-        help="Benchmark only a representative sample of N images.",
+        type=parse_sample,
+        help="Sample N images total, or auto starter coverage from a matching metadata profile.",
     )
     parser.add_argument(
         "-w",
@@ -319,7 +319,7 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Separate output directories are not implemented; omit --output-dir")
     if not 1 <= args.quality <= 100 or not 0.80 <= args.perceptual_target <= 1.0:
         parser.error("Quality must be 1..100 and perceptual target 0.80..1.00")
-    if args.threads < 1 or args.sample is not None and args.sample < 1:
+    if args.threads < 1 or args.sample is not None and args.sample != "auto" and args.sample < 1:
         parser.error("Threads and sample must be positive")
     if not 64 <= args.memory_budget_mib <= 4096:
         parser.error("Aggregate scheduling budget must be64..4096MiB")
@@ -386,6 +386,7 @@ def main(argv: list[str] | None = None) -> int:
             if args.inventory_only:
                 report = inventory_report(images, args.input.expanduser().resolve())
                 report.update(store.diagnostics())
+                report["sampling_profile"] = snapshot.profile.data if snapshot.profile else None
                 emit_inventory_report(report, as_json=args.json)
                 return 0
         if not images:
@@ -402,7 +403,12 @@ def main(argv: list[str] | None = None) -> int:
 
         # Handle sample selection
         sampling_plan = gallery_sample(
-            images, args.input, sample_size=args.sample, percent=args.sample_percent, seed=args.sample_seed
+            images,
+            args.input,
+            sample_size=args.sample,
+            percent=args.sample_percent,
+            seed=args.sample_seed,
+            profile=snapshot.profile if args.sample == "auto" else None,
         )
         eval_images = sampling_plan.images
         snapshot.validate_selected(eval_images)

@@ -1,5 +1,13 @@
 # mangadl
 
+Checkpoint1.57.0/compresser0.31.0 adds explicit `-s auto` using a matching saved
+gallery metadata profile. It preserves nested chapter ownership and uniform page
+draws within each gallery. Starter coverage is not a guaranteed statistical minimum.
+Use `mangadl compress -d TARGET -l -I EXTERNAL.sqlite3` to refresh the inventory,
+then `mangadl compress -d TARGET -I EXTERNAL.sqlite3 -U trust -s auto -c`.
+These are read-only; `-I` alone never enables sampling. Older trusted selections
+without a matching profile need one refresh. Numeric -s/-P remain balanced for now.
+
 Checkpoint1.56.0/compresser0.30.0 starts compression workers before later cache
 probes finish. Cache-hit bypass and source validation remain in place; no extra
 cache-probing worker pool or silent memory increase is introduced.

@@ -205,7 +205,12 @@ class InventoryStore:
             for key, members in plan.groups.items()
             for i in members
         ]
-        identity = hashlib.sha256(json.dumps([2, population]).encode()).hexdigest()
+        provenance = (
+            [2, population]
+            if plan.allocation_method == "balanced"
+            else [3, population, plan.allocation_method, plan.profile_identity]
+        )
+        identity = hashlib.sha256(json.dumps(provenance).encode()).hexdigest()
         report = plan.summary()
         report.update(
             population_identity=identity,
@@ -222,7 +227,11 @@ class InventoryStore:
                 "INSERT OR REPLACE INTO inventory_samples VALUES(?,?,?,?,?)",
                 (str(root), str(plan.seed), identity, len(plan.images), json.dumps(report)),
             )
-        return {"population_identity": identity, "sampling_revision": 2, "inventory_file": str(self.path)}
+        return {
+            "population_identity": identity,
+            "sampling_revision": report["sampling_revision"],
+            "inventory_file": str(self.path),
+        }
 
 
 class InventorySession:

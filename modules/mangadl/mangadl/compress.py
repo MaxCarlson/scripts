@@ -261,7 +261,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             return run_recovery(dest, apply=args.write, confirmation=args.confirm_recovery, as_json=args.json)
         if not 1 <= args.quality <= 100 or not 0.80 <= args.perceptual_target <= 1.0:
             raise ValueError("Quality must be 1..100 and perceptual target 0.80..1.00")
-        if args.threads < 1 or args.sample is not None and args.sample < 1:
+        if args.threads < 1 or args.sample is not None and args.sample != "auto" and args.sample < 1:
             raise ValueError("Threads and sample must be positive")
         if args.write and args.compare:
             raise ValueError("Comparison is read-only; omit --write")
@@ -311,8 +311,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             if not gallery_paths:
                 prog.close()
                 if getattr(args, "inventory_only", False):
+                    snapshot.publish([], {})
                     report = inventory_report([], dest)
                     report.update(store.diagnostics())
+                    report["sampling_profile"] = snapshot.profile.data
                     emit_inventory_report(report, as_json=getattr(args, "json", False))
                     return 0
                 msg = f"No manga gallery directories with images found in: {dest}"
@@ -372,6 +374,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if getattr(args, "inventory_only", False):
             report = inventory_report(all_images, dest, gallery_keys=gallery_keys)
             report.update(store.diagnostics())
+            report["sampling_profile"] = snapshot.profile.data if snapshot.profile else None
             emit_inventory_report(report, as_json=getattr(args, "json", False))
             return 0
 
@@ -405,6 +408,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             percent=getattr(args, "sample_percent", None),
             seed=getattr(args, "sample_seed", 0),
             gallery_keys=gallery_keys,
+            profile=snapshot.profile if args.sample == "auto" else None,
         )
         eval_images = sampling_plan.images
         snapshot.validate_selected(eval_images)

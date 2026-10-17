@@ -65,6 +65,21 @@ def test_compress_rejects_junction_root_before_resolution(tmp_path, monkeypatch,
     assert "unlinked destination" in capsys.readouterr().err
 
 
+def test_mangadl_auto_uses_matching_gallery_profile(tmp_path, capsys):
+    root = tmp_path / "library"
+    chapter = root / "manga" / "chapter"
+    chapter.mkdir(parents=True)
+    for n in range(5):
+        Image.new("RGB", (40, 40)).save(chapter / f"{n}.png")
+    args = ["compress", "-d", str(root), "-I", str(tmp_path / "inventory.sqlite3"), "-J"]
+    assert main([*args, "-l"]) == 0
+    assert json.loads(capsys.readouterr().out)["sampling_profile"]["starter_samples"] == 2
+    assert main([*args, "-s", "auto", "-U", "trust", "-f", "png", "-e", "0"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["total_images"] == 2
+    assert result["sampling"]["allocation_method"] == "metadata_proxy"
+
+
 def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
     root = tmp_path / "library"
     (root / "manga").mkdir(parents=True)

@@ -453,7 +453,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
             "Dry-run analysis is the default; use -w/--write to apply modifications."
         ),
     )
-    from compresser.sampling import add_analysis_arguments
+    from compresser.sampling import add_analysis_arguments, parse_sample
     add_analysis_arguments(compress)
     compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
     compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
@@ -479,7 +479,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     compress.add_argument("-q", "--quality", type=int, default=80, help="Quality setting 1..100 for lossy mode (default: 80).")
     compress.add_argument("-p", "--perceptual-target", type=float, default=0.990, help="Minimum SSIM quality threshold (default: 0.990).")
     compress.add_argument("-c", "--compare", action="store_true", help="Benchmark comparison matrix across multiple strategies.")
-    compress.add_argument("-s", "--sample", type=int, help="Process a representative sample of N images total across selected galleries.")
+    compress.add_argument("-s", "--sample", type=parse_sample, help="Sample N images total, or auto starter coverage from a matching metadata profile.")
     compress.add_argument("-w", "--write", action="store_true", help="Apply compression and write changes to disk (default: dry-run).")
     compress.add_argument("-L", "--allow-lossy", action="store_true", help="Explicitly permit lossy compression in write mode.")
     compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
