@@ -1,5 +1,16 @@
 # Status
 
+Plan03 P2a compresser0.29.0/MangaDL1.55.0: one coordinator-owned run connection,
+shared bounded header pool, <=2*workers futures, <=256 scoped SQL lookups/cache
+flushes, short write transactions and completed-selection preservation. No-follow
+scandir classification, source-ID before/after checks, visited-directory pruning;
+old snapshot policy requires explicit refresh, database retained.224 compression
+passed/1 platform skip,311 MangaDL/55 help passed; lint/format/whitespace pass,
+editable installs refreshed. Generated benchmarks retain equal results, MangaDL
+connections10->1; scopes<=64 use serial header reads to avoid measured overhead.
+P2 remains open: reuse MangaDL root discovery entries/probe and finish failure/
+admission review before task3 gate. Publish P2a now as a usable checkpoint.
+
 Plan03 P1 compresser0.28.0/MangaDL1.54.0 implemented: completed logical galleries,
 nested-chapter ownership, current files and overall bars, recent completion ETA
 with unknown/estimated labels, short-lock snapshots and supported LiveBlock close.

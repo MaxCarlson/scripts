@@ -36,7 +36,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.28.0"
+__version__ = "0.29.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -356,7 +356,9 @@ def main(argv: list[str] | None = None) -> int:
 
                 prog = InventoryProgress(args.input, depth="files", enabled=not args.no_ui and not args.json)
                 try:
-                    report = scan_file_inventory(args.input, inventory_path(args, args.input), progress=prog)
+                    report = scan_file_inventory(
+                        args.input, inventory_path(args, args.input), progress=prog, threads=args.threads
+                    )
                 finally:
                     prog.close()
                 emit_inventory_report(report, as_json=args.json)
@@ -367,7 +369,7 @@ def main(argv: list[str] | None = None) -> int:
             ):
                 raise ValueError("Analysis cache must be outside the input tree")
             cache = None if args.inventory_only or args.preview_dir else create_analysis_cache(args, args.input)
-            store = InventoryStore(inventory_path(args, args.input))
+            store = resources.enter_context(InventoryStore(inventory_path(args, args.input)).run())
             snapshot = SelectionSnapshot(store, args.input, owner="compresser")
             if args.inventory_policy == "trust":
                 images, _ = snapshot.load()
@@ -376,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
                 prog = InventoryProgress(args.input, depth="headers", enabled=not args.no_ui and not args.json)
                 try:
                     summary, images = scan_directory(
-                        args.input, recursive=True, cache=cache, inventory=store, progress=prog
+                        args.input, recursive=True, cache=cache, inventory=store, progress=prog, threads=args.threads
                     )
                 finally:
                     prog.close()

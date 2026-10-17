@@ -14,7 +14,7 @@ from typing import Iterable
 
 from .scanner import IMAGE_EXTENSIONS
 from .inventory import connect_inventory
-from .timing import increment, phase, phase_iter
+from .timing import configure_pipeline, increment, phase, phase_iter
 
 
 def _linked(path: Path) -> bool:
@@ -32,8 +32,14 @@ def scan_file_inventory(
     exclude_stems: Iterable[str] = (),
     single_gallery: bool = False,
     progress=None,
+    threads: int = 4,
 ) -> dict:
     """Refresh extension/size statistics and atomically save a complete enumeration."""
+    if threads < 1:
+        raise ValueError("Inventory threads must be positive")
+    configure_pipeline(
+        inventory_effective_workers=1, inventory_worker_policy="file-only metadata traversal; no header pool"
+    )
     if _linked(source):
         raise ValueError("Filesystem inventory cannot target a linked source")
     root = source.expanduser().resolve()

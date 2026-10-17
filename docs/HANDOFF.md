@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+Plan03 P2a inventory pipeline checkpoint: compresser0.29.0/MangaDL1.55.0, bounded
+header workers, batched SQL and one run connection, short transactions and no-follow
+identity checks.224 compression/1 skip,311 MangaDL/55 help pass. P2 still open for
+root discovery reuse/failure review; then P3-P8. No production changes or main push.
+
 Plan03 P1 inventory progress implemented on compression-pipeline-and-cli-20261017:
 compresser0.28.0/MangaDL1.54.0. Logical galleries/chapters, completed counts,
 file/overall bars, approximate ETA and render-lock safety. P2 bounded inventory

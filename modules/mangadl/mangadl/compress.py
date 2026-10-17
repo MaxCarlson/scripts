@@ -6,6 +6,7 @@ MangaDL integration adapter for the compresser module.
 from __future__ import annotations
 
 import argparse
+from contextlib import ExitStack
 import json
 import sys
 from pathlib import Path
@@ -48,9 +49,16 @@ def _gallery_images(
     recursive: bool = True,
     inventory=None,
     progress=None,
+    threads=4,
 ):
     summary, images = scan_directory(
-        directory, recursive=recursive, cache=cache, inventory=inventory, progress=progress, gallery_key=directory
+        directory,
+        recursive=recursive,
+        cache=cache,
+        inventory=inventory,
+        progress=progress,
+        gallery_key=directory,
+        threads=threads,
     )
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
@@ -81,6 +89,7 @@ def discover_gallery_targets(
     inventory=None,
     collected=None,
     progress=None,
+    threads=4,
 ) -> list[Path]:
     """Find gallery directories under destination root."""
     if destination.expanduser().is_symlink():
@@ -93,7 +102,9 @@ def discover_gallery_targets(
 
     # Check if destination itself directly contains images
     # This discovery probe is not a completed logical gallery (chapters may follow).
-    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory, progress=None)
+    _, direct_images = _gallery_images(
+        dest, cache, recursive=False, inventory=inventory, progress=None, threads=threads
+    )
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
     is_gallery = bool(direct_images) or read_source_manifest(dest) is not None
@@ -132,7 +143,7 @@ def discover_gallery_targets(
     if progress is not None:
         progress.set_folder_total(len(entries))
     for entry in entries:
-        summary, imgs = _gallery_images(entry, cache, inventory=inventory, progress=progress)
+        summary, imgs = _gallery_images(entry, cache, inventory=inventory, progress=progress, threads=threads)
         if imgs:
             galleries.append(entry)
             if collected is not None:
@@ -186,6 +197,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
     dest = args.destination.expanduser().resolve()
     url_filters = getattr(args, "url", None) or ()
     cache = None
+    resources = ExitStack()
 
     try:
         if getattr(args, "inventory_depth", "headers") == "files":
@@ -212,6 +224,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                     exclude_stems=COVER_STEMS,
                     single_gallery=single_gallery,
                     progress=prog,
+                    threads=args.threads,
                 )
             finally:
                 prog.close()
@@ -245,7 +258,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             if getattr(args, "inventory_only", False) or getattr(args, "preview_dir", None)
             else create_analysis_cache(args, dest)
         )
-        store = InventoryStore(inventory_path(args, dest))
+        store = resources.enter_context(InventoryStore(inventory_path(args, dest)).run())
         snapshot = SelectionSnapshot(store, dest, owner="mangadl-pages", filters=url_filters)
         discovered = {}
         prog = InventoryProgress(
@@ -268,7 +281,13 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 gallery_paths = list(discovered)
             else:
                 gallery_paths = discover_gallery_targets(
-                    dest, url_filters, cache=cache, inventory=store, collected=discovered, progress=prog
+                    dest,
+                    url_filters,
+                    cache=cache,
+                    inventory=store,
+                    collected=discovered,
+                    progress=prog,
+                    threads=args.threads,
                 )
             if not gallery_paths:
                 prog.close()
@@ -299,7 +318,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 if gal in discovered:
                     s, imgs = discovered[gal]
                 else:
-                    s, imgs = _gallery_images(gal, cache, inventory=store, progress=prog)
+                    s, imgs = _gallery_images(gal, cache, inventory=store, progress=prog, threads=args.threads)
                 # Rebuild counts after cover exclusions; no excluded bytes count as savings.
                 s = ScanSummary(
                     gal,
@@ -545,5 +564,6 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         print(f"Error in mangadl compress: {exc}", file=sys.stderr)
         return 2
     finally:
+        resources.close()
         if cache is not None:
             cache.close()

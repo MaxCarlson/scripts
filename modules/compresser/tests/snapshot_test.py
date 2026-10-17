@@ -25,7 +25,7 @@ def test_trusted_analysis_skips_discovery_and_labels_saved_population(tmp_path, 
     def forbidden(*a, **k):
         pytest.fail("Trusted mode enumerated the library")
 
-    monkeypatch.setattr(scanner.os, "walk", forbidden)
+    monkeypatch.setattr(scanner, "observe_files", forbidden)
     assert main([*args, "-U", "trust", "-f", "png", "-e", "0", "-J"]) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["total_images"] == 1  # Newly added pages are deliberately not discovered.
@@ -137,7 +137,7 @@ def test_aborted_refresh_preserves_whole_snapshot(tmp_path, monkeypatch, capsys)
     def interrupted(*a, **k):
         raise PermissionError("blocked enumeration")
 
-    monkeypatch.setattr(scanner.os, "walk", interrupted)
+    monkeypatch.setattr(scanner, "observe_files", interrupted)
     assert main(args) == 2
     with sqlite3.connect(path) as db:
         assert db.execute("SELECT report FROM inventory_selections").fetchall() == before

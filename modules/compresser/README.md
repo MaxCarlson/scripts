@@ -1,4 +1,20 @@
-# compresser 0.28.0
+# compresser 0.29.0
+
+Header inventory now shares one coordinator-owned database connection and header
+pool across scan scopes. Selection-scoped cache lookups and writes are batched
+(at most256), without a write transaction spanning filesystem work. Larger scopes
+use up to `-t` header readers, with at most twice that many pending jobs; scopes
+of64 or fewer candidates avoid measured pool overhead and remain serial. File-only
+inventory remains serial and opens no header pool. `pipeline.settings` reports the
+effective scope limit/reason; more workers are not a promised throughput gain.
+
+Source identity is checked before/after changed-header inspection. Fingerprint/
+snapshot policy revision2 adds device/file IDs: existing inventory databases are
+retained, but old header rows need refresh and old trusted selections require
+`-U refresh` once. Interrupted scans can leave validated reusable header hints,
+but never replace the previous completed selection. Filesystem races remain
+possible; this is not a filesystem transaction. Full library/sample metadata
+still lives in coordinator RAM; bounded queues do not imply constant total memory.
 
 Inventory progress now separates the active logical gallery's files from finished
 gallery work units across the target. Nested chapter directories do not restart

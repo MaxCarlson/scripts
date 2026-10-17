@@ -1,5 +1,10 @@
 # Repository-Wide Plans Handoff
 
+Plan03 P2a usable pipeline slice compresser0.29.0/MangaDL1.55.0 validated;
+shared run connection, bounded changed-header jobs/SQL, source identity and safe
+completed-selection preservation. Task3/P2 remains open for root discovery reuse
+and final failure/admission review. Earlier Task6 pilot/confirmation remains excluded.
+
 Plan03 P1 progress checkpoint: compresser0.28.0/MangaDL1.54.0, current logical
 gallery files versus completed gallery work, chapter grouping, estimated ETA and
 thread-safe rendering. P2 inventory pipeline next. Actual terminal acceptance is

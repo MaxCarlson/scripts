@@ -1,5 +1,16 @@
 # Compresser handoff
 
+Plan03 P2a compresser0.29.0/MangaDL1.55.0: bounded SQL-free header workers,
+<=2*workers pending, ready-result collection, one selection connection/pool,
+<=256-key lookups/cache flushes and short write transactions. No-follow scandir
+classification, before/after source identity and only visited-directory pruning.
+Fingerprint/policy2 requires refresh of older trusted snapshots; no DB deletion.
+224 compression/1 platform skip,311 MangaDL/55 help pass. Generated worker matrix
+keeps equal results; MangaDL connection count10->1. Tiny scopes<=64 stay serial
+after measured pool overhead; file-only serial unchanged. Editable installs verified.
+P2 remains in progress: root discovery still probes/re-enumerates separately;
+finish that reuse and failure/admission review before task3 gate, then P3 trust/cache.
+
 Plan03 P1 compresser0.28.0/MangaDL1.54.0: logical-gallery completion events,
 per-gallery file counts, independent overall progress, thread-safe render snapshots,
 recent completed-gallery ETA (estimated, unknown until sufficient history).

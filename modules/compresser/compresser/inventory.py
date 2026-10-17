@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager, closing
+from contextlib import contextmanager, ExitStack
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -15,6 +15,11 @@ from typing import Iterator
 
 from .models import ImageMetadata
 from .timing import increment, pipeline_report, timed
+
+
+def header_fingerprint(info: os.stat_result) -> list[int]:
+    """Versioned identity evidence; older cache rows require fresh observation."""
+    return [2, info.st_size, info.st_mtime_ns, info.st_ctime_ns, info.st_dev, info.st_ino]
 
 
 def connect_inventory(*args, **kwargs) -> sqlite3.Connection:
@@ -61,12 +66,76 @@ class InventoryStore:
     def __init__(self, path: Path):
         self.path = path.expanduser().resolve()
         self.reports: list[dict] = []
+        self._connection: sqlite3.Connection | None = None
+        self._connection_readonly = False
+        self._running = False
+        self._resources: ExitStack | None = None
+        self._headers = None
+
+    @contextmanager
+    def run(self) -> Iterator["InventoryStore"]:
+        """One coordinator-owned connection across the selection's scan scopes."""
+        if self._running:
+            yield self
+            return
+        self._running = True
+        self.reports.clear()
+        self._resources = ExitStack()
+        try:
+            yield self
+        finally:
+            try:
+                self._resources.close()
+            finally:
+                self._resources = None
+                self._headers = None
+                if self._connection is not None:
+                    self._connection.close()
+                    self._connection = None
+                self._running = False
+
+    @contextmanager
+    def header_pipeline(self, workers: int):
+        from .inventory_pipeline import HeaderPipeline
+
+        if self._resources is not None:
+            if self._headers is None:
+                self._headers = self._resources.enter_context(HeaderPipeline(workers))
+            elif self._headers.workers != workers:
+                raise ValueError("Use one header worker limit throughout an inventory run")
+            yield self._headers
+        else:
+            with HeaderPipeline(workers) as pipeline:
+                yield pipeline
+
+    @contextmanager
+    def connection(self, *, readonly: bool = False) -> Iterator[sqlite3.Connection]:
+        """Borrow this run's connection; standalone callers retain scoped ownership."""
+        if self._connection is not None and self._connection_readonly and not readonly:
+            # Trust loads stay genuinely read-only; saving later sample provenance
+            # explicitly upgrades after that read scope has ended.
+            self._connection.close()
+            self._connection = None
+        if self._connection is not None:
+            yield self._connection
+            return
+        if not readonly:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+        target = self.path.as_uri() + "?mode=ro" if readonly else self.path
+        connection = connect_inventory(target, uri=readonly, timeout=5)
+        if self._running:
+            self._connection = connection
+            self._connection_readonly = readonly
+            yield connection
+        else:
+            try:
+                yield connection
+            finally:
+                connection.close()
 
     @contextmanager
     def scan(self, root: Path, recursive: bool) -> Iterator["InventorySession"]:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = connect_inventory(self.path, timeout=5)
-        try:
+        with self.connection() as connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_headers "
                 "(path TEXT, grayscale INTEGER, fingerprint TEXT, metadata TEXT, "
@@ -78,35 +147,32 @@ class InventoryStore:
                 "PRIMARY KEY(root,recursive))"
             )
             connection.commit()
-            connection.execute("BEGIN IMMEDIATE")
             session = InventorySession(connection, root.resolve(), recursive)
-            yield session
-            # Only a successfully completed enumeration may remove missing records.
-            prefix = session.root if session.root.is_dir() else session.root.parent
-            start = str(prefix) + os.sep
-            rows = connection.execute(
-                "SELECT DISTINCT path FROM inventory_headers WHERE path=? OR (path>=? AND path<?)",
-                (str(session.root), start, start + "\uffff"),
-            ).fetchall()
-            for (value,) in rows:
-                candidate = Path(value)
-                belongs = candidate == session.root or (
-                    session.root.is_dir() and prefix in candidate.parents and (recursive or candidate.parent == prefix)
+            try:
+                yield session
+                session.flush()
+                # Only a successfully completed enumeration may remove missing records.
+                prefix = session.root if session.is_directory else session.root.parent
+                start = str(prefix) + os.sep
+                rows = connection.execute(
+                    "SELECT DISTINCT path FROM inventory_headers WHERE path=? OR (path>=? AND path<?)",
+                    (str(session.root), start, start + "\uffff"),
                 )
-                if belongs and value not in session.seen:
-                    connection.execute("DELETE FROM inventory_headers WHERE path=?", (value,))
-            report = session.report()
-            connection.execute(
-                "INSERT OR REPLACE INTO inventory_scans VALUES(?,?,?,?)",
-                (str(session.root), int(recursive), report["completed"], json.dumps(report)),
-            )
-            connection.commit()
-            self.reports.append(report)
-        except BaseException:
-            connection.rollback()
-            raise
-        finally:
-            connection.close()
+                with connection:
+                    for (value,) in rows:
+                        candidate = Path(value)
+                        belongs = candidate == session.root or candidate.parent in session.visited
+                        if belongs and value not in session.seen:
+                            connection.execute("DELETE FROM inventory_headers WHERE path=?", (value,))
+                    report = session.report()
+                    connection.execute(
+                        "INSERT OR REPLACE INTO inventory_scans VALUES(?,?,?,?)",
+                        (str(session.root), int(recursive), report["completed"], json.dumps(report)),
+                    )
+                self.reports.append(report)
+            except BaseException:
+                connection.rollback()
+                raise
 
     def diagnostics(self) -> dict:
         """Expose scan failures and actual header operations, not integrity claims."""
@@ -146,7 +212,7 @@ class InventoryStore:
             created=datetime.now(timezone.utc).isoformat(),
             selected_files=[str(i.path.relative_to(root)) if is_directory else i.path.name for i in plan.images],
         )
-        with closing(connect_inventory(self.path)) as connection, connection:
+        with self.connection() as connection, connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_samples "
                 "(root TEXT, seed TEXT, population TEXT, count INTEGER, report TEXT, "
@@ -164,6 +230,9 @@ class InventorySession:
         self.connection = connection
         self.root = root
         self.recursive = recursive
+        self.is_directory = root.is_dir()
+        self.visited: set[Path] = set()
+        self._pending: list[tuple] = []
         self.seen: dict[str, dict] = {}
         self.reused = 0
         self.inspected = 0
@@ -171,10 +240,10 @@ class InventorySession:
     @timed("metadata_lookup")
     def get_metadata(self, path: Path, check_grayscale: bool = False) -> ImageMetadata | None:
         stat = path.stat()
-        fingerprint = json.dumps([1, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns])
+        fingerprint = json.dumps(header_fingerprint(stat))
         self.seen[str(path)] = {
             "path": str(path),
-            "relative_path": str(path.relative_to(self.root)) if self.root.is_dir() else path.name,
+            "relative_path": str(path.relative_to(self.root)) if self.is_directory else path.name,
             "extension": path.suffix.lower(),
             "bytes": stat.st_size,
             "fingerprint": fingerprint,
@@ -196,18 +265,66 @@ class InventorySession:
         self.inspected += 1
         return None
 
+    @timed("metadata_lookup")
+    def get_many(self, observations, check_grayscale: bool = False) -> dict[Path, ImageMetadata]:
+        """Selection-scoped <=256-key queries; SQL always stays on the coordinator."""
+        if len(observations) > 256:
+            raise ValueError("Header lookup batch exceeds256 observations")
+        if not observations:
+            return {}
+        marks = ",".join("?" for _ in observations)
+        rows = {
+            path: (fingerprint, metadata)
+            for path, fingerprint, metadata in self.connection.execute(
+                f"SELECT path,fingerprint,metadata FROM inventory_headers WHERE grayscale=? AND path IN ({marks})",
+                (int(check_grayscale), *(str(item.path) for item in observations)),
+            )
+        }
+        found = {}
+        for item in observations:
+            info = item.info
+            fingerprint = json.dumps(header_fingerprint(info))
+            self.seen[str(item.path)] = {
+                "path": str(item.path),
+                "relative_path": str(item.path.relative_to(self.root)) if self.is_directory else item.path.name,
+                "extension": item.path.suffix.lower(),
+                "bytes": info.st_size,
+                "fingerprint": fingerprint,
+                "status": "unreadable",
+            }
+            row = rows.get(str(item.path))
+            if row and row[0] == fingerprint:
+                item.validate()
+                data = json.loads(row[1])
+                data["path"] = Path(data["path"])
+                meta = ImageMetadata(**data)
+                found[item.path] = meta
+                self.seen[str(item.path)].update(
+                    status="header_verified", format=meta.format, width=meta.width, height=meta.height
+                )
+                self.reused += 1
+            else:
+                self.inspected += 1
+        return found
+
     @timed("header_publication")
     def set_metadata(self, meta: ImageMetadata, check_grayscale: bool = False) -> None:
         stat = meta.path.stat()
         entry = self.seen[str(meta.path)]
-        fingerprint = json.dumps([1, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns])
+        fingerprint = json.dumps(header_fingerprint(stat))
         if fingerprint != entry["fingerprint"] or stat.st_size != meta.size_bytes or stat.st_mtime_ns != meta.mtime_ns:
             raise RuntimeError(f"Source changed during inventory: {meta.path}")
-        self.connection.execute(
-            "INSERT OR REPLACE INTO inventory_headers VALUES(?,?,?,?)",
-            (str(meta.path), int(check_grayscale), fingerprint, json.dumps(asdict(meta), default=str)),
-        )
+        self._pending.append((str(meta.path), int(check_grayscale), fingerprint, json.dumps(asdict(meta), default=str)))
+        if len(self._pending) >= 256:
+            self.flush()
         entry.update(status="header_verified", format=meta.format, width=meta.width, height=meta.height)
+
+    def flush(self) -> None:
+        """Cache batches are reusable hints, never a completed-population marker."""
+        if self._pending:
+            with self.connection:
+                self.connection.executemany("INSERT OR REPLACE INTO inventory_headers VALUES(?,?,?,?)", self._pending)
+            self._pending.clear()
 
     def report(self) -> dict:
         extensions = {}

@@ -1,5 +1,13 @@
 # mangadl
 
+Compression inventory checkpoint1.55.0/compresser0.29.0 shares one inventory
+connection/header pool across gallery scopes and batches cache SQL. `-t` caps
+header concurrency for larger scopes; scopes<=64 candidates stay serial to avoid
+measured overhead. File-only inventory remains serial. New device/file identity
+fingerprints require one `-U refresh` before trusting an older saved inventory;
+no database deletion is needed. Completed-selection publication remains separate
+from reusable header-cache hints after interruption.
+
 Compression inventory checkpoint1.54.0/compresser0.28.0 separates current-gallery
 files and overall finished-gallery progress, including nested chapters and empty
 candidates. Recent gallery throughput supplies an approximate ETA; unknown totals

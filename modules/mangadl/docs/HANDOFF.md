@@ -1,5 +1,13 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P2a MangaDL1.55.0/compresser0.29.0: shared inventory run connection/header
+pool across galleries, bounded changed-header jobs/batched SQL, short write scopes,
+source-ID fingerprints requiring -U refresh once before trusting old selections.
+224 compression/1 skip,311 MangaDL/55 help pass; installs refreshed. Generated
+8-gallery fixture reduces inventory connections10->1 with equal compression results.
+P2 remaining: discovery root entries/probe reuse and failure/admission review;
+no production scan, no Task6 pilot CLI work, no push of main.
+
 Plan03 P1 MangaDL1.54.0/compresser0.28.0 adds correct logical-gallery progress;
 discovery probes no longer count a gallery complete before its chapters are scanned.
 Empty candidates and completed-with-errors are counted separately from verification.

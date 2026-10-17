@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections import Counter, defaultdict
-from contextlib import closing
 from dataclasses import asdict
 from datetime import datetime, timezone
 import json
@@ -13,7 +12,7 @@ import stat
 
 from PIL import __version__ as pillow_version
 
-from .inventory import InventoryStore, connect_inventory
+from .inventory import InventoryStore, header_fingerprint
 from .models import ImageMetadata, ScanSummary
 from .timing import timed
 
@@ -58,7 +57,7 @@ class SelectionSnapshot:
         self.original_root = root.expanduser().absolute()
         self.root = self.original_root.resolve()
         # Increment the policy revision when scanner/exclusion/ownership rules change.
-        self.policy = json.dumps([1, owner, sorted(set(filters)), pillow_version])
+        self.policy = json.dumps([2, owner, sorted(set(filters)), pillow_version])
         self.report: dict = {}
         self.fingerprints: dict[Path, list[int]] = {}
 
@@ -88,7 +87,7 @@ class SelectionSnapshot:
             "images": entries,
         }
         self.store.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(connect_inventory(self.store.path)) as db, db:
+        with self.store.connection() as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_selections "
                 "(root TEXT, policy TEXT, report TEXT, PRIMARY KEY(root,policy))"
@@ -104,7 +103,7 @@ class SelectionSnapshot:
         """Load a compatible completed population; never enumerate the library."""
         try:
             _unlinked(self.original_root)
-            with closing(connect_inventory(self.store.path.as_uri() + "?mode=ro", uri=True)) as db:
+            with self.store.connection(readonly=True) as db:
                 row = db.execute(
                     "SELECT report FROM inventory_selections WHERE root=? AND policy=?",
                     (str(self.root), self.policy),
@@ -132,8 +131,8 @@ class SelectionSnapshot:
                 image = ImageMetadata(**meta)
                 fingerprint = entry["fingerprint"]
                 if (
-                    len(fingerprint) != 4
-                    or fingerprint[0] != 1
+                    len(fingerprint) != 6
+                    or fingerprint[0] != 2
                     or fingerprint[1:3] != [image.size_bytes, image.mtime_ns]
                     or image.width < 1
                     or image.height < 1
@@ -171,7 +170,7 @@ class SelectionSnapshot:
             try:
                 _unlinked(image.path)
                 info = image.path.stat()
-                fingerprint = [1, info.st_size, info.st_mtime_ns, info.st_ctime_ns]
+                fingerprint = header_fingerprint(info)
                 if not stat.S_ISREG(info.st_mode) or fingerprint != self.fingerprints[image.path]:
                     raise ValueError("source changed")
             except (OSError, ValueError, KeyError) as exc:

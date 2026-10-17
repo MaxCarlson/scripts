@@ -6,7 +6,7 @@ Recursive directory scanner for manga/manhwa image collections.
 from __future__ import annotations
 
 from collections import defaultdict
-import os
+from contextlib import nullcontext
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -16,7 +16,8 @@ from .models import ImageMetadata, ScanSummary
 from .cache import AnalysisCache
 from .inventory import InventoryStore
 from .perceptual import is_grayscale_image
-from .timing import increment, phase, timed
+from .timing import configure_pipeline, increment, phase, timed
+from .inventory_pipeline import FileObservation, HeaderPipeline, linked, observe_files
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".webp", ".png", ".avif", ".bmp"}
 
@@ -27,11 +28,13 @@ def is_image_file(path: Path) -> bool:
 
 
 @timed("header_read")
-def inspect_image_file(path: Path, *, check_grayscale: bool = False) -> ImageMetadata | None:
+def inspect_image_file(
+    path: Path, *, check_grayscale: bool = False, observation: FileObservation | None = None
+) -> ImageMetadata | None:
     """Extract metadata for a single image file without loading pixel buffer."""
     increment("headers_inspected")
     try:
-        stat = path.stat()
+        stat = observation.info if observation is not None else path.stat()
         size = stat.st_size
         if size <= 0:
             return None
@@ -62,6 +65,7 @@ def scan_directory(
     inventory: InventoryStore | None = None,
     progress: Any | None = None,
     gallery_key: Path | None = None,
+    threads: int = 4,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """Refresh membership and reuse unchanged headers from a durable inventory."""
     if inventory is None:
@@ -73,8 +77,9 @@ def scan_directory(
             cache=cache,
             progress=progress,
             gallery_key=gallery_key,
+            threads=threads,
         )
-    with inventory.scan(target_path, recursive) as session:
+    with inventory.scan(target_path, recursive) as session, inventory.header_pipeline(threads) as pipeline:
         return _scan_directory(
             target_path,
             recursive=recursive,
@@ -83,6 +88,8 @@ def scan_directory(
             cache=session,
             progress=progress,
             gallery_key=gallery_key,
+            threads=threads,
+            pipeline=pipeline,
         )
 
 
@@ -95,138 +102,130 @@ def _scan_directory(
     cache: AnalysisCache | None = None,
     progress: Any | None = None,
     gallery_key: Path | None = None,
+    threads: int = 4,
+    pipeline: HeaderPipeline | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """
     Recursively scan target_path for all image files and compile aggregate statistics.
     """
-    target = target_path.expanduser().resolve()
+    original = target_path.expanduser().absolute()
+    if original.exists() and linked(original.lstat()):
+        raise ValueError(f"Linked inventory source is not allowed: {original}")
+    target = original.resolve()
     if not target.exists():
         raise FileNotFoundError(f"Target path does not exist: {target}")
 
-    images: list[ImageMetadata] = []
-    format_counts: dict[str, int] = defaultdict(int)
-    format_bytes: dict[str, int] = defaultdict(int)
-    total_bytes = 0
-    tall_count = 0
-    gray_count = 0
-
+    if threads < 1:
+        raise ValueError("Inventory threads must be positive")
     with phase("enumeration"):
-        if target.is_file():
-            file_candidates = [target] if is_image_file(target) else []
-        elif recursive:
-            file_candidates = []
-
-            def walk_error(error):
-                raise error
-
-            for directory, dirs, names in os.walk(target, followlinks=False, onerror=walk_error):
-                dirs[:] = [
-                    name
-                    for name in dirs
-                    if not name.startswith(".") and name != "_partial" and not (Path(directory) / name).is_symlink()
-                ]
-                file_candidates.extend(
-                    Path(directory) / name
-                    for name in names
-                    if not name.startswith(".")
-                    and is_image_file(Path(directory) / name)
-                    and not (Path(directory) / name).is_symlink()
-                )
-        else:
-            file_candidates = [p for p in target.glob("*") if is_image_file(p)]
-
-        file_candidates.sort(key=lambda p: str(p).casefold())
-    increment("scanned_candidates", len(file_candidates))
-    group_keys = {}
+        observations = observe_files(
+            target,
+            recursive=recursive,
+            extensions=IMAGE_EXTENSIONS,
+            gallery=gallery_key,
+            visited=getattr(cache, "visited", None),
+        )
+    increment("scanned_candidates", len(observations))
+    # P0/P2 generated64-file scans are faster serial than with pool overhead.
+    # Larger scopes may benefit from I/O overlap; requested threads remain a cap.
+    effective = 1 if len(observations) <= 64 else min(threads, len(observations))
+    configure_pipeline(
+        inventory_effective_workers=effective,
+        inventory_worker_policy=(
+            "small scope (<=64 candidates): avoid measured pool overhead"
+            if len(observations) <= 64
+            else "requested upper bound; changed headers only"
+        ),
+    )
     group_counts = defaultdict(int)
     group_done = defaultdict(int)
-    target_is_directory = target.is_dir()
-    for path in file_candidates:
-        relative = path.relative_to(target) if target_is_directory else Path(path.name)
-        key = gallery_key or (
-            target / relative.parts[0]
-            if len(relative.parts) > 1
-            else (target if target_is_directory else target.parent)
-        )
-        group_keys[path] = key
-        group_counts[key] += 1
+    for item in observations:
+        group_counts[item.gallery] += 1
     if progress is not None:
         if gallery_key is None:
             progress.set_folder_total(len(group_counts))
         elif progress.total_folders is None:
             progress.set_folder_total(1)
-        if gallery_key is not None and not file_candidates:
+        if gallery_key is not None and not observations:
             progress.start_gallery(gallery_key, total_files=0)
             progress.finish_gallery(gallery_key)
-    if progress is not None and file_candidates:
-        progress.add_total_files(len(file_candidates))
+        progress.add_total_files(len(observations))
 
-    for idx, path in enumerate(file_candidates, 1):
-        key = group_keys[path]
-        if progress is not None and group_done[key] == 0:
-            progress.start_gallery(key, total_files=group_counts[key])
-        meta = cache.get_metadata(path, check_grayscale) if cache else None
-        reused = meta is not None
+    images = []
+    completed = 0
+    started = set()
+
+    def start_gallery(item):
+        if progress is not None and item.gallery not in started:
+            progress.start_gallery(item.gallery, total_files=group_counts[item.gallery])
+            started.add(item.gallery)
+
+    def accept(item, meta, reused):
+        nonlocal completed
+        start_gallery(item)
+        path, key = item.path, item.gallery
         if reused:
             increment("headers_reused")
-        inspected = False
-        if meta is None:
-            inspected = True
-            meta = inspect_image_file(path, check_grayscale=check_grayscale)
-            if meta and cache:
-                cache.set_metadata(meta, check_grayscale)
+        elif meta is not None and cache:
+            cache.set_metadata(meta, check_grayscale)
         if meta is None:
             increment("unreadable_images")
-            if progress is not None:
-                try:
-                    raw_size = path.stat().st_size
-                except OSError:
-                    raw_size = 0
-                progress.advance_file(
-                    path,
-                    size_bytes=raw_size,
-                    reused=False,
-                    inspected=inspected,
-                    unreadable=True,
-                    gallery_key=key,
-                )
-            group_done[key] += 1
-            if progress is not None and group_done[key] == group_counts[key]:
-                progress.finish_gallery(key)
-            continue
-        images.append(meta)
-        fmt = meta.format.upper()
-        format_counts[fmt] += 1
-        format_bytes[fmt] += meta.size_bytes
-        total_bytes += meta.size_bytes
-        if meta.is_tall_for_webp:
-            tall_count += 1
-        if meta.is_grayscale:
-            gray_count += 1
-
+        else:
+            images.append(meta)
         if progress is not None:
             progress.advance_file(
                 path,
-                size_bytes=meta.size_bytes,
+                size_bytes=item.info.st_size,
                 reused=reused,
-                inspected=inspected,
-                unreadable=False,
+                inspected=not reused,
+                unreadable=meta is None,
                 gallery_key=key,
             )
         group_done[key] += 1
         if progress is not None and group_done[key] == group_counts[key]:
             progress.finish_gallery(key)
-        if progress_callback:
-            progress_callback(idx, path)
+        completed += 1
+        if progress_callback and meta is not None:
+            progress_callback(completed, path)
+
+    def read(item):
+        return inspect_image_file(item.path, check_grayscale=check_grayscale, observation=item)
+
+    # One serial fast path for a single candidate; reuse one selection pool otherwise.
+    context = nullcontext(pipeline) if pipeline is not None and effective > 1 else HeaderPipeline(effective)
+    with context as headers:
+        for start in range(0, len(observations), 256):
+            batch = observations[start : start + 256]
+            if cache and hasattr(cache, "get_many"):
+                cached = cache.get_many(batch, check_grayscale)
+            else:
+                cached = {item.path: cache.get_metadata(item.path, check_grayscale) for item in batch} if cache else {}
+            changed = []
+            for item in batch:
+                meta = cached.get(item.path)
+                if meta is not None:
+                    item.validate()
+                    accept(item, meta, True)
+                else:
+                    changed.append(item)
+            for item, meta in headers.inspect(changed, read, on_submit=start_gallery):
+                accept(item, meta, False)
+
+    images.sort(key=lambda item: str(item.path).casefold())
+    format_counts: dict[str, int] = defaultdict(int)
+    format_bytes: dict[str, int] = defaultdict(int)
+    for image in images:
+        format_counts[image.format.upper()] += 1
+        format_bytes[image.format.upper()] += image.size_bytes
 
     summary = ScanSummary(
         target_path=target,
         total_images=len(images),
-        total_bytes=total_bytes,
+        total_bytes=sum(image.size_bytes for image in images),
         format_counts=dict(format_counts),
         format_bytes=dict(format_bytes),
-        tall_images_count=tall_count,
-        grayscale_count=gray_count,
+        tall_images_count=sum(image.is_tall_for_webp for image in images),
+        grayscale_count=sum(image.is_grayscale for image in images),
     )
 
     return summary, images
