@@ -16,6 +16,18 @@ from .models import ImageMetadata, ImageResult
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-I",
+        "--inventory-file",
+        type=Path,
+        help="Durable inventory SQLite file outside the input tree (default: per-library user cache).",
+    )
+    parser.add_argument(
+        "-l",
+        "--inventory-only",
+        action="store_true",
+        help="Refresh and report image inventory without running encoders.",
+    )
+    parser.add_argument(
         "-b",
         "--compare-both",
         action="store_true",
@@ -33,6 +45,15 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
+    if getattr(args, "inventory_only", False) and (
+        args.write
+        or args.compare
+        or getattr(args, "compare_both", False)
+        or getattr(args, "recover", False)
+        or args.sample is not None
+        or getattr(args, "sample_percent", None) is not None
+    ):
+        raise ValueError("Inventory-only cannot be combined with writes, comparison, recovery or sampling")
     if getattr(args, "compare_both", False):
         args.compare = True
     percent = getattr(args, "sample_percent", None)

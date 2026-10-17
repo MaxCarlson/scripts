@@ -14,6 +14,7 @@ from PIL import Image
 
 from .models import ImageMetadata, ScanSummary
 from .cache import AnalysisCache
+from .inventory import InventoryStore
 from .perceptual import is_grayscale_image
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".webp", ".png", ".avif", ".bmp"}
@@ -55,6 +56,34 @@ def scan_directory(
     check_grayscale: bool = False,
     progress_callback: Callable[[int, Path], None] | None = None,
     cache: AnalysisCache | None = None,
+    inventory: InventoryStore | None = None,
+) -> tuple[ScanSummary, list[ImageMetadata]]:
+    """Refresh membership and reuse unchanged headers from a durable inventory."""
+    if inventory is None:
+        return _scan_directory(
+            target_path,
+            recursive=recursive,
+            check_grayscale=check_grayscale,
+            progress_callback=progress_callback,
+            cache=cache,
+        )
+    with inventory.scan(target_path, recursive) as session:
+        return _scan_directory(
+            target_path,
+            recursive=recursive,
+            check_grayscale=check_grayscale,
+            progress_callback=progress_callback,
+            cache=session,
+        )
+
+
+def _scan_directory(
+    target_path: Path,
+    *,
+    recursive: bool = True,
+    check_grayscale: bool = False,
+    progress_callback: Callable[[int, Path], None] | None = None,
+    cache: AnalysisCache | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """
     Recursively scan target_path for all image files and compile aggregate statistics.
@@ -74,7 +103,11 @@ def scan_directory(
         file_candidates = [target] if is_image_file(target) else []
     elif recursive:
         file_candidates = []
-        for directory, dirs, names in os.walk(target, followlinks=False):
+
+        def walk_error(error):
+            raise error
+
+        for directory, dirs, names in os.walk(target, followlinks=False, onerror=walk_error):
             dirs[:] = [
                 name
                 for name in dirs

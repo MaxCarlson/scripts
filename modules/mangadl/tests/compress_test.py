@@ -1,12 +1,31 @@
 from __future__ import annotations
 
 import json
+import pytest
 from pathlib import Path
 from PIL import Image
 
 from mangadl.cli import build_parser, main
 from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
+
+
+def test_inventory_only_reuses_nested_headers(tmp_path, capsys, monkeypatch):
+    import compresser.scanner as scanner
+
+    root = tmp_path / "library"
+    gallery = root / "manga" / "chapter"
+    gallery.mkdir(parents=True)
+    Image.new("RGB", (40, 40)).save(gallery / "01.png")
+    Image.new("RGB", (40, 40)).save(gallery / "cover.png")
+    args = ["compress", "-d", str(root), "-l", "-I", str(tmp_path / "inventory.sqlite3")]
+    assert main(args) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["images"] == 1
+    assert report["galleries"][str(root / "manga")]["images"] == 1
+    monkeypatch.setattr(scanner, "inspect_image_file", lambda *a, **k: pytest.fail("Unchanged header reopened"))
+    assert main(args) == 0
+    assert json.loads(capsys.readouterr().out)["headers_reused"] >= 2
 
 
 def test_combined_gallery_sample_report(tmp_path, capsys):

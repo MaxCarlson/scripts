@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+I1a:1.38.0/compresser0.10.0 adds -l inventory-only/-I external inventory SQLite.
+Normal compression auto-refreshes inventory; nested pages preserve owning gallery,
+covers remain excluded, and discovery results are reused instead of rescanning
+each discovered gallery. JSON includes per-gallery totals/shares/extension types
+and scan-scope unreadable diagnostics. No production run or source-image writes.
+
 2026-10-16:1.37.0/compresser0.9.0: -b compares full lossless/lossy sets using -q;
 -P percentage and -z seed sample across all discovered galleries, preserving
 nested-chapter ownership. Counts and bytes jointly weight quotas; projections

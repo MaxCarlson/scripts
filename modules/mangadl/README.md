@@ -1,5 +1,19 @@
 # mangadl
 
+## Inventory without compression
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp\mangadl-inventory.sqlite3' > 'E:\Temp\mangadl-inventory.json'
+```
+
+`-l` runs no encoders. The JSON report groups eligible pages by gallery, preserving
+nested chapter ownership and cover/control/partial exclusions. Extension totals,
+actual formats, image sizes/shares and scan-scope errors are separate. A header scan
+is not an integrity audit. Normal compression automatically refreshes durable header
+inventory too; use the same `-I` path to reuse this one. Without `-I`, explicit `-K`
+gets a companion inventory file; otherwise a per-library user-cache path is selected.
+Membership is checked each run and unchanged headers reused; sources are not changed.
+
 ## Representative compression comparison
 
 ```powershell

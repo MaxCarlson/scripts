@@ -7,6 +7,11 @@ from uuid import uuid4
 import pytest
 
 
+@pytest.fixture(autouse=True)
+def isolated_inventory_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMPRESSER_STATE_DIR", str(tmp_path.parent / f"{tmp_path.name}-inventory-state"))
+
+
 _MODULE_ROOT = Path(__file__).resolve().parents[1]
 _BASE_TEMP_ROOT = _MODULE_ROOT / ".pytest_tmp_root"
 

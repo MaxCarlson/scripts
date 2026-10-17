@@ -1,5 +1,13 @@
 # Scripts Repository Handoff
 
+2026-10-16 inventory continuation: official existing compression plan reconciled;
+approved I1-I5 continuation includes opt-in SSD scratch at I4. I1a implemented as
+compresser0.10.0/MangaDL1.38.0: -l inventory-only, -I durable external inventory,
+automatic header reuse and atomic completed scans, gallery discovery reuse.
+90 compression/17 integration/55 help tests pass; local installs refreshed. User
+requests current checkpoint commit followed by a new branch and per-feature tested
+commits/pushes. No production scan or image writes. Next I2 cache improvements.
+
 Last updated: 2026-10-16
 
 ## Compression merge checkpoint

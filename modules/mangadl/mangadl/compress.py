@@ -22,14 +22,15 @@ from compresser import (
 )
 from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
+from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
 from .library_guard import library_write_guard
 
 
-def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recursive: bool = True):
-    summary, images = scan_directory(directory, recursive=recursive, cache=cache)
+def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recursive: bool = True, inventory=None):
+    summary, images = scan_directory(directory, recursive=recursive, cache=cache, inventory=inventory)
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
         image
@@ -52,7 +53,12 @@ def _assert_library_idle(destination: Path) -> None:
 
 
 def discover_gallery_targets(
-    destination: Path, url_filters: Sequence[str] = (), *, cache: AnalysisCache | None = None
+    destination: Path,
+    url_filters: Sequence[str] = (),
+    *,
+    cache: AnalysisCache | None = None,
+    inventory=None,
+    collected=None,
 ) -> list[Path]:
     """Find gallery directories under destination root."""
     if destination.expanduser().is_symlink():
@@ -64,7 +70,7 @@ def discover_gallery_targets(
         raise ValueError("Compression cannot target hidden controls or partial downloads")
 
     # Check if destination itself directly contains images
-    _, direct_images = _gallery_images(dest, cache, recursive=False)
+    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory)
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
     is_gallery = bool(direct_images) or read_source_manifest(dest) is not None
@@ -97,9 +103,11 @@ def discover_gallery_targets(
     galleries: list[Path] = []
     for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold()):
         if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink():
-            summary, imgs = _gallery_images(entry, cache)
+            summary, imgs = _gallery_images(entry, cache, inventory=inventory)
             if imgs:
                 galleries.append(entry)
+                if collected is not None:
+                    collected[entry] = (summary, imgs)
 
     return galleries
 
@@ -149,8 +157,15 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if cache_path and (cache_path.resolve() == dest or dest in cache_path.resolve().parents):
             raise ValueError("Analysis cache must be outside the destination tree")
         cache = AnalysisCache(path=cache_path)
-        gallery_paths = discover_gallery_targets(dest, url_filters, cache=cache)
+        store = InventoryStore(inventory_path(args, dest))
+        discovered = {}
+        gallery_paths = discover_gallery_targets(dest, url_filters, cache=cache, inventory=store, collected=discovered)
         if not gallery_paths:
+            if getattr(args, "inventory_only", False):
+                report = inventory_report([], dest)
+                report.update(store.diagnostics())
+                print(json.dumps(report, indent=2))
+                return 0
             msg = f"No manga gallery directories with images found in: {dest}"
             if getattr(args, "json", False):
                 print(json.dumps({"error": msg}))
@@ -168,7 +183,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         gray_count = 0
 
         for gal in gallery_paths:
-            s, imgs = _gallery_images(gal, cache)
+            s, imgs = discovered[gal] if gal in discovered else _gallery_images(gal, cache, inventory=store)
             # Rebuild counts after cover exclusions; no excluded bytes count as savings.
             s = ScanSummary(
                 gal,
@@ -191,6 +206,12 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 format_counts[fmt] = format_counts.get(fmt, 0) + cnt
             for fmt, b_cnt in s.format_bytes.items():
                 format_bytes[fmt] = format_bytes.get(fmt, 0) + b_cnt
+
+        if getattr(args, "inventory_only", False):
+            report = inventory_report(all_images, dest, gallery_keys=gallery_keys)
+            report.update(store.diagnostics())
+            print(json.dumps(report, indent=2))
+            return 0
 
         if not all_images:
             msg = f"No images found to process in: {dest}"
@@ -220,6 +241,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         )
         eval_images = sampling_plan.images
         if not args.json:
+            print(f"Inventory: {store.path}")
             print_sampling(sampling_plan)
         engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
 

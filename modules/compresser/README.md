@@ -1,4 +1,24 @@
-# compresser 0.8.0
+# compresser 0.10.0
+
+## Persistent inventory
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp\image-inventory.sqlite3' > 'E:\Temp\image-inventory.json'
+```
+
+`-l/--inventory-only` refreshes inventory and emits JSON without encoding. Includes
+per-gallery eligible header-image counts/bytes, extensions versus actual formats,
+size summaries and shares; scan scopes separately report unreadable candidates.
+Headers are not full image-integrity verification. Bytes are file lengths, not
+filesystem allocation sizes. `-I/--inventory-file` selects durable SQLite storage
+outside the input tree. Without it, a companion inventory is used beside explicit
+`-K`, or a per-library file under the user cache directory. Normal compression
+automatically refreshes the same inventory. Existing inventory metadata is never
+evicted by the trial cache. Membership is enumerated every run; only new/changed
+headers are inspected. Successful scope refreshes remove deleted records; aborted
+scans do not publish a completed snapshot. Sources are unchanged; only the inventory
+is written. Trusted-snapshot/fast filesystem-only modes and sample advice are later
+checkpoints; this first implementation inspects headers on the initial pass.
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are

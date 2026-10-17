@@ -5,6 +5,11 @@ from pathlib import Path
 from PIL import Image
 
 
+@pytest.fixture(autouse=True)
+def isolated_inventory_state(tmp_path, monkeypatch):
+    monkeypatch.setenv("COMPRESSER_STATE_DIR", str(tmp_path.parent / f"{tmp_path.name}-inventory-state"))
+
+
 @pytest.fixture
 def sample_images_dir(tmp_path: Path) -> Path:
     """Create a temporary directory with various sample images."""

@@ -1,5 +1,12 @@
 # Compresser handoff
 
+I1a (2026-10-16):0.10.0 durable SQLite inventory independent of trial eviction.
+-I path override and -l JSON inventory-only; normal analysis refreshes automatically.
+Validated membership/header fingerprints, transactional completed-scope publication,
+deleted-record pruning and explicit unreadable scope diagnostics. Initial scan uses
+headers, not filesystem-only or trusted snapshots. MangaDL reuses gallery discovery
+results; automatic metadata persistence is isolated in test fixtures. No source writes.
+
 2026-10-16:0.9.0 adds CLI -b combined lossless/lossy comparison, -P percent and
 -z seed. New sampling.py provides per-gallery coverage, count/byte-weighted quotas,
 uniform random selection and design-weighted projections with approximate95%

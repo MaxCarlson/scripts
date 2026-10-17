@@ -1,5 +1,20 @@
 # Status
 
+I1a implemented/tested: compresser0.10.0/MangaDL1.38.0, durable non-evicting
+inventory, automatic validated header reuse, -I/-l inventory-only JSON, transactional
+completed scopes, errors/extensions/sizes/coverage diagnostics and discovery reuse.
+Full compression90, focused MangaDL17, help55 pass; ruff/format/whitespace checks
+pass and editable installs refreshed. Initial scan still inspects headers; trusted
+snapshots, lightweight filesystem-only inventory and advisor remain open. User now
+explicitly requests: commit current changes, create a new branch, then test/commit/
+push each major feature before continuing. Main is not to be pushed by this step.
+
+2026-10-16 approved continuation recorded in01_inventory-and-analysis-continuation.md.
+Baseline c3db8b4 on main, clean before this checkpoint. I1a persistent inventory is
+next/in progress; no new production runs or source writes. I1-I5 supersede unfinished
+P4/P5 design details; existing sampling/comparison and P1-P3 are not being rewritten.
+SSD scratch belongs in I4 as opt-in analysis-only staging after measured diagnostics.
+
 2026-10-16 P4 implementation: compresser0.9.0/MangaDL1.37.0 on main after
 authorized merge3122931. Shared -b/--compare-both executes seven unique lossless/
 lossy strategies on one inventory/sample. -P/--sample-percent and -z/--sample-seed

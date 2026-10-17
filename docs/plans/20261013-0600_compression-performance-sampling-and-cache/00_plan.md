@@ -1,6 +1,11 @@
 # Compression performance, sampling and MangaDL cache
 
-Branch: compression-module-mangadl-20261013-0151. Baseline: df9e0d4.
+Current branch: main. Current baseline: c3db8b4 (2026-10-16).
+The compression branch was merged as3122931. Original baseline: df9e0d4.
+The approved continuation in [01_inventory-and-analysis-continuation.md](01_inventory-and-analysis-continuation.md)
+supersedes unfinished P4/P5 design details and defines the next implementation order.
+P1-P3 and the seeded comparison subset of P4 are implemented; sections below retain
+historical requirements, not a claim that those features remain missing.
 Continue the reviewed compression plan; do not replace its unresolved terminal,
 reader, fidelity or production-write acceptance gates. Manual repair mapping remains
 tracked separately. User authorizes implementation, scoped commits and pushes,
@@ -10,15 +15,14 @@ most important first, publishing each usable feature before starting the next.
 
 - Comparison is read-only: it does not acquire the library writer lock. OS locks
   are nonblocking and fail immediately; there is no existing lock-wait mode.
-- Current pool size uses the largest image in the sample, including images that
-  exceed the decode allowance and will fail. This can serialize all valid jobs.
-- Requested worker limit is displayed, not effective limit or active workers.
+- P3 replaced the largest-image pool cap with per-job reservations/preflight.
+- P2 exposes requested, effective and active workers and phase diagnostics.
 - Working allowance is512MiB, estimated48 bytes/pixel. It is conservative scheduling,
   not measured RSS or a hard OS cap. Do not blindly raise it or remove Pillow limits.
 - WebP effort6 may spend substantial time in native encoding. Perceptual mode tests
   six quality levels; AUTO may repeat multiple encoders. These need measured phase
   timings, not assumptions from low aggregate CPU or compressed file size.
-- First Ctrl+C currently waits silently for executor shutdown. Native calls cannot
+- P1 reports cooperative cancellation. Native calls cannot
   be safely interrupted mid-call by Python threads; no forced process exit during
   image publication. Cancellation must stop future work and explain active work.
 - Source JPEG trials showed lossless candidates larger than originals. Preserve
