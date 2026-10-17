@@ -23,6 +23,7 @@ from compresser import (
 from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
+from compresser.inventory_ui import emit_inventory_report
 from compresser.snapshots import SelectionSnapshot
 from compresser.cache import create_analysis_cache
 from compresser.ui import (
@@ -159,7 +160,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             report = scan_file_inventory(
                 dest, inventory_path(args, dest), exclude_stems=COVER_STEMS, single_gallery=single_gallery
             )
-            print(json.dumps(report, indent=2))
+            emit_inventory_report(report, as_json=getattr(args, "json", False))
             return 0
         if args.write:
             _assert_library_idle(dest)
@@ -210,7 +211,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             if getattr(args, "inventory_only", False):
                 report = inventory_report([], dest)
                 report.update(store.diagnostics())
-                print(json.dumps(report, indent=2))
+                emit_inventory_report(report, as_json=getattr(args, "json", False))
                 return 0
             msg = f"No manga gallery directories with images found in: {dest}"
             if getattr(args, "json", False):
@@ -259,7 +260,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if getattr(args, "inventory_only", False):
             report = inventory_report(all_images, dest, gallery_keys=gallery_keys)
             report.update(store.diagnostics())
-            print(json.dumps(report, indent=2))
+            emit_inventory_report(report, as_json=getattr(args, "json", False))
             return 0
 
         if not all_images:

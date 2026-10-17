@@ -1,5 +1,16 @@
 # Status
 
+Inventory summary compresser0.20.0/MangaDL1.46.0: shared concise terminal footer
+for header and file-only -l. Gallery/image counts, file bytes, extension shares,
+format/header diagnostics, errors/exclusions and saved path; unknown totals stay
+unknown. Redirected stdout remains JSON, summary on stderr; -J is JSON only.
+RED->GREEN8 CLI tests; full134 compression/305 MangaDL/55 help pass,1 Windows
+symlinkprivilege skip. Prior snapshot1689ffb committed/pushed. Broader advisor/
+performance/scratch/reader gates remain open. User authorized one read-only live
+header inventory of B:\Hent\hent1imageperpage in background; external artifacts
+E:\Temp\mangadl-library-inventory.sqlite3 and timestamped JSON. Check completion
+before claiming final counts. No source image/association changes.
+
 I1b2 compresser0.19.0/MangaDL1.45.0: explicit -U refresh|trust. Whole-selection
 header snapshots retain root/scanner/Pillow/filter policy, UTC completion and manga
 ownership; atomic publication only after completed discovery. Trust skips enumeration,

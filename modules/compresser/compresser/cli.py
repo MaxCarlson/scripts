@@ -15,6 +15,7 @@ from typing import Any, Callable, Sequence
 from .engine import CompressionEngine
 from .cache import create_analysis_cache
 from .inventory import InventoryStore, inventory_path, inventory_report
+from .inventory_ui import emit_inventory_report
 from .snapshots import SelectionSnapshot, summarize_images
 from .models import (
     ComparisonRow,
@@ -31,7 +32,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.19.0"
+__version__ = "0.20.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -317,7 +318,7 @@ def main(argv: list[str] | None = None) -> int:
             from .file_inventory import scan_file_inventory
 
             report = scan_file_inventory(args.input, inventory_path(args, args.input))
-            print(json.dumps(report, indent=2))
+            emit_inventory_report(report, as_json=args.json)
             return 0
         if args.cache_file and (
             args.cache_file.resolve() == args.input.resolve()
@@ -336,7 +337,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.inventory_only:
             report = inventory_report(images, args.input.expanduser().resolve())
             report.update(store.diagnostics())
-            print(json.dumps(report, indent=2))
+            emit_inventory_report(report, as_json=args.json)
             return 0
         if not images:
             if args.json:

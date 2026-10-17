@@ -1,4 +1,19 @@
-# compresser 0.19.0
+# compresser 0.20.0
+
+## Inventory statistics summary
+
+`compresser -i TARGET -l` ends with a concise, color-aware summary: eligible gallery
+folders, image headers/extension candidates, total file bytes, extension counts/sizes
+and count/byte shares, plus header reuse/unreadable or stat/exclusion counts as available.
+Detected formats are separate from extensions. No per-gallery dump in a terminal.
+Unknown sizes/shares stay unknown rather than becoming zero. No encoders run.
+
+Interactive inventory-only runs display just the summary on stderr. Redirected stdout
+retains the full JSON inventory, with the summary still visible on stderr. Use `-J`
+for JSON only (no human footer), e.g. `compresser -i TARGET -l -J > inventory.json`.
+Both header depth and `-D files` have summaries; candidates are not verified content
+and header inventory is not a decode/completeness audit. Bytes are file lengths,
+not filesystem allocated space. The final line shows where the inventory was saved.
 
 ## Explicit snapshot reuse
 

@@ -2,6 +2,10 @@
 
 ## Current branch
 
+Readable inventory footer checkpoint0.20.0/1.46.0 follows pushed1689ffb.134
+compression/305 MangaDL/55 help pass,1 Windows privilege skip. User requested
+one live read-only header index and final stats pasted into chat; see active STATUS.
+
 Latest I1b2: -U refresh|trust whole-selection snapshots,128 compression/303 MangaDL/
 55 help pass,1 privilege skip. Next readable inventory stats summary, then remaining
 advisor/performance/scratch/reader gates. See active STATUS for publication evidence.

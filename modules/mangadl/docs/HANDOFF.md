@@ -1,5 +1,12 @@
 # mangadl Immediate Project Handoff
 
+Inventory footer1.46.0/compresser0.20.0: -l and -l -D files have shared readable
+stats/error/type summary; terminal avoids full JSON dump, redirection retains JSON
+with stderr footer, -J suppresses footer.134 compression/305 MangaDL/55 help pass,
+1 Windows symlinkprivilege skip. Nested ownership/covers unchanged. User-requested
+live header inventory running externally, no source/association writes; see active
+repo STATUS for artifact paths. Remaining advisor/scratch/reader gates open.
+
 I1b2 1.45.0/compresser0.19.0: analysis-only -U trust completed header selection;
 defaultrefresh unchanged. Saved nested ownership/cover exclusions/exact-u policy,
 selected file checks before cache/work and between comparison stages. Old population

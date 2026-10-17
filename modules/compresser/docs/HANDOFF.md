@@ -1,5 +1,14 @@
 # Compresser handoff
 
+Inventory footer0.20.0/MangaDL1.46.0: shared emitter keeps redirected JSON while
+showing stats on stderr (terminal gets summary only); -J suppresses footer. Header/
+file modes report eligible gallery counts, bytes, extension shares and error/scan
+diagnostics, never full integrity claims or fabricated zero for unknown bytes.
+134 compression/305 MangaDL/55 help pass,1 symlinkprivilege skip. Snapshot1689ffb
+pushed; remaining advisor/performance/scratch/reader gates open. One user-requested
+read-only production header scan is running externally; inspect artifacts before
+reporting final counts (see repo active STATUS). Source images unchanged.
+
 I1b2 0.19.0/MangaDL1.45.0: -U refresh|trust, defaultrefresh. Whole-selection
 snapshot table scoped by root/scanner/Pillow/exactfilter policy; trust skips walks,
 checks selected source fingerprints/links before cache/encoding and between stages.

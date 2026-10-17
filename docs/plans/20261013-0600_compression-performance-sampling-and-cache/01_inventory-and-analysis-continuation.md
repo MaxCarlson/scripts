@@ -200,3 +200,21 @@ gallery ownership. Add -U/--inventory-policy refresh|trust, default refresh.
 4. Run full compression/MangaDL/help suites and lint/format/whitespace checks;
    update docs/versions/install, commit and push this feature branch only.
    Expected: all green and branch synchronized. No production library scan.
+
+## Task 4: readable inventory statistics footer (user request2026-10-16)
+
+Interfaces: one shared inventory report emitter for standalone/MangaDL header and
+file-only modes. Existing JSON payloads stay intact; -J produces only JSON. Terminal
+inventory-only runs show a concise summary, not an unbounded JSON dump. Redirected
+stdout retains JSON with the human summary on stderr unless -J is specified.
+
+1. Add RED real-CLI tests for header/file summaries and error/null-size semantics,
+   empty library, per-extension totals/shares and clean explicit JSON. A terminal
+   stream fixture must prove the report is concise and contains no JSON file list.
+2. Reuse termdash tables/byte formatting. Report eligible gallery folders, image or
+   candidate counts, bytes, header reuse/inspection, unreadable/stat errors, available
+   exclusions, inventory location and extension breakdown. Do not call headers a
+   decode audit or candidate bytes verified content. Never print every gallery.
+3. Run full compression/MangaDL/help suites and lint/format checks, update versions/
+   documentation/status/install, commit and push feature branch. Expected: all pass,
+   clean synchronized branch; no production scan.

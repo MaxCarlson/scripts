@@ -1,5 +1,19 @@
 # mangadl
 
+## Readable compression inventory summary
+
+`mangadl compress -d TARGET -l` shows a final stats summary: eligible gallery folders,
+page/header counts, bytes, per-extension counts/sizes/shares, detected formats,
+header reuse/inspection and unreadable candidates. `-l -D files` instead labels
+unverified extension candidates and reports stat errors/exclusions. Unknown totals
+are not displayed as zero. Chapter pages stay owned by their manga; covers remain
+excluded. This is not an audit of gallery completeness, and performs no compression.
+
+In a terminal, only the concise summary is shown (on stderr). Redirect stdout for
+the full JSON report; the footer stays visible. Add `-J` to suppress the footer:
+`mangadl compress -d TARGET -l -J > inventory.json`. Saved inventories remain reusable
+via `-I` and explicit `-U trust`; normal runs default to validated refresh.
+
 ## Reuse a completed compression inventory
 
 ```powershell

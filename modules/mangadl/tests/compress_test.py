@@ -58,6 +58,24 @@ def test_fast_inventory_preserves_manga_page_exclusions(tmp_path, monkeypatch, c
     assert report["content_verified"] is False
 
 
+@pytest.mark.parametrize("depth", ["files", "headers"])
+def test_inventory_summary_shared_with_standalone(tmp_path, capsys, depth):
+    chapter = tmp_path / "manga" / "chapter"
+    chapter.mkdir(parents=True)
+    Image.new("RGB", (40, 40)).save(chapter / "01.png")
+    args = ["compress", "-d", str(tmp_path), "-l", "-D", depth]
+    assert main(args) == 0
+    output = capsys.readouterr()
+    assert "Inventory Summary" in output.err
+    assert "Gallery folders with images" in output.err
+    assert "Saved inventory:" in output.err
+    assert json.loads(output.out)["galleries"]
+    assert main([*args, "-J"]) == 0
+    output = capsys.readouterr()
+    assert output.err == ""
+    assert json.loads(output.out)["galleries"]
+
+
 def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, capsys):
     gallery = tmp_path / "library" / "manga" / "chapter"
     gallery.mkdir(parents=True)

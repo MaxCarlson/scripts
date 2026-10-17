@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+Inventory stats0.20.0/1.46.0: readable footer for both CLIs/depths; JSON redirects
+preserved, explicit -J clean.134 compression/305 MangaDL/55 help pass,1 privilege
+skip. Snapshot1689ffb pushed. User-authorized background header index in B:\Hent\
+hent1imageperpage: E:\Temp\mangadl-library-inventory.sqlite3 and timestamped JSON;
+paste final statistics to user when complete. Broader plan not complete.
+
 I1b2 compresser0.19.0/MangaDL1.45.0: -U trust explicitly reuses complete header
 selection without walks, with selected-file validation and old-population warnings.
 128 compression/303 MangaDL/55 help passed;1 symlinkprivilege skip. No production
