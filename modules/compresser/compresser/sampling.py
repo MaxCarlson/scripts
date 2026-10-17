@@ -13,6 +13,7 @@ from statistics import variance
 from typing import Mapping, Sequence
 
 from .models import ImageMetadata, ImageResult
+from .ui import color_text, format_bytes_decimal
 
 
 def parse_sample(value: str):
@@ -618,34 +619,43 @@ def confirmation_sample(
 
 def print_sampling(plan: GallerySample) -> None:
     report = plan.summary()
+    img_ratio = f"{report['sample_images']}/{report['inventory_images']}"
+    gal_ratio = f"{report['sampled_galleries']}/{report['galleries']}"
+    print("\n" + color_text("╭─ INVENTORY SAMPLING & ALLOCATION ──────────────────────────────────────────────────────╮", "cyan"))
     print(
-        f"Sampling: {report['sample_images']}/{report['inventory_images']} images; "
-        f"{report['sampled_galleries']}/{report['galleries']} galleries; seed {plan.seed}"
+        f"│ Sampling:   {color_text(img_ratio, 'bright')} images; "
+        f"{color_text(gal_ratio, 'bright')} galleries; seed {plan.seed}"
     )
     print(
-        f"Allocation: per-gallery coverage (minimum {report['coverage_minimum_images']} images; "
+        f"│ Allocation: per-gallery coverage (minimum {report['coverage_minimum_images']} images; "
         f"{report['variance_minimum_images']} for within-gallery variance). {report['allocation']}."
     )
     if plan.allocation_method == "metadata_proxy":
         print(
-            "Design: metadata_proxy revision3; input-size proxy with0.15 mean floor. Starter coverage is not a statistical minimum or accuracy guarantee."
+            "│ Design:     metadata_proxy revision3; input-size proxy with 0.15 mean floor."
         )
     for fmt, row in report["formats"].items():
-        print(f"  {fmt}: {row['images']} images, {row['bytes']} bytes; {row['sample_images']} sampled")
+        byte_str = format_bytes_decimal(row["bytes"])
+        pct = (row["sample_images"] / report["sample_images"] * 100) if report["sample_images"] else 0
+        samp_str = f"{row['sample_images']:>3d} sampled"
+        print(f"│   • {fmt:5s}:  {row['images']:>6,d} images ({byte_str:>9s})  ──▶  {color_text(samp_str, 'bright')} ({pct:4.1f}%)")
     if report["unsampled_formats"]:
-        print(f"Coverage note: rare formats not in sample: {', '.join(report['unsampled_formats'])}.")
+        print(f"│ Coverage note: rare formats not in sample: {', '.join(report['unsampled_formats'])}.")
     if report["unsampled_large_images"] and not report["sampled_large_images"]:
+        thresh_str = format_bytes_decimal(report["large_image_threshold_bytes"])
         print(
-            f"Coverage note: {report['unsampled_large_images']} top-decile large images "
-            f"(>= {report['large_image_threshold_bytes']:,} bytes) were not sampled."
+            f"│ Coverage note: {report['unsampled_large_images']} top-decile large images "
+            f"(>= {thresh_str}) were not sampled."
         )
     if report["unsampled_tall_webp_images"] and not report["sampled_tall_webp_images"]:
         print(
-            f"Coverage note: {report['unsampled_tall_webp_images']} images exceeding WebP's 16,383px dimension "
+            f"│ Coverage note: {report['unsampled_tall_webp_images']} images exceeding WebP's 16,383px dimension "
             "limit were not sampled."
         )
     if report["singleton_sample_galleries"]:
+        warn_msg = f"{report['singleton_sample_galleries']} non-census galleries have only one sample"
         print(
-            f"Warning: {report['singleton_sample_galleries']} non-census galleries have only one sample; "
+            f"│ Warning: {color_text(warn_msg, 'yellow')}; "
             "uncertainty cannot be calculated. Increase -s/-P."
         )
+    print(color_text("╰────────────────────────────────────────────────────────────────────────────────────────╯", "cyan"))

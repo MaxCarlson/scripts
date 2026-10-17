@@ -114,3 +114,38 @@ def test_print_comparison_matrix_executive_summary_and_hero_banner(monkeypatch, 
     assert "READY TO COMPRESS?" in output
     assert "mangadl compress -d 'B:\\Hent\\308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output or "mangadl compress -d 'B:/Hent/308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output
 
+
+def test_print_comparison_matrix_sample_fallback_hero_and_responsive_table(monkeypatch, capsys):
+    import shutil
+    from compresser.models import ComparisonRow
+    from compresser.ui import print_comparison_matrix
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *args, **kwargs: __import__("os").terminal_size((80, 24)))
+    # Row has positive sample savings, but estimate projection is unavailable (e.g. singleton galleries or preflight rejects)
+    row = ComparisonRow(
+        strategy_name="auto-lossy-q70",
+        output_format="auto",
+        mode="lossy",
+        quality_display="q=70",
+        compressed_bytes=41820000,
+        original_bytes=50430000,
+        savings_percent=17.1,
+        average_ssim=0.971,
+        throughput_images_per_s=4.7,
+        measured_images=50,
+        saved_bytes=8610000,
+        retained_formats=("WEBP",),
+        failed_count=4,
+        estimate={"projected_total_saved_bytes": None, "unestimated_images": 4},
+        worker_diagnostics={"requested_workers": 12, "effective_workers": 12, "limiter": "requested", "phase_seconds": {"encoding": 1.5}},
+    )
+    print_comparison_matrix([row], target_path=Path("B:/Hent/hent1imageperpage"), workers=12, runner="mangadl")
+    output = capsys.readouterr().out
+    assert "COMPRESSION BENCHMARK RESULTS" in output
+    assert "RECOMMENDED STRATEGY (Sample Winner)" in output
+    assert "auto-lossy-q70" in output
+    assert "Whole-target projections: unavailable" in output
+    assert "READY TO COMPRESS?" in output
+    assert "HARDWARE & WORKER PERFORMANCE" in output
+    assert "mangadl compress -d 'B:\\Hent\\hent1imageperpage' -f auto -m lossy -q 70 -B auto -t 12 -w" in output or "mangadl compress -d 'B:/Hent/hent1imageperpage' -f auto -m lossy -q 70 -B auto -t 12 -w" in output
+

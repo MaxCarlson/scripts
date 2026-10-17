@@ -453,28 +453,67 @@ def print_comparison_matrix(
     max_entry = recommendations.get("maximum_savings")
     tradeoff_entry = recommendations.get("practical_tradeoff")
 
+    # If full whole-target projection is unavailable (e.g. sample singletons or preflight memory rejects),
+    # pick the best measured sample candidate so the user still gets a hero banner, badge, and actionable command.
+    hero_entry = max_entry
+    is_sample_fallback = False
+    if not hero_entry and rows:
+        candidates = [r for r in rows if r.saved_bytes > 0 and r.measured_images > 0]
+        if candidates:
+            best_sample = max(candidates, key=lambda r: (r.saved_bytes, r.savings_percent))
+            hero_entry = {
+                "strategy": best_sample.strategy_name,
+                "format": best_sample.output_format,
+                "quality": best_sample.quality_display,
+                "average_ssim": best_sample.average_ssim,
+                "ranking_saved_bytes": best_sample.saved_bytes,
+                "ranking_scope": "sample_measured_set",
+                "savings_percent": best_sample.savings_percent,
+                "speed_img_per_s": best_sample.throughput_images_per_s,
+            }
+            is_sample_fallback = True
+            if not tradeoff_entry:
+                tradeoff_candidates = [
+                    r for r in candidates
+                    if (r.mode == "lossless" or (r.average_ssim is not None and r.average_ssim >= 0.98))
+                ]
+                if tradeoff_candidates:
+                    t_cand = max(tradeoff_candidates, key=lambda r: (r.saved_bytes, r.savings_percent))
+                    tradeoff_entry = {
+                        "strategy": t_cand.strategy_name,
+                        "format": t_cand.output_format,
+                        "quality": t_cand.quality_display,
+                        "average_ssim": t_cand.average_ssim,
+                        "speed_img_per_s": t_cand.throughput_images_per_s,
+                    }
+
     # 1. Recommended Hero Banner
-    if max_entry:
+    if hero_entry:
         target_name = Path(target_path).name if target_path else "Current Target"
-        sample_count = max_entry.get("sample_images", rows[0].measured_images if rows else 0)
+        sample_count = hero_entry.get("sample_images", rows[0].measured_images if rows else 0)
         print("\n" + color_text("╭─ COMPRESSION BENCHMARK RESULTS ────────────────────────────────────────────────────────╮", "cyan"))
         print(f"│ Target: {target_name}  •  Evaluated: {len(rows)} Strategies on {sample_count} Sample Images   │")
         print(color_text("╰────────────────────────────────────────────────────────────────────────────────────────╯", "cyan"))
-        print(f"\n  {color_text('🏆 RECOMMENDED STRATEGY', 'bright')}")
-        print(f"  Strategy:    {color_text(max_entry['strategy'], 'green')} ({max_entry['format'].upper()} {max_entry['quality']})")
-        ssim_val = max_entry.get("average_ssim")
+        title_suffix = " (Sample Winner)" if is_sample_fallback else ""
+        print(f"\n  {color_text('🏆 RECOMMENDED STRATEGY' + title_suffix, 'bright')}")
+        print(f"  Strategy:    {color_text(hero_entry['strategy'], 'green')} ({hero_entry['format'].upper()} {hero_entry['quality']})")
+        ssim_val = hero_entry.get("average_ssim")
         ssim_str = f"{ssim_val:.3f}" if ssim_val is not None else "N/A"
         print(f"  Perception:  SSIM {ssim_str}")
-        print(f"  Projected:   Saved {format_bytes_decimal(max_entry['ranking_saved_bytes'])} ({max_entry['ranking_scope']})")
-        if tradeoff_entry and tradeoff_entry["strategy"] != max_entry["strategy"]:
+        if is_sample_fallback:
+            print(f"  Sample:      Saved {format_bytes_decimal(hero_entry['ranking_saved_bytes'])} (▼ {hero_entry.get('savings_percent', 0):.1f}% reduction) • Rate: {hero_entry.get('speed_img_per_s', 0):.1f} img/s")
+            print("  Projected:   Whole-target projection unavailable; ranking based on measured sample set")
+        else:
+            print(f"  Projected:   Saved {format_bytes_decimal(hero_entry['ranking_saved_bytes'])} ({hero_entry['ranking_scope']})")
+        if tradeoff_entry and tradeoff_entry["strategy"] != hero_entry["strategy"]:
             t_ssim = f"{tradeoff_entry['average_ssim']:.3f}" if tradeoff_entry.get("average_ssim") is not None else "N/A"
             print(f"\n  {color_text('⚖ BEST QUALITY/SPEED BALANCE', 'bright')}")
             print(f"  Strategy:    {tradeoff_entry['strategy']} ({tradeoff_entry['format'].upper()} {tradeoff_entry['quality']}) • SSIM: {t_ssim} • Rate: {tradeoff_entry.get('speed_img_per_s', 0):.1f} img/s")
 
     print("\n" + color_text("Compression Strategy Comparison Matrix", "cyan"))
     cols = shutil.get_terminal_size().columns
-    if cols < 100:
-        # Stacked records preserve meaning without truncating labels in narrow terminals.
+    if cols < 68:
+        # Stacked records only in extremely narrow terminals (< 68 columns)
         for row in rows:
             print(f"\n{row.strategy_name} | {row.output_format.upper()} | {row.quality_display}")
             print(f"  Retained: {format_bytes_decimal(row.compressed_bytes)} | Savings: {row.savings_percent:.1f}%")
@@ -482,10 +521,10 @@ def print_comparison_matrix(
             print(f"  Trials: {row.measured_images} | Rate: {row.throughput_images_per_s:.1f}/s")
             print(f"  Failures: {row.failed_count} | Kept: {row.skipped_count} | Cached: {row.cache_hits}")
     else:
-        best_strat = max_entry["strategy"] if max_entry else None
+        best_strat = hero_entry["strategy"] if hero_entry else None
         table_rows = []
         for idx, r in enumerate(rows):
-            num_badge = "★" if r.strategy_name == best_strat else ("✗" if r.failed_count > 0 else str(idx + 1))
+            num_badge = "★" if r.strategy_name == best_strat else ("✗" if r.failed_count > 0 and r.measured_images == 0 else str(idx + 1))
             strat_disp = color_text(r.strategy_name, "bright")
             fmt_disp = f"{r.output_format.upper()} ({r.quality_display})"
             if r.failed_count > 0 and r.measured_images == 0:
@@ -514,23 +553,24 @@ def print_comparison_matrix(
         for row in rows:
             print(f"  {row.strategy_name}: Retained: {format_bytes_decimal(row.compressed_bytes)} | Savings: {row.savings_percent:.1f}% | Failures: {row.failed_count} | Kept: {row.skipped_count} | Cached: {row.cache_hits}")
 
-    for row in rows:
-        if row.estimate:
+    # Projections section (deduplicated when whole-target projection is unavailable)
+    valid_estimates = [r for r in rows if r.estimate and r.estimate.get("projected_total_saved_bytes") is not None]
+    if valid_estimates:
+        for row in valid_estimates:
             estimate = row.estimate
             value = estimate["projected_total_saved_bytes"]
-            display = format_bytes_decimal(value) if value is not None else "unavailable (failed/unmeasured galleries)"
-            interval = estimate["approximate_95_percent_interval_bytes"]
+            display = format_bytes_decimal(value)
+            interval = estimate.get("approximate_95_percent_interval_bytes")
             bounds = (
-                (
-                    f"; approximate 95% interval {format_bytes_decimal(interval[0])}.."
-                    f"{format_bytes_decimal(interval[1])}"
-                )
+                f"; approximate 95% interval {format_bytes_decimal(interval[0])}..{format_bytes_decimal(interval[1])}"
                 if interval is not None
                 else "; uncertainty interval unavailable"
             )
             print(f"  {row.strategy_name}: projected whole-target savings {display}{bounds}")
-    if any(row.estimate for row in rows):
-        print(rows[0].estimate["uncertainty"])
+        if any(r.estimate.get("uncertainty") for r in valid_estimates):
+            print(valid_estimates[0].estimate["uncertainty"])
+    elif any(r.estimate for r in rows):
+        print("  Whole-target projections: unavailable (failed/unmeasured singleton galleries in sample; sample savings reflect measured set)")
 
     print("Comparison Recommendations:")
     for label, key in (
@@ -554,44 +594,58 @@ def print_comparison_matrix(
     print(
         "Trials count images once per strategy; AUTO may test several encoders internally. Trial rate is not successful encoding speed."
     )
+
+    # Worker performance & error diagnostics
+    has_diag = any(r.worker_diagnostics for r in rows)
+    if has_diag:
+        first_diag = next(r.worker_diagnostics for r in rows if r.worker_diagnostics)
+        peak_res = max((r.worker_diagnostics.get("peak_reserved_bytes", 0) for r in rows if r.worker_diagnostics), default=0)
+        preflight_rej = max((r.worker_diagnostics.get("preflight_rejected_images", 0) for r in rows if r.worker_diagnostics), default=0)
+        disp_wait = sum((r.worker_diagnostics.get("dispatch_wait_seconds", 0) for r in rows if r.worker_diagnostics))
+
+        workers_req = first_diag.get("requested_workers", workers)
+        workers_eff = first_diag.get("effective_workers", workers)
+        limiter = first_diag.get("limiter", "requested")
+
+        print("\n" + color_text("╭─ HARDWARE & WORKER PERFORMANCE ────────────────────────────────────────────────────────╮", "cyan"))
+        print(f"│ Concurrency: {workers_req} workers requested, {workers_eff} effective • Limiter: {limiter}")
+        if peak_res > 0:
+            print(f"│ Memory:      Peak reserved estimate: {format_bytes_decimal(peak_res)} • Preflight rejected: {preflight_rej}")
+            if disp_wait > 0:
+                print(f"│ Dispatch:    Accumulated dispatch wait: {disp_wait:.2f} task-seconds")
+        print("│ Phase worker-seconds across strategies:")
+        for r in rows:
+            if r.worker_diagnostics:
+                timings = r.worker_diagnostics.get("phase_seconds", {})
+                if timings:
+                    t_str = ", ".join(f"{phase}={sec:.2f}s" for phase, sec in sorted(timings.items()))
+                    print(f"│   • {r.strategy_name}: {t_str}")
+        print(color_text("╰────────────────────────────────────────────────────────────────────────────────────────╯", "cyan"))
+
     for row in rows:
-        if row.worker_diagnostics:
-            print(
-                f"  {row.strategy_name}: workers requested {row.worker_diagnostics['requested_workers']}, "
-                f"effective {row.worker_diagnostics['effective_workers']}; limiter: {row.worker_diagnostics['limiter']}."
-            )
-            timings = row.worker_diagnostics.get("phase_seconds", {})
-            if "peak_reserved_bytes" in row.worker_diagnostics:
-                print(
-                    f"    Peak reserved estimate: {format_bytes_decimal(row.worker_diagnostics['peak_reserved_bytes'])}; "
-                    f"preflight rejected: {row.worker_diagnostics.get('preflight_rejected_images', 0)}; "
-                    f"accumulated dispatch wait: {row.worker_diagnostics.get('dispatch_wait_seconds', 0):.2f} task-seconds."
-                )
-            if timings:
-                print(
-                    "    Phase worker-seconds (exclusive; parallel workers add): "
-                    + ", ".join(f"{phase}={seconds:.2f}s" for phase, seconds in sorted(timings.items()))
-                )
-            scratch = row.worker_diagnostics.get("scratch")
-            if scratch:
-                print(
-                    f"    Scratch staging: {scratch['staged_files']} staged, {scratch['reused_files']} reused, "
-                    f"{format_bytes_decimal(scratch['bytes_copied'])} copied in {scratch['copy_seconds']:.2f}s."
-                )
         if row.candidate_bytes is not None and row.original_bytes:
             change = (row.candidate_bytes / row.original_bytes - 1) * 100
             print(
                 f"  {row.strategy_name}: encoded candidates {format_bytes_decimal(row.candidate_bytes)} "
                 f"({change:+.1f}% vs original; before retaining larger originals)."
             )
+
+    # Errors across benchmark
+    all_errors = Counter()
+    for row in rows:
         for reason in row.error_summary:
-            print(f"  {row.strategy_name}: {reason}")
+            all_errors[reason] += 1
+    if all_errors:
+        print(color_text("\nFailures across benchmark:", "yellow"))
+        for reason in all_errors:
+            print(f"  • {reason}")
 
     # 3. Actionable Command Prompt
-    if max_entry and target_path:
-        strat_name = max_entry["strategy"]
-        fmt = max_entry["format"]
-        quality = max_entry.get("quality", "")
+    target_hero = hero_entry
+    if target_hero and target_path:
+        strat_name = target_hero["strategy"]
+        fmt = target_hero["format"]
+        quality = target_hero.get("quality", "")
         mode = "lossy" if "lossy" in strat_name or "q=" in quality else "lossless"
         q_flag = f"-q {quality.replace('q=', '')} " if mode == "lossy" and "q=" in quality else ""
         target_str = str(target_path)
