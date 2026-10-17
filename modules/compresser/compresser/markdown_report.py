@@ -14,7 +14,12 @@ from uuid import uuid4
 
 from .report_models import CompressionReport
 from .reporting import clean
-from .workspace import CompressionWorkspace, _unlinked, initialize_workspace, workspace_publication
+from .workspace import (
+    CompressionWorkspace,
+    _unlinked,
+    initialize_workspace,
+    workspace_publication,
+)
 
 
 def _escape(value: str) -> str:
@@ -73,6 +78,8 @@ def _write_temp(directory: Path, content: str) -> Path:
 def publish_markdown_report(workspace: CompressionWorkspace, report: CompressionReport) -> ReportArtifacts:
     if not re.fullmatch(r"[a-z][a-z0-9-]*", report.operation):
         raise ValueError("Invalid report operation name")
+    if Path(report.target).expanduser().resolve() != workspace.target.resolve():
+        raise ValueError("Report target does not belong to workspace target")
     initialize_workspace(workspace)
     content = render_markdown_report(report)
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S-%fZ")

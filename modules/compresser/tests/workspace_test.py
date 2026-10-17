@@ -87,3 +87,33 @@ def test_two_concurrent_initializers_revalidate_owner(tmp_path):
         for future in futures:
             future.result()
     assert json.loads((ws.root / "workspace.json").read_text())["target"] == str(target)
+
+
+def test_cache_override_cannot_alias_inventory_or_reserved_report(tmp_path):
+    from types import SimpleNamespace
+
+    from compresser.workspace import configure_workspace, initialize_workspace
+
+    target = tmp_path / "book"
+    target.mkdir()
+    ws = resolve(target)
+    initialize_workspace(ws)
+    ws.inventory_file.touch()
+    hardlink_cache = tmp_path / "cache-alias.sqlite3"
+    hardlink_cache.hardlink_to(ws.inventory_file)
+    with pytest.raises(ValueError, match="different files"):
+        configure_workspace(
+            SimpleNamespace(inventory_file=None, cache_file=hardlink_cache, preview_dir=None),
+            target,
+            owner="mangadl-pages",
+        )
+
+    latest = ws.reports_dir / "latest.md"
+    latest.parent.mkdir(exist_ok=True)
+    latest.write_text("existing report", encoding="utf-8")
+    with pytest.raises(ValueError, match="reserved workspace artifact"):
+        configure_workspace(
+            SimpleNamespace(inventory_file=None, cache_file=latest, preview_dir=None),
+            target,
+            owner="mangadl-pages",
+        )

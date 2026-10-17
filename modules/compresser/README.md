@@ -1,4 +1,4 @@
-# compresser 1.4.0
+# compresser 1.4.1
 
 ## Workspace and automatic reports
 

@@ -1,6 +1,6 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (2.4.0)
+## Compression workspace, estimates and saved reports (2.4.1)
 
 ```powershell
 # Inventory and its Markdown report. -I selects the workspace PARENT.

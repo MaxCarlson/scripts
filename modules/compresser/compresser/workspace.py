@@ -27,6 +27,13 @@ def _unlinked(path: Path) -> None:
             raise ValueError(f"Compression workspace paths must not be linked: {item}")
 
 
+def _same_file(left: Path, right: Path) -> bool:
+    try:
+        return left.samefile(right)
+    except FileNotFoundError:
+        return False
+
+
 @dataclass(frozen=True)
 class CompressionWorkspace:
     root: Path
@@ -56,7 +63,11 @@ class CompressionWorkspace:
 
 
 def resolve_workspace(
-    target: Path, parent: Path | None, *, owner: str, legacy_inventory: Path | None = None
+    target: Path,
+    parent: Path | None,
+    *,
+    owner: str,
+    legacy_inventory: Path | None = None,
 ) -> CompressionWorkspace:
     _unlinked(target.expanduser().absolute())
     target = target.expanduser().resolve()
@@ -73,14 +84,28 @@ def resolve_workspace(
         legacy_inventory.expanduser().absolute() if legacy_inventory else root / f"{leaf}-{suffix}-inventory.sqlite3"
     )
     trials = inventory.with_suffix(".trials.sqlite3") if legacy_inventory else root / f"{leaf}-{suffix}-trials.sqlite3"
-    for path in (root, inventory, trials, root / "reports", root / "previews", root / "workspace.json"):
+    for path in (
+        root,
+        inventory,
+        trials,
+        root / "reports",
+        root / "previews",
+        root / "workspace.json",
+    ):
         _unlinked(path)
         resolved = path.resolve()
         if resolved == target or (target.is_dir() and target in resolved.parents):
             raise ValueError("Compression artifacts must be outside the input tree")
     if inventory.is_dir() or trials.is_dir() or inventory.resolve() == trials.resolve():
         raise ValueError("Inventory and trial cache require distinct file paths")
-    return CompressionWorkspace(root, inventory.resolve(), trials.resolve(), target, owner, bool(legacy_inventory))
+    return CompressionWorkspace(
+        root,
+        inventory.resolve(),
+        trials.resolve(),
+        target,
+        owner,
+        bool(legacy_inventory),
+    )
 
 
 def _validate_manifest(workspace: CompressionWorkspace) -> None:
@@ -126,7 +151,14 @@ def initialize_workspace(workspace: CompressionWorkspace) -> None:
         descriptor, temp = tempfile.mkstemp(prefix=".workspace-", dir=workspace.root)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-                json.dump({**workspace.identity(), "created": datetime.now(timezone.utc).isoformat()}, stream, indent=2)
+                json.dump(
+                    {
+                        **workspace.identity(),
+                        "created": datetime.now(timezone.utc).isoformat(),
+                    },
+                    stream,
+                    indent=2,
+                )
                 stream.flush()
                 os.fsync(stream.fileno())
             os.replace(temp, manifest)
@@ -155,13 +187,21 @@ def configure_workspace(args, target: Path, *, owner: str) -> CompressionWorkspa
     if cache:
         cache = Path(cache).expanduser().absolute()
         _unlinked(cache)
-        if cache.resolve() in (ws.inventory_file, ws.root / "workspace.json") or cache.is_dir():
-            raise ValueError("Inventory and trial cache must use different files")
-        if cache.resolve() == ws.target or (ws.target.is_dir() and ws.target in cache.resolve().parents):
+        resolved_cache = cache.resolve()
+        manifest = ws.root / "workspace.json"
+        reserved = [ws.inventory_file, manifest]
+        for directory in (ws.reports_dir, ws.previews_dir):
+            if resolved_cache == directory.resolve() or directory.resolve() in resolved_cache.parents:
+                raise ValueError(f"Analysis cache cannot use a reserved workspace artifact: {resolved_cache}")
+            if directory.is_dir():
+                reserved.extend(path for path in directory.rglob("*") if path.is_file())
+        if cache.is_dir() or any(resolved_cache == path.resolve() or _same_file(cache, path) for path in reserved):
+            raise ValueError("Inventory, trial cache and reserved workspace artifacts must use different files")
+        if resolved_cache == ws.target or (ws.target.is_dir() and ws.target in resolved_cache.parents):
             raise ValueError("Analysis cache must be outside the input tree")
         from dataclasses import replace
 
-        ws = replace(ws, trial_cache_file=cache.resolve())
+        ws = replace(ws, trial_cache_file=resolved_cache)
     args._workspace = ws
     if getattr(args, "preview_dir", None) == Path("__workspace_preview__"):
         args.preview_dir = ws.previews_dir

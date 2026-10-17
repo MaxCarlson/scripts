@@ -56,7 +56,8 @@ def test_compress_rejects_junction_root_before_resolution(tmp_path, monkeypatch,
     def junction(path, *args, **kwargs):
         if path == root:
             return SimpleNamespace(
-                st_mode=stat.S_IFDIR, st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 1024)
+                st_mode=stat.S_IFDIR,
+                st_file_attributes=getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 1024),
             )
         return original(path, *args, **kwargs)
 
@@ -71,7 +72,14 @@ def test_mangadl_auto_uses_matching_gallery_profile(tmp_path, capsys):
     chapter.mkdir(parents=True)
     for n in range(5):
         Image.new("RGB", (40, 40)).save(chapter / f"{n}.png")
-    args = ["compress", "-d", str(root), "-I", str(tmp_path / "inventory.sqlite3"), "-J"]
+    args = [
+        "compress",
+        "-d",
+        str(root),
+        "-I",
+        str(tmp_path / "inventory.sqlite3"),
+        "-J",
+    ]
     assert main([*args, "-l"]) == 0
     assert json.loads(capsys.readouterr().out)["sampling_profile"]["starter_samples"] == 2
     assert main([*args, "-s", "auto", "-U", "trust", "-f", "png", "-e", "0"]) == 0
@@ -187,7 +195,21 @@ def test_fast_inventory_preserves_manga_page_exclusions(tmp_path, monkeypatch, c
         pytest.fail("Fast MangaDL inventory opened image content")
 
     monkeypatch.setattr(Image, "open", forbidden)
-    assert main(["compress", "-d", str(root), "-l", "-D", "files", "-I", str(tmp_path / "inventory.sqlite3")]) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(root),
+                "-l",
+                "-D",
+                "files",
+                "-I",
+                str(tmp_path / "inventory.sqlite3"),
+            ]
+        )
+        == 0
+    )
     report = json.loads(capsys.readouterr().out)
     assert report["candidate_images"] == 1
     assert report["candidate_bytes"] == 5
@@ -220,6 +242,14 @@ def test_rejected_trusted_write_does_not_create_library_controls(tmp_path, capsy
     assert "read-only analysis only" in capsys.readouterr().err
     assert {path.name for path in tmp_path.iterdir()} == {"01.png"}
     assert (tmp_path / "01.png").read_bytes() == before["01.png"]
+
+
+def test_rejected_recovery_confirmation_does_not_create_workspace(tmp_path, capsys):
+    root = tmp_path / "library"
+    root.mkdir()
+    assert main(["compress", "-d", str(root), "-C", "TOKEN"]) == 2
+    assert not (tmp_path / "library-mangadl").exists()
+    assert "--confirm-recovery requires --recover" in capsys.readouterr().err
 
 
 def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, capsys):
@@ -273,12 +303,23 @@ def test_inventory_only_reuses_nested_headers(tmp_path, capsys, monkeypatch):
     gallery.mkdir(parents=True)
     Image.new("RGB", (40, 40)).save(gallery / "01.png")
     Image.new("RGB", (40, 40)).save(gallery / "cover.png")
-    args = ["compress", "-d", str(root), "-l", "-I", str(tmp_path / "inventory.sqlite3")]
+    args = [
+        "compress",
+        "-d",
+        str(root),
+        "-l",
+        "-I",
+        str(tmp_path / "inventory.sqlite3"),
+    ]
     assert main(args) == 0
     report = json.loads(capsys.readouterr().out)
     assert report["images"] == 1
     assert report["galleries"][str(root / "manga")]["images"] == 1
-    monkeypatch.setattr(scanner, "inspect_image_file", lambda *a, **k: pytest.fail("Unchanged header reopened"))
+    monkeypatch.setattr(
+        scanner,
+        "inspect_image_file",
+        lambda *a, **k: pytest.fail("Unchanged header reopened"),
+    )
     assert main(args) == 0
     assert json.loads(capsys.readouterr().out)["headers_reused"] >= 2
 
@@ -289,7 +330,24 @@ def test_combined_gallery_sample_report(tmp_path, capsys):
         directory.mkdir(parents=True)
         for i in range(3 if gallery == "small" else 9):
             Image.new("RGB", (40, 40), "white").save(directory / f"{i}.png")
-    assert main(["compress", "-d", str(tmp_path), "-b", "-P", "50", "-q", "75", "-e", "0", "-J"]) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(tmp_path),
+                "-b",
+                "-P",
+                "50",
+                "-q",
+                "75",
+                "-e",
+                "0",
+                "-J",
+            ]
+        )
+        == 0
+    )
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 7
     assert all(row["sampling"]["galleries"] == 2 for row in rows)
@@ -376,7 +434,22 @@ def test_compress_write_mode_and_audit(tmp_path: Path):
     (gal / "info.json").write_text('{"title": "B"}', encoding="utf-8")
 
     # Apply compression (with explicit -L / --allow-lossy)
-    ret = main(["compress", "-d", str(dest), "-f", "webp", "-m", "lossy", "-q", "75", "-w", "-L", "-N"])
+    ret = main(
+        [
+            "compress",
+            "-d",
+            str(dest),
+            "-f",
+            "webp",
+            "-m",
+            "lossy",
+            "-q",
+            "75",
+            "-w",
+            "-L",
+            "-N",
+        ]
+    )
     assert ret == 0
 
     # Check files
@@ -413,7 +486,22 @@ def test_compress_audit_defect_non_regression(tmp_path: Path):
     assert findings_before["missing_pages"] == [2]
 
     # Run compression with write mode
-    ret = main(["compress", "-d", str(dest), "-f", "webp", "-m", "lossy", "-q", "75", "-w", "-L", "-N"])
+    ret = main(
+        [
+            "compress",
+            "-d",
+            str(dest),
+            "-f",
+            "webp",
+            "-m",
+            "lossy",
+            "-q",
+            "75",
+            "-w",
+            "-L",
+            "-N",
+        ]
+    )
     assert ret == 0
 
     # Post-audit check: incomplete status preserved, page 2 still missing, zero duplicate pages
@@ -463,7 +551,19 @@ def test_exact_url_selection_and_cover_exclusion(tmp_path):
     with pytest.raises(ValueError, match="unresolved"):
         discover_gallery_targets(destination, ["renamed"])
     assert (
-        main(["compress", "-d", str(destination), "-u", "https://nhentai.net/g/633374/", "-m", "lossless", "-w", "-N"])
+        main(
+            [
+                "compress",
+                "-d",
+                str(destination),
+                "-u",
+                "https://nhentai.net/g/633374/",
+                "-m",
+                "lossless",
+                "-w",
+                "-N",
+            ]
+        )
         == 0
     )
     assert cover.read_bytes() == before
@@ -515,7 +615,23 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
         chapter = gallery / name
         chapter.mkdir(parents=True)
         Image.new("RGB", (120, 120), (80, 120, 160)).save(chapter / "001.jpg", quality=90)
-    assert main(["compress", "-d", str(gallery.parent), "-f", "webp", "-m", "lossy", "-w", "-L", "-N"]) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(gallery.parent),
+                "-f",
+                "webp",
+                "-m",
+                "lossy",
+                "-w",
+                "-L",
+                "-N",
+            ]
+        )
+        == 0
+    )
     for name in ("chapter-1", "chapter-2"):
         assert not (gallery / name / "001.jpg").exists()
         with Image.open(gallery / name / "001.webp") as image:
@@ -573,7 +689,24 @@ def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recom
     assert list(scratch_dir.iterdir()) == []
 
     # Apply lossless WebP compression and verify reader/library invariants
-    assert main(["compress", "-d", str(library), "-f", "webp", "-m", "lossless", "-e", "0", "-w", "-N"]) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(library),
+                "-f",
+                "webp",
+                "-m",
+                "lossless",
+                "-e",
+                "0",
+                "-w",
+                "-N",
+            ]
+        )
+        == 0
+    )
     assert read_source_manifest(gallery)["canonical_url"] == "https://nhentai.net/g/633374/"
     assert cover.read_bytes() == cover_bytes
     assert archive.read_bytes() == b"PK\x03\x04dummy-cbz"
@@ -591,4 +724,3 @@ def test_compress_accepts_uncapped_memory_budgets(tmp_path):
     assert main(["compress", "-d", str(tmp_path), "-l", "-B", "40%", "-N"]) == 0
     assert main(["compress", "-d", str(tmp_path), "-l", "-B", "8192", "-N"]) == 0
     assert main(["compress", "-d", str(tmp_path), "-l", "-B", "16G", "-N"]) == 0
-

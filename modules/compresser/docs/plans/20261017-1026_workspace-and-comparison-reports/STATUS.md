@@ -1,11 +1,15 @@
 # Status
 
-Current: Tasks1-4 committed/pushed; Task5 automatic lifecycle integrated, focused
-generated end-to-end trust/cache/workers/scratch test green. Full323compression/1skip,
-316MangaDL,76TermDash/1skip,55help passed before final settings/scope refinements;
-new12operation/9report tests cover final behavior. Next final task gate and one fresh
-whole-change review. No live production changes or main merge. Source1.4.0/2.4.0.
-Manual Windows terminal/reader gates remain outstanding.
+Current: all five tasks implemented and pushed on
+`compression-ui-color-and-stats-20261017`. Final review reproduced and fixed three
+workspace boundary issues: hardlink cache aliases, cache paths under reports/previews,
+and reports published to a workspace for another target. MangaDL now rejects an
+invalid recovery confirmation before creating workspace artifacts. Final full gates:
+326 compresser passed/1 skipped, 317 MangaDL passed, 76 TermDash passed/1 skipped,
+55 help tests passed. Ruff and Black120 clean. No production library scan or image
+write was run; no main merge. Versions compresser1.4.1/MangaDL2.4.1/TermDash0.8.0.
+The separate reviewer stopped at a usage limit, so the review fixes were verified in
+this session. Manual Windows terminal resize/color and reader quality acceptance remain.
 
 2026-10-17: Design/mockup approved in conversation; written design and implementation
 plan created and self-reviewed against source64b33d1. Awaiting written plan review

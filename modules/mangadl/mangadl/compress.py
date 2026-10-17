@@ -110,7 +110,13 @@ def discover_gallery_targets(
     with os.scandir(dest) as listing:
         root_entries = tuple(listing)
     _, direct_images = _gallery_images(
-        dest, cache, recursive=False, inventory=inventory, progress=None, threads=threads, _root_entries=root_entries
+        dest,
+        cache,
+        recursive=False,
+        inventory=inventory,
+        progress=None,
+        threads=threads,
+        _root_entries=root_entries,
     )
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
@@ -138,13 +144,23 @@ def discover_gallery_targets(
                 selected.append(target)
         if is_gallery and collected is not None:
             collected[dest] = _gallery_images(
-                dest, cache, inventory=inventory, progress=progress, threads=threads, _root_entries=root_entries
+                dest,
+                cache,
+                inventory=inventory,
+                progress=progress,
+                threads=threads,
+                _root_entries=root_entries,
             )
         return selected
     if is_gallery:
         if collected is not None:
             collected[dest] = _gallery_images(
-                dest, cache, inventory=inventory, progress=progress, threads=threads, _root_entries=root_entries
+                dest,
+                cache,
+                inventory=inventory,
+                progress=progress,
+                threads=threads,
+                _root_entries=root_entries,
             )
         return [dest]
 
@@ -175,6 +191,8 @@ def discover_gallery_targets(
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
+        if getattr(args, "confirm_recovery", None) and not getattr(args, "recover", False):
+            raise ValueError("--confirm-recovery requires --recover")
         from compresser.workspace import configure_workspace, initialize_workspace
 
         if not args.recover:
@@ -274,7 +292,12 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 raise ValueError("Recovery requires one exact directory, without URL/compare/sample selection")
             from compresser.recovery import run_recovery
 
-            return run_recovery(dest, apply=args.write, confirmation=args.confirm_recovery, as_json=args.json)
+            return run_recovery(
+                dest,
+                apply=args.write,
+                confirmation=args.confirm_recovery,
+                as_json=args.json,
+            )
         if not 1 <= args.quality <= 100 or not 0.80 <= args.perceptual_target <= 1.0:
             raise ValueError("Quality must be 1..100 and perceptual target 0.80..1.00")
         if args.threads < 1 or args.sample is not None and args.sample != "auto" and args.sample < 1:
@@ -440,7 +463,9 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             cache=cache.diagnostics(),
         )
         engine = CompressionEngine(
-            cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=args._memory_policy
+            cache=cache,
+            memory_budget_bytes=args.memory_budget_mib * 1024**2,
+            memory_policy=args._memory_policy,
         )
 
         # Comparison Mode
@@ -551,7 +576,11 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
 
         session = current_session()
         analysis_report, report_artifacts, extrapolation = session.analysis(
-            batch_result, sampling_plan, strat, snapshot=snapshot.report, cache=cache.diagnostics()
+            batch_result,
+            sampling_plan,
+            strat,
+            snapshot=snapshot.report,
+            cache=cache.diagnostics(),
         )
         if getattr(args, "json", False):
             out = {
@@ -572,7 +601,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "cache_hits": sum(item.cache_hit for item in batch_result.results),
                 "worker_diagnostics": batch_result.worker_diagnostics,
                 "pipeline": pipeline_report(),
-                "scope": "sample" if len(eval_images) < summary.total_images else "full",
+                "scope": ("sample" if len(eval_images) < summary.total_images else "full"),
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),

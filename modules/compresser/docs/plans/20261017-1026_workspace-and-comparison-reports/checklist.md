@@ -8,6 +8,6 @@
 - [x] Task2: format-weighted extrapolation and sample coverage.
 - [x] Task3: shared report model and responsive console tables.
 - [x] Task4: automatic durable Markdown reports.
-- [ ] Task5: inventory/all summary paths, integration/docs, final review and validation.
+- [x] Task5: inventory/all summary paths, integration/docs, review fixes and final validation.
 - [ ] Real Windows terminal resize/color acceptance (manual).
 - [ ] Reader visual-quality acceptance before any lossy production application (manual).

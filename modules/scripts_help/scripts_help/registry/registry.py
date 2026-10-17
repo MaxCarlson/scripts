@@ -380,14 +380,14 @@ REGISTRY: dict = {
                 "path": "modules/compresser",
                 "desc": "Analyze, compare, and optimize manga/manhwa images using perceptual compression",
                 "help_cmd": ["python", "-m", "compresser", "--help"],
-                 "version": "1.4.0",
+                 "version": "1.4.1",
             },
             {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
                 "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
                 "help_cmd": ["mangadl", "--help"],
-                 "version": "2.4.0",
+                 "version": "2.4.1",
             },
             {
                 "name": "edit_video_file.py",
