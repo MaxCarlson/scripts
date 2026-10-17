@@ -9,4 +9,4 @@
 - [x] Task2: CLI routing, detailed artifact preservation, release/docs/checkpoint.
 - [ ] Windows80/120/160-column/color acceptance.
 - [x] Final independent review; important unequal-allocation visibility finding fixed with RED/GREEN regression.
-- [ ] Verified review-fix commit/push; pause before estimator Task6.
+- [x] Verified review-fix commit/push (e55780f4); pause before estimator Task6.
