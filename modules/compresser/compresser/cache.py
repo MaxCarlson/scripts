@@ -14,12 +14,15 @@ from collections import Counter, OrderedDict
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Sequence
 
 import PIL
 from PIL import features
 
 from .models import CompressionStrategy, ImageMetadata, ImageResult
 from .timing import timed
+from .inventory_pipeline import FileObservation
+from .cancellation import check_cancelled
 
 CACHE_SCHEMA = 3
 METRIC_REVISION = "bounded-gaussian-rgb-native-patches-3"
@@ -241,15 +244,18 @@ class AnalysisCache:
 
     @timed("cache")
     def get(self, path: Path, strategy: CompressionStrategy) -> ImageResult | None:
-        key = self._make_key(path, strategy)
+        return self._lookup(path, strategy, self._make_key(path, strategy))
+
+    def _lookup(self, path, strategy, key, *, rows=None, legacy_key=None):
         with self._lock:
             cached = self._entries.get(key)
             if cached is None and self.path and self.reuse_persistent:
-                data = self._load("trial", key)
+                data = rows.get(key) if rows is not None else self._load("trial", key)
                 if data is None:
                     # Previous versions included display labels and irrelevant
                     # lossless quality settings. Exact legacy matches remain safe.
-                    data = self._load("trial", self._make_key(path, strategy, legacy=True))
+                    legacy_key = legacy_key or self._make_key(path, strategy, legacy=True)
+                    data = rows.get(legacy_key) if rows is not None else self._load("trial", legacy_key)
                 if data:
                     try:
                         data["input_path"] = Path(data["input_path"])
@@ -269,6 +275,59 @@ class AnalysisCache:
                 self._miss_reasons[reason] += 1
                 self._invalidation_causes[cause] += 1
             return replace(cached, cache_hit=True) if cached else None
+
+    @timed("cache")
+    def get_many(
+        self, requests: Sequence[tuple[ImageMetadata, CompressionStrategy, FileObservation]]
+    ) -> list[ImageResult | None]:
+        """Bounded bulk SQL with scalar semantics and fresh no-follow evidence."""
+        results = []
+        for start in range(0, len(requests), 128):
+            prepared = []
+            for meta, strategy, observation in requests[start : start + 128]:
+                check_cancelled()
+                observation.validate()
+                info = observation.info
+                if (
+                    meta.path != observation.path
+                    or meta.size_bytes != info.st_size
+                    or (meta.mtime_ns and meta.mtime_ns != info.st_mtime_ns)
+                ):
+                    raise RuntimeError(f"Source changed before cache lookup: {meta.path}")
+                resolved = meta.path.resolve()
+                prefix = f"{resolved}:{info.st_size}:{info.st_mtime_ns}:{info.st_ctime_ns}:{self.identity}:"
+                key, legacy_key = [
+                    hashlib.sha256((prefix + _strategy_key(strategy, legacy=legacy)).encode("utf-8")).hexdigest()
+                    for legacy in (False, True)
+                ]
+                prepared.append((meta, strategy, observation, key, legacy_key))
+            with self._lock:
+                rows = {}
+                if self.path and self.reuse_persistent:
+                    keys = list(
+                        dict.fromkeys(
+                            key
+                            for meta, strategy, observation, primary, legacy in prepared
+                            for key in (primary, legacy)
+                        )
+                    )
+                    if keys:
+                        marks = ",".join("?" for _ in keys)
+                        for key, payload in self._database().execute(
+                            f"SELECT key,data FROM entries WHERE kind='trial' AND key IN ({marks})", keys
+                        ):
+                            try:
+                                value = json.loads(payload)
+                                rows[key] = value if isinstance(value, dict) else None
+                            except ValueError:
+                                rows[key] = None
+            for meta, strategy, observation, key, legacy in prepared:
+                check_cancelled()
+                observation.validate()
+                result = self._lookup(meta.path, strategy, key, rows=rows, legacy_key=legacy)
+                observation.validate()
+                results.append(result)
+        return results
 
     @timed("cache")
     def set(self, path: Path, strategy: CompressionStrategy, result: ImageResult) -> None:

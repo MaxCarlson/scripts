@@ -3,6 +3,9 @@
 from collections import Counter
 from pathlib import Path
 from types import SimpleNamespace
+import threading
+import sqlite3
+from dataclasses import replace
 
 import pytest
 from PIL import Image
@@ -70,3 +73,103 @@ def test_changed_selected_file_still_rejected_after_previous_validation(tmp_path
     Image.new("RGB", (50, 50)).save(images[0].path)
     with pytest.raises(ValueError, match="refresh"):
         snapshot.validate_selected(images)
+
+
+def test_first_encode_starts_before_later_cache_probes(tmp_path, monkeypatch):
+    from compresser.engine import CompressionEngine
+    from compresser.models import CompressionStrategy
+
+    _, images, _ = _trusted(tmp_path)
+    engine = CompressionEngine()
+    started = threading.Event()
+    original_encode = engine._measure_image
+    original_probe = engine._probe_cached
+    probes = []
+
+    def encode(*args, **kwargs):
+        started.set()
+        return original_encode(*args, **kwargs)
+
+    def probe(image, strategy):
+        if probes:
+            assert started.wait(2), "All cache probes blocked first encoder dispatch"
+        probes.append(image.path)
+        return original_probe(image, strategy)
+
+    monkeypatch.setattr(engine, "_measure_image", encode)
+    monkeypatch.setattr(engine, "_probe_cached", probe)
+    try:
+        result = engine.compress_batch(images, CompressionStrategy("png", format="png", method=0), threads=2)
+        assert result.failed_count == 0
+        assert len(probes) == len(set(probes)) == len(images)
+    finally:
+        engine.cache.close()
+
+
+@pytest.mark.parametrize("persistent", [True, False])
+def test_bulk_cache_matches_scalar_and_rejects_stale_observations(tmp_path, persistent):
+    from compresser.cache import AnalysisCache
+    from compresser.inventory_pipeline import FileObservation
+    from compresser.models import CompressionStrategy, ImageResult
+
+    _, images, _ = _trusted(tmp_path)
+    strategy = CompressionStrategy("webp", format="webp", method=0)
+    path = tmp_path / "trials.sqlite3" if persistent else None
+    with AnalysisCache(path=path) as cache:
+        for image in images[:4]:
+            cache.set(
+                image.path,
+                strategy,
+                ImageResult(image.path, image.path, image.size_bytes, image.size_bytes, image.format, image.format),
+            )
+        requests = [
+            (image, strategy, FileObservation(image.path, image.path.parent, image.path.lstat())) for image in images
+        ]
+        expected = [cache.get(image.path, strategy) for image in images]
+        before = cache.diagnostics()
+        assert cache.get_many(requests) == expected
+        after = cache.diagnostics()
+        assert after["lookup_hits"] - before["lookup_hits"] == 4
+        images[0].path.write_bytes(b"changed")
+        with pytest.raises(RuntimeError, match="changed"):
+            cache.get_many(requests)
+
+
+@pytest.mark.parametrize("case", ["legacy", "malformed", "invalid", "evicted", "refresh", "settings", "runtime"])
+def test_bulk_cache_preserves_legacy_invalidation_and_diagnostics(tmp_path, case):
+    from compresser.cache import AnalysisCache
+    from compresser.inventory_pipeline import FileObservation
+    from compresser.models import CompressionStrategy, ImageResult
+
+    _, images, _ = _trusted(tmp_path)
+    image = images[0]
+    strategy = CompressionStrategy("webp", format="webp", method=0)
+    database = tmp_path / "trials.sqlite3"
+    with AnalysisCache(path=database) as cache:
+        cache.set(
+            image.path,
+            strategy,
+            ImageResult(image.path, image.path, image.size_bytes, image.size_bytes, image.format, image.format),
+        )
+        primary, legacy = cache._make_key(image.path, strategy), cache._make_key(image.path, strategy, legacy=True)
+    with sqlite3.connect(database) as db:
+        if case == "legacy":
+            db.execute("UPDATE entries SET key=? WHERE key=?", (legacy, primary))
+        elif case in ("malformed", "invalid"):
+            db.execute(
+                "UPDATE entries SET data=? WHERE key=?", ("bad-json" if case == "malformed" else '{"bad":1}', primary)
+            )
+        elif case == "evicted":
+            db.execute("DELETE FROM entries")
+    if case == "settings":
+        strategy = replace(strategy, method=1)
+    with AnalysisCache(path=database, reuse_persistent=case != "refresh") as scalar, AnalysisCache(
+        path=database, reuse_persistent=case != "refresh"
+    ) as bulk:
+        if case == "runtime":
+            scalar.identity = bulk.identity = "changed-runtime"
+        expected = scalar.get(image.path, strategy)
+        request = (image, strategy, FileObservation(image.path, image.path.parent, image.path.lstat()))
+        assert bulk.get_many([request]) == [expected]
+        for key in ("lookup_hits", "lookup_misses", "miss_reasons", "invalidation_causes"):
+            assert bulk.diagnostics()[key] == scalar.diagnostics()[key]

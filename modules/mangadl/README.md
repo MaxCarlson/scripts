@@ -1,5 +1,9 @@
 # mangadl
 
+Checkpoint1.56.0/compresser0.30.0 starts compression workers before later cache
+probes finish. Cache-hit bypass and source validation remain in place; no extra
+cache-probing worker pool or silent memory increase is introduced.
+
 Checkpoint1.55.2/compresser0.29.2 reduces repeated ancestor checks in trusted
 compression selections while checking directory identity at batch boundaries.
 Selected pages are still checked individually; trust is not retained across stages.

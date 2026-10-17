@@ -1,5 +1,12 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P3 completed: compresser0.30.0/MangaDL1.56.0, incremental pre-admission
+cache probes overlap encodes; bounded preparation, source checks and cancellation
+retained. Bulk validated library lookup preserves scalar legacy/diagnostic behavior.
+No speculative stat pool; first dispatch keeps scalar probing. P4 metadata-only
+profiles next; final gate/publication follows. No production writes or main push.
+
+
 Plan03 P3a MangaDL1.55.2/compresser0.29.2 improves shared trusted validation:
 ancestor identity checked at bounded batch boundaries, selected pages still checked
 individually, no retained trust between stages.227 compression/1 skip,314 MangaDL/

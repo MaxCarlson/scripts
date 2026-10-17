@@ -14,7 +14,7 @@ from PIL import Image
 
 from .models import ImageMetadata, ScanSummary
 from .cache import AnalysisCache
-from .inventory import InventoryStore
+from .inventory import InventoryStore, InventorySession
 from .perceptual import is_grayscale_image
 from .timing import configure_pipeline, increment, phase, timed
 from .inventory_pipeline import FileObservation, HeaderPipeline, linked, observe_files
@@ -201,7 +201,7 @@ def _scan_directory(
     with context as headers:
         for start in range(0, len(observations), 256):
             batch = observations[start : start + 256]
-            if cache and hasattr(cache, "get_many"):
+            if isinstance(cache, InventorySession):
                 cached = cache.get_many(batch, check_grayscale)
             else:
                 cached = {item.path: cache.get_metadata(item.path, check_grayscale) for item in batch} if cache else {}

@@ -1,5 +1,12 @@
 # Status
 
+Plan03 P3 completed: compresser0.30.0/MangaDL1.56.0, incremental pre-admission
+cache probes overlap encodes; bounded preparation, source checks and cancellation
+retained. Bulk validated library lookup preserves scalar legacy/diagnostic behavior.
+No speculative stat pool; first dispatch keeps scalar probing. P4 metadata-only
+profiles next; final gate/publication follows. No production writes or main push.
+
+
 Plan03 P3a compresser0.29.2/MangaDL1.55.2 implemented/tested: shared selected-source
 ancestors checked before/after256-page batches with operation-local directory IDs;
 individual leaf lstat/identity/fingerprint retained, no trust between stages. RED

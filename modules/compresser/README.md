@@ -1,4 +1,12 @@
-# compresser 0.29.2
+# compresser 0.30.0
+
+Analysis dispatch probes cache entries incrementally while admitted encoders run,
+instead of probing the entire selection before the first encode. Cache hits bypass
+encoder/scratch admission; pending preparation is bounded. Validated bulk trial
+lookup is also available to library callers (128 requests/256 SQL keys per chunk),
+matching scalar legacy-key and diagnostic semantics. Dispatch retains scalar probes
+to avoid delaying initial work for a bulk read. Ancestor validation stays serial;
+there is no additional unmeasured stat/cache pool.
 
 Trusted selected-source validation now checks shared ancestors before/after bounded
 256-page batches, retaining directory identity only for that validation call. Every

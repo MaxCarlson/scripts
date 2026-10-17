@@ -24,6 +24,7 @@ from .cache import AnalysisCache
 from .cancellation import cancellation_scope, check_cancelled
 from .timing import phase, timed, timing_scope, current_pipeline, execution_role, increment
 from .scheduler import MemoryScheduler
+from .inventory_pipeline import FileObservation
 from .codecs import (
     BaseCodec,
     discover_available_codecs,
@@ -217,10 +218,19 @@ class CompressionEngine:
         self, meta: ImageMetadata, strategy: CompressionStrategy
     ) -> tuple[ImageResult | None, dict[str, float], float]:
         started = time.monotonic()
+        observation = FileObservation(meta.path, meta.path.parent, meta.path.lstat())
+        observation.validate()
+        if observation.info.st_size != meta.size_bytes or (
+            meta.mtime_ns and observation.info.st_mtime_ns != meta.mtime_ns
+        ):
+            # Let the ordinary worker produce its per-image source-change error;
+            # never return a cached result for stale inventory metadata.
+            return None, {}, 0.0
         with timing_scope() as trace:
             cached = self.cache.get(meta.path, strategy)
             if cached is None and strategy.format == "auto" and 1 <= strategy.quality <= 100:
                 cached = self._cached_auto(meta, strategy)
+        observation.validate()
         elapsed = time.monotonic() - started
         phases = dict(trace["seconds"])
         if cached is not None:
@@ -538,17 +548,13 @@ class CompressionEngine:
                 )
             else:
                 eligible_costs.append(cost)
-                if can_pre_probe:
-                    cached_res, pre_phases, _ = self._probe_cached(img, strategy)
-                    if cached_res is not None:
-                        pre_cached.append(cached_res)
-                        continue
-                    pre_phase_by_path[img.path] = pre_phases
                 jobs.append((img, cost))
         largest_working_set = max(eligible_costs, default=0)
         memory_workers = self.memory_budget_bytes // min(eligible_costs, default=self.memory_budget_bytes)
         max_workers = min(threads, os.cpu_count() or 4, memory_workers, len(eligible_costs))
-        scheduler = MemoryScheduler(jobs, self.memory_budget_bytes, max_workers)
+        scheduler = MemoryScheduler([], self.memory_budget_bytes, max_workers)
+        unprepared = iter(jobs)
+        preparation_complete = False
         diagnostics = {
             "requested_workers": threads,
             "effective_workers": max_workers,
@@ -642,10 +648,30 @@ class CompressionEngine:
                                 report_activity()
 
                 def fill_slots() -> None:
+                    nonlocal preparation_complete, finished
                     while len(futures) < max_workers:
                         job = scheduler.next_job()
                         if job is None:
-                            break
+                            if preparation_complete or len(scheduler.pending) >= 2 * max_workers:
+                                break
+                            check_cancelled()
+                            pending_job = next(unprepared, None)
+                            if pending_job is None:
+                                preparation_complete = True
+                                continue
+                            img, cost = pending_job
+                            if can_pre_probe:
+                                cached_res, pre_phases, _ = self._probe_cached(img, strategy)
+                                if cached_res is not None:
+                                    finished += 1
+                                    diagnostics["pre_admission_cache_hits"] += 1
+                                    consume(cached_res)
+                                    continue
+                                pre_phase_by_path[img.path] = pre_phases
+                            scheduler.pending.append((img, cost))
+                            if metrics is not None:
+                                metrics.observe_max("cache_preparation_pending_peak", len(scheduler.pending))
+                            continue
                         img, cost = job
                         futures[pool.submit(copy_context().run, work, img)] = cost
                         if metrics is not None:
@@ -689,11 +715,11 @@ class CompressionEngine:
                         res = fut.result()
                         consume(res)
                         fill_slots()
-                except KeyboardInterrupt:
+                except BaseException as exc:
                     cancelled.set()
                     for future in futures:
                         future.cancel()
-                    if cancellation_callback:
+                    if isinstance(exc, KeyboardInterrupt) and cancellation_callback:
                         cancellation_callback(sum(future.running() for future in futures))
                     # Repeated Ctrl+C must not release library ownership while a
                     # worker is still finishing an already-entered publication.
