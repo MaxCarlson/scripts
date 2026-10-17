@@ -45,6 +45,38 @@ def test_weighted_estimate_failures_and_uncertainty(tmp_path):
     assert singleton.estimate([])["approximate_95_percent_interval_bytes"] is None
 
 
+def test_increasing_budget_never_replaces_samples(tmp_path):
+    images = population(tmp_path)
+    prior = set()
+    for size in range(3, len(images) + 1):
+        plan = gallery_sample(images, tmp_path, sample_size=size, seed=42)
+        selected = {i.path for i in plan.images}
+        assert prior <= selected
+        assert len(selected) == size
+        prior = selected
+
+
+def test_saved_sample_tracks_population_and_selection(tmp_path):
+    import sqlite3
+    from compresser.inventory import InventoryStore
+    from compresser.scanner import scan_directory
+
+    root = tmp_path / "library"
+    root.mkdir()
+    for i in range(4):
+        Image.new("RGB", (40, 40)).save(root / f"{i}.png")
+    store = InventoryStore(tmp_path / "inventory.sqlite3")
+    _, images = scan_directory(root, inventory=store)
+    small = store.save_sample(gallery_sample(images, root, sample_size=2), root)
+    large = store.save_sample(gallery_sample(images, root, sample_size=3), root)
+    assert small["population_identity"] == large["population_identity"]
+    with sqlite3.connect(store.path) as connection:
+        reports = [
+            json.loads(row[0]) for row in connection.execute("SELECT report FROM inventory_samples ORDER BY count")
+        ]
+    assert set(reports[0]["selected_files"]) < set(reports[1]["selected_files"])
+
+
 def test_combined_cli_and_persistent_cache(tmp_path, capsys):
     gallery = tmp_path / "library" / "gallery"
     gallery.mkdir(parents=True)

@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.13.0"
+__version__ = "0.14.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -317,6 +317,7 @@ def main(argv: list[str] | None = None) -> int:
             images, args.input, sample_size=args.sample, percent=args.sample_percent, seed=args.sample_seed
         )
         eval_images = sampling_plan.images
+        store.save_sample(sampling_plan, args.input)
         if not args.json:
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")

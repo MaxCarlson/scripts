@@ -11,6 +11,8 @@
   - [x] I2c automatic per-library use/refresh/off trial-cache policies and path/policy reporting;96 compression/17 integration/55 help pass.
   - [ ] Detailed invalidation-cause diagnostics and historical cache timestamps.
 - [ ] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
+  - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
+  - [ ] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations.
 - [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
 

@@ -2,6 +2,11 @@
 
 ## Current branch
 
+`compression-inventory-and-analysis-20261016`: I1a inventory, I2a/I2b cache reuse,
+I2c automatic cache policies and I3a stable expanding samples. Each tested checkpoint
+is committed/pushed under explicit user authorization; main is not pushed. Remaining
+advisor, fast/trusted inventory, scratch and reader gates stay open in active status.
+
 Active performance/cache continuation:
 [plan](20261013-0600_compression-performance-sampling-and-cache/00_plan.md),
 [status](20261013-0600_compression-performance-sampling-and-cache/STATUS.md).

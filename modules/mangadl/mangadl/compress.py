@@ -242,6 +242,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             gallery_keys=gallery_keys,
         )
         eval_images = sampling_plan.images
+        store.save_sample(sampling_plan, dest)
         if not args.json:
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")

@@ -1,6 +1,6 @@
 # Compression performance, sampling and MangaDL cache
 
-Current branch: main. Current baseline: c3db8b4 (2026-10-16).
+Current branch: compression-inventory-and-analysis-20261016. Planning baseline: c3db8b4 (2026-10-16).
 The compression branch was merged as3122931. Original baseline: df9e0d4.
 The approved continuation in [01_inventory-and-analysis-continuation.md](01_inventory-and-analysis-continuation.md)
 supersedes unfinished P4/P5 design details and defines the next implementation order.

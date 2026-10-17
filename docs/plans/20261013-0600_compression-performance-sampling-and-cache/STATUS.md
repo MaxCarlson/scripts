@@ -1,5 +1,16 @@
 # Status
 
+I3a compresser0.14.0/MangaDL1.40.0: seeded hash priorities and monotone divisor quota
+extension keep earlier selections when -s/-P grows on unchanged inventory/seed.
+Sampling revision2 differs from revision1. Selection plans in inventory_samples
+include population fingerprint, selected relative files, quotas, seed and timestamp;
+they are not completed-trial evidence.98 compression tests pass, including every
+budget expansion in a heterogeneous fixture; full MangaDL suite and55 help pass.
+Local installs refreshed; final persistence-close focused check recorded in handoff.
+I2c1f51b92 pushed. Next: I3 pilot advisor/confirmation design; I1b trusted snapshots/
+fast scan, miss-cause timestamps, I4 scratch/benchmarks and I5 multi-quality/reader
+acceptance are still open. No production library benchmark or image writes.
+
 I2c compresser0.13.0/MangaDL1.39.0: automatic per-library trial persistence beside
 inventory, -k/--cache-policy use/refresh/off, -K override preserved. Refresh ignores
 prior disk entries but permits new in-run reuse; off is memory-only for trials and

@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Current1.40.0/compresser0.14.0 on compression-inventory-and-analysis-20261016.
+Inventory -l/-I, automatic trial -k use/refresh/off, compatible AUTO reuse and stable
+growing sample plans implemented.98 compression/full MangaDL/55 help pass; local
+installs refreshed. Check authoritative continuation STATUS for remaining stages.
+
 I1a:1.38.0/compresser0.10.0 adds -l inventory-only/-I external inventory SQLite.
 Normal compression auto-refreshes inventory; nested pages preserve owning gallery,
 covers remain excluded, and discovery results are reused instead of rescanning

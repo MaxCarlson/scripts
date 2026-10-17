@@ -6,8 +6,9 @@ from collections import defaultdict
 import argparse
 from dataclasses import dataclass
 import math
+import hashlib
+import heapq
 from pathlib import Path
-import random
 from statistics import variance
 from typing import Mapping, Sequence
 
@@ -94,6 +95,7 @@ class GallerySample:
             "method": "gallery-stratified simple random sampling without replacement",
             "allocation": "one per gallery (two where budget permits), then equal image-count and byte weighting",
             "seed": self.seed,
+            "sampling_revision": 2,
             "inventory_images": sum(map(len, self.groups.values())),
             "inventory_bytes": sum(i.size_bytes for g in self.groups.values() for i in g),
             "sample_images": len(self.images),
@@ -172,8 +174,9 @@ def gallery_sample(
         raise ValueError("Choose sample size or percentage, not both")
     groups = defaultdict(list)
     root = root.resolve()
+    is_directory = root.is_dir()
     for image in images:
-        relative = image.path.resolve().relative_to(root) if root.is_dir() else Path(image.path.name)
+        relative = image.path.resolve().relative_to(root) if is_directory else Path(image.path.name)
         key = (
             gallery_keys[image.path]
             if gallery_keys is not None
@@ -192,30 +195,38 @@ def gallery_sample(
             f"Sample {target} cannot cover {len(groups)} galleries; use -s {len(groups)} or more, "
             "or -P for a percentage with automatic per-gallery coverage"
         )
-    minimum = {k: min(2, len(v)) for k, v in groups.items()}
-    quotas = minimum if target >= sum(minimum.values()) else {k: 1 for k in groups}
+    quotas = {key: 1 for key in groups}
     total_bytes = sum(i.size_bytes for i in images)
     weights = {
         k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / max(1, total_bytes) for k, v in groups.items()
     }
-    # Capped proportional allocation. Recompute after a gallery fills its quota.
+    # Monotone allocation: establish second samples before weighted expansion.
+    # Divisor priorities never reduce an earlier gallery quota as budget grows.
     remaining = target - sum(quotas.values())
+    second = sorted((key for key in groups if len(groups[key]) > 1), key=lambda key: (-weights[key], key))
+    for key in second[:remaining]:
+        quotas[key] += 1
+        remaining -= 1
+    heap = [(-weights[key], key) for key in groups if quotas[key] < len(groups[key])]
+    heapq.heapify(heap)
+    baseline = dict(quotas)
     while remaining:
-        eligible = [k for k in groups if quotas[k] < len(groups[k])]
-        weight_sum = sum(weights[k] for k in eligible)
-        shares = {k: remaining * weights[k] / weight_sum for k in eligible}
-        allocated = 0
-        for key in eligible:
-            extra = min(len(groups[key]) - quotas[key], int(shares[key]))
-            quotas[key] += extra
-            allocated += extra
-        remaining -= allocated
-        if remaining and not allocated:
-            for key in sorted(eligible, key=lambda k: (-shares[k], k))[:remaining]:
-                quotas[key] += 1
-                remaining -= 1
-    rng = random.Random(seed)
-    selected = [i for k, members in groups.items() for i in rng.sample(members, quotas[k])]
+        _, key = heapq.heappop(heap)
+        quotas[key] += 1
+        remaining -= 1
+        if quotas[key] < len(groups[key]):
+            heapq.heappush(heap, (-weights[key] / (quotas[key] - baseline[key] + 1), key))
+    selected = []
+    for key, members in groups.items():
+        # Seeded file priorities give a stable pseudorandom permutation; selecting
+        # a longer prefix retains all earlier samples for an unchanged population.
+        ranked = sorted(
+            members,
+            key=lambda image: hashlib.sha256(
+                f"{seed}\0{image.path.relative_to(root) if is_directory else image.path.name}".encode()
+            ).digest(),
+        )
+        selected.extend(ranked[: quotas[key]])
     return GallerySample(sorted(selected, key=lambda i: str(i.path).casefold()), groups, quotas, seed)
 
 

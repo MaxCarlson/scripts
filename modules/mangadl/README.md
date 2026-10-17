@@ -20,6 +20,13 @@ memory only). `-K` still overrides the trial-cache file. Policies never delete
 unrelated data or skip source/settings fingerprint checks. Inventory-only does not
 open a trial cache, and disabling trials does not disable inventory persistence.
 
+Larger samples now extend smaller ones for an unchanged inventory and seed.
+For example, run -P 2 then -P 5 with the same -z value: existing selected images
+remain included and matching trials can be reused. Selection plans/population
+fingerprints are saved in the inventory SQLite file. Sampling revision2 changes
+the old revision1 selection order; a seed alone does not identify a plan across
+different revisions or changing libraries. This is not yet a statistical advisor.
+
 ## Representative compression comparison
 
 ```powershell

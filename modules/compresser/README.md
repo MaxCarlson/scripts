@@ -1,4 +1,4 @@
-# compresser 0.13.0
+# compresser 0.14.0
 
 ## Persistent inventory
 
@@ -63,6 +63,16 @@ non-singleton gallery are reserved before allocating the remainder equally by
 image-count and byte shares. Within each gallery every image has equal selection
 probability. `-z SEED` reproduces selection (default 0). Nested chapters belong
 to their manga in MangaDL; standalone input groups by first-level directory.
+
+Sampling revision2 uses stable seeded file priorities and monotone weighted quota
+allocation. With the same inventory/seed, increasing -s or -P retains every previous
+selection, maximizing trial-cache reuse. A changed population is a different sample
+plan. This revision can select different images from revision1 for the same seed.
+Plans are saved in the inventory database's `inventory_samples` table, including
+population fingerprint, selected relative paths, seed, quotas and creation time.
+These are selection records, not proof that any trial finished. Pilot-based sample
+size advice and outcome-adaptive sampling are not implemented; existing uncertainty
+limits still apply, especially when repeatedly inspecting growing samples.
 
 `-b/--compare-both` compares PNG/WebP/JPEG/AUTO lossless and WebP/JPEG/AUTO lossy
 using `-q QUALITY`, one inventory and one shared sample: seven strategy trials per

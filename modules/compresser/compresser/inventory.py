@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from contextlib import contextmanager
+from contextlib import contextmanager, closing
 from dataclasses import asdict
 from datetime import datetime, timezone
 import hashlib
@@ -100,6 +100,42 @@ class InventoryStore:
             "headers_inspected": sum(r["headers_inspected"] for r in self.reports),
             "scan_scopes": [{key: value for key, value in report.items() if key != "files"} for report in self.reports],
         }
+
+    def save_sample(self, plan, root: Path) -> dict:
+        """Persist selection provenance separately from completed compression trials."""
+        root = root.resolve()
+        is_directory = root.is_dir()
+        population = [
+            (
+                str(i.path.relative_to(root)) if is_directory else i.path.name,
+                i.size_bytes,
+                i.mtime_ns,
+                i.format,
+                i.width,
+                i.height,
+                key,
+            )
+            for key, members in plan.groups.items()
+            for i in members
+        ]
+        identity = hashlib.sha256(json.dumps([2, population]).encode()).hexdigest()
+        report = plan.summary()
+        report.update(
+            population_identity=identity,
+            created=datetime.now(timezone.utc).isoformat(),
+            selected_files=[str(i.path.relative_to(root)) if is_directory else i.path.name for i in plan.images],
+        )
+        with closing(sqlite3.connect(self.path)) as connection, connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS inventory_samples "
+                "(root TEXT, seed TEXT, population TEXT, count INTEGER, report TEXT, "
+                "PRIMARY KEY(root,seed,population,count))"
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO inventory_samples VALUES(?,?,?,?,?)",
+                (str(root), str(plan.seed), identity, len(plan.images), json.dumps(report)),
+            )
+        return {"population_identity": identity, "sampling_revision": 2, "inventory_file": str(self.path)}
 
 
 class InventorySession:

@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+Current compression continuation branch: compression-inventory-and-analysis-20261016.
+User requested commit existing work before branching, then test/commit/push each
+major feature. I1a83b6735, I2a7e0e8a9, I2bd097138, I2c1f51b92 published on feature
+branch, not main. I3a stable expanding samples tested as0.14.0/1.40.0,98 compression/
+full MangaDL/55 help pass, installs refreshed. Persistent inventory and automatic
+trial caching ready; advisor/fast snapshots/SSD scratch/multi-quality remain open.
+
 2026-10-16 inventory continuation: official existing compression plan reconciled;
 approved I1-I5 continuation includes opt-in SSD scratch at I4. I1a implemented as
 compresser0.10.0/MangaDL1.38.0: -l inventory-only, -I durable external inventory,

@@ -1,5 +1,12 @@
 # Compresser handoff
 
+I3a0.14.0/MangaDL1.40.0: stable seeded file ranking + monotone gallery quotas;
+larger samples retain earlier selections on unchanged population/seed. Persisted
+sample plans/population identity in separate inventory_samples table. Revision2
+changes old selection order.98 compression/full MangaDL/55 help pass; installs
+refreshed. Pilot-based advisor, trusted snapshots/fast inventory, diagnostics,
+scratch and multi-quality/reader acceptance remain open. No production writes.
+
 I2c:0.13.0/MangaDL1.39.0 automatic per-library trial cache, -k use/refresh/off,
 -K override. Refresh ignores old disk trials but reuses this run's work; off keeps
 memory only. Inventory-only opens no trial DB. Text/JSON report path/policy; CLI
