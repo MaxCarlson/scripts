@@ -7,6 +7,8 @@ from __future__ import annotations
 
 import io
 import os
+import sys
+import logging
 import time
 import threading
 from contextlib import nullcontext
@@ -692,6 +694,11 @@ class CompressionEngine:
             if scratch_workspace is not None:
                 scratch_workspace.close()
                 diagnostics["scratch"] = scratch_workspace.diagnostics()
+                if not scratch_workspace.cleaned_up:
+                    message = f"Scratch cleanup incomplete; ownership evidence retained at {scratch_workspace.run_dir}"
+                    if sys.exc_info()[0] is None:
+                        raise RuntimeError(message)
+                    logging.getLogger(__name__).warning(message)
 
         elapsed = time.monotonic() - start_time
         diagnostics["peak_reserved_bytes"] = scheduler.peak_reserved_bytes

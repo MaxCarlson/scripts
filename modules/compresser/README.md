@@ -1,4 +1,4 @@
-# compresser 0.26.0
+# compresser 0.26.1
 
 ## Review repair status
 
@@ -8,8 +8,8 @@ Reader/writer coordination is repaired in0.26.0: standalone ownership spans disc
 and encoder completion, nested galleries conflict with parent operations, and valid
 write workers inherit covering ownership without removing legacy inode locks. Stop
 older running binaries before upgrading; all processes must share local lock state.
-The protocol cannot coordinate nonparticipating programs or other hosts. Large
-scratch runs, recommendation labels and advisor precision claims remain provisional.
+The protocol cannot coordinate nonparticipating programs or other hosts.
+Recommendation labels and exact advisor/confirmation CLI integration remain under repair.
 
 ## Pre-admission cache bypass and opt-in SSD scratch staging (`-X/--scratch-dir`)
 
@@ -22,6 +22,22 @@ and size before decoding, tracks `scratch_copy` phase seconds and `worker_diagno
 (`staged_images`, `staged_bytes`, `peak_staged_bytes`, `copy_seconds`, `cleaned_up`),
 preserves original source identities in results and `AnalysisCache`, and removes only
 verified owned scratch files after each image and at run exit/cancellation.
+
+Staging now reserves aggregate encoded-file bytes before opening input content,
+waits cooperatively for capacity, and copies/verifies in64KiB chunks instead of
+allocating whole-file buffers. A single source larger than the staging budget fails
+before reading. The staging byte budget is separate from decoded-memory estimates.
+Source growth, shrinking, checksum mismatch and cancellation discard owned copies.
+Linked ancestors/junctions and replaced run directories are refused. An atomic
+manifest records ownership before image writes; disk-full/partial writes remain
+tracked. Cleanup failure preserves ownership evidence, wakes/aborts waiting stagers,
+and makes the CLI fail rather than silently succeeding. `cleanup_errors` records
+encountered errors; `cleaned_up` reports whether eventual cleanup succeeded.
+
+Scratch is not automatically faster. A bounded same-volume generated fixture
+benchmark (four images/3.69MB, two workers, effort0, three runs) gave identical
+results with median0.125s direct versus0.156s staged. This measures local overhead,
+not a benefit on B: or a production throughput claim; use opt-in -X when worthwhile.
 
 ## Pilot sample-size advisor, coverage gaps, and confirmation sampling
 

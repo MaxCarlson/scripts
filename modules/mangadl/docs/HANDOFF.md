@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+Repair Task3 1.52.1/compresser0.26.1: scratch reservations before reads, bounded64KiB
+copy/hash, atomic ownership manifest before image bytes, run/link identity guards,
+explicit cleanup failures with evidence and no hung stagers. Optional scratch may
+add overhead; local fixture benchmark is not a production speedup claim. Next cache
+diagnostic bound, weighted recommendations and persisted CLI confirmation plans.
+
 Repair Task2 1.52.0/compresser0.26.0/cross_platform0.8.0: wrapper-held ownership now
 participates in real overlapping reader/writer exclusion, preserving legacy operation
 inode/reentrant worker behavior. Shared-user local protocol, not cross-host protection;

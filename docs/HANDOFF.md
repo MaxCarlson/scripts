@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+Repair Task3 compresser0.26.1/MangaDL1.52.1: bounded streaming scratch with pre-read
+byte reservations, durable ownership/failure cleanup and fail-fast stalled stagers.
+Locks ee4696a already synchronized. Next Task4 diagnostic memory bounds in02_review-repairs.
+No production operations; same-volume fixture benchmark showed staging overhead,
+not a claimed SSD benefit. Original source/cache identities remain unchanged.
+
 Repair Task2: real read/write coordination in cross_platform0.8.0, compresser0.26.0,
 MangaDL1.52.0. Shared local user registry serializes acquisition on overlapping trees;
 full standalone operation ownership, covering write reentrancy, legacy locks retained.

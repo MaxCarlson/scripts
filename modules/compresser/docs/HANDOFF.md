@@ -1,5 +1,15 @@
 # Compresser handoff
 
+Repair Task3 0.26.1/MangaDL1.52.1: byte reservations precede source opens;64KiB
+streaming/hash verification, cancellable capacity wait, atomic pre-write manifest,
+tracked partial writes, run-identity/link checks, retryable cleanup with evidence.
+Unlink failure aborts waiting stagers; engine/context-manager normal exit fails if
+cleanup incomplete (does not mask original cancellation).17 scratch failure fixtures
+cover oversized inputs, chunk bounds, exact concurrent reservation, manifest/disk/
+delete failures, replacement, source growth/checksum/cancel, invalid budgets.
+Local generated4-image benchmark identical: median0.125s direct/0.156s staged;
+no B: or SSD speedup claim. Next bounded diagnostic cache memory.
+
 Repair Task2 0.26.0/MangaDL1.52.0/cross_platform0.8.0: coordinated external reader/
 writer gate and overlapping-tree registry. Standalone owns target through discovery
 and all trials; writes before discovery, read-only target untouched. Managed writes

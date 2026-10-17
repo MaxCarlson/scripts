@@ -23,7 +23,7 @@ from .sampling import GallerySample, confirmation_sample, gallery_sample
 from .scanner import inspect_image_file, scan_directory, select_sample
 from .ui import recommend_comparison_strategies
 
-__version__ = "0.26.0"
+__version__ = "0.26.1"
 
 
 def analyze_collection(

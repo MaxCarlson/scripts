@@ -1,5 +1,14 @@
 # Status
 
+Repair Task3 compresser0.26.1/MangaDL1.52.1: pre-read aggregate byte reservation,
+64KiB streaming copy/verification, cancellable capacity waiting, durable pre-write
+ownership and atomic manifests, run identity/link checks. Partial writes cleaned,
+failed cleanup preserves evidence/retries and aborts waiting stagers; incomplete
+cleanup cannot silently return CLI success. Source-growth/checksum/cancel/budget
+fixtures included. Same-volume generated4-image benchmark equal outputs, medians
+0.125s direct/0.156s staged; no production/SSD benefit claim. Full178 compression
+passed/1 platform skip,308 MangaDL/55 help passed; lint/format pass. Next Task4 cache memory.
+
 Repair Task2 cross_platform0.8.0/compresser0.26.0/MangaDL1.52.0: shared local user
 acquisition gate/active-operation registry excludes overlapping readers/writers,
 permits shared readers/sibling operations and covering same-thread nested writes.
