@@ -9,7 +9,7 @@ def test_nested_phases_do_not_double_count(monkeypatch):
     import compresser.timing as module
 
     clock = [0.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0])
     notices = []
     with timing_scope(notices.append) as trace:
         with phase("encoding"):
@@ -25,7 +25,7 @@ def test_failure_phase_and_context_cleanup(monkeypatch):
     import compresser.timing as module
 
     clock = [0.0]
-    monkeypatch.setattr(module.time, "monotonic", lambda: clock[0])
+    monkeypatch.setattr(module.time, "perf_counter", lambda: clock[0])
     with timing_scope() as trace:
         with pytest.raises(ValueError):
             with phase("verification"):

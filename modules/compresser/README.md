@@ -1,4 +1,28 @@
-# compresser 0.26.4
+# compresser 0.27.0
+
+## Current-run pipeline measurements
+
+Inventory and compression JSON include `pipeline`: exclusive measured coordinator/
+worker seconds, elapsed/CPU at report construction, scan/header/cache counters,
+inventory SQL connections/statements/commits, worker high-water marks, runtime and
+settings. High-resolution timing distinguishes submillisecond metadata work.
+Worker seconds add across threads and are not wall time; cache hits measure current
+lookup work, never saved encoder timing. Uninstrumented overhead and final output/
+cleanup remain outside those phase totals. File-only inventory measures stat work
+without pretending to inspect headers; human inventory summaries include the phase
+and database counters. These run measurements are not persisted population evidence.
+
+Developer generated-only benchmark (no production target accepted):
+
+```powershell
+.venv/Scripts/python.exe modules/compresser/tests/pipeline_benchmark.py -r 3 -t 1 2 4 8
+.venv/Scripts/python.exe modules/compresser/tests/pipeline_benchmark.py -M -r 3 -t 1 2 4 8
+```
+
+`-M` uses the installed MangaDL adapter; otherwise the utility stays standalone.
+It checks retained-result equality and reports cold-trial/warm-trust timings on
+four small generated fixture shapes. Fresh trial DBs are not cold OS caches; RSS
+is sampled, not a guaranteed peak. Inventory scanning is still serial at this stage.
 
 ## Review repair status
 

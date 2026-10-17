@@ -16,6 +16,7 @@ from .models import ImageMetadata, ScanSummary
 from .cache import AnalysisCache
 from .inventory import InventoryStore
 from .perceptual import is_grayscale_image
+from .timing import increment, phase, timed
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".webp", ".png", ".avif", ".bmp"}
 
@@ -25,8 +26,10 @@ def is_image_file(path: Path) -> bool:
     return path.suffix.lower() in IMAGE_EXTENSIONS and path.is_file()
 
 
+@timed("header_read")
 def inspect_image_file(path: Path, *, check_grayscale: bool = False) -> ImageMetadata | None:
     """Extract metadata for a single image file without loading pixel buffer."""
+    increment("headers_inspected")
     try:
         stat = path.stat()
         size = stat.st_size
@@ -103,38 +106,41 @@ def _scan_directory(
     tall_count = 0
     gray_count = 0
 
-    if target.is_file():
-        file_candidates = [target] if is_image_file(target) else []
-    elif recursive:
-        file_candidates = []
+    with phase("enumeration"):
+        if target.is_file():
+            file_candidates = [target] if is_image_file(target) else []
+        elif recursive:
+            file_candidates = []
 
-        def walk_error(error):
-            raise error
+            def walk_error(error):
+                raise error
 
-        for directory, dirs, names in os.walk(target, followlinks=False, onerror=walk_error):
-            dirs[:] = [
-                name
-                for name in dirs
-                if not name.startswith(".") and name != "_partial" and not (Path(directory) / name).is_symlink()
-            ]
-            file_candidates.extend(
-                Path(directory) / name
-                for name in names
-                if not name.startswith(".")
-                and is_image_file(Path(directory) / name)
-                and not (Path(directory) / name).is_symlink()
-            )
-    else:
-        file_candidates = [p for p in target.glob("*") if is_image_file(p)]
+            for directory, dirs, names in os.walk(target, followlinks=False, onerror=walk_error):
+                dirs[:] = [
+                    name
+                    for name in dirs
+                    if not name.startswith(".") and name != "_partial" and not (Path(directory) / name).is_symlink()
+                ]
+                file_candidates.extend(
+                    Path(directory) / name
+                    for name in names
+                    if not name.startswith(".")
+                    and is_image_file(Path(directory) / name)
+                    and not (Path(directory) / name).is_symlink()
+                )
+        else:
+            file_candidates = [p for p in target.glob("*") if is_image_file(p)]
 
-    # Sort files naturally for consistent batch ordering
-    file_candidates.sort(key=lambda p: str(p).casefold())
+        file_candidates.sort(key=lambda p: str(p).casefold())
+    increment("scanned_candidates", len(file_candidates))
     if progress is not None and file_candidates:
         progress.add_total_files(len(file_candidates))
 
     for idx, path in enumerate(file_candidates, 1):
         meta = cache.get_metadata(path, check_grayscale) if cache else None
         reused = meta is not None
+        if reused:
+            increment("headers_reused")
         inspected = False
         if meta is None:
             inspected = True
@@ -142,6 +148,7 @@ def _scan_directory(
             if meta and cache:
                 cache.set_metadata(meta, check_grayscale)
         if meta is None:
+            increment("unreadable_images")
             if progress is not None:
                 try:
                     raw_size = path.stat().st_size

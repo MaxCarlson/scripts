@@ -11,4 +11,4 @@ _IMPLEMENTATION = Path(__file__).parent / "mangadl"
 if str(_IMPLEMENTATION) not in __path__:
     __path__.append(str(_IMPLEMENTATION))
 
-__version__ = "1.52.4"
+__version__ = "1.53.0"

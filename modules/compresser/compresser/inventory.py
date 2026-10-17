@@ -14,6 +14,25 @@ from statistics import median
 from typing import Iterator
 
 from .models import ImageMetadata
+from .timing import increment, pipeline_report, timed
+
+
+def connect_inventory(*args, **kwargs) -> sqlite3.Connection:
+    """Count actual SQL work without changing connection ownership/transactions."""
+    connection = sqlite3.connect(*args, **kwargs)
+    increment("inventory_connections")
+
+    def trace(statement):
+        verb = statement.lstrip().split(None, 1)[0].upper()
+        if verb == "COMMIT":
+            increment("inventory_commits")
+        elif verb == "ROLLBACK":
+            increment("inventory_rollbacks")
+        elif verb != "BEGIN":
+            increment("inventory_queries")
+
+    connection.set_trace_callback(trace)
+    return connection
 
 
 def inventory_path(args, root: Path) -> Path:
@@ -46,7 +65,7 @@ class InventoryStore:
     @contextmanager
     def scan(self, root: Path, recursive: bool) -> Iterator["InventorySession"]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        connection = sqlite3.connect(self.path, timeout=5)
+        connection = connect_inventory(self.path, timeout=5)
         try:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_headers "
@@ -94,6 +113,7 @@ class InventoryStore:
         records = {row["path"]: row for report in self.reports for row in report["files"]}
         return {
             "inventory_file": str(self.path),
+            "pipeline": pipeline_report(),
             "scanned_candidates": len(records),
             "unreadable_images": sum(row["status"] == "unreadable" for row in records.values()),
             "headers_reused": sum(r["headers_reused"] for r in self.reports),
@@ -101,6 +121,7 @@ class InventoryStore:
             "scan_scopes": [{key: value for key, value in report.items() if key != "files"} for report in self.reports],
         }
 
+    @timed("publication")
     def save_sample(self, plan, root: Path) -> dict:
         """Persist selection provenance separately from completed compression trials."""
         root = root.resolve()
@@ -125,7 +146,7 @@ class InventoryStore:
             created=datetime.now(timezone.utc).isoformat(),
             selected_files=[str(i.path.relative_to(root)) if is_directory else i.path.name for i in plan.images],
         )
-        with closing(sqlite3.connect(self.path)) as connection, connection:
+        with closing(connect_inventory(self.path)) as connection, connection:
             connection.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_samples "
                 "(root TEXT, seed TEXT, population TEXT, count INTEGER, report TEXT, "
@@ -147,6 +168,7 @@ class InventorySession:
         self.reused = 0
         self.inspected = 0
 
+    @timed("metadata_lookup")
     def get_metadata(self, path: Path, check_grayscale: bool = False) -> ImageMetadata | None:
         stat = path.stat()
         fingerprint = json.dumps([1, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns])
@@ -174,6 +196,7 @@ class InventorySession:
         self.inspected += 1
         return None
 
+    @timed("header_publication")
     def set_metadata(self, meta: ImageMetadata, check_grayscale: bool = False) -> None:
         stat = meta.path.stat()
         entry = self.seen[str(meta.path)]

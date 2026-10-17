@@ -12,6 +12,7 @@ import logging
 import time
 import threading
 from contextlib import nullcontext
+from contextvars import copy_context
 from dataclasses import replace
 from concurrent.futures import FIRST_COMPLETED, CancelledError, ThreadPoolExecutor, wait
 from pathlib import Path
@@ -21,7 +22,7 @@ from PIL import Image
 
 from .cache import AnalysisCache
 from .cancellation import cancellation_scope, check_cancelled
-from .timing import phase, timed, timing_scope
+from .timing import phase, timed, timing_scope, current_pipeline, execution_role, increment
 from .scheduler import MemoryScheduler
 from .codecs import (
     BaseCodec,
@@ -211,6 +212,7 @@ class CompressionEngine:
         self.cache.set(meta.path, strategy, result)
         return result
 
+    @timed("cache_preparation")
     def _probe_cached(
         self, meta: ImageMetadata, strategy: CompressionStrategy
     ) -> tuple[ImageResult | None, dict[str, float], float]:
@@ -511,6 +513,7 @@ class CompressionEngine:
         jobs, rejected, pre_cached = [], [], []
         eligible_costs: list[int] = []
         pre_phase_by_path: dict[Path, dict[str, float]] = {}
+        metrics = current_pipeline()
         for img in images:
             cost = img.width * img.height * ESTIMATED_BYTES_PER_PIXEL
             reason = None
@@ -599,7 +602,7 @@ class CompressionEngine:
                 cancelled = threading.Event()
 
                 def work(img):
-                    with cancellation_scope(cancelled):
+                    with cancellation_scope(cancelled), execution_role("worker"):
                         check_cancelled()
                         with activity_lock:
                             active[str(img.path)] = {
@@ -609,6 +612,9 @@ class CompressionEngine:
                                 "estimated_bytes": img.width * img.height * ESTIMATED_BYTES_PER_PIXEL,
                                 "started": time.monotonic(),
                             }
+                            if metrics is not None:
+                                metrics.observe_max("peak_active_workers", len(active))
+                                metrics.observe_max("peak_reserved_bytes", scheduler.reserved_bytes)
                             report_activity()
                         try:
 
@@ -641,11 +647,18 @@ class CompressionEngine:
                         if job is None:
                             break
                         img, cost = job
-                        futures[pool.submit(work, img)] = cost
+                        futures[pool.submit(copy_context().run, work, img)] = cost
+                        if metrics is not None:
+                            metrics.observe_max("peak_pending_futures", len(futures))
 
                 def consume(res):
                     nonlocal orig_bytes_total, comp_bytes_total, failed_cnt, skipped_cnt, applied_cnt
                     results.append(res)
+                    increment("completed_image_strategy_trials")
+                    if res.cache_hit:
+                        increment("trial_cache_hits")
+                    if res.error:
+                        increment("failed_image_strategy_trials")
                     orig_bytes_total += res.original_bytes
                     comp_bytes_total += res.compressed_bytes
                     if res.error:

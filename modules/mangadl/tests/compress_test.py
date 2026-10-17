@@ -10,6 +10,16 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
+    root = tmp_path / "library"
+    (root / "manga").mkdir(parents=True)
+    Image.new("RGB", (40, 40)).save(root / "manga" / "01.png")
+    assert main(["compress", "-d", str(root), "-l", "-J"]) == 0
+    report = json.loads(capsys.readouterr().out)["pipeline"]
+    assert report["counters"]["headers_inspected"] == 1
+    assert report["settings"]["inventory_effective_workers"] == 1
+
+
 def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, monkeypatch, capsys):
     import io
     import sys

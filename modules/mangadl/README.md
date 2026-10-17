@@ -1,6 +1,15 @@
 # mangadl
 
-Review repairs in progress (1.52.4/compresser0.26.4): conditional confirmation
+Compression pipeline checkpoint1.53.0/compresser0.27.0 adds current-run `pipeline`
+measurements to inventory/compression JSON: coordinator versus worker phase seconds,
+scan/header/SQL/cache counts, settings/runtime and worker high-water marks. Human
+inventory summaries include measured coordinator seconds/database work. These are
+not persisted snapshot evidence; phase sums exclude uninstrumented overhead and
+elapsed is captured before final output/cleanup. Inventory is still serial;
+requested `-t` and actual inventory worker1 are distinguished. See the active
+inventory/pipeline plan for upcoming changes; canonical CLI cleanup is its last step.
+
+Review repairs in progress: conditional confirmation
 estimates retain measured pilot contributions and use remaining-population finite
 correction. The unsupported two-stage interval field is now null, and CLI advisor
 output is explicitly planning-only (ordinary -s does not apply recommended quotas).

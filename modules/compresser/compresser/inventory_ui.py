@@ -14,6 +14,7 @@ from termdash.live import LiveBlock
 from termdash.progress import ProgressBar
 from termdash.table import render_table
 from termdash.utils import color_text, fmt_hms, format_bytes_decimal, format_rate_bps
+from .timing import pipeline_report
 
 
 class InventoryProgress:
@@ -221,6 +222,7 @@ class InventoryProgress:
 
 def emit_inventory_report(report: dict, *, as_json: bool = False) -> None:
     """Keep redirected JSON compatible; show only a summary in an interactive terminal."""
+    report["pipeline"] = pipeline_report()
     if as_json or not sys.stdout.isatty():
         print(json.dumps(report, indent=2), flush=True)
     if not as_json:
@@ -312,3 +314,18 @@ def print_inventory_summary(report: dict) -> None:
     )
     print("File lengths, not filesystem allocated space; no compression performed.", file=stream)
     print(f"Saved inventory: {report['inventory_file']}", file=stream, flush=True)
+    pipeline = report.get("pipeline", {})
+    phases = pipeline.get("coordinator_seconds", {})
+    if phases:
+        print(
+            "Measured coordinator seconds: "
+            + ", ".join(f"{name}={seconds:.3f}" for name, seconds in sorted(phases.items())),
+            file=stream,
+        )
+        counts = pipeline.get("counters", {})
+        print(
+            f"Inventory DB: {counts.get('inventory_connections', 0)} connections, "
+            f"{counts.get('inventory_queries', 0)} statements, {counts.get('inventory_commits', 0)} commits. "
+            "Current-run measured phases; uninstrumented overhead remains.",
+            file=stream,
+        )

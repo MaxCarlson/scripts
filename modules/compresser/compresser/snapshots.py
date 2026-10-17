@@ -13,8 +13,9 @@ import stat
 
 from PIL import __version__ as pillow_version
 
-from .inventory import InventoryStore
+from .inventory import InventoryStore, connect_inventory
 from .models import ImageMetadata, ScanSummary
+from .timing import timed
 
 STALE_WARNING = (
     "Totals and projections describe the saved snapshot, not verified current library membership. "
@@ -61,6 +62,7 @@ class SelectionSnapshot:
         self.report: dict = {}
         self.fingerprints: dict[Path, list[int]] = {}
 
+    @timed("publication")
     def publish(self, images: list[ImageMetadata], gallery_keys: dict | None = None) -> None:
         """Publish only after every scope in this selection finished successfully."""
         records = {Path(row["path"]): row for scope in self.store.reports for row in scope["files"]}
@@ -86,7 +88,7 @@ class SelectionSnapshot:
             "images": entries,
         }
         self.store.path.parent.mkdir(parents=True, exist_ok=True)
-        with closing(sqlite3.connect(self.store.path)) as db, db:
+        with closing(connect_inventory(self.store.path)) as db, db:
             db.execute(
                 "CREATE TABLE IF NOT EXISTS inventory_selections "
                 "(root TEXT, policy TEXT, report TEXT, PRIMARY KEY(root,policy))"
@@ -97,11 +99,12 @@ class SelectionSnapshot:
             )
         self.report = {"policy": "refresh", "completed": report["completed"], "membership_verified": True}
 
+    @timed("snapshot_load")
     def load(self) -> tuple[list[ImageMetadata], dict | None]:
         """Load a compatible completed population; never enumerate the library."""
         try:
             _unlinked(self.original_root)
-            with closing(sqlite3.connect(self.store.path.as_uri() + "?mode=ro", uri=True)) as db:
+            with closing(connect_inventory(self.store.path.as_uri() + "?mode=ro", uri=True)) as db:
                 row = db.execute(
                     "SELECT report FROM inventory_selections WHERE root=? AND policy=?",
                     (str(self.root), self.policy),
@@ -159,6 +162,7 @@ class SelectionSnapshot:
         except (OSError, sqlite3.Error, KeyError, TypeError, ValueError) as exc:
             raise ValueError(f"Cannot trust inventory snapshot: {exc}. Run with -U refresh first.") from exc
 
+    @timed("validation")
     def validate_selected(self, images: list[ImageMetadata]) -> None:
         """Validate before any engine/cache fast path. No unselected-file probing."""
         if self.report.get("policy") != "trust":

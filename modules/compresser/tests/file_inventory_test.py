@@ -84,7 +84,11 @@ def test_failed_enumeration_preserves_last_complete_snapshot(tmp_path, monkeypat
     database = tmp_path / "inventory.sqlite3"
     args = ["-i", str(root), "-l", "-D", "files", "-I", str(database)]
     assert main(args) == 0
-    before = json.loads(capsys.readouterr().out)
+    assert json.loads(capsys.readouterr().out)["candidate_images"] == 1
+    # Current-run diagnostics belong to the CLI response, not the saved population.
+    # Compare durable snapshots directly to prove a failed refresh changes no bytes.
+    with sqlite3.connect(database) as connection:
+        before = connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0]
 
     def interrupted(*args, **kwargs):
         raise PermissionError("test directory enumeration denied")
@@ -93,5 +97,5 @@ def test_failed_enumeration_preserves_last_complete_snapshot(tmp_path, monkeypat
     monkeypatch.setattr(inventory.os, "walk", interrupted)
     assert main(args) == 2
     with sqlite3.connect(database) as connection:
-        saved = json.loads(connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0])
+        saved = connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0]
     assert saved == before

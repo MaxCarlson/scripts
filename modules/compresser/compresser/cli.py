@@ -25,6 +25,7 @@ from .models import (
     ImageMetadata,
 )
 from .scanner import scan_directory
+from .timing import configure_pipeline, pipeline_report, profile_pipeline
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import (
     CompresserDashboard,
@@ -35,7 +36,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.26.4"
+__version__ = "0.27.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -292,9 +293,20 @@ def run_comparison(
     return rows
 
 
+@profile_pipeline
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    configure_pipeline(
+        requested_workers=args.threads,
+        inventory_effective_workers=1,
+        memory_budget_mib=args.memory_budget_mib,
+        cache_policy=args.cache_policy,
+        inventory_policy=args.inventory_policy,
+        inventory_depth=args.inventory_depth,
+        mode=args.mode,
+        effort=args.effort,
+    )
     try:
         validate_analysis_arguments(args)
     except ValueError as exc:
@@ -437,6 +449,7 @@ def main(argv: list[str] | None = None) -> int:
                         "skipped_count": r.skipped_count,
                         "cache_hits": r.cache_hits,
                         "retained_formats": list(r.retained_formats),
+                        "pipeline": pipeline_report(),
                         "error_summary": r.error_summary,
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
@@ -515,6 +528,7 @@ def main(argv: list[str] | None = None) -> int:
                 "failed_count": batch_result.failed_count,
                 "cache_hits": sum(item.cache_hit for item in batch_result.results),
                 "worker_diagnostics": batch_result.worker_diagnostics,
+                "pipeline": pipeline_report(),
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,

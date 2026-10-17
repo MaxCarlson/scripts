@@ -1,5 +1,18 @@
 # Checkpoints
 
+## Plan03 inventory/sampling/pipeline and CLI continuation
+
+- [x] P0 current-run phase/counter baseline and generated repeatable benchmark (0.27.0/1.53.0).
+- [ ] P1 accurate gallery/file progress and estimated ETA.
+- [ ] P2 reduced I/O and bounded header concurrency.
+- [ ] P3 trusted-source/cache preparation optimization.
+- [ ] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
+- [ ] P5 verified AUTO candidate reuse/measurement-gated CPU optimization.
+- [ ] P6 explicit auto memory policy; default remains512MiB.
+- [ ] P7 bounded parallel previews and single manifest owner.
+- [ ] P8 canonical argument simplification/major migration, compatibility and safety checks.
+- [ ] Fresh whole-branch review and explicit manual reader/Windows terminal gates.
+
 ## Review repairs (2026-10-17) — earlier completion claims are conditional
 
 - [x] Correct conditional confirmation estimator and remove unsupported adaptive pooling claim (0.25.1/1.51.1).

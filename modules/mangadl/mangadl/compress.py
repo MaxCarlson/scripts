@@ -24,6 +24,7 @@ from compresser.sampling import validate_analysis_arguments, gallery_sample, pri
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.inventory_ui import InventoryProgress, emit_inventory_report
 from compresser.snapshots import SelectionSnapshot
+from compresser.timing import configure_pipeline, pipeline_report, profile_pipeline
 from compresser.cache import create_analysis_cache
 from compresser.ui import (
     CompresserDashboard,
@@ -141,9 +142,20 @@ def discover_gallery_targets(
     return galleries
 
 
+@profile_pipeline
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
+        configure_pipeline(
+            requested_workers=args.threads,
+            inventory_effective_workers=1,
+            memory_budget_mib=args.memory_budget_mib,
+            cache_policy=args.cache_policy,
+            inventory_policy=args.inventory_policy,
+            inventory_depth=args.inventory_depth,
+            mode=args.mode,
+            effort=args.effort,
+        )
         validate_analysis_arguments(args)
         destination = args.destination.expanduser()
         if not destination.is_dir() or destination.is_symlink():
@@ -404,6 +416,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "skipped_count": r.skipped_count,
                         "cache_hits": r.cache_hits,
                         "retained_formats": list(r.retained_formats),
+                        "pipeline": pipeline_report(),
                         "error_summary": r.error_summary,
                         "candidate_bytes": r.candidate_bytes,
                         "original_bytes": r.original_bytes,
@@ -485,6 +498,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "failed_count": batch_result.failed_count,
                 "cache_hits": sum(item.cache_hit for item in batch_result.results),
                 "worker_diagnostics": batch_result.worker_diagnostics,
+                "pipeline": pipeline_report(),
                 "scope": "sample" if len(eval_images) < summary.total_images else "full",
                 "inventory_images": summary.total_images,
                 "inventory_bytes": summary.total_bytes,

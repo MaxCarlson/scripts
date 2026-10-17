@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P0 MangaDL1.53.0/compresser0.27.0: pipeline measurements in inventory/single/
+comparison JSON, human inventory phase/SQL footer. Actual inventory worker count
+still1. Generated8-gallery scan confirms10 inventory connections/commits; P2 will
+optimize this before worker growth. No production run; P1 progress is next.
+
 Inventory UI fix1.52.4/compresser0.26.4 corrects nonexistent termdash methods and
 bar total assignment. Interactive inventory CLI fixture publishes snapshot/summary
 and preserves source image; no production scan. User's command remains valid;

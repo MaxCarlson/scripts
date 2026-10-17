@@ -1,6 +1,6 @@
 # Inventory, sampling, and compression pipeline implementation plan — revised
 
-> **For agentic workers:** Use `superpowers:executing-plans` only after implementation is authorized. Steps use checkbox (`- [ ]`) syntax. This document is a reviewed proposal, not an instruction to begin work or publish changes.
+> **For agentic workers:** Use `superpowers:executing-plans` inline with test-first checkpoints and one fresh whole-branch review at completion. User authorized implementation2026-10-17 after adding the CLI simplification step below. Steps use checkbox (`- [ ]`) syntax.
 
 **Goal:** Make inventory progress understandable, reduce analysis overhead, persist reusable sampling guidance, and accelerate expensive work without weakening source validation, statistical inference, cancellation, or memory limits.
 
@@ -8,7 +8,7 @@
 
 **Tech stack:** Existing Python/Pillow/NumPy/SQLite/cross_platform/termdash dependencies. Development runtime Python3.12; compresser currently declares Python>=3.10, so do not introduce 3.14-only executor APIs. No new mandatory dependencies in this proposal.
 
-**Spec:** Reviewed replacement for the user's attached “Inventory UI, Optimal Sampling Distribution, and Multi-Threaded Pipeline Implementation Plan,” attachment `5d2e52ad-6633-4590-9e8c-cfb521fac28c/Pasted text.txt`, plus the user's clarification that sampling must stay simpler than the earlier Task6. The attachment is preserved unchanged. User asked for analysis and plan edits, not implementation. Existing safety contracts in [02_review-repairs.md](02_review-repairs.md) remain authoritative; its unimplemented pilot/confirmation Task6 is explicitly outside this proposal.
+**Spec:** Reviewed replacement for the user's attached “Inventory UI, Optimal Sampling Distribution, and Multi-Threaded Pipeline Implementation Plan,” attachment `5d2e52ad-6633-4590-9e8c-cfb521fac28c/Pasted text.txt`, the clarification excluding the earlier pilot/confirmation Task6, and the2026-10-17 instruction to integrate argument-audit attachment `98f03690-037b-4e16-9f4b-078dd5f311cd/Pasted text.txt` then implement. Attachments are proposals, not independent authority; reviewed decisions here govern. Existing safety contracts in [02_review-repairs.md](02_review-repairs.md) remain authoritative; its unimplemented pilot/confirmation Task6 is explicitly outside this work.
 
 ## Baseline and review findings
 
@@ -35,10 +35,10 @@ Documentation freshness (0 fresh,100 stale): compresser20/MangaDL20, because REA
 
 ## Global constraints
 
-- Planning only now. Do not execute any checkpoint, stage/commit/push, merge, or touch production images as part of this review. Future execution must recheck branch/status and current publication authority.
+- User authorized local merge of the verified prior branch into main, creation of a new branch and implementation. Main fast-forwarded to0672a42; work now runs in the existing checkout on `compression-pipeline-and-cli-20261017`. Prior standing authority covers verified feature-branch commits/pushes per usable checkpoint. Do not push main or run production writes/large benchmarks. Recheck dirty state before changes.
 - **The earlier repair plan's Task6 (pilot/confirmation CLI) is excluded, not a prerequisite.** Sampling guidance must be computed from existing inventory metadata without an extra compression pilot, confirmation run, precision-target search, or outcome-adaptive allocation. These P-prefixed checkpoints do not authorize that earlier Task6; P6 here concerns memory policy only.
 - Preserve source ownership, nested chapter grouping, cover/control/archive/partial/link exclusions, read/write coordination, selected-source validation, corruption/failure visibility and scratch ownership/cleanup guarantees.
-- Existing `-s`, `-P`, `-z`, `-I`, `-U`, `-k`, `-K`, `-t`, `-B`, `-e`, `-X`, `-O` semantics remain unless an explicit change is documented. New flags require short/long forms; planned flags below are **not implemented**.
+- Existing CLI semantics remain through P7 except the explicit P4 `-s auto`/P6 `-B auto` additions. P8 is the documented major-version canonical CLI migration; new flags require short/long forms. Future flag syntax in this plan is not implemented until its checkpoint.
 - Keep inventory, trial cache, preview output and scratch outside the source tree. `-D files` stays extension/size-only and cannot become a trusted header snapshot or compression input.
 - Use one concurrency budget per phase; never create nested gallery × file × candidate thread pools. Bound pending futures/results to at most `2 * effective_workers` unless a tested smaller cap is needed.
 - Persistent completed trial results remain reusable during a running analysis. Do not turn immediate durable `AnalysisCache.set()` into deferred end-of-run persistence.
@@ -57,11 +57,11 @@ Documentation freshness (0 fresh,100 stale): compresser20/MangaDL20, because REA
 
 ## Execution order
 
-P0 measurement baseline → P1 progress correctness → P2 inventory pipeline → P3 trusted/cache preparation → P4 metadata sampling profiles → P5 expensive-work reuse → P6 explicit memory auto-policy → P7 parallel previews.
+P0 measurement baseline → P1 progress correctness → P2 inventory pipeline → P3 trusted/cache preparation → P4 metadata sampling profiles → P5 expensive-work reuse → P6 explicit memory auto-policy → P7 parallel previews → P8 canonical CLI simplification.
 
 P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 can move ahead of P4 if P0 shows encoding/repeated similarity work dominates. Process pools, compiled metric changes and cross-stage source-decode reuse are experiment-gated extensions, not assumed improvements.
 
-## P0: establish phase measurements and reproducible comparisons
+## Task 1: P0 — establish phase measurements and reproducible comparisons
 
 **Files:** `modules/compresser/compresser/timing.py`, `inventory.py`, `scanner.py`, `engine.py`; new `modules/compresser/tests/pipeline_diagnostics_test.py`; generated-fixture benchmark utility under `modules/compresser/tests/`.
 
@@ -72,7 +72,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] Benchmark generated small-image many-gallery, few large-image, mixed-format/nested and cached cases with worker limits1/2/4/8. Record median of3 repetitions, wall/CPU, peak RSS where available, failures and result equality. Do not claim OS page cache is cold merely because trial cache is empty.
 - [ ] Validate behavior tests without timing thresholds in CI. Record the bottleneck and selected implementation before P2/P3/P5; a change that adds concurrency without repeatable benefit is revised or dropped.
 
-## P1: correct two-level inventory progress and estimated ETA
+## Task 2: P1 — correct two-level inventory progress and estimated ETA
 
 **Files:** `inventory_ui.py`, `scanner.py`, `file_inventory.py`, `modules/mangadl/mangadl/compress.py`; tests `inventory_summary_test.py`, `inventory_test.py`, MangaDL `compress_test.py`.
 
@@ -84,7 +84,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] Use smoothed completed-work throughput over15s once there is enough history; folder-duration fallback must be labeled approximate for unequal galleries. Do not add an active remainder to a remaining count that already includes that active gallery. Discovery with unknown totals is indeterminate; no expensive second full traversal solely for an exact percentage.
 - [ ] Test actual LiveBlock/ProgressBar contracts with TTY streams, redraw, narrow/CJK paths, no-UI, redirected JSON and double close. Do not hold state locks while joining the timer thread. Preserve the0.26.4 API regression tests and run a real Windows terminal smoke test before claiming visual acceptance.
 
-## P2: reduce redundant I/O and add bounded header concurrency
+## Task 3: P2 — reduce redundant I/O and add bounded header concurrency
 
 **Files:** `inventory.py`, `scanner.py`, `file_inventory.py`, both compression CLI adapters; new `modules/compresser/compresser/inventory_pipeline.py` and `tests/inventory_parallel_test.py`.
 
@@ -98,7 +98,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] Failure tests: deleted/replaced/growing file, permission error, traversal failure, links/junctions, interrupted batch, DB lock/full disk, old completed snapshot still loadable after interruption. Corrupt images remain reportable exclusions, not pipeline success silently dropping their errors.
 - [ ] Compare P0 cold/warm fixtures before selecting default concurrency. HDD random-read regressions warrant lower effective concurrency with a visible reason; `-t` is an upper bound, not a100% CPU promise.
 
-## P3: optimize trusted-source validation and cache preparation
+## Task 4: P3 — optimize trusted-source validation and cache preparation
 
 **Files:** `snapshots.py`, `cache.py`, `engine.py`, adapters; new `tests/trust_and_probe_perf_test.py`, existing cache/ownership tests.
 
@@ -110,7 +110,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] GREEN: prepare small bounded batches and overlap preparation with admitted encodes instead of probing every selected image before the first dispatch. Keep SQL under the existing cache owner/lock; chunk reads avoid SQLite parameter limits. If stat work benefits from threads, parallelize only that work outside the DB lock. Cache hits bypass encoder/scratch memory admission but never source validation.
 - [ ] Test cancellation before/between probes, no duplicate lookups for an uncached dispatched image, and startup latency until first encode under a delayed later lookup. Repeat P0 warm-hit and cold-miss cases; use a batch query only if it improves measured work.
 
-## P4: persist honest inventory-derived sampling profiles
+## Task 5: P4 — persist honest inventory-derived sampling profiles
 
 **Files:** new `compresser/distribution.py`; `inventory.py`, `snapshots.py`, `sampling.py`, both adapters, inventory/report UI; `tests/distribution_test.py`, `sampling_test.py`, MangaDL integration tests.
 
@@ -118,13 +118,13 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 
 - [ ] RED: same counts/total bytes but higher input-size variance can receive a higher *proxy* weight; equal-sized populations with deliberately different compression savings demonstrate that metadata alone cannot certify accuracy. File-only inventories label format/dimensions unknown and cannot supply a trusted compression selection.
 - [ ] GREEN: derive a transparent initial proxy `w_g = N_g * max(sd(input_bytes_g), 0.15 * mean(input_bytes_g), 1)`; label0.15 a versioned heuristic floor, not a measured savings standard deviation. Store format/tallness as diagnostics, not arbitrary additive Neyman multipliers. Compare against existing balanced allocation in P0-style simulations before making efficiency claims.
-- [ ] New opt-in `-S/--inventory-sample`: with `-s N` or `-P p`, use this profile to allocate that budget; without either, use an explicitly labeled starter budget `min(N, max(sum(min(2,N_g)), ceil(0.01*N)))`. This is **not a recommended statistical minimum**. Existing commands without `-S` retain balanced count/byte allocation; no silently enabled profile and no long-only opt-out flag.
+- [ ] Extend existing `-s/--sample` with explicit `auto`, which uses this profile and a labeled starter budget `min(N, max(sum(min(2,N_g)), ceil(0.01*N)))`; numeric `-s` and `-P` remain unchanged until P8. This is **not a recommended statistical minimum**. Do not add a temporary `-S` flag or sampling-profile-policy switch only to remove it later. `-I` alone never enables sampling.
 - [ ] Reserve positive gallery coverage; where budget permits reserve two for variance, cap by gallery population, then distribute remaining seats by deterministic weighted divisor allocation with canonical tie-breaking. Within every gallery retain the existing seeded uniform random priority permutation. Persist actual per-budget quotas/seed/selected identities/revision; do not confuse a weight profile with an executable measured plan. Census default stays unchanged without explicit sampling flags.
-- [ ] RED: exact budgets, singleton/census/empty selections, below-gallery-count `-s` failure, percent coverage inflation disclosed, `-S` without profile requires completed header refresh or a clear error in trust mode. Bad/stale/incompatible roots, population IDs, owners/filters or policy reject profile reuse. No fallback that quietly changes design. Refresh publishes matching selection/profile together.
+- [ ] RED: exact budgets, singleton/census/empty selections, below-gallery-count `-s` failure, percent coverage inflation disclosed, `-s auto` without profile requires completed header refresh or a clear error in trust mode. Bad/stale/incompatible roots, population IDs, owners/filters or policy reject profile reuse. No fallback that quietly changes design. Refresh publishes matching selection/profile together.
 - [ ] RED: growing a budget with unchanged population/profile/revision/seed retains earlier samples; serial/parallel inventory order cannot change profiles or selections. Use repeated-seed finite populations with known savings totals to test design-weighted estimates/bias/interval behavior; singleton/skewed/failed outcomes preserve uncertainty caveats.
 - [ ] Summary names: `metadata_proxy` or `balanced`; print coverage/variance floors and starter size separately from achievable precision. Estimates continue to use the existing gallery expansion weights and caveated finite-population uncertainty. Comparisons use one shared inventory-derived sample for every strategy; compression outcomes do not alter its selection. **No measured/adaptive allocation, pilot/confirmation workflow, or extra sampling-control subsystem is required or planned.** This is practical inventory-informed coverage, not a promise of optimality or a certified minimum for a requested error margin.
 
-## P5: reuse expensive verified encoder work before adding CPU pools
+## Task 6: P5 — reuse expensive verified encoder work before adding CPU pools
 
 **Files:** `engine.py`, `cache.py`, relevant `compresser/codecs/` backend only if needed, `perceptual.py` only if measurement justifies it; new `tests/auto_candidate_cache_test.py`, existing effective-key/phase tests.
 
@@ -136,7 +136,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] If investigating `_filter2d` row/column Python-call overhead, compare a compiled separable implementation against current numeric/detail/color tests and RSS before proposing a dependency. A changed metric needs a revision/cache invalidation; never accelerate by dropping detail patches or lowering the requested SSIM threshold.
 - [ ] No default ProcessPoolExecutor: first compare native threads with measured GIL-bound time and Windows spawn/serialization/RSS costs. Do not transfer decoded PIL/NumPy buffers between processes or create nested candidate pools as an unmeasured optimization.
 
-## P6: optional available-memory scheduling policy, not a silent increase
+## Task 7: P6 — optional available-memory scheduling policy, not a silent increase
 
 **Files:** shared argument validation in `sampling.py`, both CLI parsers/adapters, `engine.py`, `scheduler.py`; new `tests/memory_policy_test.py`.
 
@@ -146,7 +146,7 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] GREEN: feed existing per-job MemoryScheduler, including bounded head bypass, not a second global-largest-image worker cap. Do not reject small jobs because one large job exists. Admission covers source pixels, verification/metric workspace and retained candidate bytes; measure RSS against the conservative estimate in representative generated cases before increasing any default limit.
 - [ ] Pressure after start stops new admission rather than terminating owners; show pressure/wait state and allow cancellation. Reservations are not an OS guarantee or a cross-process global budget. Test pressure/cancellation with fake telemetry and worker barriers; preserve per-image and pixel caps.
 
-## P7: parallel previews with one manifest owner
+## Task 8: P7 — parallel previews with one manifest owner
 
 **Files:** `preview.py`, `scheduler.py`, `cancellation.py`; `tests/preview_test.py`, MangaDL integration tests.
 
@@ -158,9 +158,39 @@ P4 does not add within-gallery strata or implement the excluded pilot CLI. P5 ca
 - [ ] Failure tests: disk-full/short write, partial candidate, source change, manifest replacement error, permission error and cancellation while workers are encoding. Final publication failure is explicit, not masked by shutdown. Existing artifact names are never overwritten and unrelated files never removed.
 - [ ] Benchmark default3-source previews and a larger fixture. Report requested/effective/active concurrency and why limited; preserve seeded source selection. Size-only analysis cache cannot bypass preview encoding.
 
+## Task 9: P8 — simplify and normalize both compression CLIs
+
+**Files:** new `modules/compresser/compresser/arguments.py`; shared argument owners `sampling.py`/`preview.py`, standalone `cli.py`, MangaDL `cli_core.py`/`compress.py`; new `tests/arguments_test.py`, both CLI integration suites/READMEs/help registry. Do not change unrelated MangaDL commands.
+
+**Interfaces:** one shared `normalize_compression_arguments(namespace) -> CompressionOptions` value object drives both adapters. Define explicit operation, sampling specification, comparison scope, quality list, inventory depth, recovery token and resolved resource paths. Parse once, validate conflicting/ignored arguments before ownership acquisition or output creation, then use normalized values throughout. Preserve library APIs separately from CLI migration.
+
+### Reviewed argument decisions
+
+| Current surface | Canonical surface after P8 | Decision/compatibility |
+| --- | --- | --- |
+| `-o/--output-dir` standalone | removed | Dead placeholder always rejects; do not repurpose it silently. Preview output remains `-O`. |
+| `-s N`, `-P p`, proposed `-S` | `-s/--sample N\|p%\|auto` | Explicit value required, no bare `-s` or implicit sampling from `-I`. `auto` is metadata-only starter sampling. |
+| `-q`, `-Q/--qualities/--preview-qualities` | `-q/--quality VALUE [VALUE ...]` | Accept1..100 or decimal fractions, deduplicate in input order. Multiple values only compare/preview. Omitted defaults:80 single/compare,90/80 preview. |
+| `-c`, `-b` | `-c/--compare [both\|lossless\|lossy\|perceptual]` | Bare `-c` means both; explicit `-m` narrows bare `-c`. Conflicting explicit scope/mode is an error. Comparison always read-only. |
+| `-l`, `-D` | `-l/--inventory-only [headers\|files]` | Bare `-l` means headers; file-only remains unverified and incompatible with compression/trust. |
+| `-R`, `-C` | `-R/--recover [TOKEN]` | Bare recovery previews. Apply still requires `-w` plus the exact current token; folding syntax does not weaken stale-plan checks. |
+| `-I`, `-K` | retain `-I`; advanced `-K` override | Default trial path already derives beside inventory. Keep separate non-evicting inventory and bounded trial-result DBs; no same-file migration/WAL assumptions. Ordinary commands need only `-I`. |
+| `-L/--allow-lossy`, `-F/--allow-larger` | retain in safety group | They are intentional independent destructive-policy interlocks, not cosmetic redundancy. Never infer library `allow_lossy` from mode alone. |
+| `-A`, `-f`, `-e` | retain, group backend/encoding | Different controls (backend/format/effort). Reject incompatible explicit combinations; do not silently ignore them. |
+| `-U`, `-k`, `-B`, `-t`, `-X` | retain, group persistence/performance | Population freshness, trial reuse, RAM, worker slots and scratch are distinct policies. No additional profile-policy switch. |
+| `-N`, `-J`, `-v` | retain, group output | No-UI, machine-readable output and verbose error tracebacks are distinct. Normal JSON stays parseable. |
+
+- [ ] RED: standalone and MangaDL normalize equivalent commands identically except target/URL selection; exact syntax cases `-s 200`, `-s 2%`, `-s auto`, `-q 0.9 80`, `-l files`, bare `-c`, `-c lossless`, bare `-R` and `-R TOKEN -w`. Zero/NaN/negative/ambiguous percentages, bare sample and contradictory aliases fail before filesystem mutations.
+- [ ] GREEN: retain legacy `-P`, `-Q`, `-b`, `-D`, `-C` as hidden compatibility aliases for one major release with stderr deprecation notices and deterministic conflict errors; remove them from normal help. Legacy `-c` default changes are explicitly documented, not described as unchanged. Keep the canonical short/long forms grouped by operation, sampling/quality, storage/performance and safety/output.
+- [ ] P8 canonical explicit sample budgets use versioned metadata-profile allocation, with the existing gallery-uniform random draws/estimator. Hidden legacy `-P` preserves its old balanced design during the transition; explicit output names the chosen design revision so cached selections are never silently mistaken for equivalent ones. Missing profile in trust mode fails with refresh guidance; default refresh can create it. No pilot/confirmation workflow.
+- [ ] RED: no sampling when only `-I` supplied; defaults remain lossless analysis with no writes; `-m lossy -w` without `-L` still rejects; recovery token alone cannot bypass `-w` or exact-token verification. No accidental compression after an inventory/preview/recovery mode conflict; preview/count/qualities and comparison/perceptual combinations validate consistently.
+- [ ] Retain `-K` functionality for existing workflows and explain that it is normally unnecessary. Do not remove a capability merely to reduce the flag count. The attachment's proposed `--sampling-profile-policy` is absent from the current plan/code; do not add it. Its “<5ms” calculation claim is unmeasured and not an acceptance criterion.
+- [ ] Major-version migration: compresser1.0.0/MangaDL2.0.0 (or next available major if versions have advanced), update dependency minima/help registry, full editable-entrypoint reinstall per repository rules, and verify installed wrappers. Include old→new command examples and test help excludes deprecated flags while aliases still execute safely. No new entrypoint name or separate recovery subcommand is needed in this checkpoint.
+- [ ] Run all common checks below plus parser/help/entrypoint tests; commit/push the verified feature branch under standing authority. Final whole-branch review covers all P0-P8 changes, especially safety and compatibility; no automatic merge back to main.
+
 ## Common checkpoint validation and delivery
 
-For each subsequently authorized checkpoint: write behavior tests first, observe the intended failure, implement the scoped change, run focused tests and full affected module suites, then update docs/version/help metadata. Performance tests use barriers/counters for correctness, not fragile elapsed-time assertions. Keep before/after benchmark settings identical and report regressions or non-improvements.
+For each authorized checkpoint: write behavior tests first, observe the intended failure, implement the scoped change, run focused tests and full affected module suites, then update docs/version/help metadata. Performance tests use barriers/counters for correctness, not fragile elapsed-time assertions. Keep before/after benchmark settings identical and report regressions or non-improvements.
 
 From repository root, using the active venv (replace the temp suffix per checkpoint):
 
@@ -188,4 +218,4 @@ Run black120/ruff on changed Python and `git diff --check`. If termdash changes,
 
 ## Status
 
-Proposed/reviewed only. No feature implementation or product behavior changes made by this revision. Await user review. User clarified that the original repair Task6's pilot/confirmation machinery is not wanted for this sampling feature; it is excluded, not required to make this proposal usable.
+Implementation authorized2026-10-17. Prior feature branch merged locally into main at0672a42 after199 compression/309 MangaDL/55 help/129 cross_platform passed (1+4 platform skips); main not pushed. Active implementation branch `compression-pipeline-and-cli-20261017`. P8 argument review integrated; P0 starts first. The earlier repair Task6 pilot/confirmation machinery remains excluded.

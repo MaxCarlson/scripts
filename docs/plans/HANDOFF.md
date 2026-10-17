@@ -2,6 +2,11 @@
 
 ## Current branch
 
+Active execution: compression-pipeline-and-cli-20261017, main fast-forwarded locally
+to0672a42 and not pushed. [Plan03](20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md)
+P0-P8 authorized2026-10-17, CLI cleanup last. Earlier pilot/confirmation Task6 excluded.
+Supersedes the planning-only state below. First task: phase/counter measurements.
+
 Reviewed proposal only: [03 inventory/sampling/pipeline revision](20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md).
 User requests plan analysis/edits, not execution. Sampling stays inventory-metadata
 based; no pilot/confirmation machinery from the earlier repair Task6. No implementation

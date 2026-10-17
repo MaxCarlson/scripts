@@ -8,12 +8,13 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import sqlite3
 import stat
 from statistics import median
 from typing import Iterable
 
 from .scanner import IMAGE_EXTENSIONS
+from .inventory import connect_inventory
+from .timing import increment, phase, phase_iter
 
 
 def _linked(path: Path) -> bool:
@@ -68,7 +69,7 @@ def scan_file_inventory(
             for name in names:
                 yield Path(parent) / name
 
-    for path in candidates():
+    for path in phase_iter(candidates(), "enumeration"):
         if path.suffix.lower() not in IMAGE_EXTENSIONS:
             continue
         if path.name.startswith(".") or path.stem.casefold() in excluded:
@@ -76,6 +77,7 @@ def scan_file_inventory(
             if progress is not None:
                 progress.advance_file(path, size_bytes=0, unreadable=True)
             continue
+        increment("scanned_candidates")
         relative = path.relative_to(root) if directory else Path(path.name)
         gallery = root.name if single_gallery or len(relative.parts) == 1 else relative.parts[0]
         row = {
@@ -89,7 +91,8 @@ def scan_file_inventory(
             "content_verified": False,
         }
         try:
-            info = path.lstat()
+            with phase("filesystem_metadata"):
+                info = path.lstat()
             if stat.S_ISLNK(info.st_mode):
                 excluded_files += 1
                 if progress is not None:
@@ -99,6 +102,7 @@ def scan_file_inventory(
                 continue
             row.update(bytes=info.st_size, mtime_ns=info.st_mtime_ns, ctime_ns=info.st_ctime_ns)
         except OSError as exc:
+            increment("stat_errors")
             row["error"] = str(exc)
             errors.append({"relative_path": str(relative), "error": str(exc)})
         files.append(row)
@@ -158,7 +162,7 @@ def scan_file_inventory(
     }
     destination.parent.mkdir(parents=True, exist_ok=True)
     policy = json.dumps({"schema": 1, "exclude_stems": sorted(excluded), "single_gallery": single_gallery})
-    with closing(sqlite3.connect(destination, timeout=5)) as connection, connection:
+    with phase("publication"), closing(connect_inventory(destination, timeout=5)) as connection, connection:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS inventory_file_snapshots "
             "(root TEXT,policy TEXT,completed TEXT,report TEXT,PRIMARY KEY(root,policy))"

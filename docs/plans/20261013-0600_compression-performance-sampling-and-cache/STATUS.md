@@ -1,5 +1,17 @@
 # Status
 
+Plan03 P0 compresser0.27.0/MangaDL1.53.0 implemented: current-run response-only
+coordinator/worker timings, high-resolution clock, inventory SQL/header counts,
+cache/worker high-water diagnostics.206 compression passed/1 platform skip,310
+MangaDL/55 help passed; formatter/lint green, editable installs refreshed/wrappers
+verified. Generated standalone+MangaDL benchmark1/2/4/8 ×3 repetitions retains equal
+results; see P0_MEASUREMENTS.md. No production work. P1 progress is next after commit.
+
+2026-10-17 user authorizes execution of plan03 plus final CLI cleanup P8. Prior
+feature branch merged into local main0672a42; new compression-pipeline-and-cli-20261017.
+Main not pushed. Baseline199 compression/309 MangaDL/55 help/129 cross_platform
+pass (1+4 platform skips). Begin P0 current-run measurements; no pilot Task6 work.
+
 User-reported inventory hotfix after Task5: compresser0.26.4/MangaDL1.52.4 use
 supported termdash APIs for total/render/close. Interactive regression reproduced
 render_bar error then masked clear cleanup error; headers/files renderer fixtures

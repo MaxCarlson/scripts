@@ -1,5 +1,12 @@
 # Compresser handoff
 
+Plan03 P0 compresser0.27.0/MangaDL1.53.0: response-only current-run coordinator/
+worker phase measurements, high-resolution clock, inventory SQL/header/candidate
+counts, cache hits and worker/reservation high-water marks. Worker contexts isolate
+trace stacks; nested traces remain exclusive; warm hits never replay old encode time.
+Generated benchmark matrix covers standalone/MangaDL1/2/4/8 workers with3 repetitions;
+same verified results, no blanket more-threads improvement. P1 progress is next.
+
 Inventory UI regression fix0.26.4: use actual termdash ProgressBar.set_total/str
 and LiveBlock.close APIs. Nonexistent render_bar raised first; nonexistent clear
 masked that error during finally cleanup. Real renderer TTY-stream regressions

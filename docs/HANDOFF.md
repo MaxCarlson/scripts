@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+Implementation authorized2026-10-17: prior branch fast-forwarded into local main
+at0672a42 (main not pushed); new branch compression-pipeline-and-cli-20261017.
+[Active plan03](plans/20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md)
+adds final P8 canonical CLI cleanup; P0 phase/counter baseline starts first. Use
+Superpowers inline/TDD ledger, tested feature checkpoints; earlier pilot Task6 excluded.
+
 2026-10-17 planning-only review: [inventory/sampling/pipeline revision](plans/20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md)
 replaces attached threading/optimal-distribution ideas with bounded measured work,
 honest progress and metadata-only sampling guidance. User explicitly does not want
