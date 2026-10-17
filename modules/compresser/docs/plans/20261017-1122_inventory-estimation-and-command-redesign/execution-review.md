@@ -198,6 +198,14 @@ sequences in https://arxiv.org/abs/2006.04347 .
 
 ## 6. CLI and quality exploration clarifications — Tasks 3 and 9
 
+2026-10-17 user-requested amendment: plan/estimate now also support combined
+lossless/lossy recipes (`-m both`). Plan/estimate/compare support `-f all` as
+AUTO/WebP/JPEG/AVIF/PNG, excluding keep. These combined/all requests enumerate
+compatible format/mode pairs (PNG lossless, AVIF lossy), superseding the earlier
+requirement below to reject incompatible Cartesian products in combined mode.
+Explicit single-mode PNG lossy requests remain errors. One design/budget and
+the existing individual-recipe identities apply; no statistical/schema change.
+
 - Preserve all explicit-option provenance. Reject explicit q with lossless/perceptual;
   reject explicit perceptual target outside perceptual mode. Compare both uses q for
   its lossy recipes only. Preview's fixed lossless baseline is not an ignored -m.

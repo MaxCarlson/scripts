@@ -380,14 +380,14 @@ REGISTRY: dict = {
                 "path": "modules/compresser",
                 "desc": "Inventory, plan, estimate, analyze, compare, preview, apply, or recover image compression work",
                 "help_cmd": ["compresser", "--help"],
-                 "version": "3.0.0",
+                 "version": "3.1.0",
             },
             {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
                 "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
                 "help_cmd": ["mangadl", "--help"],
-                 "version": "3.0.0",
+                 "version": "3.1.0",
             },
             {
                 "name": "edit_video_file.py",

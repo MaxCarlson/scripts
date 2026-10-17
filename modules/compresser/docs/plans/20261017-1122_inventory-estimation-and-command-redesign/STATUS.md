@@ -1,5 +1,30 @@
 # Status
 
+2026-10-17 user-requested bounded follow-up (3.1.0): plan/estimate now accept
+`-m both`; plan/estimate/compare accept `-f all`. This registers supported
+AUTO/WebP/JPEG/AVIF/PNG recipes once, with PNG lossless only and AVIF lossy only,
+under one immutable plan and shared budget. `keep` remains explicit. Saved-plan
+schema and numerical estimators are unchanged; estimate execution is still pending.
+See amended cli.md/execution-review.md for the updated capability contract.
+
+RED: nine new argument cases and the MangaDL inventory/plan/resume test rejected
+the missing options. GREEN: compresser435 passed/1 skipped; full MangaDL suite
+exit0; scripts-help55 passed. Commands (repository virtualenv, module cwd):
+`python -m pytest -p no:cacheprovider --basetemp .pytest_tmp_root/combined-full tests -q --tb=short`
+for each of compresser and MangaDL, with module source paths in PYTHONPATH.
+Help: `python -m pytest -p no:cacheprovider --basetemp modules/scripts_help/.pytest_tmp_root/combined-full modules/scripts_help/tests -q --tb=short`.
+Ruff passed changed CLI/tests; Black120 checked arguments.py and arguments_test.py.
+The installed `mangadl.exe compress plan -I ./ -d ./hent1imageperpage/ -f all
+-m both -q 85 70 -s 200 -T 750 -M 15m -J` succeeded against a generated inventory:
+12 recipes, lossless+lossy, caps200 images/750 attempts/900 seconds.
+
+Local editable metadata refreshed with `pip install --no-deps --no-build-isolation
+-e ./modules/compresser -e ./modules/mangadl`; source/metadata3.1.0 agree.
+Pip emitted existing invalid-distribution warnings but completed successfully.
+Parent status excludes inaccessible pscripts. Unrelated untracked bridge work is
+preserved. Commit/push authorized; pause again after publishing this follow-up,
+without beginning Task6 or touching production images.
+
 2026-10-17 Sol Medium checkpoint: Task5 implemented and validated on
 `compression-inventory-estimation-20261017` in `C:\Users\mcarls\src\scripts`.
 Compresser3.0.0 uses saved-plan schema2: schema1 plans require rebuilding. This breaking

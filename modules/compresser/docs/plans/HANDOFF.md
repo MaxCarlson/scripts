@@ -1,5 +1,10 @@
 # Active module plan
 
+Follow-up3.1.0: combined plan/estimate mode and all-format alias implemented at user
+request; see active STATUS.md. Compresser435/1 skip, full MangaDL exit0, help55 and
+installed-command test pass. Source/installed metadata refreshed. Resume remains
+paused before Task6 after publishing this bounded follow-up.
+
 Current checkpoint: Tasks1-5 implemented; Task5 Sol Medium review complete, schema2 /
 compresser3.0.0. Full compresser424/1 skip and help55 pass. See the active plan's
 task5-handoff.md and STATUS.md. Next Task6 may use Luna High; preserve Task7/8 stronger

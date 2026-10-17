@@ -12,6 +12,7 @@
 - [x] Task3: shared operation CLI, safety and argument replacement.
 - [x] Task4: descriptive inventory and separate persistent plans.
 - [x] Task5: fixed estimators and numerical validation; Sol Medium checkpoint completed.
+- [x] User-requested follow-up: combined lossless/lossy plan, all-format alias, shared budget, saved-plan resume and installed-command validation (3.1.0).
 - [ ] Task6: actual encode admission and selected recipe jobs.
 - [ ] Task7: estimation/resume/report integration and Windows visual gate.
 - [ ] Task8: certified repeated accuracy stopping.

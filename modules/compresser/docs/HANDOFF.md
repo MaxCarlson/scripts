@@ -1,5 +1,16 @@
 # Compresser handoff
 
+2026-10-17 bounded follow-up: user requested combined planning and `-f all`.
+Compresser/MangaDL3.1.0 plan/estimate/compare normalize supported recipes into one
+design/budget; PNG lossless only, AVIF lossy only; AUTO included, keep explicit.
+No schema or statistical changes. Exact user command succeeds via installed
+mangadl.exe against a test inventory (12 recipes, caps200/750/900s); persisted plan
+creation/resume passes. Full compresser435/1 skip, MangaDL suite exit0 and help55
+pass; Ruff/Black checks pass. Editable metadata refreshed without dependencies;
+source/installed versions3.1.0 match, including the repository-path MangaDL shim.
+Checkpoint commit/push authorized. Pause after this follow-up; Task6 has not begun.
+Unrelated local-agent-bridge files in the parent checkout remain untouched.
+
 Paused at the user's request after the verified Task5 checkpoint; await resume before Task6.
 
 2026-10-17 current: Task5 numerical core implemented on Sol Medium, source3.0.0/schema2.

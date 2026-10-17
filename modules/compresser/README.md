@@ -1,4 +1,13 @@
-# compresser 3.0.0
+# compresser 3.1.0
+
+`plan`, `estimate`, and `compare` accept `-m both` and `-f all`.
+`all` expands to AUTO, WebP, JPEG, AVIF and PNG (not the explicit `keep` policy).
+Combined mode creates supported lossless recipes once and lossy recipes at each
+requested quality. PNG is lossless only; AVIF is lossy only. JPEG lossless requires
+`jpegtran` and JPEG sources; planning does not probe encoder availability. All recipes
+share the plan's image, encoding-attempt and time budgets. Single-mode `all` requests
+include only compatible formats. Analyze/apply still require one exact recipe.
+The saved-plan schema is unchanged; estimate execution remains pending Tasks6/7.
 
 ## Operation-based CLI
 

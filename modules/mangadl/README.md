@@ -1,6 +1,6 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (3.0.0)
+## Compression workspace, estimates and saved reports (3.1.0)
 
 Compression now uses explicit operation subcommands. `inventory` refreshes the
 descriptive snapshot, `analyze` measures one recipe, `compare` benchmarks named
@@ -11,11 +11,20 @@ saves a bounded reproducible design under `plans/`; it never refreshes inventory
 opens the trial database, or encodes images. `estimate` execution/resume remains in
 the next implementation checkpoint.
 
+`plan`, `estimate`, and `compare` accept `-m both` and `-f all`. `all` expands to
+AUTO, WebP, JPEG, AVIF and PNG, excluding the explicit `keep` policy. Combined mode
+registers each supported lossless recipe once and lossy recipes at each requested
+quality: PNG lossless only, AVIF lossy only. JPEG lossless needs `jpegtran` and JPEG
+source pages; a saved plan does not prove installed encoder availability. All recipes
+share one image/trial/time budget. Analyze/apply still require one exact recipe.
+
 ```powershell
 # Inventory and its Markdown report. -I selects the workspace PARENT.
 mangadl compress inventory -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent'
 # Plan from that completed snapshot without opening trials or source images.
 mangadl compress plan -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -m lossy -f webp -q 85 -s 512 -T 2000 -M 5m
+# One combined plan with all format policies and two lossy qualities (12 recipes).
+mangadl compress plan -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -m both -f all -q 85 70 -s 200 -T 750 -M 15m
 # Reuse that snapshot/cache; compare lossless and lossy q85/q70 on a sample.
 mangadl compress compare -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -f webp avif -m both -q 85 70 -s 200 -t 12 -B 40% -e 2
 # Same analysis with uncached inputs staged on SSD.

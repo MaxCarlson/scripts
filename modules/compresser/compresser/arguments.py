@@ -157,6 +157,7 @@ def _recipe_options(
     *,
     formats_default=None,
     formats_required=False,
+    all_formats=False,
     mode_default="lossless",
     mode_choices=None,
     quality_default=None,
@@ -169,10 +170,14 @@ def _recipe_options(
         "-f",
         "--format",
         nargs="+",
-        choices=FORMATS,
+        choices=(*FORMATS, "all") if all_formats else FORMATS,
         default=formats_default,
         required=formats_required,
-        help="Target image format(s).",
+        help=(
+            "Target formats; all includes AUTO, WebP, JPEG, AVIF and PNG in supported modes."
+            if all_formats
+            else "Target image format(s)."
+        ),
     )
     parser.add_argument(
         "-m", "--mode", choices=mode_choices or ("lossless", "lossy", "perceptual"), default=mode_default
@@ -214,6 +219,8 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     _common(plan, owner)
     _recipe_options(
         plan,
+        all_formats=True,
+        mode_choices=("lossless", "lossy", "perceptual", "both"),
         formats_default=None,
         mode_default=None,
         encoder_default=None,
@@ -232,6 +239,8 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     _common(estimate, owner)
     _recipe_options(
         estimate,
+        all_formats=True,
+        mode_choices=("lossless", "lossy", "perceptual", "both"),
         formats_default=None,
         mode_default=None,
         encoder_default=None,
@@ -259,7 +268,11 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     compare = operations.add_parser("compare", help="Benchmark an explicit set of recipes.")
     _common(compare, owner)
     _recipe_options(
-        compare, formats_required=True, mode_default="both", mode_choices=("lossless", "lossy", "perceptual", "both")
+        compare,
+        formats_required=True,
+        all_formats=True,
+        mode_default="both",
+        mode_choices=("lossless", "lossy", "perceptual", "both"),
     )
     compare.add_argument("-s", "--sample", type=_sample_value, default="all")
     compare.add_argument("-z", "--seed", type=int, default=0)
@@ -365,9 +378,15 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
 
     mode_value = getattr(namespace, "mode", None) or "lossless"
     modes = ("lossless", "lossy") if mode_value == "both" else (mode_value,)
+    requested_formats = getattr(namespace, "format", None) or (
+        ["webp"] if operation in ("plan", "estimate") else ["auto"]
+    )
+    expand_all = "all" in requested_formats
     formats = tuple(
         dict.fromkeys(
-            getattr(namespace, "format", None) or (["webp"] if operation in ("plan", "estimate") else ["auto"])
+            expanded
+            for requested in requested_formats
+            for expanded in (("auto", "webp", "jpeg", "avif", "png") if requested == "all" else (requested,))
         )
     )
     qualities = tuple(dict.fromkeys(getattr(namespace, "quality", None) or ()))
@@ -397,6 +416,12 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
                 recipes.append(RecipeSpec(image_format, "lossy", q, perceptual_target, encoder, effort))
             continue
         for mode in modes:
+            # A mixed request enumerates supported recipes rather than an impossible
+            # Cartesian product. Keep invalid explicit single-mode requests visible.
+            if image_format == "avif" and mode == "lossless" and (expand_all or mode_value == "both"):
+                continue
+            if image_format == "png" and mode != "lossless" and (expand_all or mode_value == "both"):
+                continue
             if mode == "lossless":
                 if qualities and len(modes) == 1:
                     raise ValueError("Quality is not valid for lossless mode")
@@ -405,8 +430,6 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
                 q_values = qualities or ((80,) if mode == "lossy" else (None,))
             for q in q_values:
                 if mode == "lossy" and image_format == "png":
-                    if operation == "compare" and getattr(namespace, "mode", None) == "both" and len(formats) > 1:
-                        continue
                     raise ValueError("PNG does not support a lossy quality recipe")
                 if mode != "lossy" and q is not None:
                     raise ValueError("Quality is only valid for lossy recipes")

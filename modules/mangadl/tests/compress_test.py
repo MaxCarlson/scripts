@@ -10,6 +10,45 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_combined_all_format_plan_persists_one_budget_and_resumes(tmp_path, capsys):
+    target = tmp_path / "hent1imageperpage"
+    target.mkdir()
+    Image.new("RGB", (32, 32), "white").save(target / "01.png")
+    base = ["-I", str(tmp_path), "-d", str(target), "-J", "-N"]
+    assert _main(["compress", "inventory", *base, "-D", "files"]) == 0
+    capsys.readouterr()
+    args = [
+        "compress",
+        "plan",
+        *base,
+        "-f",
+        "all",
+        "-m",
+        "both",
+        "-q",
+        "85",
+        "70",
+        "-s",
+        "200",
+        "-T",
+        "750",
+        "-M",
+        "15m",
+    ]
+    assert _main(args) == 0
+    plan = json.loads(capsys.readouterr().out)["plan"]
+    assert len(plan["recipes"]) == 12
+    assert {r["mode"] for r in plan["recipes"]} == {"lossless", "lossy"}
+    assert plan["budget"]["max_images"] == 200
+    assert plan["budget"]["max_new_encodes"] == 750
+    assert plan["budget"]["max_runtime_seconds"] == 900
+    saved = tmp_path / ".mangadl" / target.name / "plans" / (plan["plan_id"] + ".json")
+    assert saved.is_file()
+    assert _main([*args, "-r", plan["plan_id"]]) == 0
+    resumed = json.loads(capsys.readouterr().out)["plan"]
+    assert resumed["design_identity"] == plan["design_identity"]
+
+
 def main(argv):
     """Keep older engine-integration vectors while passing canonical CLI syntax.
 

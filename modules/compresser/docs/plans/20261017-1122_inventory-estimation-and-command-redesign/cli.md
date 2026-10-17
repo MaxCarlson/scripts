@@ -1,6 +1,6 @@
 # Proposed canonical compression CLI
 
-Target syntax, not yet installed. Native execution authorized; see
+Task3 syntax is implemented; estimate execution still awaits Tasks6/7. Native execution authorized; see
 [execution-review.md](execution-review.md) for capability/default/provenance decisions
 and model escalation gates. No backwards compatibility layer.
 
@@ -35,7 +35,7 @@ Every option has a short and long spelling. Shared options are defined once in
 | All except recover | `-I/--workspace` (parent directory) |
 | Inventory/plan/estimate/analyze/compare/preview/apply | MangaDL `-u/--url` (repeatable exact selection); recovery rejects filters |
 | Inventory only | `-D/--depth files\|headers` (default headers), `-t/--threads` |
-| Plan/estimate | `-f/--format FORMAT [FORMAT ...]`, `-m/--mode lossless\|lossy\|perceptual`, `-q/--quality Q [Q ...]`, `-p/--perceptual-target`, `-A/--encoder`, `-e/--effort`, `-z/--seed`, `-s/--max-images`, `-T/--max-trials`, `-M/--max-time`, `-a/--accuracy-pp` |
+| Plan/estimate | `-f/--format FORMAT [FORMAT ...]` (including `all`), `-m/--mode lossless\|lossy\|perceptual\|both`, `-q/--quality Q [Q ...]`, `-p/--perceptual-target`, `-A/--encoder`, `-e/--effort`, `-z/--seed`, `-s/--max-images`, `-T/--max-trials`, `-M/--max-time`, `-a/--accuracy-pp` |
 | Plan only | `-r/--plan ID` optionally views existing matching plan; otherwise create and print ID |
 | Estimate only | `-r/--plan ID` executes/resumes compatible plan; explicit conflicting recipe/scope/seed fails; resource flags provide additional run allowances |
 | Estimate/analyze/compare/preview/apply | `-t/--threads`, `-B/--memory-budget`, `-k/--cache use\|refresh\|off`, `-K/--cache-file` advanced override |
@@ -55,9 +55,13 @@ Q accepts integer 1..100 or exact decimal fractions (0.85 -> 85), deduplicated i
 input order. Do not accept arbitrary fractional percentages that the backend rounds
 silently. Explicit quality is rejected with lossless-only mode; lossless recipe identity
 uses codec compression effort rather than pretending quality is comparable across codecs.
-Combined comparison applies q only to its lossy recipes. `plan/estimate` defaults one
+Combined plan/estimate/comparison applies q only to its lossy recipes. `plan/estimate` defaults one
 WebP lossless recipe; lossy omitted q defaults 80. For multiple formats, validate every
-requested combination; do not silently introduce/remove formats or reinterpret PNG lossy.
+requested combination; do not reinterpret explicit PNG lossy.
+User-requested 3.1.0 amendment: `-f all` expands to AUTO/WebP/JPEG/AVIF/PNG (not keep)
+for plan, estimate and compare. `both` or `all` enumerates supported pairs: PNG
+lossless only and AVIF lossy only. JPEG lossless requires jpegtran and JPEG sources;
+planning does not probe codecs. These recipes share one plan/population/budget.
 Perceptual mode keeps current SSIM target contract and budgets every internal encode.
 
 Inventory refresh is its own explicit operation for plan/estimate. Existing completed

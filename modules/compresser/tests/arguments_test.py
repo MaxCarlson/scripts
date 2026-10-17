@@ -123,3 +123,68 @@ def test_allow_larger_normalizes_into_recipe_identity():
     growth = normalize_compression_arguments(_parser().parse_args(["plan", "-i", "library", "-F"]))
     assert growth.recipes[0].identity != standard.recipes[0].identity
     assert growth.recipes[0].retained_original_policy == "allow-larger"
+
+
+@pytest.mark.parametrize("owner,target_flag", [("compresser", "-i"), ("mangadl", "-d")])
+@pytest.mark.parametrize("operation", ["plan", "estimate", "compare"])
+def test_all_formats_with_both_modes_registers_supported_recipes_once(owner, target_flag, operation):
+    namespace = _parser(owner).parse_args(
+        [operation, target_flag, "library", "-f", "all", "webp", "all", "-m", "both", "-q", "85", "70"]
+    )
+    options = normalize_compression_arguments(namespace)
+    assert [(r.format, r.mode, r.quality) for r in options.recipes] == [
+        ("auto", "lossless", None),
+        ("auto", "lossy", 85),
+        ("auto", "lossy", 70),
+        ("webp", "lossless", None),
+        ("webp", "lossy", 85),
+        ("webp", "lossy", 70),
+        ("jpeg", "lossless", None),
+        ("jpeg", "lossy", 85),
+        ("jpeg", "lossy", 70),
+        ("avif", "lossy", 85),
+        ("avif", "lossy", 70),
+        ("png", "lossless", None),
+    ]
+
+
+@pytest.mark.parametrize(
+    "mode,extra,expected",
+    [
+        (
+            "lossless",
+            [],
+            [
+                ("auto", "lossless", None),
+                ("webp", "lossless", None),
+                ("jpeg", "lossless", None),
+                ("png", "lossless", None),
+            ],
+        ),
+        (
+            "lossy",
+            ["-q", "85"],
+            [("auto", "lossy", 85), ("webp", "lossy", 85), ("jpeg", "lossy", 85), ("avif", "lossy", 85)],
+        ),
+    ],
+)
+def test_all_formats_respects_selected_mode(mode, extra, expected):
+    args = _parser().parse_args(["plan", "-i", "library", "-f", "all", "-m", mode, *extra])
+    options = normalize_compression_arguments(args)
+    assert [(r.format, r.mode, r.quality) for r in options.recipes] == expected
+
+
+def test_explicit_formats_support_both_without_impossible_png_or_avif_recipes():
+    args = _parser().parse_args(["plan", "-i", "library", "-f", "png", "avif", "-m", "both", "-q", "85", "70"])
+    options = normalize_compression_arguments(args)
+    assert [(r.format, r.mode, r.quality) for r in options.recipes] == [
+        ("png", "lossless", None),
+        ("avif", "lossy", 85),
+        ("avif", "lossy", 70),
+    ]
+
+
+@pytest.mark.parametrize("operation", ["analyze", "apply"])
+def test_all_does_not_expand_single_recipe_operations(operation):
+    with pytest.raises(SystemExit):
+        _parser().parse_args([operation, "-i", "library", "-f", "all"])
