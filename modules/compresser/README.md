@@ -1,4 +1,4 @@
-# compresser 0.10.0
+# compresser 0.11.0
 
 ## Persistent inventory
 
@@ -87,7 +87,11 @@ are committed as they finish, reusable on matching checks and after interruption
 Active encodes have no reusable result yet. Keys include file timestamps/identity,
 strategy settings and codec/runtime identity; quality/effort changes need new trials.
 The cache must be outside the input tree. Storage is bounded (20,000 entries by
-default), so large scans may evict old entries. Without `-K`, reuse is in-memory
+default, with at most 255 temporary extra rows between eviction passes), so large
+analyses may evict old trial entries. Durable inventory is separate and not evicted.
+Connections are reused; each completed trial is still committed immediately.
+Library callers can use `AnalysisCache` as a context manager or call `close()`.
+Without `-K`, reuse is in-memory
 for this invocation only. Sampling never applies writes.
 Comparison uses one persistent dashboard across PNG, WebP, JPEG and AUTO stages.
 The dashboard reports requested/effective/active workers and the CPU/memory/requested

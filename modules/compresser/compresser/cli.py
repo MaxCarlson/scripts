@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.10.0"
+__version__ = "0.11.0"
 
 
 def build_parser() -> argparse.ArgumentParser:

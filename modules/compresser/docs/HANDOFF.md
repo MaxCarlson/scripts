@@ -1,5 +1,11 @@
 # Compresser handoff
 
+I2a:0.11.0 on compression-inventory-and-analysis-20261016. Reused lock-coordinated
+SQLite handle, disk-hit promotion, periodic eviction bounded by capacity+255,
+immediate per-result commits preserved. close()/context manager release handles.
+92 compression/17 integration/55 help pass; lint/format/whitespace checks pass.
+I1a83b6735 pushed on new branch; no push of main. Next candidate/AUTO reuse.
+
 I1a (2026-10-16):0.10.0 durable SQLite inventory independent of trial eviction.
 -I path override and -l JSON inventory-only; normal analysis refreshes automatically.
 Validated membership/header fingerprints, transactional completed-scope publication,

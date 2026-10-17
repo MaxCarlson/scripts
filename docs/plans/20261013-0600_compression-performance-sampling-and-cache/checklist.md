@@ -6,6 +6,9 @@
 - [x] I1a durable inventory, validated refresh, inventory-only CLI, focused validation (90 compression/17 integration/55 help).
 - [ ] I1b single-pass discovery, fast/richer inventory and explicit trusted snapshots.
 - [ ] I2 bounded persistent cache improvements and reusable encoder candidates.
+  - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
+  - [ ] I2b effective candidate identity and AUTO analysis reuse.
+  - [ ] Automatic trial-cache policy and invalidation diagnostics.
 - [ ] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
 - [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.

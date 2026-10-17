@@ -1,5 +1,14 @@
 # Status
 
+Branch compression-inventory-and-analysis-20261016 tracks matching origin branch.
+I1a committed83b6735 before branch creation and pushed on new branch, not main.
+I2a compresser0.11.0: one lock-coordinated reusable SQLite connection per cache,
+disk-hit memory promotion, eviction every min(256,capacity) writes, at most255
+temporary excess rows. Every successful set still commits immediately. Explicit
+close/context-manager API and final handle cleanup. No WAL assumption or buffered
+durability introduced. Full compression92/integration17/help55 pass; lint/whitespace
+checks pass. Next I2b reusable encoder candidates; automatic trial cache still open.
+
 I1a implemented/tested: compresser0.10.0/MangaDL1.38.0, durable non-evicting
 inventory, automatic validated header reuse, -I/-l inventory-only JSON, transactional
 completed scopes, errors/extensions/sizes/coverage diagnostics and discovery reuse.

@@ -10,7 +10,6 @@ import json
 import shutil
 import sqlite3
 import threading
-from contextlib import closing
 from dataclasses import asdict, replace
 from pathlib import Path
 
@@ -71,15 +70,54 @@ class AnalysisCache:
         self._entries: dict[str, ImageResult] = {}
         self._metadata: dict[str, ImageMetadata] = {}
         self._lock = threading.RLock()
+        self._connection: sqlite3.Connection | None = None
+        self._closed = False
+        self._writes_since_prune = 0
+        self._prune_interval = min(256, max_entries)
         self.path = path.expanduser().resolve() if path else None
         self.identity = json.dumps(_runtime_identity(), sort_keys=True)
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with closing(sqlite3.connect(self.path)) as connection:
-                connection.execute(
+            self._connection = sqlite3.connect(self.path, timeout=5, check_same_thread=False)
+            try:
+                self._connection.execute(
                     "CREATE TABLE IF NOT EXISTS entries (kind TEXT, key TEXT, data TEXT, PRIMARY KEY(kind,key))"
                 )
-                connection.commit()
+                self._prune()
+                self._connection.commit()
+            except BaseException:
+                self.close()
+                raise
+
+    def close(self) -> None:
+        """Release SQLite handles; every successful set is already committed."""
+        with self._lock:
+            if self._connection is not None:
+                self._connection.close()
+                self._connection = None
+            self._closed = True
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        self.close()
+
+    def __del__(self):
+        if getattr(self, "_connection", None) is not None:
+            self._connection.close()
+
+    def _database(self) -> sqlite3.Connection:
+        if self._closed or self._connection is None:
+            raise RuntimeError("Analysis cache is closed")
+        return self._connection
+
+    def _prune(self) -> None:
+        self._database().execute(
+            "DELETE FROM entries WHERE rowid IN (SELECT rowid FROM entries ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
+            (self.max_entries,),
+        )
+        self._writes_since_prune = 0
 
     def _make_key(self, path: Path, strategy: CompressionStrategy) -> str:
         try:
@@ -101,6 +139,9 @@ class AnalysisCache:
                         data["input_path"] = Path(data["input_path"])
                         data["output_path"] = Path(data["output_path"])
                         cached = ImageResult(**data)
+                        if len(self._entries) >= self.max_entries:
+                            self._entries.pop(next(iter(self._entries)))
+                        self._entries[key] = cached
                     except (KeyError, TypeError, ValueError):
                         return None
             return replace(cached, cache_hit=True) if cached else None
@@ -119,8 +160,7 @@ class AnalysisCache:
     def _load(self, kind: str, key: str) -> dict | None:
         if not self.path:
             return None
-        with closing(sqlite3.connect(self.path)) as connection:
-            row = connection.execute("SELECT data FROM entries WHERE kind=? AND key=?", (kind, key)).fetchone()
+        row = self._database().execute("SELECT data FROM entries WHERE kind=? AND key=?", (kind, key)).fetchone()
         if row:
             try:
                 data = json.loads(row[0])
@@ -132,15 +172,18 @@ class AnalysisCache:
     def _save(self, kind: str, key: str, data: dict) -> None:
         if not self.path:
             return
-        with closing(sqlite3.connect(self.path)) as connection:
+        connection = self._database()
+        try:
             connection.execute(
                 "INSERT OR REPLACE INTO entries VALUES(?,?,?)", (kind, key, json.dumps(data, default=str))
             )
-            connection.execute(
-                "DELETE FROM entries WHERE rowid IN (SELECT rowid FROM entries ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
-                (self.max_entries,),
-            )
+            self._writes_since_prune += 1
+            if self._writes_since_prune >= self._prune_interval:
+                self._prune()
             connection.commit()
+        except BaseException:
+            connection.rollback()
+            raise
 
     def _metadata_key(self, path: Path, check_grayscale: bool) -> str:
         stat = path.stat()
@@ -158,6 +201,9 @@ class AnalysisCache:
                     try:
                         data["path"] = Path(data["path"])
                         result = ImageMetadata(**data)
+                        if len(self._metadata) >= self.max_entries:
+                            self._metadata.pop(next(iter(self._metadata)))
+                        self._metadata[key] = result
                     except (ValueError, KeyError, TypeError):
                         return None
             return result
@@ -178,6 +224,6 @@ class AnalysisCache:
             self._entries.clear()
             self._metadata.clear()
             if self.path:
-                with closing(sqlite3.connect(self.path)) as connection:
-                    connection.execute("DELETE FROM entries")
-                    connection.commit()
+                connection = self._database()
+                connection.execute("DELETE FROM entries")
+                connection.commit()
