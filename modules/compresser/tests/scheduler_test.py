@@ -55,10 +55,15 @@ def test_mixed_jobs_run_together_and_rejected_images_do_not_cap_pool(monkeypatch
     assert all(event["reserved_bytes"] <= module.MEMORY_BUDGET_BYTES for event in events)
 
 
-@pytest.mark.parametrize("budget", [0, 63 * 1024**2, 4097 * 1024**2])
+@pytest.mark.parametrize("budget", [0, 63 * 1024**2])
 def test_aggregate_budget_is_bounded(budget):
     with pytest.raises(ValueError, match="Aggregate memory"):
         CompressionEngine(memory_budget_bytes=budget)
+
+
+def test_aggregate_budget_allows_large_allocation():
+    engine = CompressionEngine(memory_budget_bytes=16384 * 1024**2)
+    assert engine.memory_budget_bytes == 16384 * 1024**2
 
 
 def test_larger_aggregate_budget_does_not_remove_decode_limit():

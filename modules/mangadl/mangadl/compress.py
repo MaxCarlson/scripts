@@ -272,8 +272,8 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         if args.write and args.mode != "lossless" and not args.allow_lossy:
             raise ValueError("Lossy/perceptual writes require --allow-lossy")
         cache_path = getattr(args, "cache_file", None)
-        if not 64 <= args.memory_budget_mib <= 4096:
-            raise ValueError("Aggregate scheduling budget must be64..4096MiB")
+        if args.memory_budget_mib < 64:
+            raise ValueError("Aggregate scheduling budget must be at least 64MiB")
         if cache_path and (cache_path.resolve() == dest or dest in cache_path.resolve().parents):
             raise ValueError("Analysis cache must be outside the destination tree")
         cache = (

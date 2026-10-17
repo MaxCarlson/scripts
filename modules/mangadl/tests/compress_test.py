@@ -584,3 +584,11 @@ def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recom
     assert findings["image_integrity"] == "valid"
     assert findings["valid_images"] == 2
     assert not findings["duplicate_pages"]
+
+
+def test_compress_accepts_uncapped_memory_budgets(tmp_path):
+    Image.new("RGB", (40, 40), "white").save(tmp_path / "01.png")
+    assert main(["compress", "-d", str(tmp_path), "-l", "-B", "40%", "-N"]) == 0
+    assert main(["compress", "-d", str(tmp_path), "-l", "-B", "8192", "-N"]) == 0
+    assert main(["compress", "-d", str(tmp_path), "-l", "-B", "16G", "-N"]) == 0
+

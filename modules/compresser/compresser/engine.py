@@ -91,8 +91,8 @@ class CompressionEngine:
     def __init__(
         self, cache: AnalysisCache | None = None, *, memory_budget_bytes: int = MEMORY_BUDGET_BYTES, memory_policy=None
     ) -> None:
-        if not 64 * 1024**2 <= memory_budget_bytes <= 4096 * 1024**2:
-            raise ValueError("Aggregate memory budget must be64..4096MiB; per-image decode limits remain unchanged")
+        if memory_budget_bytes < 64 * 1024**2:
+            raise ValueError("Aggregate memory budget must be at least 64MiB; per-image decode limits remain unchanged")
         self.memory_budget_bytes = memory_budget_bytes
         self.memory_policy = memory_policy
         self.codecs = discover_available_codecs()

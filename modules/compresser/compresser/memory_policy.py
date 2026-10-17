@@ -94,7 +94,7 @@ def _available(provider) -> int:
             raise ValueError
         return int(value)
     except (OSError, TypeError, ValueError, OverflowError) as exc:
-        raise ValueError("Available-memory telemetry unavailable; specify an explicit -B64..4096") from exc
+        raise ValueError("Available-memory telemetry unavailable; specify an explicit -B (e.g. -B 2048 or -B 4G)") from exc
 
 
 @dataclass
