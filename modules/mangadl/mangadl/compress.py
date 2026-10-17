@@ -383,6 +383,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 sampling_plan=sampling_plan,
                 qualities=getattr(args, "preview_qualities", None),
                 source_validator=snapshot.validate_selected,
+                scratch_dir=getattr(args, "scratch_dir", None),
             )
             if getattr(args, "json", False):
                 data = [
@@ -458,6 +459,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
                 activity_callback=dash.update_activity if dash else None,
+                scratch_dir=getattr(args, "scratch_dir", None),
             )
         finally:
             if dash:

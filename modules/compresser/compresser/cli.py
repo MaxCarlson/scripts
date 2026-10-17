@@ -33,7 +33,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.23.0"
+__version__ = "0.24.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -183,6 +183,7 @@ def run_comparison(
     sampling_plan=None,
     qualities: Sequence[int] | None = None,
     source_validator: Callable[[list[ImageMetadata]], None] | None = None,
+    scratch_dir: Path | None = None,
 ) -> list[ComparisonRow]:
     """Execute benchmarks across standard competing compression configurations."""
     formats = ["png", "webp", "jpeg", "auto"]
@@ -245,6 +246,7 @@ def run_comparison(
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
                 activity_callback=dash.update_activity if dash else None,
+                scratch_dir=scratch_dir,
             )
             q_disp = (
                 f"SSIM>={strat.perceptual_target:.3f}"
@@ -409,6 +411,7 @@ def main(argv: list[str] | None = None) -> int:
                 sampling_plan=sampling_plan,
                 qualities=args.preview_qualities,
                 source_validator=snapshot.validate_selected,
+                scratch_dir=args.scratch_dir,
             )
             if args.json:
                 data = [
@@ -481,6 +484,7 @@ def main(argv: list[str] | None = None) -> int:
                 progress_callback=cb,
                 cancellation_callback=lambda active: report_cancellation(dash, active),
                 activity_callback=dash.update_activity if dash else None,
+                scratch_dir=args.scratch_dir,
             )
         finally:
             if dash:

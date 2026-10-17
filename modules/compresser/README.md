@@ -1,4 +1,16 @@
-# compresser 0.23.0
+# compresser 0.24.0
+
+## Pre-admission cache bypass and opt-in SSD scratch staging (`-X/--scratch-dir`)
+
+In read-only analysis mode, `CompressionEngine.compress_batch()` probes `AnalysisCache`
+(including `AUTO` candidate synthesis) before `MemoryScheduler` admission so warm/cached
+images bypass memory reservation (`pre_admission_cache_hits`) and never wait behind
+uncached jobs. Optional `-X/--scratch-dir PATH` stages uncached selected inputs into an
+owned, manifest-tracked temporary run folder outside the input tree, verifies SHA-256
+and size before decoding, tracks `scratch_copy` phase seconds and `worker_diagnostics.scratch`
+(`staged_images`, `staged_bytes`, `peak_staged_bytes`, `copy_seconds`, `cleaned_up`),
+preserves original source identities in results and `AnalysisCache`, and removes only
+verified owned scratch files after each image and at run exit/cancellation.
 
 ## Pilot sample-size advisor, coverage gaps, and confirmation sampling
 

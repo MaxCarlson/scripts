@@ -1,5 +1,14 @@
 # Status
 
+I4 compresser0.24.0/MangaDL1.50.0: pre-admission cache-hit bypass (`pre_admission_cache_hits`)
+serves cached analysis results before `MemoryScheduler` admission (`peak_reserved_bytes == 0`
+on warm hits, single cache lookup per image); opt-in `-X/--scratch-dir PATH` stages
+only uncached selected inputs into an owned manifest-tracked directory outside the
+target tree, verifies SHA-256 and size before decode, tracks `scratch_copy` phase
+seconds and `worker_diagnostics["scratch"]`, preserves original source identities in
+results and `AnalysisCache`, and cleans up owned artifacts per image and at run exit.
+144 compression (1 skip)/307 MangaDL/55 help pass; ruff clean.
+
 I2d2 compresser0.23.0/MangaDL1.49.0: `AnalysisCache` indexes `(path_hash, strategy_hash)`
 with `source_stamp` and `runtime_hash` in `trial_index` (and in-memory `_trial_index`),
 enabling `diagnostics()` to classify cache misses and `invalidation_causes` into

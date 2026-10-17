@@ -67,6 +67,12 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-z", "--sample-seed", type=int, default=0, help="Reproducible gallery sampling seed (default: 0)."
     )
+    parser.add_argument(
+        "-X",
+        "--scratch-dir",
+        type=Path,
+        help="Optional external SSD scratch directory for read-only analysis staging of uncached inputs.",
+    )
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
@@ -74,6 +80,15 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
         getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")
     ):
         raise ValueError("Trusted snapshots are read-only analysis only; omit writes/recovery/inventory-only/preview")
+    scratch_dir = getattr(args, "scratch_dir", None)
+    if scratch_dir is not None:
+        if any(getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")):
+            raise ValueError("Scratch staging is read-only analysis only; omit writes, recovery, inventory-only, and preview")
+        target = getattr(args, "input", None) or getattr(args, "destination", None)
+        if target is not None:
+            from .scratch import validate_scratch_dir
+
+            validate_scratch_dir(scratch_dir, target)
     if getattr(args, "inventory_depth", "headers") == "files":
         if not getattr(args, "inventory_only", False):
             raise ValueError("Filesystem-only depth requires --inventory-only; compression requires verified headers")

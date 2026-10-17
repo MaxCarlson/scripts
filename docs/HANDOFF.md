@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+I4 compresser0.24.0/MangaDL1.50.0 adds pre-admission cache-hit bypass (`pre_admission_cache_hits`)
+before `MemoryScheduler` reservation and opt-in analysis-only SSD scratch staging
+(`-X/--scratch-dir PATH`) with ownership manifests, SHA-256 copy verification,
+source-change checks, `scratch_copy` phase timing, and verified cleanup. 144 compression
+(1 skip)/307 MangaDL/55 help pass.
+
 I2d2 compresser0.23.0/MangaDL1.49.0 indexes `(path_hash, strategy_hash)` metadata in
 `AnalysisCache` (`trial_index`) to classify cache misses and `invalidation_causes`
 into `never_measured`, `source_changed`, `settings_changed`, `runtime_changed`,

@@ -18,7 +18,7 @@
 - [x] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
   - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
   - [x] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations (`compresser 0.22.0` / `mangadl 1.48.0`).
-- [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
+- [x] I4 measured concurrency improvements (pre-admission cache-hit bypass) and opt-in analysis-only SSD scratch (`-X/--scratch-dir`, `compresser 0.24.0` / `mangadl 1.50.0`).
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
   - [x] I5a full-resolution external preview originals/lossless/multiple-quality variants, manifest, cancellation and source preservation tests.
   - [x] I5b multi-quality comparison on one sample with shared lossless baseline/cache and per-quality stages/projections.

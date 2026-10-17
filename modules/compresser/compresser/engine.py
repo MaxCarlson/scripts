@@ -209,11 +209,44 @@ class CompressionEngine:
         self.cache.set(meta.path, strategy, result)
         return result
 
-    def _measure_image(self, meta, strategy, *, write_mode=False, phase_callback=None):
+    def _probe_cached(
+        self, meta: ImageMetadata, strategy: CompressionStrategy
+    ) -> tuple[ImageResult | None, dict[str, float], float]:
+        started = time.monotonic()
+        with timing_scope() as trace:
+            cached = self.cache.get(meta.path, strategy)
+            if cached is None and strategy.format == "auto" and 1 <= strategy.quality <= 100:
+                cached = self._cached_auto(meta, strategy)
+        elapsed = time.monotonic() - started
+        phases = dict(trace["seconds"])
+        if cached is not None:
+            return replace(cached, phase_seconds=phases, elapsed_s=elapsed), phases, elapsed
+        return None, phases, elapsed
+
+    def _measure_image(
+        self,
+        meta,
+        strategy,
+        *,
+        write_mode=False,
+        phase_callback=None,
+        skip_cache_lookup=False,
+        initial_phase_seconds: dict[str, float] | None = None,
+        scratch_workspace=None,
+    ):
         started = time.monotonic()
         with timing_scope(phase_callback) as trace:
-            result = self._compress_image_owned(meta, strategy, write_mode=write_mode)
-        return replace(result, phase_seconds=dict(trace["seconds"]), elapsed_s=time.monotonic() - started)
+            result = self._compress_image_owned(
+                meta,
+                strategy,
+                write_mode=write_mode,
+                skip_cache_lookup=skip_cache_lookup,
+                scratch_workspace=scratch_workspace,
+            )
+        merged_phases = dict(initial_phase_seconds or {})
+        for k, v in trace["seconds"].items():
+            merged_phases[k] = merged_phases.get(k, 0.0) + v
+        return replace(result, phase_seconds=merged_phases, elapsed_s=time.monotonic() - started)
 
     def _compress_image_owned(
         self,
@@ -221,6 +254,8 @@ class CompressionEngine:
         strategy: CompressionStrategy,
         *,
         write_mode: bool = False,
+        skip_cache_lookup: bool = False,
+        scratch_workspace=None,
     ) -> ImageResult:
         """Analyze or compress a single image."""
         start_time = time.monotonic()
@@ -244,7 +279,7 @@ class CompressionEngine:
             )
 
         # Check cache if in read-only / analysis mode
-        if not write_mode:
+        if not write_mode and not skip_cache_lookup:
             cached = self.cache.get(path, strategy)
             if cached is not None:
                 return cached
@@ -257,6 +292,7 @@ class CompressionEngine:
         ext_map = {"jpeg": ".jpg", "jpg": ".jpg", "webp": ".webp", "avif": ".avif", "png": ".png"}
         new_ext = ext_map.get(target_fmt.lower(), f".{target_fmt.lower()}")
         output_path = path.with_suffix(new_ext)
+        staged_path: Path | None = None
 
         try:
             if not 1 <= strategy.quality <= 100 or not 0.80 <= strategy.perceptual_target <= 1.0:
@@ -274,7 +310,11 @@ class CompressionEngine:
             if meta.mtime_ns and (stat.st_mtime_ns != meta.mtime_ns or stat.st_size != meta.size_bytes):
                 raise RuntimeError("Source changed since scan; rescan before compression")
             source_digest = digest(path) if write_mode else ""
-            with phase("source_decode"), Image.open(path) as im:
+            decode_path = path
+            if scratch_workspace is not None and not write_mode:
+                staged_path = scratch_workspace.stage_image(meta)
+                decode_path = staged_path
+            with phase("source_decode"), Image.open(decode_path) as im:
                 if im.size != (meta.width, meta.height):
                     raise RuntimeError("Source dimensions differ from scan metadata; rescan before compression")
                 if im.width * im.height > 40_000_000:
@@ -381,6 +421,9 @@ class CompressionEngine:
                 skipped=True,
                 error=str(exc),
             )
+        finally:
+            if scratch_workspace is not None and staged_path is not None:
+                scratch_workspace.release_image(staged_path)
 
     def compress_batch(
         self,
@@ -392,8 +435,11 @@ class CompressionEngine:
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
         cancellation_callback: Callable[[int], None] | None = None,
         activity_callback: Callable[[dict], None] | None = None,
+        scratch_dir: Path | None = None,
     ) -> BatchResult:
         """Hold managed-library ownership until all image workers have finished."""
+        if scratch_dir is not None and write_mode:
+            raise ValueError("Scratch staging is read-only analysis only; omit --write")
         with managed_write_guard({image.path.parent for image in images}) if write_mode else nullcontext():
             return self._compress_batch_owned(
                 images,
@@ -403,6 +449,7 @@ class CompressionEngine:
                 progress_callback=progress_callback,
                 cancellation_callback=cancellation_callback,
                 activity_callback=activity_callback,
+                scratch_dir=scratch_dir,
             )
 
     def _compress_batch_owned(
@@ -415,6 +462,7 @@ class CompressionEngine:
         progress_callback: Callable[[int, int, ImageResult], None] | None = None,
         cancellation_callback: Callable[[int], None] | None = None,
         activity_callback: Callable[[dict], None] | None = None,
+        scratch_dir: Path | None = None,
     ) -> BatchResult:
         """Process a collection of images using thread concurrency."""
         if threads < 1:
@@ -454,7 +502,13 @@ class CompressionEngine:
                 if (directory / JOURNAL_FILENAME).exists():
                     raise RuntimeError(f"Pending compression transaction requires explicit recovery: {directory}")
 
-        jobs, rejected = [], []
+        can_pre_probe = (
+            not write_mode
+            and getattr(self._compress_image_owned, "__func__", None) is CompressionEngine._compress_image_owned
+        )
+        jobs, rejected, pre_cached = [], [], []
+        eligible_costs: list[int] = []
+        pre_phase_by_path: dict[Path, dict[str, float]] = {}
         for img in images:
             cost = img.width * img.height * ESTIMATED_BYTES_PER_PIXEL
             reason = None
@@ -478,10 +532,17 @@ class CompressionEngine:
                     )
                 )
             else:
+                eligible_costs.append(cost)
+                if can_pre_probe:
+                    cached_res, pre_phases, _ = self._probe_cached(img, strategy)
+                    if cached_res is not None:
+                        pre_cached.append(cached_res)
+                        continue
+                    pre_phase_by_path[img.path] = pre_phases
                 jobs.append((img, cost))
-        largest_working_set = max((cost for _, cost in jobs), default=0)
-        memory_workers = self.memory_budget_bytes // min((cost for _, cost in jobs), default=self.memory_budget_bytes)
-        max_workers = min(threads, os.cpu_count() or 4, memory_workers, len(jobs))
+        largest_working_set = max(eligible_costs, default=0)
+        memory_workers = self.memory_budget_bytes // min(eligible_costs, default=self.memory_budget_bytes)
+        max_workers = min(threads, os.cpu_count() or 4, memory_workers, len(eligible_costs))
         scheduler = MemoryScheduler(jobs, self.memory_budget_bytes, max_workers)
         diagnostics = {
             "requested_workers": threads,
@@ -491,14 +552,15 @@ class CompressionEngine:
             "memory_budget_bytes": self.memory_budget_bytes,
             "per_image_limit_bytes": MEMORY_BUDGET_BYTES,
             "preflight_rejected_images": len(rejected),
+            "pre_admission_cache_hits": len(pre_cached),
             "largest_estimated_image_bytes": largest_working_set,
             "limiter": (
                 "no eligible jobs"
-                if not jobs
+                if not eligible_costs
                 else (
                     "memory"
                     if largest_working_set * max_workers > self.memory_budget_bytes
-                    or memory_workers < min(threads, len(jobs))
+                    or memory_workers < min(threads, len(eligible_costs))
                     else "cpu" if (os.cpu_count() or 4) < threads else "requested"
                 )
             ),
@@ -521,91 +583,115 @@ class CompressionEngine:
                     }
                 )
 
-        report_activity()
-        with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
-            cancelled = threading.Event()
+        scratch_workspace = None
+        if scratch_dir is not None:
+            from .scratch import ScratchWorkspace
 
-            def work(img):
-                with cancellation_scope(cancelled):
-                    check_cancelled()
-                    with activity_lock:
-                        active[str(img.path)] = {
-                            "path": str(img.path),
-                            "width": img.width,
-                            "height": img.height,
-                            "estimated_bytes": img.width * img.height * ESTIMATED_BYTES_PER_PIXEL,
-                            "started": time.monotonic(),
-                        }
-                        report_activity()
-                    try:
+            scratch_workspace = ScratchWorkspace(
+                scratch_dir, images[0].path.parent, max_staged_bytes=self.memory_budget_bytes
+            )
 
-                        def phase_changed(name):
+        try:
+            report_activity()
+            with ThreadPoolExecutor(max_workers=max(1, max_workers)) as pool:
+                cancelled = threading.Event()
+
+                def work(img):
+                    with cancellation_scope(cancelled):
+                        check_cancelled()
+                        with activity_lock:
+                            active[str(img.path)] = {
+                                "path": str(img.path),
+                                "width": img.width,
+                                "height": img.height,
+                                "estimated_bytes": img.width * img.height * ESTIMATED_BYTES_PER_PIXEL,
+                                "started": time.monotonic(),
+                            }
+                            report_activity()
+                        try:
+
+                            def phase_changed(name):
+                                with activity_lock:
+                                    active[str(img.path)]["phase"] = name
+                                    report_activity()
+
+                            dispatched = time.monotonic() - start_time
+                            result = self._measure_image(
+                                img,
+                                strategy,
+                                write_mode=write_mode,
+                                phase_callback=phase_changed,
+                                skip_cache_lookup=can_pre_probe,
+                                initial_phase_seconds=pre_phase_by_path.get(img.path),
+                                scratch_workspace=scratch_workspace,
+                            )
+                            return replace(result, dispatch_wait_s=dispatched)
+                        finally:
+                            nonlocal finished
                             with activity_lock:
-                                active[str(img.path)]["phase"] = name
+                                active.pop(str(img.path), None)
+                                finished += 1
                                 report_activity()
 
-                        dispatched = time.monotonic() - start_time
-                        result = self._measure_image(img, strategy, write_mode=write_mode, phase_callback=phase_changed)
-                        return replace(result, dispatch_wait_s=dispatched)
-                    finally:
-                        nonlocal finished
-                        with activity_lock:
-                            active.pop(str(img.path), None)
-                            finished += 1
-                            report_activity()
+                def fill_slots() -> None:
+                    while len(futures) < max_workers:
+                        job = scheduler.next_job()
+                        if job is None:
+                            break
+                        img, cost = job
+                        futures[pool.submit(work, img)] = cost
 
-            def fill_slots() -> None:
-                while len(futures) < max_workers:
-                    job = scheduler.next_job()
-                    if job is None:
-                        break
-                    img, cost = job
-                    futures[pool.submit(work, img)] = cost
+                def consume(res):
+                    nonlocal orig_bytes_total, comp_bytes_total, failed_cnt, skipped_cnt, applied_cnt
+                    results.append(res)
+                    orig_bytes_total += res.original_bytes
+                    comp_bytes_total += res.compressed_bytes
+                    if res.error:
+                        failed_cnt += 1
+                    elif res.skipped:
+                        skipped_cnt += 1
+                    elif res.applied:
+                        applied_cnt += 1
+                    if res.ssim is not None:
+                        ssim_scores.append(res.ssim)
+                    if progress_callback:
+                        progress_callback(len(results), total, res)
 
-            def consume(res):
-                nonlocal orig_bytes_total, comp_bytes_total, failed_cnt, skipped_cnt, applied_cnt
-                results.append(res)
-                orig_bytes_total += res.original_bytes
-                comp_bytes_total += res.compressed_bytes
-                if res.error:
-                    failed_cnt += 1
-                elif res.skipped:
-                    skipped_cnt += 1
-                elif res.applied:
-                    applied_cnt += 1
-                if res.ssim is not None:
-                    ssim_scores.append(res.ssim)
-                if progress_callback:
-                    progress_callback(len(results), total, res)
-
-            futures = {}
-            try:
-                for res in rejected:
-                    finished += 1
-                    consume(res)
-                report_activity()
-                fill_slots()
-                while futures:
-                    completed, _ = wait(futures, return_when=FIRST_COMPLETED)
-                    fut = next(iter(completed))
-                    scheduler.release(futures.pop(fut))
-                    res = fut.result()
-                    consume(res)
+                futures = {}
+                try:
+                    for res in rejected:
+                        finished += 1
+                        consume(res)
+                    for res in pre_cached:
+                        finished += 1
+                        consume(res)
+                    report_activity()
                     fill_slots()
-            except KeyboardInterrupt:
-                cancelled.set()
-                for future in futures:
-                    future.cancel()
-                if cancellation_callback:
-                    cancellation_callback(sum(future.running() for future in futures))
-                # Repeated Ctrl+C must not release library ownership while a
-                # worker is still finishing an already-entered publication.
-                while any(not future.done() for future in futures):
-                    try:
-                        wait(futures, timeout=0.25)
-                    except KeyboardInterrupt:
-                        continue
-                raise
+                    while futures:
+                        completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                        fut = next(iter(completed))
+                        scheduler.release(futures.pop(fut))
+                        res = fut.result()
+                        consume(res)
+                        fill_slots()
+                except KeyboardInterrupt:
+                    cancelled.set()
+                    for future in futures:
+                        future.cancel()
+                    if cancellation_callback:
+                        cancellation_callback(sum(future.running() for future in futures))
+                    # Repeated Ctrl+C must not release library ownership while a
+                    # worker is still finishing an already-entered publication.
+                    while any(not future.done() for future in futures):
+                        try:
+                            wait(futures, timeout=0.25)
+                        except KeyboardInterrupt:
+                            continue
+                    raise
+        finally:
+            if scratch_workspace is not None:
+                scratch_workspace.close()
+                diagnostics["scratch"] = scratch_workspace.diagnostics()
 
         elapsed = time.monotonic() - start_time
         diagnostics["peak_reserved_bytes"] = scheduler.peak_reserved_bytes

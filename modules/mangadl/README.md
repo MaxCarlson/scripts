@@ -21,8 +21,13 @@ automatically cleans harmless stale metadata when the OS lock is free. Explicit
 `mangadl lock -u -d TARGET` clears stale `repair.lock` and stale `state.sqlite3`
 `running` records only when no live process holds a lock.
 
-## Pilot sample-size advisor, coverage gaps, and confirmation sampling (`mangadl 1.48.0`)
+## Pre-admission cache bypass, SSD scratch staging (`-X`), and pilot advisor (`mangadl 1.50.0`)
 
+`mangadl compress` probes the trial cache before `MemoryScheduler` admission
+(`pre_admission_cache_hits`) and supports optional read-only SSD scratch staging via
+`-X/--scratch-dir PATH` (outside the library root), staging only uncached selected
+images into an owned manifest-tracked run directory while preserving original page
+paths in results and caches.
 Sampled `mangadl compress` runs report coverage gaps (unsampled rare formats,
 unsampled top-decile large pages, unsampled >16,383px tall WebP pages, and
 singleton non-census galleries), two-stage Bonferroni-adjusted 95% intervals
