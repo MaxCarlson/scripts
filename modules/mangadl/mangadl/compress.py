@@ -483,6 +483,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "extrapolation": r.extrapolation,
                         "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {

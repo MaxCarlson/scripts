@@ -5,7 +5,7 @@
 - [x] Write design, testable implementation plan and self-review.
 - [x] User reviews written plan before implementation.
 - [x] Task1: workspace ownership/path compatibility and wrapper migration.
-- [ ] Task2: format-weighted extrapolation and sample coverage.
+- [x] Task2: format-weighted extrapolation and sample coverage.
 - [ ] Task3: shared report model and responsive console tables.
 - [ ] Task4: automatic durable Markdown reports.
 - [ ] Task5: inventory/all summary paths, integration/docs, final review and validation.

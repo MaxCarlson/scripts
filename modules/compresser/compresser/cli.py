@@ -37,7 +37,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -258,6 +258,12 @@ def run_comparison(
                 else (f"q={strat.quality}" if strat.mode == "lossy" else "lossless")
             )
             errors = Counter(item.error for item in res.results if item.error)
+            from dataclasses import asdict
+            from .extrapolation import extrapolate_target
+
+            population = (
+                [image for group in sampling_plan.groups.values() for image in group] if sampling_plan else images
+            )
             rows.append(
                 ComparisonRow(
                     strategy_name=strat.name,
@@ -274,6 +280,11 @@ def run_comparison(
                     skipped_count=res.skipped_count,
                     cache_hits=sum(item.cache_hit for item in res.results),
                     error_summary=tuple(f"{count} failed: {reason}" for reason, count in errors.most_common(3)),
+                    issues=dict(errors),
+                    settings={**asdict(strat), "elapsed_seconds": res.elapsed_seconds},
+                    extrapolation=extrapolate_target(
+                        population, images, res.results, complete=res.processed_images == len(images)
+                    ),
                     candidate_bytes=(
                         sum(item.candidate_bytes for item in res.results)
                         if all(item.candidate_bytes is not None for item in res.results)
@@ -487,6 +498,7 @@ def main(argv: list[str] | None = None) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "extrapolation": r.extrapolation,
                         "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {**cache.diagnostics(), "policy": args.cache_policy},
@@ -495,9 +507,7 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 print(json.dumps(data, indent=2))
             else:
-                print_comparison_matrix(
-                    comp_rows, target_path=args.input, workers=args.threads, runner="compresser"
-                )
+                print_comparison_matrix(comp_rows, target_path=args.input, workers=args.threads, runner="compresser")
                 print_cache_diagnostics(cache.diagnostics())
                 snapshot.print_warning()
             return 0

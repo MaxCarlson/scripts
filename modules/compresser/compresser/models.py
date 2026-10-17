@@ -147,3 +147,6 @@ class ComparisonRow:
     sampling: dict = field(default_factory=dict)
     estimate: dict = field(default_factory=dict)
     retained_formats: tuple[str, ...] = ()
+    extrapolation: dict = field(default_factory=dict)
+    issues: dict[str, int] = field(default_factory=dict)
+    settings: dict = field(default_factory=dict)

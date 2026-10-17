@@ -193,7 +193,7 @@ class GallerySample:
     profile_identity: str = ""
 
     def _coverage_diagnostics(self) -> dict:
-        formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0})
+        formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0, "sample_bytes": 0})
         chosen = {image.path for image in self.images}
         all_images = [image for members in self.groups.values() for image in members]
         for image in all_images:
@@ -201,6 +201,7 @@ class GallerySample:
             row["images"] += 1
             row["bytes"] += image.size_bytes
             row["sample_images"] += image.path in chosen
+            row["sample_bytes"] += image.size_bytes if image.path in chosen else 0
         unsampled_formats = sorted(fmt for fmt, row in formats.items() if row["sample_images"] == 0)
         sizes = sorted(image.size_bytes for image in all_images)
         if sizes:

@@ -1,4 +1,11 @@
-# compresser 1.0.0
+# compresser 1.1.0
+
+Comparison JSON now includes `extrapolation` (`format_ratio_v1`) alongside the
+unchanged design-based `estimate`. Each source format's sampled byte-savings ratio
+is applied to its inventoried bytes; unsampled formats use the overall byte ratio
+and report fallback coverage. Failed trials retain originals in the denominator.
+Small samples still produce estimates, not statistical guarantees. A completed
+census reports calculated retained bytes. Console integration follows in the next checkpoint.
 
 Analysis artifacts now use one external workspace. `-I/--workspace` selects a
 parent directory; target `book` creates `book-compresser` there (default: beside

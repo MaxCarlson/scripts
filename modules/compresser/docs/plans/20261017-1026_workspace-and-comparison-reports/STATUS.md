@@ -13,7 +13,10 @@ implicit SQLite migration, main merge or paused Plan03 P8 CLI overhaul.
 User approved implementation and chose current feature branch. Task1 implemented:
 workspace resolution/ownership, directory-I/legacy compatibility, optional bare-O,
 major1.0.0/2.0.0 wrappers reinstalled.291compression/1skip,316MangaDL,55help pass.
-Next Task2: format-weighted extrapolation and coverage. No production data touched.
+Task2 implemented: independent format_ratio_v1 extrapolation, failed-original policy,
+unsampled-format fallback, signed growth and completed-census calculated totals.
+298compression/1skip,316MangaDL pass; help/gate publication follows. Next Task3 shared
+report and responsive panels. No production data touched.
 
 Documentation drift: compresser/MangaDL80/100 stale, TermDash60/100 needs review;
 Task5 updates user docs and current handoffs. No tests claimed for planning-only edits.
