@@ -29,8 +29,8 @@ this session. Manual Windows terminal resize/color and reader quality acceptance
 Final verification after review fixes: Compresser326 passed/1 skipped; MangaDL317 passed;
 TermDash76 passed/1 skipped; scripts_help55 passed. Focused regressions reproduced all
 three defects before fixes and passed afterward. Ruff and Black120 passed. CLI versions
-reported compresser1.4.1 and mangadl2.4.1. Parent checkout clean and branch synchronized
-at 6fcbe7cbcb310651031c42ef9ea184484fe18225.
+reported compresser1.4.1 and mangadl2.4.1. The feature branch was clean and synchronized
+after the review-fix checkpoint.
 
 2026-10-17: Design/mockup approved in conversation; written design and implementation
 plan created and self-reviewed against source64b33d1. Awaiting written plan review
