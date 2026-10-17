@@ -1,5 +1,10 @@
 # Status
 
+Repair Task4 compresser0.26.2/MangaDL1.52.2 bounds diagnostic history in RAM,
+queries exact/existence durable rows; legacy/forgotten history is unavailable,
+not never-measured.185 compression passed/1 skip,308 MangaDL/55 help pass.
+Task3 d8f99ca/7600196 pushed; sharing retry gate180/308/55 passed. Next Task5.
+
 Repair Task3 compresser0.26.1/MangaDL1.52.1: pre-read aggregate byte reservation,
 64KiB streaming copy/verification, cancellable capacity waiting, durable pre-write
 ownership and atomic manifests, run identity/link checks. Partial writes cleaned,

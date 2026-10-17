@@ -1,4 +1,4 @@
-# compresser 0.26.1
+# compresser 0.26.2
 
 ## Review repair status
 
@@ -125,7 +125,13 @@ Text summaries and JSON `cache` objects include current-run trial lookup hits/mi
 source), `runtime_changed` (codec/Pillow/metric identity changed), `evicted` (previously
 recorded in `trial_index` for the exact source, settings, and runtime before `entries`
 pruning), `refresh_policy`, and `invalid_record`. Memory-only caches have no persistent
-creation date.
+creation date. Diagnostic RAM history is an LRU bounded by `max_entries` across
+both paths and settings; JSON exposes `diagnostic_memory_entries`/`diagnostic_memory_limit`.
+SQLite diagnostic history is retained separately from evictable trial results;
+misses query exact keys/existence, not every setting for a path. Legacy caches and
+truncated memory-only history report `history_unavailable` rather than pretending
+a forgotten trial was never measured. Durable history grows on disk until explicit
+`clear()`; that call also resets the diagnostic history scope.
 
 ## Fast extension/size inventory
 
@@ -294,7 +300,7 @@ remains format/size-stratified.
 are committed as they finish, reusable on matching checks and after interruption.
 Active encodes have no reusable result yet. Keys include file timestamps/identity,
 strategy settings and codec/runtime identity; quality/effort changes need new trials.
-The cache must be outside the input tree. Storage is bounded (20,000 entries by
+The cache must be outside the input tree. Trial-result storage is bounded (20,000 entries by
 default, with at most 255 temporary extra rows between eviction passes), so large
 analyses may evict old trial entries. Durable inventory is separate and not evicted.
 Connections are reused; each completed trial is still committed immediately.

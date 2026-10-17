@@ -10,7 +10,7 @@ import json
 import shutil
 import sqlite3
 import threading
-from collections import Counter
+from collections import Counter, OrderedDict
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from pathlib import Path
@@ -74,7 +74,8 @@ class AnalysisCache:
             raise ValueError("Cache capacity must be positive")
         self._entries: dict[str, ImageResult] = {}
         self._metadata: dict[str, ImageMetadata] = {}
-        self._trial_index: dict[str, dict[str, dict[str, str]]] = {}
+        self._trial_index: OrderedDict[tuple[str, str], dict[str, str]] = OrderedDict()
+        self._history_complete = True
         self._lock = threading.RLock()
         self.reuse_persistent = reuse_persistent
         self._connection: sqlite3.Connection | None = None
@@ -107,9 +108,11 @@ class AnalysisCache:
                     "created_at": None if existing else now,
                     "tracking_started_at": now,
                     "last_result_saved_at": None,
+                    "history_complete": "0" if existing else "1",
                 }
                 self._connection.executemany("INSERT OR IGNORE INTO cache_metadata VALUES(?,?)", initial.items())
                 self._dates.update(dict(self._connection.execute("SELECT key,value FROM cache_metadata")))
+                self._history_complete = self._dates.pop("history_complete") == "1"
                 self._prune()
                 self._connection.commit()
             except BaseException:
@@ -128,7 +131,8 @@ class AnalysisCache:
         """Return run trial-lookup counters and trustworthy persisted cache dates."""
         with self._lock:
             if self.path and not self._closed:
-                self._dates.update(dict(self._database().execute("SELECT key,value FROM cache_metadata")))
+                values = dict(self._database().execute("SELECT key,value FROM cache_metadata"))
+                self._dates.update({key: value for key, value in values.items() if key != "history_complete"})
             return {
                 "file": str(self.path) if self.path else None,
                 **self._dates,
@@ -136,6 +140,9 @@ class AnalysisCache:
                 "lookup_misses": sum(self._miss_reasons.values()),
                 "miss_reasons": dict(self._miss_reasons),
                 "invalidation_causes": dict(self._invalidation_causes),
+                "diagnostic_memory_entries": len(self._trial_index),
+                "diagnostic_memory_limit": self.max_entries,
+                "history_complete": self._history_complete,
                 "counter_scope": "current run trial lookups, including AUTO candidate probes; not image counts",
             }
 
@@ -160,11 +167,7 @@ class AnalysisCache:
             "DELETE FROM entries WHERE rowid IN (SELECT rowid FROM entries ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
             (self.max_entries,),
         )
-        index_cap = max(100_000, self.max_entries * 10)
-        db.execute(
-            "DELETE FROM trial_index WHERE rowid IN (SELECT rowid FROM trial_index ORDER BY rowid DESC LIMIT -1 OFFSET ?)",
-            (index_cap,),
-        )
+        # Diagnostic history is durable, separate from bounded result retention.
         self._writes_since_prune = 0
 
     def _trial_components(
@@ -193,30 +196,48 @@ class AnalysisCache:
         if self.path and not self.reuse_persistent:
             return "refresh_policy", "refresh_policy"
         path_hash, strategy_hash, source_stamp, runtime_hash = self._trial_components(path, strategy)
-        known_by_strat = dict(self._trial_index.get(path_hash, {}))
+        exact_strat = self._trial_index.get((path_hash, strategy_hash))
+        known = [value for (p_hash, _), value in self._trial_index.items() if p_hash == path_hash]
         if self.path and not self._closed:
-            rows = self._database().execute(
-                "SELECT strategy_hash, entry_key, source_stamp, runtime_hash FROM trial_index WHERE path_hash=?",
-                (path_hash,),
-            ).fetchall()
-            for s_hash, entry_key, s_stamp, r_hash in rows:
-                known_by_strat[s_hash] = {
-                    "entry_key": entry_key,
-                    "source_stamp": s_stamp,
-                    "runtime_hash": r_hash,
-                }
-        if not known_by_strat:
-            return "no_matching_entry", "never_measured"
-        exact_strat = known_by_strat.get(strategy_hash)
+            db = self._database()
+            row = db.execute(
+                "SELECT entry_key,source_stamp,runtime_hash FROM trial_index WHERE path_hash=? AND strategy_hash=?",
+                (path_hash, strategy_hash),
+            ).fetchone()
+            if row:
+                exact_strat = dict(zip(("entry_key", "source_stamp", "runtime_hash"), row))
+                self._remember_trial(path_hash, strategy_hash, exact_strat)
+            if exact_strat is None:
+                # Do not materialize all settings ever tried for this path.
+                if db.execute(
+                    "SELECT 1 FROM trial_index WHERE path_hash=? AND source_stamp!=? LIMIT 1",
+                    (path_hash, source_stamp),
+                ).fetchone():
+                    return "source_changed", "source_changed"
+                if db.execute("SELECT 1 FROM trial_index WHERE path_hash=? LIMIT 1", (path_hash,)).fetchone():
+                    return "settings_changed", "settings_changed"
         if exact_strat is not None:
             if exact_strat["source_stamp"] != source_stamp:
                 return "source_changed", "source_changed"
             if exact_strat["runtime_hash"] != runtime_hash:
                 return "runtime_changed", "runtime_changed"
             return "evicted", "evicted"
-        if any(item["source_stamp"] != source_stamp for item in known_by_strat.values()):
+        if not self.path and not self._history_complete:
+            return "no_matching_entry", "history_unavailable"
+        if not known:
+            return "no_matching_entry", "never_measured" if self._history_complete else "history_unavailable"
+        if any(item["source_stamp"] != source_stamp for item in known):
             return "source_changed", "source_changed"
         return "settings_changed", "settings_changed"
+
+    def _remember_trial(self, path_hash: str, strategy_hash: str, value: dict[str, str]) -> None:
+        ident = (path_hash, strategy_hash)
+        self._trial_index[ident] = value
+        self._trial_index.move_to_end(ident)
+        while len(self._trial_index) > self.max_entries:
+            self._trial_index.popitem(last=False)
+            if not self.path:
+                self._history_complete = False
 
     @timed("cache")
     def get(self, path: Path, strategy: CompressionStrategy) -> ImageResult | None:
@@ -259,16 +280,16 @@ class AnalysisCache:
                 for k in keys:
                     self._entries.pop(k, None)
             self._entries[key] = result
-            self._trial_index.setdefault(path_hash, {})[strategy_hash] = {
-                "entry_key": key,
-                "source_stamp": source_stamp,
-                "runtime_hash": runtime_hash,
-            }
             self._save(
                 "trial",
                 key,
                 asdict(result),
                 index_row=(path_hash, strategy_hash, key, source_stamp, runtime_hash),
+            )
+            self._remember_trial(
+                path_hash,
+                strategy_hash,
+                {"entry_key": key, "source_stamp": source_stamp, "runtime_hash": runtime_hash},
             )
 
     def _load(self, kind: str, key: str) -> dict | None:
@@ -358,10 +379,12 @@ class AnalysisCache:
             self._entries.clear()
             self._metadata.clear()
             self._trial_index.clear()
+            self._history_complete = True
             if self.path:
                 connection = self._database()
                 connection.execute("DELETE FROM entries")
                 connection.execute("DELETE FROM trial_index")
+                connection.execute("INSERT OR REPLACE INTO cache_metadata VALUES('history_complete','1')")
                 connection.commit()
 
 

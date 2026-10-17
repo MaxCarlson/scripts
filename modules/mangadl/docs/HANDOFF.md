@@ -1,5 +1,9 @@
 # mangadl Immediate Project Handoff
 
+Repair Task4 1.52.2 requires compresser0.26.2 bounded diagnostic RAM history;
+SQLite history remains until explicitly cleared.185 compression (1 skip)/308
+MangaDL/55 help pass; no live writes. Next recommendations/confirmation CLI.
+
 Repair Task3 1.52.1/compresser0.26.1: scratch reservations before reads, bounded64KiB
 copy/hash, atomic ownership manifest before image bytes, run/link identity guards,
 explicit cleanup failures with evidence and no hung stagers. Optional scratch may

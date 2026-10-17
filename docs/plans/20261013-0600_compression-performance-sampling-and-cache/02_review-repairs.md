@@ -81,7 +81,6 @@ Interfaces: versioned external pilot/confirmation plan contains population ident
 
 ## Current status
 
-Tasks1/2 committed/pushed7dea9b3/ee4696a. Task3 streaming scratch passes178 compression
-(1 platform skip),308 MangaDL and55 help tests; generated scratch equality and
-failure-path checks pass. Next Task4 cache memory. Cache/recommendation/CLI findings
-remain open. No production images changed.
+Tasks1/2/3 committed/pushed7dea9b3/ee4696a/7600196. Task4 bounded cache history passes
+185 compression (1 platform skip),308 MangaDL and55 help tests. Next Task5 weighted
+recommendations, then Task6 CLI confirmation workflow. No production images changed.

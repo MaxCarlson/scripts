@@ -1,5 +1,10 @@
 # Compresser handoff
 
+Repair Task4 0.26.2: diagnostic RAM LRU bounded across paths/settings, persistent
+exact-key/existence queries without materializing all settings. SQLite history
+survives result eviction (disk growth explicit); legacy/forgotten memory history
+reports unknown.185 compression/1 skip,308 MangaDL/55 help pass. Next Task5 ranking.
+
 Repair Task3 0.26.1/MangaDL1.52.1: byte reservations precede source opens;64KiB
 streaming/hash verification, cancellable capacity wait, atomic pre-write manifest,
 tracked partial writes, run-identity/link checks, retryable cleanup with evidence.

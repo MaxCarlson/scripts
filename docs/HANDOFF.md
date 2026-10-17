@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+Repair Task4 compresser0.26.2/MangaDL1.52.2: bounded diagnostic cache RAM,
+durable queried miss history and honest legacy/forgotten causes.185 compression
+(1 skip)/308 MangaDL/55 help pass. Task3 pushed7600196. Next Task5 recommendations.
+
 Repair Task3 compresser0.26.1/MangaDL1.52.1: bounded streaming scratch with pre-read
 byte reservations, durable ownership/failure cleanup and fail-fast stalled stagers.
 Locks ee4696a already synchronized. Next Task4 diagnostic memory bounds in02_review-repairs.

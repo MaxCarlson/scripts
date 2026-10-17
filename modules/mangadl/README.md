@@ -1,6 +1,6 @@
 # mangadl
 
-Review repairs in progress (1.52.1/compresser0.26.1): conditional confirmation
+Review repairs in progress (1.52.2/compresser0.26.2): conditional confirmation
 estimates retain measured pilot contributions and use remaining-population finite
 correction. The unsupported two-stage interval field is now null, and CLI advisor
 output is explicitly planning-only (ordinary -s does not apply recommended quotas).
