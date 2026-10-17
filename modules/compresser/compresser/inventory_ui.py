@@ -95,7 +95,7 @@ class InventoryProgress:
         if not self.enabled or count <= 0:
             return
         self.total_files = (self.total_files or 0) + int(count)
-        self.bar.total = max(1, self.total_files)
+        self.bar.set_total(max(1, self.total_files))
         self._maybe_render()
 
     def advance_file(
@@ -127,7 +127,7 @@ class InventoryProgress:
         if unreadable:
             self.excluded_or_unreadable += 1
         if self.total_files is not None and self.total_files > 0:
-            self.bar.total = max(1, self.total_files)
+            self.bar.set_total(max(1, self.total_files))
             self.bar.set(min(self.files_processed, self.total_files))
         self._maybe_render()
 
@@ -192,7 +192,7 @@ class InventoryProgress:
         header = f"[{self.phase}] Target: {self.root.name or str(self.root)} ({self.depth})"
         if self.total_files and self.total_files > 0:
             pct = 100.0 * min(self.files_processed, self.total_files) / max(1, self.total_files)
-            bar_line = f"Progress: [{self.bar.render_bar()}] {pct:5.1f}% ({file_str} files) | ETA: {eta_str}"
+            bar_line = f"Progress: {self.bar} {pct:5.1f}% ({file_str} files) | ETA: {eta_str}"
         else:
             bar_line = f"Progress: {file_str} files scanned | Elapsed: {fmt_hms(elapsed)}"
 
@@ -215,8 +215,7 @@ class InventoryProgress:
     def close(self) -> None:
         if not self.enabled:
             return
-        if self.interactive:
-            self.block.clear()
+        # close() stops the timer and erases its transient rows atomically.
         self.block.close()
 
 

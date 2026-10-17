@@ -1,5 +1,12 @@
 # Status
 
+User-reported inventory hotfix after Task5: compresser0.26.4/MangaDL1.52.4 use
+supported termdash APIs for total/render/close. Interactive regression reproduced
+render_bar error then masked clear cleanup error; headers/files renderer fixtures
+and MangaDL CLI snapshot/summary regression pass.199 compression passed/1 platform
+skip,309 MangaDL/55 help passed; lint/format/whitespace pass. No production scan
+or Task6 work. Same inventory command can be rerun; no database deletion needed.
+
 Repair Task5 compresser0.26.3/MangaDL1.52.3: recommendations rank complete target
 projections, exclude failed/unestimated/nonpositive rows, require measured lossy
 SSIM>=0.98 and retained-format reader eligibility; warm/mixed cache disables speed

@@ -10,6 +10,34 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, monkeypatch, capsys):
+    import io
+    import sys
+
+    class Terminal(io.StringIO):
+        def isatty(self):
+            return True
+
+    root = tmp_path / "library"
+    gallery = root / "manga"
+    gallery.mkdir(parents=True)
+    image = gallery / "01.png"
+    Image.new("RGB", (40, 40)).save(image)
+    original = image.read_bytes()
+    inventory = tmp_path / "inventory.sqlite3"
+    terminal = Terminal()
+    monkeypatch.delenv("TERM", raising=False)
+    monkeypatch.setattr(sys, "stderr", terminal)
+    assert main(["compress", "-d", str(root), "-l", "-D", "headers", "-I", str(inventory)]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["images"] == 1
+    assert inventory.exists()
+    assert "DISCOVERING" in terminal.getvalue()
+    assert "Inventory Summary" in terminal.getvalue()
+    assert "Saved inventory:" in terminal.getvalue()
+    assert image.read_bytes() == original
+
+
 def test_trusted_snapshot_preserves_nested_gallery_selection(tmp_path, monkeypatch, capsys):
     import mangadl.compress as adapter
 
@@ -447,4 +475,3 @@ def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recom
     assert findings["image_integrity"] == "valid"
     assert findings["valid_images"] == 2
     assert not findings["duplicate_pages"]
-

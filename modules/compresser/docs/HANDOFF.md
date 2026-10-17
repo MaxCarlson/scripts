@@ -1,5 +1,10 @@
 # Compresser handoff
 
+Inventory UI regression fix0.26.4: use actual termdash ProgressBar.set_total/str
+and LiveBlock.close APIs. Nonexistent render_bar raised first; nonexistent clear
+masked that error during finally cleanup. Real renderer TTY-stream regressions
+cover headers/files,50% progress, double close and stopped timer. Task6 untouched.
+
 Repair Task5 0.26.3/MangaDL1.52.3 ranks complete design-weighted target projections,
 no failed/unestimated/nonpositive fallback winners. Practical lossy eligibility
 requires measured SSIM>=0.98 and observed retained JPEG/PNG/WebP (AUTO conditional).

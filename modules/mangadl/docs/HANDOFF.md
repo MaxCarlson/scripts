@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Inventory UI fix1.52.4/compresser0.26.4 corrects nonexistent termdash methods and
+bar total assignment. Interactive inventory CLI fixture publishes snapshot/summary
+and preserves source image; no production scan. User's command remains valid;
+-N bypasses UI on older code. Task6 has not started.
+
 Repair Task5 1.52.3/compresser0.26.3: complete projected-savings ranking, no failed/
 unestimated/nonpositive fallback, measured lossy fidelity and retained formats for
 conditional practical eligibility. Warm-cache speed excluded. User STOP after

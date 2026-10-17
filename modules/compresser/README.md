@@ -1,4 +1,4 @@
-# compresser 0.26.3
+# compresser 0.26.4
 
 ## Review repair status
 

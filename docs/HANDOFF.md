@@ -1,5 +1,9 @@
 # Scripts Repository Handoff
 
+Inventory UI hotfix compresser0.26.4/MangaDL1.52.4: correct ProgressBar.set_total/
+str and LiveBlock.close API usage; interactive-only errors were missed by redirected
+tests. Real renderer + MangaDL inventory fixture regressions added. Task6 untouched.
+
 Repair Task5 compresser0.26.3/MangaDL1.52.3: weighted complete projections,
 failure-honest recommendations, warm-cache speed exclusion and actual retained
 format evidence. Task4 pushed8f729e2. User says finish Task5 then STOP; do not start
