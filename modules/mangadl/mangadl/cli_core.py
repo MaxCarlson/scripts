@@ -9,7 +9,11 @@ import sqlite3
 import sys
 import time
 import hashlib
+import tempfile
+from contextlib import nullcontext, redirect_stdout
+from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from cross_platform import StorageMediaKind, storage_media_for_path
@@ -18,6 +22,7 @@ from kavita.assignments import reconcile_assignments
 
 from . import __version__
 from .archive_ui import ArchiveBrowser, filter_records, load_archive
+from .audit_console import AuditProgress, field, styled
 from .backends import backend_classification, choose_backend, gallery_dl_scope
 from .cli_structure import add_run_arguments, normalize_command_shape
 from .concurrency import configured_maximum_workers
@@ -25,6 +30,7 @@ from .destination_audit import audit_destinations, audit_library, write_audit_ou
 from .favorites import crawl_favorites, format_result as format_favorites_result
 from .favorites import result_payload as favorites_result_payload
 from .favorites import write_url_file
+from .file_io import replace_file
 from .gallery_auth import (
     BROWSERS,
     DEFAULT_AUTH_SITE,
@@ -48,11 +54,14 @@ from .optimizer import (
 from .partial_safety import apply_cleanup, cleanup_preview, plan_cleanup
 from .repair import resolve_nhentai_metadata
 from .partial_reconcile import reconstruct_archive_keys, reconstruct_archive_page_keys, resolve_owner_urls
-from .repair_pages import apply_page_repair, make_page_repair_plan, repair_confirmation_token
+from .repair_pages import (
+    apply_page_repair, apply_page_repairs, clear_page_repair_archive,
+    make_page_repair_plan, repair_confirmation_token,
+)
 from .partial_ui import select_partial_owners
 from .page_adapters import resolve_expected_pages
 from .scratch import partial_root_for
-from .scratch_controls import ScratchControls
+from .scratch_controls import ScratchControls, archive_cleanup_checkpoint
 from .repair import apply_repair, plan_loose_images
 from .repair_ui import RepairDashboard
 from .state import StateStore
@@ -206,6 +215,10 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Optional URL file or glob; repeatable (-u/--url-file is an audit-only alias). Omit for folder-only audit.",
     )
     audit.add_argument(
+        "-F", "--url-directory", action="append", type=_path,
+        help="Add every top-level text file whose name starts with 'url' from this directory; repeatable.",
+    )
+    audit.add_argument(
         "-d",
         "--destination",
         action="append",
@@ -226,10 +239,16 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Write duplicate folder locations as JSON here.",
     )
     audit.add_argument("-j", "--json", action="store_true", help="Emit the audit summary as JSON.")
+    audit.add_argument(
+        "-r", "--report-output", type=_path,
+        help="Report filename base; automatically includes input names and avoids overwrites. "
+        "Default: mangadl-<URL-file>-audit-report.json in the first destination root.",
+    )
     audit.add_argument("-q", "--quiet", action="store_true", help="Suppress progress messages on stderr.")
+    audit.add_argument("-a", "--all-findings", action="store_true", help="Include defect-free unknown/ambiguous entries in console details.")
     audit.add_argument(
         "-x", "--no-index-backfill", action="store_true",
-        help="Keep URL-file audits read-only; do not create missing per-folder source indexes.",
+        help="Do not create missing per-folder source indexes; audit reports are still written.",
     )
 
     repair = subparsers.add_parser("repair-loose", help="Rebuild per-gallery folders from loose nhentai images.")
@@ -255,6 +274,31 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     repair_pages.add_argument("-f", "--apply", action="store_true", help="Apply the reviewed targeted repair.")
     repair_pages.add_argument("-C", "--confirm-plan", help="Preview token required with --apply.")
     repair_pages.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    batch_repair = subparsers.add_parser(
+        "repair", help="Build, preview, or apply a guarded batch repair from an audit report."
+    )
+    batch_repair.add_argument("-r", "--report", required=True, type=_path, help="Audit report produced by mangadl audit.")
+    batch_repair.add_argument(
+        "-d", "--destination", type=_path,
+        help="Destination for wholly missing galleries; required when the report contains multiple roots.",
+    )
+    batch_repair.add_argument("-p", "--plan-output", type=_path, help="Optionally save the displayed repair plan as JSON.")
+    batch_repair.add_argument("-S", "--scratch", type=_path, help="Optional scratch volume for downloads.")
+    batch_repair.add_argument("-a", "--archive", type=_path, help="gallery-dl archive (default: destination control archive).")
+    batch_repair.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config used for downloads.")
+    batch_repair.add_argument("-c", "--cookies", type=_path, help="Cookie file for gallery requests.")
+    batch_repair.add_argument("-B", "--cookies-browser", help="Browser cookie source.")
+    batch_repair.add_argument("-U", "--user-agent", help="Optional gallery-dl user agent.")
+    batch_repair.add_argument("-x", "--rate", help="Optional transfer-rate limit.")
+    batch_repair.add_argument("-f", "--apply", action="store_true", help="Apply the exact displayed repair plan.")
+    batch_repair.add_argument("-C", "--confirm-plan", help="Exact plan token required with --apply.")
+    batch_repair.add_argument("-j", "--json", action="store_true", help="Emit the plan/result as JSON.")
+    batch_repair.add_argument("-w", "--workers", type=int, default=2, help="Initial normal downloader workers (default: 2).")
+    batch_repair.add_argument("-m", "--max-workers", type=int, help="Normal downloader outer-worker ceiling.")
+    batch_repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the normal download dashboard.")
+    batch_repair.add_argument("-L", "--worker-start-delay", type=float, default=2.0,
+                              help="Seconds between worker launches (normal default: 2).")
 
     partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
     partial_commands = partials.add_subparsers(dest="partials_command", required=True)
@@ -400,6 +444,49 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     favorites.add_argument("-f", "--apply", action="store_true", help="Write/replace the output URL file.")
     favorites.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
     favorites.add_argument("-q", "--quiet", action="store_true", help="Suppress fetch progress on stderr.")
+
+    compress = subparsers.add_parser(
+        "compress",
+        help="Analyze, compare, and optimize manga/manhwa images using perceptual compression.",
+        description=(
+            "Recursively analyze and compress downloaded manga collections. "
+            "Dry-run analysis is the default; use -w/--write to apply modifications."
+        ),
+    )
+    compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
+    compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
+    compress.add_argument("-R", "--recover", action="store_true", help="Preview compression recovery in one exact directory; -w applies.")
+    compress.add_argument("-C", "--confirm-recovery", help="Exact recovery preview token required with -R -w.")
+    compress.add_argument("-A", "--algorithm", choices=("auto", "pillow-jpeg", "pillow-webp", "pillow-png", "pillow-avif", "cli-jpegtran"), default="auto", help="Select a verified encoder (default: auto).")
+    compress.add_argument("-e", "--effort", type=int, choices=range(7), default=6, help="PNG/WebP encoding effort 0..6 (default: 6).")
+    compress.add_argument("-K", "--cache-file", type=_path, help="Optional persistent analysis cache outside the destination tree.")
+    compress.add_argument(
+        "-f",
+        "--format",
+        choices=("auto", "webp", "jpeg", "avif", "png", "keep"),
+        default="auto",
+        help="Target image format (default: auto).",
+    )
+    compress.add_argument(
+        "-m",
+        "--mode",
+        choices=("perceptual", "lossless", "lossy"),
+        default="lossless",
+        help="Compression strategy mode (default: lossless).",
+    )
+    compress.add_argument("-q", "--quality", type=int, default=80, help="Quality setting 1..100 for lossy mode (default: 80).")
+    compress.add_argument("-p", "--perceptual-target", type=float, default=0.990, help="Minimum SSIM quality threshold (default: 0.990).")
+    compress.add_argument("-c", "--compare", action="store_true", help="Benchmark comparison matrix across multiple strategies.")
+    compress.add_argument("-s", "--sample", type=int, help="Process a representative sample of N images total across selected galleries.")
+    compress.add_argument("-w", "--write", action="store_true", help="Apply compression and write changes to disk (default: dry-run).")
+    compress.add_argument("-L", "--allow-lossy", action="store_true", help="Explicitly permit lossy compression in write mode.")
+    compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
+    compress.add_argument("-t", "--threads", type=int, default=4, help="Worker thread concurrency (default: 4).")
+    compress.add_argument("-B", "--memory-budget-mib", type=int, default=512,
+                         help="Aggregate scheduling allowance64..4096MiB; per-image decode limit stays512MiB.")
+    compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
+    compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
+    compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")
     return parser
 
 
@@ -478,6 +565,12 @@ def _validate_run(args: argparse.Namespace) -> None:
             raise ValueError("--file-range is reserved for the guarded repair workflow")
         if not re.fullmatch(r"\d+(?:,\d+)*", args.file_range):
             raise ValueError("invalid internal file range")
+    repair_ranges = getattr(args, "repair_file_ranges", {})
+    if repair_ranges and (
+        not os.environ.get("MANGADL_REPAIR_TOKEN")
+        or any(not re.fullmatch(r"\d+(?:,\d+)*", value) for value in repair_ranges.values())
+    ):
+        raise ValueError("per-URL file ranges require the guarded repair workflow")
 
     if args.run_mode in {"optimize", "benchmark"}:
         if args.min_workers < 1 or args.min_workers > args.max_workers:
@@ -561,14 +654,20 @@ def _format_run_preview(preview: dict[str, Any]) -> str:
 
 
 def _run(args: argparse.Namespace) -> int:
+    from .library_guard import library_write_guard
+
     _normalize_legacy_autotune(args)
     _resolve_run_paths(args)
+    _resolve_storage_policy(args)
+    _validate_run(args)
+    with library_write_guard(args.destination) if not args.dry_run else nullcontext():
+        return _run_owned(args)
+
+
+def _run_owned(args: argparse.Namespace) -> int:
     repair_lock = args.destination / ".mangadl" / "repair.lock"
     if repair_lock.exists() and os.environ.get("MANGADL_REPAIR_TOKEN") != repair_lock.read_text(encoding="utf-8"):
         raise ValueError(f"a guarded page repair is active for this library: {repair_lock}")
-    _resolve_storage_policy(args)
-    _validate_run(args)
-
     inputs, rejected = collect_inputs(args.input_file, args.url)
     routes: dict[str, str] = {}
     unsupported: list[dict[str, Any]] = []
@@ -598,6 +697,9 @@ def _run(args: argparse.Namespace) -> int:
     inputs = [item for item in inputs if item.canonical_url in routes]
     if args.file_range and (len(inputs) != 1 or set(routes.values()) != {"gallery-dl"}):
         raise ValueError("internal targeted file range requires exactly one gallery-dl URL")
+    repair_ranges = getattr(args, "repair_file_ranges", {})
+    if any(routes.get(url) != "gallery-dl" for url in repair_ranges):
+        raise ValueError("every targeted repair URL must be accepted by gallery-dl")
     manga18fx_urls = [item.canonical_url for item in inputs if routes[item.canonical_url] == "manga18fx"]
 
     preview: dict[str, Any] = {
@@ -762,6 +864,7 @@ def _run(args: argparse.Namespace) -> int:
             maximum_workers=args.max_workers,
             fast_storage=args.fast_storage,
             file_range=args.file_range,
+            repair_file_ranges=repair_ranges or None,
             workers=args.workers,
             retries=args.retries,
             retry_wait=args.retry_wait,
@@ -1227,7 +1330,142 @@ def _patch_hdporncomics(args: argparse.Namespace) -> int:
     return 0 if status.state == "patched" else 1
 
 
-def _expand_audit_input_files(patterns: list[str]) -> list[Path]:
+AUDIT_REPORT_SCHEMA = 1
+REPAIR_PLAN_SCHEMA = 1
+
+
+def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}-", suffix=".tmp", dir=path.parent)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(payload, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        replace_file(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except OSError:
+            pass
+        raise
+
+
+def _audit_report_path(args: argparse.Namespace, files: list[Path]) -> Path:
+    label = files[0].stem if files else "folder"
+    if len(files) > 1:
+        label += f"-and-{len(files) - 1}-more"
+    if args.report_output:
+        path = args.report_output
+        if label.casefold() not in path.stem.casefold():
+            path = path.with_name(f"{path.stem}-{label}{path.suffix or '.json'}")
+        return path
+    return args.destination[0] / f"mangadl-{label}-audit-report.json"
+
+
+def _write_audit_report(path: Path, payload: dict[str, Any]) -> Path:
+    """Reserve an unused name, then publish the complete report atomically."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    candidate = path
+    number = 0
+    while True:
+        try:
+            with candidate.open("x", encoding="utf-8"):
+                pass
+            break
+        except FileExistsError:
+            number += 1
+            candidate = path.with_name(f"{path.stem}-{number}{path.suffix}")
+    payload["report_output"] = str(candidate)
+    try:
+        _write_json_atomic(candidate, payload)
+    except BaseException:
+        candidate.unlink(missing_ok=True)
+        raise
+    return candidate
+
+
+def _format_audit_page_ranges(pages: list[int]) -> str:
+    ranges: list[str] = []
+    for page in sorted(set(pages)):
+        if not ranges:
+            start = end = page
+            ranges.append(str(page))
+        elif page == end + 1:
+            end = page
+            ranges[-1] = f"{start}-{end}"
+        else:
+            start = end = page
+            ranges.append(str(page))
+    return ", ".join(ranges)
+
+
+def _format_audit_findings(items: list[dict[str, Any]], *, all_findings: bool = False) -> str:
+    lines: list[str] = []
+    for item in items:
+        status = item.get("status", item.get("identity_status", "unknown"))
+        defects = any(item.get(key) for key in ("missing_pages", "corrupt_pages", "duplicate_pages", "extra_pages", "corrupt_files", "missing_image_count"))
+        if not all_findings and status in {"unknown", "ambiguous"} and not defects:
+            continue
+        if status == "matched" and item["completeness"] == "complete" and item["image_integrity"] != "issues":
+            continue
+        state = status if status != "matched" else item["completeness"]
+        if state == "complete":
+            state = "image issues"
+        url = item.get("canonical_url") or item.get("source_url") or "unknown source"
+        color = "red" if state in {"missing", "incomplete", "image issues"} else "yellow"
+        if lines:
+            lines.append("")
+        lines.append(styled(f"  {state.upper()}: {url}", color))
+        folders = item.get("folders") or ([item["folder"]] if item.get("folder") else [])
+        for folder in folders:
+            lines.append(field("Folder", Path(folder).name))
+            lines.append(field("Root", Path(folder).parent))
+        if status == "missing":
+            lines.append("    No matching gallery folder was found.")
+            continue
+        if status == "ambiguous":
+            lines.append("    Identity: multiple or conflicting source candidates; source completeness is unverified.")
+        expected = item.get("expected_images")
+        lines.append(
+            f"    Images: {item.get('valid_images', 0)}/{expected if expected is not None else 'unknown'} valid, "
+            f"{item.get('present_images', 0)} files present"
+        )
+        for key, label in (
+            ("missing_pages", "Missing pages"), ("corrupt_pages", "Corrupt pages"),
+            ("duplicate_pages", "Duplicate page numbers"), ("extra_pages", "Extra pages"),
+        ):
+            if pages := item.get(key):
+                if key == "missing_pages" and (expected is None or item.get("missing_page_evidence") == "inferred numbering gaps"):
+                    lines.append("    Evidence: inferred numbering gaps, not a source-confirmed page list; trailing pages unknown.")
+                lines.append(field(label, f"{_format_audit_page_ranges(pages)} ({len(pages)})", color="red"))
+        if files := item.get("corrupt_files"):
+            lines.append(f"    Corrupt files: {', '.join(files)}")
+        if item.get("missing_image_count") and not item.get("missing_pages"):
+            lines.append(f"    Missing images by count: {item['missing_image_count']}; exact page identities unavailable")
+        if error := item.get("metadata_error"):
+            lines.append(f"    Metadata: {error}")
+    return "URLs/folders requiring attention\n" + "\n".join(lines) if lines else "No concrete gallery defects found; see summary for unresolved evidence."
+
+
+def _format_audit_totals(items: list[dict[str, Any]]) -> str:
+    confirmed = sum(len(item.get("missing_pages", [])) for item in items
+                    if item.get("missing_page_evidence") == "source-confirmed")
+    inferred = sum(len(item.get("missing_pages", [])) for item in items
+                   if item.get("missing_page_evidence") != "source-confirmed")
+    ambiguous = sum(item.get("status", item.get("identity_status")) == "ambiguous" for item in items)
+    unknown_identity = sum(item.get("status", item.get("identity_status")) == "unknown" for item in items)
+    return (
+        f"  Page findings: {confirmed} source-confirmed missing, {inferred} inferred numbering gaps, "
+        f"{sum(len(item.get('corrupt_files', [])) for item in items)} corrupt files, "
+        f"{sum(len(item.get('duplicate_pages', [])) for item in items)} duplicate page numbers, "
+        f"{sum(len(item.get('extra_pages', [])) for item in items)} extra pages\n"
+        f"  Identity evidence: {ambiguous} ambiguous, {unknown_identity} unknown (overlaps completeness counts)."
+    )
+
+
+def _expand_audit_input_files(patterns: list[str], directories: list[Path] | None = None) -> list[Path]:
     files: list[Path] = []
     seen: set[Path] = set()
     for pattern in patterns:
@@ -1241,12 +1479,37 @@ def _expand_audit_input_files(patterns: list[str]) -> list[Path]:
             if path not in seen:
                 seen.add(path)
                 files.append(path)
+    for directory in directories or []:
+        if not directory.is_dir():
+            raise ValueError(f"URL-file directory was not found: {directory}")
+        matches = sorted(
+            (
+                path.resolve()
+                for path in directory.iterdir()
+                if path.is_file() and path.suffix.casefold() == ".txt" and path.name.casefold().startswith("url")
+            ),
+            key=lambda path: path.name.casefold(),
+        )
+        if not matches:
+            raise ValueError(f"URL-file directory contains no top-level url*.txt files: {directory}")
+        for path in matches:
+            if path not in seen:
+                seen.add(path)
+                files.append(path)
     return files
 
 
 def _audit_destinations(args: argparse.Namespace) -> int:
-    progress = None if args.quiet else lambda message: print(f"Audit: {message}", file=sys.stderr, flush=True)
-    if not args.input_file:
+    display = AuditProgress(enabled=not args.quiet)
+    try:
+        return _audit_destinations_impl(args, display)
+    finally:
+        display.close()
+
+
+def _audit_destinations_impl(args: argparse.Namespace, display: AuditProgress) -> int:
+    progress = None if args.quiet else display.log
+    if not args.input_file and not args.url_directory:
         if progress:
             progress(f"Scanning {len(args.destination)} destination root(s) without a URL file")
         items = audit_library(
@@ -1254,9 +1517,16 @@ def _audit_destinations(args: argparse.Namespace) -> int:
             progress,
             metadata_resolver=resolve_nhentai_metadata,
             page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
+            item_progress=display.update,
         )
+        display.close()
         payload = {
+            "schema": AUDIT_REPORT_SCHEMA,
+            "kind": "mangadl-audit-report",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "mangadl_version": __version__,
             "mode": "folder-only",
+            "destinations": [str(path) for path in args.destination],
             "folders": len(items),
             "complete": sum(item["completeness"] == "complete" for item in items),
             "incomplete": sum(item["completeness"] == "incomplete" for item in items),
@@ -1264,17 +1534,32 @@ def _audit_destinations(args: argparse.Namespace) -> int:
             "ambiguous_identity": sum(item["identity_status"] == "ambiguous" for item in items),
             "items": items,
         }
-        print(json.dumps(payload, indent=2, sort_keys=True) if args.json else (
-            f"Audited {payload['folders']} folder(s): {payload['complete']} complete, "
-            f"{payload['incomplete']} incomplete, {payload['unknown']} unknown."
-        ))
+        report_output = _write_audit_report(_audit_report_path(args, []), payload)
+        if args.json:
+            print(json.dumps(payload, indent=2, sort_keys=True))
+        if not args.json:
+            print(_format_audit_findings(items, all_findings=args.all_findings))
+            print(styled("\nAudit summary", "bright"))
+            print(f"  Audited {payload['folders']} folder(s): " + styled(f"{payload['complete']} complete", "green") + ", "
+                  + styled(f"{payload['incomplete']} incomplete", "red") + ", " + styled(f"{payload['unknown']} unknown", "yellow") + ".")
+            print(_format_audit_totals(items))
+            present = sum(item["association_present"] for item in items)
+            print(f"  Source associations: {present} present, {len(items) - present} missing; folder audit creates none.")
+            print(f"Audit report: {report_output}")
+        elif progress:
+            progress(f"Wrote audit report: {report_output}")
         return 0
-    files = _expand_audit_input_files(args.input_file)
+    files = _expand_audit_input_files(args.input_file or [], args.url_directory)
     if progress:
         progress(f"Loading {len(files)} URL file(s)")
     inputs, rejected = collect_inputs(files, [])
+    duplicate_lines = sum(row["reason"] == "duplicate" for row in rejected)
+    invalid_lines = len(rejected) - duplicate_lines
     if progress:
-        progress(f"Loaded {len(inputs)} unique URL(s); {len(rejected)} rejected/duplicate line(s)")
+        progress(
+            f"Loaded {len(inputs)} unique URL(s); {duplicate_lines} duplicate line(s); "
+            f"{invalid_lines} rejected/invalid line(s)"
+        )
     audit = audit_destinations(
         inputs,
         args.destination,
@@ -1282,7 +1567,9 @@ def _audit_destinations(args: argparse.Namespace) -> int:
         metadata_resolver=resolve_nhentai_metadata,
         page_resolver=lambda url: resolve_expected_pages(url, progress=progress),
         backfill_index=not args.no_index_backfill,
+        item_progress=display.update,
     )
+    display.close()
     write_audit_outputs(audit, args.missing_output, args.duplicates_output)
     item_results = []
     for item in inputs:
@@ -1301,31 +1588,72 @@ def _audit_destinations(args: argparse.Namespace) -> int:
             }
         )
     payload = {
+        "schema": AUDIT_REPORT_SCHEMA,
+        "kind": "mangadl-audit-report",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "mangadl_version": __version__,
+        "mode": "url-file",
+        "input_files": [str(path) for path in files],
+        "destinations": [str(path) for path in args.destination],
+        "input_entries": len(inputs) + len(rejected),
         "input_urls": len(inputs),
         "rejected": rejected,
+        "duplicate_url_lines": duplicate_lines,
+        "invalid_url_lines": invalid_lines,
         "resolved": len(audit.resolved),
         "unresolved": len(audit.unresolved),
         "duplicates": len(audit.duplicates),
+        "duplicate_folder_groups": len(audit.duplicates),
         "index_backfill": audit.index_backfill,
+        "association_inventory": audit.association_inventory,
         "untracked_folders": [str(path) for path in audit.untracked_folders],
         "complete": sum(item["completeness"] == "complete" for item in item_results),
         "incomplete": sum(item["completeness"] == "incomplete" for item in item_results),
         "unknown": sum(item["completeness"] == "unknown" for item in item_results),
-        "corrupt": sum(bool(item["corrupt_pages"]) for item in item_results),
+        "corrupt": sum(bool(item.get("corrupt_files")) for item in item_results),
+        "issue_urls": sum(
+            item["status"] != "matched"
+            or item["completeness"] != "complete"
+            or item["image_integrity"] == "issues"
+            for item in item_results
+        ),
         "items": item_results,
         "missing_output": str(args.missing_output) if args.missing_output else None,
         "duplicates_output": str(args.duplicates_output) if args.duplicates_output else None,
     }
+    report_output = _write_audit_report(_audit_report_path(args, files), payload)
     if args.json:
         print(json.dumps(payload, indent=2, sort_keys=True))
     else:
+        print(_format_audit_findings(item_results, all_findings=args.all_findings))
+        invalid = [row for row in rejected if row["reason"] != "duplicate"]
+        if invalid:
+            print("Rejected/invalid input lines")
+            for row in invalid:
+                print(f"  {row['source']}:{row['line']}: {row['value']} — {row['reason']}")
+        print(styled("\nAudit summary", "bright"))
+        print(f"  URL files: {len(files)}")
         print(
-            f"Audited {payload['input_urls']} URL(s): {payload['resolved']} found, "
-            f"{payload['unresolved']} missing, {payload['duplicates']} duplicate folder group(s)."
-            f" {len(payload['untracked_folders'])} untracked folder(s)."
-            f" Images: {payload['complete']} complete, {payload['incomplete']} incomplete, "
-            f"{payload['unknown']} unknown; {payload['corrupt']} with corrupt pages."
+            f"  Input entries: {payload['input_entries']} ({payload['input_urls']} unique, "
+            f"{payload['duplicate_url_lines']} duplicate, {payload['invalid_url_lines']} rejected/invalid)"
         )
+        print(
+            f"  Identity: {payload['resolved']} found, {payload['unresolved']} missing, "
+            f"{payload['duplicate_folder_groups']} duplicate folder group(s), "
+            f"{len(payload['untracked_folders'])} untracked folder(s)"
+        )
+        print(
+            "  Verification: " + styled(f"{payload['complete']} complete", "green") + ", "
+            + styled(f"{payload['incomplete']} incomplete", "red") + ", "
+            + styled(f"{payload['unknown']} unknown", "yellow") + ", "
+            + styled(f"{payload['corrupt']} with corrupt pages", "red")
+        )
+        print(styled(f"  URLs requiring attention: {payload['issue_urls']}", "red" if payload['issue_urls'] else "green"))
+        print(_format_audit_totals(item_results))
+        inventory = audit.association_inventory or {}
+        print(f"  Source associations before audit: {inventory.get('already_indexed', 0)} present, "
+              f"{inventory.get('missing', 0)} safely creatable/missing, {inventory.get('conflict', 0)} conflicts, "
+              f"{inventory.get('ambiguous', 0)} ambiguous, {inventory.get('unresolved', 0)} unresolved.")
         if audit.index_backfill is not None:
             print(
                 f"Source indexes: {audit.index_backfill['created']} added, "
@@ -1335,10 +1663,15 @@ def _audit_destinations(args: argparse.Namespace) -> int:
                 f"{audit.index_backfill['unresolved']} unresolved, "
                 f"{audit.index_backfill['conflict']} conflicts."
             )
+        else:
+            print("  Source association writes disabled (-x); no source indexes created.")
+        print(field("Audit report", report_output, indent=0, color="cyan"))
     if progress and args.missing_output:
         progress(f"Wrote missing URLs: {args.missing_output}")
     if progress and args.duplicates_output:
         progress(f"Wrote duplicate folders: {args.duplicates_output}")
+    if progress and args.json:
+        progress(f"Wrote audit report: {report_output}")
     return 0
 
 
@@ -1385,6 +1718,13 @@ def _repair_loose(args: argparse.Namespace) -> int:
 
 
 def _repair_pages(args: argparse.Namespace) -> int:
+    from .library_guard import library_write_guard
+
+    with library_write_guard(args.destination) if args.apply else nullcontext():
+        return _repair_pages_owned(args)
+
+
+def _repair_pages_owned(args: argparse.Namespace) -> int:
     inputs, rejected = collect_inputs([], [args.url])
     if rejected or len(inputs) != 1:
         raise ValueError("repair-pages requires exactly one valid gallery URL")
@@ -1459,22 +1799,7 @@ def _repair_pages(args: argparse.Namespace) -> int:
             "--apply requires --confirm-plan with the token from the current exact preview"
         )
 
-    state_db = args.destination / ".mangadl" / "state.sqlite3"
-    if state_db.is_file():
-        connection = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True)
-        try:
-            has_runs = connection.execute(
-                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
-            ).fetchone()
-            if has_runs is None:
-                raise ValueError(f"state database does not contain MangaDL run history: {state_db}")
-            active = connection.execute(
-                "SELECT id FROM runs WHERE status='running' AND finished IS NULL LIMIT 1"
-            ).fetchone()
-        finally:
-            connection.close()
-        if active:
-            raise ValueError(f"MangaDL run {active[0]} is active; wait for it to finish before repair")
+    _assert_no_active_mangadl_run(args.destination)
 
     def run_download(file_range: str, token: str) -> None:
         old_token = os.environ.get("MANGADL_REPAIR_TOKEN")
@@ -1528,6 +1853,467 @@ def _repair_pages(args: argparse.Namespace) -> int:
         f"backup={result['archive_backup'] or 'not needed'}"
     ))
     return 0 if result["verified"] else 1
+
+
+def _assert_no_active_mangadl_run(destination: Path) -> None:
+    state_db = destination / ".mangadl" / "state.sqlite3"
+    if state_db.is_file():
+        connection = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True)
+        try:
+            has_runs = connection.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
+            ).fetchone()
+            if has_runs is None:
+                raise ValueError(f"state database does not contain MangaDL run history: {state_db}")
+            active = connection.execute(
+                "SELECT id FROM runs WHERE status='running' AND finished IS NULL LIMIT 1"
+            ).fetchone()
+        finally:
+            connection.close()
+        if active:
+            raise ValueError(f"MangaDL run {active[0]} is active; wait for it to finish before repair")
+
+
+def _load_audit_report(path: Path) -> tuple[dict[str, Any], str]:
+    try:
+        raw = path.read_bytes()
+        payload = json.loads(raw)
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"could not read audit report {path}: {exc}") from exc
+    if not isinstance(payload, dict) or payload.get("kind") != "mangadl-audit-report":
+        raise ValueError(f"not a MangaDL audit report: {path}")
+    if payload.get("schema") != AUDIT_REPORT_SCHEMA:
+        raise ValueError(f"unsupported MangaDL audit report schema: {payload.get('schema')!r}")
+    if payload.get("mode") != "url-file":
+        raise ValueError("batch repair requires a URL-file audit report")
+    if not isinstance(payload.get("items"), list) or not isinstance(payload.get("destinations"), list):
+        raise ValueError("audit report is missing items or destinations")
+    return payload, hashlib.sha256(raw).hexdigest()
+
+
+def _containing_destination(folder: Path, destinations: list[Path]) -> Path | None:
+    resolved = folder.resolve()
+    matches = [root for root in destinations if resolved == root or root in resolved.parents]
+    return max(matches, key=lambda root: len(root.parts)) if matches else None
+
+
+def _archive_for_destination(args: argparse.Namespace, destination: Path, action_roots: set[Path]) -> Path:
+    if args.archive:
+        if len(action_roots) > 1:
+            raise ValueError("--archive cannot be shared across repair actions in multiple destination roots")
+        return args.archive
+    return destination / ".mangadl" / "archive.sqlite3"
+
+
+def _fresh_page_plan(
+    item: dict[str, Any],
+    destination: Path,
+    args: argparse.Namespace,
+    progress,
+):
+    url = str(item["canonical_url"])
+    if not re.fullmatch(r"https?://(?:www\.)?nhentai\.net/g/\d+/?", url):
+        raise ValueError("exact-page repair is currently proven only for individual nhentai galleries")
+    if args.gallery_config:
+        raise ValueError("exact-page repair cannot prove archive keys with a custom gallery-dl configuration")
+    inputs, rejected = collect_inputs([], [url])
+    if rejected or len(inputs) != 1:
+        raise ValueError("audit report contains an invalid repair URL")
+    fresh = audit_destinations(
+        inputs,
+        [destination],
+        progress,
+        metadata_resolver=resolve_nhentai_metadata,
+    )
+    detail = fresh.details[url]
+    folders = fresh.resolved.get(url, [])
+    if detail["folder_status"] != "matched" or len(folders) != 1:
+        raise ValueError("repair requires one current unambiguous source-to-folder match")
+    if detail["expected_images"] is None:
+        raise ValueError("expected page count is unavailable")
+    # The fresh count plus the complete unique archive page map below prove
+    # the nhentai target set; a second page enumeration is redundant.
+    page_keys = reconstruct_archive_page_keys(
+        url,
+        cookies=args.cookies,
+        cookies_browser=args.cookies_browser,
+        user_agent=args.user_agent,
+        auth_dir=destination / ".mangadl" / "auth",
+    )
+    archive = _archive_for_destination(args, destination, {destination})
+    plan = make_page_repair_plan(
+        url,
+        folders[0],
+        int(detail["expected_images"]),
+        list(detail["missing_pages"]),
+        list(detail.get("corrupt_files", [])),
+        page_keys,
+        archive,
+    )
+    if plan.damaged_pages and not plan.eligible:
+        raise ValueError("not every damaged page has an exact gallery-dl archive identity")
+    return plan, archive
+
+
+def _build_batch_repair_plan(args: argparse.Namespace) -> tuple[dict[str, Any], dict[int, tuple[Any, Path]]]:
+    if args.workers < 1 or args.max_workers is not None and args.max_workers < 1:
+        raise ValueError("repair workers and maximum workers must be at least 1")
+    if args.worker_start_delay < 0:
+        raise ValueError("repair worker start delay must be zero or greater")
+    report, report_digest = _load_audit_report(args.report)
+    destinations = [Path(value).expanduser().resolve() for value in report["destinations"]]
+    if not destinations:
+        raise ValueError("audit report contains no destination roots")
+    if args.archive and len(destinations) > 1:
+        raise ValueError("--archive cannot be shared by a report containing multiple destination roots")
+    missing_destination = args.destination or (destinations[0] if len(destinations) == 1 else None)
+
+    def progress(message: str) -> None:
+        print(f"Repair: {message}", file=sys.stderr, flush=True)
+
+    actions: list[dict[str, Any]] = []
+    unsupported: list[dict[str, str]] = []
+    prepared: dict[int, tuple[Any, Path]] = {}
+    missing_urls = any(
+        isinstance(item, dict) and item.get("status") == "missing"
+        for item in report["items"]
+    )
+    current_roots = list(dict.fromkeys([
+        *destinations,
+        *([missing_destination] if missing_destination else []),
+    ]))
+    current_library = scan_library(current_roots, progress=progress) if missing_urls else []
+
+    for item in report["items"]:
+        if not isinstance(item, dict) or not item.get("canonical_url"):
+            continue
+        url = str(item["canonical_url"])
+        status = item.get("status")
+        completeness = item.get("completeness")
+        integrity = item.get("image_integrity")
+        if status == "missing":
+            if resolve_url_folders(url, current_library):
+                unsupported.append({
+                    "url": url,
+                    "reason": "audit report is stale: a matching folder now exists; run audit again",
+                })
+                continue
+            if missing_destination is None:
+                unsupported.append({
+                    "url": url,
+                    "reason": "select --destination for missing galleries when the audit used multiple roots",
+                })
+                continue
+            try:
+                backend = choose_backend(url)
+                scope = gallery_dl_scope(url) if backend == "gallery-dl" else None
+                if args.scratch and backend in {"hdporncomics", "native-nhentai"}:
+                    raise ValueError(f"scratch mode is not supported for the {backend} backend")
+                if scope is not None and scope.broad_collection:
+                    raise ValueError("broad gallery-dl collections require a separate reviewed download")
+            except ValueError as exc:
+                unsupported.append({"url": url, "reason": str(exc)})
+                continue
+            actions.append({
+                "kind": "download_gallery",
+                "url": url,
+                "backend": backend,
+                "destination": str(missing_destination),
+                "reason": "URL has no matched gallery folder",
+            })
+            continue
+        if status != "matched":
+            unsupported.append({"url": url, "reason": f"folder identity is {status or 'unknown'}"})
+            continue
+        has_damage = completeness == "incomplete" or integrity == "issues"
+        if not has_damage:
+            if completeness != "complete":
+                unsupported.append({
+                    "url": url,
+                    "reason": "completion is unknown; no exact repair target can be established",
+                })
+            continue
+        folders = [Path(value).expanduser().resolve() for value in item.get("folders", [])]
+        if len(folders) != 1:
+            unsupported.append({"url": url, "reason": "repair requires exactly one matched folder"})
+            continue
+        destination = _containing_destination(folders[0], destinations)
+        if destination is None:
+            unsupported.append({"url": url, "reason": "matched folder is outside the report destination roots"})
+            continue
+        try:
+            page_plan, archive = _fresh_page_plan(item, destination, args, progress)
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            unsupported.append({"url": url, "reason": str(exc)})
+            continue
+        if not page_plan.damaged_pages:
+            continue
+        action_index = len(actions)
+        actions.append({
+            "kind": "repair_pages",
+            "url": url,
+            "destination": str(destination),
+            "folder": str(page_plan.folder),
+            "expected_pages": page_plan.expected_count,
+            "damaged_pages": list(page_plan.damaged_pages),
+            "archive": str(archive),
+            "archive_keys_to_reconcile": [page_plan.page_keys[page] for page in page_plan.damaged_pages],
+            "archive_rows_present": list(page_plan.archive_rows_found),
+            "corrupt_files_to_quarantine": [str(path) for path in page_plan.corrupt_files],
+        })
+        prepared[action_index] = (page_plan, archive)
+
+    token_payload = {
+        "schema": REPAIR_PLAN_SCHEMA,
+        "report_sha256": report_digest,
+        "actions": actions,
+        "unsupported": unsupported,
+    }
+    token = hashlib.sha256(json.dumps(token_payload, sort_keys=True).encode("utf-8")).hexdigest()[:16]
+    plan = {
+        "schema": REPAIR_PLAN_SCHEMA,
+        "kind": "mangadl-repair-plan",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "mangadl_version": __version__,
+        "mode": "apply" if args.apply else "preview",
+        "audit_report": str(args.report),
+        "audit_report_sha256": report_digest,
+        "actions": actions,
+        "unsupported": unsupported,
+        "action_count": len(actions),
+        "unsupported_count": len(unsupported),
+        "confirmation_token": token,
+        "workers": args.workers,
+        "max_workers": args.max_workers,
+    }
+    return plan, prepared
+
+
+def _format_batch_repair_plan(plan: dict[str, Any]) -> str:
+    lines = [
+        styled("\nRepair plan", "bright"),
+        f"  Planned actions: {plan['action_count']}",
+        f"  Report-only/unsupported issues: {plan['unsupported_count']}",
+    ]
+    if "workers" in plan:
+        lines.append(f"  Downloader workers: {plan['workers']} (normal dashboard; one queue per destination)")
+    for index, action in enumerate(plan["actions"], 1):
+        lines.append("")
+        if action["kind"] == "repair_pages":
+            lines.append(styled(f"  {index}. Repair {len(action['damaged_pages'])} page(s)", "yellow"))
+            lines.append(field("URL", action["url"], color="cyan"))
+            lines.append(field("Folder", Path(action["folder"]).name))
+            lines.append(field("Pages", _format_audit_page_ranges(action["damaged_pages"]), color="yellow"))
+        else:
+            lines.append(styled(f"  {index}. Download missing gallery", "yellow"))
+            lines.append(field("URL", action["url"], color="cyan"))
+        lines.append(field("Destination", action["destination"]))
+    for row in plan["unsupported"]:
+        lines.append("\n" + styled(f"  REPORT ONLY: {row['url']}", "red"))
+        lines.append(field("Reason", row["reason"], color="yellow"))
+    if plan["actions"]:
+        lines.append("\n" + styled(f"  Confirmation token: {plan['confirmation_token']}", "green"))
+        if plan["mode"] == "preview":
+            lines.append("  Re-run with -f/--apply and -C/--confirm-plan TOKEN to apply this exact plan.")
+    return "\n".join(lines)
+
+
+def _repair_run_arguments(action: dict[str, Any], args: argparse.Namespace, archive: Path) -> list[str]:
+    run_args = [
+        "run", "-u", action["url"], "-d", action["destination"], "-a", str(archive),
+        "-b", "auto", "-w", str(args.workers),
+        "--worker-start-delay", str(args.worker_start_delay),
+    ]
+    if args.max_workers is not None:
+        run_args.extend(["--max-workers", str(args.max_workers)])
+    if args.no_ui or args.json:
+        run_args.append("--no-ui")
+    if args.gallery_config:
+        run_args.extend(["-g", str(args.gallery_config)])
+    if args.cookies:
+        run_args.extend(["--cookies", str(args.cookies)])
+    if args.cookies_browser:
+        run_args.extend(["-B", args.cookies_browser])
+    if args.user_agent:
+        run_args.extend(["--gallery-user-agent", args.user_agent])
+    if args.rate:
+        run_args.extend(["--max-rate", args.rate])
+    if args.scratch:
+        run_args.extend(["-S", str(args.scratch)])
+    return run_args
+
+
+def _run_nested(argv: list[str]) -> int:
+    try:
+        return main(argv)
+    except SystemExit as exc:
+        raise RuntimeError(f"download manager exited: {exc.code}") from exc
+
+
+def _backfill_repaired_source(url: str, destination: Path) -> dict[str, int]:
+    return backfill_source_indexes([url], scan_library([destination]))
+
+
+def _run_repair_queue(actions, args, archive, page_plans, token) -> int:
+    run_args = _repair_run_arguments(actions[0], args, archive)
+    for action in actions[1:]:
+        run_args.extend(["--url", action["url"]])
+    old_token = os.environ.get("MANGADL_REPAIR_TOKEN")
+    if token:
+        os.environ["MANGADL_REPAIR_TOKEN"] = token
+    try:
+        # JSON repair output remains one document; manager status/progress goes
+        # to stderr rather than adding a second JSON value to stdout.
+        with redirect_stdout(sys.stderr) if args.json else nullcontext():
+            if not page_plans:
+                return _run_nested(run_args)
+            run_namespace = build_parser(run_args).parse_args(run_args)
+            run_namespace.repair_file_ranges = {
+                plan.url: ",".join(str(page) for page in plan.damaged_pages) for plan in page_plans
+            }
+            return _run(run_namespace)
+    finally:
+        if old_token is None:
+            os.environ.pop("MANGADL_REPAIR_TOKEN", None)
+        else:
+            os.environ["MANGADL_REPAIR_TOKEN"] = old_token
+
+
+def _batch_repair(args: argparse.Namespace) -> int:
+    plan, prepared = _build_batch_repair_plan(args)
+    if args.plan_output:
+        _write_json_atomic(args.plan_output, plan)
+    if not args.json:
+        print(_format_batch_repair_plan(plan))
+    if not args.apply:
+        if args.json:
+            print(json.dumps(plan, indent=2, sort_keys=True))
+        return 0
+    if args.confirm_plan != plan["confirmation_token"]:
+        raise ValueError("--apply requires --confirm-plan with the token from the current exact repair preview")
+
+    from contextlib import ExitStack
+    from .library_guard import library_write_guard
+
+    with ExitStack() as owners:
+        destinations = sorted({Path(action["destination"]).resolve() for action in plan["actions"]})
+        for destination in destinations:
+            owners.enter_context(library_write_guard(destination))
+        return _apply_batch_repair_owned(args, plan, prepared)
+
+
+def _apply_batch_repair_owned(args, plan, prepared) -> int:
+
+    results: list[dict[str, Any]] = []
+    groups: dict[tuple[Path, Path], list[tuple[int, dict[str, Any]]]] = {}
+    for index, action in enumerate(plan["actions"]):
+        destination = Path(action["destination"])
+        archive = prepared[index][1] if action["kind"] == "repair_pages" else _archive_for_destination(
+            args, destination, {destination}
+        )
+        groups.setdefault((destination, archive), []).append((index, action))
+
+    for (destination, archive), group in groups.items():
+        actions = [action for _index, action in group]
+        page_plans = [prepared[index][0] for index, action in group if action["kind"] == "repair_pages"]
+        try:
+            _assert_no_active_mangadl_run(destination)
+            verified_details = None
+            controls = ScratchControls(destination, args.scratch, archive,
+                                       destination / ".mangadl" / "state.sqlite3",
+                                       destination / ".mangadl" / "logs") if args.scratch else None
+            pending_scratch = controls.validate_pending() if controls else False
+            queue_returned = False
+
+            def run_download(plans, token) -> None:
+                nonlocal queue_returned
+                if pending_scratch and controls:
+                    # Canonical keys were deliberately cleared under this
+                    # repair lock. Mirror those exact targets to the working
+                    # archive, and checkpoint only this owned baseline change.
+                    clear_page_repair_archive(plans, controls.archive)
+                    archive_cleanup_checkpoint(partial_root_for(destination, args.scratch),
+                                               controls.archive, archive, verify=False)
+                returncode = _run_repair_queue(actions, args, archive, plans, token)
+                queue_returned = True
+                if returncode != 0:
+                    raise RuntimeError(f"download manager returned exit status {returncode}")
+
+            def verify_repair(page_plan) -> tuple[bool, set[int]]:
+                nonlocal verified_details
+                if verified_details is None:
+                    inputs, _rejected = collect_inputs([], [item.url for item in page_plans])
+                    counts = {item.url.rstrip("/").rsplit("/", 1)[-1]: item.expected_count for item in page_plans}
+                    verified_details = audit_destinations(
+                        inputs, [destination], None,
+                        metadata_resolver=lambda gallery_id: SimpleNamespace(page_count=counts[gallery_id]),
+                    ).details
+                verified = verified_details[page_plan.url]
+                return verified["completeness"] == "complete", set(verified["missing_pages"])
+
+            if page_plans:
+                page_results = apply_page_repairs(
+                    page_plans, archive, destination / ".mangadl" / "repair-quarantine", run_download, verify_repair,
+                )
+                if controls and queue_returned and controls.manifest.is_file():
+                    if json.loads(controls.manifest.read_text(encoding="utf-8")).get("pending"):
+                        archive_cleanup_checkpoint(partial_root_for(destination, args.scratch),
+                                                   controls.archive, archive, verify=False)
+            else:
+                run_download([], "")
+                page_results = []
+            pages_by_url = {row["url"]: row for row in page_results}
+            for action in actions:
+                index_result = _backfill_repaired_source(action["url"], destination)
+                if action["kind"] == "repair_pages":
+                    results.append({"kind": action["kind"], **pages_by_url[action["url"]], "index_backfill": index_result})
+                    continue
+                inputs, _rejected = collect_inputs([], [action["url"]])
+                verified = audit_destinations(
+                    inputs,
+                    [destination],
+                    None,
+                    metadata_resolver=resolve_nhentai_metadata,
+                    page_resolver=resolve_expected_pages,
+                ).details[action["url"]]
+                results.append({
+                    "url": action["url"],
+                    "kind": action["kind"],
+                    "downloaded": True,
+                    "verified": verified["completeness"] == "complete",
+                    "verification": verified["completeness"],
+                    "index_backfill": index_result,
+                })
+        except (OSError, RuntimeError, ValueError, sqlite3.Error) as exc:
+            results.extend({
+                "url": action["url"],
+                "kind": action["kind"],
+                "verified": False,
+                "error": f"{type(exc).__name__}: {exc}",
+            } for action in actions)
+
+    payload = {**plan, "results": results}
+    succeeded = sum(bool(row.get("verified")) for row in results)
+    payload["verified_actions"] = succeeded
+    payload["failed_or_unverified_actions"] = len(results) - succeeded
+    if args.plan_output:
+        _write_json_atomic(args.plan_output, payload)
+    if args.json:
+        print(json.dumps(payload, indent=2, sort_keys=True))
+    else:
+        print(styled(f"\nRepair results: {succeeded} verified, {len(results) - succeeded} failed or unverified.",
+                     "green" if succeeded == len(results) else "red"))
+        for row in results:
+            state = "VERIFIED" if row.get("verified") else "NOT VERIFIED"
+            detail = row.get("error") or row.get("run_error") or row.get("verification") or ""
+            print(styled(f"  {state}: {row['url']}", "green" if row.get("verified") else "red"))
+            if detail:
+                print(field("Detail", detail))
+            if row.get("remaining_pages"):
+                print(field("Remaining pages", _format_audit_page_ranges(row["remaining_pages"]), color="red"))
+    if plan["unsupported_count"]:
+        return 1
+    return 0 if succeeded == len(results) else 1
 
 
 def _interactive_auth_site(targets: TargetStore, query: str | None) -> str:
@@ -1729,6 +2515,12 @@ def _favorites(args: argparse.Namespace) -> int:
     return 0
 
 
+def _compress(args: argparse.Namespace) -> int:
+    from .compress import run_cli as run_compress_cli
+
+    return run_compress_cli(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
@@ -1754,9 +2546,11 @@ def main(argv: list[str] | None = None) -> int:
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
             "repair-pages": _repair_pages,
+            "repair": _batch_repair,
             "partials": _partials,
             "auth": _auth,
             "favorites": _favorites,
+            "compress": _compress,
         }[args.command](args)
     except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:
         parser.error(str(exc))

@@ -32,7 +32,12 @@ class PageRepairPlan:
 
     @property
     def eligible(self) -> bool:
-        return bool(self.damaged_pages) and set(self.page_keys) == set(range(1, self.expected_count + 1))
+        return (
+            bool(self.damaged_pages)
+            and set(self.page_keys) == set(range(1, self.expected_count + 1))
+            and len(set(self.page_keys.values())) == self.expected_count
+            and all(key and key not in {"None", "null"} for key in self.page_keys.values())
+        )
 
 
 def repair_confirmation_token(plan: PageRepairPlan) -> str:
@@ -166,24 +171,36 @@ def _update_archive_keys(archive: Path, table: str, values: dict[str, bool]) -> 
         connection.close()
 
 
-def apply_page_repair(
-    plan: PageRepairPlan,
+def clear_page_repair_archive(plans: list[PageRepairPlan], archive: Path) -> None:
+    """Clear only proven target keys, including a resumed scratch archive."""
+    for plan in plans:
+        if not plan.eligible:
+            raise ValueError("cannot clear archive keys for an ineligible page repair")
+        _update_archive_keys(archive, plan.archive_table or "archive",
+                             {plan.page_keys[page]: False for page in plan.damaged_pages})
+
+
+def apply_page_repairs(
+    plans: list[PageRepairPlan],
     archive: Path,
     quarantine_root: Path,
     run_download,
     verify_repair,
-) -> dict[str, Any]:
-    """Run a normal one-worker targeted download and reconcile only its keys."""
-    if not plan.eligible:
+) -> list[dict[str, Any]]:
+    """Prepare a library batch under one lock, download once, then verify each URL."""
+    if not plans or any(not plan.eligible for plan in plans):
         raise ValueError("repair plan is not eligible; expected page identities are incomplete")
-    if len(plan.damaged_pages) > 1000:
+    if any(len(plan.damaged_pages) > 1000 for plan in plans):
         raise ValueError("one repair apply is limited to 1000 pages; split the reviewed repair into smaller plans")
+    if len({plan.url for plan in plans}) != len(plans):
+        raise ValueError("duplicate URLs in prepared repair batch")
     repair_id = time.strftime("%Y%m%d-%H%M%S") + "-" + secrets.token_hex(4)
     control_root = archive.parent
     backup = control_root / "archive-backups" / f"repair-{repair_id}.sqlite3"
     _snapshot_archive(archive, backup)
-    quarantine = quarantine_root / repair_id / plan.folder.name
-    moved: list[tuple[Path, Path]] = []
+    # The manifest is needed even for missing-only repairs. Keep the original
+    # long gallery name inside the manifest rather than in its Windows path.
+    prepared: list[tuple[PageRepairPlan, Path]] = []
     lock = control_root / "repair.lock"
     token = secrets.token_hex(24)
     lock.parent.mkdir(parents=True, exist_ok=True)
@@ -193,61 +210,70 @@ def apply_page_repair(
     finally:
         os.close(descriptor)
     try:
-        for source in plan.corrupt_files:
-            quarantine.mkdir(parents=True, exist_ok=True)
-            target = quarantine / source.name
-            if target.exists():
-                raise ValueError(f"quarantine target already exists: {target}")
-            shutil.move(str(source), str(target))
-            moved.append((source, target))
-        if plan.archive_table and plan.archive_rows_found:
-            _update_archive_keys(archive, plan.archive_table, {key: False for key in plan.archive_rows_found})
-        (quarantine / "repair-manifest.json").write_text(
-            json.dumps(
-                {
+        # Publish every manifest before moving images or changing any archive
+        # rows, so a preparation failure cannot leave an undocumented repair.
+        for index, plan in enumerate(plans, 1):
+            suffix = "" if len(plans) == 1 else f"-{index}"
+            quarantine = quarantine_root / (repair_id + suffix)
+            quarantine.mkdir(parents=True, exist_ok=False)
+            (quarantine / "repair-manifest.json").write_text(
+                json.dumps({
                     "repair_id": repair_id,
                     "source_url": plan.url,
                     "folder": str(plan.folder),
                     "expected_pages": plan.expected_count,
                     "target_pages": list(plan.damaged_pages),
                     "archive_backup": str(backup) if backup.exists() else None,
-                    "quarantined_files": [str(target) for _source, target in moved],
-                },
-                indent=2,
-                sort_keys=True,
+                    "quarantined_files": [str(quarantine / source.name) for source in plan.corrupt_files],
+                }, indent=2, sort_keys=True) + "\n", encoding="utf-8",
             )
-            + "\n",
-            encoding="utf-8",
-        )
+            prepared.append((plan, quarantine))
+        for plan, quarantine in prepared:
+            for source in plan.corrupt_files:
+                target = quarantine / source.name
+                if target.exists():
+                    raise ValueError(f"quarantine target already exists: {target}")
+                shutil.move(str(source), str(target))
+        clear_page_repair_archive(plans, archive)
         run_error = None
         try:
-            run_download(",".join(str(page) for page in plan.damaged_pages), token)
+            run_download(plans, token)
         except Exception as exc:
             run_error = f"{type(exc).__name__}: {exc}"
-        try:
-            verified, remaining = verify_repair()
-        except Exception as exc:
-            verified = False
-            remaining = set(plan.damaged_pages)
-            run_error = run_error or f"post-repair audit failed: {type(exc).__name__}: {exc}"
-        table = plan.archive_table or "archive"
-        key_states = {
-            plan.page_keys[page]: page not in remaining
-            for page in plan.damaged_pages
-            if page in plan.page_keys
-        }
-        _update_archive_keys(archive, table, key_states)
-        return {
-            "repair_id": repair_id,
-            "verified": bool(verified and run_error is None),
-            "remaining_pages": sorted(remaining),
-            "run_error": run_error,
-            "archive_backup": str(backup) if backup.exists() else None,
-            "quarantine": str(quarantine),
-            "archive_reconciled_pages": sorted(page for page in plan.damaged_pages if page not in remaining),
-        }
+        results: list[dict[str, Any]] = []
+        for plan, quarantine in prepared:
+            item_error = run_error
+            try:
+                verified, remaining = verify_repair(plan)
+            except Exception as exc:
+                verified = False
+                remaining = set(plan.damaged_pages)
+                item_error = item_error or f"post-repair audit failed: {type(exc).__name__}: {exc}"
+            key_states = {plan.page_keys[page]: page not in remaining for page in plan.damaged_pages}
+            _update_archive_keys(archive, plan.archive_table or "archive", key_states)
+            results.append({
+                "url": plan.url,
+                "repair_id": repair_id,
+                "verified": bool(verified and item_error is None),
+                "remaining_pages": sorted(remaining),
+                "run_error": item_error,
+                "archive_backup": str(backup) if backup.exists() else None,
+                "quarantine": str(quarantine),
+                "archive_reconciled_pages": sorted(page for page in plan.damaged_pages if page not in remaining),
+            })
+        return results
     finally:
         try:
             lock.unlink()
         except OSError:
             pass
+
+
+def apply_page_repair(plan: PageRepairPlan, archive: Path, quarantine_root: Path,
+                      run_download, verify_repair) -> dict[str, Any]:
+    """Compatibility entry point for a single guarded page repair."""
+    return apply_page_repairs(
+        [plan], archive, quarantine_root,
+        lambda plans, token: run_download(",".join(str(page) for page in plans[0].damaged_pages), token),
+        lambda _plan: verify_repair(),
+    )[0]

@@ -221,6 +221,10 @@ def reconstruct_archive_page_keys(
             str(root / "empty-archive.sqlite3"),
             "--print",
             f"prepare-after:{REPAIR_MARKER}{{_archive_key}}\t{{num}}",
+            # --print disables skip checks, which also disables archive-key
+            # generation. Re-enable checks against this empty temporary
+            # archive; download remains disabled by --print.
+            "--option", "skip=true",
         ]
         if gallery_config:
             command.extend(["--config", str(gallery_config)])
@@ -246,6 +250,7 @@ def reconstruct_archive_page_keys(
             errors="replace",
         )
         result: dict[int, str] = {}
+        invalid_key = False
         tail: deque[str] = deque(maxlen=12)
         assert process.stdout is not None
         for raw_line in process.stdout:
@@ -258,6 +263,9 @@ def reconstruct_archive_page_keys(
                         page = int(page_text)
                     except ValueError:
                         continue
+                    if key in {"None", "null", ""}:
+                        invalid_key = True
+                        continue
                     if page > 0 and key:
                         result[page] = key
             elif line:
@@ -266,6 +274,10 @@ def reconstruct_archive_page_keys(
         if returncode != 0:
             detail = " | ".join(tail) or f"gallery-dl exited {returncode}"
             raise RuntimeError(f"failed to map gallery-dl archive keys for {url}: {detail}")
+        if invalid_key:
+            raise RuntimeError("gallery-dl did not generate an exact archive key")
+        if len(set(result.values())) != len(result):
+            raise RuntimeError("gallery-dl returned repeated archive keys for different pages")
         return result
 
 

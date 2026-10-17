@@ -1,4 +1,4 @@
-<!-- version: 0.4.0 -->
+<!-- version: 0.7.0 -->
 # TermDash - Terminal Dashboard Library
 
 TermDash is a robust, thread-safe Python library designed for creating persistent, multi-line, in-place terminal dashboards. It allows for dynamic display of information with a co-existing scrolling log region, making it ideal for monitoring long-running processes or real-time data.
@@ -18,6 +18,21 @@ TermDash is a robust, thread-safe Python library designed for creating persisten
 *   **Utility Functions**: Includes helpers for human-readable byte formatting, time formatting (HH:MM:SS), and string clipping.
 
 ## Core Components
+
+`LiveBlock(stream=sys.stderr)` owns a transient group of relative-cursor status
+rows below existing console output, without a full-screen reset. `update(provider)`
+accepts a callback returning rows; its heartbeat refreshes timers while work is
+blocked. `log(text)` cooperates with the block; `close()` erases rows and stops
+the renderer. Width/Unicode clipping, NO_COLOR and redirected plain logs are handled
+centrally. Unlike TermDash, it does not reserve the whole terminal scroll region.
+
+`Table`/`render_table` provide ANSI-aware, bounded-width report tables with
+left/right/center alignment. Long clipped values become plain text with an
+ellipsis. CJK wide and combining characters are measured in terminal cells;
+complex emoji sequences may depend on terminal font behavior. At very narrow
+widths the grid falls back to clipped text rows. Newlines inside cells become spaces.
+`render_horizontal_bar(ratio, width=20, color=None, show_pct=False)` renders a
+clamped comparison bar; width includes brackets but not an optional percentage.
 
 *   **`TermDash`**: The main class that manages the dashboard. It handles rendering, updates, and terminal interactions.
 *   **`Line`**: Represents a single row in the dashboard, composed of `Stat` objects.

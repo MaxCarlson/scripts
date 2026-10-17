@@ -20,6 +20,11 @@ def test_collect_inputs_comments_invalid_and_stable_duplicates(tmp_path: Path) -
         "duplicate",
         "not a supported HTTP URL: not-a-url",
     ]
+    duplicates = [item for item in rejected if item["reason"] == "duplicate"]
+    assert duplicates[0]["canonical_url"] == "https://nhentai.net/g/123/"
+    assert duplicates[0]["duplicate_of"] == {"source": str(source), "line": 2}
+    assert duplicates[1]["canonical_url"] == "https://example.com/a"
+    assert duplicates[1]["duplicate_of"] == {"source": "<cli>", "line": 1}
 
 
 def test_collect_inputs_extracts_urls_from_numbered_and_pasted_lines(tmp_path: Path) -> None:

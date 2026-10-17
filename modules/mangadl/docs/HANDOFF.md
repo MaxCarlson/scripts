@@ -1,6 +1,107 @@
 # mangadl Immediate Project Handoff
 
-## Current branch planning handoff — 2026-10-09
+Current P3: MangaDL1.36.0/compresser0.8.0. Shared per-job memory reservations,
+preflight exclusions and aggregate -B allowance64..4096MiB, default512 unchanged.
+Per-image decode limit still512MiB. Full83 compression,15 integration,55 help pass.
+Actual read-only two-image test shows native threading gain3.735s->1.968s when
+budget permits two jobs. No production writes. Publish checkpoint before P4/P5.
+
+Current P2 phase slice: MangaDL1.35.0/compresser0.7.0. Shared active phase labels,
+exclusive aggregate phase timings in summary/JSON, narrow stacked comparisons.
+Compression75 and integration15 tests pass; setup refreshed. Source benchmark
+confirmed native WebP effort6 encoding dominates, about one core, not disk/lock.
+Scheduler/budget unchanged; next publish checkpoint then P3 reservations/preflight.
+
+Latest P2 worker-visibility slice: MangaDL1.34.0 / compresser0.6.0. Shared UI and
+JSON expose requested/effective/active workers, limiter and active image details.
+Full compression71 and integration/ownership15 tests pass. Scheduler/memory budget
+unchanged; phase timers, readable narrow summaries and automatic cache are pending.
+
+Active performance/cache continuation: MangaDL1.33.0 / compresser0.5.0.
+Cooperative cancellation/STOPPING and exit130 implemented, lock errors explicitly
+fail fast. Plan at ../../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/;
+plan pushed c76df28. Actual worker/phase diagnosis, memory-aware scheduler, percentage
+sampling/projections, automatic cache prompt and integrity acceptance remain planned.
+
+Current compression UI continuation: MangaDL1.32.0 / compresser0.4.0.
+Comparison shares one staged dashboard and continuous overall timer/counts;
+retained-size report distinguishes rejected larger candidates and encoder failures.
+Comparison JSON includes candidate/original bytes and grouped errors. Full
+compresser66/MangaDL compression integration10 pass. Terminal/reader and manual
+mapping acceptance remain pending; source trials only read user images.
+
+## Current compression continuation — 2026-10-13
+
+Branch `compression-module-mangadl-20261013-0151`. Reviewed plans pushed as
+`f1baeab`; S5/S6 and audit A1/A2 checkpoint pushed as7181e4f. Continuation source,
+shim and registry synchronized at1.31.1 (compresser0.3.1). Nested chapter pages
+and a whole-operation OS guard now coordinate run/page repair/batch repair/compression.
+Same-thread reentrancy supports normal repair workers; separate-process contention
+and process-death release are tested. Consistent established library roots required;
+standalone compresser engine/CLI/recovery now share ownership. External tools
+that ignore the lock must not run concurrently.
+Compression defaults lossless and JSON suppresses progress stdout; explicit
+lossy/perceptual writes require -L. Production compression not accepted.
+Audit A1/A2 now implement bottom summaries, visible inferred gaps even for
+ambiguous sources, explicit source fields (not cover/artist links), association
+inventories with -x, and shared3-row URL/folder progress. A3/A4 manual worksheet
+and mapped repair are still planned. Full290 MangaDL tests pass; compresser61,
+termdash75/1 skipped, scripts-help55, dispatcher, Ruff/compile/help/version and
+installed read-only CLI acceptance pass. Continuation full MangaDL296/compresser63
+pass. Terminal/reader gates remain; manual mapping has not started.
+
+## Current branch planning handoff — 2026-10-12
+
+Branch: `codex/mangadl-generalized-audit-repair`.
+
+The active plan is [generalized audit and batch repair](plans/20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
+MangaDL 1.28.0 accepts repeatable URL files/globs plus top-level `url*.txt`
+directory discovery, records cross-file duplicate provenance, writes a
+versioned audit report automatically with input-based names and numbered
+collisions, prints per-URL page findings and separate duplicate/invalid counts,
+and builds a visible batch repair plan directly from
+that report. `repair -p` is optional output only; `repair -r REPORT` always
+creates and displays the plan. Apply remains token-guarded and limited to
+proven individual nhentai page repair plus normal downloads for wholly missing
+non-collection galleries. Successful actions re-audit and backfill exact source
+identity. Unsupported or ambiguous items remain report-only. Repository
+validation passed (268 MangaDL tests and 42 focused scripts-help tests). The
+user confirmed the live audit findings and authorized committing this usable
+1.26.0 state. Live progress and colored summaries are deferred at the user's
+request. Live repair acceptance is pending; no live library repair, push, or
+merge has been performed.
+
+The first live missing-only repair failed before downloads because its manifest
+directory was not created. Archive backups and current archive were confirmed
+identical. The 1.26.1 fix creates a short repair directory unconditionally and
+writes its manifest before archive-key deletion. Focused repair/CLI regression
+validation passed (44 tests); retry of the live apply remains pending.
+
+The live retry exposed placeholder `None` archive keys in print-only
+enumeration. Version 1.26.2 generates and validates distinct real keys, and the
+agent's authorized repair restored all 260 missing pages in galleries 633374,
+268015, and 592786. Independent destination checks found 192/192, 160/160, and
+76/76 valid pages, respectively. See the active plan's LIVE_REPAIR.md.
+The user now authorizes commit/push after the repair fix, then summary/color
+improvements, then shared normal downloader UI and available-worker scheduling.
+
+The live repair fix was pushed as `55d02b2`. Summary/color changes now use
+readable wrapped fields, terminal-only ANSI status colors, clean JSON/plain
+redirected output, and termdash audit metadata/image progress. Validation:
+271 MangaDL tests passed. Next is the shared normal repair worker pool/UI.
+
+Completed on 2026-10-13: summary stage pushed as `a49c655`; repair apply now
+uses one normal manager queue per destination, per-URL exact page ranges,
+normal dashboard and worker controls, and `-w/-m/-N/-L`. One batch lock/backup
+protects the archive. Production galleries remain complete. Isolated live UI
+acceptance dispatched three workers in one run and verified nine downloaded
+pages; available-worker reassignment and failed scratch resume are covered by
+integration tests. Final validation: 276 MangaDL tests, Ruff, compilation,
+CLI help/version, and editable install at 1.28.0. No merge is authorized.
+
+---
+
+## Prior branch planning handoff — 2026-10-09
 
 Branch: `codex/kavita-module-mangadl-collections-20261009-0349`.
 

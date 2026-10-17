@@ -1,6 +1,17 @@
 # mangadl Plan Index
 
-Active: [20261009-1204 library identity, audit, repair, and Kavita operations](20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md).
+Planned follow-up: [audit UX/manual repair](20261013-0300_audit-ux-and-manual-folder-repair/00_implementation-plan.md).
+Cross-module compression reviewed plan: repository
+`docs/plans/20261013-0151_compression-module-and-mangadl-integration/05_reviewed-plan.md`.
+
+Active: [20261012-2300 generalized audit and batch repair](20261012-2300_generalized-audit-and-batch-repair/00_implementation-plan.md).
+
+This focused continuation adds multi-file/directory URL ingestion, durable
+versioned audit reports, and a report-driven `mangadl repair` command. Exact
+repair remains intentionally limited to already-proven page identities and
+whole missing-gallery downloads; broader backend adapters are deferred.
+
+Previous: [20261009-1204 library identity, audit, repair, and Kavita operations](20261009-1204_library-identity-audit-and-kavita-operations/00_implementation-plan.md).
 
 The prior [20261009-0409 URL-file audit and repair](20261009-0409_url-file-audit-and-repair/00_implementation-plan.md) records the read-only audit implementation and detailed repair safeguards; continue its repair stage under the active umbrella plan.
 

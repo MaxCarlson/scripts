@@ -24,6 +24,7 @@ class DestinationAudit:
     details: dict[str, dict[str, Any]]
     untracked_folders: list[Path]
     index_backfill: dict[str, int] | None = None
+    association_inventory: dict[str, int] | None = None
 
 
 _PAGE_FILE = re.compile(r"^(?P<page>\d+)\.[^.]+$", re.IGNORECASE)
@@ -46,6 +47,7 @@ def _inspect_pages(
     expected_count: int | None,
     *,
     image_validator: Callable[[Path], bool],
+    image_progress: Callable[[int, int], None] | None = None,
 ) -> dict[str, Any]:
     pages: dict[int, list[Path]] = defaultdict(list)
     image_files: list[Path] = []
@@ -66,7 +68,9 @@ def _inspect_pages(
     corrupt_paths: set[Path] = set()
     valid_images = 0
     valid_paths: set[Path] = set()
-    for path in image_files:
+    if image_progress:
+        image_progress(0, len(image_files))
+    for image_index, path in enumerate(image_files, 1):
         try:
             valid = path.stat().st_size > 0 and image_validator(path)
         except OSError:
@@ -77,6 +81,8 @@ def _inspect_pages(
         else:
             corrupt_files.append(str(path.relative_to(folder)))
             corrupt_paths.add(path)
+        if image_progress:
+            image_progress(image_index, len(image_files))
     for page, paths in pages.items():
         if any(path in valid_paths for path in paths):
             valid_pages.add(page)
@@ -121,6 +127,7 @@ def _inspect_pages(
         "extra_pages": sorted(extra_pages),
         "corrupt_files": corrupt_files,
         "repair_eligible": False,
+        "missing_page_evidence": "source-confirmed" if expected_count is not None else "inferred numbering gaps",
     }
 
 
@@ -148,6 +155,7 @@ def audit_destinations(
     page_resolver: Callable[[str], Any] | None = None,
     image_validator: Callable[[Path], bool] = _validate_image,
     backfill_index: bool = False,
+    item_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> DestinationAudit:
     """Match known URL identities to populated top-level gallery folders.
 
@@ -155,6 +163,7 @@ def audit_destinations(
     IDs and HDPornComics manhwa slugs provide safe folder-name matches.
     """
     library = scan_library(destinations, progress=progress)
+    association_inventory = backfill_source_indexes((item.canonical_url for item in inputs), library, write=False)
     index_backfill = (
         backfill_source_indexes(
             (item.canonical_url for item in inputs), library, progress=progress
@@ -177,6 +186,11 @@ def audit_destinations(
 
     details: dict[str, dict[str, Any]] = {}
     for index, item in enumerate(inputs, start=1):
+        def notify(phase: str, **values: Any) -> None:
+            if item_progress:
+                item_progress({"phase": phase, "index": index, "total": len(inputs),
+                               "url": item.canonical_url, **values})
+
         match_rows = resolve_url_folders(item.canonical_url, library)
         matches = [row.path for row in match_rows]
         identity_ambiguous = any(row.identity_status == "ambiguous" for row in match_rows)
@@ -206,7 +220,8 @@ def audit_destinations(
             nhentai = _NHENTAI.fullmatch(item.canonical_url)
             if nhentai and metadata_resolver is not None:
                 try:
-                    if progress:
+                    notify("metadata")
+                    if progress and item_progress is None:
                         progress(f"[{index}/{len(inputs)}] Resolving expected page count for nhentai {nhentai.group(1)}")
                     metadata = metadata_resolver(nhentai.group(1))
                     expected_count = int(metadata.page_count)
@@ -216,6 +231,7 @@ def audit_destinations(
                     base["metadata_error"] = type(exc).__name__
             elif page_resolver is not None:
                 try:
+                    notify("metadata")
                     page_set = page_resolver(item.canonical_url)
                     if page_set is not None:
                         expected_count = int(page_set.count)
@@ -223,9 +239,11 @@ def audit_destinations(
                         comparable = bool(page_set.complete_identity_set and _flat_numbered_layout(matches[0]))
                 except Exception as exc:
                     base["metadata_error"] = type(exc).__name__
+            notify("scanning")
             base.update(
                 _inspect_pages(
-                    matches[0], expected_count if comparable else None, image_validator=image_validator
+                    matches[0], expected_count if comparable else None, image_validator=image_validator,
+                    image_progress=lambda checked, total: notify("images", checked=checked, image_total=total),
                 )
             )
             if expected_count is not None and not comparable:
@@ -236,9 +254,11 @@ def audit_destinations(
             base["completeness"] = "unknown"
             base["metadata_error"] = "ambiguous destination match"
         details[item.canonical_url] = base
+        notify("complete")
     if progress:
         progress(
-            f"Matching complete: {len(resolved)} found, {len(unresolved)} missing, {len(duplicates)} duplicate group(s)"
+            f"Matching complete: {len(resolved)} found, {len(unresolved)} missing, "
+            f"{len(duplicates)} duplicate folder group(s)"
         )
     matched_paths = {path for paths in resolved.values() for path in paths}
     untracked = sorted({row.path for row in library if row.path not in matched_paths and _has_images(row.path)})
@@ -249,6 +269,7 @@ def audit_destinations(
         details=details,
         untracked_folders=untracked,
         index_backfill=index_backfill,
+        association_inventory=association_inventory,
     )
 
 
@@ -259,23 +280,30 @@ def audit_library(
     metadata_resolver: Callable[[str], Any] | None = None,
     page_resolver: Callable[[str], Any] | None = None,
     image_validator: Callable[[Path], bool] = _validate_image,
+    item_progress: Callable[[dict[str, Any]], None] | None = None,
 ) -> list[dict[str, Any]]:
     """Audit every top-level library folder without requiring a URL file."""
     folders = scan_library(destinations, progress=progress)
     results: list[dict[str, Any]] = []
     for index, row in enumerate(folders, 1):
+        def notify(phase: str, **values: Any) -> None:
+            if item_progress:
+                item_progress({"phase": phase, "index": index, "total": len(folders),
+                               "url": row.source_url or "unknown source", "folder": str(row.path), **values})
         expected_count = None
         metadata_error = None
         page_evidence = None
         match = _NHENTAI.fullmatch(row.source_url or "")
         if match and metadata_resolver is not None:
             try:
+                notify("metadata")
                 expected_count = int(metadata_resolver(match.group(1)).page_count)
                 page_evidence = "nhentai gallery metadata"
             except Exception as exc:
                 metadata_error = type(exc).__name__
         elif row.source_url and page_resolver is not None:
             try:
+                notify("metadata")
                 page_set = page_resolver(row.source_url)
                 if page_set is not None:
                     expected_count = int(page_set.count)
@@ -283,8 +311,10 @@ def audit_library(
             except Exception as exc:
                 metadata_error = type(exc).__name__
         comparable = bool(expected_count is not None and (match or _flat_numbered_layout(row.path)))
+        notify("scanning")
         details = _inspect_pages(
-            row.path, expected_count if comparable else None, image_validator=image_validator
+            row.path, expected_count if comparable else None, image_validator=image_validator,
+            image_progress=lambda checked, total: notify("images", checked=checked, image_total=total),
         )
         if expected_count is not None and not comparable:
             details["expected_images"] = expected_count
@@ -301,8 +331,11 @@ def audit_library(
                 "metadata_error": metadata_error,
                 "expected_page_evidence": page_evidence,
                 **details,
+                "association_present": row.manifest is not None,
+                "missing_page_evidence": "source-confirmed" if comparable else "inferred numbering gaps",
             }
         )
+        notify("complete")
         if progress and index % 50 == 0:
             progress(f"Audited {index}/{len(folders)} library folders")
     return results

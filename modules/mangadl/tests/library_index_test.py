@@ -35,6 +35,28 @@ def test_manifest_is_atomic_versioned_and_resolves_exact_source(tmp_path: Path) 
     assert [row.path for row in resolve_url_folders("https://example.test/manga/a", rows)] == [folder]
 
 
+def test_cover_and_artist_urls_are_not_gallery_identity(tmp_path):
+    folder = tmp_path / "Legacy"
+    folder.mkdir()
+    Image.new("RGB", (1, 1)).save(folder / "001.jpg")
+    (folder / "contentV2.json").write_text(json.dumps({
+        "url": "https://example.test/gallery/1", "coverImageUrl": "https://example.test/images/cover.jpg",
+        "artist": {"url": "https://example.test/artist/1"}, "related": ["https://example.test/gallery/2"],
+    }), encoding="utf-8")
+    rows = scan_library([tmp_path])
+    assert rows[0].identity_status == "matched"
+    assert rows[0].source_url == "https://example.test/gallery/1"
+    assert rows[0].candidate_urls == ("https://example.test/gallery/1",)
+
+
+def test_explicit_conflicting_sources_remain_ambiguous(tmp_path):
+    folder = tmp_path / "Conflict"
+    folder.mkdir()
+    (folder / "info.json").write_text(json.dumps({"url": "https://example.test/a", "source_url": "https://example.test/b"}), encoding="utf-8")
+    rows = scan_library([tmp_path])
+    assert rows[0].identity_status == "ambiguous"
+
+
 def test_invalid_manifest_falls_back_to_existing_metadata(tmp_path: Path) -> None:
     folder = tmp_path / "Legacy"
     folder.mkdir()

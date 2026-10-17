@@ -103,6 +103,63 @@ def test_page_repair_refuses_incomplete_archive_page_mapping(tmp_path: Path) -> 
         apply_page_repair(plan, archive, tmp_path / "q", lambda *_: None, lambda: (False, {2}))
 
 
+def test_missing_only_repair_creates_manifest_before_download(tmp_path: Path) -> None:
+    folder = tmp_path / "gallery"
+    folder.mkdir()
+    archive = tmp_path / "archive.sqlite3"
+    _archive(archive, ["nhentai 1_1", "nhentai 1_2", "other 3"])
+    plan = make_page_repair_plan(
+        "https://nhentai.net/g/1/", folder, 2, [2], [],
+        {1: "nhentai 1_1", 2: "nhentai 1_2"}, archive,
+    )
+    quarantine_root = tmp_path / "q"
+
+    def download(file_range: str, token: str) -> None:
+        manifests = list(quarantine_root.glob("*/repair-manifest.json"))
+        assert len(manifests) == 1
+        manifest = json.loads(manifests[0].read_text(encoding="utf-8"))
+        assert manifest["folder"] == str(folder)
+        assert manifest["quarantined_files"] == []
+        assert file_range == "2" and token
+        assert _rows(archive) == {"nhentai 1_1", "other 3"}
+        Image.new("RGB", (1, 1), "white").save(folder / "002.jpg")
+
+    result = apply_page_repair(plan, archive, quarantine_root, download, lambda: (True, set()))
+
+    assert result["verified"] is True
+    assert len(Path(result["quarantine"]).relative_to(quarantine_root).parts) == 1
+    assert _rows(archive) == {"nhentai 1_1", "nhentai 1_2", "other 3"}
+    assert not (tmp_path / "repair.lock").exists()
+
+
+def test_manifest_failure_preserves_archive_keys(tmp_path: Path, monkeypatch) -> None:
+    folder = tmp_path / "gallery"
+    folder.mkdir()
+    archive = tmp_path / "archive.sqlite3"
+    original_rows = {"nhentai 1_1", "nhentai 1_2", "other 3"}
+    _archive(archive, list(original_rows))
+    plan = make_page_repair_plan(
+        "https://nhentai.net/g/1/", folder, 2, [2], [],
+        {1: "nhentai 1_1", 2: "nhentai 1_2"}, archive,
+    )
+    original_write = Path.write_text
+
+    def fail_manifest(path, *args, **kwargs):
+        if path.name == "repair-manifest.json":
+            raise OSError("manifest write failed")
+        return original_write(path, *args, **kwargs)
+
+    def unexpected_download(*_args):
+        pytest.fail("download must not start after manifest failure")
+
+    monkeypatch.setattr(Path, "write_text", fail_manifest)
+    with pytest.raises(OSError, match="manifest write failed"):
+        apply_page_repair(plan, archive, tmp_path / "q", unexpected_download, lambda: (True, set()))
+
+    assert _rows(archive) == original_rows
+    assert not (tmp_path / "repair.lock").exists()
+
+
 def test_repair_confirmation_token_is_bound_to_exact_targets(tmp_path: Path) -> None:
     folder = tmp_path / "gallery"
     folder.mkdir()
@@ -115,3 +172,13 @@ def test_repair_confirmation_token_is_bound_to_exact_targets(tmp_path: Path) -> 
     )
     assert repair_confirmation_token(plan) == repair_confirmation_token(same_plan)
     assert repair_confirmation_token(plan) != repair_confirmation_token(changed_plan)
+
+
+def test_page_repair_refuses_placeholder_and_repeated_keys(tmp_path: Path) -> None:
+    folder = tmp_path / "gallery"
+    folder.mkdir()
+    for keys in ({1: "None", 2: "None"}, {1: "same-key", 2: "same-key"}):
+        plan = make_page_repair_plan(
+            "https://nhentai.net/g/1/", folder, 2, [2], [], keys, tmp_path / "archive.sqlite3",
+        )
+        assert not plan.eligible

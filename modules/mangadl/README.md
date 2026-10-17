@@ -456,8 +456,24 @@ mangadl archive config -a .\gallery-dl-archive.sqlite3 -N
 
 ## Other operations
 
+Image compression/analysis is available through the reusable compresser library:
+
+```powershell
+mangadl compress -d . -m lossless -s 60 -N
+mangadl compress -d . -c -m lossless -s 60 -N
+mangadl compress -d . -f webp -A pillow-webp -m perceptual -p 0.990 -s 60 -K E:\Temp\compression-cache.sqlite3 -N
+```
+
+These commands are read-only (except the explicitly separate cache). Reports
+distinguish measured sample savings from coverage-aware projections. Both tools
+default to lossless; writes require `-w`, with `-L` additionally for lossy/perceptual.
+No larger replacement or output collision is accepted by default. Pending
+compression transactions need explicit `compress -d GALLERY -R` recovery preview
+and `-R -w -C TOKEN` apply. See [compresser usage](../compresser/README.md).
+Production write acceptance and nested-gallery/download coordination are pending.
+
 Audit all recognized manga folders without a URL file, or compare a URL file to
-one or more destination roots. Folder-only audits are read-only. URL-file audits
+one or more destination roots. Folder-only audits do not change gallery contents. URL-file audits
 also backfill a missing `.mangadl-source.json` for unique, image-bearing matches
 established by exact source metadata or deterministic backend identity. They
 never index ambiguous, conflicting, empty, or unresolved matches. The sidecar
@@ -467,6 +483,9 @@ does not alter images, archives, download state, or Kavita collections. Use
 ```powershell
 mangadl audit -u .\URLFILE.txt -d .\downloads -j
 mangadl audit -i .\URLFILE.txt -d .\downloads -o .\missing.txt -p .\duplicates.json
+mangadl audit -F .\url-lists -d .\downloads -r .\audit-report.json
+mangadl audit -i .\urls-a.txt -i .\urls-b.txt -d .\downloads -r .\audit-report.json
+mangadl audit -i .\urls32.txt -d . -x
 mangadl audit -d .\downloads -j
 mangadl audit -i .\urls.txt -d .\downloads -j -x
 ```
@@ -482,7 +501,81 @@ totals remain unknown. URL-file audits also report untracked populated folders.
 Audit does not repair or download files. For original URL lists, pass each file
 (or a file glob) with repeatable `-i` and the matching library root with
 repeatable `-d`; JSON includes created, already-indexed, ambiguous, unresolved,
-and conflicting index counts.
+and conflicting index counts. `-F/--url-directory` loads every top-level
+`url*.txt` file in a directory (case-insensitive). Inputs are canonicalized and
+deduplicated across every selected file; the report retains the source file and
+line for invalid and duplicate entries, including the first occurrence of each
+duplicate. Loading progress and the final summary show separate duplicate and
+rejected/invalid counts. The console also lists each URL requiring attention,
+its matched folder, valid/expected image totals, and missing/corrupt/duplicate
+page ranges. A found folder can still be incomplete; image integrity describes
+the files present, while completeness checks whether expected pages are missing.
+On a terminal, audit shows a transient three-row block: current URL/folder,
+its real image-check progress (or indeterminate metadata activity), and overall
+completion with elapsed/rolling15-second ETA. Both modes share this renderer.
+The metadata spinner indicates activity while waiting for the source; it does
+not imply a known metadata percentage. Audit and repair summaries use colored
+statuses, separate URL/folder/page fields, and aligned wrapping for long names.
+Redirected output stays plain, JSON remains machine-readable, `NO_COLOR`
+disables summary colors, and `audit -q` suppresses progress.
+
+Detailed output prioritizes missing/corrupt/duplicate/extra pages; defect-free
+unknown/ambiguous entries are counted in the bottom summary. Add `-a/--all-findings`
+to list them too. Identity ambiguity never hides image defects. Unknown-total
+sequence gaps are explicitly inferred, not source-confirmed, and can't detect
+trailing missing pages. Bottom summaries report associations present/creatable/
+created/conflicting, including an inventory when `-x` disables index writes.
+Source identity reads explicit metadata fields; cover/artist links aren't owners.
+
+Every audit writes a complete versioned JSON report automatically. For a single
+`urls32.txt` input and `-d .`, the default is
+`mangadl-urls32-audit-report.json` in the destination folder. Existing reports
+are preserved: later runs use `mangadl-urls32-audit-report-1.json`, `-2.json`,
+and so on. Multiple input files use the first filename plus `-and-N-more`;
+multiple destination roots place the report in the first root. Folder-only
+audits use `mangadl-folder-audit-report.json`. `-r/--report-output` optionally
+sets the filename base and directory; MangaDL appends the input label if absent
+and still chooses an unused numbered filename. The actual report path is
+printed to the console and included as `report_output` in JSON output.
+`-x/--no-index-backfill` prevents source-manifest writes; the report is still
+created.
+
+Use the audit report with `repair`. A normal invocation always builds and
+prints the current plan; no separate plan file is required. `-p/--plan-output`
+only saves an optional machine-readable copy. Applying a plan requires both
+`-f/--apply` and the exact confirmation token printed by a fresh preview:
+
+```powershell
+mangadl repair -r .\audit-report.json
+mangadl repair -r .\audit-report.json -p .\repair-plan.json
+mangadl repair -r .\audit-report.json -f -C <preview-token>
+mangadl repair -r .\audit-report.json -S E:\Temp -w 3 -f -C <preview-token>
+```
+
+Batch repair currently performs the proven operations only: exact-page repair
+for individual nhentai galleries and normal MangaDL downloads for wholly
+missing, non-collection gallery URLs. It rechecks current folder/page identity,
+refuses active MangaDL runs, quarantines corrupt files where applicable,
+re-audits the result, and backfills `.mangadl-source.json` only for a unique,
+populated match. Ambiguous matches, broad collection URLs, unknown exact page
+identity, unsupported backends, and unverifiable results remain prominently
+report-only and cause apply mode to return a nonzero status. If a folder has
+appeared since the audit marked its URL missing, repair asks for a fresh audit
+instead of scheduling another download. Unknown completion is shown as report
+only, not silently treated as complete.
+
+Applying a batch now opens the normal MangaDL download dashboard. Every action
+for the same destination shares one manager queue, scratch/control setup, and
+worker pool; page repair jobs carry separate exact page ranges. `-w/--workers`
+sets the initial workers (default 2), `-m/--max-workers` sets the normal worker
+ceiling, and the normal dashboard supports adding/retiring workers with `+/-`.
+Page bars show the number of planned target pages. `-L/--worker-start-delay`
+controls launch staggering (default 2 seconds). `-N/--no-ui` or `-j/--json`
+disables the dashboard; JSON mode keeps manager output on stderr. Multiple
+destination roots run as separate queues, one root at a time.
+The batch acquires one repair lock and archive backup per destination, prepares
+all manifests, then runs the queue. Each gallery is verified locally against
+its reviewed expected page set and only its targeted archive keys are reconciled.
 
 For supported individual nhentai galleries, `repair-pages` previews the exact
 missing/corrupt pages, archive keys, and quarantine targets. Apply requires

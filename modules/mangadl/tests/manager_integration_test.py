@@ -9,6 +9,37 @@ from mangadl.models import InputUrl
 from mangadl.state import StateStore
 
 
+def test_manager_schedules_repair_ranges_across_available_workers(tmp_path: Path, monkeypatch) -> None:
+    store = StateStore(tmp_path / "state.sqlite3")
+    run_id = store.create_run({}, "repair-pool")
+    items = [InputUrl(str(index), f"https://nhentai.net/g/{index}/", "test", index) for index in (1, 2, 3)]
+    store.add_jobs(run_id, items, {item.canonical_url: "gallery-dl" for item in items})
+    ranges = {item.canonical_url: str(index) for index, item in enumerate(items, 1)}
+    options = RunOptions(run_id, tmp_path, tmp_path / "archive.sqlite3", tmp_path / "state.sqlite3",
+                         tmp_path / "logs", 2, 0, 0.01, ui=False, worker_start_delay=0,
+                         maximum_workers=2, repair_file_ranges=ranges)
+    original = DownloadManager._worker_command
+    dispatched = []
+
+    def fake_command(self, slot, job):
+        command = original(self, slot, job)
+        dispatched.append((slot, job["canonical_url"], command[command.index("--file-range") + 1]))
+        event = {"schema": 1, "run_id": run_id, "job_id": job["id"], "attempt_id": job["attempt_id"],
+                 "worker": slot, "url": job["canonical_url"], "wall_time": time.time(), "monotonic": time.monotonic(),
+                 "event": "job_complete", "data": {"state": "succeeded", "images_done": 1, "images_total": 1}}
+        return [sys.executable, "-c", f"import time;time.sleep(0.3);print({json.dumps(json.dumps(event))},flush=True)"]
+
+    monkeypatch.setattr(DownloadManager, "_worker_command", fake_command)
+    try:
+        assert DownloadManager(options, store).run() == 0
+        assert len(dispatched) == 3
+        assert {entry[0] for entry in dispatched[:2]} == {1, 2}
+        assert all(page_range == ranges[url] for _slot, url, page_range in dispatched)
+        assert all(job["state"] == "succeeded" for job in store.jobs(run_id))
+    finally:
+        store.close()
+
+
 def test_manager_runs_fake_worker_to_completion(tmp_path: Path, monkeypatch) -> None:
     store = StateStore(tmp_path / "state.sqlite3")
     run_id = store.create_run({}, "integration")

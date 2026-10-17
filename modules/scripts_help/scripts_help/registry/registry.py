@@ -286,7 +286,7 @@ REGISTRY: dict = {
                 "path": "pyscripts/zip_for_llms.py",
                 "desc": "Package repo for LLM: Gemini analysis, presets, size reporting",
                 "help_cmd": ["python", "pyscripts/zip_for_llms.py", "--help"],
-                "version": "0.7.0",
+                "version": "0.8.0",
             },
             {
                 "name": "repo_processor.py",
@@ -376,11 +376,18 @@ REGISTRY: dict = {
         "desc": "Process video and image files; clean up download fragments",
         "items": [
             {
+                "name": "compresser (module)",
+                "path": "modules/compresser",
+                "desc": "Analyze, compare, and optimize manga/manhwa images using perceptual compression",
+                "help_cmd": ["python", "-m", "compresser", "--help"],
+                "version": "0.7.0",
+            },
+            {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
                 "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",
                 "help_cmd": ["mangadl", "--help"],
-                "version": "1.24.0",
+                "version": "1.36.0",
             },
             {
                 "name": "edit_video_file.py",
