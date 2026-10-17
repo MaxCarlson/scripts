@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+I1b1 1.43.0/compresser0.17.0: -l -D files shared fast extension/size inventory,
+preserving manga ownership/exclusions without image opens. Explicit unverified
+totals and separate snapshots. First slice rejects -u (direct gallery targets work).
+109 compression/302 MangaDL pass; default header-based compression unchanged.
+
 I5b1.42.0/compresser0.16.0: `-b -Q 90 80` quality sweeps,
 shared baseline/sample/inventory/cache.105 compression/19 integration pass. Preview
 via -O remains external and serial; no whole-plan completion implied.

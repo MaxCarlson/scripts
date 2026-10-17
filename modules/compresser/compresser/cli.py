@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.16.0"
+__version__ = "0.17.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -303,6 +303,12 @@ def main(argv: list[str] | None = None) -> int:
             from .recovery import run_recovery
 
             return run_recovery(args.input, apply=args.write, confirmation=args.confirm_recovery, as_json=args.json)
+        if args.inventory_only and args.inventory_depth == "files":
+            from .file_inventory import scan_file_inventory
+
+            report = scan_file_inventory(args.input, inventory_path(args, args.input))
+            print(json.dumps(report, indent=2))
+            return 0
         if args.cache_file and (
             args.cache_file.resolve() == args.input.resolve()
             or args.input.resolve() in args.cache_file.resolve().parents

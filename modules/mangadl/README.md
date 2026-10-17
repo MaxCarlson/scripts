@@ -1,5 +1,19 @@
 # mangadl
 
+## Quick file-extension and size inventory
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp\mangadl-inventory.sqlite3' > 'E:\Temp\file-inventory.json'
+```
+
+No image headers/pixels are opened. JSON reports candidate counts/bytes per gallery
+and extension, size summaries and shares; format/dimensions/content remain unverified.
+Nested chapters stay with the gallery, covers/controls/partials/links are excluded.
+Unreadable stats are explicit and unknown sizes are null, never zero-byte success.
+Completed file snapshots persist separately from header inventory and trial cache.
+Normal compression still verifies headers. This first fast-scan slice rejects -u
+filters: target a gallery directly or use default header inventory for exact filters.
+
 ## Compare lossless and several lossy qualities
 
 ```powershell

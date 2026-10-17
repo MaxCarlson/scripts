@@ -1,4 +1,25 @@
-# compresser 0.16.0
+# compresser 0.17.0
+
+## Fast extension/size inventory
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp\image-inventory.sqlite3' > 'E:\Temp\file-inventory.json'
+```
+
+`-D/--inventory-depth files` is an inventory-only pass using directory entries and
+file stats: no image header opens, pixel decodes or encoder work. It counts candidate
+images by extension, gallery and bytes, with size summaries and count/byte shares.
+Malformed files with image extensions are counted as candidates, not valid images.
+Actual formats/dimensions remain unverified/null. Unknown file sizes are null, with
+explicit stat errors; known bytes are reported separately. Directory enumeration
+failure leaves the last completed snapshot intact. Hidden/partial/linked paths are
+excluded. Bytes are file lengths, not filesystem allocated space.
+
+Fast snapshots are saved in a separate inventory_file_snapshots table, never as
+verified headers or compression results. Normal compression still refreshes verified
+headers; this fast snapshot does not yet bypass that refresh or advise accuracy.
+`-D headers` (default) retains the existing header-based inventory workflow. Files
+depth requires -l and cannot drive sampled compression or source writes.
 
 ## Multi-quality comparison
 

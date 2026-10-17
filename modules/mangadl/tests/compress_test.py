@@ -10,6 +10,27 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_fast_inventory_preserves_manga_page_exclusions(tmp_path, monkeypatch, capsys):
+    root = tmp_path / "library"
+    chapter = root / "manga" / "chapter"
+    chapter.mkdir(parents=True)
+    (chapter / "01.jpg").write_bytes(b"12345")
+    (chapter / "cover.webp").write_bytes(b"ignored")
+    (root / "manga" / "_partial").mkdir()
+    (root / "manga" / "_partial" / "bad.jpg").write_bytes(b"ignored")
+
+    def forbidden(*args, **kwargs):
+        pytest.fail("Fast MangaDL inventory opened image content")
+
+    monkeypatch.setattr(Image, "open", forbidden)
+    assert main(["compress", "-d", str(root), "-l", "-D", "files", "-I", str(tmp_path / "inventory.sqlite3")]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["candidate_images"] == 1
+    assert report["candidate_bytes"] == 5
+    assert list(report["galleries"]) == ["manga"]
+    assert report["content_verified"] is False
+
+
 def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, capsys):
     gallery = tmp_path / "library" / "manga" / "chapter"
     gallery.mkdir(parents=True)

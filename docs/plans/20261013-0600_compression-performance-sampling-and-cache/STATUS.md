@@ -1,5 +1,17 @@
 # Status
 
+I1b1 compresser0.17.0/MangaDL1.43.0: -l -D files counts extension candidates/bytes
+without opening image content, reports known versus unknown totals, gallery shares/
+size distributions and stat errors, and persists completed unverified snapshots in
+inventory_file_snapshots. Existing headers/trials untouched. Normal header refresh
+still required for compression. Fast -u filters explicitly rejected; direct gallery
+targeting supported, nested pages/cover/control/partial/link exclusions retained.
+RED observed for absent CLI/guard and denied-stat boundary, then focused5 tests pass;
+full compresser109, full MangaDL302 and help55 pass. Lint/format/whitespace checks
+pass; editable installs refreshed before publishing. User-requested existing
+feature branch retained. No production run.
+Docs freshness: compresser/MangaDL20 (same-checkpoint CLI docs); termdash unchanged.
+
 I5b compresser0.16.0/MangaDL1.42.0: -Q/--qualities quality sweep in -b or -c -m
 lossy. Existing --preview-qualities alias retained. Unique quality stages share
 inventory/sample/lossless baseline and effective candidate cache. Without -Q the

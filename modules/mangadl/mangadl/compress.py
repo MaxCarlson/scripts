@@ -29,6 +29,8 @@ from .library_index import read_source_manifest, scan_library, resolve_url_folde
 from .input import canonicalize_url
 from .library_guard import library_write_guard
 
+COVER_STEMS = frozenset({"cover", "folder", "front", "back", "poster"})
+
 
 def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recursive: bool = True, inventory=None):
     summary, images = scan_directory(directory, recursive=recursive, cache=cache, inventory=inventory)
@@ -38,7 +40,7 @@ def _gallery_images(directory: Path, cache: AnalysisCache | None = None, *, recu
         for image in images
         if not image.path.is_symlink()
         and not image.path.name.startswith(".")
-        and image.path.stem.casefold() not in {"cover", "folder", "front", "back", "poster"}
+        and image.path.stem.casefold() not in COVER_STEMS
     ]
 
 
@@ -135,6 +137,23 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
 
     try:
         validate_analysis_arguments(args)
+        if getattr(args, "inventory_depth", "headers") == "files":
+            from compresser.file_inventory import scan_file_inventory
+            from compresser.scanner import IMAGE_EXTENSIONS
+
+            single_gallery = read_source_manifest(dest) is not None or any(
+                path.is_file()
+                and not path.is_symlink()
+                and not path.name.startswith(".")
+                and path.suffix.lower() in IMAGE_EXTENSIONS
+                and path.stem.casefold() not in COVER_STEMS
+                for path in dest.iterdir()
+            )
+            report = scan_file_inventory(
+                dest, inventory_path(args, dest), exclude_stems=COVER_STEMS, single_gallery=single_gallery
+            )
+            print(json.dumps(report, indent=2))
+            return 0
         if args.write:
             _assert_library_idle(dest)
         if getattr(args, "confirm_recovery", None) and not getattr(args, "recover", False):

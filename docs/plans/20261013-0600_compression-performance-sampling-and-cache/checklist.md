@@ -5,6 +5,8 @@
 - [x] Reconcile baseline/completed work and record approved I1-I5 plan including SSD scratch.
 - [x] I1a durable inventory, validated refresh, inventory-only CLI, focused validation (90 compression/17 integration/55 help).
 - [ ] I1b single-pass discovery, fast/richer inventory and explicit trusted snapshots.
+  - [x] I1b1 filesystem-only -l -D files, separate durable unverified snapshots, totals/error handling and MangaDL exclusions.
+  - [ ] Trusted completed header snapshots and selected-file validation without whole-target enumeration.
 - [ ] I2 bounded persistent cache improvements and reusable encoder candidates.
   - [x] I2a reusable serialized SQLite connection, memory promotion of disk hits, periodic bounded eviction; immediate commits retained. 92 compression/17 integration/55 help pass.
   - [x] I2b effective candidate identity and AUTO analysis reuse;95 compression/17 integration pass.

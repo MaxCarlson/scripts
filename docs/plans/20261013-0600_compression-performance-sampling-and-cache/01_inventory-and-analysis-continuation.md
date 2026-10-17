@@ -1,6 +1,7 @@
 # Approved inventory and analysis continuation
 
-Approved in conversation 2026-10-16. Baseline c3db8b4, current branch main.
+Approved in conversation 2026-10-16. Planning baseline c3db8b4 on main;
+execution branch compression-inventory-and-analysis-20261016.
 This extends the existing plan, not a competing roadmap. P1-P3 and seven-strategy
 comparison/seeded gallery sampling already exist. Preserve their safety/tests.
 
@@ -139,3 +140,24 @@ Current READMEs match c3db8b4; old main plan had stale P1-P3 implementation clai
 Freshness before reconciliation: README20/100, plan60/100 for both target modules;
 shared termdash unchanged. Reconcile in this checkpoint and keep each new CLI/API
 slice documented/tested before moving on. No separate docs backlog is necessary.
+
+## Task 1: I1b1 filesystem-only inventory checkpoint
+
+Interfaces: standalone/MangaDL shared analysis arguments consume the new fast
+inventory scanner; durable inventory owns a distinct file-snapshot table. Existing
+header scans, preview selection, trial cache and estimators must remain unchanged.
+
+1. Write CLI tests for `-l -D files`: literal candidate counts/bytes/extensions,
+   no image opens, durable snapshot, updated membership and policy rejection.
+   Expected: RED because -D is not recognized, not because of fixture problems.
+2. Implement explicit filesystem depth for inventory-only mode, sharing the scanner
+   between both CLIs. Enumerate image extensions without claiming verified formats;
+   preserve nested-gallery ownership and cover/control/partial/link exclusions.
+   First slice refuses -u filters rather than silently ignoring them. Header-based
+   inventory remains the default. No trust mode or lazy compression consumption yet.
+3. Persist only completed enumerations; record stat errors as unknown totals, never
+   zero-byte success. Failed enumeration preserves prior completed snapshot. Keep
+   fast snapshots independent of verified headers and compressed trial retention.
+4. Run focused tests, full compression suite, full MangaDL suite and help registry.
+   Expected: all pass. Update versions/help/docs/status, refresh installs, commit
+   and push this feature branch only. Expected: clean synchronized branch.

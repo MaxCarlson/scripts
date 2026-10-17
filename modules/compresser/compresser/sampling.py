@@ -16,6 +16,13 @@ from .models import ImageMetadata, ImageResult
 
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "-D",
+        "--inventory-depth",
+        choices=("headers", "files"),
+        default="headers",
+        help="Inventory depth: verified headers (default) or fast unverified file sizes/extensions; files requires -l.",
+    )
     from .preview import add_preview_arguments
 
     add_preview_arguments(parser)
@@ -56,6 +63,13 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
+    if getattr(args, "inventory_depth", "headers") == "files":
+        if not getattr(args, "inventory_only", False):
+            raise ValueError("Filesystem-only depth requires --inventory-only; compression requires verified headers")
+        if getattr(args, "url", None):
+            raise ValueError(
+                "Filesystem inventory does not yet support -u filters; target one gallery or use header depth"
+            )
     from .preview import validate_preview_arguments
 
     validate_preview_arguments(args)

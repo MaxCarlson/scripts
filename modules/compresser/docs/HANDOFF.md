@@ -1,5 +1,12 @@
 # Compresser handoff
 
+I1b1 0.17.0/MangaDL1.43.0: shared file_inventory scanner via -l -D files, no image
+opens/encodes. Explicit candidate/unknown totals, gallery/extension sizes/shares,
+durable separate completed file snapshots; aborted walk preserves prior snapshot.
+109 full compression/302 full MangaDL tests pass; RED->GREEN observed for main
+behavior and stat-error guard. Header compression/preview logic unchanged. Existing
+plan-scoped ledger records execution; remaining trust/advisor/scratch stages open.
+
 I5b0.16.0/MangaDL1.42.0: -Q/--qualities now also works in combined/lossy comparison;
 --preview-qualities alias retained. One shared lossless baseline and sample; stages
 named per quality, duplicate values removed, per-row estimates/cache reuse.105

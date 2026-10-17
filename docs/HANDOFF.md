@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+I1b1 current checkpoint: compresser0.17.0/MangaDL1.43.0 on existing compression
+feature branch. -l -D files provides filesystem-only extension/size inventory,
+clearly unverified and persisted separately.109 compression/302 MangaDL/55 help
+pass; default verified-header compression unchanged. Exact -u filters are rejected
+in this first fast slice; direct gallery targeting works. Trusted snapshots,
+advisor, scratch and reader acceptance remain open; no production library run.
+
 Latest I5b: compresser0.16.0/MangaDL1.42.0 compares lossless plus multiple lossy
 qualities using -b -Q90 80 (space between flag and values recommended), sharing the
 sample/inventory/lossless baseline/cache.105 compression/19 integration/55 help pass.
