@@ -272,6 +272,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 effort=getattr(args, "effort", 6),
                 compare_both=getattr(args, "compare_both", False),
                 sampling_plan=sampling_plan,
+                qualities=getattr(args, "preview_qualities", None),
             )
             if getattr(args, "json", False):
                 data = [

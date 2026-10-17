@@ -48,10 +48,12 @@ def add_preview_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-Q",
+        "--qualities",
         "--preview-qualities",
+        dest="preview_qualities",
         type=parse_preview_quality,
         nargs="+",
-        help="Lossy preview qualities, e.g.90 80 or0.9 0.8 (default:90 80); lossless always included.",
+        help="Preview/comparison lossy qualities, e.g.90 80 or0.9 0.8. Preview default:90 80; comparison default:-q.",
     )
 
 
@@ -60,8 +62,12 @@ def validate_preview_arguments(args: argparse.Namespace) -> None:
     count = getattr(args, "preview_count", None)
     qualities = getattr(args, "preview_qualities", None)
     if not output:
-        if count is not None or qualities is not None:
-            raise ValueError("--preview-count/--preview-qualities require --preview-dir")
+        if count is not None:
+            raise ValueError("--preview-count requires --preview-dir")
+        if qualities is not None and not (
+            getattr(args, "compare_both", False) or (args.compare and args.mode == "lossy")
+        ):
+            raise ValueError("--qualities requires preview, --compare-both, or --compare -m lossy")
         return
     if count is not None and count < 1:
         raise ValueError("Preview count must be positive")

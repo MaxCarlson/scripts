@@ -1,5 +1,12 @@
 # Status
 
+I5b compresser0.16.0/MangaDL1.42.0: -Q/--qualities quality sweep in -b or -c -m
+lossy. Existing --preview-qualities alias retained. Unique quality stages share
+inventory/sample/lossless baseline and effective candidate cache. Without -Q the
+old -q single-quality behavior/names remain.105 full compression/19 integration
+tests and55 help tests pass; lint/format/whitespace checks pass. I5a df3535f already pushed. Remaining
+advisor, trusted/fast inventory, diagnostics/scratch/reader acceptance not complete.
+
 I5a compresser0.15.0/MangaDL1.41.0: new user-requested full-resolution previews
 (-O external output,-n base count,-Q quality list; lossless plus default90/80).
 Checksum-verified original copies and verified encoded candidates, unique run

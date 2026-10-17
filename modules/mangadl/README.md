@@ -1,5 +1,16 @@
 # mangadl
 
+## Compare lossless and several lossy qualities
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -B 1024
+```
+
+One shared sampled inventory, four lossless strategies, then WebP/JPEG/AUTO at
+each requested quality. -Q also accepts0.9/0.8 notation. Matching trials reuse the
+automatic cache. This is read-only analysis; no preview images are written without
+-O. More qualities add trials, not repeated inventories/lossless baselines.
+
 ## Visual compression previews
 
 ```powershell

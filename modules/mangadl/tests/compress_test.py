@@ -45,6 +45,14 @@ def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, caps
     assert {p.name: p.read_bytes() for p in gallery.iterdir()} == before
 
 
+def test_multi_quality_gallery_comparison(tmp_path, capsys):
+    Image.new("RGB", (40, 40), "white").save(tmp_path / "01.png")
+    assert main(["compress", "-d", str(tmp_path), "-b", "-Q", "90", "80", "-e", "0", "-J"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    assert len(rows) == 10
+    assert {r["quality"] for r in rows if r["mode"] == "lossy"} == {"q=90", "q=80"}
+
+
 def test_inventory_only_reuses_nested_headers(tmp_path, capsys, monkeypatch):
     import compresser.scanner as scanner
 

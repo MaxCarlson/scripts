@@ -1,5 +1,9 @@
 # mangadl Immediate Project Handoff
 
+I5b1.42.0/compresser0.16.0: `-b -Q 90 80` quality sweeps,
+shared baseline/sample/inventory/cache.105 compression/19 integration pass. Preview
+via -O remains external and serial; no whole-plan completion implied.
+
 I5a1.41.0/compresser0.15.0: shared preview -O/-n/-Q, exact gallery filters and nested
 page/cover exclusions preserved. External candidate copies only, serial; full-res
 manifest/checksums/failure/cancellation evidence.103 compression/18 integration pass.

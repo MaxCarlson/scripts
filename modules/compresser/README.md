@@ -1,4 +1,19 @@
-# compresser 0.15.0
+# compresser 0.16.0
+
+## Multi-quality comparison
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -B 1024
+```
+
+`-Q/--qualities` also works in comparisons (the existing --preview-qualities spelling
+remains an alias). With -b, one lossless set is followed by WebP/JPEG/AUTO lossy rows
+for every quality, on the same sample and inventory. Duplicate qualities are removed.
+Lossless baselines are not repeated. For only a PNG lossless baseline plus lossy
+quality sweeps, use `-c -m lossy -Q 90 80`.
+Without -Q, -q continues to select the single lossy quality. Per-quality stage names,
+sample projections and cache hits are reported separately. Comparison writes no image
+copies; use -O for visual preview output. More qualities mean more encoder trials.
 
 ## Full-resolution compression previews
 

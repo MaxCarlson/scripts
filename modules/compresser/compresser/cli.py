@@ -24,7 +24,7 @@ from .scanner import scan_directory
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling
 from .ui import CompresserDashboard, print_comparison_matrix, print_single_summary, report_cancellation
 
-__version__ = "0.15.0"
+__version__ = "0.16.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -172,22 +172,33 @@ def run_comparison(
     effort: int = 6,
     compare_both: bool = False,
     sampling_plan=None,
+    qualities: Sequence[int] | None = None,
 ) -> list[ComparisonRow]:
     """Execute benchmarks across standard competing compression configurations."""
     formats = ["png", "webp", "jpeg", "auto"]
+    quality_values = list(dict.fromkeys(qualities)) if qualities is not None else [quality]
+    if not quality_values or any(
+        isinstance(q, bool) or not isinstance(q, int) or not 1 <= q <= 100 for q in quality_values
+    ):
+        raise ValueError("Comparison qualities must be integers1..100")
+    if qualities is not None and not compare_both and mode != "lossy":
+        raise ValueError("Multiple quality comparison requires lossy mode or compare_both")
     candidate_strategies = [
         CompressionStrategy(
-            name=f"{fmt}-{'lossless' if fmt == 'png' else selected_mode}",
+            name=f"{fmt}-{'lossless' if fmt == 'png' else selected_mode}"
+            + (f"-q{trial_quality}" if selected_mode == "lossy" and fmt != "png" and len(quality_values) > 1 else ""),
             format=fmt,
             mode="lossless" if fmt == "png" else selected_mode,
-            quality=quality,
+            quality=trial_quality,
             perceptual_target=perceptual_target,
             encoder=encoder,
             method=effort,
         )
         for selected_mode in (["lossless", "lossy"] if compare_both else [mode])
+        for quality_index, trial_quality in enumerate(quality_values if selected_mode == "lossy" else [quality])
         for fmt in formats
         if not (compare_both and selected_mode == "lossy" and fmt == "png")
+        and not (selected_mode == "lossy" and quality_index > 0 and fmt == "png")
     ]
 
     from collections import Counter
@@ -342,6 +353,7 @@ def main(argv: list[str] | None = None) -> int:
                 effort=args.effort,
                 compare_both=args.compare_both,
                 sampling_plan=sampling_plan,
+                qualities=args.preview_qualities,
             )
             if args.json:
                 data = [

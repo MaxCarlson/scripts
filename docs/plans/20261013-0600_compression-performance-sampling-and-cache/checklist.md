@@ -16,6 +16,7 @@
 - [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
   - [x] I5a full-resolution external preview originals/lossless/multiple-quality variants, manifest, cancellation and source preservation tests.
+  - [x] I5b multi-quality comparison on one sample with shared lossless baseline/cache and per-quality stages/projections.
 
 Historical checkpoints below retain publication status; they do not imply newer work
 has been pushed or accepted in a reader/real terminal.

@@ -1,5 +1,10 @@
 # Compresser handoff
 
+I5b0.16.0/MangaDL1.42.0: -Q/--qualities now also works in combined/lossy comparison;
+--preview-qualities alias retained. One shared lossless baseline and sample; stages
+named per quality, duplicate values removed, per-row estimates/cache reuse.105
+compression/19 integration tests pass. I5a preview df3535f pushed previously.
+
 I5a0.15.0/MangaDL1.41.0 preview: -O external unique run,-n base count,-Q integer/
 decimal quality list (defaults90/80), lossless always included. Full-resolution
 verified candidate bytes + checksum original copy; actual sizes even if larger.

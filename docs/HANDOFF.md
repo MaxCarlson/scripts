@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+Latest I5b: compresser0.16.0/MangaDL1.42.0 compares lossless plus multiple lossy
+qualities using -b -Q90 80 (space between flag and values recommended), sharing the
+sample/inventory/lossless baseline/cache.105 compression/19 integration/55 help pass.
+Preview I5a df3535f pushed; remaining plan stages are still open. No production runs.
+
 Latest visual preview checkpoint: compresser0.15.0/MangaDL1.41.0 on existing
 compression-inventory-and-analysis-20261016. -O external run directory,-n base
 image count,-Q qualities produce originals/lossless/lossy candidates with manifest.
