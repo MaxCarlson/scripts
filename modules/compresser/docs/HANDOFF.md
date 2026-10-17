@@ -1,5 +1,12 @@
 # Compresser handoff
 
+Plan03 P5 completed: compresser0.32.0/MangaDL1.58.0 caches each successfully
+verified AUTO format candidate during analysis, with normalized PNG-lossless keys,
+retained-original policy and candidate-only elapsed time. Preview/write paths still
+require bytes; failed candidates never fabricated.249 compression/1 skip,315
+MangaDL/55 help pass. P6 explicit available-memory auto policy next.
+
+
 Plan03 P4 implemented: compresser0.31.0/MangaDL1.57.0, atomic versioned metadata
 profiles with input-size variance proxy, explicit -s auto starter coverage, stable
 uniform-within-gallery prefixes and design-weighted estimates. Numeric -s/-P stay

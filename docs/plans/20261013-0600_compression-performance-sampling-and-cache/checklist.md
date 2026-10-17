@@ -11,7 +11,7 @@
   - [x] P3a deduplicated operation-local ancestor validation and replacement checks;227 compression/314 MangaDL/55 help pass.
   - [x] P3b bounded cache preparation/dispatch overlap and bulk lookup parity; final gate follows.
 - [x] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
-- [ ] P5 verified AUTO candidate reuse/measurement-gated CPU optimization.
+- [x] P5 verified AUTO candidate reuse; no unmeasured metric/process-pool changes.
 - [ ] P6 explicit auto memory policy; default remains512MiB.
 - [ ] P7 bounded parallel previews and single manifest owner.
 - [ ] P8 canonical argument simplification/major migration, compatibility and safety checks.

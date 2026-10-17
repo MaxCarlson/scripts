@@ -1,5 +1,9 @@
 # mangadl
 
+Checkpoint1.58.0/compresser0.32.0 reuses successful verified AUTO candidates for
+later matching explicit-format analysis, respecting retained originals and failures.
+Cached sizes do not replace actual preview encoding or safe write publication.
+
 Checkpoint1.57.0/compresser0.31.0 adds explicit `-s auto` using a matching saved
 gallery metadata profile. It preserves nested chapter ownership and uniform page
 draws within each gallery. Starter coverage is not a guaranteed statistical minimum.

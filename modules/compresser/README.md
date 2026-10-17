@@ -1,4 +1,15 @@
-# compresser 0.31.0
+# compresser 0.32.0
+
+AUTO read-only analysis now saves verified per-format trial results immediately.
+Subsequent matching explicit format checks reuse them; failed/unsupported encoders
+never become successful cache entries. PNG is normalized to lossless. Larger
+candidates retain originals unless explicitly allowed, just like single-format
+analysis. Candidate elapsed time measures only its encode/verification; warm hits
+report current lookup work. Preview and source publication always require bytes.
+Encoder effort remains a speed/size trade-off, not a fidelity percentage: on one
+generated128px fixture, effort0/2/6 median times were0.0039/0.0057/0.0808s and
+candidate sizes650/92/78 B. Different settings, not equal-work speed comparisons;
+no default effort change or production throughput prediction.
 
 `-s auto` explicitly selects a metadata-profile starter sample. Header inventories
 publish versioned gallery counts/bytes/variance, formats and dimension diagnostics,

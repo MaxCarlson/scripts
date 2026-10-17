@@ -148,7 +148,7 @@ class CompressionEngine:
         return encoded, ssim, codec.name
 
     def _encode_auto(
-        self, im: Image.Image, meta: ImageMetadata, strategy: CompressionStrategy
+        self, im: Image.Image, meta: ImageMetadata, strategy: CompressionStrategy, *, candidate_callback=None
     ) -> tuple[str, bytes, float | None, str]:
         formats = ["png", "jpeg"] if meta.is_tall_for_webp else ["webp", "png", "jpeg"]
         if strategy.encoder != "auto":
@@ -164,10 +164,13 @@ class CompressionEngine:
             # PNG is always pixel-lossless, including in mixed lossy/perceptual searches.
             candidate = replace(strategy, format=fmt, mode="lossless" if fmt == "png" else strategy.mode)
             try:
+                candidate_started = time.perf_counter()
                 encoded, score, encoder = self._encode_verified(im, fmt, candidate)
             except (ValueError, RuntimeError, OSError) as exc:
                 failures.append(f"{fmt}: {exc}")
                 continue
+            if candidate_callback is not None:
+                candidate_callback(candidate, fmt, encoded, score, encoder, time.perf_counter() - candidate_started)
             if best is None or len(encoded) < len(best[1]):
                 best = (fmt, encoded, score, encoder)
         if best is None:
@@ -339,7 +342,35 @@ class CompressionEngine:
                     raise ValueError("Unsupported animation or pixel/color mode; source preserved")
                 im.load()
                 if strategy.format == "auto":
-                    target_fmt, encoded_bytes, ssim, encoder = self._encode_auto(im, meta, strategy)
+
+                    def cache_candidate(candidate, fmt, payload, score, encoder_name, elapsed):
+                        FileObservation(path, path.parent, stat).validate()
+                        size = len(payload)
+                        kept = size >= orig_bytes and not candidate.allow_larger
+                        destination = path if kept or fmt == meta.format.lower() else path.with_suffix(ext_map[fmt])
+                        result = ImageResult(
+                            input_path=path,
+                            output_path=destination,
+                            original_bytes=orig_bytes,
+                            compressed_bytes=orig_bytes if kept else size,
+                            original_format=meta.format,
+                            output_format=meta.format if kept else fmt.upper(),
+                            ssim=1.0 if kept else score,
+                            elapsed_s=elapsed,
+                            skipped=kept,
+                            skip_reason=(
+                                f"compressed output ({size} B) is not smaller than original ({orig_bytes} B)"
+                                if kept
+                                else None
+                            ),
+                            candidate_bytes=size,
+                            encoder=encoder_name,
+                        )
+                        self.cache.set(path, candidate, result)
+
+                    target_fmt, encoded_bytes, ssim, encoder = self._encode_auto(
+                        im, meta, strategy, candidate_callback=cache_candidate if not write_mode else None
+                    )
                     output_path = path if target_fmt == meta.format.lower() else path.with_suffix(ext_map[target_fmt])
                 else:
                     encoded_bytes, ssim, encoder = self._encode_verified(im, target_fmt, strategy)

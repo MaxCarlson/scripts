@@ -36,7 +36,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.31.0"
+__version__ = "0.32.0"
 
 
 def build_parser() -> argparse.ArgumentParser:

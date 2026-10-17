@@ -1,6 +1,6 @@
 """Concurrent manga/gallery download manager."""
 
-__version__ = "1.57.0"
+__version__ = "1.58.0"
 
 from .library_index import (
     LibraryFolder,
