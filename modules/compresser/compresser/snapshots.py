@@ -104,6 +104,18 @@ class SelectionSnapshot:
             )
         self.report = {"policy": "refresh", "completed": report["completed"], "membership_verified": True}
         self.profile = profile
+        from .report_session import current_session
+
+        session = current_session()
+        if session and session.operation != "inventory":
+            from dataclasses import replace
+            from .inventory import inventory_report
+
+            session.context = replace(session.context, snapshot=dict(self.report))
+            summary = inventory_report(images, self.root, gallery_keys=gallery_keys)
+            summary.update(self.store.diagnostics())
+            summary["sampling_profile"] = profile.data
+            session.inventory(summary, implicit=True)
 
     @timed("snapshot_load")
     def load(self) -> tuple[list[ImageMetadata], dict | None]:

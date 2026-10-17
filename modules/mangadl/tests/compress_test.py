@@ -209,7 +209,7 @@ def test_inventory_summary_shared_with_standalone(tmp_path, capsys, depth):
     assert json.loads(output.out)["galleries"]
     assert main([*args, "-J"]) == 0
     output = capsys.readouterr()
-    assert output.err == ""
+    assert "Report saved:" in output.err and "Inventory Summary" not in output.err
     assert json.loads(output.out)["galleries"]
 
 

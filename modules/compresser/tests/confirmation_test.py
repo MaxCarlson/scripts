@@ -112,4 +112,4 @@ def test_cli_does_not_advertise_an_unapplied_precision_allocation(tmp_path, caps
     assert main(["-i", str(tmp_path), "-s", "1", "-f", "png", "-e", "0", "-N"]) == 0
     output = capsys.readouterr().out
     assert "recommend -s" not in output
-    assert "planning only" in output.lower()
+    assert "not guaranteed savings" in " ".join(output.lower().split())

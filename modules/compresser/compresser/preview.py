@@ -166,8 +166,16 @@ def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], r
     if not args.json:
         print(f"Preview output: {run}\n{report['execution']}")
     status = run_preview_pipeline(args, selected, run, report, _save_manifest)
+    from .report_session import current_session
+    from .reporting import build_preview_report
+
+    session = current_session()
+    if session:
+        report["report_artifacts"] = session.save(build_preview_report(report, context=session.context))
     if args.json:
         print(json.dumps(report, indent=2))
     else:
         print(f"Preview {report['status']}: {run / 'manifest.json'}")
+        if session:
+            session.print_artifacts()
     return status

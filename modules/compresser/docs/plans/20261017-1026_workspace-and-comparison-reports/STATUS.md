@@ -1,5 +1,12 @@
 # Status
 
+Current: Tasks1-4 committed/pushed; Task5 automatic lifecycle integrated, focused
+generated end-to-end trust/cache/workers/scratch test green. Full323compression/1skip,
+316MangaDL,76TermDash/1skip,55help passed before final settings/scope refinements;
+new12operation/9report tests cover final behavior. Next final task gate and one fresh
+whole-change review. No live production changes or main merge. Source1.4.0/2.4.0.
+Manual Windows terminal/reader gates remain outstanding.
+
 2026-10-17: Design/mockup approved in conversation; written design and implementation
 plan created and self-reviewed against source64b33d1. Awaiting written plan review
 before implementation under Superpowers. Current branch

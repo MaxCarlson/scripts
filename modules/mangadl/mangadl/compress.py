@@ -22,7 +22,8 @@ from compresser import (
     scan_directory,
 )
 from compresser.cli import run_comparison
-from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
+from compresser.report_session import report_operation, start_session, current_session
+from compresser.sampling import validate_analysis_arguments, gallery_sample
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.inventory_ui import InventoryProgress, emit_inventory_report
 from compresser.memory_policy import configure_memory_arguments
@@ -32,11 +33,8 @@ from compresser.timing import configure_pipeline, pipeline_report, profile_pipel
 from compresser.cache import create_analysis_cache
 from compresser.ui import (
     CompresserDashboard,
-    print_comparison_matrix,
-    print_single_summary,
     recommend_comparison_strategies,
     report_cancellation,
-    print_cache_diagnostics,
 )
 from .library_index import read_source_manifest, scan_library, resolve_url_folders
 from .input import canonicalize_url
@@ -172,6 +170,7 @@ def discover_gallery_targets(
     return galleries
 
 
+@report_operation
 @profile_pipeline
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
@@ -222,6 +221,7 @@ def run_cli(args: argparse.Namespace) -> int:
         with guard:
             if not args.recover:
                 initialize_workspace(args._workspace)
+                start_session(args)
             return _run_cli_owned(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Error in mangadl compress: {exc}", file=sys.stderr)
@@ -430,12 +430,15 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         snapshot.validate_selected(eval_images)
         sampling_plan.population_warning = snapshot.report.get("warning", "")
         store.save_sample(sampling_plan, dest)
-        if not args.json:
-            snapshot.print_warning()
-            print(f"Inventory: {store.path}")
-            print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")
-            print_cache_diagnostics(cache.diagnostics(), startup=True)
-            print_sampling(sampling_plan)
+        from dataclasses import replace
+
+        active_report = current_session()
+        active_report.context = replace(
+            active_report.context,
+            sampling=sampling_plan.summary(),
+            snapshot=dict(snapshot.report),
+            cache=cache.diagnostics(),
+        )
         engine = CompressionEngine(
             cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=args._memory_policy
         )
@@ -457,6 +460,10 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 qualities=getattr(args, "preview_qualities", None),
                 source_validator=snapshot.validate_selected,
                 scratch_dir=getattr(args, "scratch_dir", None),
+            )
+            session = current_session()
+            comparison_report, report_artifacts = session.comparison(
+                comp_rows, snapshot=snapshot.report, cache=cache.diagnostics()
             )
             if getattr(args, "json", False):
                 recommendations = recommend_comparison_strategies(comp_rows)
@@ -484,6 +491,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "sampling": r.sampling,
                         "estimate": r.estimate,
                         "extrapolation": r.extrapolation,
+                        "report_artifacts": report_artifacts,
                         "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {
@@ -495,14 +503,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 ]
                 print(json.dumps(data, indent=2))
             else:
-                print_comparison_matrix(
-                    comp_rows,
-                    target_path=args.destination,
-                    workers=getattr(args, "threads", 4),
-                    runner="mangadl",
-                )
-                print_cache_diagnostics(cache.diagnostics())
-                snapshot.print_warning()
+                session.render(comparison_report)
             return 0
 
         # Compression / Analysis Mode
@@ -548,9 +549,15 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             if dash:
                 dash.close()
 
+        session = current_session()
+        analysis_report, report_artifacts, extrapolation = session.analysis(
+            batch_result, sampling_plan, strat, snapshot=snapshot.report, cache=cache.diagnostics()
+        )
         if getattr(args, "json", False):
             out = {
                 "strategy": batch_result.strategy_name,
+                "report_artifacts": report_artifacts,
+                "extrapolation": extrapolation,
                 "dry_run": batch_result.dry_run,
                 "total_images": batch_result.total_images,
                 "original_bytes": batch_result.original_bytes,
@@ -578,25 +585,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             }
             print(json.dumps(out, indent=2))
         else:
-            print_single_summary(batch_result, scan=summary)
-            estimate = sampling_plan.estimate(batch_result.results)
-            if estimate["scope"] != "full":
-                print(
-                    f"Projected savings for covered strata: {estimate['projected_covered_saved_bytes']:,} bytes; "
-                    f"{estimate['unestimated_images']} images remain unestimated."
-                )
-                advisor = estimate.get("pilot_advisor")
-                if advisor and not advisor["precision_met"]:
-                    print(
-                        f"Pilot advisor (planning only): {advisor['recommended_total_samples']} total trials "
-                        f"(+{advisor['recommended_additional_confirmation_samples']} samples, "
-                        f"~{advisor['estimated_additional_runtime_seconds']:.1f}s) for "
-                        f"+/-{advisor['target_margin_percent']:g}% target margin under its proposed quotas. "
-                        "Ordinary -s does not apply those quotas; this is not a precision guarantee."
-                    )
-                print(estimate["uncertainty"])
-            print_cache_diagnostics(cache.diagnostics())
-            snapshot.print_warning()
+            session.render(analysis_report)
 
         return 0 if batch_result.failed_count == 0 else 1
 
@@ -604,6 +593,8 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
         print("Cancelled.", file=sys.stderr)
         return 130
     except Exception as exc:
+        if current_session():
+            current_session().failure = str(exc)
         if getattr(args, "verbose", 0):
             import traceback
 

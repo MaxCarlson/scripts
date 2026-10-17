@@ -170,8 +170,8 @@ def test_trusted_text_warns_about_snapshot_age_and_membership(tmp_path, capsys):
     capsys.readouterr()
     assert main([*args, "-U", "trust", "-f", "png", "-e", "0", "-N"]) == 0
     report = capsys.readouterr().out
-    assert "Trusted snapshot:" in report and "age:" in report
-    assert report.rstrip().endswith("Use -U refresh to update.")
+    assert "Saved snapshot UTC" in report and "Snapshot age (seconds)" in report
+    assert "Use -U refresh to update." in " ".join(report.replace("│", " ").split())
 
 
 def test_trusted_sampling_does_not_resolve_every_unselected_source(tmp_path, monkeypatch, capsys):

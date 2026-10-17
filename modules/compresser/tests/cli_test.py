@@ -18,7 +18,7 @@ def test_cli_dry_run_execution(sample_images_dir: Path, capsys):
     ret = main(["-i", str(sample_images_dir), "-f", "webp", "-m", "perceptual", "-N"])
     assert ret == 0
     captured = capsys.readouterr()
-    assert "Compression Batch Summary" in captured.out or "Dry-Run" in captured.out
+    assert "COMPRESSION ANALYSIS" in captured.out and "Read-only" in captured.out
 
 
 def test_cli_compare_execution(sample_images_dir: Path, capsys):

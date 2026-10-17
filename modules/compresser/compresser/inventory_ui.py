@@ -360,7 +360,11 @@ class InventoryProgress:
         eta = fmt_hms(state["eta_seconds"]) + " estimated" if state["eta_seconds"] is not None else "unknown"
         current_label = f"{current_pct:.1f}%" if current_pct is not None else "unknown"
         overall_label = f"{overall_pct:.1f}%" if overall_pct is not None else "unknown"
-        phase_badge = color_text("[PHASE 1/2: INVENTORY DISCOVERY]", "cyan") if self.interactive else "[PHASE 1/2: INVENTORY DISCOVERY]"
+        phase_badge = (
+            color_text("[PHASE 1/2: INVENTORY DISCOVERY]", "cyan")
+            if self.interactive
+            else "[PHASE 1/2: INVENTORY DISCOVERY]"
+        )
         header = f"{phase_badge} [{state['phase']}] {state['current_folder']} | active: {max(0, state['active_galleries'] - 1)}"
         current_line = f"Folder:  {current_bar_str} {current_label} ({current_count} files)"
         overall_line = f"Overall: {overall_bar_str} {overall_label} ({folder_count} folders)"
@@ -386,10 +390,17 @@ class InventoryProgress:
 def emit_inventory_report(report: dict, *, as_json: bool = False) -> None:
     """Keep redirected JSON compatible; show only a summary in an interactive terminal."""
     report["pipeline"] = pipeline_report()
+    from .report_session import current_session
+
+    session = current_session()
+    if session:
+        report["report_artifacts"] = session.inventory(report)
     if as_json or not sys.stdout.isatty():
         print(json.dumps(report, indent=2), flush=True)
     if not as_json:
         print_inventory_summary(report)
+        if session:
+            session.print_artifacts()
 
 
 def print_inventory_summary(report: dict) -> None:

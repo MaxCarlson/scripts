@@ -1,5 +1,14 @@
 # Compresser handoff
 
+2026-10-17 current checkpoint: compresser1.4.0/MangaDL2.4.0, TermDash0.8.0.
+Workspace/report plan Tasks1-4 committed/pushed; Task5 automatic inventory (including
+implicit refresh), comparison, analysis/write and preview Markdown reports integrated.
+Small-sample format-ratio extrapolation, full-value responsive panels, JSON compatibility,
+partial/failure handling and generated cache/trust/scratch workflow tested. No production
+images touched. Plan: modules/compresser/docs/plans/20261017-1026_workspace-and-comparison-reports/plan.md
+(repo-relative). Final gate/fresh review next; manual Windows/reader acceptance outstanding.
+Paused Plan03 P8 remains excluded. Historical paragraphs below are not current status.
+
 2026-10-17: New workspace/report plan prepared at
 `docs/plans/20261017-1026_workspace-and-comparison-reports/plan.md` (module-relative).
 Source64b33d1 on `compression-ui-color-and-stats-20261017` includes newer UI/memory

@@ -61,7 +61,7 @@ def test_file_inventory_summary_totals_types_and_redirected_json(tmp_path, capsy
     assert main([*args, "-J"]) == 0
     output = capsys.readouterr()
     assert json.loads(output.out)["candidate_images"] == 2
-    assert output.err == ""
+    assert "Report saved:" in output.err and "Inventory Summary" not in output.err
 
 
 def test_header_summary_reports_unreadable_and_reused_headers(tmp_path, capsys):

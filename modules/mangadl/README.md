@@ -1,5 +1,49 @@
 # mangadl
 
+## Compression workspace, estimates and saved reports (2.4.0)
+
+```powershell
+# Inventory and its Markdown report. -I selects the workspace PARENT.
+mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -l
+# Reuse that snapshot/cache; compare lossless and lossy q85/q70 on a sample.
+mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2
+# Same analysis with uncached inputs staged on SSD.
+mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2 -X 'E:\Temp\compression'
+# Opt-in previews, automatically placed in the workspace.
+mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -O -n 3 -Q 85 70 -t 4
+```
+
+Workspace: `B:\Hent\hent1imageperpage-mangadl\`. Inventory is
+`hent1imageperpage-mangadl-inventory.sqlite3`, separate trial cache is
+`hent1imageperpage-mangadl-trials.sqlite3`. Reports are automatic under `reports`:
+timestamped unique Markdown archives and `latest.md`. Inventory creation/refresh
+(even implicit refresh during comparison), analysis/write, comparison and preview
+summaries are saved. Detailed summary diagnostics remain in Markdown when console
+output is compact. Add -J for pure JSON stdout with report artifact paths.
+Omit -I to use the same sibling default. Do not pass the generated workspace itself
+as -I. Old explicit SQLite paths work temporarily with a warning; nothing is migrated.
+Same-name targets/foreign workspace identities cannot silently share databases.
+
+Main results show format-byte-weighted **estimated** target retained/saved size even
+for small samples. Unsampled formats use a marked overall-ratio fallback. Coverage
+tables show count/byte/gallery proportions; estimates are not confidence bounds.
+Existing design-based JSON `estimate` stays separate from new `extrapolation`.
+Complete census results are **calculated**, not already applied savings. Failed
+trials retain originals in extrapolation; all-failed rows are not useful winners.
+Mean SSIM can hide poor individual pages; inspect full-resolution previews. Cache
+throughput is not encoder speed. -v expands console timings; Markdown keeps details.
+
+Report-save errors are nonzero and preserve prior reports when publication fails.
+With -w, source images may already have changed: inspect before rerunning. Workspace
+storage needs hardlink support. Scratch -X remains separate and temporary; no
+downloader source associations, recovery journals, repair quarantine or backups move.
+Exact URL/folder selection, nested chapters, cover/partial exclusions and write
+interlocks are unchanged. Trusted inventories do not refresh unseen library membership.
+Memory supports -B auto (20% available, cap32GiB), percentages and explicit amounts;
+default512MiB and per-image safeguards remain. More threads do not accelerate one
+native codec call. Real Windows resize/color and reader visual quality still need
+manual acceptance; generated-fixture tests are not a reader-quality guarantee.
+
 Compression2.0.0 uses one analysis workspace. Example:
 `mangadl compress -d 'B:\Hent\book' -I 'B:\Hent' -l` creates/reuses
 `B:\Hent\book-mangadl\book-mangadl-inventory.sqlite3`; its separate trial cache

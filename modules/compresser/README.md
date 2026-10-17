@@ -1,4 +1,45 @@
-# compresser 1.3.0
+# compresser 1.4.0
+
+## Workspace and automatic reports
+
+Every CLI inventory create/refresh, comparison, analysis/write and preview saves a
+Markdown summary automatically. Implicit header inventory refreshes during other
+operations also save an inventory report. No report is created for invalid CLI
+arguments. Cancelled/failed operations save a clearly marked partial summary when
+possible. Recovery journals remain unchanged and are outside this reporting scope.
+
+```powershell
+# Inventory + inventory report; workspace defaults beside the target.
+compresser -i 'B:\Hent\book' -l
+# Choose a parent for the single target-named workspace.
+compresser -i 'B:\Hent\book' -I 'B:\Analysis' -l
+# Small-sample lossless + multiple lossy qualities; existing inventory and cache.
+compresser -i 'B:\Hent\book' -I 'B:\Analysis' -U trust -b -Q 85 70 -s 200 -t 12 -B 40% -e 2
+# Optional external SSD staging for uncached read-only trials.
+compresser -i 'B:\Hent\book' -I 'B:\Analysis' -U trust -b -Q 85 70 -s 200 -X 'E:\Temp\compression' -t 12 -e 2
+# Preview copies inside the workspace; no source writes.
+compresser -i 'B:\Hent\book' -I 'B:\Analysis' -O -n 3 -Q 85 70 -t 4
+```
+
+The second example uses `B:\Analysis\book-compresser\` containing
+`book-compresser-inventory.sqlite3`, `book-compresser-trials.sqlite3`,
+`workspace.json`, `reports\<unique UTC run>-<operation>.md`, `reports\latest.md`,
+and preview runs under `previews`. **-I takes the parent**, not the generated
+workspace folder. Nonempty unowned/foreign workspaces are refused. No old files
+are automatically moved. For a single input file, its filename stem names the workspace.
+
+Old `-I path.sqlite3` / hidden `--inventory-file` calls remain supported temporarily
+with a warning: existing inventory/trial locations stay unchanged and reports live
+in a target workspace beside that inventory. Do not switch between legacy-file and
+directory modes against an already bound workspace; choose a different -I parent.
+-K remains an expert cache-file override; -O PATH remains an external preview override;
+-X is disposable SSD staging, not persistent report storage. Inventory-only and
+cache-off do not create a trial database. Markdown includes available detailed summary
+diagnostics even without console -v; JSON stdout stays parseable and adds artifact paths.
+Reports require hardlink-capable storage for exclusive atomic archives. latest.md
+is an independent copy, not a mutable alias of its archive; archives are not pruned.
+A report-save failure is explicit/nonzero; if -w already modified images, inspect
+results before rerunning. Source read-only does not mean no artifact writes.
 
 Comparison reports now lead with source-format coverage and estimated whole-target
 impact. Tables split into matching column panels and wrap instead of truncating
@@ -11,7 +52,7 @@ unchanged design-based `estimate`. Each source format's sampled byte-savings rat
 is applied to its inventoried bytes; unsampled formats use the overall byte ratio
 and report fallback coverage. Failed trials retain originals in the denominator.
 Small samples still produce estimates, not statistical guarantees. A completed
-census reports calculated retained bytes. Console integration follows in the next checkpoint.
+census reports calculated retained bytes; these are not disk savings already applied.
 
 Analysis artifacts now use one external workspace. `-I/--workspace` selects a
 parent directory; target `book` creates `book-compresser` there (default: beside
@@ -29,8 +70,9 @@ sources cancelled. Verified artifacts publish exclusively via same-directory har
 links; filesystems without that support fail safely rather than overwrite files.
 Original/candidate/checksum buffers count toward conservative reservations.
 
-`-B auto` opts into `floor(available_bytes / (5 * MiB))`, capped4096MiB;
-below64MiB or unavailable telemetry fails with explicit `-B64..4096` guidance.
+`-B auto` opts into `floor(available_bytes / (5 * MiB))`, capped32768MiB.
+`-B 40%` uses40% of available memory at startup; explicit amounts such as2048 or16G
+are also supported. Below64MiB or unavailable telemetry fails with explicit-budget guidance.
 Omitted remains512MiB, and the512MiB per-image/40M-pixel safety caps are unchanged.
 The chosen aggregate budget is fixed for the run; encoder admission also pauses
 when current available memory falls. UI reports the wait reason; Ctrl+C stops
@@ -345,19 +387,20 @@ combined with -w/-c/-b/-s/-P/-l/recovery. Add -J for a JSON-only final report.
 compresser -i 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp\image-inventory.sqlite3' > 'E:\Temp\image-inventory.json'
 ```
 
-`-l/--inventory-only` refreshes inventory and emits JSON without encoding. Includes
+`-l/--inventory-only` refreshes inventory without encoding. JSON is emitted with -J
+or redirected stdout, with a human summary otherwise. Includes
 per-gallery eligible header-image counts/bytes, extensions versus actual formats,
 size summaries and shares; scan scopes separately report unreadable candidates.
 Headers are not full image-integrity verification. Bytes are file lengths, not
-filesystem allocation sizes. `-I/--inventory-file` selects durable SQLite storage
-outside the input tree. Without it, a companion inventory is used beside explicit
-`-K`, or a per-library file under the user cache directory. Normal compression
+filesystem allocation sizes. `-I/--workspace` selects the parent of a target-named
+workspace outside the input tree. Without it, the workspace is beside the target;
+hidden --inventory-file retains legacy explicit-file compatibility. Normal compression
 automatically refreshes the same inventory. Existing inventory metadata is never
 evicted by the trial cache. Membership is enumerated every run; only new/changed
 headers are inspected. Successful scope refreshes remove deleted records; aborted
-scans do not publish a completed snapshot. Sources are unchanged; only the inventory
-is written. Trusted-snapshot/fast filesystem-only modes and sample advice are later
-checkpoints; this first implementation inspects headers on the initial pass.
+scans do not publish a completed snapshot. Sources are unchanged; inventory, workspace
+manifest and Markdown reports are written. -U trust reuses saved membership explicitly;
+-l files performs unverified extension/size inventory without header inspection.
 
 Reusable image analysis, encoder comparison and optional verified compression.
 Default operation is read-only, lossless analysis. Bulk production writes are
@@ -392,12 +435,12 @@ JPEG coefficient optimization requires original-file jpegtran; Pillow JPEG is
 lossy. AVIF is explicit lossy only. No unverified external wrapper is automatically
 selected merely because a binary appears on PATH. Explicit oversized WebP,
 animation, unsupported color/bit depth, changed source and metadata/alpha loss
-are refused. Estimated aggregate decoded working memory is capped at512MiB;
+are refused. The conservative per-image decoded working-memory ceiling is512MiB;
 this is conservative scheduling, not an OS memory reservation.
 
 CLI samples are seeded random samples within each gallery. `-s N` is a total
-budget and must cover every eligible gallery; `-P PERCENT` automatically raises
-the count to at least one per gallery. If the budget permits, two images per
+budget; a small budget can cover only a subset of galleries, reported explicitly.
+Percentages also select a total budget. If the budget permits, two images per
 non-singleton gallery are reserved before allocating the remainder equally by
 image-count and byte shares. Within each gallery every image has equal selection
 probability. `-z SEED` reproduces selection (default 0). Nested chapters belong
@@ -462,7 +505,7 @@ and elapsed time. JSON and summaries expose worker_diagnostics too. These are ac
 worker activity counters, not OS CPU utilization. Per-job reservations allow small
 images to overlap with large ones when they fit; rejected oversized images never
 cap valid jobs. Reserved bytes are estimates, not actual RSS or an OS reservation.
-`-B/--memory-budget-mib` sets aggregate batch scheduling allowance64..4096MiB
+`-B/--memory-budget-mib` sets an aggregate batch scheduling allowance of at least64MiB
 (default512). It does not raise the512MiB per-image decode allowance or pixel limit.
 Use a larger allowance only when sufficient RAM is available; independent batches
 have independent budgets. Bounded FIFO-head bypass prevents large-job starvation.

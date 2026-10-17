@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from .engine import CompressionEngine
+from .report_session import report_operation, start_session, current_session
 from .cache import create_analysis_cache
 from .inventory import InventoryStore, inventory_path, inventory_report
 from .inventory_ui import emit_inventory_report
@@ -27,17 +28,14 @@ from .models import (
 from .scanner import scan_directory
 from .memory_policy import configure_memory_arguments, parse_memory_budget
 from .timing import configure_pipeline, pipeline_report, profile_pipeline
-from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling, parse_sample
+from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, parse_sample
 from .ui import (
     CompresserDashboard,
-    print_comparison_matrix,
-    print_single_summary,
     recommend_comparison_strategies,
     report_cancellation,
-    print_cache_diagnostics,
 )
 
-__version__ = "1.3.0"
+__version__ = "1.4.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -305,6 +303,7 @@ def run_comparison(
     return rows
 
 
+@report_operation
 @profile_pipeline
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -381,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
         if not args.input.exists():
             raise ValueError(f"Compression target does not exist: {args.input}")
         initialize_workspace(args._workspace)
+        session = start_session(args)
         # Keep ownership in resources through discovery and the final encoder trial.
         with nullcontext():
             if args.inventory_only and args.inventory_depth == "files":
@@ -446,12 +446,15 @@ def main(argv: list[str] | None = None) -> int:
         snapshot.validate_selected(eval_images)
         sampling_plan.population_warning = snapshot.report.get("warning", "")
         store.save_sample(sampling_plan, args.input)
-        if not args.json:
-            snapshot.print_warning()
-            print(f"Inventory: {store.path}")
-            print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")
-            print_cache_diagnostics(cache.diagnostics(), startup=True)
-            print_sampling(sampling_plan)
+        from dataclasses import replace
+
+        active_report = current_session()
+        active_report.context = replace(
+            active_report.context,
+            sampling=sampling_plan.summary(),
+            snapshot=dict(snapshot.report),
+            cache=cache.diagnostics(),
+        )
         engine = CompressionEngine(
             cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=args._memory_policy
         )
@@ -472,6 +475,9 @@ def main(argv: list[str] | None = None) -> int:
                 qualities=args.preview_qualities,
                 source_validator=snapshot.validate_selected,
                 scratch_dir=args.scratch_dir,
+            )
+            comparison_report, report_artifacts = session.comparison(
+                comp_rows, snapshot=snapshot.report, cache=cache.diagnostics()
             )
             if args.json:
                 recommendations = recommend_comparison_strategies(comp_rows)
@@ -499,6 +505,7 @@ def main(argv: list[str] | None = None) -> int:
                         "sampling": r.sampling,
                         "estimate": r.estimate,
                         "extrapolation": r.extrapolation,
+                        "report_artifacts": report_artifacts,
                         "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {**cache.diagnostics(), "policy": args.cache_policy},
@@ -507,9 +514,7 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 print(json.dumps(data, indent=2))
             else:
-                print_comparison_matrix(comp_rows, target_path=args.input, workers=args.threads, runner="compresser")
-                print_cache_diagnostics(cache.diagnostics())
-                snapshot.print_warning()
+                session.render(comparison_report)
             return 0
 
         # Single Strategy Execution
@@ -555,9 +560,14 @@ def main(argv: list[str] | None = None) -> int:
             if dash:
                 dash.close()
 
+        analysis_report, report_artifacts, extrapolation = session.analysis(
+            batch_result, sampling_plan, strat, snapshot=snapshot.report, cache=cache.diagnostics()
+        )
         if args.json:
             out = {
                 "strategy": batch_result.strategy_name,
+                "report_artifacts": report_artifacts,
+                "extrapolation": extrapolation,
                 "dry_run": batch_result.dry_run,
                 "total_images": batch_result.total_images,
                 "original_bytes": batch_result.original_bytes,
@@ -582,25 +592,7 @@ def main(argv: list[str] | None = None) -> int:
             }
             print(json.dumps(out, indent=2))
         else:
-            print_single_summary(batch_result, scan=summary)
-            estimate = sampling_plan.estimate(batch_result.results)
-            if estimate["scope"] != "full":
-                print(
-                    f"Projected savings for covered strata: {estimate['projected_covered_saved_bytes']:,} bytes; "
-                    f"{estimate['unestimated_images']} images remain unestimated."
-                )
-                advisor = estimate.get("pilot_advisor")
-                if advisor and not advisor["precision_met"]:
-                    print(
-                        f"Pilot advisor (planning only): {advisor['recommended_total_samples']} total trials "
-                        f"(+{advisor['recommended_additional_confirmation_samples']} samples, "
-                        f"~{advisor['estimated_additional_runtime_seconds']:.1f}s) for "
-                        f"+/-{advisor['target_margin_percent']:g}% target margin under its proposed quotas. "
-                        "Ordinary -s does not apply those quotas; this is not a precision guarantee."
-                    )
-                print(estimate["uncertainty"])
-            print_cache_diagnostics(cache.diagnostics())
-            snapshot.print_warning()
+            session.render(analysis_report)
 
         return 0 if batch_result.failed_count == 0 else 1
 
@@ -608,6 +600,8 @@ def main(argv: list[str] | None = None) -> int:
         print("Cancelled.", file=sys.stderr)
         return 130
     except Exception as exc:
+        if current_session():
+            current_session().failure = str(exc)
         if args.verbose:
             import traceback
 

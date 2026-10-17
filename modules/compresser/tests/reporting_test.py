@@ -68,3 +68,16 @@ def test_color_never_leaks_when_disabled():
     report = build_comparison_report([sample_row()], context=ReportContext(Path("x")))
     assert "\x1b[" not in render_console_report(report, width=100, color=False)
     assert "\x1b[" in render_console_report(report, width=100, color=True)
+
+
+def test_inventory_details_keep_file_counts_without_raw_file_lists():
+    from compresser.reporting import build_inventory_report
+    from compresser.report_models import ReportContext
+
+    report = build_inventory_report(
+        {"depth": "files", "galleries": {"g": {"files": 12, "bytes": 128}}, "files": [{"path": "private-raw-list"}]},
+        context=ReportContext(Path("x")),
+    )
+    rows = [row for section in report.sections for row in section.rows]
+    assert ("galleries.g.files", "12") in rows
+    assert "private-raw-list" not in str(rows)

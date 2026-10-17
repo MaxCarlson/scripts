@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import math
+from collections import Counter
 import os
 import re
 import sys
@@ -54,16 +55,144 @@ def _context_sections(context: ReportContext):
         ["Target", str(context.target)],
         ["Status", context.status],
         ["Workspace", str(context.workspace) if context.workspace else "Not specified"],
+        ["Target scope", "Eligible inventoried images, not every file on disk"],
+        ["Selection filters", ", ".join(context.settings.get("url") or []) or "All eligible galleries at target"],
+        [
+            "Source writes",
+            "Explicit write requested" if context.settings.get("write") else "Read-only; source images not modified",
+        ],
     ]
     for name, value in context.snapshot.items():
-        if name in ("created", "completed", "age_seconds", "warning", "policy") and value is not None:
-            facts.append([f"Inventory {name}", str(value)])
-    return [section("RUN CONTEXT", ("Metric", "Value"), facts)]
+        labels = {
+            "created": "Inventory created UTC",
+            "completed": "Saved snapshot UTC",
+            "age_seconds": "Snapshot age (seconds)",
+            "warning": "WARNING: inventory scope",
+            "policy": "Inventory policy",
+            "membership_verified": "Membership refreshed",
+            "selected_files_validated": "Selected files validated",
+        }
+        if name in labels and value is not None:
+            facts.append([labels[name], f"{value:,.1f}" if name == "age_seconds" else str(value)])
+    sections = [section("RUN CONTEXT", ("Metric", "Value"), facts)]
+    settings = [
+        [name, str(value)] for name, value in context.settings.items() if name != "extrapolation" and value is not None
+    ]
+    if settings:
+        sections.append(section("RUN SETTINGS", ("Setting", "Value"), settings, verbose=True))
+    return sections
+
+
+def _detail_rows(payload, prefix=""):
+    for key, value in payload.items():
+        name = f"{prefix}.{key}" if prefix else str(key)
+        if key == "report_artifacts" or key == "files" and isinstance(value, list):
+            continue
+        if isinstance(value, dict):
+            yield from _detail_rows(value, name)
+        elif isinstance(value, (tuple, list)):
+            for index, item in enumerate(value):
+                if isinstance(item, dict):
+                    yield from _detail_rows(item, f"{name}[{index}]")
+                else:
+                    yield [f"{name}[{index}]", str(item)]
+        else:
+            display = str(value)
+            if isinstance(value, (int, float)) and not isinstance(value, bool) and "bytes" in str(key):
+                display = f"{binary_bytes(value)} ({value:,} B)"
+            yield [name, display]
+
+
+def build_inventory_report(payload: dict, *, context: ReportContext) -> CompressionReport:
+    depth = payload.get("depth", "headers")
+    notes = (
+        (
+            "Files-only inventory is unverified; no encoding or SSIM assessment."
+            if depth == "files"
+            else "Image headers inspected; this is not a full decode/completeness audit."
+        ),
+        "File lengths, not filesystem allocated space. Inventory creation/refresh does not compress images.",
+    )
+    return CompressionReport(
+        "INVENTORY REPORT",
+        "inventory",
+        context.status,
+        clean(context.target),
+        tuple(_context_sections(context)) + (section("INVENTORY DETAILS", ("Metric", "Value"), _detail_rows(payload)),),
+        notes,
+    )
+
+
+def build_preview_report(payload: dict, *, context: ReportContext) -> CompressionReport:
+    return CompressionReport(
+        "COMPRESSION PREVIEW",
+        "preview",
+        payload.get("status", context.status),
+        clean(context.target),
+        tuple(_context_sections(context)) + (section("PREVIEW DETAILS", ("Metric", "Value"), _detail_rows(payload)),),
+        (
+            "External preview copies only; source images were not modified. Preview selection is not a representative savings estimate.",
+        ),
+    )
+
+
+def build_analysis_report(result, *, context: ReportContext) -> CompressionReport:
+    mode = context.settings.get("mode", "lossless")
+    quality = (
+        "lossless"
+        if mode == "lossless"
+        else (
+            f"q={context.settings.get('quality', 80)}"
+            if mode == "lossy"
+            else f"SSIM>={context.settings.get('perceptual_target', .990):.3f}"
+        )
+    )
+    row = ComparisonRow(
+        result.strategy_name,
+        context.settings.get("format", "auto"),
+        context.settings.get("mode", "lossless"),
+        quality,
+        result.compressed_bytes,
+        result.saved_bytes,
+        result.savings_percent,
+        result.average_ssim,
+        result.throughput_images_per_s,
+        measured_images=result.processed_images,
+        failed_count=result.failed_count,
+        skipped_count=result.skipped_count,
+        cache_hits=sum(r.cache_hit for r in result.results),
+        extrapolation=context.settings.get("extrapolation", {}),
+        settings=context.settings,
+        issues=dict(Counter(r.error for r in result.results if r.error)),
+        worker_diagnostics=result.worker_diagnostics,
+    )
+    report = build_comparison_report([row], context=context)
+    operation = "analysis" if result.dry_run else "write"
+    sections = report.sections + (
+        section(
+            "APPLIED RESULTS",
+            ("Metric", "Value"),
+            [
+                ["Applied images", str(result.applied_count)],
+                ["Dry run", str(result.dry_run)],
+                ["Elapsed wall seconds", f"{result.elapsed_seconds:.3f}"],
+            ],
+        ),
+    )
+    return replace(
+        report,
+        title="COMPRESSION ANALYSIS" if result.dry_run else "COMPRESSION WRITE RESULTS",
+        operation=operation,
+        sections=sections,
+    )
 
 
 def build_comparison_report(rows: Sequence[ComparisonRow], *, context: ReportContext) -> CompressionReport:
-    if context.status == "completed" and any(row.failed_count for row in rows):
-        context = replace(context, status="completed_with_errors")
+    if context.status == "completed":
+        if any(row.extrapolation.get("status") == "partial" for row in rows):
+            context = replace(context, status="partial")
+        elif any(row.failed_count for row in rows):
+            context = replace(context, status="completed_with_errors")
     sections = _context_sections(context)
     sampling = context.sampling or (rows[0].sampling if rows else {})
     coverage = rows[0].extrapolation.get("formats", {}) if rows else {}

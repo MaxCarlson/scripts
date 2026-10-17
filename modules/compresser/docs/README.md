@@ -1,5 +1,12 @@
 # Compresser API and architecture
 
+2026-10-17: CLI sessions now resolve `workspace.CompressionWorkspace`; reusable
+library scanning/cache APIs remain independently usable. `extrapolation` adds
+format_ratio_v1 model estimates without replacing design estimates. Immutable
+report_models feed responsive reporting and markdown_report; report_session owns
+automatic CLI finalization, inventory side reports and failure/cancellation summaries.
+See [current plan](plans/20261017-1026_workspace-and-comparison-reports/plan.md).
+
 CLI-only whole-selection snapshots now live in `snapshots.SelectionSnapshot`.
 They are separate from per-directory header records/file-only inventories and are
 scoped by root, scanner/ownership policy, exact filters and Pillow runtime. CLI
