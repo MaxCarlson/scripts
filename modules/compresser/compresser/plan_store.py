@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 import tempfile
 
-from .estimation_models import EstimationPlan
+from .estimation_models import ConfirmationDesign, EstimationPlan
 from .workspace import CompressionWorkspace, _unlinked, workspace_publication
 
 _PLAN_ID = re.compile(r"plan-[a-f0-9]{20}\Z")
@@ -41,6 +41,7 @@ def _atomic_write(path: Path, payload: dict) -> None:
 
 
 def _validate_workspace_plan(workspace: CompressionWorkspace, plan: EstimationPlan) -> None:
+    plan.validate_design()
     if plan.root.resolve() != workspace.target.resolve() or plan.owner != (
         "mangadl" if workspace.owner == "mangadl-pages" else "compresser"
     ):
@@ -57,6 +58,10 @@ def save_plan(workspace: CompressionWorkspace, plan: EstimationPlan) -> Path:
         _unlinked(path)
         if path.exists() and (not path.is_file() or path.stat().st_nlink > 1):
             raise ValueError("Plan artifact must be a regular file without hardlinks")
+        if path.exists():
+            # Re-running plan creation is not permission to erase a measurement journal.
+            load_plan(workspace, plan.plan_id)
+            return path
         _atomic_write(path, plan.to_dict())
     return path
 
@@ -75,6 +80,28 @@ def load_plan(workspace: CompressionWorkspace, plan_id: str) -> EstimationPlan:
     if plan.plan_id != plan_id:
         raise ValueError("Plan file identity does not match its requested ID")
     return plan
+
+
+def freeze_confirmation(
+    workspace: CompressionWorkspace,
+    plan_id: str,
+    design: ConfirmationDesign,
+) -> EstimationPlan:
+    """Publish the model/quotas before any confirmation observations; never replace them."""
+    path = _plan_path(workspace, plan_id)
+    with workspace_publication(workspace):
+        current = load_plan(workspace, plan_id)
+        ConfirmationDesign.from_dict(design.to_dict())
+        if design.plan_identity != current.design_identity:
+            raise ValueError("Confirmation design belongs to a different plan")
+        if current.confirmation is not None:
+            if current.confirmation != design:
+                raise ValueError("Confirmation design is already frozen; create a new plan for refinement")
+            return current
+        updated = replace(current, confirmation=design)
+        _unlinked(path)
+        _atomic_write(path, updated.to_dict())
+        return updated
 
 
 def append_plan_measurements(

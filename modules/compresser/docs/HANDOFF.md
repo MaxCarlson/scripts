@@ -1,5 +1,15 @@
 # Compresser handoff
 
+Paused at the user's request after the verified Task5 checkpoint; await resume before Task6.
+
+2026-10-17 current: Task5 numerical core implemented on Sol Medium, source3.0.0/schema2.
+Active checkout `C:\Users\mcarls\src\scripts`, branch
+`compression-inventory-estimation-20261017`. Compresser424/1 skip, help55, focused exact
+oracles and400-seed simulations pass; approximate interval coverage is descriptive and
+below95% on these fixtures. See the active plan's task5-handoff.md and STATUS.md.
+Checkpoint commit/push authorized. Next Task6 may use Luna High; Task7 crash/resume and
+Task8 certification need Sol review. No production images or package installs touched.
+
 2026-10-17 active checkpoint: Tasks 1-4 implemented on
 `compression-inventory-estimation-20261017`, now checked out in the original
 `C:\Users\mcarls\src\scripts` checkout. Tasks 3/4 replace the flat CLI and add

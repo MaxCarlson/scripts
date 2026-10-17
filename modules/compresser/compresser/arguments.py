@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import argparse
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import math
 from pathlib import Path
@@ -89,16 +89,16 @@ class CompressionOptions:
         values["compare"] = self.operation == "compare"
         values["compare_both"] = self.operation == "compare" and getattr(parsed, "mode", None) == "both"
         values["preview_dir"] = (
-            (self.output if self.output is not None else _WORKSPACE_PREVIEW)
-            if self.operation == "preview"
-            else None
+            (self.output if self.output is not None else _WORKSPACE_PREVIEW) if self.operation == "preview" else None
         )
         values["preview_count"] = self.preview_count if self.operation == "preview" else None
         preview_qualities = [item.quality for item in self.recipes if item.quality is not None]
         values["preview_qualities"] = preview_qualities or None if self.operation in ("preview", "compare") else None
         recipe = self.recipes[0] if self.recipes else None
         values["format"] = recipe.format if recipe else "auto"
-        values["preview_formats"] = tuple(dict.fromkeys(item.format for item in self.recipes)) if self.operation == "preview" else ()
+        values["preview_formats"] = (
+            tuple(dict.fromkeys(item.format for item in self.recipes)) if self.operation == "preview" else ()
+        )
         values["mode"] = recipe.mode if recipe else "lossless"
         values["quality"] = recipe.quality if recipe and recipe.quality is not None else 80
         values["perceptual_target"] = recipe.perceptual_target if recipe else 0.990
@@ -132,7 +132,9 @@ class CompressionOptions:
 
 def _target(parser: argparse.ArgumentParser, owner: str) -> None:
     if owner == "mangadl":
-        parser.add_argument("-d", "--destination", type=Path, required=True, help="Destination library root or gallery.")
+        parser.add_argument(
+            "-d", "--destination", type=Path, required=True, help="Destination library root or gallery."
+        )
     else:
         parser.add_argument("-i", "--input", type=Path, required=True, help="Input image file or directory.")
 
@@ -142,7 +144,9 @@ def _common(parser: argparse.ArgumentParser, owner: str, *, workspace: bool = Tr
     if workspace:
         parser.add_argument("-I", "--workspace", type=Path, help="Parent directory for the target workspace.")
     if filters and owner == "mangadl":
-        parser.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or folder; repeatable.")
+        parser.add_argument(
+            "-u", "--url", action="append", default=[], help="Select an exact source URL or folder; repeatable."
+        )
     parser.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON.")
     parser.add_argument("-N", "--no-ui", action="store_true", help="Disable live terminal progress.")
     parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic output.")
@@ -162,12 +166,26 @@ def _recipe_options(
     perceptual_default=0.990,
 ) -> None:
     parser.add_argument(
-        "-f", "--format", nargs="+", choices=FORMATS, default=formats_default, required=formats_required,
+        "-f",
+        "--format",
+        nargs="+",
+        choices=FORMATS,
+        default=formats_default,
+        required=formats_required,
         help="Target image format(s).",
     )
-    parser.add_argument("-m", "--mode", choices=mode_choices or ("lossless", "lossy", "perceptual"), default=mode_default)
-    parser.add_argument("-q", "--quality", type=parse_quality, action=quality_action, nargs="+", default=quality_default,
-                        help="Quality 1..100 or exact fraction such as 0.85; repeat for multiple qualities.")
+    parser.add_argument(
+        "-m", "--mode", choices=mode_choices or ("lossless", "lossy", "perceptual"), default=mode_default
+    )
+    parser.add_argument(
+        "-q",
+        "--quality",
+        type=parse_quality,
+        action=quality_action,
+        nargs="+",
+        default=quality_default,
+        help="Quality 1..100 or exact fraction such as 0.85; repeat for multiple qualities.",
+    )
     parser.add_argument("-p", "--perceptual-target", type=float, default=perceptual_default)
     parser.add_argument("-A", "--encoder", choices=ENCODERS, default=encoder_default)
     parser.add_argument("-e", "--effort", type=int, choices=range(7), default=effort_default)
@@ -181,7 +199,11 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     parent.description = "Inventory, estimate, analyze, compare, preview, apply, or recover compression work."
     parent.epilog = "Use an operation subcommand; bare command prints help and performs no scan."
     operations = parent.add_subparsers(dest="operation", metavar="OPERATION")
-    operations.add_parser("inventory", help="Refresh a descriptive image inventory.", description="Refresh and report an image inventory; does not encode images.")
+    operations.add_parser(
+        "inventory",
+        help="Refresh a descriptive image inventory.",
+        description="Refresh and report an image inventory; does not encode images.",
+    )
     # Rebuild inventory parser with its own option group rather than sharing a flat argument surface.
     inventory = operations.choices["inventory"]
     _common(inventory, owner)
@@ -191,7 +213,12 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     plan = operations.add_parser("plan", help="Create or inspect a bounded estimation plan.")
     _common(plan, owner)
     _recipe_options(
-        plan, formats_default=None, mode_default=None, encoder_default=None, effort_default=None, perceptual_default=None
+        plan,
+        formats_default=None,
+        mode_default=None,
+        encoder_default=None,
+        effort_default=None,
+        perceptual_default=None,
     )
     plan.add_argument("-z", "--seed", type=int)
     plan.add_argument("-s", "--max-images", type=_positive_int)
@@ -204,7 +231,12 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     estimate = operations.add_parser("estimate", help="Execute or resume a bounded estimation plan.")
     _common(estimate, owner)
     _recipe_options(
-        estimate, formats_default=None, mode_default=None, encoder_default=None, effort_default=None, perceptual_default=None
+        estimate,
+        formats_default=None,
+        mode_default=None,
+        encoder_default=None,
+        effort_default=None,
+        perceptual_default=None,
     )
     estimate.add_argument("-z", "--seed", type=int, default=None)
     estimate.add_argument("-s", "--max-images", type=_positive_int)
@@ -226,7 +258,9 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
 
     compare = operations.add_parser("compare", help="Benchmark an explicit set of recipes.")
     _common(compare, owner)
-    _recipe_options(compare, formats_required=True, mode_default="both", mode_choices=("lossless", "lossy", "perceptual", "both"))
+    _recipe_options(
+        compare, formats_required=True, mode_default="both", mode_choices=("lossless", "lossy", "perceptual", "both")
+    )
     compare.add_argument("-s", "--sample", type=_sample_value, default="all")
     compare.add_argument("-z", "--seed", type=int, default=0)
     compare.add_argument("-F", "--allow-larger", action="store_true")
@@ -256,7 +290,9 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     recover = operations.add_parser("recover", help="Preview or apply one exact transaction recovery.")
     _common(recover, owner, workspace=False, filters=False)
     recover.add_argument("-w", "--write", action="store_true", help="Apply the previewed recovery.")
-    recover.add_argument("-C", "--confirm", dest="confirm_recovery", help="Exact fresh recovery token required with --write.")
+    recover.add_argument(
+        "-C", "--confirm", dest="confirm_recovery", help="Exact fresh recovery token required with --write."
+    )
 
 
 def _measurement_options(parser: argparse.ArgumentParser, *, scratch: bool = False) -> None:
@@ -329,7 +365,11 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
 
     mode_value = getattr(namespace, "mode", None) or "lossless"
     modes = ("lossless", "lossy") if mode_value == "both" else (mode_value,)
-    formats = tuple(dict.fromkeys(getattr(namespace, "format", None) or (["webp"] if operation in ("plan", "estimate") else ["auto"])))
+    formats = tuple(
+        dict.fromkeys(
+            getattr(namespace, "format", None) or (["webp"] if operation in ("plan", "estimate") else ["auto"])
+        )
+    )
     qualities = tuple(dict.fromkeys(getattr(namespace, "quality", None) or ()))
     if operation in ("plan", "estimate") and not formats:
         formats = ("webp",)
@@ -374,6 +414,9 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
                 if recipe not in recipes:
                     recipes.append(recipe)
 
+    if operation in ("plan", "estimate"):
+        policy = "allow-larger" if getattr(namespace, "allow_larger", False) else "keep-if-larger"
+        recipes = [replace(recipe, retained_original_policy=policy) for recipe in recipes]
     write = bool(getattr(namespace, "write", False))
     allow_lossy = bool(getattr(namespace, "allow_lossy", False))
     confirmation = getattr(namespace, "confirm_recovery", None)
@@ -393,9 +436,13 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
     max_trials = getattr(namespace, "max_trials", None)
     max_time = getattr(namespace, "max_time", None)
     accuracy = getattr(namespace, "accuracy_pp", None)
-    if operation in ("plan", "estimate") and (sample is not None or accuracy is not None and getattr(namespace, "allow_larger", False)):
+    if operation in ("plan", "estimate") and (
+        sample is not None or accuracy is not None and getattr(namespace, "allow_larger", False)
+    ):
         raise ValueError("Plan/estimate use --max-images; --sample is for exact analyze/compare operations")
-    if operation not in ("plan", "estimate") and any(value is not None for value in (max_images, max_trials, max_time, accuracy, getattr(namespace, "plan_id", None))):
+    if operation not in ("plan", "estimate") and any(
+        value is not None for value in (max_images, max_trials, max_time, accuracy, getattr(namespace, "plan_id", None))
+    ):
         raise ValueError("Plan budgets and --plan are only valid for plan/estimate")
     inventory_policy = getattr(namespace, "inventory_policy", "refresh")
     if operation in ("preview", "apply") and inventory_policy == "snapshot":
@@ -424,14 +471,21 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         max_time_seconds=max_time,
         accuracy_pp=accuracy,
         plan_id=getattr(namespace, "plan_id", None),
-        plan_recipes_explicit=any(
-            getattr(namespace, name, None) is not None
-            for name in ("format", "mode", "quality", "perceptual_target", "encoder", "effort")
-        ) if operation in ("plan", "estimate") else False,
+        plan_recipes_explicit=(
+            any(
+                getattr(namespace, name, None) is not None
+                for name in ("format", "mode", "quality", "perceptual_target", "encoder", "effort")
+            )
+            if operation in ("plan", "estimate")
+            else False
+        ),
         plan_seed_explicit=seed_value is not None if operation in ("plan", "estimate") else False,
-        plan_budget_explicit=any(
-            value is not None for value in (max_images, max_trials, max_time, accuracy)
-        ) or bool(getattr(namespace, "allow_larger", False)) if operation in ("plan", "estimate") else False,
+        plan_budget_explicit=(
+            any(value is not None for value in (max_images, max_trials, max_time, accuracy))
+            or bool(getattr(namespace, "allow_larger", False))
+            if operation in ("plan", "estimate")
+            else False
+        ),
         threads=threads,
         memory_budget=memory,
         cache_policy=getattr(namespace, "cache_policy", "use"),

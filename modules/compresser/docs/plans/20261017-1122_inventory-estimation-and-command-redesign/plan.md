@@ -210,26 +210,26 @@ Plan state separates immutable design inputs from atomic measured-stage updates.
 reuse/refactor confirmation.py/sampling.py only for shared primitives without changing
 old interval semantics silently; add tests/estimation_population_test.py.
 **Interfaces:** `allocate_confirmation(plan, pilot_results) -> ConfirmationDesign`;
-`estimate_fixed(plan, design, pilot_results, confirmation_results) -> RecipeEstimate`.
+`estimate_fixed(plan, design, pilot_results, confirmation_results) -> tuple[RecipeEstimate, ...]`.
 Define ConfirmationDesign and RecipeEstimate in estimation_models.py. Quotas, selection,
 population remainder and estimator revision are immutable before confirmation observations.
 
-- [ ] RED: tiny enumerated finite populations recover known stratified expectations;
+- [x] RED: tiny enumerated finite populations recover known stratified expectations;
   full census has exact total/zero sampling variance; unsampled/singleton/failed groups
   have explicit uncertainty gaps; skewed bytes and signed growth are not clipped.
   Distinct input sizes demonstrate ratio-of-sums is not mean percentage savings.
-- [ ] Implement known pilot totals + residual population sample totals with finite
+- [x] Implement known pilot totals + residual population sample totals with finite
   correction. Allocate using group size, observed variation and cost with floors/caps;
   missing variation gets a labelled conservative planning proxy, not fake precision.
-- [ ] Add frozen group linear predictor and confirmation residual correction in a
+- [x] Add frozen group linear predictor and confirmation residual correction in a
   separate RED/GREEN step: constant fallback, exact predictions yield zero residual
   variance, deliberately wrong predictions still yield correct expectation across all
   confirmation samples. Store model coefficients and revision in the plan.
-- [ ] RED/GREEN: unreadable selected files never replaced/dropped; missing results,
+- [x] RED/GREEN: unreadable selected files never replaced/dropped; missing results,
   duplicate identities, stale source and partial outcome-selected confirmation batches
   cannot produce complete statistical intervals. Ordinary fixed normal intervals are
   explicitly approximate, with no repeated-stopping guarantee.
-- [ ] Run focused tests and repeated seeded known-population simulations; record bias,
+- [x] Run focused tests and repeated seeded known-population simulations; record bias,
   interval coverage and errors by recipe, not merely unit pass counts.
 
 ## Subproject D: bounded measurement and useful estimation UI

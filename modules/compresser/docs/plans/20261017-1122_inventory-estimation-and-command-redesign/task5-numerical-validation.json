@@ -1,0 +1,59 @@
+{
+  "repetitions": 400,
+  "population_count": 96,
+  "population_input_bytes": 56280,
+  "budget": {
+    "max_images": 64,
+    "pilot_images": 16,
+    "recipes": 2
+  },
+  "interpretation": "Descriptive simulation of approximate fixed intervals; no coverage acceptance threshold or certification.",
+  "recipes": [
+    {
+      "recipe": {
+        "format": "webp",
+        "mode": "lossless",
+        "quality": null,
+        "perceptual_target": 0.99,
+        "encoder": "pillow",
+        "effort": 6,
+        "runtime_identity": "synthetic-runtime",
+        "metadata_policy": "preserve",
+        "alpha_policy": "preserve",
+        "dimension_policy": "preserve",
+        "retained_original_policy": "allow-larger"
+      },
+      "truth_saved_bytes": 18692,
+      "complete_runs": 400,
+      "incomplete_runs": 0,
+      "mean_bias_bytes": 4.8247526212327285,
+      "mean_bias_percent_of_input": 0.008572765851515153,
+      "rmse_bytes": 341.2485657709675,
+      "maximum_absolute_error_bytes": 1135.8088556583825,
+      "approximate_interval_coverage": 0.92
+    },
+    {
+      "recipe": {
+        "format": "png",
+        "mode": "lossless",
+        "quality": null,
+        "perceptual_target": 0.99,
+        "encoder": "pillow",
+        "effort": 6,
+        "runtime_identity": "synthetic-runtime",
+        "metadata_policy": "preserve",
+        "alpha_policy": "preserve",
+        "dimension_policy": "preserve",
+        "retained_original_policy": "allow-larger"
+      },
+      "truth_saved_bytes": 24449,
+      "complete_runs": 400,
+      "incomplete_runs": 0,
+      "mean_bias_bytes": -33.10784408281137,
+      "mean_bias_percent_of_input": -0.05882701507251487,
+      "rmse_bytes": 2147.0440914146056,
+      "maximum_absolute_error_bytes": 7892.579382676082,
+      "approximate_interval_coverage": 0.8625
+    }
+  ]
+}

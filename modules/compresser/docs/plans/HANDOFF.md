@@ -1,5 +1,10 @@
 # Active module plan
 
+Current checkpoint: Tasks1-5 implemented; Task5 Sol Medium review complete, schema2 /
+compresser3.0.0. Full compresser424/1 skip and help55 pass. See the active plan's
+task5-handoff.md and STATUS.md. Next Task6 may use Luna High; preserve Task7/8 stronger
+model and Windows visual gates. User authorizes verified feature-branch commit/push.
+
 2026-10-17: [Inventory, estimation and command redesign](20261017-1122_inventory-estimation-and-command-redesign/plan.md).
 Tasks1-4 implemented on `compression-inventory-estimation-20261017`, now checked out in
 the original scripts checkout. Tasks3/4 passed final regression checks and are

@@ -11,10 +11,10 @@
 - [x] Task2: comparison, inventory and deterministic progress baselines at 80/120/160 columns; Windows visual gate recorded pending.
 - [x] Task3: shared operation CLI, safety and argument replacement.
 - [x] Task4: descriptive inventory and separate persistent plans.
-- [ ] Task5: fixed estimators and numerical validation.
+- [x] Task5: fixed estimators and numerical validation; Sol Medium checkpoint completed.
 - [ ] Task6: actual encode admission and selected recipe jobs.
 - [ ] Task7: estimation/resume/report integration and Windows visual gate.
 - [ ] Task8: certified repeated accuracy stopping.
 - [ ] Task9: optional quality interpolation and exact-quality confirmation.
 - [ ] Task10: empirical benchmark, docs, full checks and final review.
-- [ ] Explicit publication authority if commit/push/merge is requested later.
+- [x] User authorizes verified checkpoint commits and feature-branch pushes; no merge authority.

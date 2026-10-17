@@ -380,7 +380,7 @@ REGISTRY: dict = {
                 "path": "modules/compresser",
                 "desc": "Inventory, plan, estimate, analyze, compare, preview, apply, or recover image compression work",
                 "help_cmd": ["compresser", "--help"],
-                 "version": "2.0.0",
+                 "version": "3.0.0",
             },
             {
                 "name": "mangadl (module)",

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import replace
 import hashlib
 import json
 import math
@@ -26,34 +27,27 @@ def _size_strata(members: tuple[PopulationMember, ...]) -> dict[str, list[Popula
         bases[(member.group, member.codec_class)].append(member)
     strata: dict[str, list[PopulationMember]] = {}
     for (group, codec_class), values in sorted(bases.items()):
-        known: dict[int, list[PopulationMember]] = defaultdict(list)
-        unknown = []
-        for member in values:
-            if member.size_bytes is None:
-                unknown.append(member)
-            else:
-                known[int(math.log2(max(1, member.size_bytes)))].append(member)
-        bins = [(band, sorted(rows, key=lambda row: row.identity.casefold())) for band, rows in sorted(known.items())]
-        if len(values) < 8:
-            bins = [(min((band for band, _ in bins), default=0), values)]
-        while len(bins) > 1 and (len(bins) > 4 or any(len(rows) < 8 for _, rows in bins)):
-            index = min(range(len(bins)), key=lambda current: (len(bins[current][1]), bins[current][0]))
-            neighbor = 1 if index == 0 else index - 1 if index == len(bins) - 1 else (
-                index - 1 if len(bins[index - 1][1]) <= len(bins[index + 1][1]) else index + 1
-            )
+        exponents = [max(1, member.size_bytes).bit_length() - 1 for member in values]
+        low_exp, high_exp = min(exponents), max(exponents)
+        width = max(1, math.ceil((high_exp - low_exp + 1) / 4))
+        grouped: dict[int, list[PopulationMember]] = defaultdict(list)
+        for member, exponent in zip(values, exponents):
+            grouped[low_exp + ((exponent - low_exp) // width) * width].append(member)
+        bins = sorted(grouped.items())
+        while len(bins) > 1 and any(len(rows) < 8 for _, rows in bins):
+            index = next(i for i, (_, rows) in enumerate(bins) if len(rows) < 8)
+            neighbor = index + 1 if index < len(bins) - 1 else index - 1
             low, high = sorted((index, neighbor))
             merged = sorted((*bins[low][1], *bins[high][1]), key=lambda row: row.identity.casefold())
             bins[low : high + 1] = [(bins[low][0], merged)]
         for band, rows in bins:
             suffix = "all" if len(values) < 8 else str(band)
             strata[f"{group}|{codec_class}|log2:{suffix}"] = rows
-        if unknown:
-            strata[f"{group}|{codec_class}|unknown-size"] = unknown
     return strata
 
 
-def _priority(seed: int, population_id: str, member: PopulationMember) -> str:
-    payload = f"{seed}\0{population_id}\0{member.identity}".encode("utf-8")
+def _priority(seed: int, group_id: str, member: PopulationMember) -> str:
+    payload = json.dumps([2, seed, group_id, member.identity], separators=(",", ":")).encode("utf-8")
     return hashlib.sha256(payload).hexdigest()
 
 
@@ -67,7 +61,8 @@ def build_plan(
     allow_larger: bool = False,
 ) -> EstimationPlan:
     """Build a deterministic, bounded design whose selected prefixes survive cap growth."""
-    recipes = tuple(recipes)
+    policy = "allow-larger" if allow_larger else "keep-if-larger"
+    recipes = tuple(replace(recipe, retained_original_policy=policy) for recipe in recipes)
     if not recipes:
         raise ValueError("At least one recipe is required to build an estimation plan")
     if len({recipe.identity for recipe in recipes}) != len(recipes):
@@ -78,10 +73,12 @@ def build_plan(
         raise ValueError("Accuracy target must be positive and finite")
     if accuracy_pp is not None and allow_larger:
         raise ValueError("Accuracy stopping cannot be combined with allow-larger estimates")
+    if any(member.size_bytes is None or not member.fingerprint for member in population.members):
+        raise ValueError("Incomplete inventory bytes/fingerprints; run inventory again before planning")
 
     grouped = _size_strata(population.members)
     rankings = {
-        key: sorted(rows, key=lambda member: (_priority(seed, population.population_id, member), member.identity))
+        key: sorted(rows, key=lambda member: (_priority(seed, key, member), member.identity))
         for key, rows in sorted(grouped.items())
     }
     selected: list[tuple[str, PopulationMember]] = []
@@ -99,9 +96,10 @@ def build_plan(
         cursor += 1
 
     per_recipe_pilot = min(
+        64,
         budget.pilot_images,
         len(selected),
-        max(1, budget.max_new_encodes // len(recipes)),
+        budget.max_new_encodes // len(recipes),
     )
     quota_rows = []
     pilot_by_stratum: dict[str, int] = defaultdict(int)
@@ -119,45 +117,18 @@ def build_plan(
         StratumPlan(
             key=key,
             member_count=len(grouped[key]),
-            total_bytes=(sum(row.size_bytes for row in grouped[key]) if all(row.size_bytes is not None for row in grouped[key]) else None),
+            total_bytes=(
+                sum(row.size_bytes for row in grouped[key])
+                if all(row.size_bytes is not None for row in grouped[key])
+                else None
+            ),
             selected_prefix=tuple(selected_by_stratum.get(key, ())),
+            ordered_member_ids=tuple(member.identity for member in rankings[key]),
         )
         for key in sorted(grouped)
     )
-    coverage_gaps = tuple(row.key for row in strata if not row.selected_prefix)
-    immutable = {
-        "population_id": population.population_id,
-        "root": str(population.root),
-        "owner": population.owner,
-        "depth": population.depth,
-        "filters": population.filters,
-        "seed": seed,
-        "accuracy_pp": accuracy_pp,
-        "allow_larger": allow_larger,
-        "recipes": [recipe.identity for recipe in recipes],
-        "budget": {
-            "max_images": budget.max_images,
-            "max_new_encodes": budget.max_new_encodes,
-            "max_runtime_seconds": budget.max_runtime_seconds,
-            "pilot_images": budget.pilot_images,
-        },
-        "strata": [
-            {"key": row.key, "member_count": row.member_count, "total_bytes": row.total_bytes,
-             "selected_prefix": row.selected_prefix}
-            for row in strata
-        ],
-        "recipe_quotas": [
-            {"recipe_id": row.recipe_id, "per_stratum": row.per_stratum}
-            for row in quota_rows
-        ],
-        "ordering_revision": 1,
-        "ordering": "sha256(seed, population_id, member_identity), round-robin by stratum",
-    }
-    immutable = json.loads(json.dumps(immutable, sort_keys=True, allow_nan=False))
-    identity = design_digest(immutable)
-    return EstimationPlan(
-        plan_id=f"plan-{identity[:20]}",
-        design_identity=identity,
+    coverage_gaps = tuple(row.key for row in strata if not pilot_by_stratum[row.key])
+    return EstimationPlan.create(
         population_id=population.population_id,
         root=population.root,
         owner=population.owner,
@@ -172,7 +143,8 @@ def build_plan(
         strata=strata,
         selected_member_ids=tuple(member.identity for _, member in selected),
         recipe_quotas=tuple(quota_rows),
-        design_payload=immutable,
+        members=population.members,
+        pilot_member_ids=tuple(member.identity for _, member in selected[:per_recipe_pilot]),
         coverage_gaps=coverage_gaps,
     )
 
@@ -211,7 +183,8 @@ def load_population(workspace, *, owner: str, filters: tuple[str, ...]) -> Popul
                     size_bytes=row.get("bytes"),
                     group=row["extension"].casefold(),
                     fingerprint=tuple(
-                        value for value in (row.get("bytes"), row.get("mtime_ns"), row.get("ctime_ns"))
+                        value
+                        for value in (row.get("bytes"), row.get("mtime_ns"), row.get("ctime_ns"))
                         if value is not None
                     ),
                 )
@@ -234,11 +207,7 @@ def load_population(workspace, *, owner: str, filters: tuple[str, ...]) -> Popul
             images, gallery_keys = snapshot.load()
             records = []
             for image in images:
-                relative = (
-                    str(image.path.relative_to(snapshot.root))
-                    if snapshot.root.is_dir()
-                    else image.path.name
-                )
+                relative = str(image.path.relative_to(snapshot.root)) if snapshot.root.is_dir() else image.path.name
                 records.append(
                     PopulationMember(
                         identity=relative,

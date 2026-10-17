@@ -12,7 +12,9 @@ def _parser(owner="compresser"):
     return parser
 
 
-@pytest.mark.parametrize("owner,target_flag,target_dest", [("compresser", "-i", "input"), ("mangadl", "-d", "destination")])
+@pytest.mark.parametrize(
+    "owner,target_flag,target_dest", [("compresser", "-i", "input"), ("mangadl", "-d", "destination")]
+)
 def test_operation_tree_and_normalized_recipe_parity(owner, target_flag, target_dest):
     parser = _parser(owner)
     namespace = parser.parse_args(
@@ -53,9 +55,7 @@ def test_duplicate_formats_and_qualities_produce_one_recipe():
 
 
 def test_mixed_compare_keeps_png_lossless_and_other_formats_lossy():
-    namespace = _parser().parse_args(
-        ["compare", "-i", "library", "-f", "png", "webp", "-m", "both", "-q", "85"]
-    )
+    namespace = _parser().parse_args(["compare", "-i", "library", "-f", "png", "webp", "-m", "both", "-q", "85"])
     options = normalize_compression_arguments(namespace)
     assert [(recipe.format, recipe.mode) for recipe in options.recipes] == [
         ("png", "lossless"),
@@ -116,3 +116,10 @@ def test_help_scopes_options_to_operation(capsys):
 def test_plan_and_estimate_require_an_explicit_target():
     with pytest.raises(SystemExit):
         _parser().parse_args(["plan"])
+
+
+def test_allow_larger_normalizes_into_recipe_identity():
+    standard = normalize_compression_arguments(_parser().parse_args(["plan", "-i", "library"]))
+    growth = normalize_compression_arguments(_parser().parse_args(["plan", "-i", "library", "-F"]))
+    assert growth.recipes[0].identity != standard.recipes[0].identity
+    assert growth.recipes[0].retained_original_policy == "allow-larger"

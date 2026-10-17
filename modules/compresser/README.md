@@ -1,4 +1,4 @@
-# compresser 2.0.0
+# compresser 3.0.0
 
 ## Operation-based CLI
 
@@ -9,6 +9,10 @@ explicit recipes, `preview` writes external copies, `apply` requires `--write`, 
 completed inventory and saves a bounded reproducible design under `plans/`; `estimate`
 execution/resume remains in the next checkpoint. Planning never refreshes inventory,
 opens the trial database, or encodes images.
+Saved plans now use schema2 with full frozen population membership and recipe-specific
+confirmation designs. Schema1 plans are rejected with a rebuild hint. The fixed-design
+numerical core is implemented and tested, but bounded measurement and CLI estimation
+integration are still pending; its approximate intervals do not certify an accuracy target.
 The old flat switches (`-l`, `-c`, `-b`, `-P`, `-Q`, `-R`, and `--output-dir`) and
 explicit inventory-file alias are rejected without compatibility aliases.
 

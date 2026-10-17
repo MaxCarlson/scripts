@@ -1,5 +1,36 @@
 # Status
 
+2026-10-17 Sol Medium checkpoint: Task5 implemented and validated on
+`compression-inventory-estimation-20261017` in `C:\Users\mcarls\src\scripts`.
+Compresser3.0.0 uses saved-plan schema2: schema1 plans require rebuilding. This breaking
+version reflects corrections to incomplete frozen-population and executable-field
+identity contracts discovered before statistical implementation. New exact-recipe
+observations distinguish retention policies; confirmation models/quotas freeze once
+and repeat plan creation preserves measured history.
+
+The fixed estimator counts known pilot outcomes once, applies a pilot-only centered
+predictor plus confirmation residual correction and finite-population variance, and
+returns one RecipeEstimate per registered recipe. Missing/failed/unselected/stale or
+duplicate prescribed observations cannot yield a complete interval. Intervals are
+marginal approximate fixed normal intervals; they have no repeated-look guarantee.
+The estimate CLI remains explicitly unavailable until Tasks6/7 supply bounded measurement
+and orchestration. See task5-handoff.md for the exact next-stage contracts.
+
+Task5 validation: full compresser424 passed/1 skipped; help55 passed; independent Fraction
+oracles and deterministic 400-seed simulations completed. Ruff and Black120 passed on
+the changed Python files; whitespace check passed. Simulation bias was +4.82/-33.11 bytes,
+with observed approximate interval coverage92%/86.25% for the two synthetic recipes.
+Those figures are descriptive, not nominal-coverage acceptance or certification.
+Detailed results: task5-numerical-validation.json. The full MangaDL regression suite
+also passed. No codecs or production sources were used in the numerical simulations.
+
+User authorizes verified checkpoint commits and feature-branch pushes. Execution pauses
+after publication at the user's explicit request. On resume, Task6 may use Luna High. Task7 crash/resume review and
+Task8 certified sequential inference still require Sol Medium; Windows visual acceptance,
+final setup/version metadata refresh and whole-change review remain pending.
+
+Earlier execution history follows; the checkpoint above is current.
+
 2026-10-17 execution update: Tasks 1 through 4 are implemented on branch
 `compression-inventory-estimation-20261017`. The original checkout at
 `C:\Users\mcarls\src\scripts` now has this branch checked out and contains the current
