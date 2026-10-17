@@ -2,10 +2,15 @@
 
 ## Current branch
 
-Review repairs2026-10-17 reopen prior I1-I5 completion; execute
-[02_review-repairs](20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
-Task1 confirmation statistics first, then real locks, bounded scratch/cache, weighted
-recommendations and CLI plans. User authorizes tested feature-branch checkpoints.
+Reviewed proposal only: [03 inventory/sampling/pipeline revision](20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md).
+User requests plan analysis/edits, not execution. Sampling stays inventory-metadata
+based; no pilot/confirmation machinery from the earlier repair Task6. No implementation
+or publication authorized by this review. Current baseline876115e on feature branch.
+
+[02 review repairs](20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md)
+Tasks1-5 are implemented/pushed, followed by interactive inventory hotfix876115e.
+Earlier repair Task6 remains unstarted; do not treat older continuation notes below
+as current instructions to execute it. Real reader/terminal acceptance remains manual.
 
 Readable inventory footer checkpoint0.20.0/1.46.0 follows pushed1689ffb.134
 compression/305 MangaDL/55 help pass,1 Windows privilege skip. User requested

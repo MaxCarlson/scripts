@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+2026-10-17 planning-only review: [inventory/sampling/pipeline revision](plans/20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md)
+replaces attached threading/optimal-distribution ideas with bounded measured work,
+honest progress and metadata-only sampling guidance. User explicitly does not want
+the earlier Task6 pilot/confirmation machinery for this feature. No code changes,
+implementation, commit/push or production operations in this review.
+
 Inventory UI hotfix compresser0.26.4/MangaDL1.52.4: correct ProgressBar.set_total/
 str and LiveBlock.close API usage; interactive-only errors were missed by redirected
 tests. Real renderer + MangaDL inventory fixture regressions added. Task6 untouched.
