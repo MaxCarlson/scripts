@@ -153,7 +153,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--memory-budget-mib",
         type=parse_memory_budget,
         default=512,
-        help="Aggregate allowance64..4096MiB or auto (20% available, cap4096); default512; per-image limits unchanged.",
+        help="Aggregate allowance: integer MiB, units (e.g. 16G, 8192M), percentage (e.g. 50%%), or auto (20%% available); default 512.",
     )
     parser.add_argument(
         "-J",
@@ -317,6 +317,8 @@ def main(argv: list[str] | None = None) -> int:
         validate_analysis_arguments(args)
     except ValueError as exc:
         parser.error(str(exc))
+    if hasattr(args, "input") and args.input:
+        args.input = Path(str(args.input).rstrip("/\\")).resolve()
     if args.confirm_recovery and not args.recover:
         parser.error("--confirm-recovery requires --recover")
     if args.recover and (args.compare or args.sample):
@@ -327,8 +329,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Quality must be 1..100 and perceptual target 0.80..1.00")
     if args.threads < 1 or args.sample is not None and args.sample != "auto" and args.sample < 1:
         parser.error("Threads and sample must be positive")
-    if not 64 <= args.memory_budget_mib <= 4096:
-        parser.error("Aggregate scheduling budget must be64..4096MiB")
+    if args.memory_budget_mib < 64:
+        parser.error("Aggregate scheduling budget must be at least 64MiB")
     if args.write and args.compare:
         parser.error("Comparison is read-only; omit --write")
     if args.write and not args.recover and args.mode != "lossless" and not args.allow_lossy:
@@ -480,7 +482,9 @@ def main(argv: list[str] | None = None) -> int:
                 ]
                 print(json.dumps(data, indent=2))
             else:
-                print_comparison_matrix(comp_rows)
+                print_comparison_matrix(
+                    comp_rows, target_path=args.input, workers=args.threads, runner="compresser"
+                )
                 print_cache_diagnostics(cache.diagnostics())
                 snapshot.print_warning()
             return 0

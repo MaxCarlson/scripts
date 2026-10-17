@@ -82,3 +82,35 @@ def test_comparison_uses_one_dashboard_and_closes_on_failure(monkeypatch):
     with pytest.raises(RuntimeError, match="test failure"):
         cli.run_comparison([], Engine())
     assert events == ["created", 0, "closed"]
+
+
+def test_print_comparison_matrix_executive_summary_and_hero_banner(monkeypatch, capsys):
+    import shutil
+    from compresser.models import ComparisonRow
+    from compresser.ui import print_comparison_matrix
+
+    monkeypatch.setattr(shutil, "get_terminal_size", lambda *args, **kwargs: __import__("os").terminal_size((120, 24)))
+    row = ComparisonRow(
+        strategy_name="webp-lossy-q80",
+        output_format="webp",
+        mode="lossy",
+        quality_display="q=80",
+        compressed_bytes=700,
+        original_bytes=1000,
+        savings_percent=30.0,
+        average_ssim=0.985,
+        throughput_images_per_s=4.5,
+        measured_images=10,
+        saved_bytes=300,
+        retained_formats=("WEBP",),
+        estimate={"projected_total_saved_bytes": 30000, "approximate_95_percent_interval_bytes": [28000, 32000], "uncertainty": "Design-weighted estimate"},
+    )
+    print_comparison_matrix([row], target_path=Path("B:/Hent/308191"), workers=8, runner="mangadl")
+    output = capsys.readouterr().out
+    assert "COMPRESSION BENCHMARK RESULTS" in output
+    assert "RECOMMENDED STRATEGY" in output
+    assert "webp-lossy-q80" in output
+    assert "Quality Badges:" in output
+    assert "READY TO COMPRESS?" in output
+    assert "mangadl compress -d 'B:\\Hent\\308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output or "mangadl compress -d 'B:/Hent/308191' -f webp -m lossy -q 80 -B auto -t 8 -w" in output
+

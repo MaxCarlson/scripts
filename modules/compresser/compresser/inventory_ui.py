@@ -57,6 +57,8 @@ class InventoryProgress:
         self.current_file: str = ""
 
         self.samples: deque[tuple[float, int, int]] = deque([(self.start_time, 0, 0)])
+        self._format_counts: Counter[str] = Counter()
+        self._format_bytes: Counter[str] = Counter()
         self.bar = ProgressBar("scan", 1, 0, width=28, charset="block")
         if self.enabled and self.interactive:
             self.block.update(self._lines)
@@ -169,6 +171,13 @@ class InventoryProgress:
                     item["status"] in ("complete_with_errors", "failed", "cancelled")
                     for item in self._galleries.values()
                 ),
+                "formats": {
+                    ext: {"files": self._format_counts[ext], "bytes": self._format_bytes[ext]}
+                    for ext in sorted(
+                        self._format_counts,
+                        key=lambda e: (-self._format_bytes[e], -self._format_counts[e], e),
+                    )
+                },
             }
 
     def start_folder(self, folder: Path, *, folders_done: int | None = None, total_folders: int | None = None) -> None:
@@ -221,8 +230,11 @@ class InventoryProgress:
             self.current_folder = parent.name or str(parent)
             self.current_file = path.name
             self.files_processed += 1
+            ext = path.suffix.lower() or "unknown"
+            self._format_counts[ext] += 1
             if size_bytes > 0:
                 self.bytes_processed += int(size_bytes)
+                self._format_bytes[ext] += int(size_bytes)
             self.headers_reused += bool(reused)
             self.headers_inspected += bool(inspected)
             self.excluded_or_unreadable += bool(unreadable)
@@ -263,12 +275,68 @@ class InventoryProgress:
         detail_part = (
             f" (reused {state['reused']:,}, inspected {state['inspected']:,})" if self.depth == "headers" else ""
         )
+        fmt_summary = ""
+        if state.get("formats"):
+            fmt_parts = [
+                f"{ext}: {info['files']:,} ({format_bytes_decimal(info['bytes'])})"
+                for ext, info in list(state["formats"].items())[:3]
+            ]
+            fmt_summary = f" | Formats: {', '.join(fmt_parts)}"
         return (
-            f"[{state['phase']}] {folder_part} | {file_part}{detail_part} | "
-            f"Size: {format_bytes_decimal(state['bytes'])} | "
+            f"[PHASE 1/2: INVENTORY DISCOVERY] [{state['phase']}] {folder_part} | {file_part}{detail_part} | "
+            f"Size: {format_bytes_decimal(state['bytes'])}{fmt_summary} | "
             f"Rate: {files_s:,.1f} files/s ({format_rate_bps(bytes_s)}) | "
             f"Elapsed: {fmt_hms(elapsed)}"
         )
+
+    def _render_formats_table(self, state: dict) -> list[str]:
+        formats = state.get("formats", {})
+        if not formats:
+            return []
+        total_files = state.get("files_done", 0)
+        total_bytes = state.get("bytes", 0)
+        rows = []
+        sorted_exts = list(formats.keys())
+        top_exts = sorted_exts[:4]
+        other_exts = sorted_exts[4:]
+        for ext in top_exts:
+            info = formats[ext]
+            cnt = info["files"]
+            byts = info["bytes"]
+            share = (
+                (100.0 * byts / total_bytes)
+                if total_bytes > 0
+                else (100.0 * cnt / total_files if total_files > 0 else 0.0)
+            )
+            rows.append([ext, f"{cnt:,}", format_bytes_decimal(byts), f"{share:5.1f}%"])
+        if other_exts:
+            oth_cnt = sum(formats[e]["files"] for e in other_exts)
+            oth_byts = sum(formats[e]["bytes"] for e in other_exts)
+            share = (
+                (100.0 * oth_byts / total_bytes)
+                if total_bytes > 0
+                else (100.0 * oth_cnt / total_files if total_files > 0 else 0.0)
+            )
+            rows.append(["other", f"{oth_cnt:,}", format_bytes_decimal(oth_byts), f"{share:5.1f}%"])
+        if len(rows) > 1:
+            rows.append(["Total", f"{total_files:,}", format_bytes_decimal(total_bytes), "100.0%"])
+
+        enc = (getattr(self.stream, "encoding", "") or "").lower()
+        style = "rule"
+        if "utf" not in enc and "65001" not in enc and enc:
+            try:
+                "┌─┐".encode(enc)
+            except (UnicodeEncodeError, LookupError):
+                style = "dash"
+
+        tbl = render_table(
+            headers=["Ext", "Files", "Size", "Share (%)"],
+            rows=rows,
+            alignments=["left", "right", "right", "right"],
+            style=style,
+            padding=1,
+        )
+        return ["  DISCOVERED ASSETS (LIVE)"] + [f"  {line}" for line in tbl.splitlines()]
 
     def _lines(self) -> list[str]:
         state = self.snapshot()
@@ -279,6 +347,8 @@ class InventoryProgress:
         overall_pct = state["overall_percent"]
         current_bar = ProgressBar("folder", 100, current_pct or 0, width=28, show_percent=current_pct is not None)
         overall_bar = ProgressBar("overall", 100, overall_pct or 0, width=28, show_percent=overall_pct is not None)
+        current_bar_str = color_text(str(current_bar), "cyan") if self.interactive else str(current_bar)
+        overall_bar_str = color_text(str(overall_bar), "green") if self.interactive else str(overall_bar)
         current_count = (
             f"{state['current_files_done']:,}/{count:,}" if count is not None else f"{state['current_files_done']:,}/?"
         )
@@ -290,14 +360,21 @@ class InventoryProgress:
         eta = fmt_hms(state["eta_seconds"]) + " estimated" if state["eta_seconds"] is not None else "unknown"
         current_label = f"{current_pct:.1f}%" if current_pct is not None else "unknown"
         overall_label = f"{overall_pct:.1f}%" if overall_pct is not None else "unknown"
-        header = f"[{state['phase']}] {state['current_folder']} | other active: {max(0, state['active_galleries'] - 1)}"
-        current_line = f"Folder:  {current_bar} {current_label} ({current_count} files)"
-        overall_line = f"Overall: {overall_bar} {overall_label} ({folder_count} folders)"
-        clock_line = f"Elapsed: {fmt_hms(elapsed)} | ETA: {eta} | Rate: {files_s:.1f} files/s"
-        stats_line = f"Files: {state['files_done']:,} | {format_bytes_decimal(state['bytes'])} | {format_rate_bps(bytes_s)} | folders with errors: {state['error_galleries']}"
+        phase_badge = color_text("[PHASE 1/2: INVENTORY DISCOVERY]", "cyan") if self.interactive else "[PHASE 1/2: INVENTORY DISCOVERY]"
+        header = f"{phase_badge} [{state['phase']}] {state['current_folder']} | active: {max(0, state['active_galleries'] - 1)}"
+        current_line = f"Folder:  {current_bar_str} {current_label} ({current_count} files)"
+        overall_line = f"Overall: {overall_bar_str} {overall_label} ({folder_count} folders)"
+        eta_str = color_text(eta, "bright") if self.interactive else eta
+        rate_str = color_text(f"{files_s:.1f} files/s", "yellow") if self.interactive else f"{files_s:.1f} files/s"
+        clock_line = f"Elapsed: {fmt_hms(elapsed)} | ETA: {eta_str} | Rate: {rate_str} ({format_rate_bps(bytes_s)})"
+        files_str = color_text(f"{state['files_done']:,}", "bright") if self.interactive else f"{state['files_done']:,}"
+        stats_line = f"Files: {files_str} | {format_bytes_decimal(state['bytes'])} | {format_rate_bps(bytes_s)} | folders with errors: {state['error_galleries']}"
         detail_line = f"Headers reused/inspected: {state['reused']:,}/{state['inspected']:,} | unreadable/excluded: {state['unreadable']:,}"
-        # LiveBlock clips by terminal display width, including CJK and ANSI spans.
-        return [header, current_line, overall_line, clock_line, stats_line, detail_line]
+        lines = [header, current_line, overall_line, clock_line, stats_line, detail_line]
+        table_lines = self._render_formats_table(state)
+        if table_lines:
+            lines.extend(table_lines)
+        return lines
 
     def close(self) -> None:
         if not self.enabled:

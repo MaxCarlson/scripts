@@ -18,13 +18,21 @@ from .models import ImageMetadata, ImageResult
 def parse_sample(value: str):
     if value == "auto":
         return value
+    if value.endswith("%"):
+        try:
+            pct = float(value[:-1])
+            if not (0 < pct <= 100) or not math.isfinite(pct):
+                raise ValueError
+            return f"{pct:g}%"
+        except ValueError:
+            raise argparse.ArgumentTypeError("Sample percentage must be greater than 0 and at most 100") from None
     try:
         result = int(value)
         if result < 1:
             raise ValueError
         return result
     except ValueError:
-        raise argparse.ArgumentTypeError("Sample must be a positive integer or auto") from None
+        raise argparse.ArgumentTypeError("Sample must be a positive integer, percentage (e.g. 10%), or auto") from None
 
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
@@ -61,8 +69,11 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-l",
         "--inventory-only",
-        action="store_true",
-        help="Refresh and report image inventory without running encoders.",
+        nargs="?",
+        const="headers",
+        default=False,
+        choices=("headers", "files"),
+        help="Refresh and report image inventory without running encoders (optional depth: headers or files).",
     )
     parser.add_argument(
         "-b",
@@ -88,6 +99,25 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
+    inv_only = getattr(args, "inventory_only", False)
+    if inv_only == "files":
+        args.inventory_depth = "files"
+    if inv_only:
+        args.inventory_only = True
+
+    sample = getattr(args, "sample", None)
+    if isinstance(sample, str) and sample.endswith("%"):
+        if getattr(args, "sample_percent", None) is not None:
+            raise ValueError("Choose --sample or --sample-percent, not both")
+        try:
+            pct = float(sample[:-1])
+            if not (0 < pct <= 100) or not math.isfinite(pct):
+                raise ValueError
+            args.sample_percent = pct
+            args.sample = None
+        except ValueError:
+            raise ValueError("Sample percentage must be greater than 0 and at most 100")
+
     if getattr(args, "inventory_policy", "refresh") == "trust" and any(
         getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")
     ):
@@ -436,18 +466,22 @@ def _allocate_quotas(
     groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int, proxy_weights=None
 ) -> dict[str, int]:
     active_keys = [key for key in groups if capacities[key] > 0]
-    if target < len(active_keys):
-        raise ValueError(
-            f"Sample {target} cannot cover {len(active_keys)} galleries; use -s {len(active_keys)} or more, "
-            "or -P for a percentage with automatic per-gallery coverage"
-        )
-    quotas = {key: (1 if capacities[key] > 0 else 0) for key in groups}
+    quotas = {key: 0 for key in groups}
     all_images = [i for g in groups.values() for i in g]
     count = max(1, len(all_images))
     total_bytes = max(1, sum(i.size_bytes for i in all_images))
     weights = {k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes for k, v in groups.items()}
     if proxy_weights is not None:
         weights = proxy_weights
+
+    if target < len(active_keys):
+        selected_keys = sorted(active_keys, key=lambda key: (-weights[key], key))[:target]
+        for key in selected_keys:
+            quotas[key] = 1
+        return quotas
+
+    for key in active_keys:
+        quotas[key] = 1
     remaining = target - sum(quotas.values())
     second = sorted((key for key in active_keys if capacities[key] > 1), key=lambda key: (-weights[key], key))
     for key in second[:remaining]:

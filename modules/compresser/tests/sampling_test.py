@@ -28,8 +28,9 @@ def test_coverage_weights_seed_and_percentage(tmp_path):
     assert plan.images != gallery_sample(images, tmp_path, sample_size=30, seed=9).images
     assert len(gallery_sample(images, tmp_path, percent=10).images) == 12
     assert len(gallery_sample(images, tmp_path, percent=0.01).images) == 3
-    with pytest.raises(ValueError, match="cannot cover"):
-        gallery_sample(images, tmp_path, sample_size=2)
+    small_sample = gallery_sample(images, tmp_path, sample_size=2)
+    assert len(small_sample.images) == 2
+    assert small_sample.summary()["sampled_galleries"] == 2
 
 
 def test_sampling_refuses_noncanonical_parent_paths(tmp_path):
@@ -258,3 +259,55 @@ def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_pat
     mean_estimate = sum(estimates) / len(estimates)
     assert abs(mean_estimate - true_total) / true_total < 0.01
     assert covered_standard / runs >= 0.90
+
+
+def test_parse_sample_percentages_and_validation():
+    import argparse
+    from compresser.sampling import parse_sample, add_analysis_arguments, validate_analysis_arguments
+
+    assert parse_sample("10%") == "10%"
+    assert parse_sample("2.5%") == "2.5%"
+    assert parse_sample("100%") == "100%"
+    assert parse_sample("auto") == "auto"
+    assert parse_sample("50") == 50
+
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_sample("0%")
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_sample("105%")
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_sample("0")
+    with pytest.raises(argparse.ArgumentTypeError):
+        parse_sample("-5")
+
+    # Test parser integration
+    parser = argparse.ArgumentParser()
+    add_analysis_arguments(parser)
+    parser.add_argument("-s", "--sample", type=parse_sample)
+    parser.add_argument("-w", "--write", action="store_true")
+    parser.add_argument("-c", "--compare", action="store_true")
+    parser.add_argument("-f", "--format", default="auto")
+    parser.add_argument("-m", "--mode", default="lossless")
+
+    # Smart percentage conversion
+    args = parser.parse_args(["-s", "15%"])
+    validate_analysis_arguments(args)
+    assert args.sample is None
+    assert args.sample_percent == 15.0
+
+    # Conflict between -s % and -P
+    args_conflict = parser.parse_args(["-s", "15%", "-P", "10"])
+    with pytest.raises(ValueError, match="not both"):
+        validate_analysis_arguments(args_conflict)
+
+    # Inventory-only optional depth
+    args_inv_headers = parser.parse_args(["-l"])
+    validate_analysis_arguments(args_inv_headers)
+    assert args_inv_headers.inventory_only is True
+    assert args_inv_headers.inventory_depth == "headers"
+
+    args_inv_files = parser.parse_args(["-l", "files"])
+    validate_analysis_arguments(args_inv_files)
+    assert args_inv_files.inventory_only is True
+    assert args_inv_files.inventory_depth == "files"
+

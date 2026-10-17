@@ -203,10 +203,13 @@ Applying standard ANSI / 256-color formatting through `termdash.formatting`:
 
 ## 9. Implementation Checklist
 
-- [ ] **Stage 1 (Responsive Startup, Memory Uncap & Sampling Fix):** Add immediate startup status during snapshot verification, sanitize input paths, lift the 4096 MiB ceiling to host RAM (`-B 16G`, `-B 50%`, `-B auto`), and remove the hard error when `-s` is less than the gallery count.
-- [ ] **Stage 2 (Live Extension Stats):** Add real-time format breakdown dictionary and table generator to `InventoryProgress`.
-- [ ] **Stage 3 (Worker Pool Diagnostics):** Track per-worker state, elapsed times, and memory throttle events in `CompresserDashboard`.
-- [ ] **Stage 4 (Coloring & Visual Hierarchy):** Update `InventoryProgress` and `CompresserDashboard` with colored phase banners and status indicators.
-- [ ] **Stage 5 (Executive Summary & Report):** Implement winning strategy hero callout, whole-library extrapolation, fidelity badges, and copy-paste CLI prompt.
-- [ ] **Stage 6 (Verification):** Test on mock directory and verify clean terminal redraws on Windows PowerShell.
+- [x] **Stage 1 (Responsive Startup, Memory Uncap & Sampling Fix):** Add immediate startup status during snapshot verification, sanitize input paths, lift the 4096 MiB ceiling to host RAM (`-B 16G`, `-B 50%`, `-B auto`), and remove the hard error when `-s` is less than the gallery count.
+- [x] **Stage 2 (Live Extension Stats):** Add real-time format breakdown dictionary and table generator to `InventoryProgress`.
+- [x] **Stage 3 (Worker Pool Diagnostics):** Track per-worker state, elapsed times, and memory throttle events in `CompresserDashboard`.
+- [x] **Stage 4 (Coloring & Visual Hierarchy):** Update `InventoryProgress` and `CompresserDashboard` with colored phase banners and status indicators.
+- [x] **Stage 5 (Executive Summary & Report):** Implement winning strategy hero callout, whole-library extrapolation, fidelity badges, and copy-paste CLI prompt.
+- [x] **Stage 6 (Verification):** Test on mock directory and verify clean terminal redraws on Windows PowerShell.
+- [x] **Stage 7 (CLI Usability & Flag Simplifications):** Smart percentage parsing on `-s` (`-s 10%`, `-s auto`), optional depth parameter on `-l` (`-l [headers|files]`), fixed `-B` help string formatting with uncap explanation, and verified 100% test pass on both `compresser` (283 passed, 1 skipped) and `mangadl` (315 passed).
+
+
 

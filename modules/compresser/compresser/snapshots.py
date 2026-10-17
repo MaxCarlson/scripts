@@ -109,6 +109,9 @@ class SelectionSnapshot:
     def load(self) -> tuple[list[ImageMetadata], dict | None]:
         """Load a compatible completed population; never enumerate the library."""
         try:
+            import sys
+
+            print("[VERIFYING SNAPSHOT] Loading cached inventory from SQLite...", file=sys.stderr, flush=True)
             _unlinked(self.original_root)
             with self.store.connection(readonly=True) as db:
                 row = db.execute(

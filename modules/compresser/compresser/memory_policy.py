@@ -16,13 +16,31 @@ MIB = 1024**2
 def parse_memory_budget(value):
     if value == "auto":
         return value
+    val_str = str(value).strip().lower()
+    if val_str == "auto":
+        return "auto"
+    if val_str.endswith("%"):
+        try:
+            pct = float(val_str[:-1].strip())
+            if not 1 <= pct <= 100:
+                raise ValueError
+            return f"{int(pct) if pct.is_integer() else pct}%"
+        except ValueError:
+            raise argparse.ArgumentTypeError("Memory percentage must be between 1% and 100%") from None
+    multiplier = 1
+    if val_str.endswith("gb") or val_str.endswith("gib") or val_str.endswith("g"):
+        multiplier = 1024
+        val_str = val_str.rstrip("gib").rstrip("gb").rstrip("g").strip()
+    elif val_str.endswith("mb") or val_str.endswith("mib") or val_str.endswith("m"):
+        multiplier = 1
+        val_str = val_str.rstrip("mib").rstrip("mb").rstrip("m").strip()
     try:
-        result = int(str(value))
-        if not 64 <= result <= 4096:
+        result = int(float(val_str) * multiplier)
+        if result < 64:
             raise ValueError
         return result
-    except ValueError:
-        raise argparse.ArgumentTypeError("Use -B auto or an integer64..4096MiB") from None
+    except (ValueError, OverflowError):
+        raise argparse.ArgumentTypeError("Use -B auto, percentage (e.g. 50%), or memory amount (e.g. 16G, 2048M, minimum 64M)") from None
 
 
 def available_memory_bytes() -> int | None:
@@ -96,17 +114,25 @@ class MemoryPolicy:
             "resolved_mib": self.budget_mib,
             "available_bytes_at_start": self.available_at_start,
             "measured_at": self.measured_at,
-            "policy": "20% available capped4096MiB" if self.requested == "auto" else "fixed",
+            "policy": (
+                "20% available capped 32768MiB"
+                if self.requested == "auto"
+                else (f"{self.requested} available" if isinstance(self.requested, str) and self.requested.endswith("%") else "fixed")
+            ),
             "note": "Per-process estimated reservations, not an OS or cross-process guarantee",
         }
 
     def admission_allowance(self) -> int:
-        if self.requested != "auto":
+        if self.requested != "auto" and not (isinstance(self.requested, str) and self.requested.endswith("%")):
             return self.budget_mib * MIB
         now = time.monotonic()
         if now - self._last_poll >= self.poll_interval:
             available = _available(self.provider)
-            share = available // 5
+            if self.requested == "auto":
+                share = available // 5
+            else:
+                pct = float(self.requested[:-1])
+                share = int(available * (pct / 100))
             self._allowance = min(self.budget_mib * MIB, share) if share >= 64 * MIB else 0
             self._last_poll = now
         return self._allowance
@@ -118,10 +144,17 @@ def resolve_memory_policy(value=512, *, provider=None) -> MemoryPolicy:
     except argparse.ArgumentTypeError as exc:
         raise ValueError(str(exc)) from exc
     provider = provider or available_memory_bytes
-    available = _available(provider) if value == "auto" else None
-    budget = min(4096, available // (5 * MIB)) if value == "auto" else value
+    is_dynamic = value == "auto" or (isinstance(value, str) and value.endswith("%"))
+    available = _available(provider) if is_dynamic else None
+    if value == "auto":
+        budget = min(32768, available // (5 * MIB))
+    elif isinstance(value, str) and value.endswith("%"):
+        pct = float(value[:-1])
+        budget = int((available * (pct / 100)) // MIB)
+    else:
+        budget = value
     if budget < 64:
-        raise ValueError("Auto memory allowance is below64MiB; free memory or specify an explicit -B64..4096")
+        raise ValueError("Memory allowance is below 64MiB; free memory or specify an explicit -B (e.g. -B 2048)")
     return MemoryPolicy(value, budget, available, provider, datetime.now(timezone.utc).isoformat())
 
 

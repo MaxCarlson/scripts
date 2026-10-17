@@ -189,10 +189,11 @@ def run_cli(args: argparse.Namespace) -> int:
             effort=args.effort,
         )
         validate_analysis_arguments(args)
-        destination = args.destination.expanduser()
+        args.destination = Path(str(args.destination).rstrip("/\\")).expanduser().resolve()
+        destination = args.destination
         if not destination.is_dir() or linked(destination.lstat()):
             raise ValueError("Compression requires an existing, unlinked destination directory")
-        if destination.resolve().name.startswith(".") or destination.resolve().name == "_partial":
+        if destination.name.startswith(".") or destination.name == "_partial":
             raise ValueError("Compression cannot target hidden controls or partial downloads")
         op_desc = (
             "mangadl compress -w"
@@ -481,7 +482,12 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 ]
                 print(json.dumps(data, indent=2))
             else:
-                print_comparison_matrix(comp_rows)
+                print_comparison_matrix(
+                    comp_rows,
+                    target_path=args.destination,
+                    workers=getattr(args, "threads", 4),
+                    runner="mangadl",
+                )
                 print_cache_diagnostics(cache.diagnostics())
                 snapshot.print_warning()
             return 0

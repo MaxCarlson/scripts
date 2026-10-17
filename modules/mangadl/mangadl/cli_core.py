@@ -486,7 +486,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
     compress.add_argument("-t", "--threads", type=int, default=4, help="Worker thread concurrency (default: 4).")
     compress.add_argument("-B", "--memory-budget-mib", type=parse_memory_budget, default=512,
-                         help="Aggregate allowance64..4096MiB or auto (20% available, cap4096); default512; per-image limits unchanged.")
+                         help="Aggregate allowance: integer MiB, units (e.g. 16G, 8192M), percentage (e.g. 50%%), or auto (20%% available); default 512.")
     compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
     compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
     compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")

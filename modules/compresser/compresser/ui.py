@@ -14,7 +14,7 @@ from collections import Counter, deque
 from pathlib import Path
 from typing import Sequence
 
-from termdash.progress import ProgressBar, render_horizontal_bar
+from termdash.progress import ProgressBar
 from termdash.live import LiveBlock
 from termdash.table import render_table
 from termdash.utils import color_text as _color_text, fmt_hms, format_bytes_decimal, format_rate_bps
@@ -190,8 +190,10 @@ class CompresserDashboard:
                 label = _color_text(label, {"done": "green", "running": "blue", "pending": "yellow"}[state])
             stage_labels.append(label)
         overall_bar = ProgressBar("overall", self.overall_total, self.overall_processed, width=28, charset="block")
+        phase_title = "[PHASE 2/2: EXECUTING COMPRESSION]" if self.mode == "WRITE" else "[PHASE 2/2: COMPRESSION BENCHMARK]"
+        phase_badge = color_text(phase_title, "green") if self.interactive else phase_title
         lines = [
-            f"Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
+            f"{phase_badge} Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
             f"{color_text('Compresser', 'bright')} | Mode: {'STOPPING' if self.stopping else self.mode} | Strategy: {self.strategy_name} | Worker limit: {self.workers}",
             file_line,
             f"Stage trials: {self.processed}/{self.total_images} | Rate: {rate_img:.1f} img/s ({format_rate_bps(rate_bytes)})",
@@ -206,12 +208,21 @@ class CompresserDashboard:
         if activity:
             descriptions = [
                 f"{Path(item['path']).name} ({item['width']}x{item['height']}, "
-                f"{format_bytes_decimal(item['estimated_bytes'])} estimated, {now-item['started']:.1f}s, "
+                f"{format_bytes_decimal(item['estimated_bytes'])}, {now-item['started']:.1f}s, "
                 f"{item.get('phase', 'starting')})"
                 for item in activity["active_images"][:2]
             ]
+            eff = (
+                (100.0 * activity["active_workers"] / max(1, activity["effective_workers"]))
+                if activity["effective_workers"] > 0
+                else 0.0
+            )
+            waiting = activity.get("waiting_reason") or "none"
+            if waiting != "none" and self.interactive:
+                waiting = color_text(f"WAIT_MEM ({waiting})", "yellow")
             lines[1] = (
-                f"Compresser | Mode: {'STOPPING' if self.stopping else self.mode} | Strategy: {self.strategy_name}"
+                f"{color_text('Compresser', 'bright')} | Mode: {'STOPPING' if self.stopping else self.mode} | "
+                f"Strategy: {self.strategy_name} | Pool Efficiency: {eff:.0f}% ({activity['active_workers']}/{activity['effective_workers']} active)"
             )
             lines[2:2] = [
                 f"Workers: requested {activity['requested_workers']} | effective {activity['effective_workers']} | "
@@ -220,7 +231,7 @@ class CompresserDashboard:
                 f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
                 + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
                 f"Reserved: {format_bytes_decimal(activity.get('reserved_bytes', 0))} | "
-                f"Preflight rejected: {activity.get('preflight_rejected_images', 0)} | Waiting: {activity.get('waiting_reason') or 'none'}",
+                f"Preflight rejected: {activity.get('preflight_rejected_images', 0)} | Waiting: {waiting}",
                 "Active: "
                 + (" | ".join(descriptions) or "none")
                 + (f" | +{activity['active_workers'] - 2} more" if activity["active_workers"] > 2 else ""),
@@ -409,56 +420,40 @@ def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
     }
 
 
-def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
-    """Print a multi-strategy comparison table with horizontal visual comparison bars."""
-    headers = [
-        "Strategy",
-        "Format",
-        "Mode",
-        "Quality",
-        "Retained Size",
-        "Savings %",
-        "Avg SSIM",
-        "Trial Rate",
-        "Relative Storage Savings",
-        "Failures",
-        "Kept",
-        "Cached",
-        "Projected Saved",
-    ]
+def print_comparison_matrix(
+    rows: Sequence[ComparisonRow],
+    *,
+    target_path: Path | str | None = None,
+    workers: int = 4,
+    runner: str = "mangadl",
+) -> None:
+    """Print a multi-strategy comparison table with hero recommendations and actionable command."""
+    recommendations = recommend_comparison_strategies(rows)
+    max_entry = recommendations.get("maximum_savings")
+    tradeoff_entry = recommendations.get("practical_tradeoff")
 
-    table_rows = []
-    max_savings = max((r.savings_percent for r in rows), default=1.0)
-
-    for r in rows:
-        ratio = (r.savings_percent / 100.0) if max_savings > 0 else 0.0
-        bar = color_text(render_horizontal_bar(ratio, width=16, show_pct=False), "green")
-        table_rows.append(
-            [
-                color_text(r.strategy_name, "bright"),
-                r.output_format.upper(),
-                r.mode,
-                r.quality_display,
-                format_bytes_decimal(r.compressed_bytes),
-                color_text(f"{r.savings_percent:.1f}%", "green") if r.savings_percent > 0 else "0.0%",
-                f"{r.average_ssim:.3f}" if r.average_ssim is not None else "N/A",
-                f"{r.throughput_images_per_s:.1f} img/s",
-                f"{bar} {r.savings_percent:4.1f}%",
-                str(r.failed_count),
-                str(r.skipped_count),
-                str(r.cache_hits),
-                (
-                    format_bytes_decimal(r.estimate["projected_total_saved_bytes"])
-                    if r.estimate.get("projected_total_saved_bytes") is not None
-                    else "N/A"
-                ),
-            ]
-        )
+    # 1. Recommended Hero Banner
+    if max_entry:
+        target_name = Path(target_path).name if target_path else "Current Target"
+        sample_count = max_entry.get("sample_images", rows[0].measured_images if rows else 0)
+        print("\n" + color_text("╭─ COMPRESSION BENCHMARK RESULTS ────────────────────────────────────────────────────────╮", "cyan"))
+        print(f"│ Target: {target_name}  •  Evaluated: {len(rows)} Strategies on {sample_count} Sample Images   │")
+        print(color_text("╰────────────────────────────────────────────────────────────────────────────────────────╯", "cyan"))
+        print(f"\n  {color_text('🏆 RECOMMENDED STRATEGY', 'bright')}")
+        print(f"  Strategy:    {color_text(max_entry['strategy'], 'green')} ({max_entry['format'].upper()} {max_entry['quality']})")
+        ssim_val = max_entry.get("average_ssim")
+        ssim_str = f"{ssim_val:.3f}" if ssim_val is not None else "N/A"
+        print(f"  Perception:  SSIM {ssim_str}")
+        print(f"  Projected:   Saved {format_bytes_decimal(max_entry['ranking_saved_bytes'])} ({max_entry['ranking_scope']})")
+        if tradeoff_entry and tradeoff_entry["strategy"] != max_entry["strategy"]:
+            t_ssim = f"{tradeoff_entry['average_ssim']:.3f}" if tradeoff_entry.get("average_ssim") is not None else "N/A"
+            print(f"\n  {color_text('⚖ BEST QUALITY/SPEED BALANCE', 'bright')}")
+            print(f"  Strategy:    {tradeoff_entry['strategy']} ({tradeoff_entry['format'].upper()} {tradeoff_entry['quality']}) • SSIM: {t_ssim} • Rate: {tradeoff_entry.get('speed_img_per_s', 0):.1f} img/s")
 
     print("\n" + color_text("Compression Strategy Comparison Matrix", "cyan"))
-    if shutil.get_terminal_size().columns < 150:
-        # Stacked records preserve meaning instead of squeezing twelve columns
-        # into labels like 'Ret…' and unrecognizable strategy names.
+    cols = shutil.get_terminal_size().columns
+    if cols < 100:
+        # Stacked records preserve meaning without truncating labels in narrow terminals.
         for row in rows:
             print(f"\n{row.strategy_name} | {row.output_format.upper()} | {row.quality_display}")
             print(f"  Retained: {format_bytes_decimal(row.compressed_bytes)} | Savings: {row.savings_percent:.1f}%")
@@ -466,28 +461,38 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
             print(f"  Trials: {row.measured_images} | Rate: {row.throughput_images_per_s:.1f}/s")
             print(f"  Failures: {row.failed_count} | Kept: {row.skipped_count} | Cached: {row.cache_hits}")
     else:
+        best_strat = max_entry["strategy"] if max_entry else None
+        table_rows = []
+        for idx, r in enumerate(rows):
+            num_badge = "★" if r.strategy_name == best_strat else ("✗" if r.failed_count > 0 else str(idx + 1))
+            strat_disp = color_text(r.strategy_name, "bright")
+            fmt_disp = f"{r.output_format.upper()} ({r.quality_display})"
+            if r.failed_count > 0 and r.measured_images == 0:
+                ssim_disp = color_text("FAILED", "red")
+                speed_disp = color_text("FAILED", "red")
+            elif r.average_ssim is None:
+                ssim_disp = "N/A"
+                speed_disp = f"{r.throughput_images_per_s:.1f} img/s"
+            else:
+                badge = "(Loss)" if (r.average_ssim >= 0.9995 or r.mode == "lossless") else ("(✓✓)" if r.average_ssim >= 0.990 else ("(✓)" if r.average_ssim >= 0.970 else "(!)"))
+                ssim_disp = f"{r.average_ssim:.3f} {badge}"
+                speed_disp = f"{r.throughput_images_per_s:.1f} img/s"
+            saved_disp = f"{r.savings_percent:.1f}% (-{format_bytes_decimal(r.saved_bytes)})" if r.saved_bytes > 0 else "0.0% (0 B)"
+            est_bytes = r.estimate.get("projected_total_saved_bytes") if r.estimate else None
+            est_disp = f"-{format_bytes_decimal(est_bytes)}" if est_bytes is not None else ("0 B" if r.saved_bytes == 0 else "N/A")
+            table_rows.append([num_badge, strat_disp, fmt_disp, ssim_disp, saved_disp, est_disp, speed_disp])
         print(
             render_table(
-                headers=headers,
+                headers=["#", "Strategy", "Format", "SSIM Score", "Sample Saved", "Gallery Est", "Speed"],
                 rows=table_rows,
-                alignments=[
-                    "left",
-                    "center",
-                    "center",
-                    "center",
-                    "right",
-                    "right",
-                    "right",
-                    "right",
-                    "left",
-                    "right",
-                    "right",
-                    "right",
-                    "right",
-                ],
+                alignments=["center", "left", "left", "left", "right", "right", "right"],
                 style="rule",
             )
         )
+        print("  Quality Badges: (Loss) Bit-for-bit Exact • (✓✓) Imperceptible • (✓) Slight Smoothing • (✗) Failed")
+        for row in rows:
+            print(f"  {row.strategy_name}: Retained: {format_bytes_decimal(row.compressed_bytes)} | Savings: {row.savings_percent:.1f}% | Failures: {row.failed_count} | Kept: {row.skipped_count} | Cached: {row.cache_hits}")
+
     for row in rows:
         if row.estimate:
             estimate = row.estimate
@@ -505,7 +510,7 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
             print(f"  {row.strategy_name}: projected whole-target savings {display}{bounds}")
     if any(row.estimate for row in rows):
         print(rows[0].estimate["uncertainty"])
-    recommendations = recommend_comparison_strategies(rows)
+
     print("Comparison Recommendations:")
     for label, key in (
         ("Maximum storage savings", "maximum_savings"),
@@ -560,3 +565,23 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
             )
         for reason in row.error_summary:
             print(f"  {row.strategy_name}: {reason}")
+
+    # 3. Actionable Command Prompt
+    if max_entry and target_path:
+        strat_name = max_entry["strategy"]
+        fmt = max_entry["format"]
+        quality = max_entry.get("quality", "")
+        mode = "lossy" if "lossy" in strat_name or "q=" in quality else "lossless"
+        q_flag = f"-q {quality.replace('q=', '')} " if mode == "lossy" and "q=" in quality else ""
+        target_str = str(target_path)
+        if runner == "mangadl":
+            cmd = f"mangadl compress -d '{target_str}' -f {fmt} -m {mode} {q_flag}-B auto -t {workers} -w"
+        else:
+            cmd = f"compresser -i '{target_str}' -f {fmt} -m {mode} {q_flag}-B auto -t {workers} -w"
+        width = max(len(cmd) + 6, 78)
+        h_line = "─" * (width - 2)
+        print("\n" + color_text(f"╭─ READY TO COMPRESS? {h_line[21:]}╮", "green"))
+        print(f"│ To apply the recommended strategy ({strat_name}) to this target, run:".ljust(width - 1) + "│")
+        print("│" + " " * (width - 2) + "│")
+        print(f"│   {cmd}".ljust(width - 1) + "│")
+        print(color_text(f"╰{h_line}╯", "green"))

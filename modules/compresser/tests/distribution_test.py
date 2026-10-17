@@ -49,8 +49,10 @@ def test_profile_sampling_exact_monotone_uniform_gallery_prefixes(tmp_path):
         previous = chosen
     assert len(gallery_sample(images, root, sample_size="auto", profile=profile).images) == 4
     assert len(gallery_sample(images, root).images) == 20
+    sub = gallery_sample(images, root, sample_size=1, profile=profile)
+    assert len(sub.images) == 1
     with pytest.raises(ValueError):
-        gallery_sample(images, root, sample_size=1, profile=profile)
+        gallery_sample(images, root, sample_size=0, profile=profile)
 
 
 def test_stale_or_absent_profile_never_silently_falls_back(tmp_path):

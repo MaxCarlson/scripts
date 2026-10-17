@@ -13,7 +13,7 @@ def test_fixed_default_and_explicit_budgets_never_query_ram():
     assert resolve_memory_policy(64, provider=forbidden).budget_mib == 64
 
 
-@pytest.mark.parametrize("available,expected", [(320 * 1024**2, 64), (1024 * 1024**2, 204), (100 * 1024**3, 4096)])
+@pytest.mark.parametrize("available,expected", [(320 * 1024**2, 64), (1024 * 1024**2, 204), (100 * 1024**3, 20480)])
 def test_auto_uses_available_fraction_floor_and_cap(available, expected):
     from compresser.memory_policy import resolve_memory_policy
 
@@ -21,6 +21,20 @@ def test_auto_uses_available_fraction_floor_and_cap(available, expected):
     assert policy.budget_mib == expected
     assert policy.diagnostics()["available_bytes_at_start"] == available
     assert policy.diagnostics()["requested"] == "auto"
+
+
+def test_human_units_and_percentages_parsing():
+    from compresser.memory_policy import parse_memory_budget, resolve_memory_policy
+
+    assert parse_memory_budget("16G") == 16384
+    assert parse_memory_budget("8GB") == 8192
+    assert parse_memory_budget("2048M") == 2048
+    assert parse_memory_budget("50%") == "50%"
+    assert parse_memory_budget(8192) == 8192
+
+    # Percentage resolves against available RAM
+    policy = resolve_memory_policy("50%", provider=lambda: 16384 * 1024**2)
+    assert policy.budget_mib == 8192
 
 
 @pytest.mark.parametrize("available", [None, 0, 319 * 1024**2, float("nan"), float("inf")])
@@ -31,7 +45,7 @@ def test_auto_unknown_or_low_ram_fails_without_total_fallback(available):
         resolve_memory_policy("auto", provider=lambda: available)
 
 
-@pytest.mark.parametrize("value", ["nan", "inf", "-1", "63", "4097", "1.5"])
+@pytest.mark.parametrize("value", ["nan", "inf", "-1", "63", "0%", "101%", "-5G", "1.5"])
 def test_bad_memory_policy_values_reject(value):
     import argparse
     from compresser.memory_policy import parse_memory_budget

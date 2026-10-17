@@ -192,3 +192,27 @@ def test_real_renderer_handles_narrow_cjk_gallery_and_redraw(tmp_path, monkeypat
         progress.close()
         progress.close()
     assert not progress.block._thread.is_alive()
+
+
+def test_live_extension_stats_tracked_and_rendered(tmp_path):
+    progress = _progress(tmp_path)
+    try:
+        gallery = tmp_path / "gallery"
+        progress.start_gallery(gallery, total_files=3)
+        progress.advance_file(gallery / "01.jpg", size_bytes=1000, gallery_key=gallery)
+        progress.advance_file(gallery / "02.webp", size_bytes=500, gallery_key=gallery)
+        progress.advance_file(gallery / "03.jpg", size_bytes=2000, gallery_key=gallery)
+        state = progress.snapshot()
+        assert "formats" in state
+        assert state["formats"][".jpg"]["files"] == 2
+        assert state["formats"][".jpg"]["bytes"] == 3000
+        assert state["formats"][".webp"]["files"] == 1
+        assert state["formats"][".webp"]["bytes"] == 500
+        lines = "\n".join(progress._lines())
+        assert "DISCOVERED ASSETS (LIVE)" in lines
+        assert ".jpg" in lines
+        assert ".webp" in lines
+        assert "PHASE 1/2: INVENTORY DISCOVERY" in lines
+    finally:
+        progress.close()
+
