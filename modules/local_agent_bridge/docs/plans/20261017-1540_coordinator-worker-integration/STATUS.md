@@ -2,6 +2,11 @@
 
 Updated: 2026-10-17 (America/Los_Angeles).
 
+Superseded activation design: [local_agent CLI/setup ownership](../20261017-1602_local-agent-setup/design.md)
+now plans installation and dotfiles migration inside this module without using
+`agent_abilities`. Resource authoring below remains the implemented baseline;
+manual Stage 2 and optional packaging stages are historical proposals.
+
 - Workspace: `C:/Users/mcarls/src/scripts`, branch
   `compression-inventory-estimation-20261017`.
 - User authorized implementing the researched integration in the existing module.

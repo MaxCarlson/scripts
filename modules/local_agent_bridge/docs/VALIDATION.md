@@ -1,3 +1,11 @@
+# Current installer validation
+
+The 2.0.0 independent installer passed 26 focused checks with one host file-symlink
+privilege skip. Wheel build/assets/entry points and an isolated wheel lifecycle
+also passed. See [HANDOFF.md](HANDOFF.md) for exact commands and limits. Real
+profile activation and model handoffs remain pending. Historical worker scenarios
+below remain acceptance criteria for that next stage.
+
 # Resource validation
 
 ## Offline checks
@@ -18,7 +26,7 @@ changes. These checks do not invoke the model or prove behavioral quality. Also 
   and rejects missing fields or invented check statuses.
 - Task-envelope JSON and wait examples match the pinned bridge's inputs.
 
-## Behavioral scenarios — pending
+## Behavioral scenarios â€” pending
 
 Run only when delegation/model use is enabled, in a disposable workspace. For an
 independent evaluation, compare the same task without and with the skill; retain

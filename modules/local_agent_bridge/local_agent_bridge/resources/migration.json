@@ -1,0 +1,162 @@
+{
+  "schema_version": 1,
+  "source": "C:\\Users\\mcarls\\src\\dotfiles\\symlinked\\llms",
+  "files": [
+    {
+      "path": "AGENTS.local.template.md",
+      "source_sha256": "1fd6aae3cddf0718ba383015f5bf82958923df4851109cc09eb303ae49b8c8c4",
+      "copied_sha256": "1fd6aae3cddf0718ba383015f5bf82958923df4851109cc09eb303ae49b8c8c4",
+      "redactions": 0
+    },
+    {
+      "path": "AGENTS.md",
+      "source_sha256": "a248818a984269b001f28bf4e961327f0edd1499aee5abc404eeb9e332a1047b",
+      "copied_sha256": "a248818a984269b001f28bf4e961327f0edd1499aee5abc404eeb9e332a1047b",
+      "redactions": 0
+    },
+    {
+      "path": "claude/CLAUDE.md",
+      "source_sha256": "ca1bc580d61215eb299ce00d3a15324e1c3060c3951cba9d094d9ab1385c3366",
+      "copied_sha256": "ca1bc580d61215eb299ce00d3a15324e1c3060c3951cba9d094d9ab1385c3366",
+      "redactions": 0
+    },
+    {
+      "path": "claude/settings.json",
+      "source_sha256": "732bc61f469ebfd9b026f8104ef4305b5872330268b4dd70947d32fdf9f2286d",
+      "copied_sha256": "dbc8b26a9ab2976b7f97c38e2709abea71b9a0de30d7f40da147978dd8091202",
+      "redactions": 1
+    },
+    {
+      "path": "codex/AGENTS.md",
+      "source_sha256": "17440698bde50f41e5bb48c3b36c1b30116b2831b045d5abc5f0a93d94795dc2",
+      "copied_sha256": "17440698bde50f41e5bb48c3b36c1b30116b2831b045d5abc5f0a93d94795dc2",
+      "redactions": 0
+    },
+    {
+      "path": "codex/config.toml",
+      "source_sha256": "124841412b0e6dd3c1cc348435e9c7523248ac26d9324da1be146a93eaf9ff27",
+      "copied_sha256": "124841412b0e6dd3c1cc348435e9c7523248ac26d9324da1be146a93eaf9ff27",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/agents/test-verify.agent.md",
+      "source_sha256": "e259caea1e2d3bed86bd5e04323c2c37bc2f026ab50aad25fd20c23763749bb1",
+      "copied_sha256": "e259caea1e2d3bed86bd5e04323c2c37bc2f026ab50aad25fd20c23763749bb1",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/instructions/github/copilot-instructions.md",
+      "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "copied_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/instructions/test-verify.instructions.md",
+      "source_sha256": "eb83ba2bfd1de4091c65620e081e6ac3caf8ed636341c1e1e1d4d8845064bbef",
+      "copied_sha256": "eb83ba2bfd1de4091c65620e081e6ac3caf8ed636341c1e1e1d4d8845064bbef",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/prompts/test-verify.prompt.md",
+      "source_sha256": "b46a434c83fc30df63c2b1cd0d7ba76fd24bac72c7a0ee895e61a77e3e41f1c9",
+      "copied_sha256": "b46a434c83fc30df63c2b1cd0d7ba76fd24bac72c7a0ee895e61a77e3e41f1c9",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/README.md",
+      "source_sha256": "8fe8081b54e074810caf526f81731d006240c0574ef1361240376afc99444119",
+      "copied_sha256": "8fe8081b54e074810caf526f81731d006240c0574ef1361240376afc99444119",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/skills/test-verify/SKILL.md",
+      "source_sha256": "7db699fd72cb307b780080403ab94e97aa772092daac11ac2519d87eaae6b3bf",
+      "copied_sha256": "7db699fd72cb307b780080403ab94e97aa772092daac11ac2519d87eaae6b3bf",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/symlinks.sh",
+      "source_sha256": "2649d4e06359784df5830fcb3a29b6619c96285c0147d534fc86e96a1a07858c",
+      "copied_sha256": "2649d4e06359784df5830fcb3a29b6619c96285c0147d534fc86e96a1a07858c",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/templates/agent.template.md",
+      "source_sha256": "01ad0a8e34302286103345a573b330906ded3494623037b0a3e20463fb5e86ec",
+      "copied_sha256": "01ad0a8e34302286103345a573b330906ded3494623037b0a3e20463fb5e86ec",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/templates/instruction.template.md",
+      "source_sha256": "e8ff4c45bfadd35d7631111d6b2faf828656232e4b0b22e8a3f17dd9d0fc2ba5",
+      "copied_sha256": "e8ff4c45bfadd35d7631111d6b2faf828656232e4b0b22e8a3f17dd9d0fc2ba5",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/templates/prompt.template.md",
+      "source_sha256": "16b948378b741a3938acc54c6531f02f28d72952745c72f73ab22ef1f193df66",
+      "copied_sha256": "16b948378b741a3938acc54c6531f02f28d72952745c72f73ab22ef1f193df66",
+      "redactions": 0
+    },
+    {
+      "path": "custom_agents/templates/skill.template.md",
+      "source_sha256": "632c57eeddb81df2675b4875d365ecf7092550deda7926dbfa5cc0e24f2ad44a",
+      "copied_sha256": "632c57eeddb81df2675b4875d365ecf7092550deda7926dbfa5cc0e24f2ad44a",
+      "redactions": 0
+    },
+    {
+      "path": "gemini/GEMINI.md",
+      "source_sha256": "610c6e27c7f5a3bef01f4dc6864f13f06002a7e0508d37fdda38a123507e92be",
+      "copied_sha256": "610c6e27c7f5a3bef01f4dc6864f13f06002a7e0508d37fdda38a123507e92be",
+      "redactions": 0
+    },
+    {
+      "path": "gemini/settings.json",
+      "source_sha256": "646fd2100b4271ad784130e4dcf32bf8b523005ff48db076544bb76425154c6b",
+      "copied_sha256": "646fd2100b4271ad784130e4dcf32bf8b523005ff48db076544bb76425154c6b",
+      "redactions": 0
+    },
+    {
+      "path": "README.md",
+      "source_sha256": "06ce8121b6d7e9d3b3606d670d55406f81cdb18d94bebfcb6b936173301e206d",
+      "copied_sha256": "06ce8121b6d7e9d3b3606d670d55406f81cdb18d94bebfcb6b936173301e206d",
+      "redactions": 0
+    },
+    {
+      "path": "research-request-template.md",
+      "source_sha256": "c858a10417ccfb51d0b0a1ef1e2d27048b8e0e6927fb99e1dd4bd0317b2fd2cc",
+      "copied_sha256": "c858a10417ccfb51d0b0a1ef1e2d27048b8e0e6927fb99e1dd4bd0317b2fd2cc",
+      "redactions": 0
+    },
+    {
+      "path": "scripts/AGENTS.md",
+      "source_sha256": "d1768a94d58b4672dd405aa0110bf86c7364ddf32dea46bef3d90eaac807cfd7",
+      "copied_sha256": "d1768a94d58b4672dd405aa0110bf86c7364ddf32dea46bef3d90eaac807cfd7",
+      "redactions": 0
+    },
+    {
+      "path": "scripts/claude",
+      "source_sha256": "5b8662f3228a88aaa17b280d784fd40f540de155538df90d52441a2beda94c0c",
+      "copied_sha256": "5b8662f3228a88aaa17b280d784fd40f540de155538df90d52441a2beda94c0c",
+      "redactions": 0
+    },
+    {
+      "path": "scripts/gemini",
+      "source_sha256": "2c6a2a867d077042eb14cd38348fe02c360661bd6db0a9475de4da3837f36dbf",
+      "copied_sha256": "2c6a2a867d077042eb14cd38348fe02c360661bd6db0a9475de4da3837f36dbf",
+      "redactions": 0
+    },
+    {
+      "path": "scripts/GEMINI.md",
+      "source_sha256": "9286684e918e7906e303199b9f0008d7b115b7575cf240270b2a5c82bb90abe3",
+      "copied_sha256": "9286684e918e7906e303199b9f0008d7b115b7575cf240270b2a5c82bb90abe3",
+      "redactions": 0
+    },
+    {
+      "path": "symlinks.sh",
+      "source_sha256": "e5babf1be4baf985690548e9cb35a92fd7683ca86ec300ecfaeb17d115425e55",
+      "copied_sha256": "e5babf1be4baf985690548e9cb35a92fd7683ca86ec300ecfaeb17d115425e55",
+      "redactions": 0
+    }
+  ]
+}

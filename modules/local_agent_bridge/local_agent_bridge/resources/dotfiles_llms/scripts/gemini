@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper for @google/gemini-cli that prefers a known-good global install on Termux
+# and otherwise falls back to npx with Termux-safe npm env flags.
+
+SELF="$(readlink -f "$0" 2>/dev/null || python3 - <<'PY' 2>/dev/null || echo "$0")"
+PY
+import os,sys
+try:
+    import os, sys
+    print(os.path.realpath(sys.argv[0]))
+except Exception:
+    pass
+PY
+
+: "${PREFIX:=/data/data/com.termux/files/usr}"
+: "${TMPDIR:=${PREFIX}/tmp}"
+: "${NPM_CACHE_DIR:=${PREFIX}/var/npm-cache}"
+: "${NPM_TMP_DIR:=${TMPDIR}/npm-tmp}"
+
+# If a true global gemini exists under npm's global root, exec it directly to avoid npx temp dirs.
+resolve_npm_root() {
+    npm root -g 2>/dev/null || printf '%s\n' "${PREFIX}/lib/node_modules"
+}
+NPM_ROOT="$(resolve_npm_root)"
+GLOBAL_BIN="${NPM_ROOT}/@google/gemini-cli/bin/gemini"
+
+# Avoid self-recursion if this wrapper path equals the resolved global bin path.
+if [ -x "${GLOBAL_BIN}" ] && [ "${GLOBAL_BIN}" != "${SELF}" ]; then
+    exec "${GLOBAL_BIN}" "$@"
+fi
+
+# Fallback: npx with safe env (omit optional deps, no postinstall scripts, dedicated cache/tmp).
+export npm_config_cache="${NPM_CACHE_DIR}"
+export npm_config_tmp="${NPM_TMP_DIR}"
+export npm_config_fund=false
+export npm_config_audit=false
+export npm_config_progress=false
+export npm_config_update_notifier=false
+export npm_config_omit=optional
+export npm_config_ignore_scripts=true
+
+exec npx --yes @google/gemini-cli@latest "$@"

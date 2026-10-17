@@ -1,0 +1,27 @@
+{
+  "security": {
+    "auth": {
+      "selectedType": "oauth-personal"
+    }
+  },
+  "ui": {
+    "showLineNumbers": true,
+    "showCitations": false,
+    "theme": "Atom One"
+  },
+  "context": {
+    "fileName": "GEMINI.md",
+    "fileFiltering": {
+      "respectGitIgnore": true,
+      "respectGeminiIgnore": true,
+      "enableRecursiveFileSearch": true
+    },
+    "loadFromIncludeDirectories": false
+  },
+  "model": {
+    "name": "gemini-2.5-pro"
+  },
+  "privacy": {
+    "usageStatisticsEnabled": false
+  }
+}

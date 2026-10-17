@@ -109,7 +109,7 @@ def print_header(title: str) -> None:
 
 
 def print_work(msg: str) -> None:
-    print(f"    {Style.YELLOW}… [WORK] {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.YELLOW}â€¦ [WORK] {msg}{Style.RESET}", flush=True)
 
 
 def print_info(msg: str) -> None:
@@ -117,7 +117,7 @@ def print_info(msg: str) -> None:
 
 
 def print_ok(msg: str) -> None:
-    print(f"    {Style.GREEN}✓ [OK]   {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.GREEN}âœ“ [OK]   {msg}{Style.RESET}", flush=True)
 
 
 def print_warn(msg: str) -> None:
@@ -125,7 +125,7 @@ def print_warn(msg: str) -> None:
 
 
 def print_fail(msg: str) -> None:
-    print(f"    {Style.RED}✗ [FAIL] {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.RED}âœ— [FAIL] {msg}{Style.RESET}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -258,34 +258,8 @@ def load_json_file(path: Path) -> dict[str, Any]:
 
 
 def save_json_file_atomic(path: Path, data: dict[str, Any]) -> bool:
-    before = ""
-    if path.is_file():
-        try:
-            before_obj = json.loads(path.read_text(encoding="utf-8"))
-            before = json.dumps(before_obj, sort_keys=True)
-        except Exception:
-            pass
-
-    after = json.dumps(data, sort_keys=True)
-    if before == after:
-        return False
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent), prefix=f"{path.stem}-", suffix=".tmp"
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
-            f.write("\n")
-        os.replace(tmp_path, path)
-    finally:
-        if os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except OSError:
-                pass
-    return True
+    from .setup.runtime_config import save_json
+    return save_json(path, data, HOME_DIR)
 
 
 # ---------------------------------------------------------------------------
@@ -787,54 +761,9 @@ def build_bridge_env(nickname: str, opencode_port: int) -> dict[str, str]:
 
 
 def update_codex_mcp_toml(nickname: str, opencode_port: int) -> bool:
-    """
-    Directly inspects and updates ~/.codex/config.toml for [mcp_servers.opencode_worker]
-    avoiding `codex mcp` non-TTY stdout errors and avoiding `.bak` file clutter.
-    """
-    wanted_env = build_bridge_env(nickname, opencode_port)
-    npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
-
-    existing_text = ""
-    if CODEX_CONFIG_PATH.is_file():
-        existing_text = CODEX_CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
-        try:
-            parsed = tomllib.loads(existing_text)
-            mcp_servers = parsed.get("mcp_servers") or {}
-            bridge = mcp_servers.get(BRIDGE_NAME) or {}
-            if (
-                bridge.get("command") == npx_cmd
-                and bridge.get("args") == ["-y", BRIDGE_PACKAGE]
-                and bridge.get("enabled", True) is True
-                and bridge.get("env") == wanted_env
-            ):
-                return False
-        except Exception:
-            pass
-
-    block_lines = [
-        f"[mcp_servers.{BRIDGE_NAME}]",
-        f'command = "{npx_cmd}"',
-        f'args = ["-y", "{BRIDGE_PACKAGE}"]',
-        "enabled = true",
-        "",
-        f"[mcp_servers.{BRIDGE_NAME}.env]",
-    ]
-    for k, v in wanted_env.items():
-        block_lines.append(f'{k} = "{v}"')
-    new_block = "\n".join(block_lines) + "\n"
-
-    cleaned = remove_toml_table_prefix(existing_text, f"mcp_servers.{BRIDGE_NAME}")
-    if cleaned and not cleaned.endswith("\n"):
-        cleaned += "\n"
-    if cleaned and not cleaned.endswith("\n\n"):
-        cleaned += "\n"
-    updated_text = cleaned + new_block
-
-    tomllib.loads(updated_text)
-
-    CODEX_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
-    CODEX_CONFIG_PATH.write_text(updated_text, encoding="utf-8")
-    return True
+    """Update bridge fields while preserving unrelated TOML and extra options."""
+    from .setup.runtime_config import save_codex
+    return save_codex(CODEX_CONFIG_PATH, nickname, opencode_port, HOME_DIR)
 
 
 def remove_toml_table_prefix(toml_text: str, table_prefix: str) -> str:
@@ -866,12 +795,13 @@ def _update_single_agy_mcp_file(path: Path, nickname: str, opencode_port: int) -
         data["mcpServers"] = {}
 
     npx_cmd = "npx.cmd" if os.name == "nt" else "npx"
-    data["mcpServers"][BRIDGE_NAME] = {
-        "command": npx_cmd,
-        "args": ["-y", BRIDGE_PACKAGE],
-        "env": build_bridge_env(nickname, opencode_port),
-        "disabled": False,
-    }
+    entry = data["mcpServers"].setdefault(BRIDGE_NAME, {})
+    if not isinstance(entry, dict):
+        raise RuntimeError("Existing bridge configuration must be an object")
+    entry.update({"command": npx_cmd, "args": ["-y", BRIDGE_PACKAGE], "disabled": False})
+    if not isinstance(entry.get("env", {}), dict):
+        raise RuntimeError("Existing bridge env must be an object")
+    entry.setdefault("env", {}).update(build_bridge_env(nickname, opencode_port))
     return save_json_file_atomic(path, data)
 
 
@@ -1377,7 +1307,7 @@ def run_opencode_server_foreground(
         [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
     ) or "OpenCode"
     print(
-        f"\n{Style.GREEN}{Style.BOLD}✓ READY: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode ({opencode_url}) -> LM Studio/{nickname}{Style.RESET}"
+        f"\n{Style.GREEN}{Style.BOLD}âœ“ READY: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode ({opencode_url}) -> LM Studio/{nickname}{Style.RESET}"
     )
     print(
         f"{Style.YELLOW}! Holding OpenCode server active. Press 'q' or Ctrl+C to stop and exit...{Style.RESET}\n",
@@ -1432,9 +1362,9 @@ def run_opencode_server_foreground(
 # ---------------------------------------------------------------------------
 # Argument Parser & Main Workflow
 # ---------------------------------------------------------------------------
-def build_parser() -> argparse.ArgumentParser:
+def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="local-agent-bridge",
+        prog="local_agent run" if runtime_only else "local-agent-bridge",
         description="Configure, load, and manage local LM Studio models for Codex and Antigravity (`agy`) via OpenCode.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
@@ -1448,17 +1378,19 @@ def build_parser() -> argparse.ArgumentParser:
   local-agent-bridge -m qwen/qwen3.8-27b@q6_k -N
 """,
     )
-    parser.add_argument(
-        "command",
-        nargs="?",
-        choices=["ls"],
-        help="Optional positional command: 'ls' to list available LM Studio models, loaded instances, and OpenCode nicknames.",
-    )
-    parser.add_argument(
-        "--ls",
-        action="store_true",
-        help="List available LM Studio models/variants, loaded models, and configured OpenCode nicknames.",
-    )
+    parser.set_defaults(command=None, ls=False, delete_model="", rename_model=None)
+    if not runtime_only:
+        parser.add_argument(
+            "command",
+            nargs="?",
+            choices=["ls"],
+            help="Optional positional command: 'ls' to list available LM Studio models, loaded instances, and OpenCode nicknames.",
+        )
+        parser.add_argument(
+            "--ls",
+            action="store_true",
+            help="List available LM Studio models/variants, loaded models, and configured OpenCode nicknames.",
+        )
     parser.add_argument(
         "-m",
         "--model",
@@ -1481,21 +1413,22 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Named model identifier in OpenCode, Codex MCP, Gemini `agy` MCP, and LM Studio (default: active nickname or 'qwen-local').",
     )
-    parser.add_argument(
-        "-D",
-        "--delete-model",
-        "--remove-model",
-        dest="delete_model",
-        metavar="NICKNAME",
-        default="",
-        help="Unload and remove the specified model nickname from opencode.json (and clean up configs if none remain).",
-    )
-    parser.add_argument(
-        "--rename-model",
-        nargs=2,
-        metavar=("OLD_NICK", "NEW_NICK"),
-        help="Rename an existing model nickname in opencode.json, Codex config.toml, and Gemini `agy` mcp_config.json.",
-    )
+    if not runtime_only:
+        parser.add_argument(
+            "-D",
+            "--delete-model",
+            "--remove-model",
+            dest="delete_model",
+            metavar="NICKNAME",
+            default="",
+            help="Unload and remove the specified model nickname from opencode.json (and clean up configs if none remain).",
+        )
+        parser.add_argument(
+            "--rename-model",
+            nargs=2,
+            metavar=("OLD_NICK", "NEW_NICK"),
+            help="Rename an existing model nickname in opencode.json, Codex config.toml, and Gemini `agy` mcp_config.json.",
+        )
     parser.add_argument(
         "-c",
         "--context-length",
@@ -1563,6 +1496,8 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Optional override path for LM Studio's downloaded models directory.",
     )
+    if runtime_only:
+        parser.epilog = "Examples:\n  local_agent run -M qwen38_23GB\n  local_agent run -m qwen/qwen3.8-27b@q6_k -c 32768"
     return parser
 
 
@@ -1663,9 +1598,9 @@ def unload_other_loaded_llms(active_nickname: str) -> None:
             print_ok(f"Unloaded '{item.identifier}'.")
 
 
-def main() -> int:
-    parser = build_parser()
-    args = parser.parse_args()
+def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
+    parser = build_parser(runtime_only=runtime_only)
+    args = parser.parse_args(argv)
 
     enable_codex = not args.no_codex
     enable_agy = not args.no_agy
@@ -1825,7 +1760,7 @@ def main() -> int:
                 [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
             ) or "OpenCode"
             print(
-                f"\n{Style.GREEN}{Style.BOLD}✓ CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> LM Studio/{nickname} ({selection.display}){Style.RESET}"
+                f"\n{Style.GREEN}{Style.BOLD}âœ“ CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> LM Studio/{nickname} ({selection.display}){Style.RESET}"
             )
             return 0
 

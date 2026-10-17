@@ -1,0 +1,40 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Wrapper for @anthropic-ai/claude-code with Termux-safe behavior.
+SELF="$(readlink -f "$0" 2>/dev/null || python3 - <<'PY' 2>/dev/null || echo "$0")"
+PY
+import os,sys
+try:
+    import os, sys
+    print(os.path.realpath(sys.argv[0]))
+except Exception:
+    pass
+PY
+
+: "${PREFIX:=/data/data/com.termux/files/usr}"
+: "${TMPDIR:=${PREFIX}/tmp}"
+: "${NPM_CACHE_DIR:=${PREFIX}/var/npm-cache}"
+: "${NPM_TMP_DIR:=${TMPDIR}/npm-tmp}"
+
+resolve_npm_root() {
+    npm root -g 2>/dev/null || printf '%s\n' "${PREFIX}/lib/node_modules"
+}
+NPM_ROOT="$(resolve_npm_root)"
+GLOBAL_BIN="${NPM_ROOT}/@anthropic-ai/claude-code/bin/claude"
+
+if [ -x "${GLOBAL_BIN}" ] && [ "${GLOBAL_BIN}" != "${SELF}" ]; then
+    exec "${GLOBAL_BIN}" "$@"
+fi
+
+export npm_config_cache="${NPM_CACHE_DIR}"
+export npm_config_tmp="${NPM_TMP_DIR}"
+export npm_config_fund=false
+export npm_config_audit=false
+export npm_config_progress=false
+export npm_config_update_notifier=false
+export npm_config_omit=optional
+export npm_config_ignore_scripts=true
+
+# npx will execute the package's bin
+exec npx --yes @anthropic-ai/claude-code@latest "$@"

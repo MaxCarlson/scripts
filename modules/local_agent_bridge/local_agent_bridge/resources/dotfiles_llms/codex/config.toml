@@ -1,0 +1,72 @@
+# Codex CLI Configuration
+# Location: ~/.codex/config.toml
+
+# Default model
+model = "gpt-5-codex"
+model_provider = "openai"
+
+# Reasoning configuration
+model_reasoning_effort = "medium"  # minimal, low, medium, high
+model_reasoning_summary = "auto"    # auto, concise, detailed, none
+
+# Approval policy
+# untrusted = ask for untrusted commands
+# on-failure = ask only if command fails
+# on-request = model decides when to ask
+# never = never ask (YOLO mode)
+approval_policy = "untrusted"
+
+# Sandbox mode
+# read-only = read files, block writes/network
+# workspace-write = write to workspace, read elsewhere
+# danger-full-access = no restrictions
+sandbox_mode = "workspace-write"
+
+[sandbox_workspace_write]
+network_access = false
+exclude_tmpdir_env_var = false
+exclude_slash_tmp = false
+writable_roots = []
+
+# Shell environment policy
+[shell_environment_policy]
+inherit = "core"  # all, core (HOME/PATH/USER/etc), none
+ignore_default_excludes = false  # false = filter *KEY*, *SECRET*, *TOKEN*
+exclude = ["AWS_*", "AZURE_*", "GCP_*"]
+set = {}
+
+# History
+[history]
+persistence = "save-all"  # save-all or none
+
+# File opener for citations
+file_opener = "vscode"  # vscode, vscode-insiders, windsurf, cursor, none
+
+# Hide/show reasoning
+hide_agent_reasoning = false
+show_raw_agent_reasoning = false
+
+# AGENTS.md configuration
+project_doc_max_bytes = 32768  # 32 KiB
+project_doc_fallback_filenames = ["CLAUDE.md", "GEMINI.md"]
+
+# TUI notifications (requires compatible terminal)
+[tui]
+notifications = false  # or ["agent-turn-complete", "approval-requested"]
+
+# Profiles for different scenarios
+[profiles.default]
+model = "gpt-5-codex"
+approval_policy = "untrusted"
+sandbox_mode = "workspace-write"
+
+[profiles.reasoning]
+model = "o3"
+model_reasoning_effort = "high"
+model_reasoning_summary = "detailed"
+approval_policy = "on-failure"
+
+[profiles.quick]
+model = "gpt-3.5-turbo"
+approval_policy = "never"
+sandbox_mode = "danger-full-access"

@@ -1,6 +1,8 @@
 # Plan handoff
 
-The active module plan is
-[coordinator/worker integration](20261017-1540_coordinator-worker-integration/plan.md).
-Stage 1 resources and offline checks are complete; live activation/evaluation
-remains pending. Resume from [module handoff](../HANDOFF.md) for evidence and next steps.
+Active: [local_agent setup](20261017-1602_local-agent-setup/plan.md).
+The installer/CLI/package stage is implemented and verified. Real profile adoption,
+Codex/agy runtime handoffs and dotfiles hook activation are next.
+
+Resume from [module handoff](../HANDOFF.md) for verification, migration commands
+and remaining limitations. Earlier worker-resource plans are historical context.

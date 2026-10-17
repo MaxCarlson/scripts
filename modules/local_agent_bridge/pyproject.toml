@@ -4,15 +4,23 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-agent-bridge"
-version = "1.1.0"
+version = "2.0.0"
 description = "Manage the LM Studio model and OpenCode bridge for Codex and Antigravity"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = []
+dependencies = ["tomlkit>=0.13,<1"]
 
 [project.scripts]
+local_agent = "local_agent_bridge.commands:main"
 local-agent-bridge = "local_agent_bridge.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["local_agent_bridge*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+local_agent_bridge = ["resources/**/*"]
+
+[tool.setuptools.exclude-package-data]
+local_agent_bridge = ["**/__pycache__/*", "**/*.pyc"]
