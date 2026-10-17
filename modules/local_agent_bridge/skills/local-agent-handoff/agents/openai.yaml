@@ -1,0 +1,13 @@
+interface:
+  display_name: "Local Agent Handoff"
+  short_description: "Delegate bounded repository work to LM Studio"
+  default_prompt: "Use $local-agent-handoff to delegate a bounded part of this repository task to the connected local worker and review its result."
+
+policy:
+  allow_implicit_invocation: true
+
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "opencode_worker"
+      description: "Existing OpenCode MCP connection to the local LM Studio worker"

@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Local worker result",
+  "type": "object",
+  "properties": {
+    "outcome": { "type": "string", "enum": ["completed", "partial", "blocked"] },
+    "summary": { "type": "string" },
+    "changed_paths": { "type": "array", "items": { "type": "string" } },
+    "evidence": { "type": "array", "items": { "type": "string" } },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "command": { "type": "string" },
+          "status": { "type": "string", "enum": ["passed", "failed", "not_run"] },
+          "details": { "type": "string" }
+        },
+        "required": ["command", "status", "details"],
+        "additionalProperties": false
+      }
+    },
+    "blockers": { "type": "array", "items": { "type": "string" } }
+  },
+  "required": ["outcome", "summary", "changed_paths", "evidence", "checks", "blockers"],
+  "additionalProperties": false
+}

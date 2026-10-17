@@ -1,0 +1,29 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "agent": {
+    "local-worker": {
+      "description": "Bounded coding assistance for a coordinating agent",
+      "mode": "primary",
+      "prompt": "{file:../skills/local-agent-handoff/resources/local-worker.md}",
+      "permission": {
+        "task": "deny",
+        "skill": {
+          "local-agent-handoff": "deny"
+        }
+      }
+    },
+    "local-reviewer": {
+      "description": "Inspect source and report evidence without edits or shell execution",
+      "mode": "primary",
+      "prompt": "{file:../skills/local-agent-handoff/resources/local-worker.md}",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny",
+        "task": "deny",
+        "skill": {
+          "local-agent-handoff": "deny"
+        }
+      }
+    }
+  }
+}
