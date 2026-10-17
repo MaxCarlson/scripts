@@ -380,7 +380,7 @@ REGISTRY: dict = {
                 "path": "modules/compresser",
                 "desc": "Analyze, compare, and optimize manga/manhwa images using perceptual compression",
                 "help_cmd": ["python", "-m", "compresser", "--help"],
-                 "version": "0.11.0",
+                 "version": "0.12.0",
             },
             {
                 "name": "mangadl (module)",

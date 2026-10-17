@@ -1,4 +1,4 @@
-# compresser 0.11.0
+# compresser 0.12.0
 
 ## Persistent inventory
 
@@ -90,6 +90,12 @@ The cache must be outside the input tree. Storage is bounded (20,000 entries by
 default, with at most 255 temporary extra rows between eviction passes), so large
 analyses may evict old trial entries. Durable inventory is separate and not evicted.
 Connections are reused; each completed trial is still committed immediately.
+Display labels no longer prevent reuse, and lossless keys ignore unused quality
+values. Exact old-format keys are still checked for compatibility. Read-only AUTO
+can compose its result from a complete compatible set of explicit-format trials,
+avoiding repeated encodes; incomplete candidate sets fall back to normal encoding.
+An unavailable lossless JPEG optimizer is excluded from that candidate set. Cached
+size summaries are never used as replacement image data in write mode.
 Library callers can use `AnalysisCache` as a context manager or call `close()`.
 Without `-K`, reuse is in-memory
 for this invocation only. Sampling never applies writes.

@@ -1,5 +1,10 @@
 # Compresser handoff
 
+I2b:0.12.0 effective candidate keys/legacy fallback, read-only AUTO candidate reuse.
+Complete compatible candidates required; unavailable lossless JPEG optimizer excluded.
+Missing candidates fall back; summary caches never publish image bytes.95 compression
+and17 integration pass. Label changes/unused lossless quality no longer force encodes.
+
 I2a:0.11.0 on compression-inventory-and-analysis-20261016. Reused lock-coordinated
 SQLite handle, disk-hit promotion, periodic eviction bounded by capacity+255,
 immediate per-result commits preserved. close()/context manager release handles.

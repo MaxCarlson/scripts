@@ -181,6 +181,34 @@ class CompressionEngine:
         with managed_write_guard([meta.path.parent]) if write_mode else nullcontext():
             return self._measure_image(meta, strategy, write_mode=write_mode)
 
+    def _cached_auto(self, meta: ImageMetadata, strategy: CompressionStrategy) -> ImageResult | None:
+        """Compose read-only AUTO from a complete set of compatible measured candidates."""
+        if strategy.encoder != "auto":
+            return None
+        formats = ["png", "jpeg"] if meta.is_tall_for_webp else ["webp", "png", "jpeg"]
+        candidates = []
+        for fmt in formats:
+            # The Pillow JPEG backend explicitly cannot optimize JPEG losslessly.
+            # AUTO normally discards this unsupported candidate after attempting it.
+            if fmt == "jpeg" and strategy.mode == "lossless" and "cli-jpegtran" not in self.codecs:
+                continue
+            candidate = replace(strategy, format=fmt, mode="lossless" if fmt == "png" else strategy.mode)
+            result = self.cache.get(meta.path, candidate)
+            if result is None or result.error:
+                return None
+            candidates.append(result)
+        if not candidates:
+            return None
+        best = min(
+            candidates,
+            key=lambda result: (
+                result.candidate_bytes if result.candidate_bytes is not None else result.compressed_bytes
+            ),
+        )
+        result = replace(best, cache_hit=True)
+        self.cache.set(meta.path, strategy, result)
+        return result
+
     def _measure_image(self, meta, strategy, *, write_mode=False, phase_callback=None):
         started = time.monotonic()
         with timing_scope(phase_callback) as trace:
@@ -220,6 +248,10 @@ class CompressionEngine:
             cached = self.cache.get(path, strategy)
             if cached is not None:
                 return cached
+            if strategy.format == "auto" and 1 <= strategy.quality <= 100:
+                cached = self._cached_auto(meta, strategy)
+                if cached is not None:
+                    return cached
 
         target_fmt = meta.format.lower()
         ext_map = {"jpeg": ".jpg", "jpg": ".jpg", "webp": ".webp", "avif": ".avif", "png": ".png"}

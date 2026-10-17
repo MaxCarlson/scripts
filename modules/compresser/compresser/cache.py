@@ -42,21 +42,24 @@ def _runtime_identity() -> dict:
     }
 
 
-def _strategy_key(strategy: CompressionStrategy) -> str:
+def _strategy_key(strategy: CompressionStrategy, *, legacy: bool = False) -> str:
     payload = {
         "pillow_version": getattr(PIL, "__version__", "unknown"),
         "format": strategy.format,
         "mode": strategy.mode,
-        "quality": strategy.quality,
+        "quality": (
+            strategy.quality if legacy or strategy.mode != "lossless" or not 1 <= strategy.quality <= 100 else None
+        ),
         "perceptual_target": strategy.perceptual_target,
         "method": strategy.method,
         "progressive": strategy.progressive,
         "allow_larger": strategy.allow_larger,
         "allow_lossy": strategy.allow_lossy,
-        "name": strategy.name,
         "encoder": strategy.encoder,
         "extra_params": strategy.extra_params,
     }
+    if legacy:
+        payload["name"] = strategy.name
     return json.dumps(payload, sort_keys=True)
 
 
@@ -119,12 +122,12 @@ class AnalysisCache:
         )
         self._writes_since_prune = 0
 
-    def _make_key(self, path: Path, strategy: CompressionStrategy) -> str:
+    def _make_key(self, path: Path, strategy: CompressionStrategy, *, legacy: bool = False) -> str:
         try:
             stat = path.stat()
-            ident = f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{self.identity}:{_strategy_key(strategy)}"
+            ident = f"{path.resolve()}:{stat.st_size}:{stat.st_mtime_ns}:{stat.st_ctime_ns}:{self.identity}:{_strategy_key(strategy, legacy=legacy)}"
         except OSError:
-            ident = f"{path.resolve()}:{self.identity}:{_strategy_key(strategy)}"
+            ident = f"{path.resolve()}:{self.identity}:{_strategy_key(strategy, legacy=legacy)}"
         return hashlib.sha256(ident.encode("utf-8")).hexdigest()
 
     @timed("cache")
@@ -134,6 +137,10 @@ class AnalysisCache:
             cached = self._entries.get(key)
             if cached is None and self.path:
                 data = self._load("trial", key)
+                if data is None:
+                    # Previous versions included display labels and irrelevant
+                    # lossless quality settings. Exact legacy matches remain safe.
+                    data = self._load("trial", self._make_key(path, strategy, legacy=True))
                 if data:
                     try:
                         data["input_path"] = Path(data["input_path"])

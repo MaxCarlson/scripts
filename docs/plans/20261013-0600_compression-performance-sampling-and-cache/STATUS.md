@@ -1,5 +1,14 @@
 # Status
 
+I2b compresser0.12.0: effective trial keys ignore display labels and unused valid
+lossless quality, with exact legacy-key fallback. Analysis AUTO composes from a
+complete measured candidate set and excludes unavailable lossless JPEG optimizer;
+missing/failed candidate trials fall back to normal encoding. Publication never
+uses summary-only cached candidates. Tests compare cached AUTO to uncached results
+and prohibit re-encoding in fully cached cases.95 compression/17 integration pass.
+I2a7e0e8a9 already pushed. Automatic trial-cache policy/diagnostics remain open;
+I3 progressive sampling is next after publishing this usable slice.
+
 Branch compression-inventory-and-analysis-20261016 tracks matching origin branch.
 I1a committed83b6735 before branch creation and pushed on new branch, not main.
 I2a compresser0.11.0: one lock-coordinated reusable SQLite connection per cache,
