@@ -12,7 +12,7 @@
   - [x] P3b bounded cache preparation/dispatch overlap and bulk lookup parity; final gate follows.
 - [x] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.
 - [x] P5 verified AUTO candidate reuse; no unmeasured metric/process-pool changes.
-- [ ] P6 explicit auto memory policy; default remains512MiB.
+- [x] P6 explicit auto memory policy/pressure-aware admission; default remains512MiB.
 - [ ] P7 bounded parallel previews and single manifest owner.
 - [ ] P8 canonical argument simplification/major migration, compatibility and safety checks.
 - [ ] Fresh whole-branch review and explicit manual reader/Windows terminal gates.

@@ -220,7 +220,7 @@ class CompresserDashboard:
                 f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
                 + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
                 f"Reserved: {format_bytes_decimal(activity.get('reserved_bytes', 0))} | "
-                f"Preflight rejected: {activity.get('preflight_rejected_images', 0)}",
+                f"Preflight rejected: {activity.get('preflight_rejected_images', 0)} | Waiting: {activity.get('waiting_reason') or 'none'}",
                 "Active: "
                 + (" | ".join(descriptions) or "none")
                 + (f" | +{activity['active_workers'] - 2} more" if activity["active_workers"] > 2 else ""),
@@ -279,6 +279,11 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
     ]
 
     print("\n" + color_text("Compression Batch Summary", "cyan"))
+    policy = result.worker_diagnostics.get("memory_policy")
+    if policy:
+        rows.append(["Memory policy / resolved MiB", f"{policy['requested']} / {policy['resolved_mib']}"])
+        if policy.get("available_bytes_at_start") is not None:
+            rows.append(["Available RAM measured at start", format_bytes_decimal(policy["available_bytes_at_start"])])
     print(render_table(headers=headers, rows=rows, alignments=["left", "right"], style="rule"))
     timings = result.worker_diagnostics.get("phase_seconds", {})
     if timings:

@@ -88,10 +88,13 @@ def recover_interrupted_transactions(directory: Path, *, apply: bool = False) ->
 class CompressionEngine:
     """Engine managing codec dispatch, benchmark caching, and atomic application."""
 
-    def __init__(self, cache: AnalysisCache | None = None, *, memory_budget_bytes: int = MEMORY_BUDGET_BYTES) -> None:
+    def __init__(
+        self, cache: AnalysisCache | None = None, *, memory_budget_bytes: int = MEMORY_BUDGET_BYTES, memory_policy=None
+    ) -> None:
         if not 64 * 1024**2 <= memory_budget_bytes <= 4096 * 1024**2:
             raise ValueError("Aggregate memory budget must be64..4096MiB; per-image decode limits remain unchanged")
         self.memory_budget_bytes = memory_budget_bytes
+        self.memory_policy = memory_policy
         self.codecs = discover_available_codecs()
         self.cache = cache or AnalysisCache()
         self._publication_lock = threading.Lock()
@@ -585,7 +588,7 @@ class CompressionEngine:
         max_workers = min(threads, os.cpu_count() or 4, memory_workers, len(eligible_costs))
         scheduler = MemoryScheduler([], self.memory_budget_bytes, max_workers)
         unprepared = iter(jobs)
-        preparation_complete = False
+        preparation_complete = not jobs
         diagnostics = {
             "requested_workers": threads,
             "effective_workers": max_workers,
@@ -607,6 +610,12 @@ class CompressionEngine:
                 )
             ),
             "includes_oversized_images": False,
+            "memory_policy": (
+                self.memory_policy.diagnostics()
+                if self.memory_policy
+                else {"requested": "fixed", "resolved_mib": self.memory_budget_bytes // 1024**2}
+            ),
+            "waiting_reason": "",
         }
         active = {}
         finished = 0
@@ -681,8 +690,20 @@ class CompressionEngine:
                 def fill_slots() -> None:
                     nonlocal preparation_complete, finished
                     while len(futures) < max_workers:
-                        job = scheduler.next_job()
+                        allowance = (
+                            self.memory_policy.admission_allowance()
+                            if self.memory_policy and scheduler.pending
+                            else None
+                        )
+                        job = scheduler.next_job(available_limit=allowance)
                         if job is None:
+                            diagnostics["waiting_reason"] = (
+                                "system memory pressure"
+                                if allowance is not None
+                                and scheduler.pending
+                                and scheduler.pending[0][1] > allowance
+                                else "memory reservations" if scheduler.pending else ""
+                            )
                             if preparation_complete or len(scheduler.pending) >= 2 * max_workers:
                                 break
                             check_cancelled()
@@ -703,6 +724,7 @@ class CompressionEngine:
                             if metrics is not None:
                                 metrics.observe_max("cache_preparation_pending_peak", len(scheduler.pending))
                             continue
+                        diagnostics["waiting_reason"] = ""
                         img, cost = job
                         futures[pool.submit(copy_context().run, work, img)] = cost
                         if metrics is not None:
@@ -739,8 +761,18 @@ class CompressionEngine:
                         consume(res)
                     report_activity()
                     fill_slots()
-                    while futures:
-                        completed, _ = wait(futures, return_when=FIRST_COMPLETED)
+                    while futures or scheduler.pending or not preparation_complete:
+                        check_cancelled()
+                        if not futures:
+                            report_activity()
+                            cancelled.wait(0.1)
+                            fill_slots()
+                            continue
+                        completed, _ = wait(futures, timeout=0.25, return_when=FIRST_COMPLETED)
+                        if not completed:
+                            fill_slots()
+                            report_activity()
+                            continue
                         fut = next(iter(completed))
                         scheduler.release(futures.pop(fut))
                         res = fut.result()

@@ -25,6 +25,7 @@ from .models import (
     ImageMetadata,
 )
 from .scanner import scan_directory
+from .memory_policy import configure_memory_arguments, parse_memory_budget
 from .timing import configure_pipeline, pipeline_report, profile_pipeline
 from .sampling import add_analysis_arguments, validate_analysis_arguments, gallery_sample, print_sampling, parse_sample
 from .ui import (
@@ -36,7 +37,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.32.0"
+__version__ = "0.33.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -150,9 +151,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "-B",
         "--memory-budget-mib",
-        type=int,
+        type=parse_memory_budget,
         default=512,
-        help="Aggregate scheduling allowance64..4096MiB; per-image decode limit stays512MiB.",
+        help="Aggregate allowance64..4096MiB or auto (20% available, cap4096); default512; per-image limits unchanged.",
     )
     parser.add_argument(
         "-J",
@@ -297,10 +298,15 @@ def run_comparison(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    try:
+        configure_memory_arguments(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     configure_pipeline(
         requested_workers=args.threads,
         inventory_effective_workers=1,
         memory_budget_mib=args.memory_budget_mib,
+        memory_policy=args._memory_policy.diagnostics(),
         cache_policy=args.cache_policy,
         inventory_policy=args.inventory_policy,
         inventory_depth=args.inventory_depth,
@@ -420,7 +426,9 @@ def main(argv: list[str] | None = None) -> int:
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")
             print_cache_diagnostics(cache.diagnostics(), startup=True)
             print_sampling(sampling_plan)
-        engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
+        engine = CompressionEngine(
+            cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=args._memory_policy
+        )
 
         if args.compare:
             comp_rows = run_comparison(

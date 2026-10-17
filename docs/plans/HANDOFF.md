@@ -1,5 +1,13 @@
 # Repository-Wide Plans Handoff
 
+Plan03 P6 implemented: compresser0.33.0/MangaDL1.59.0 adds opt-in -B auto,
+20% available floor/cap4096MiB, clear low/unknown telemetry failures, fixed512MiB
+omitted default and unchanged image/pixel caps. Existing per-job scheduler pauses
+new admissions under pressure, reports waiting reason and supports cancellation;
+no cross-process/OS reservation promise.269 compression/1 skip, focused pressure
+checks and55 help pass; final MangaDL/task gate follows. P7 parallel previews next.
+
+
 Plan03 P5 completed: compresser0.32.0/MangaDL1.58.0 caches each successfully
 verified AUTO format candidate during analysis, with normalized PNG-lossless keys,
 retained-original policy and candidate-only elapsed time. Preview/write paths still

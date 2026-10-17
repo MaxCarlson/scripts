@@ -25,6 +25,7 @@ from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
 from compresser.inventory_ui import InventoryProgress, emit_inventory_report
+from compresser.memory_policy import configure_memory_arguments
 from compresser.inventory_pipeline import linked
 from compresser.snapshots import SelectionSnapshot
 from compresser.timing import configure_pipeline, pipeline_report, profile_pipeline
@@ -175,10 +176,12 @@ def discover_gallery_targets(
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
+        configure_memory_arguments(args)
         configure_pipeline(
             requested_workers=args.threads,
             inventory_effective_workers=1,
             memory_budget_mib=args.memory_budget_mib,
+            memory_policy=args._memory_policy.diagnostics(),
             cache_policy=args.cache_policy,
             inventory_policy=args.inventory_policy,
             inventory_depth=args.inventory_depth,
@@ -420,7 +423,9 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")
             print_cache_diagnostics(cache.diagnostics(), startup=True)
             print_sampling(sampling_plan)
-        engine = CompressionEngine(cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2)
+        engine = CompressionEngine(
+            cache=cache, memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=args._memory_policy
+        )
 
         # Comparison Mode
         if getattr(args, "compare", False):

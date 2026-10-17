@@ -1,5 +1,10 @@
 # mangadl
 
+Checkpoint1.59.0/compresser0.33.0 supports explicit `-B auto` (20% available RAM,
+floor/cap guards). Default512MiB and image/pixel caps remain unchanged. Encoder
+workers pause new admission under pressure and show the wait reason; Ctrl+C remains
+cooperative. This is a per-process estimate, not an OS/global memory guarantee.
+
 Checkpoint1.58.0/compresser0.32.0 reuses successful verified AUTO candidates for
 later matching explicit-format analysis, respecting retained originals and failures.
 Cached sizes do not replace actual preview encoding or safe write publication.

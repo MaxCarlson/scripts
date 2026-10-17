@@ -153,7 +153,9 @@ def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], r
     _save_manifest(manifest, report)
     if not args.json:
         print(f"Preview output: {run}\n{report['execution']}")
-    engine = CompressionEngine(memory_budget_bytes=args.memory_budget_mib * 1024**2)
+    engine = CompressionEngine(
+        memory_budget_bytes=args.memory_budget_mib * 1024**2, memory_policy=getattr(args, "_memory_policy", None)
+    )
     failed = False
     try:
         for index, meta in enumerate(selected, 1):

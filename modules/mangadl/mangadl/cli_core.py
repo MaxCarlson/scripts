@@ -454,6 +454,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         ),
     )
     from compresser.sampling import add_analysis_arguments, parse_sample
+    from compresser.memory_policy import parse_memory_budget
     add_analysis_arguments(compress)
     compress.add_argument("-d", "--destination", type=_path, required=True, help="Destination library root or gallery folder.")
     compress.add_argument("-u", "--url", action="append", default=[], help="Select an exact source URL or exact folder name; repeatable. No substring matching.")
@@ -484,8 +485,8 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     compress.add_argument("-L", "--allow-lossy", action="store_true", help="Explicitly permit lossy compression in write mode.")
     compress.add_argument("-F", "--allow-larger", action="store_true", help="Permit replacement if the compressed file is larger.")
     compress.add_argument("-t", "--threads", type=int, default=4, help="Worker thread concurrency (default: 4).")
-    compress.add_argument("-B", "--memory-budget-mib", type=int, default=512,
-                         help="Aggregate scheduling allowance64..4096MiB; per-image decode limit stays512MiB.")
+    compress.add_argument("-B", "--memory-budget-mib", type=parse_memory_budget, default=512,
+                         help="Aggregate allowance64..4096MiB or auto (20% available, cap4096); default512; per-image limits unchanged.")
     compress.add_argument("-N", "--no-ui", action="store_true", help="Disable the live terminal dashboard.")
     compress.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON results.")
     compress.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic logging output.")

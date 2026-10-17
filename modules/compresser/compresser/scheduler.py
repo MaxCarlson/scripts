@@ -17,13 +17,15 @@ class MemoryScheduler(Generic[Job]):
         self._head = None
         self._bypasses = 0
 
-    def next_job(self) -> tuple[Job, int] | None:
+    def next_job(self, *, available_limit: int | None = None) -> tuple[Job, int] | None:
         if not self.pending:
             return None
         head = id(self.pending[0][0])
         if head != self._head:
             self._head, self._bypasses = head, 0
         available = self.budget - self.reserved_bytes
+        if available_limit is not None:
+            available = min(available, max(0, available_limit))
         index = 0
         if self.pending[0][1] > available:
             if self._bypasses >= self.slots:
