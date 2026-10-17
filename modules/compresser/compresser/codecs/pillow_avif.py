@@ -11,6 +11,7 @@ from PIL import Image
 from .base import BaseCodec
 from ..models import CompressionStrategy
 from ..perceptual import calculate_ssim
+from ..trial_budget import trial_entry
 
 
 class PillowAvifCodec(BaseCodec):
@@ -45,13 +46,14 @@ class PillowAvifCodec(BaseCodec):
             target_im = target_im.convert("RGBA" if "A" in im.getbands() or "transparency" in im.info else "RGB")
 
         buf = io.BytesIO()
-        target_im.save(
-            buf,
-            format="AVIF",
-            quality=int(strategy.quality),
-            max_threads=1,
-            **{key: im.info[key] for key in ("icc_profile", "exif", "xmp") if key in im.info},
-        )
+        with trial_entry(strategy.name or "avif"):
+            target_im.save(
+                buf,
+                format="AVIF",
+                quality=int(strategy.quality),
+                max_threads=1,
+                **{key: im.info[key] for key in ("icc_profile", "exif", "xmp") if key in im.info},
+            )
         encoded = buf.getvalue()
 
         decoded = self.decode_bytes(encoded)

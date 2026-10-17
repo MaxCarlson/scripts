@@ -1,5 +1,18 @@
 # Status
 
+2026-10-17 Task 6 checkpoint: Actual encode accounting and image-recipe measurement
+implemented and validated on `compression-inventory-estimation-20261017`.
+Added `TrialBudget`, `TrialPermit`, `trial_entry` across Pillow WebP, JPEG, PNG, AVIF,
+external CLI, and engine AUTO/candidacy paths. Cache hits consume zero encodes; unused
+reservations release cleanly; deadlines prevent new admissions while active native calls drain.
+`measure_jobs` shares source decodes across recipes per image, preserves size guards, alpha/metadata
+handling, and lossless pixel verification. MemoryScheduler and bounded ThreadPoolExecutor
+obey concurrency and memory limits.
+
+Validation: 17 focused Task 6 tests passed (10 in trial_budget_test.py, 7 in measurement_test.py).
+Full compresser suite: 499 passed, 1 skipped. MangaDL suite: exit 0. scripts-help: 55 passed.
+Ruff lint passed; format checked.
+
 2026-10-17 follow-up bug: user reported plan could not find the completed inventory
 in the exact `.mangadl/<target>/` workspace. Inspection confirmed a complete header
 snapshot for B:\Hent\hent1imageperpage with 66,233 images. Root cause: `load_population`

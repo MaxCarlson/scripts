@@ -21,7 +21,8 @@ from .models import (
 )
 from .sampling import GallerySample, confirmation_sample, gallery_sample
 from .scanner import inspect_image_file, scan_directory, select_sample
-from .ui import recommend_comparison_strategies
+from .measurement import MeasurementBatch, MeasurementJob, measure_jobs
+from .trial_budget import BudgetExceeded, TrialBudget, TrialPermit
 
 __version__ = "3.2.0"
 
@@ -111,4 +112,10 @@ __all__ = [
     "confirmation_sample",
     "recommend_comparison_strategies",
     "discover_available_codecs",
+    "BudgetExceeded",
+    "TrialBudget",
+    "TrialPermit",
+    "MeasurementJob",
+    "MeasurementBatch",
+    "measure_jobs",
 ]

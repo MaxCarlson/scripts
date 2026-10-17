@@ -12,6 +12,7 @@ from PIL import Image
 from .base import BaseCodec
 from ..models import CompressionStrategy
 from ..perceptual import find_optimal_quality, calculate_ssim
+from ..trial_budget import trial_entry
 
 
 class PillowJpegCodec(BaseCodec):
@@ -46,7 +47,8 @@ class PillowJpegCodec(BaseCodec):
         if "xmp" in im.info:
             save_kwargs["xmp"] = im.info["xmp"]
 
-        target_im.save(buf, **save_kwargs)
+        with trial_entry("jpeg"):
+            target_im.save(buf, **save_kwargs)
         return buf.getvalue()
 
     def encode(

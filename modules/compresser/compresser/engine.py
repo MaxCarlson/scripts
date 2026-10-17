@@ -24,6 +24,7 @@ from .cache import AnalysisCache
 from .cancellation import cancellation_scope, check_cancelled
 from .timing import phase, timed, timing_scope, current_pipeline, execution_role, increment
 from .scheduler import MemoryScheduler
+from .trial_budget import BudgetExceeded
 from .inventory_pipeline import FileObservation
 from .codecs import (
     BaseCodec,
@@ -169,6 +170,8 @@ class CompressionEngine:
             try:
                 candidate_started = time.perf_counter()
                 encoded, score, encoder = self._encode_verified(im, fmt, candidate)
+            except BudgetExceeded:
+                raise
             except (ValueError, RuntimeError, OSError) as exc:
                 failures.append(f"{fmt}: {exc}")
                 continue
@@ -453,7 +456,7 @@ class CompressionEngine:
             self.cache.set(path, strategy, res)
             return res
 
-        except CancelledError:
+        except (CancelledError, BudgetExceeded):
             raise
         except Exception as exc:
             return ImageResult(

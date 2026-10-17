@@ -15,6 +15,7 @@ from PIL import Image
 from .base import BaseCodec
 from ..models import CompressionStrategy
 from ..perceptual import calculate_ssim
+from ..trial_budget import trial_entry
 
 
 class ExternalCliCodec(BaseCodec):
@@ -68,7 +69,8 @@ class ExternalCliCodec(BaseCodec):
                 im.save(in_file, format="PNG")
                 cmd.extend([str(in_file), str(out_file)])
 
-            res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
+            with trial_entry(self.name):
+                res = subprocess.run(cmd, capture_output=True, text=True, check=False, timeout=120)
             if res.returncode != 0 or not out_file.exists():
                 raise RuntimeError(f"{self._binary_name} execution failed (code {res.returncode}): {res.stderr}")
 

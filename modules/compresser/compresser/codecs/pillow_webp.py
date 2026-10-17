@@ -14,6 +14,9 @@ from ..models import CompressionStrategy, WEBP_MAX_DIMENSION
 from ..perceptual import find_optimal_quality, calculate_ssim
 
 
+from ..trial_budget import trial_entry
+
+
 class PillowWebpCodec(BaseCodec):
     """Encodes WebP images using Pillow's libwebp backend."""
 
@@ -48,7 +51,8 @@ class PillowWebpCodec(BaseCodec):
         if "xmp" in im.info:
             save_kwargs["xmp"] = im.info["xmp"]
 
-        target_im.save(buf, **save_kwargs)
+        with trial_entry("webp"):
+            target_im.save(buf, **save_kwargs)
         return buf.getvalue()
 
     def encode(
@@ -81,7 +85,8 @@ class PillowWebpCodec(BaseCodec):
             if "xmp" in im.info:
                 save_kwargs["xmp"] = im.info["xmp"]
 
-            target_im.save(buf, **save_kwargs)
+            with trial_entry(strategy.name or "webp"):
+                target_im.save(buf, **save_kwargs)
             return buf.getvalue(), 1.0
 
         if strategy.mode == "perceptual":
