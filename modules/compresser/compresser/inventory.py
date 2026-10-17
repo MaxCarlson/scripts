@@ -42,6 +42,8 @@ def connect_inventory(*args, **kwargs) -> sqlite3.Connection:
 
 def inventory_path(args, root: Path) -> Path:
     """Resolve an external inventory, independently of trial-cache retention."""
+    if getattr(args, "_workspace", None):
+        return args._workspace.inventory_file
     explicit = getattr(args, "inventory_file", None)
     cache = getattr(args, "cache_file", None)
     if explicit:

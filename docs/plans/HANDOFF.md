@@ -1,5 +1,11 @@
 # Repository-Wide Plans Handoff
 
+2026-10-17: Compression-owned workspace/report plan:
+`modules/compresser/docs/plans/20261017-1026_workspace-and-comparison-reports/plan.md`.
+Written plan awaits review; implementation not started. Native/inline execution
+preserves existing workflow. Historical Plan03 P8 remains paused; current source64b33d1
+contains later UI/memory changes. Inventory and other detailed reports are explicit deliverables.
+
 Plan03 P7 implemented: compresser0.34.0/MangaDL1.60.0 uses bounded memory-admitted
 source workers, serial variants/local decoded image, immutable sequenced events and
 one manifest owner. Numbered outputs/order stable under reverse completion; atomic

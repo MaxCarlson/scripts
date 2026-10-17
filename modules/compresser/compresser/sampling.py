@@ -63,10 +63,12 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument(
         "-I",
-        "--inventory-file",
+        "--workspace",
+        dest="inventory_file",
         type=Path,
-        help="Durable inventory SQLite file outside the input tree (default: per-library user cache).",
+        help="Parent directory for target-named analysis workspace (default: target parent).",
     )
+    parser.add_argument("--inventory-file", dest="inventory_file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "-l",
         "--inventory-only",

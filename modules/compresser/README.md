@@ -1,4 +1,11 @@
-# compresser 0.34.0
+# compresser 1.0.0
+
+Analysis artifacts now use one external workspace. `-I/--workspace` selects a
+parent directory; target `book` creates `book-compresser` there (default: beside
+the target). Inventory and trial cache have readable target-based names. Old
+explicit SQLite paths remain supported with a deprecation warning; nothing is moved.
+Use bare `-O` for preview output inside the workspace, or `-O PATH` to override.
+Scratch `-X` remains independent. Foreign/nonempty unowned workspaces are refused.
 
 Previews now honor `-t` and resolved `-B` using one admitted worker per source;
 that source's variants stay serial and reuse its decoded image. The coordinator

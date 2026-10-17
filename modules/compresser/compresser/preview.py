@@ -34,6 +34,8 @@ def add_preview_arguments(parser: argparse.ArgumentParser) -> None:
         "-O",
         "--preview-dir",
         type=Path,
+        nargs="?",
+        const=Path("__workspace_preview__"),
         help="Generate lossless/lossy preview copies in a new run folder outside the source tree.",
     )
     parser.add_argument(

@@ -176,6 +176,12 @@ def discover_gallery_targets(
 def run_cli(args: argparse.Namespace) -> int:
     """Execute mangadl compress subcommand."""
     try:
+        from compresser.workspace import configure_workspace, initialize_workspace
+
+        if not args.recover:
+            if not args.destination.expanduser().is_dir() or linked(args.destination.expanduser().lstat()):
+                raise ValueError("Compression requires an existing, unlinked destination directory")
+            configure_workspace(args, args.destination, owner="mangadl-pages")
         configure_memory_arguments(args)
         configure_pipeline(
             requested_workers=args.threads,
@@ -189,6 +195,10 @@ def run_cli(args: argparse.Namespace) -> int:
             effort=args.effort,
         )
         validate_analysis_arguments(args)
+        if args.threads < 1 or not 1 <= args.quality <= 100 or not 0.80 <= args.perceptual_target <= 1:
+            raise ValueError("Threads must be positive; quality1..100 and perceptual target0.80..1.00")
+        if args.write and not args.recover and args.mode != "lossless" and not args.allow_lossy:
+            raise ValueError("Lossy/perceptual writes require --allow-lossy")
         args.destination = Path(str(args.destination).rstrip("/\\")).expanduser().resolve()
         destination = args.destination
         if not destination.is_dir() or linked(destination.lstat()):
@@ -210,6 +220,8 @@ def run_cli(args: argparse.Namespace) -> int:
             else library_read_guard(args.destination, operation=op_desc)
         )
         with guard:
+            if not args.recover:
+                initialize_workspace(args._workspace)
             return _run_cli_owned(args)
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"Error in mangadl compress: {exc}", file=sys.stderr)

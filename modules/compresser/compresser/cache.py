@@ -456,7 +456,13 @@ def create_analysis_cache(args, root: Path) -> AnalysisCache:
         return AnalysisCache()
     explicit = getattr(args, "cache_file", None)
     path = (
-        Path(explicit).expanduser().resolve() if explicit else inventory_path(args, root).with_suffix(".trials.sqlite3")
+        Path(explicit).expanduser().resolve()
+        if explicit
+        else (
+            args._workspace.trial_cache_file
+            if getattr(args, "_workspace", None)
+            else inventory_path(args, root).with_suffix(".trials.sqlite3")
+        )
     )
     target = root.resolve()
     if path == target or (target.is_dir() and target in path.parents):

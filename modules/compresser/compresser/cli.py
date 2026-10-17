@@ -37,7 +37,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.34.0"
+__version__ = "1.0.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -298,6 +298,14 @@ def run_comparison(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    from .workspace import configure_workspace
+
+    try:
+        if not args.recover:
+            configure_workspace(args, args.input, owner="compresser")
+    except (OSError, ValueError) as exc:
+        print(f"Error in compresser: {exc}", file=sys.stderr)
+        return 2
     try:
         configure_memory_arguments(args)
     except ValueError as exc:
@@ -357,6 +365,11 @@ def main(argv: list[str] | None = None) -> int:
                     operation=(f"compresser -l -D {args.inventory_depth}" if args.inventory_only else "compresser"),
                 )
         resources.enter_context(operation_guard)
+        from .workspace import initialize_workspace
+
+        if not args.input.exists():
+            raise ValueError(f"Compression target does not exist: {args.input}")
+        initialize_workspace(args._workspace)
         # Keep ownership in resources through discovery and the final encoder trial.
         with nullcontext():
             if args.inventory_only and args.inventory_depth == "files":

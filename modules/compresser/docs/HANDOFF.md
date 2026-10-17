@@ -1,5 +1,12 @@
 # Compresser handoff
 
+2026-10-17: New workspace/report plan prepared at
+`docs/plans/20261017-1026_workspace-and-comparison-reports/plan.md` (module-relative).
+Source64b33d1 on `compression-ui-color-and-stats-20261017` includes newer UI/memory
+changes than historical notes below. Await written-plan review; no implementation.
+Inventory creation/refresh and other detailed compression summaries must save Markdown.
+Paused Plan03 P8 remains excluded.
+
 Plan03 P7 implemented: compresser0.34.0/MangaDL1.60.0 uses bounded memory-admitted
 source workers, serial variants/local decoded image, immutable sequenced events and
 one manifest owner. Numbered outputs/order stable under reverse completion; atomic

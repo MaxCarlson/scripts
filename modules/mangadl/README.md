@@ -1,5 +1,13 @@
 # mangadl
 
+Compression2.0.0 uses one analysis workspace. Example:
+`mangadl compress -d 'B:\Hent\book' -I 'B:\Hent' -l` creates/reuses
+`B:\Hent\book-mangadl\book-mangadl-inventory.sqlite3`; its separate trial cache
+is `book-mangadl-trials.sqlite3`. Without -I the workspace is beside the target.
+An old explicit SQLite path is preserved with a deprecation warning, not migrated.
+Bare -O selects workspace previews; -O PATH/-K PATH retain explicit overrides.
+Downloader source manifests, recovery journals and scratch -X remain independent.
+
 Checkpoint1.60.0/compresser0.34.0 previews honor -t/-B with bounded source-owned
 workers and serial variants per source. One coordinator publishes ordered manifests;
 source files remain untouched. Progress is in-place and cancellation drains owners.

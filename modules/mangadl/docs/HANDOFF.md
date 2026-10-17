@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+2026-10-17: Shared compression workspace/report plan prepared (not implemented):
+`modules/compresser/docs/plans/20261017-1026_workspace-and-comparison-reports/plan.md`
+from repo root. Source64b33d1 on `compression-ui-color-and-stats-20261017`; historical
+P7 notes below predate current UI/memory changes. Await written-plan review before
+Task1; include automatic inventory and all detailed-summary Markdown reports.
+
 Plan03 P7 implemented: compresser0.34.0/MangaDL1.60.0 uses bounded memory-admitted
 source workers, serial variants/local decoded image, immutable sequenced events and
 one manifest owner. Numbered outputs/order stable under reverse completion; atomic

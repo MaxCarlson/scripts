@@ -23,7 +23,7 @@ def test_all_public_options_have_short_and_long_forms() -> None:
     parsers.extend(subparsers.choices.values())
     for current in parsers:
         for action in current._actions:
-            if not action.option_strings or action.dest == "help":
+            if not action.option_strings or action.dest == "help" or action.help == argparse.SUPPRESS:
                 continue
             assert any(option.startswith("--") for option in action.option_strings), action.dest
             assert any(
