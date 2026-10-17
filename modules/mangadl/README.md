@@ -1,5 +1,9 @@
 # mangadl
 
+Checkpoint1.60.0/compresser0.34.0 previews honor -t/-B with bounded source-owned
+workers and serial variants per source. One coordinator publishes ordered manifests;
+source files remain untouched. Progress is in-place and cancellation drains owners.
+
 Checkpoint1.59.0/compresser0.33.0 supports explicit `-B auto` (20% available RAM,
 floor/cap guards). Default512MiB and image/pixel caps remain unchanged. Encoder
 workers pause new admission under pressure and show the wait reason; Ctrl+C remains
@@ -187,8 +191,8 @@ gallery filters can narrow the input. Nested pages are eligible; covers and part
 controls remain excluded. Originals are untouched. A manifest records paths,
 settings, sizes, SSIM and errors. Candidates remain available even when larger.
 Open each numbered output folder to compare at full resolution. Each run gets a
-new folder; cancelled partial previews are preserved. This first version is serial,
-not a library-wide estimate or write-mode operation; -t does not affect it. Preview
+new folder; cancelled partial previews are preserved. Source workers honor -t/-B,
+with serial variants per source, not a library-wide estimate or write-mode operation. Preview
 uses -Q, not -q, and is incompatible with comparison/sampling/write/recovery flags.
 Cached size-only trial records cannot provide output bytes, so previews re-encode.
 

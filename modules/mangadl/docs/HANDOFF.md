@@ -1,5 +1,13 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P7 implemented: compresser0.34.0/MangaDL1.60.0 uses bounded memory-admitted
+source workers, serial variants/local decoded image, immutable sequenced events and
+one manifest owner. Numbered outputs/order stable under reverse completion; atomic
+exclusive artifact publication, source checks, cancellation/draining, in-place UI.
+276 compression/1 skip,315 MangaDL/55 help pass plus final13 preview regressions;
+publication gate follows. P8 canonical CLI migration and whole-branch review next.
+
+
 Plan03 P6 implemented: compresser0.33.0/MangaDL1.59.0 adds opt-in -B auto,
 20% available floor/cap4096MiB, clear low/unknown telemetry failures, fixed512MiB
 omitted default and unchanged image/pixel caps. Existing per-job scheduler pauses

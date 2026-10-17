@@ -1,4 +1,13 @@
-# compresser 0.33.0
+# compresser 0.34.0
+
+Previews now honor `-t` and resolved `-B` using one admitted worker per source;
+that source's variants stay serial and reuse its decoded image. The coordinator
+alone writes an atomic manifest, with stable numbered folders despite out-of-order
+completion. In-place progress shows active/admitted work, reservation/wait reason
+and elapsed time. Cancellation stops new work, drains owners and marks unsubmitted
+sources cancelled. Verified artifacts publish exclusively via same-directory hard
+links; filesystems without that support fail safely rather than overwrite files.
+Original/candidate/checksum buffers count toward conservative reservations.
 
 `-B auto` opts into `floor(available_bytes / (5 * MiB))`, capped4096MiB;
 below64MiB or unavailable telemetry fails with explicit `-B64..4096` guidance.
@@ -95,7 +104,8 @@ Developer generated-only benchmark (no production target accepted):
 `-M` uses the installed MangaDL adapter; otherwise the utility stays standalone.
 It checks retained-result equality and reports cold-trial/warm-trust timings on
 four small generated fixture shapes. Fresh trial DBs are not cold OS caches; RSS
-is sampled, not a guaranteed peak. Inventory scanning is still serial at this stage.
+is sampled, not a guaranteed peak. Small inventory scopes use the measured serial
+policy; larger scopes can use bounded changed-header workers.
 
 ## Review repair status
 
@@ -303,8 +313,8 @@ not a visual-quality guarantee. Open numbered folders in an image viewer to comp
 No source files, page names, manifests or archives are changed. Repeated runs create
 new folders and do not overwrite previous previews. Cancellation preserves partial
 output and records cancelled status. Existing safety/metadata checks apply, source
-changes are detected, and oversized/unsupported inputs are reported. Preview is
-serial (-t is not used), with one source/candidate at a time; native encoder work can
+changes are detected, and oversized/unsupported inputs are reported. Preview uses
+bounded -t source workers and serial variants within each owner; native encoder work can
 delay Ctrl+C until it returns. Summary-only trial caches cannot supply image bytes,
 so variants are regenerated; inventory headers are still reused. Preview cannot be
 combined with -w/-c/-b/-s/-P/-l/recovery. Add -J for a JSON-only final report.
