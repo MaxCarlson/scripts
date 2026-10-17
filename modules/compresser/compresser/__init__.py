@@ -21,8 +21,9 @@ from .models import (
 )
 from .sampling import GallerySample, confirmation_sample, gallery_sample
 from .scanner import inspect_image_file, scan_directory, select_sample
+from .ui import recommend_comparison_strategies
 
-__version__ = "0.24.0"
+__version__ = "0.25.0"
 
 
 def analyze_collection(
@@ -108,5 +109,6 @@ __all__ = [
     "GallerySample",
     "gallery_sample",
     "confirmation_sample",
+    "recommend_comparison_strategies",
     "discover_available_codecs",
 ]

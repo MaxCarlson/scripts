@@ -29,6 +29,7 @@ from compresser.ui import (
     CompresserDashboard,
     print_comparison_matrix,
     print_single_summary,
+    recommend_comparison_strategies,
     report_cancellation,
     print_cache_diagnostics,
 )
@@ -386,6 +387,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 scratch_dir=getattr(args, "scratch_dir", None),
             )
             if getattr(args, "json", False):
+                recommendations = recommend_comparison_strategies(comp_rows)
                 data = [
                     {
                         "strategy": r.strategy_name,
@@ -407,6 +409,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {
                             **cache.diagnostics(),

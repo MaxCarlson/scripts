@@ -1,5 +1,14 @@
 # Status
 
+I5c compresser0.25.0/MangaDL1.51.0 (Continuation Plan I1-I5 Complete):
+`recommend_comparison_strategies()` in `compresser.ui` and `print_comparison_matrix()`
+(plus JSON `recommendations` in `compresser` and `mangadl compress`) separate
+`maximum_savings`, `best_lossless` (pixel-exact), and `practical_tradeoff`
+(balancing storage reduction, throughput, SSIM >= 0.98, and reader compatibility)
+with an explicit `fidelity_caveat`. End-to-end MangaDL reader/library acceptance
+tests verify page ordering/completeness, cover/sidecar/archive/partial exclusions,
+and `.mangadl-source.json` preservation. 145 compression (1 skip)/308 MangaDL/55 help pass; ruff clean.
+
 I4 compresser0.24.0/MangaDL1.50.0: pre-admission cache-hit bypass (`pre_admission_cache_hits`)
 serves cached analysis results before `MemoryScheduler` admission (`peak_reserved_bytes == 0`
 on warm hits, single cache lookup per image); opt-in `-X/--scratch-dir PATH` stages

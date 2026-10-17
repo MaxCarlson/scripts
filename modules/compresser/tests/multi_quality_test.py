@@ -30,3 +30,29 @@ def test_lossy_only_quality_sweep_has_one_png_baseline(tmp_path, capsys):
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 7
     assert [r["format"] for r in rows].count("png") == 1
+
+
+def test_multi_quality_recommendations_separate_max_savings_from_practical_tradeoff(tmp_path, capsys):
+    source = tmp_path / "01.png"
+    im = Image.new("RGB", (120, 120))
+    for y in range(120):
+        for x in range(120):
+            im.putpixel((x, y), ((x * 7) % 256, (y * 11) % 256, ((x + y) * 5) % 256))
+    im.save(source)
+
+    args = ["-i", str(source), "-b", "-Q", "92", "75", "-e", "0"]
+    assert main(args + ["-J"]) == 0
+    rows = json.loads(capsys.readouterr().out)
+    rec = rows[0]["recommendations"]
+    assert rec["maximum_savings"] is not None
+    assert rec["best_lossless"] is not None
+    assert rec["practical_tradeoff"] is not None
+    assert "not a guarantee" in rec["fidelity_caveat"]
+
+    assert main(args + ["-N"]) == 0
+    text_out = capsys.readouterr().out
+    assert "Comparison Recommendations:" in text_out
+    assert "Maximum storage savings:" in text_out
+    assert "Best lossless (pixel-exact):" in text_out
+    assert "Practical speed/fidelity/reader trade-off:" in text_out
+

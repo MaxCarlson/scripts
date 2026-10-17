@@ -29,11 +29,12 @@ from .ui import (
     CompresserDashboard,
     print_comparison_matrix,
     print_single_summary,
+    recommend_comparison_strategies,
     report_cancellation,
     print_cache_diagnostics,
 )
 
-__version__ = "0.24.0"
+__version__ = "0.25.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -414,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
                 scratch_dir=args.scratch_dir,
             )
             if args.json:
+                recommendations = recommend_comparison_strategies(comp_rows)
                 data = [
                     {
                         "strategy": r.strategy_name,
@@ -435,6 +437,7 @@ def main(argv: list[str] | None = None) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "recommendations": recommendations,
                         "inventory_snapshot": snapshot.report,
                         "cache": {**cache.diagnostics(), "policy": args.cache_policy},
                     }

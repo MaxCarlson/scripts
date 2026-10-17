@@ -21,7 +21,7 @@ automatically cleans harmless stale metadata when the OS lock is free. Explicit
 `mangadl lock -u -d TARGET` clears stale `repair.lock` and stale `state.sqlite3`
 `running` records only when no live process holds a lock.
 
-## Pre-admission cache bypass, SSD scratch staging (`-X`), and pilot advisor (`mangadl 1.50.0`)
+## Pre-admission cache bypass, SSD scratch staging (`-X`), and pilot advisor (`mangadl 1.51.0`)
 
 `mangadl compress` probes the trial cache before `MemoryScheduler` admission
 (`pre_admission_cache_hits`) and supports optional read-only SSD scratch staging via
@@ -74,8 +74,9 @@ still require refresh. See [snapshot details](../compresser/README.md#explicit-s
 Compression reports now show cache creation/last-saved dates and run lookup
 hits/misses in text/JSON. Legacy creation dates remain unknown. Lookup counts include
 AUTO candidate probes and differ from processed-image/cache-hit trial counts.
-Refresh-policy bypass is distinguished from no matching entry; detailed source/
-settings/eviction causes require further indexing and are not guessed.
+Refresh-policy bypass is distinguished from no matching entry; indexed `trial_index`
+metadata classifies `source_changed`, `settings_changed`, `runtime_changed`, and
+`evicted` misses.
 
 ## Quick file-extension and size inventory
 
@@ -99,8 +100,11 @@ mangadl compress -d 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -
 
 One shared sampled inventory, four lossless strategies, then WebP/JPEG/AUTO at
 each requested quality. -Q also accepts0.9/0.8 notation. Matching trials reuse the
-automatic cache. This is read-only analysis; no preview images are written without
--O. More qualities add trials, not repeated inventories/lossless baselines.
+automatic cache. Comparison output (and JSON `recommendations`) separates
+`maximum_savings`, `best_lossless` (pixel-exact), and `practical_tradeoff`
+(balancing storage reduction, throughput, SSIM >= 0.98, and reader compatibility),
+alongside a fidelity caveat. This is read-only analysis; no preview images are
+written without -O. More qualities add trials, not repeated inventories/lossless baselines.
 
 ## Visual compression previews
 

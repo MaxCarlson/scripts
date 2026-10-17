@@ -300,6 +300,73 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
         print(render_table(headers=fmt_headers, rows=fmt_rows, alignments=["left", "right", "right"], style="rule"))
 
 
+def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
+    """Return structured recommendations separating max savings, best lossless, and practical trade-off."""
+    valid = [r for r in rows if r.failed_count == 0 and r.measured_images > 0]
+    if not valid:
+        valid = list(rows)
+
+    def _serialize(row: ComparisonRow | None) -> dict | None:
+        if row is None:
+            return None
+        return {
+            "strategy": row.strategy_name,
+            "format": row.output_format,
+            "mode": row.mode,
+            "quality": row.quality_display,
+            "saved_bytes": row.saved_bytes,
+            "savings_percent": row.savings_percent,
+            "projected_total_saved_bytes": row.estimate.get("projected_total_saved_bytes"),
+            "average_ssim": row.average_ssim,
+            "speed_img_per_s": row.throughput_images_per_s,
+        }
+
+    max_savings_row = max(
+        valid,
+        key=lambda r: (r.saved_bytes, r.average_ssim or 0.0, r.throughput_images_per_s),
+        default=None,
+    )
+    lossless_candidates = [r for r in valid if r.mode == "lossless"]
+    best_lossless_row = max(
+        lossless_candidates,
+        key=lambda r: (r.saved_bytes, r.throughput_images_per_s),
+        default=None,
+    )
+
+    reader_friendly = {"webp", "jpeg", "png", "auto"}
+    practical_candidates = [
+        r
+        for r in valid
+        if r.output_format.lower() in reader_friendly and (r.average_ssim is None or r.average_ssim >= 0.98)
+    ]
+    if not practical_candidates:
+        practical_candidates = [r for r in valid if r.output_format.lower() in reader_friendly] or valid
+
+    max_rate = max((r.throughput_images_per_s for r in practical_candidates), default=1.0) or 1.0
+    max_saved = max((max(0, r.saved_bytes) for r in practical_candidates), default=1) or 1
+
+    def _practical_score(row: ComparisonRow) -> tuple[float, int, float]:
+        savings_norm = max(0.0, row.saved_bytes) / max_saved
+        speed_norm = min(1.0, row.throughput_images_per_s / max_rate)
+        ssim_norm = row.average_ssim if row.average_ssim is not None else 1.0
+        reader_bonus = 0.08 if row.output_format.lower() in {"webp", "jpeg", "png"} else 0.0
+        return (0.55 * savings_norm + 0.25 * speed_norm + 0.20 * ssim_norm + reader_bonus, row.saved_bytes, speed_norm)
+
+    practical_row = max(practical_candidates, key=_practical_score, default=None)
+
+    return {
+        "maximum_savings": _serialize(max_savings_row),
+        "best_lossless": _serialize(best_lossless_row),
+        "practical_tradeoff": _serialize(practical_row),
+        "fidelity_caveat": (
+            "Recommendations separate maximum byte reduction from a practical reader-compatible "
+            "speed/fidelity trade-off. SSIM is an approximate structural metric, not a guarantee "
+            "against visible ringing or banding on text/screentones; inspect full-resolution previews (-O) "
+            "before lossy writes."
+        ),
+    }
+
+
 def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
     """Print a multi-strategy comparison table with horizontal visual comparison bars."""
     headers = [
@@ -396,6 +463,22 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
             print(f"  {row.strategy_name}: projected whole-target savings {display}{bounds}")
     if any(row.estimate for row in rows):
         print(rows[0].estimate["uncertainty"])
+    recommendations = recommend_comparison_strategies(rows)
+    print("Comparison Recommendations:")
+    for label, key in (
+        ("Maximum storage savings", "maximum_savings"),
+        ("Best lossless (pixel-exact)", "best_lossless"),
+        ("Practical speed/fidelity/reader trade-off", "practical_tradeoff"),
+    ):
+        entry = recommendations.get(key)
+        if entry:
+            ssim_txt = f"{entry['average_ssim']:.3f}" if entry["average_ssim"] is not None else "N/A"
+            print(
+                f"  {label}: {entry['strategy']} ({entry['format'].upper()} {entry['quality']}, "
+                f"saved {format_bytes_decimal(entry['saved_bytes'])} / {entry['savings_percent']:.1f}%, "
+                f"SSIM {ssim_txt}, {entry['speed_img_per_s']:.1f} img/s)"
+            )
+    print(f"  Note: {recommendations['fidelity_caveat']}")
     print("Savings use retained size: originals stay when candidates are not smaller or a trial fails.")
     print("Kept excludes failures; SSIM describes retained results, including unchanged originals.")
     print(
@@ -418,6 +501,12 @@ def print_comparison_matrix(rows: Sequence[ComparisonRow]) -> None:
                 print(
                     "    Phase worker-seconds (exclusive; parallel workers add): "
                     + ", ".join(f"{phase}={seconds:.2f}s" for phase, seconds in sorted(timings.items()))
+                )
+            scratch = row.worker_diagnostics.get("scratch")
+            if scratch:
+                print(
+                    f"    Scratch staging: {scratch['staged_files']} staged, {scratch['reused_files']} reused, "
+                    f"{format_bytes_decimal(scratch['bytes_copied'])} copied in {scratch['copy_seconds']:.2f}s."
                 )
         if row.candidate_bytes is not None and row.original_bytes:
             change = (row.candidate_bytes / row.original_bytes - 1) * 100

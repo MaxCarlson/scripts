@@ -19,9 +19,10 @@
   - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
   - [x] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations (`compresser 0.22.0` / `mangadl 1.48.0`).
 - [x] I4 measured concurrency improvements (pre-admission cache-hit bypass) and opt-in analysis-only SSD scratch (`-X/--scratch-dir`, `compresser 0.24.0` / `mangadl 1.50.0`).
-- [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
+- [x] I5 multi-quality recommendations and remaining MangaDL/reader acceptance (`compresser 0.25.0` / `mangadl 1.51.0`).
   - [x] I5a full-resolution external preview originals/lossless/multiple-quality variants, manifest, cancellation and source preservation tests.
   - [x] I5b multi-quality comparison on one sample with shared lossless baseline/cache and per-quality stages/projections.
+  - [x] I5c comparison recommendations separating maximum storage savings, best lossless, and practical speed/fidelity/reader trade-off, plus MangaDL reader/library acceptance tests (`145 passed, 1 skipped` in `compresser`; `308 passed` in `mangadl`; `55 passed` in `scripts_help`).
 
 Historical checkpoints below retain publication status; they do not imply newer work
 has been pushed or accepted in a reader/real terminal.
@@ -36,11 +37,11 @@ has been pushed or accepted in a reader/real terminal.
   - [x] Publish P2 phase checkpoint; scheduling-wait metrics remain with P3.
 - [x] P3 memory-aware scheduling and bounded resource configuration, tests/setup.
 - [x] Publish P3 checkpoint before P4.
-- [ ] P4 inventory, proportional percentage sampling and coverage-aware projections, commit/push.
+- [x] P4 inventory, proportional percentage sampling and coverage-aware projections, commit/push.
   - [x] Gallery-stratified seeded random sampling, count/byte-weighted quotas, percent selection, and explicit coverage limits.
   - [x] Seven-strategy combined lossless/lossy comparison on one shared sample; text/JSON projections and uncertainty.
   - [x] Explicit persistent cache writes/reuse verified during an active analysis; automatic cache policy remains P5.
-- [ ] P5 automatic MangaDL cache and interactive/noninteractive policy, commit/push.
-- [ ] P6 MangaDL gallery integrity and terminal/reader acceptance, commit/push.
+- [x] P5 automatic MangaDL cache and interactive/noninteractive policy, commit/push.
+- [x] P6 MangaDL gallery integrity and terminal/reader acceptance, commit/push.
 
 Publish each usable checkpoint before starting the next feature.

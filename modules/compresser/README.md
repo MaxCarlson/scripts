@@ -1,4 +1,4 @@
-# compresser 0.24.0
+# compresser 0.25.0
 
 ## Pre-admission cache bypass and opt-in SSD scratch staging (`-X/--scratch-dir`)
 
@@ -111,7 +111,7 @@ headers; this fast snapshot does not yet bypass that refresh or advise accuracy.
 `-D headers` (default) retains the existing header-based inventory workflow. Files
 depth requires -l and cannot drive sampled compression or source writes.
 
-## Multi-quality comparison
+## Multi-quality comparison and recommendations
 
 ```powershell
 compresser -i 'B:\Hent\hent1imageperpage' -b -Q 90 80 70 -P 2 -z 42 -t 4 -B 1024
@@ -123,8 +123,12 @@ for every quality, on the same sample and inventory. Duplicate qualities are rem
 Lossless baselines are not repeated. For only a PNG lossless baseline plus lossy
 quality sweeps, use `-c -m lossy -Q 90 80`.
 Without -Q, -q continues to select the single lossy quality. Per-quality stage names,
-sample projections and cache hits are reported separately. Comparison writes no image
-copies; use -O for visual preview output. More qualities mean more encoder trials.
+sample projections and cache hits are reported separately. Comparison output (and JSON
+`recommendations`) explicitly separates `maximum_savings`, `best_lossless` (pixel-exact),
+and `practical_tradeoff` (balancing byte savings, trial throughput, SSIM >= 0.98, and
+reader compatibility across WebP/JPEG/PNG), with a fidelity caveat noting that SSIM is
+an approximate structural metric rather than a guarantee against visible artifacts.
+Comparison writes no image copies; use -O for visual preview output. More qualities mean more encoder trials.
 
 ## Full-resolution compression previews
 

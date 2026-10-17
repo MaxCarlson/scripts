@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+I5c compresser0.25.0/MangaDL1.51.0 completes the I1-I5 compression continuation plan on
+branch `compression-inventory-and-analysis-20261016`: comparison output and JSON
+`recommendations` separate `maximum_savings`, `best_lossless` (pixel-exact), and
+`practical_tradeoff` (speed/fidelity/reader compatibility) with an explicit fidelity
+caveat, and MangaDL reader acceptance tests verify page integrity, cover/archive/sidecar
+preservation, and `.mangadl-source.json` retention. 145 compression (1 skip)/308 MangaDL/55 help pass.
+
 I4 compresser0.24.0/MangaDL1.50.0 adds pre-admission cache-hit bypass (`pre_admission_cache_hits`)
 before `MemoryScheduler` reservation and opt-in analysis-only SSD scratch staging
 (`-X/--scratch-dir PATH`) with ownership manifests, SHA-256 copy verification,

@@ -384,3 +384,67 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
         with Image.open(gallery / name / "001.webp") as image:
             image.load()
             assert image.size == (120, 120)
+
+
+def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recommendations(tmp_path, capsys):
+    from mangadl.library_index import read_source_manifest, write_source_manifest
+
+    library = tmp_path / "library"
+    gallery = library / "series-alpha"
+    ch1 = gallery / "ch01"
+    ch1.mkdir(parents=True)
+    for page_num in (1, 2):
+        im = Image.new("RGB", (100, 100), (page_num * 40, 90, 140))
+        im.save(ch1 / f"{page_num:03d}.png")
+    cover = gallery / "cover.jpg"
+    Image.new("RGB", (80, 120), (200, 50, 50)).save(cover)
+    cover_bytes = cover.read_bytes()
+    archive = gallery / "bonus.cbz"
+    archive.write_bytes(b"PK\x03\x04dummy-cbz")
+    sidecar = gallery / "series.json"
+    sidecar.write_text('{"series": "Alpha"}', encoding="utf-8")
+    partial_dir = gallery / "_partial"
+    partial_dir.mkdir()
+    Image.new("RGB", (60, 60), "black").save(partial_dir / "001.png")
+    partial_bytes = (partial_dir / "001.png").read_bytes()
+    write_source_manifest(gallery, "https://nhentai.net/g/633374/", "gallery-dl")
+
+    scratch_dir = tmp_path / "ssd_scratch"
+    scratch_dir.mkdir()
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(library),
+                "-b",
+                "-Q",
+                "90",
+                "80",
+                "-e",
+                "0",
+                "-X",
+                str(scratch_dir),
+                "-J",
+            ]
+        )
+        == 0
+    )
+    rows = json.loads(capsys.readouterr().out)
+    assert rows[0]["recommendations"]["maximum_savings"] is not None
+    assert rows[0]["recommendations"]["practical_tradeoff"] is not None
+    assert list(scratch_dir.iterdir()) == []
+
+    # Apply lossless WebP compression and verify reader/library invariants
+    assert main(["compress", "-d", str(library), "-f", "webp", "-m", "lossless", "-e", "0", "-w", "-N"]) == 0
+    assert read_source_manifest(gallery)["canonical_url"] == "https://nhentai.net/g/633374/"
+    assert cover.read_bytes() == cover_bytes
+    assert archive.read_bytes() == b"PK\x03\x04dummy-cbz"
+    assert sidecar.read_text(encoding="utf-8") == '{"series": "Alpha"}'
+    assert (partial_dir / "001.png").read_bytes() == partial_bytes
+    findings = _inspect_pages(ch1, expected_count=2, image_validator=_validate_image)
+    assert findings["completeness"] == "complete"
+    assert findings["image_integrity"] == "valid"
+    assert findings["valid_images"] == 2
+    assert not findings["duplicate_pages"]
+
