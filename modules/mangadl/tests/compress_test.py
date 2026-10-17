@@ -20,6 +20,35 @@ def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
     assert report["settings"]["inventory_effective_workers"] == 1
 
 
+def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(tmp_path, monkeypatch, capsys):
+    import io
+    import mangadl.compress as adapter
+    from compresser.inventory_ui import InventoryProgress
+
+    states = []
+
+    class ObservedProgress(InventoryProgress):
+        def __init__(self, *args, **kwargs):
+            kwargs.update(enabled=True, interactive=False, stream=io.StringIO())
+            super().__init__(*args, **kwargs)
+
+        def finish_gallery(self, key, status="complete"):
+            super().finish_gallery(key, status)
+            states.append(self.snapshot())
+
+    for name in ("a/ch1", "a/ch2", "b", "empty"):
+        folder = tmp_path / name
+        folder.mkdir(parents=True)
+        if name != "empty":
+            Image.new("RGB", (40, 40)).save(folder / "01.png")
+    monkeypatch.setattr(adapter, "InventoryProgress", ObservedProgress)
+    assert main(["compress", "-d", str(tmp_path), "-l", "-J"]) == 0
+    assert json.loads(capsys.readouterr().out)["images"] == 3
+    assert [state["completed_galleries"] for state in states] == [1, 2, 3]
+    assert states[-1]["total_galleries"] == 3
+    assert states[-1]["overall_percent"] == 100
+
+
 def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, monkeypatch, capsys):
     import io
     import sys

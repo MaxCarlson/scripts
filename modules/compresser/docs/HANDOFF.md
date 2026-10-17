@@ -1,5 +1,12 @@
 # Compresser handoff
 
+Plan03 P1 compresser0.28.0/MangaDL1.54.0: logical-gallery completion events,
+per-gallery file counts, independent overall progress, thread-safe render snapshots,
+recent completed-gallery ETA (estimated, unknown until sufficient history).
+Nested chapters do not reset parent progress; empty/error galleries finish once.
+TTY-stream redraw/narrow-CJK/double-close and redirected JSON/no-UI tests cover
+renderer contracts, not real Windows visual acceptance (still manual). P2 next.
+
 Plan03 P0 compresser0.27.0/MangaDL1.53.0: response-only current-run coordinator/
 worker phase measurements, high-resolution clock, inventory SQL/header/candidate
 counts, cache hits and worker/reservation high-water marks. Worker contexts isolate

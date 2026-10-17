@@ -61,6 +61,7 @@ def scan_directory(
     cache: AnalysisCache | None = None,
     inventory: InventoryStore | None = None,
     progress: Any | None = None,
+    gallery_key: Path | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """Refresh membership and reuse unchanged headers from a durable inventory."""
     if inventory is None:
@@ -71,6 +72,7 @@ def scan_directory(
             progress_callback=progress_callback,
             cache=cache,
             progress=progress,
+            gallery_key=gallery_key,
         )
     with inventory.scan(target_path, recursive) as session:
         return _scan_directory(
@@ -80,6 +82,7 @@ def scan_directory(
             progress_callback=progress_callback,
             cache=session,
             progress=progress,
+            gallery_key=gallery_key,
         )
 
 
@@ -91,6 +94,7 @@ def _scan_directory(
     progress_callback: Callable[[int, Path], None] | None = None,
     cache: AnalysisCache | None = None,
     progress: Any | None = None,
+    gallery_key: Path | None = None,
 ) -> tuple[ScanSummary, list[ImageMetadata]]:
     """
     Recursively scan target_path for all image files and compile aggregate statistics.
@@ -133,10 +137,34 @@ def _scan_directory(
 
         file_candidates.sort(key=lambda p: str(p).casefold())
     increment("scanned_candidates", len(file_candidates))
+    group_keys = {}
+    group_counts = defaultdict(int)
+    group_done = defaultdict(int)
+    target_is_directory = target.is_dir()
+    for path in file_candidates:
+        relative = path.relative_to(target) if target_is_directory else Path(path.name)
+        key = gallery_key or (
+            target / relative.parts[0]
+            if len(relative.parts) > 1
+            else (target if target_is_directory else target.parent)
+        )
+        group_keys[path] = key
+        group_counts[key] += 1
+    if progress is not None:
+        if gallery_key is None:
+            progress.set_folder_total(len(group_counts))
+        elif progress.total_folders is None:
+            progress.set_folder_total(1)
+        if gallery_key is not None and not file_candidates:
+            progress.start_gallery(gallery_key, total_files=0)
+            progress.finish_gallery(gallery_key)
     if progress is not None and file_candidates:
         progress.add_total_files(len(file_candidates))
 
     for idx, path in enumerate(file_candidates, 1):
+        key = group_keys[path]
+        if progress is not None and group_done[key] == 0:
+            progress.start_gallery(key, total_files=group_counts[key])
         meta = cache.get_metadata(path, check_grayscale) if cache else None
         reused = meta is not None
         if reused:
@@ -160,7 +188,11 @@ def _scan_directory(
                     reused=False,
                     inspected=inspected,
                     unreadable=True,
+                    gallery_key=key,
                 )
+            group_done[key] += 1
+            if progress is not None and group_done[key] == group_counts[key]:
+                progress.finish_gallery(key)
             continue
         images.append(meta)
         fmt = meta.format.upper()
@@ -179,7 +211,11 @@ def _scan_directory(
                 reused=reused,
                 inspected=inspected,
                 unreadable=False,
+                gallery_key=key,
             )
+        group_done[key] += 1
+        if progress is not None and group_done[key] == group_counts[key]:
+            progress.finish_gallery(key)
         if progress_callback:
             progress_callback(idx, path)
 

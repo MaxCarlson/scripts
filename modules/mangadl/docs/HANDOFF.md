@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+Plan03 P1 MangaDL1.54.0/compresser0.28.0 adds correct logical-gallery progress;
+discovery probes no longer count a gallery complete before its chapters are scanned.
+Empty candidates and completed-with-errors are counted separately from verification.
+Estimated recent-throughput ETA, stable active gallery and file/overall bars shared
+with standalone. Real Windows terminal visual acceptance remains manual; P2 next.
+
 Plan03 P0 MangaDL1.53.0/compresser0.27.0: pipeline measurements in inventory/single/
 comparison JSON, human inventory phase/SQL footer. Actual inventory worker count
 still1. Generated8-gallery scan confirms10 inventory connections/commits; P2 will

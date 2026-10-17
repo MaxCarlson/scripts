@@ -50,11 +50,18 @@ def scan_file_inventory(
     errors = []
     excluded_directories = 0
     excluded_files = 0
+    current_gallery_key = None
 
     def candidates():
-        nonlocal excluded_directories
+        nonlocal excluded_directories, current_gallery_key
         if not directory:
+            if progress is not None:
+                progress.set_folder_total(1)
+                current_gallery_key = root
+                progress.start_gallery(root, total_files=1)
             yield root
+            if progress is not None:
+                progress.finish_gallery(root)
             return
         for parent, dirs, names in os.walk(root, followlinks=False, onerror=_raise_walk_error):
             kept = [
@@ -65,9 +72,26 @@ def scan_file_inventory(
             excluded_directories += len(dirs) - len(kept)
             dirs[:] = kept
             if progress is not None:
-                progress.start_folder(Path(parent))
+                parent_path = Path(parent)
+                root_candidates = any(
+                    Path(name).suffix.lower() in IMAGE_EXTENSIONS
+                    and not name.startswith(".")
+                    and Path(name).stem.casefold() not in excluded
+                    for name in names
+                )
+                if parent_path == root:
+                    progress.set_folder_total(1 if single_gallery else len(kept) + int(root_candidates))
+                key = root if single_gallery or parent_path == root else root / parent_path.relative_to(root).parts[0]
+                if parent_path != root or single_gallery or root_candidates:
+                    if key != current_gallery_key:
+                        if current_gallery_key is not None:
+                            progress.finish_gallery(current_gallery_key)
+                        current_gallery_key = key
+                        progress.start_gallery(key)
             for name in names:
                 yield Path(parent) / name
+        if progress is not None and current_gallery_key is not None:
+            progress.finish_gallery(current_gallery_key)
 
     for path in phase_iter(candidates(), "enumeration"):
         if path.suffix.lower() not in IMAGE_EXTENSIONS:
@@ -75,7 +99,7 @@ def scan_file_inventory(
         if path.name.startswith(".") or path.stem.casefold() in excluded:
             excluded_files += 1
             if progress is not None:
-                progress.advance_file(path, size_bytes=0, unreadable=True)
+                progress.advance_file(path, size_bytes=0, unreadable=True, gallery_key=current_gallery_key)
             continue
         increment("scanned_candidates")
         relative = path.relative_to(root) if directory else Path(path.name)
@@ -96,7 +120,7 @@ def scan_file_inventory(
             if stat.S_ISLNK(info.st_mode):
                 excluded_files += 1
                 if progress is not None:
-                    progress.advance_file(path, size_bytes=0, unreadable=True)
+                    progress.advance_file(path, size_bytes=0, unreadable=True, gallery_key=current_gallery_key)
                 continue
             if not stat.S_ISREG(info.st_mode):
                 continue
@@ -107,7 +131,9 @@ def scan_file_inventory(
             errors.append({"relative_path": str(relative), "error": str(exc)})
         files.append(row)
         if progress is not None:
-            progress.advance_file(path, size_bytes=int(row["bytes"] or 0), unreadable="error" in row)
+            progress.advance_file(
+                path, size_bytes=int(row["bytes"] or 0), unreadable="error" in row, gallery_key=current_gallery_key
+            )
     files.sort(key=lambda row: row["relative_path"].casefold())
     grouped = defaultdict(list)
     for row in files:

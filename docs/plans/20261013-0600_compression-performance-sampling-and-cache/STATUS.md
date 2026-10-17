@@ -1,5 +1,13 @@
 # Status
 
+Plan03 P1 compresser0.28.0/MangaDL1.54.0 implemented: completed logical galleries,
+nested-chapter ownership, current files and overall bars, recent completion ETA
+with unknown/estimated labels, short-lock snapshots and supported LiveBlock close.
+214 compression passed/1 platform skip,311 MangaDL/55 help passed; lint/format
+and whitespace checks pass. Publication gate follows. Editable installs
+refreshed and installed versions verified. Real terminal visual acceptance remains
+manual, not claimed from TTY-stream fixtures. P2 bounded inventory pipeline next.
+
 Plan03 P0 compresser0.27.0/MangaDL1.53.0 implemented: current-run response-only
 coordinator/worker timings, high-resolution clock, inventory SQL/header counts,
 cache/worker high-water diagnostics.206 compression passed/1 platform skip,310

@@ -1,5 +1,10 @@
 # mangadl
 
+Compression inventory checkpoint1.54.0/compresser0.28.0 separates current-gallery
+files and overall finished-gallery progress, including nested chapters and empty
+candidates. Recent gallery throughput supplies an approximate ETA; unknown totals
+remain indeterminate. Inventory completion is not a full image integrity audit.
+
 Compression pipeline checkpoint1.53.0/compresser0.27.0 adds current-run `pipeline`
 measurements to inventory/compression JSON: coordinator versus worker phase seconds,
 scan/header/SQL/cache counts, settings/runtime and worker high-water marks. Human

@@ -6,9 +6,9 @@ from collections import Counter, deque
 import json
 import os
 from pathlib import Path
-import shutil
 import sys
 import time
+import threading
 
 from termdash.live import LiveBlock
 from termdash.progress import ProgressBar
@@ -37,6 +37,10 @@ class InventoryProgress:
         self.interactive = bool(interactive) if interactive is not None else self.block.interactive
         self.start_time = time.monotonic()
         self.last_render = 0.0
+        self._lock = threading.RLock()
+        self._galleries: dict[str, dict] = {}
+        self._display_key: str | None = None
+        self._completion_samples = deque([(self.start_time, 0)])
 
         self.phase = "DISCOVERING"
         self.folders_processed = 0
@@ -75,28 +79,120 @@ class InventoryProgress:
     def set_folder_total(self, total_folders: int) -> None:
         if not self.enabled:
             return
-        self.total_folders = max(0, int(total_folders))
+        with self._lock:
+            self.total_folders = max(0, int(total_folders))
         self._maybe_render()
+
+    def start_gallery(self, key: str | Path, total_files: int | None = None) -> None:
+        if not self.enabled:
+            return
+        key = str(key)
+        with self._lock:
+            self.phase = "SCANNING HEADERS" if self.depth == "headers" else "SCANNING FILES"
+            if key not in self._galleries:
+                self._galleries[key] = {"done": 0, "total": total_files, "status": "running", "errors": 0}
+            elif total_files is not None and self._galleries[key]["status"] == "running":
+                self._galleries[key]["total"] = total_files
+            if self._display_key is None or self._galleries[self._display_key]["status"] != "running":
+                self._display_key = key
+        self._maybe_render()
+
+    def finish_gallery(self, key: str | Path, status: str = "complete") -> None:
+        if not self.enabled:
+            return
+        if status not in ("complete", "complete_with_errors", "failed", "cancelled"):
+            raise ValueError("Invalid inventory gallery completion status")
+        key = str(key)
+        with self._lock:
+            row = self._galleries[key]
+            if row["status"] != "running":
+                return
+            row["status"] = "complete_with_errors" if row["errors"] and status == "complete" else status
+            if row["total"] is None:
+                row["total"] = row["done"]
+            self.folders_processed = sum(item["status"] != "running" for item in self._galleries.values())
+            now = time.monotonic()
+            self._completion_samples.append((now, self.folders_processed))
+            while len(self._completion_samples) > 2 and self._completion_samples[1][0] < now - 15:
+                self._completion_samples.popleft()
+            active = [name for name, item in self._galleries.items() if item["status"] == "running"]
+            if self._display_key == key and active:
+                self._display_key = active[0]
+        self._maybe_render()
+
+    def snapshot(self) -> dict:
+        """Copy render state under a short lock; no filesystem or renderer calls."""
+        with self._lock:
+            now = time.monotonic()
+            elapsed, files_s, bytes_s = self._rates(now)
+            completed = self.folders_processed
+            total = self.total_folders
+            row = self._galleries.get(self._display_key)
+            active = sum(item["status"] == "running" for item in self._galleries.values())
+            overall = min(100.0, 100 * completed / total) if total else None
+            eta = None
+            if total is not None and completed == total and not active:
+                overall, eta = 100.0, 0.0
+            elif total and completed >= 3 and elapsed >= 5:
+                sample_time, sample_count = self._completion_samples[0]
+                duration = now - sample_time
+                rate = (completed - sample_count) / duration if duration > 0 else 0
+                if rate > 0 and now - self._completion_samples[-1][0] <= 15:
+                    eta = max(0.0, (total - completed) / rate)
+            done = row["done"] if row else self.files_processed
+            count = row["total"] if row else self.total_files
+            fraction = min(100.0, 100 * done / count) if count else None
+            if row and row["status"] != "running" and count == 0:
+                fraction = 100.0
+            return {
+                "phase": self.phase,
+                "active_gallery": self._display_key,
+                "current_folder": Path(self._display_key).name if row else self.current_folder,
+                "current_files_done": done,
+                "current_files_total": count,
+                "current_percent": fraction,
+                "completed_galleries": completed,
+                "total_galleries": total,
+                "active_galleries": active,
+                "overall_percent": overall,
+                "eta_seconds": eta,
+                "files_done": self.files_processed,
+                "files_total": self.total_files,
+                "bytes": self.bytes_processed,
+                "files_s": files_s,
+                "bytes_s": bytes_s,
+                "elapsed": elapsed,
+                "reused": self.headers_reused,
+                "inspected": self.headers_inspected,
+                "unreadable": self.excluded_or_unreadable,
+                "error_galleries": sum(
+                    item["status"] in ("complete_with_errors", "failed", "cancelled")
+                    for item in self._galleries.values()
+                ),
+            }
 
     def start_folder(self, folder: Path, *, folders_done: int | None = None, total_folders: int | None = None) -> None:
         if not self.enabled:
             return
-        self.phase = "SCANNING HEADERS" if self.depth == "headers" else "SCANNING FILES"
-        if total_folders is not None:
-            self.total_folders = max(0, int(total_folders))
-        if folders_done is not None:
-            self.folders_processed = max(0, int(folders_done))
-        elif folder not in self.seen_folders:
-            self.seen_folders.add(folder)
-            self.folders_processed = len(self.seen_folders)
-        self.current_folder = folder.name or str(folder)
+        with self._lock:
+            self.phase = "SCANNING HEADERS" if self.depth == "headers" else "SCANNING FILES"
+            if total_folders is not None:
+                self.total_folders = max(0, int(total_folders))
+            if not self._galleries:
+                if folders_done is not None:
+                    self.folders_processed = max(0, int(folders_done))
+                elif folder not in self.seen_folders:
+                    self.seen_folders.add(folder)
+                    self.folders_processed = len(self.seen_folders)
+            self.current_folder = folder.name or str(folder)
         self._maybe_render()
 
     def add_total_files(self, count: int) -> None:
         if not self.enabled or count <= 0:
             return
-        self.total_files = (self.total_files or 0) + int(count)
-        self.bar.set_total(max(1, self.total_files))
+        with self._lock:
+            self.total_files = (self.total_files or 0) + int(count)
+            self.bar.set_total(max(1, self.total_files))
         self._maybe_render()
 
     def advance_file(
@@ -107,111 +203,101 @@ class InventoryProgress:
         reused: bool = False,
         inspected: bool = False,
         unreadable: bool = False,
+        gallery_key: str | Path | None = None,
     ) -> None:
         if not self.enabled:
             return
-        self.phase = "SCANNING HEADERS" if self.depth == "headers" else "SCANNING FILES"
-        parent = path.parent
-        if parent not in self.seen_folders:
-            self.seen_folders.add(parent)
-            if self.total_folders is None:
-                self.folders_processed = len(self.seen_folders)
-        self.current_folder = parent.name or str(parent)
-        self.current_file = path.name
-        self.files_processed += 1
-        if size_bytes > 0:
-            self.bytes_processed += int(size_bytes)
-        if reused:
-            self.headers_reused += 1
-        if inspected:
-            self.headers_inspected += 1
-        if unreadable:
-            self.excluded_or_unreadable += 1
-        if self.total_files is not None and self.total_files > 0:
-            self.bar.set_total(max(1, self.total_files))
-            self.bar.set(min(self.files_processed, self.total_files))
+        with self._lock:
+            self.phase = "SCANNING HEADERS" if self.depth == "headers" else "SCANNING FILES"
+            parent = path.parent
+            if gallery_key is not None:
+                row = self._galleries[str(gallery_key)]
+                row["done"] += 1
+                row["errors"] += bool(unreadable)
+            elif parent not in self.seen_folders and not self._galleries:
+                self.seen_folders.add(parent)
+                if self.total_folders is None:
+                    self.folders_processed = len(self.seen_folders)
+            self.current_folder = parent.name or str(parent)
+            self.current_file = path.name
+            self.files_processed += 1
+            if size_bytes > 0:
+                self.bytes_processed += int(size_bytes)
+            self.headers_reused += bool(reused)
+            self.headers_inspected += bool(inspected)
+            self.excluded_or_unreadable += bool(unreadable)
+            if self.total_files is not None and self.total_files > 0:
+                self.bar.set_total(max(1, self.total_files))
+                self.bar.set(min(self.files_processed, self.total_files))
         self._maybe_render()
 
     def _maybe_render(self, *, force: bool = False) -> None:
         if not self.enabled:
             return
-        now = time.monotonic()
-        self._record_sample(now)
-        if self.interactive:
-            if force or (now - self.last_render) >= 0.08:
+        with self._lock:
+            now = time.monotonic()
+            self._record_sample(now)
+            render = force or now - self.last_render >= (0.08 if self.interactive else 2.0)
+            if render:
+                self.last_render = now
+        # Never hold our state lock while the renderer acquires its own lock.
+        if render:
+            if self.interactive:
                 self.block.update(self._lines)
-                self.last_render = now
-        else:
-            if force or (now - self.last_render) >= 2.0:
+            else:
                 print(self.summary_line(), file=self.stream, flush=True)
-                self.last_render = now
 
     def summary_line(self) -> str:
-        now = time.monotonic()
-        elapsed, files_s, bytes_s = self._rates(now)
+        state = self.snapshot()
+        elapsed, files_s, bytes_s = state["elapsed"], state["files_s"], state["bytes_s"]
         folder_part = (
-            f"Folders: {self.folders_processed:,}/{self.total_folders:,}"
-            if self.total_folders is not None
-            else f"Folders: {self.folders_processed:,}"
+            f"Folders: {state['completed_galleries']:,}/{state['total_galleries']:,}"
+            if state["total_galleries"] is not None
+            else f"Folders: {state['completed_galleries']:,}"
         )
         file_part = (
-            f"Files: {self.files_processed:,}/{self.total_files:,}"
-            if self.total_files is not None
-            else f"Files: {self.files_processed:,}"
+            f"Files: {state['files_done']:,}/{state['files_total']:,}"
+            if state["files_total"] is not None
+            else f"Files: {state['files_done']:,}"
         )
         detail_part = (
-            f" (reused {self.headers_reused:,}, inspected {self.headers_inspected:,})"
-            if self.depth == "headers"
-            else ""
+            f" (reused {state['reused']:,}, inspected {state['inspected']:,})" if self.depth == "headers" else ""
         )
         return (
-            f"[{self.phase}] {folder_part} | {file_part}{detail_part} | "
-            f"Size: {format_bytes_decimal(self.bytes_processed)} | "
+            f"[{state['phase']}] {folder_part} | {file_part}{detail_part} | "
+            f"Size: {format_bytes_decimal(state['bytes'])} | "
             f"Rate: {files_s:,.1f} files/s ({format_rate_bps(bytes_s)}) | "
             f"Elapsed: {fmt_hms(elapsed)}"
         )
 
     def _lines(self) -> list[str]:
-        now = time.monotonic()
-        elapsed, files_s, bytes_s = self._rates(now)
-        cols = shutil.get_terminal_size((100, 20)).columns
-        folder_str = (
-            f"{self.folders_processed:,}/{self.total_folders:,}"
-            if self.total_folders is not None
-            else f"{self.folders_processed:,}"
+        state = self.snapshot()
+        elapsed, files_s, bytes_s = state["elapsed"], state["files_s"], state["bytes_s"]
+        count = state["current_files_total"]
+        total = state["total_galleries"]
+        current_pct = state["current_percent"]
+        overall_pct = state["overall_percent"]
+        current_bar = ProgressBar("folder", 100, current_pct or 0, width=28, show_percent=current_pct is not None)
+        overall_bar = ProgressBar("overall", 100, overall_pct or 0, width=28, show_percent=overall_pct is not None)
+        current_count = (
+            f"{state['current_files_done']:,}/{count:,}" if count is not None else f"{state['current_files_done']:,}/?"
         )
-        file_str = (
-            f"{self.files_processed:,}/{self.total_files:,}"
-            if self.total_files is not None
-            else f"{self.files_processed:,}"
+        folder_count = (
+            f"{state['completed_galleries']:,}/{total:,}"
+            if total is not None
+            else f"{state['completed_galleries']:,}/?"
         )
-        eta_str = "--:--:--"
-        if self.total_files and self.files_processed > 0 and self.total_files >= self.files_processed and files_s > 0:
-            rem = (self.total_files - self.files_processed) / files_s
-            eta_str = fmt_hms(rem)
-
-        header = f"[{self.phase}] Target: {self.root.name or str(self.root)} ({self.depth})"
-        if self.total_files and self.total_files > 0:
-            pct = 100.0 * min(self.files_processed, self.total_files) / max(1, self.total_files)
-            bar_line = f"Progress: {self.bar} {pct:5.1f}% ({file_str} files) | ETA: {eta_str}"
-        else:
-            bar_line = f"Progress: {file_str} files scanned | Elapsed: {fmt_hms(elapsed)}"
-
-        stats_line = (
-            f"Folders:  {folder_str} | Size: {format_bytes_decimal(self.bytes_processed)} | "
-            f"Rate: {files_s:,.1f} files/s ({format_rate_bps(bytes_s)}) | Elapsed: {fmt_hms(elapsed)}"
-        )
-        if self.depth == "headers":
-            detail_line = (
-                f"Headers:  reused {self.headers_reused:,} | inspected {self.headers_inspected:,} | "
-                f"unreadable {self.excluded_or_unreadable:,} | Folder: {self.current_folder}"
-            )
-        else:
-            detail_line = (
-                f"Excluded: {self.excluded_or_unreadable:,} | "
-                f"Folder: {self.current_folder} | File: {self.current_file}"
-            )
-        return [line[: max(40, cols - 1)] for line in (header, bar_line, stats_line, detail_line)]
+        eta = fmt_hms(state["eta_seconds"]) + " estimated" if state["eta_seconds"] is not None else "unknown"
+        current_label = f"{current_pct:.1f}%" if current_pct is not None else "unknown"
+        overall_label = f"{overall_pct:.1f}%" if overall_pct is not None else "unknown"
+        header = f"[{state['phase']}] {state['current_folder']} | other active: {max(0, state['active_galleries'] - 1)}"
+        current_line = f"Folder:  {current_bar} {current_label} ({current_count} files)"
+        overall_line = f"Overall: {overall_bar} {overall_label} ({folder_count} folders)"
+        clock_line = f"Elapsed: {fmt_hms(elapsed)} | ETA: {eta} | Rate: {files_s:.1f} files/s"
+        stats_line = f"Files: {state['files_done']:,} | {format_bytes_decimal(state['bytes'])} | {format_rate_bps(bytes_s)} | folders with errors: {state['error_galleries']}"
+        detail_line = f"Headers reused/inspected: {state['reused']:,}/{state['inspected']:,} | unreadable/excluded: {state['unreadable']:,}"
+        # LiveBlock clips by terminal display width, including CJK and ANSI spans.
+        return [header, current_line, overall_line, clock_line, stats_line, detail_line]
 
     def close(self) -> None:
         if not self.enabled:

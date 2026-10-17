@@ -1,5 +1,10 @@
 # Repository-Wide Plans Handoff
 
+Plan03 P1 progress checkpoint: compresser0.28.0/MangaDL1.54.0, current logical
+gallery files versus completed gallery work, chapter grouping, estimated ETA and
+thread-safe rendering. P2 inventory pipeline next. Actual terminal acceptance is
+manual; no production scans/writes and no push of main.
+
 ## Current branch
 
 Active execution: compression-pipeline-and-cli-20261017, main fast-forwarded locally

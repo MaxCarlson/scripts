@@ -1,4 +1,12 @@
-# compresser 0.27.0
+# compresser 0.28.0
+
+Inventory progress now separates the active logical gallery's files from finished
+gallery work units across the target. Nested chapter directories do not restart
+the gallery bar; unknown populations stay indeterminate. ETA uses recent completed
+galleries after sufficient history and is only an estimate for unequal galleries.
+Completion means inventory work finished, not that images passed a full decode
+audit; unreadable/error counts remain visible. File-only traversal does not perform
+a second pass just to count files, so its current-gallery total is initially unknown.
 
 ## Current-run pipeline measurements
 

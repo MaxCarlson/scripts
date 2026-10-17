@@ -3,7 +3,7 @@
 ## Plan03 inventory/sampling/pipeline and CLI continuation
 
 - [x] P0 current-run phase/counter baseline and generated repeatable benchmark (0.27.0/1.53.0).
-- [ ] P1 accurate gallery/file progress and estimated ETA.
+- [x] P1 accurate gallery/file progress and estimated ETA (real terminal visual acceptance still manual).
 - [ ] P2 reduced I/O and bounded header concurrency.
 - [ ] P3 trusted-source/cache preparation optimization.
 - [ ] P4 metadata-only persisted sampling profiles; no pilot/confirmation machinery.

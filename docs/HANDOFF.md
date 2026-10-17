@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+Plan03 P1 inventory progress implemented on compression-pipeline-and-cli-20261017:
+compresser0.28.0/MangaDL1.54.0. Logical galleries/chapters, completed counts,
+file/overall bars, approximate ETA and render-lock safety. P2 bounded inventory
+pipeline is next; no production images changed, main not pushed.
+
 Implementation authorized2026-10-17: prior branch fast-forwarded into local main
 at0672a42 (main not pushed); new branch compression-pipeline-and-cli-20261017.
 [Active plan03](plans/20261013-0600_compression-performance-sampling-and-cache/03_inventory-sampling-pipeline-revision.md)

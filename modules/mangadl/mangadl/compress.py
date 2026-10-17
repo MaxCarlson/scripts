@@ -50,7 +50,7 @@ def _gallery_images(
     progress=None,
 ):
     summary, images = scan_directory(
-        directory, recursive=recursive, cache=cache, inventory=inventory, progress=progress
+        directory, recursive=recursive, cache=cache, inventory=inventory, progress=progress, gallery_key=directory
     )
     # Covers aren't numbered page payloads; their reader identity must not change.
     return summary, [
@@ -92,7 +92,8 @@ def discover_gallery_targets(
         raise ValueError("Compression cannot target hidden controls or partial downloads")
 
     # Check if destination itself directly contains images
-    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory, progress=progress)
+    # This discovery probe is not a completed logical gallery (chapters may follow).
+    _, direct_images = _gallery_images(dest, cache, recursive=False, inventory=inventory, progress=None)
     # A source-owned gallery may contain only chapter subdirectories. Do not
     # interpret an arbitrary library root's descendants as one gallery.
     is_gallery = bool(direct_images) or read_source_manifest(dest) is not None
@@ -128,11 +129,9 @@ def discover_gallery_targets(
         for entry in sorted(dest.iterdir(), key=lambda p: str(p).casefold())
         if entry.is_dir() and not entry.name.startswith(".") and entry.name != "_partial" and not entry.is_symlink()
     ]
-    if progress is not None and entries:
+    if progress is not None:
         progress.set_folder_total(len(entries))
-    for idx, entry in enumerate(entries, 1):
-        if progress is not None:
-            progress.start_folder(entry, folders_done=idx, total_folders=len(entries))
+    for entry in entries:
         summary, imgs = _gallery_images(entry, cache, inventory=inventory, progress=progress)
         if imgs:
             galleries.append(entry)
@@ -294,11 +293,12 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             tall_count = 0
             gray_count = 0
 
-            for idx, gal in enumerate(gallery_paths, 1):
+            for gal in gallery_paths:
+                if prog.total_folders is None:
+                    prog.set_folder_total(len(gallery_paths))
                 if gal in discovered:
                     s, imgs = discovered[gal]
                 else:
-                    prog.start_folder(gal, folders_done=idx, total_folders=len(gallery_paths))
                     s, imgs = _gallery_images(gal, cache, inventory=store, progress=prog)
                 # Rebuild counts after cover exclusions; no excluded bytes count as savings.
                 s = ScanSummary(
