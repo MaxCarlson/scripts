@@ -11,6 +11,27 @@ write was run; no main merge. Versions compresser1.4.1/MangaDL2.4.1/TermDash0.8.
 The separate reviewer stopped at a usage limit, so the review fixes were verified in
 this session. Manual Windows terminal resize/color and reader quality acceptance remain.
 
+## Final review rulings
+
+- Inventory/trial files that are hardlinks to one another are rejected with `samefile`;
+  path-string comparison alone misses this alias — adds a filesystem identity check.
+- A custom `-K` cache path cannot occupy the reports or previews trees, nor alias the
+  inventory, manifest, reports or previews — prevents SQLite from replacing report data;
+  custom caches therefore belong outside those workspace artifact areas.
+- A Markdown report must name the same resolved target as its workspace — prevents a
+  direct library caller from publishing one target's summary into another target's files.
+- MangaDL rejects `-C/--confirm-recovery` without `-R/--recover` before workspace setup —
+  invalid options no longer leave manifests or failure reports behind.
+- The final independent reviewer exceeded its usage limit before returning a consolidated
+  report; the identified workspace boundary findings above were reproduced and fixed in
+  session. Manual Windows terminal and reader checks remain deferred to user hardware.
+
+Final verification after review fixes: Compresser326 passed/1 skipped; MangaDL317 passed;
+TermDash76 passed/1 skipped; scripts_help55 passed. Focused regressions reproduced all
+three defects before fixes and passed afterward. Ruff and Black120 passed. CLI versions
+reported compresser1.4.1 and mangadl2.4.1. Parent checkout clean and branch synchronized
+at 6fcbe7cbcb310651031c42ef9ea184484fe18225.
+
 2026-10-17: Design/mockup approved in conversation; written design and implementation
 plan created and self-reviewed against source64b33d1. Awaiting written plan review
 before implementation under Superpowers. Current branch
