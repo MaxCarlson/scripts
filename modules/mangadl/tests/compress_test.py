@@ -10,6 +10,33 @@ from mangadl.compress import discover_gallery_targets
 from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
+def test_trusted_snapshot_preserves_nested_gallery_selection(tmp_path, monkeypatch, capsys):
+    import mangadl.compress as adapter
+
+    root = tmp_path / "library"
+    for name in ("manga-a", "manga-b"):
+        chapter = root / name / "chapter"
+        chapter.mkdir(parents=True)
+        Image.new("RGB", (40, 40)).save(chapter / "01.png")
+        Image.new("RGB", (40, 40)).save(chapter / "cover.png")
+    args = ["compress", "-d", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    assert main([*args, "-l"]) == 0
+    capsys.readouterr()
+
+    def forbidden(*a, **k):
+        pytest.fail("Trust mode rediscovered galleries")
+
+    monkeypatch.setattr(adapter, "discover_gallery_targets", forbidden)
+    assert main([*args, "-U", "trust", "-f", "png", "-e", "0", "-J"]) == 0
+    report = json.loads(capsys.readouterr().out)
+    assert report["total_images"] == 2
+    assert report["sampling"]["galleries"] == 2
+    assert report["inventory_snapshot"]["selected_files_validated"] == 2
+    assert report["estimate"]["population_warning"]
+    assert main([*args, "-U", "trust", "-u", "manga-a", "-J"]) == 2
+    assert "refresh" in capsys.readouterr().err.lower()
+
+
 def test_fast_inventory_preserves_manga_page_exclusions(tmp_path, monkeypatch, capsys):
     root = tmp_path / "library"
     chapter = root / "manga" / "chapter"

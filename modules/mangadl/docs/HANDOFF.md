@@ -1,5 +1,12 @@
 # mangadl Immediate Project Handoff
 
+I1b2 1.45.0/compresser0.19.0: analysis-only -U trust completed header selection;
+defaultrefresh unchanged. Saved nested ownership/cover exclusions/exact-u policy,
+selected file checks before cache/work and between comparison stages. Old population
+date/age/warnings explicit; no association changes.128 compression/303 MangaDL/55help
+pass,1 Windows symlinkprivilege skip. Next readable inventory-only summary, then
+remaining advisor/scratch/reader work. No production source changes.
+
 I2d1 1.44.0/compresser0.18.0: cache dates/lookup diagnostics at startup and in text/
 JSON summaries. Probe counts not image counts; legacy age not fabricated.113
 compression/302 MangaDL/55 help pass. Remaining trust/advisor/scratch/reader gates open.

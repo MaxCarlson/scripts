@@ -2,6 +2,10 @@
 
 ## Current branch
 
+Latest I1b2: -U refresh|trust whole-selection snapshots,128 compression/303 MangaDL/
+55 help pass,1 privilege skip. Next readable inventory stats summary, then remaining
+advisor/performance/scratch/reader gates. See active STATUS for publication evidence.
+
 `compression-inventory-and-analysis-20261016`: I1a inventory, I2a/I2b cache reuse,
 I2c automatic cache policies and I3a stable expanding samples. Each tested checkpoint
 is committed/pushed under explicit user authorization; main is not pushed. Remaining

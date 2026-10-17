@@ -1,5 +1,17 @@
 # Status
 
+I1b2 compresser0.19.0/MangaDL1.45.0: explicit -U refresh|trust. Whole-selection
+header snapshots retain root/scanner/Pillow/filter policy, UTC completion and manga
+ownership; atomic publication only after completed discovery. Trust skips enumeration,
+validates selected files before trial/cache work and between comparison stages, and
+labels old population totals/projections/date/age in text/JSON. Missing/incompatible/
+changed selections fail closed; file-only snapshots cannot drive compression.
+Trust excludes writes/recovery/previews/inventory-only. RED->GREEN for missing flag,
+snapshot storage and between-stage change guard.128 compression passed/1 skipped
+(Windows symlink privilege),303 MangaDL/55 help passed with required fixture permissions.
+No production scan. Next: user-requested readable inventory summary, then advisor/
+measured scheduling/scratch and reader acceptance. Docs freshness20/100 both modules.
+
 I2d1 compresser0.18.0/MangaDL1.44.0: persistent creation/tracking/last-result-save
 dates, run trial lookup hit/miss counters and refresh/no-match/invalid-record labels.
 Text/JSON expose dates/counters without conflating probes with image counts. Legacy

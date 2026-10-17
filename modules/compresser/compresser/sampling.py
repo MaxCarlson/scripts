@@ -17,6 +17,13 @@ from .models import ImageMetadata, ImageResult
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
+        "-U",
+        "--inventory-policy",
+        choices=("refresh", "trust"),
+        default="refresh",
+        help="Refresh membership (default) or explicitly trust a completed header snapshot; analysis only.",
+    )
+    parser.add_argument(
         "-D",
         "--inventory-depth",
         choices=("headers", "files"),
@@ -63,6 +70,10 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def validate_analysis_arguments(args: argparse.Namespace) -> None:
+    if getattr(args, "inventory_policy", "refresh") == "trust" and any(
+        getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")
+    ):
+        raise ValueError("Trusted snapshots are read-only analysis only; omit writes/recovery/inventory-only/preview")
     if getattr(args, "inventory_depth", "headers") == "files":
         if not getattr(args, "inventory_only", False):
             raise ValueError("Filesystem-only depth requires --inventory-only; compression requires verified headers")
@@ -101,6 +112,7 @@ class GallerySample:
     groups: dict[str, list[ImageMetadata]]
     quotas: dict[str, int]
     seed: int
+    population_warning: str = ""
 
     def summary(self) -> dict:
         formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0})
@@ -113,6 +125,7 @@ class GallerySample:
                 row["sample_images"] += image.path in chosen
         return {
             "method": "gallery-stratified simple random sampling without replacement",
+            "population_warning": self.population_warning,
             "allocation": "one per gallery (two where budget permits), then equal image-count and byte weighting",
             "seed": self.seed,
             "sampling_revision": 2,
@@ -162,6 +175,7 @@ class GallerySample:
         margin = 1.96 * math.sqrt(variance_total)
         return {
             "scope": "full" if len(self.images) == sum(map(len, self.groups.values())) else "gallery_random_sample",
+            "population_warning": self.population_warning,
             "projected_total_saved_bytes": point if not unknown_bytes else None,
             "projected_covered_saved_bytes": point,
             "unestimated_bytes": unknown_bytes,

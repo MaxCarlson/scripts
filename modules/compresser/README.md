@@ -1,4 +1,29 @@
-# compresser 0.18.0
+# compresser 0.19.0
+
+## Explicit snapshot reuse
+
+Normal analysis and header inventory (`-l`) save a completed whole-selection
+snapshot, separately from file-only scans and trial caches. Subsequent read-only
+analysis can skip discovery and header scans with `-U/--inventory-policy trust`:
+
+```powershell
+compresser -i 'B:\Hent\hent1imageperpage' -l
+compresser -i 'B:\Hent\hent1imageperpage' -U trust -b -Q 90 80 -P 2 -z 42
+```
+
+Use the same root and `-I`/`-K` inventory location. The snapshot records scanner policy,
+Pillow version and selection. Missing/incompatible snapshots fail with refresh guidance;
+file-only snapshots cannot be trusted for compression. `-U refresh` remains the default
+and discovers changes while reusing unchanged headers.
+
+Trust is explicit noninteractive consent to old population membership: reports show
+the UTC completion time, age, and a warning that totals/projections describe the saved
+population, not today's library. Selected files are checked for size/timestamps and
+linked ancestors before trial/cache work and between comparison stages. Changed or
+missing selections fail closed; new or changed unselected files are not discovered.
+Fingerprints are not content hashes or an integrity audit. Trust cannot be combined
+with source writes, recovery, inventory-only or previews. No prompt is required.
+JSON includes `inventory_snapshot` and `population_warning` alongside estimates.
 
 ## Cache visibility
 

@@ -1,5 +1,23 @@
 # mangadl
 
+## Reuse a completed compression inventory
+
+```powershell
+mangadl compress -d 'B:\Hent\hent1imageperpage' -l
+mangadl compress -d 'B:\Hent\hent1imageperpage' -U trust -b -Q 90 80 -P 2 -z 42
+```
+
+`-U/--inventory-policy trust` skips library discovery using a completed header
+snapshot of the same root and exact `-u` selection (if any). Use the same `-I` or
+`-K` inventory location. Nested chapter ownership and cover exclusions are preserved.
+Snapshots from standalone compresser or `-l -D files` cannot substitute for a MangaDL
+header snapshot. The report shows its date/age and warns that totals/projections
+refer to the saved population, not verified current membership. Selected pages are
+stat/link validated before trial/cache work and between comparison stages; changes
+require `-U refresh` (the normal default). This is analysis-only, not repair, source
+association lookup or a completeness audit; writes, recovery, previews and inventory-only
+still require refresh. See [snapshot details](../compresser/README.md#explicit-snapshot-reuse).
+
 Compression reports now show cache creation/last-saved dates and run lookup
 hits/misses in text/JSON. Legacy creation dates remain unknown. Lookup counts include
 AUTO candidate probes and differ from processed-image/cache-hit trial counts.

@@ -1,5 +1,12 @@
 # Compresser API and architecture
 
+CLI-only whole-selection snapshots now live in `snapshots.SelectionSnapshot`.
+They are separate from per-directory header records/file-only inventories and are
+scoped by root, scanner/ownership policy, exact filters and Pillow runtime. CLI
+refresh publishes after complete discovery; explicit trust validates selected source
+fingerprints/links before engine/cache use (again between comparison stages). This
+does not verify current population membership, content hashes or gallery integrity.
+
 [Usage](../README.md) · [Handoff](HANDOFF.md) ·
 [Reviewed plan](../../../docs/plans/20261013-0151_compression-module-and-mangadl-integration/05_reviewed-plan.md)
 

@@ -23,6 +23,7 @@ from compresser import (
 from compresser.cli import run_comparison
 from compresser.sampling import validate_analysis_arguments, gallery_sample, print_sampling
 from compresser.inventory import InventoryStore, inventory_path, inventory_report
+from compresser.snapshots import SelectionSnapshot
 from compresser.cache import create_analysis_cache
 from compresser.ui import (
     CompresserDashboard,
@@ -189,8 +190,22 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             else create_analysis_cache(args, dest)
         )
         store = InventoryStore(inventory_path(args, dest))
+        snapshot = SelectionSnapshot(store, dest, owner="mangadl-pages", filters=url_filters)
         discovered = {}
-        gallery_paths = discover_gallery_targets(dest, url_filters, cache=cache, inventory=store, collected=discovered)
+        if getattr(args, "inventory_policy", "refresh") == "trust":
+            saved_images, saved_keys = snapshot.load()
+            if saved_images and saved_keys is None:
+                raise ValueError("Snapshot is missing manga ownership; use -U refresh")
+            for image in saved_images:
+                gal = Path(saved_keys[image.path])
+                if gal not in discovered:
+                    discovered[gal] = (None, [])
+                discovered[gal][1].append(image)
+            gallery_paths = list(discovered)
+        else:
+            gallery_paths = discover_gallery_targets(
+                dest, url_filters, cache=cache, inventory=store, collected=discovered
+            )
         if not gallery_paths:
             if getattr(args, "inventory_only", False):
                 report = inventory_report([], dest)
@@ -238,6 +253,9 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             for fmt, b_cnt in s.format_bytes.items():
                 format_bytes[fmt] = format_bytes.get(fmt, 0) + b_cnt
 
+        if getattr(args, "inventory_policy", "refresh") != "trust":
+            snapshot.publish(all_images, gallery_keys)
+
         if getattr(args, "inventory_only", False):
             report = inventory_report(all_images, dest, gallery_keys=gallery_keys)
             report.update(store.diagnostics())
@@ -276,8 +294,11 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             gallery_keys=gallery_keys,
         )
         eval_images = sampling_plan.images
+        snapshot.validate_selected(eval_images)
+        sampling_plan.population_warning = snapshot.report.get("warning", "")
         store.save_sample(sampling_plan, dest)
         if not args.json:
+            snapshot.print_warning()
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {getattr(args, 'cache_policy', 'use')}")
             print_cache_diagnostics(cache.diagnostics(), startup=True)
@@ -299,6 +320,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 compare_both=getattr(args, "compare_both", False),
                 sampling_plan=sampling_plan,
                 qualities=getattr(args, "preview_qualities", None),
+                source_validator=snapshot.validate_selected,
             )
             if getattr(args, "json", False):
                 data = [
@@ -322,6 +344,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "inventory_snapshot": snapshot.report,
                         "cache": {
                             **cache.diagnostics(),
                             "policy": getattr(args, "cache_policy", "use"),
@@ -333,6 +356,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
             else:
                 print_comparison_matrix(comp_rows)
                 print_cache_diagnostics(cache.diagnostics())
+                snapshot.print_warning()
             return 0
 
         # Compression / Analysis Mode
@@ -398,6 +422,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
+                "inventory_snapshot": snapshot.report,
                 "cache": {
                     **cache.diagnostics(),
                     "policy": getattr(args, "cache_policy", "use"),
@@ -414,6 +439,7 @@ def _run_cli_owned(args: argparse.Namespace) -> int:
                 )
                 print(estimate["uncertainty"])
             print_cache_diagnostics(cache.diagnostics())
+            snapshot.print_warning()
 
         return 0 if batch_result.failed_count == 0 else 1
 

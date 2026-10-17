@@ -1,5 +1,13 @@
 # Compresser handoff
 
+I1b2 0.19.0/MangaDL1.45.0: -U refresh|trust, defaultrefresh. Whole-selection
+snapshot table scoped by root/scanner/Pillow/exactfilter policy; trust skips walks,
+checks selected source fingerprints/links before cache/encoding and between stages.
+Text/JSON show UTC age and stale-population caveat; old membership never claimed
+current. No trust for writes/recovery/previews/inventory-only.128 compression passed,
+1 symlinkprivilege skip;303 MangaDL/55 help passed. No production runs. Next readable
+inventory summary, then advisor/benchmark/scratch/reader gates in existing plan.
+
 I2d1 0.18.0/MangaDL1.44.0: durable cache dates and run-scoped trial lookup counters,
 shared text/JSON diagnostics. Legacy creation date unknown, refresh/no-match/invalid
 record categories only (no invented source/settings cause). Dates commit with results,

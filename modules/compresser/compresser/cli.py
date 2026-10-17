@@ -10,11 +10,12 @@ import json
 import os
 import sys
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 from .engine import CompressionEngine
 from .cache import create_analysis_cache
 from .inventory import InventoryStore, inventory_path, inventory_report
+from .snapshots import SelectionSnapshot, summarize_images
 from .models import (
     ComparisonRow,
     CompressionStrategy,
@@ -30,7 +31,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.18.0"
+__version__ = "0.19.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -179,6 +180,7 @@ def run_comparison(
     compare_both: bool = False,
     sampling_plan=None,
     qualities: Sequence[int] | None = None,
+    source_validator: Callable[[list[ImageMetadata]], None] | None = None,
 ) -> list[ComparisonRow]:
     """Execute benchmarks across standard competing compression configurations."""
     formats = ["png", "webp", "jpeg", "auto"]
@@ -229,6 +231,8 @@ def run_comparison(
 
     try:
         for index, strat in enumerate(candidate_strategies):
+            if source_validator:
+                source_validator(images)
             if dash:
                 dash.begin_stage(index)
             res = engine.compress_batch(
@@ -322,7 +326,13 @@ def main(argv: list[str] | None = None) -> int:
             raise ValueError("Analysis cache must be outside the input tree")
         cache = None if args.inventory_only or args.preview_dir else create_analysis_cache(args, args.input)
         store = InventoryStore(inventory_path(args, args.input))
-        summary, images = scan_directory(args.input, recursive=True, cache=cache, inventory=store)
+        snapshot = SelectionSnapshot(store, args.input, owner="compresser")
+        if args.inventory_policy == "trust":
+            images, _ = snapshot.load()
+            summary = summarize_images(args.input, images)
+        else:
+            summary, images = scan_directory(args.input, recursive=True, cache=cache, inventory=store)
+            snapshot.publish(images)
         if args.inventory_only:
             report = inventory_report(images, args.input.expanduser().resolve())
             report.update(store.diagnostics())
@@ -345,8 +355,11 @@ def main(argv: list[str] | None = None) -> int:
             images, args.input, sample_size=args.sample, percent=args.sample_percent, seed=args.sample_seed
         )
         eval_images = sampling_plan.images
+        snapshot.validate_selected(eval_images)
+        sampling_plan.population_warning = snapshot.report.get("warning", "")
         store.save_sample(sampling_plan, args.input)
         if not args.json:
+            snapshot.print_warning()
             print(f"Inventory: {store.path}")
             print(f"Trial cache: {cache.path or 'memory only'} | policy: {args.cache_policy}")
             print_cache_diagnostics(cache.diagnostics(), startup=True)
@@ -367,6 +380,7 @@ def main(argv: list[str] | None = None) -> int:
                 compare_both=args.compare_both,
                 sampling_plan=sampling_plan,
                 qualities=args.preview_qualities,
+                source_validator=snapshot.validate_selected,
             )
             if args.json:
                 data = [
@@ -390,6 +404,7 @@ def main(argv: list[str] | None = None) -> int:
                         "worker_diagnostics": r.worker_diagnostics,
                         "sampling": r.sampling,
                         "estimate": r.estimate,
+                        "inventory_snapshot": snapshot.report,
                         "cache": {**cache.diagnostics(), "policy": args.cache_policy},
                     }
                     for r in comp_rows
@@ -398,6 +413,7 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 print_comparison_matrix(comp_rows)
                 print_cache_diagnostics(cache.diagnostics())
+                snapshot.print_warning()
             return 0
 
         # Single Strategy Execution
@@ -463,6 +479,7 @@ def main(argv: list[str] | None = None) -> int:
                 "inventory_bytes": summary.total_bytes,
                 "estimate": sampling_plan.estimate(batch_result.results),
                 "sampling": sampling_plan.summary(),
+                "inventory_snapshot": snapshot.report,
                 "cache": {**cache.diagnostics(), "policy": args.cache_policy},
             }
             print(json.dumps(out, indent=2))
@@ -476,6 +493,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(estimate["uncertainty"])
             print_cache_diagnostics(cache.diagnostics())
+            snapshot.print_warning()
 
         return 0 if batch_result.failed_count == 0 else 1
 

@@ -1,5 +1,10 @@
 # Scripts Repository Handoff
 
+I1b2 compresser0.19.0/MangaDL1.45.0: -U trust explicitly reuses complete header
+selection without walks, with selected-file validation and old-population warnings.
+128 compression/303 MangaDL/55 help passed;1 symlinkprivilege skip. No production
+run. Next user-requested inventory stats summary; broader plan stays open.
+
 Current0.18.0/1.44.0 cache dates/lookup diagnostics checkpoint follows pushed573aa11
 fast filesystem inventory.113 compression/302 MangaDL/55 help pass. Same feature
 branch, no production library changes. Remaining plan work is not marked complete.

@@ -179,3 +179,24 @@ No encoder keys, source validation, sample selection or persistence policy chang
    separate from processed-image/cache-hit trial counts. Preserve file/policy fields.
 4. Run full compression, MangaDL, help and lint/format/whitespace checks; refresh
    installs, commit/push feature branch. Expected: all green and branch synchronized.
+
+## Task 3: I1b2 explicit trusted completed header snapshots
+
+Interfaces: shared snapshot storage publishes a whole-selection header snapshot only
+after successful discovery; both CLIs consume the same saved metadata, policy and
+gallery ownership. Add -U/--inventory-policy refresh|trust, default refresh.
+
+1. Write RED tests for refresh then trust without directory/header enumeration,
+   missing/incompatible/file-only snapshots, changed selected files, nested MangaDL
+   ownership, and trusted-mode write/recovery/preview/inventory-only rejection.
+   Expected: missing flag/API failures, not fixture failures.
+2. Atomically store root/policy/runtime/schema, completed date, metadata and source
+   fingerprints separately from per-folder and file-only snapshots. Refuse partial
+   or mismatched snapshots. Preserve previous snapshot on discovery failure.
+3. Trust is analysis-only explicit consent: no prompt. Validate selected files and
+   linked ancestors before any trial lookup, refuse changes with refresh guidance.
+   Report snapshot age and stale-population caveat in text/JSON and estimates; no
+   claim that unselected files or current library membership were verified.
+4. Run full compression/MangaDL/help suites and lint/format/whitespace checks;
+   update docs/versions/install, commit and push this feature branch only.
+   Expected: all green and branch synchronized. No production library scan.
