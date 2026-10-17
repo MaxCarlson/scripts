@@ -1,5 +1,16 @@
 # Status
 
+I3b compresser0.22.0/MangaDL1.48.0: `GallerySample.summary()` and `estimate()`
+distinguish `coverage_minimum_images` from `variance_minimum_images` and report
+`unsampled_formats`, top-decile `unsampled_large_images`, `unsampled_tall_webp_images`
+(>16,383px), and `coverage_gaps`. `advise_sample_size()` uses pilot trial variances
+and `elapsed_s` costs for Neyman/Horvitz-Thompson sample-size and runtime budget
+recommendations; `estimate()` includes `two_stage_adjusted_95_percent_interval_bytes`
+and `pilot_advisor`; `confirmation_sample()` draws a strictly disjoint confirmation
+sample from remaining seeded gallery permutations. Verified with Monte Carlo
+repeated-sampling unbiasedness and interval coverage simulations (140 compression
+tests, 1 skip; 307 MangaDL; 55 help; ruff clean).
+
 Locking & live scan progress cross_platform0.7.0/compresser0.21.0/MangaDL1.47.0:
 per-folder OS byte-range write locks with offset-1 holder metadata (PID, create_time,
 operation, target) and external shared read locks (no target folder mutation) in

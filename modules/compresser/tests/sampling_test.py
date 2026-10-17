@@ -6,7 +6,7 @@ from PIL import Image
 
 from compresser.cli import main
 from compresser.models import ImageMetadata, ImageResult
-from compresser.sampling import gallery_sample
+from compresser.sampling import confirmation_sample, gallery_sample
 
 
 def population(root):
@@ -139,3 +139,135 @@ def test_cache_is_persisted_before_batch_finishes(tmp_path):
         images, strategy, threads=1, progress_callback=completed
     )
     assert any(seen)
+
+
+def test_coverage_gaps_rare_format_large_and_tall_images(tmp_path):
+    images = [
+        ImageMetadata(tmp_path / "g1" / f"{i:02d}.jpg", "JPEG", 80, 80, 100)
+        for i in range(18)
+    ] + [
+        ImageMetadata(tmp_path / "g1" / "large.jpg", "JPEG", 80, 80, 50_000),
+        ImageMetadata(tmp_path / "g1" / "rare.gif", "GIF", 80, 80, 200),
+        ImageMetadata(tmp_path / "g1" / "tall.png", "PNG", 80, 17_000, 500),
+    ]
+    # Find a seed where sample_size=1 picks one of the ordinary 100-byte JPEGs
+    plan = next(
+        candidate
+        for s in range(50)
+        if (candidate := gallery_sample(images, tmp_path, sample_size=1, seed=s)).images[0].size_bytes == 100
+    )
+    summary = plan.summary()
+    assert summary["coverage_minimum_images"] == 1
+    assert summary["variance_minimum_images"] == 2
+    assert "GIF" in summary["unsampled_formats"]
+    assert "PNG" in summary["unsampled_formats"]
+    assert summary["sampled_large_images"] == 0
+    assert summary["unsampled_large_images"] >= 1
+    assert summary["unsampled_tall_webp_images"] == 1
+    assert "unsampled_format:GIF" in summary["coverage_gaps"]
+    assert "unsampled_top_decile_large_images" in summary["coverage_gaps"]
+    assert "unsampled_webp_dimension_limit_images" in summary["coverage_gaps"]
+    assert "singleton_non_census_galleries" in summary["coverage_gaps"]
+
+
+def test_pilot_advisor_and_disjoint_confirmation_sample(tmp_path):
+    images = [
+        ImageMetadata(tmp_path / "steady" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000)
+        for i in range(40)
+    ] + [
+        ImageMetadata(tmp_path / "volatile" / f"{i:03d}.jpg", "JPEG", 80, 80, 10_000)
+        for i in range(40)
+    ]
+    pilot = gallery_sample(images, tmp_path, sample_size=6, seed=7)
+    pilot_results = []
+    for idx, img in enumerate(pilot.images):
+        if "steady" in str(img.path):
+            saved = 4_000 + (idx % 2) * 10
+        else:
+            saved = 1_000 if idx % 2 == 0 else 8_000
+        pilot_results.append(
+            ImageResult(
+                img.path,
+                img.path,
+                img.size_bytes,
+                img.size_bytes - saved,
+                img.format,
+                img.format,
+                elapsed_s=0.025,
+            )
+        )
+    advisor = pilot.advise_sample_size(pilot_results, target_margin_percent=2.0, max_runtime_seconds=10.0)
+    assert advisor["precision_met"] is False
+    assert advisor["recommended_total_samples"] > len(pilot.images)
+    assert advisor["recommended_additional_confirmation_samples"] > 0
+    steady_key = str(tmp_path / "steady")
+    volatile_key = str(tmp_path / "volatile")
+    assert advisor["recommended_quotas"][volatile_key] > advisor["recommended_quotas"][steady_key]
+    assert "confirmation" in advisor["adaptive_stopping_note"].lower()
+
+    est = pilot.estimate(pilot_results)
+    assert est["pilot_advisor"]["recommended_total_samples"] == advisor["recommended_total_samples"]
+    lo_95, hi_95 = est["approximate_95_percent_interval_bytes"]
+    lo_2s, hi_2s = est["two_stage_adjusted_95_percent_interval_bytes"]
+    assert (hi_2s - lo_2s) >= (hi_95 - lo_95)
+
+    confirm = confirmation_sample(pilot, tmp_path, sample_size=12)
+    assert len(confirm.images) == 12
+    assert {i.path for i in pilot.images}.isdisjoint({i.path for i in confirm.images})
+    confirm_results = [
+        ImageResult(i.path, i.path, i.size_bytes, i.size_bytes - 4_500, i.format, i.format, elapsed_s=0.020)
+        for i in confirm.images
+    ]
+    confirm_est = confirm.estimate(confirm_results)
+    assert confirm_est["sampling_stage"] == "disjoint_confirmation"
+    assert confirm_est["projected_total_saved_bytes"] == 80 * 4_500
+
+
+def test_repeated_sampling_simulation_unbiasedness_and_interval_coverage(tmp_path):
+    galleries = [
+        ("g_small", 20, 2_000, 600, 120),
+        ("g_med", 50, 5_000, 2_000, 500),
+        ("g_large", 80, 10_000, 4_500, 1_200),
+    ]
+    images = []
+    true_saved_by_path = {}
+    for folder, count, size, base_saved, spread in galleries:
+        for i in range(count):
+            path = tmp_path / folder / f"{i:03d}.jpg"
+            images.append(ImageMetadata(path, "JPEG", 100, 100, size))
+            offset = ((i * 7 + 3) % 11 - 5) / 5.0
+            true_saved_by_path[path] = round(base_saved + spread * offset)
+
+    true_total = sum(true_saved_by_path.values())
+    estimates = []
+    covered_standard = 0
+    covered_two_stage = 0
+    runs = 150
+    for seed in range(runs):
+        plan = gallery_sample(images, tmp_path, sample_size=30, seed=seed)
+        results = [
+            ImageResult(
+                i.path,
+                i.path,
+                i.size_bytes,
+                i.size_bytes - true_saved_by_path[i.path],
+                i.format,
+                i.format,
+                elapsed_s=0.010,
+            )
+            for i in plan.images
+        ]
+        est = plan.estimate(results)
+        estimates.append(est["projected_total_saved_bytes"])
+        lo, hi = est["approximate_95_percent_interval_bytes"]
+        if lo <= true_total <= hi:
+            covered_standard += 1
+        lo2, hi2 = est["two_stage_adjusted_95_percent_interval_bytes"]
+        if lo2 <= true_total <= hi2:
+            covered_two_stage += 1
+
+    mean_estimate = sum(estimates) / len(estimates)
+    assert abs(mean_estimate - true_total) / true_total < 0.01
+    assert covered_standard / runs >= 0.90
+    assert covered_two_stage >= covered_standard
+

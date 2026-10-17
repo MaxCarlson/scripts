@@ -19,9 +19,10 @@ from .models import (
     ImageResult,
     ScanSummary,
 )
+from .sampling import GallerySample, confirmation_sample, gallery_sample
 from .scanner import inspect_image_file, scan_directory, select_sample
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 
 def analyze_collection(
@@ -104,5 +105,8 @@ __all__ = [
     "BatchResult",
     "ComparisonRow",
     "ScanSummary",
+    "GallerySample",
+    "gallery_sample",
+    "confirmation_sample",
     "discover_available_codecs",
 ]

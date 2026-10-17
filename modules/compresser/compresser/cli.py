@@ -33,7 +33,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.21.0"
+__version__ = "0.22.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -519,6 +519,14 @@ def main(argv: list[str] | None = None) -> int:
                     f"Projected savings for covered strata: {estimate['projected_covered_saved_bytes']:,} bytes; "
                     f"{estimate['unestimated_images']} images remain unestimated."
                 )
+                advisor = estimate.get("pilot_advisor")
+                if advisor and not advisor["precision_met"]:
+                    print(
+                        f"Pilot advisor: recommend -s {advisor['recommended_total_samples']} "
+                        f"(+{advisor['recommended_additional_confirmation_samples']} samples, "
+                        f"~{advisor['estimated_additional_runtime_seconds']:.1f}s) for "
+                        f"+/-{advisor['target_margin_percent']:g}% target margin."
+                    )
                 print(estimate["uncertainty"])
             print_cache_diagnostics(cache.diagnostics())
             snapshot.print_warning()

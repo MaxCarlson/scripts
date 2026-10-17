@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+I3b compresser0.22.0/MangaDL1.48.0 adds rare-format/top-decile-large/tall-WebP
+coverage-gap diagnostics, pilot-informed variance & runtime sample-size advisor
+(`advise_sample_size`), two-stage Bonferroni-adjusted 95% intervals, disjoint
+`confirmation_sample()`, and repeated-sampling unbiasedness/coverage simulations.
+140 compression (1 skip)/307 MangaDL/55 help pass.
+
 cross_platform0.7.0/compresser0.21.0/MangaDL1.47.0 adds reusable per-folder read/write
 locking (`cross_platform.locks`) with PID+create_time verification, `mangadl lock -s|-u -d TARGET [-j]`,
 and live in-place `InventoryProgress` (`termdash.live.LiveBlock` on `stderr`) for

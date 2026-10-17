@@ -21,6 +21,15 @@ automatically cleans harmless stale metadata when the OS lock is free. Explicit
 `mangadl lock -u -d TARGET` clears stale `repair.lock` and stale `state.sqlite3`
 `running` records only when no live process holds a lock.
 
+## Pilot sample-size advisor, coverage gaps, and confirmation sampling (`mangadl 1.48.0`)
+
+Sampled `mangadl compress` runs report coverage gaps (unsampled rare formats,
+unsampled top-decile large pages, unsampled >16,383px tall WebP pages, and
+singleton non-census galleries), two-stage Bonferroni-adjusted 95% intervals
+(`two_stage_adjusted_95_percent_interval_bytes`), and a pilot-informed sample-size
+advisor (`pilot_advisor`) that uses observed per-gallery variance and encoding
+latency to recommend total and additional confirmation samples.
+
 ## Readable compression inventory summary & live progress
 
 `mangadl compress -d TARGET -l` displays a live in-place `termdash` progress block

@@ -1,4 +1,20 @@
-# compresser 0.21.0
+# compresser 0.22.0
+
+## Pilot sample-size advisor, coverage gaps, and confirmation sampling
+
+`GallerySample.summary()` and `GallerySample.estimate()` distinguish the per-gallery
+coverage floor (`coverage_minimum_images`) from the within-gallery variance floor
+(`variance_minimum_images`) and expose coverage gaps (`unsampled_formats`,
+`unsampled_large_images` in the top size decile, `unsampled_tall_webp_images`
+exceeding WebP's 16,383px dimension limit, and `singleton_non_census_galleries`).
+On sampled runs, `GallerySample.advise_sample_size()` uses observed within-gallery
+savings variance and per-image runtime (`elapsed_s`) to recommend total and
+additional confirmation sample sizes and Neyman-weighted gallery quotas for a target
+margin or runtime budget. Because stopping early based on a pilot interval can
+understate uncertainty, `estimate()` reports both `approximate_95_percent_interval_bytes`
+and `two_stage_adjusted_95_percent_interval_bytes` (Bonferroni two-look adjustment),
+and `confirmation_sample()` draws a strictly disjoint confirmation sample from the
+remaining seeded permutation in each gallery.
 
 ## Live inventory scan progress and statistics summary
 

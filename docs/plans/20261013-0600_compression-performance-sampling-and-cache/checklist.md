@@ -15,9 +15,9 @@
   - [x] I2c automatic per-library use/refresh/off trial-cache policies and path/policy reporting;96 compression/17 integration/55 help pass.
   - [x] I2d1 persistent cache dates (legacy creation unknown) and scoped run lookup diagnostics;113 compression/302 MangaDL/55 help pass.
   - [ ] Detailed per-source/settings/eviction miss explanations need additional indexing; generic misses are not overinterpreted.
-- [ ] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
+- [x] I3 stable growing samples and pilot-informed advisor with justified uncertainty.
   - [x] I3a stable seeded priorities, monotone quotas, persistent selection/population provenance;98 compression/full MangaDL/55 help pass.
-  - [ ] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations.
+  - [x] Pilot advisor, defensible outcome-adaptive allocation/confirmation and interval simulations (`compresser 0.22.0` / `mangadl 1.48.0`).
 - [ ] I4 measured concurrency improvements and opt-in analysis-only SSD scratch.
 - [ ] I5 multi-quality recommendations and remaining MangaDL/reader acceptance.
   - [x] I5a full-resolution external preview originals/lossless/multiple-quality variants, manifest, cancellation and source preservation tests.
