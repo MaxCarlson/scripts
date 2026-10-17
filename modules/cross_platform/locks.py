@@ -9,7 +9,6 @@ import os
 import socket
 import sqlite3
 import sys
-import threading
 import time
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass
@@ -358,12 +357,11 @@ def folder_read_lock(
     block_if_write_locked: bool = False,
     write_lock_path: Path | None = None,
 ) -> Iterator[Path]:
-    """Acquire a shared, OS-backed read lock in external state without mutating ``target``."""
-    resolved_target = _safe_resolve(target)
+    """Hold shared read ownership; overlapping coordinated writers are always refused."""
     if block_if_write_locked and write_lock_path is not None and write_lock_path.exists():
         probe = probe_byte_range_lock(
             write_lock_path,
-            target=resolved_target,
+            target=target,
             auto_clean_stale_metadata=False,
         )
         if probe.engaged:
@@ -373,27 +371,24 @@ def folder_read_lock(
                 f"Target directory is write-locked by another operation: {write_lock_path}{pid_note}. "
                 "Not waiting; retry after it finishes."
             )
-    slot_dir = external_target_lock_dir(resolved_target, state_root)
-    slot_dir.mkdir(parents=True, exist_ok=True)
-    seq = next(_READ_SEQ)
-    slot_name = f"read-{os.getpid()}-{threading.get_ident()}-{seq}.lock"
-    slot_path = slot_dir / slot_name
-    with directory_lock(
-        slot_dir,
-        create=True,
-        filename=slot_name,
-        mode="read",
-        operation=operation,
-        target=resolved_target,
-    ):
-        try:
-            yield slot_path
-        finally:
-            pass
-    try:
-        slot_path.unlink(missing_ok=True)
-    except OSError:
-        pass
+    from .folder_coordination import coordinated_folder_lock
+
+    with coordinated_folder_lock(target, mode="read", operation=operation, state_root=state_root) as slot:
+        yield slot
+
+
+@contextmanager
+def folder_write_lock(
+    target: Path,
+    *,
+    operation: str = "write",
+    state_root: Path | None = None,
+) -> Iterator[Path]:
+    """Hold exclusive external ownership against overlapping readers and writers."""
+    from .folder_coordination import coordinated_folder_lock
+
+    with coordinated_folder_lock(target, mode="write", operation=operation, state_root=state_root) as slot:
+        yield slot
 
 
 def probe_byte_range_lock(
@@ -560,17 +555,20 @@ def discover_folder_processes(
             if matched_root is None and cwd_path is not None and _matches_target_path(cwd_path, roots):
                 # Only treat cwd as a match when no explicit -d/-i pointing elsewhere was passed.
                 has_explicit_other = any(
-                    a in {"-d", "--destination", "-i", "--input"}
-                    or a.startswith(("--destination=", "--input="))
+                    a in {"-d", "--destination", "-i", "--input"} or a.startswith(("--destination=", "--input="))
                     for a in cmdline
                 )
                 if not has_explicit_other:
                     matched_root = _safe_resolve(cwd_path)
             if matched_root is None:
                 continue
-            is_write = any(
-                flag in cmdline for flag in ("-w", "--write", "--apply", "-f", "run")
-            ) and "-l" not in cmdline and "--inventory-only" not in cmdline and "-n" not in cmdline and "--dry-run" not in cmdline
+            is_write = (
+                any(flag in cmdline for flag in ("-w", "--write", "--apply", "-f", "run"))
+                and "-l" not in cmdline
+                and "--inventory-only" not in cmdline
+                and "-n" not in cmdline
+                and "--dry-run" not in cmdline
+            )
             mode = "write" if is_write else "read"
             status = inspect_process(pid, info.get("create_time"))
             if not status.alive:
@@ -608,7 +606,9 @@ def discover_folder_processes(
         for rec in records:
             key = tuple(rec.process.cmdline[1:]) if rec.process and len(rec.process.cmdline) > 1 else (rec.operation,)
             prev = by_cmd.get(key)
-            if prev is None or (rec.process and prev.process and (rec.process.cpu_seconds or 0) >= (prev.process.cpu_seconds or 0)):
+            if prev is None or (
+                rec.process and prev.process and (rec.process.cpu_seconds or 0) >= (prev.process.cpu_seconds or 0)
+            ):
                 by_cmd[key] = rec
         records = list(by_cmd.values())
     return records
@@ -675,7 +675,15 @@ def inspect_folder_locks(
         if promo_rec.holder and promo_rec.holder.get("pid"):
             known_pids.add(int(promo_rec.holder["pid"]))
 
-    # 4. External shared reader locks for target and library_root
+    # New coordinated slots include ancestors/descendants and both access modes.
+    from .folder_coordination import registry_records
+
+    for coordinated in registry_records(resolved_target, state_root):
+        records.append(coordinated)
+        if coordinated.holder and coordinated.holder.get("pid"):
+            known_pids.add(int(coordinated.holder["pid"]))
+
+    # Legacy external shared reader slots remain inspectable during migration.
     seen_slots: set[Path] = set()
     for scope_path in (resolved_target, resolved_root):
         slot_dir = external_target_lock_dir(scope_path, state_root)
@@ -757,13 +765,9 @@ def inspect_folder_locks(
         try:
             conn = sqlite3.connect(state_db.as_uri() + "?mode=ro", uri=True, timeout=2)
             try:
-                has_runs = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'"
-                ).fetchone()
+                has_runs = conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='runs'").fetchone()
                 running_rows = (
-                    conn.execute(
-                        "SELECT id, started FROM runs WHERE status='running' AND finished IS NULL"
-                    ).fetchall()
+                    conn.execute("SELECT id, started FROM runs WHERE status='running' AND finished IS NULL").fetchall()
                     if has_runs
                     else []
                 )

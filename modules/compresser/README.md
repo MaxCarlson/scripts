@@ -1,11 +1,15 @@
-# compresser 0.25.1
+# compresser 0.26.0
 
 ## Review repair status
 
 The 2026-10-17 review reopened statistical/locking/scratch/cache/recommendation
 acceptance; see the [repair plan](../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
-Until subsequent checkpoints fix them, avoid concurrent library writes and large
-scratch runs; recommendation labels and advisor precision claims remain provisional.
+Reader/writer coordination is repaired in0.26.0: standalone ownership spans discovery
+and encoder completion, nested galleries conflict with parent operations, and valid
+write workers inherit covering ownership without removing legacy inode locks. Stop
+older running binaries before upgrading; all processes must share local lock state.
+The protocol cannot coordinate nonparticipating programs or other hosts. Large
+scratch runs, recommendation labels and advisor precision claims remain provisional.
 
 ## Pre-admission cache bypass and opt-in SSD scratch staging (`-X/--scratch-dir`)
 

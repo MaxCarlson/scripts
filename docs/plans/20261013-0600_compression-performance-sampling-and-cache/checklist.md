@@ -3,7 +3,7 @@
 ## Review repairs (2026-10-17) — earlier completion claims are conditional
 
 - [x] Correct conditional confirmation estimator and remove unsupported adaptive pooling claim (0.25.1/1.51.1).
-- [ ] Real reader/writer exclusion, including nested targets and standalone full-run ownership.
+- [x] Real reader/writer exclusion, including nested targets and standalone full-run ownership (0.26.0/1.52.0/cross_platform0.8.0).
 - [ ] Bounded streaming scratch/reservations and partial-write/manifest cleanup.
 - [ ] Bounded diagnostic cache memory with durable history lookup.
 - [ ] Design-weighted failure-honest recommendations.

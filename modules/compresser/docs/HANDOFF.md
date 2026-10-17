@@ -1,5 +1,12 @@
 # Compresser handoff
 
+Repair Task2 0.26.0/MangaDL1.52.0/cross_platform0.8.0: coordinated external reader/
+writer gate and overlapping-tree registry. Standalone owns target through discovery
+and all trials; writes before discovery, read-only target untouched. Managed writes
+preserve legacy locks and thread-covering reentrancy.161 compression pass/1 skip;
+129 cross_platform pass/4 skips. Stop old binaries before upgrade, shared local user
+state required. Next bounded streaming scratch, cache bounds, recommendations, CLI plans.
+
 Review Task1 compresser0.25.1/MangaDL1.51.1: confirmation_sample requires measured
 pilot_results, stores known pilot observations, and estimate adds pilot totals plus
 residual-population estimate/FPC. Missing/failed/duplicate/mismatched pilot refused;

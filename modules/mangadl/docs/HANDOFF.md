@@ -1,5 +1,10 @@
 # mangadl Immediate Project Handoff
 
+Repair Task2 1.52.0/compresser0.26.0/cross_platform0.8.0: wrapper-held ownership now
+participates in real overlapping reader/writer exclusion, preserving legacy operation
+inode/reentrant worker behavior. Shared-user local protocol, not cross-host protection;
+stop old binaries before upgrade. Next scratch/cache/recommendation/CLI repairs.
+
 Review Task1 1.51.1/compresser0.25.1: correct conditional confirmation API; unsupported
 two-stage interval null, CLI pilot advice planning-only until quota plans are applied.
 Remaining review repairs tracked in repo02_review-repairs.md; previous I1-I5 complete

@@ -1,5 +1,23 @@
-<!-- version: 0.6.0 -->
+<!-- version: 0.8.0 -->
 # cross_platform Module
+
+## Coordinated folder ownership
+
+Use `folder_read_lock(target)` and `folder_write_lock(target)` from
+`cross_platform.locks` for shared-reader/exclusive-writer coordination. A common
+external acquisition gate prevents registration races; parent/descendant targets
+conflict while sibling folders remain independent. Multiple readers may coexist.
+Writes can inherit a covering owner on the same thread, not another thread/process.
+Read ownership creates nothing in the target. Conflicts fail immediately; only
+short internal acquisition-bookkeeping contention retries for up to five seconds.
+OS ownership releases on process death; status includes coordinated slots.
+
+This protocol is scoped to one user's shared local lock-state directory. Processes
+must use the same `CROSS_PLATFORM_LOCK_DIR`/state environment. Stop older binaries
+before upgrading; they cannot honor the new registry. Legacy inode locks remain
+in place and already-held ancestor writer locks are checked, but this is not a
+cross-host/distributed lock or protection against nonparticipating programs.
+`directory_lock` remains a low-level inode mutex, not hierarchical reader/writer ownership.
 
 The `cross_platform` module is a comprehensive collection of Python utilities designed to abstract and standardize interactions with the underlying operating system. Its primary goal is to provide a unified API for common system-level tasks, allowing higher-level scripts to function consistently across different environments like Windows, Linux, macOS, Termux, and WSL2, without needing to implement OS-specific logic for each operation.
 

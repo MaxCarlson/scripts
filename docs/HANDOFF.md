@@ -1,5 +1,11 @@
 # Scripts Repository Handoff
 
+Repair Task2: real read/write coordination in cross_platform0.8.0, compresser0.26.0,
+MangaDL1.52.0. Shared local user registry serializes acquisition on overlapping trees;
+full standalone operation ownership, covering write reentrancy, legacy locks retained.
+161 compression pass/1 skip;129 cross_platform pass/4 skips. Follow02_review-repairs
+for remaining scratch/cache/recommendation/CLI plan work; no production operations.
+
 2026-10-17 REVIEW REPAIRS supersede prior completion claims. Active plan:
 docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md.
 Task1 corrects conditional confirmation totals/FPC and removes unsupported adaptive

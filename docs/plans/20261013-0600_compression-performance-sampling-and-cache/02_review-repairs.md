@@ -81,4 +81,6 @@ Interfaces: versioned external pilot/confirmation plan contains population ident
 
 ## Current status
 
-Plan written; Task1 next. All previous completion claims are superseded where these review findings apply. Inventory and fixed-budget read-only comparisons remain useful; avoid concurrent writes and large scratch runs until their tasks pass.
+Task1 committed/pushed7dea9b3. Task2 coordinated locking passes all affected suites;
+next is Task3 streaming scratch. Prior completion claims remain superseded for
+unrepaired scratch/cache/recommendation/CLI findings. No production images changed.

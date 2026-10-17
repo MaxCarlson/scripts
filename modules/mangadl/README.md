@@ -1,10 +1,13 @@
 # mangadl
 
-Review repairs in progress (1.51.1/compresser0.25.1): conditional confirmation
+Review repairs in progress (1.52.0/compresser0.26.0): conditional confirmation
 estimates retain measured pilot contributions and use remaining-population finite
 correction. The unsupported two-stage interval field is now null, and CLI advisor
 output is explicitly planning-only (ordinary -s does not apply recommended quotas).
-Avoid concurrent writes and large SSD scratch runs until their repair checkpoints.
+Cooperating read/write operations now exclude overlapping parent/gallery writes.
+Stop older binaries before upgrading and keep a common local lock-state environment;
+this does not protect against arbitrary external writers or other hosts. Large SSD
+scratch runs remain discouraged until their repair checkpoint.
 See the [repair plan](../../docs/plans/20261013-0600_compression-performance-sampling-and-cache/02_review-repairs.md).
 
 ## Folder lock inspection and recovery (`mangadl lock`)

@@ -1,5 +1,16 @@
 # Status
 
+Repair Task2 cross_platform0.8.0/compresser0.26.0/MangaDL1.52.0: shared local user
+acquisition gate/active-operation registry excludes overlapping readers/writers,
+permits shared readers/sibling operations and covering same-thread nested writes.
+Standalone owns root from discovery through final trials. Legacy locks retained;
+stop older binaries before upgrade and use a common local state directory. No
+cross-host/nonparticipating-writer guarantee. RED13 original cases plus standalone
+root-ownership RED; GREEN process conflicts/death/reentrancy/synchronized race.
+161 compression passed/1 skip,129 cross_platform passed/4 platform skips; lint green.
+Task1 7dea9b3 committed/pushed. Next bounded streaming scratch. No production writes.
+Final308 MangaDL/55 help passed; editable installs refreshed to0.26.0/1.52.0/0.8.0.
+
 Repair Task1 compresser0.25.1/MangaDL1.51.1: conditional confirmation requires measured
 pilot results, adds known pilot totals plus residual estimate/FPC, preserves census
 singletons and refuses unreliable pilot data. Deprecated two-stage interval null;

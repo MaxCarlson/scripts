@@ -16,11 +16,13 @@ from PIL import Image
 
 try:
     from cross_platform.locks import directory_lock as _cross_platform_directory_lock
+    from cross_platform.locks import folder_write_lock
 except ModuleNotFoundError:  # pragma: no cover
     _modules_root = str(Path(__file__).resolve().parents[2])
     if _modules_root not in sys.path:
         sys.path.insert(0, _modules_root)
     from cross_platform.locks import directory_lock as _cross_platform_directory_lock
+    from cross_platform.locks import folder_write_lock
 
 JOURNAL_FILENAME = ".compress_journal.json"
 LOCK_FILENAME = ".compress.lock"
@@ -46,22 +48,26 @@ def library_write_guard(root: Path, *, operation: str = "") -> Iterator[None]:
     controls = root / ".mangadl"
     if controls.is_symlink():
         raise ValueError(f"Refusing linked library controls: {controls}")
-    controls.mkdir(parents=True, exist_ok=True)
-    with directory_lock(controls, filename="operation.lock", operation=operation, target=root):
-        held.add(root)
-        try:
-            yield
-        finally:
-            held.remove(root)
+    with folder_write_lock(root, operation=operation):
+        controls.mkdir(parents=True, exist_ok=True)
+        with directory_lock(controls, filename="operation.lock", operation=operation, target=root):
+            held.add(root)
+            try:
+                yield
+            finally:
+                held.remove(root)
 
 
 @contextmanager
 def managed_write_guard(directories, *, operation: str = "") -> Iterator[None]:
     """Coordinate standalone writes with established MangaDL library owners."""
-    roots = {root for directory in directories if (root := managed_library_root(directory)) is not None}
+    roots = {managed_library_root(directory) or directory.expanduser().resolve() for directory in directories}
     with ExitStack() as owners:
         for root in sorted(roots):
-            owners.enter_context(library_write_guard(root, operation=operation))
+            if (root / ".mangadl").is_dir():
+                owners.enter_context(library_write_guard(root, operation=operation))
+            else:
+                owners.enter_context(folder_write_lock(root, operation=operation))
         yield
 
 

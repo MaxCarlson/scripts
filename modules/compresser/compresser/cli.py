@@ -10,6 +10,7 @@ from contextlib import nullcontext
 import json
 import os
 import sys
+from contextlib import ExitStack
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -34,7 +35,7 @@ from .ui import (
     print_cache_diagnostics,
 )
 
-__version__ = "0.25.1"
+__version__ = "0.26.0"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -313,23 +314,28 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Lossy/perceptual writes require --allow-lossy")
 
     cache = None
+    resources = ExitStack()
     try:
         if args.recover:
             from .recovery import run_recovery
 
             return run_recovery(args.input, apply=args.write, confirmation=args.confirm_recovery, as_json=args.json)
         from .inventory_ui import InventoryProgress
-        from cross_platform.locks import folder_read_lock
+        from cross_platform.locks import folder_read_lock, folder_write_lock
 
-        read_guard = (
-            folder_read_lock(
-                args.input,
-                operation=(f"compresser -l -D {args.inventory_depth}" if args.inventory_only else "compresser"),
-            )
-            if not args.write and args.input.expanduser().exists()
-            else nullcontext()
-        )
-        with read_guard:
+        operation_guard = nullcontext()
+        if args.input.expanduser().exists():
+            if args.write:
+                root = args.input if args.input.is_dir() else args.input.parent
+                operation_guard = folder_write_lock(root, operation="compresser -w")
+            else:
+                operation_guard = folder_read_lock(
+                    args.input,
+                    operation=(f"compresser -l -D {args.inventory_depth}" if args.inventory_only else "compresser"),
+                )
+        resources.enter_context(operation_guard)
+        # Keep ownership in resources through discovery and the final encoder trial.
+        with nullcontext():
             if args.inventory_only and args.inventory_depth == "files":
                 from .file_inventory import scan_file_inventory
 
@@ -548,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 2
     finally:
+        resources.close()
         if cache is not None:
             cache.close()
 
