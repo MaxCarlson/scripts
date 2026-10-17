@@ -8,7 +8,9 @@ import pytest
 from compresser.cli import main
 
 
-def test_files_inventory_counts_bytes_without_opening_images(tmp_path, monkeypatch, capsys):
+def test_files_inventory_counts_bytes_without_opening_images(
+    tmp_path, monkeypatch, capsys
+):
     root = tmp_path / "library"
     (root / "a").mkdir(parents=True)
     (root / "b" / "chapter").mkdir(parents=True)
@@ -23,8 +25,10 @@ def test_files_inventory_counts_bytes_without_opening_images(tmp_path, monkeypat
         pytest.fail("Filesystem-only scan opened image content")
 
     monkeypatch.setattr(Image, "open", forbidden)
-    database = tmp_path / "inventory.sqlite3"
-    assert main(["-i", str(root), "-l", "-D", "files", "-I", str(database)]) == 0
+    database = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
+    assert (
+        main(["-i", str(root), "-l", "-D", "files", "-I", str(tmp_path / "state")]) == 0
+    )
     report = json.loads(capsys.readouterr().out)
     assert report["candidate_images"] == 3
     assert report["candidate_bytes"] == 15
@@ -35,10 +39,16 @@ def test_files_inventory_counts_bytes_without_opening_images(tmp_path, monkeypat
     }
     assert report["galleries"]["b"]["candidate_images"] == 1
     with sqlite3.connect(database) as connection:
-        saved = json.loads(connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0])
+        saved = json.loads(
+            connection.execute(
+                "SELECT report FROM inventory_file_snapshots"
+            ).fetchone()[0]
+        )
         assert saved["candidate_images"] == 3
     (root / "a" / "01.JPG").unlink()
-    assert main(["-i", str(root), "-l", "-D", "files", "-I", str(database)]) == 0
+    assert (
+        main(["-i", str(root), "-l", "-D", "files", "-I", str(tmp_path / "state")]) == 0
+    )
     assert json.loads(capsys.readouterr().out)["candidate_bytes"] == 10
 
 
@@ -54,7 +64,9 @@ def test_files_depth_is_inventory_only(tmp_path):
         validate_analysis_arguments(args)
 
 
-def test_stat_failure_reports_unknown_totals_instead_of_zero(tmp_path, monkeypatch, capsys):
+def test_stat_failure_reports_unknown_totals_instead_of_zero(
+    tmp_path, monkeypatch, capsys
+):
     root = tmp_path / "library"
     root.mkdir()
     source = root / "01.jpg"
@@ -67,7 +79,9 @@ def test_stat_failure_reports_unknown_totals_instead_of_zero(tmp_path, monkeypat
         return original(path, *args, **kwargs)
 
     monkeypatch.setattr(Path, "lstat", denied)
-    assert main(["-i", str(root), "-l", "-D", "files", "-I", str(tmp_path / "inventory.sqlite3")]) == 0
+    assert (
+        main(["-i", str(root), "-l", "-D", "files", "-I", str(tmp_path / "state")]) == 0
+    )
     report = json.loads(capsys.readouterr().out)
     assert report["candidate_images"] == 1
     assert report["candidate_bytes"] is None
@@ -75,20 +89,24 @@ def test_stat_failure_reports_unknown_totals_instead_of_zero(tmp_path, monkeypat
     assert len(report["stat_errors"]) == 1
 
 
-def test_failed_enumeration_preserves_last_complete_snapshot(tmp_path, monkeypatch, capsys):
+def test_failed_enumeration_preserves_last_complete_snapshot(
+    tmp_path, monkeypatch, capsys
+):
     import compresser.file_inventory as inventory
 
     root = tmp_path / "library"
     root.mkdir()
     (root / "01.jpg").write_bytes(b"12345")
-    database = tmp_path / "inventory.sqlite3"
-    args = ["-i", str(root), "-l", "-D", "files", "-I", str(database)]
+    database = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
+    args = ["-i", str(root), "-l", "-D", "files", "-I", str(tmp_path / "state")]
     assert main(args) == 0
     assert json.loads(capsys.readouterr().out)["candidate_images"] == 1
     # Current-run diagnostics belong to the CLI response, not the saved population.
     # Compare durable snapshots directly to prove a failed refresh changes no bytes.
     with sqlite3.connect(database) as connection:
-        before = connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0]
+        before = connection.execute(
+            "SELECT report FROM inventory_file_snapshots"
+        ).fetchone()[0]
 
     def interrupted(*args, **kwargs):
         raise PermissionError("test directory enumeration denied")
@@ -97,5 +115,7 @@ def test_failed_enumeration_preserves_last_complete_snapshot(tmp_path, monkeypat
     monkeypatch.setattr(inventory.os, "walk", interrupted)
     assert main(args) == 2
     with sqlite3.connect(database) as connection:
-        saved = connection.execute("SELECT report FROM inventory_file_snapshots").fetchone()[0]
+        saved = connection.execute(
+            "SELECT report FROM inventory_file_snapshots"
+        ).fetchone()[0]
     assert saved == before

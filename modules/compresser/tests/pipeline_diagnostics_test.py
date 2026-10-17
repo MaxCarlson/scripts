@@ -67,7 +67,7 @@ def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, 
     root = tmp_path / "library"
     root.mkdir()
     Image.new("RGB", (40, 40)).save(root / "01.png")
-    args = ["-i", str(root), "-l", "-I", str(tmp_path / "inventory.sqlite3"), "-J"]
+    args = ["-i", str(root), "-l", "-I", str(tmp_path / "state"), "-J"]
     assert main(args) == 0
     cold = json.loads(capsys.readouterr().out)["pipeline"]
     assert cold["counters"]["headers_inspected"] == 1
@@ -78,7 +78,9 @@ def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, 
     assert cold["settings"]["requested_workers"] >= 1
     assert cold["settings"]["inventory_effective_workers"] == 1
     assert cold["settings"]["memory_budget_mib"] == 512
-    assert {"enumeration", "metadata_lookup", "header_read", "publication"} <= cold["coordinator_seconds"].keys()
+    assert {"enumeration", "metadata_lookup", "header_read", "publication"} <= cold[
+        "coordinator_seconds"
+    ].keys()
     assert main(args) == 0
     warm = json.loads(capsys.readouterr().out)["pipeline"]
     assert warm["counters"]["headers_reused"] == 1
@@ -86,7 +88,9 @@ def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, 
     assert warm["coordinator_seconds"].get("header_read", 0) == 0
 
 
-def test_compression_json_reports_actual_worker_phases_not_old_cache_timings(tmp_path, capsys):
+def test_compression_json_reports_actual_worker_phases_not_old_cache_timings(
+    tmp_path, capsys
+):
     from compresser.cli import main
 
     source = tmp_path / "01.png"
@@ -111,7 +115,9 @@ def test_file_only_pipeline_reports_stats_without_header_reads(tmp_path, capsys)
     report = json.loads(capsys.readouterr().out)["pipeline"]
     assert report["counters"]["scanned_candidates"] == 1
     assert report["counters"].get("headers_inspected", 0) == 0
-    assert {"enumeration", "filesystem_metadata", "publication"} <= report["coordinator_seconds"].keys()
+    assert {"enumeration", "filesystem_metadata", "publication"} <= report[
+        "coordinator_seconds"
+    ].keys()
 
 
 def test_failed_phase_is_measured_and_iterator_does_not_charge_consumer(monkeypatch):
@@ -132,4 +138,7 @@ def test_failed_phase_is_measured_and_iterator_does_not_charge_consumer(monkeypa
             with timing.phase("validation"):
                 clock[0] += 3
                 raise ValueError("fixture invalid source")
-    assert metrics.report()["coordinator_seconds"] == {"enumeration": 2, "validation": 3}
+    assert metrics.report()["coordinator_seconds"] == {
+        "enumeration": 2,
+        "validation": 3,
+    }

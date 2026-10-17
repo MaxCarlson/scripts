@@ -1,0 +1,20 @@
+# Checklist
+
+- [x] Inspect current source, branch/status, relevant instructions and recent commits.
+- [x] Locate earlier argument cleanup and current workspace/report completion evidence.
+- [x] Record clean-break CLI/workspace and UI preservation requirements.
+- [x] Write design, exact command audit, staged implementation plan and self-review.
+- [x] User authorizes written plan implementation.
+- [x] Native execution selected; isolated branch/worktree created after authorized main merge.
+- [x] Stronger-model execution review and model escalation gates recorded in execution-review.md.
+- [x] Task1: workspace layout, ownership and no migration; README updated.
+- [x] Task2: comparison, inventory and deterministic progress baselines at 80/120/160 columns; Windows visual gate recorded pending.
+- [ ] Task3: shared operation CLI, safety and argument replacement.
+- [ ] Task4: descriptive inventory and separate persistent plans.
+- [ ] Task5: fixed estimators and numerical validation.
+- [ ] Task6: actual encode admission and selected recipe jobs.
+- [ ] Task7: estimation/resume/report integration and Windows visual gate.
+- [ ] Task8: certified repeated accuracy stopping.
+- [ ] Task9: optional quality interpolation and exact-quality confirmation.
+- [ ] Task10: empirical benchmark, docs, full checks and final review.
+- [ ] Explicit publication authority if commit/push/merge is requested later.

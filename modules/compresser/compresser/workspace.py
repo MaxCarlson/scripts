@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
-import sys
 import tempfile
 from threading import RLock
 
@@ -41,7 +40,10 @@ class CompressionWorkspace:
     trial_cache_file: Path
     target: Path
     owner: str
-    legacy: bool = False
+
+    @property
+    def plans_dir(self) -> Path:
+        return self.root / "plans"
 
     @property
     def reports_dir(self) -> Path:
@@ -53,12 +55,11 @@ class CompressionWorkspace:
 
     def identity(self) -> dict:
         return {
-            "schema": 1,
+            "schema": 2,
             "target": str(self.target),
             "owner": self.owner,
             "inventory": str(self.inventory_file),
             "trials": str(self.trial_cache_file),
-            "legacy": self.legacy,
         }
 
 
@@ -67,29 +68,33 @@ def resolve_workspace(
     parent: Path | None,
     *,
     owner: str,
-    legacy_inventory: Path | None = None,
 ) -> CompressionWorkspace:
     _unlinked(target.expanduser().absolute())
     target = target.expanduser().resolve()
     if owner not in ("mangadl-pages", "compresser"):
         raise ValueError("Unsupported compression workspace owner")
-    leaf = target.stem if target.is_file() else target.name
+    leaf = target.name
     if not leaf:
         raise ValueError("Choose a target with a folder/file name, not a drive root")
     base = (parent or target.parent).expanduser().absolute()
     _unlinked(base)
+    if base.is_file() or (
+        not base.is_dir() and base.suffix.lower() in (".sqlite3", ".sqlite", ".db")
+    ):
+        raise ValueError("Workspace requires a parent directory, not an inventory file")
+    if any(part.lower() in (".mangadl", ".compresser") for part in target.parts):
+        raise ValueError("Input must not be inside a compression artifact container")
     suffix = "mangadl" if owner == "mangadl-pages" else "compresser"
-    root = base.resolve() / f"{leaf}-{suffix}"
-    inventory = (
-        legacy_inventory.expanduser().absolute() if legacy_inventory else root / f"{leaf}-{suffix}-inventory.sqlite3"
-    )
-    trials = inventory.with_suffix(".trials.sqlite3") if legacy_inventory else root / f"{leaf}-{suffix}-trials.sqlite3"
+    root = base.resolve() / f".{suffix}" / leaf
+    inventory = root / "inventory.sqlite3"
+    trials = root / "trials.sqlite3"
     for path in (
         root,
         inventory,
         trials,
         root / "reports",
         root / "previews",
+        root / "plans",
         root / "workspace.json",
     ):
         _unlinked(path)
@@ -104,7 +109,6 @@ def resolve_workspace(
         trials.resolve(),
         target,
         owner,
-        bool(legacy_inventory),
     )
 
 
@@ -115,21 +119,37 @@ def _validate_manifest(workspace: CompressionWorkspace) -> None:
         workspace.trial_cache_file,
         workspace.reports_dir,
         workspace.previews_dir,
+        workspace.plans_dir,
     ):
         _unlinked(path)
+    for database in (workspace.inventory_file, workspace.trial_cache_file):
+        if database.exists() and (
+            not database.is_file() or database.stat().st_nlink > 1
+        ):
+            raise ValueError(
+                "Workspace databases must be distinct files without hardlinks"
+            )
+    if _same_file(workspace.inventory_file, workspace.trial_cache_file):
+        raise ValueError("Inventory and trial cache must use different files")
     manifest = workspace.root / "workspace.json"
     _unlinked(manifest)
     if manifest.exists():
         try:
             value = json.loads(manifest.read_text(encoding="utf-8"))
         except (ValueError, OSError) as exc:
-            raise ValueError(f"Invalid workspace manifest {manifest}; choose another -I parent") from exc
-        if not isinstance(value, dict) or any(value.get(k) != v for k, v in workspace.identity().items()):
+            raise ValueError(
+                f"Invalid workspace manifest {manifest}; choose another -I parent"
+            ) from exc
+        if not isinstance(value, dict) or any(
+            value.get(k) != v for k, v in workspace.identity().items()
+        ):
             raise ValueError(
                 "Workspace belongs to a different target, owner or storage policy; choose another -I parent"
             )
     elif workspace.root.exists() and any(workspace.root.iterdir()):
-        raise ValueError(f"Refusing nonempty unowned workspace: {workspace.root}; choose another -I parent")
+        raise ValueError(
+            f"Refusing nonempty unowned workspace: {workspace.root}; choose another -I parent"
+        )
 
 
 @contextmanager
@@ -137,7 +157,9 @@ def workspace_publication(workspace: CompressionWorkspace):
     from cross_platform.locks import folder_write_lock
 
     with _PUBLICATION_LOCK:
-        with folder_write_lock(workspace.root, operation="compression artifact publication"):
+        with folder_write_lock(
+            workspace.root, operation="compression artifact publication"
+        ):
             _validate_manifest(workspace)
             yield
 
@@ -172,17 +194,9 @@ def configure_workspace(args, target: Path, *, owner: str) -> CompressionWorkspa
     if existing:
         return existing
     argument = getattr(args, "inventory_file", None)
-    legacy = None
     if argument:
         argument = Path(argument).expanduser()
-        if argument.is_file() or (not argument.is_dir() and argument.suffix.lower() in (".sqlite3", ".sqlite", ".db")):
-            legacy = argument
-            argument = argument.parent
-            print(
-                "Warning: explicit inventory-file paths are deprecated; -I now accepts a workspace parent directory.",
-                file=sys.stderr,
-            )
-    ws = resolve_workspace(target, argument, owner=owner, legacy_inventory=legacy)
+    ws = resolve_workspace(target, argument, owner=owner)
     cache = getattr(args, "cache_file", None)
     if cache:
         cache = Path(cache).expanduser().absolute()
@@ -190,14 +204,26 @@ def configure_workspace(args, target: Path, *, owner: str) -> CompressionWorkspa
         resolved_cache = cache.resolve()
         manifest = ws.root / "workspace.json"
         reserved = [ws.inventory_file, manifest]
-        for directory in (ws.reports_dir, ws.previews_dir):
-            if resolved_cache == directory.resolve() or directory.resolve() in resolved_cache.parents:
-                raise ValueError(f"Analysis cache cannot use a reserved workspace artifact: {resolved_cache}")
+        for directory in (ws.reports_dir, ws.previews_dir, ws.plans_dir):
+            if (
+                resolved_cache == directory.resolve()
+                or directory.resolve() in resolved_cache.parents
+            ):
+                raise ValueError(
+                    f"Analysis cache cannot use a reserved workspace artifact: {resolved_cache}"
+                )
             if directory.is_dir():
                 reserved.extend(path for path in directory.rglob("*") if path.is_file())
-        if cache.is_dir() or any(resolved_cache == path.resolve() or _same_file(cache, path) for path in reserved):
-            raise ValueError("Inventory, trial cache and reserved workspace artifacts must use different files")
-        if resolved_cache == ws.target or (ws.target.is_dir() and ws.target in resolved_cache.parents):
+        if cache.is_dir() or any(
+            resolved_cache == path.resolve() or _same_file(cache, path)
+            for path in reserved
+        ):
+            raise ValueError(
+                "Inventory, trial cache and reserved workspace artifacts must use different files"
+            )
+        if resolved_cache == ws.target or (
+            ws.target.is_dir() and ws.target in resolved_cache.parents
+        ):
             raise ValueError("Analysis cache must be outside the input tree")
         from dataclasses import replace
 

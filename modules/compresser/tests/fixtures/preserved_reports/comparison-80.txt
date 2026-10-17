@@ -1,0 +1,90 @@
+COMPRESSION COMPARISON — library
+
+RUN CONTEXT
+┌────────────────────────┬─────────────────────────────────────────────────────┐
+│ Metric                 │                                               Value │
+├────────────────────────┼─────────────────────────────────────────────────────┤
+│ Target                 │                                    fixtures\library │
+│ Status                 │                                           completed │
+│ Workspace              │                                       Not specified │
+│ Target scope           │ Eligible inventoried images, not every file on disk │
+│ Selection filters      │                    All eligible galleries at target │
+│ Source writes          │               Read-only; source images not modified │
+│ Snapshot age (seconds) │                                               123.0 │
+│ Saved snapshot UTC     │                           2026-10-17T12:00:00+00:00 │
+│ Membership refreshed   │                                               False │
+└────────────────────────┴─────────────────────────────────────────────────────┘
+
+ESTIMATED WHOLE-TARGET IMPACT
+Panel 1/2
+┌────┬────────────────┬─────────┬───────────┬────────────────────┐
+│ ID │ Strategy       │ Quality │ Mean SSIM │ Estimated retained │
+├────┼────────────────┼─────────┼───────────┼────────────────────┤
+│ 01 │ auto-lossy-q85 │    q=85 │     0.983 │         512.00 MiB │
+└────┴────────────────┴─────────┴───────────┴────────────────────┘
+Panel 2/2
+┌────┬────────────────┬─────────────────┬───────────┬────────────────┐
+│ ID │ Strategy       │ Estimated saved │ Reduction │ Basis / status │
+├────┼────────────────┼─────────────────┼───────────┼────────────────┤
+│ 01 │ auto-lossy-q85 │      512.00 MiB │     50.0% │      estimated │
+└────┴────────────────┴─────────────────┴───────────┴────────────────┘
+
+SAMPLE OUTCOMES & EXECUTION
+Panel 1/2
+┌────┬────────────────┬───────────┬────────┬───────────┬────────┬────────────┐
+│ ID │ Strategy       │ Evaluated │ Failed │ Unchanged │ Cached │ Trial rate │
+├────┼────────────────┼───────────┼────────┼───────────┼────────┼────────────┤
+│ 01 │ auto-lossy-q85 │         2 │      0 │         0 │      2 │  9000.0 /s │
+└────┴────────────────┴───────────┴────────┴───────────┴────────┴────────────┘
+Panel 2/2
+┌────┬────────────────┬──────────────┬────────┐
+│ ID │ Strategy       │    Execution │ Status │
+├────┼────────────────┼──────────────┼────────┤
+│ 01 │ auto-lossy-q85 │ Fully cached │     OK │
+└────┴────────────────┴──────────────┴────────┘
+
+QUALIFIED HIGHLIGHTS
+Panel 1/3
+┌──────────────────────────────────────────┬────┬────────────────┐
+│ Category                                 │ ID │       Strategy │
+├──────────────────────────────────────────┼────┼────────────────┤
+│ Largest target reduction                 │ 01 │ auto-lossy-q85 │
+│ Higher-SSIM alternative (0.98 heuristic) │ 01 │ auto-lossy-q85 │
+└──────────────────────────────────────────┴────┴────────────────┘
+Panel 2/3
+┌──────────────────────────────────────────┬──────────────┐
+│ Category                                 │ Target saved │
+├──────────────────────────────────────────┼──────────────┤
+│ Largest target reduction                 │   512.00 MiB │
+│ Higher-SSIM alternative (0.98 heuristic) │   512.00 MiB │
+└──────────────────────────────────────────┴──────────────┘
+Panel 3/3
+┌──────────────────────────────────────────┬───────────────────────────────────┐
+│ Category                                 │                            Caveat │
+├──────────────────────────────────────────┼───────────────────────────────────┤
+│ Largest target reduction                 │     Sample evidence, not a proven │
+│                                          │                            winner │
+│ Higher-SSIM alternative (0.98 heuristic) │     Sample evidence, not a proven │
+│                                          │                            winner │
+└──────────────────────────────────────────┴───────────────────────────────────┘
+
+ERRORS / RETAINED ORIGINALS
+┌────┬────────────────┬───────┬─────────────┐
+│ ID │ Strategy       │ Count │      Reason │
+├────┼────────────────┼───────┼─────────────┤
+│ 01 │ auto-lossy-q85 │     1 │ EXIF failed │
+└────┴────────────────┴───────┴─────────────┘
+
+Format-ratio extrapolation applies observed byte-savings ratios to inventory
+bytes; unsampled formats use an explicitly marked overall-ratio fallback.
+Estimates are not guaranteed savings or confidence bounds. Small samples and
+gallery variation can change outcomes.
+Failed trials retain originals; larger candidates are retained only when
+explicitly allowed. Unchanged excludes failures; cached counts overlap outcomes.
+Mean SSIM includes unchanged originals and can hide individual poor results.
+Lossless means pixel preservation, not identical file bytes.
+Trial rates include failures and cache reuse; they are not encoder speed.
+Reserved memory is an estimate, not process RAM.
+Inspect full-resolution previews (-O) before lossy writes. Increase sampling to
+refine estimates; -U refresh updates inventory membership.
+COMPLETED — comparison

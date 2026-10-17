@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import threading
 import sys
@@ -32,7 +33,68 @@ _library_owners = threading.local()
 def managed_library_root(directory: Path) -> Path | None:
     """Find an established MangaDL control root without creating anything."""
     directory = directory.expanduser().resolve()
-    return next((root for root in (directory, *directory.parents) if (root / ".mangadl").is_dir()), None)
+    return next(
+        (
+            root
+            for root in (directory, *directory.parents)
+            if (root / ".mangadl").is_dir()
+            and not _artifact_container_only(root / ".mangadl")
+        ),
+        None,
+    )
+
+
+def _artifact_container_only(controls: Path) -> bool:
+    """Only proven compression workspaces distinguish an external container from library controls.
+
+    Empty, unreadable, linked or unfamiliar controls retain the conservative ownership
+    interpretation. Never mark or rewrite the shared downloader container.
+    """
+    try:
+        from .inventory_pipeline import identity, linked
+
+        container_info = controls.lstat()
+        if linked(container_info):
+            return False
+        children = list(controls.iterdir())
+        if not children:
+            return False
+        for child in children:
+            manifest = child / "workspace.json"
+            child_info = child.lstat()
+            if linked(child_info) or not stat.S_ISDIR(child_info.st_mode):
+                return False
+            manifest_info = manifest.lstat()
+            if (
+                linked(manifest_info)
+                or not stat.S_ISREG(manifest_info.st_mode)
+                or manifest_info.st_nlink != 1
+            ):
+                return False
+            value = json.loads(manifest.read_text(encoding="utf-8"))
+            if (
+                not isinstance(value, dict)
+                or value.get("schema") != 2
+                or value.get("owner") != "mangadl-pages"
+            ):
+                return False
+            target = Path(value.get("target", ""))
+            if (
+                not target.is_absolute()
+                or target.name != child.name
+                or target == child
+                or controls in target.parents
+            ):
+                return False
+            if Path(value.get("inventory", "")) != child / "inventory.sqlite3":
+                return False
+            if identity(manifest.lstat()) != identity(manifest_info) or identity(
+                child.lstat()
+            ) != identity(child_info):
+                return False
+        return identity(controls.lstat()) == identity(container_info)
+    except (OSError, ValueError, TypeError):
+        return False
 
 
 @contextmanager
@@ -50,7 +112,9 @@ def library_write_guard(root: Path, *, operation: str = "") -> Iterator[None]:
         raise ValueError(f"Refusing linked library controls: {controls}")
     with folder_write_lock(root, operation=operation):
         controls.mkdir(parents=True, exist_ok=True)
-        with directory_lock(controls, filename="operation.lock", operation=operation, target=root):
+        with directory_lock(
+            controls, filename="operation.lock", operation=operation, target=root
+        ):
             held.add(root)
             try:
                 yield
@@ -61,7 +125,10 @@ def library_write_guard(root: Path, *, operation: str = "") -> Iterator[None]:
 @contextmanager
 def managed_write_guard(directories, *, operation: str = "") -> Iterator[None]:
     """Coordinate standalone writes with established MangaDL library owners."""
-    roots = {managed_library_root(directory) or directory.expanduser().resolve() for directory in directories}
+    roots = {
+        managed_library_root(directory) or directory.expanduser().resolve()
+        for directory in directories
+    }
     with ExitStack() as owners:
         for root in sorted(roots):
             if (root / ".mangadl").is_dir():
@@ -105,7 +172,9 @@ def directory_lock(
 
 
 def _save_record(journal: Path, record: dict) -> None:
-    fd, name = tempfile.mkstemp(prefix=".compress-record-", suffix=".tmp", dir=journal.parent)
+    fd, name = tempfile.mkstemp(
+        prefix=".compress-record-", suffix=".tmp", dir=journal.parent
+    )
     temp = Path(name)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
@@ -117,10 +186,21 @@ def _save_record(journal: Path, record: dict) -> None:
         temp.unlink(missing_ok=True)
 
 
-def publish(original: Path, output: Path, encoded: bytes, source_digest: str, validate: Callable[[Path], bool]) -> None:
+def publish(
+    original: Path,
+    output: Path,
+    encoded: bytes,
+    source_digest: str,
+    validate: Callable[[Path], bool],
+) -> None:
     """Caller holds directory ownership; never clobber an unrelated target."""
-    if original.parent.resolve() != output.parent.resolve() or original.stem != output.stem:
-        raise RuntimeError("Publication must remain in the same image directory and preserve the page stem")
+    if (
+        original.parent.resolve() != output.parent.resolve()
+        or original.stem != output.stem
+    ):
+        raise RuntimeError(
+            "Publication must remain in the same image directory and preserve the page stem"
+        )
     journal = original.parent / JOURNAL_FILENAME
     if journal.exists():
         raise RuntimeError(f"Pending transaction requires explicit recovery: {journal}")
@@ -128,7 +208,9 @@ def publish(original: Path, output: Path, encoded: bytes, source_digest: str, va
         raise RuntimeError("Refusing linked compression paths")
     if output != original and output.exists():
         raise FileExistsError(f"Compression target already exists: {output}")
-    fd, name = tempfile.mkstemp(prefix=".compress-image-", suffix=".tmp", dir=original.parent)
+    fd, name = tempfile.mkstemp(
+        prefix=".compress-image-", suffix=".tmp", dir=original.parent
+    )
     temp = Path(name)
     recorded = False
     try:
@@ -137,7 +219,9 @@ def publish(original: Path, output: Path, encoded: bytes, source_digest: str, va
             handle.flush()
             os.fsync(handle.fileno())
         if not validate(temp):
-            raise RuntimeError("Compression output failed full decode/fidelity verification")
+            raise RuntimeError(
+                "Compression output failed full decode/fidelity verification"
+            )
         if digest(original) != source_digest:
             raise RuntimeError(f"Source changed while encoding: {original}")
         record = {
@@ -183,11 +267,17 @@ def inspect_recovery(directory: Path) -> dict[str, Any] | None:
         if not isinstance(record, dict):
             raise RuntimeError("Malformed compression journal")
         if record.get("version") != 2:
-            raise RuntimeError("Legacy compression journal lacks ownership fingerprints; manual review required")
+            raise RuntimeError(
+                "Legacy compression journal lacks ownership fingerprints; manual review required"
+            )
         paths = []
         for key in ("original", "output", "temp"):
             name = record.get(key)
-            if not isinstance(name, str) or Path(name).name != name or name in ("", ".", ".."):
+            if (
+                not isinstance(name, str)
+                or Path(name).name != name
+                or name in ("", ".", "..")
+            ):
                 raise RuntimeError("Compression journal path escapes its directory")
             path = directory / name
             if path.is_symlink() or path.resolve().parent != directory:
@@ -205,14 +295,26 @@ def inspect_recovery(directory: Path) -> dict[str, Any] | None:
             raise RuntimeError("Journal does not describe a same-page image conversion")
         if output.suffix.lower() not in {".jpg", ".jpeg", ".webp", ".png", ".avif"}:
             raise RuntimeError("Journal target is not a supported image")
-        if not temp.name.startswith(".compress-image-") or not temp.name.endswith(".tmp"):
+        if not temp.name.startswith(".compress-image-") or not temp.name.endswith(
+            ".tmp"
+        ):
             raise RuntimeError("Compression journal contains an unowned temp path")
-        source_hash, output_hash = record.get("source_sha256"), record.get("output_sha256")
+        source_hash, output_hash = record.get("source_sha256"), record.get(
+            "output_sha256"
+        )
         for value in (source_hash, output_hash):
-            if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            if (
+                not isinstance(value, str)
+                or len(value) != 64
+                or any(c not in "0123456789abcdef" for c in value)
+            ):
                 raise RuntimeError("Invalid compression fingerprint")
         published = output.exists() and digest(output) == output_hash
-        if original.exists() and not (original == output and published) and digest(original) != source_hash:
+        if (
+            original.exists()
+            and not (original == output and published)
+            and digest(original) != source_hash
+        ):
             raise RuntimeError("Original changed since transaction; recovery refused")
         if output != original and output.exists() and not published:
             raise RuntimeError("Output changed since transaction; recovery refused")
@@ -229,9 +331,13 @@ def inspect_recovery(directory: Path) -> dict[str, Any] | None:
                     if original.exists() and original != output:
                         with Image.open(original) as source:
                             if source.size != image.size:
-                                raise ValueError("Replacement dimensions differ from original")
+                                raise ValueError(
+                                    "Replacement dimensions differ from original"
+                                )
             except (OSError, ValueError) as exc:
-                raise RuntimeError("Published recovery image fails decode/geometry validation") from exc
+                raise RuntimeError(
+                    "Published recovery image fails decode/geometry validation"
+                ) from exc
         journal_hash = digest(journal)
         return {
             "directory": str(directory),
@@ -246,12 +352,18 @@ def inspect_recovery(directory: Path) -> dict[str, Any] | None:
             "action": (
                 "finish_conversion"
                 if published and original != output and original.exists()
-                else "clear_completed_record" if published else "discard_unpublished_temp"
+                else (
+                    "clear_completed_record"
+                    if published
+                    else "discard_unpublished_temp"
+                )
             ),
         }
 
 
-def recover(directory: Path, *, apply: bool = False, expected_journal_hash: str | None = None) -> int:
+def recover(
+    directory: Path, *, apply: bool = False, expected_journal_hash: str | None = None
+) -> int:
     """Validate v2 record and preview by default. Apply revalidates under ownership."""
     candidate = inspect_recovery(directory)
     if candidate is None:
@@ -266,7 +378,9 @@ def recover(directory: Path, *, apply: bool = False, expected_journal_hash: str 
         # Inspect without reacquiring our own OS lock; ownership must stay held.
         # The preview's hashes are rechecked individually before mutation.
         journal = Path(candidate["journal"])
-        original, output, temp = (Path(candidate[key]) for key in ("original", "output", "temp"))
+        original, output, temp = (
+            Path(candidate[key]) for key in ("original", "output", "temp")
+        )
         if digest(journal) != candidate["journal_sha256"]:
             raise RuntimeError("Journal changed since recovery preview")
         published = candidate["published"]
@@ -282,8 +396,12 @@ def recover(directory: Path, *, apply: bool = False, expected_journal_hash: str 
         if not published and output != original and output.exists():
             raise RuntimeError("Unreviewed output appeared since recovery preview")
         for path in (original, output, temp, journal):
-            if path.is_symlink() or path.resolve().parent != Path(candidate["directory"]):
-                raise RuntimeError("Recovery path changed to a link or escaped its directory")
+            if path.is_symlink() or path.resolve().parent != Path(
+                candidate["directory"]
+            ):
+                raise RuntimeError(
+                    "Recovery path changed to a link or escaped its directory"
+                )
         if candidate["action"] == "finish_conversion":
             original.unlink()
         temp.unlink(missing_ok=True)

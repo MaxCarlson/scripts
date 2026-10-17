@@ -26,14 +26,18 @@ def parse_sample(value: str):
                 raise ValueError
             return f"{pct:g}%"
         except ValueError:
-            raise argparse.ArgumentTypeError("Sample percentage must be greater than 0 and at most 100") from None
+            raise argparse.ArgumentTypeError(
+                "Sample percentage must be greater than 0 and at most 100"
+            ) from None
     try:
         result = int(value)
         if result < 1:
             raise ValueError
         return result
     except ValueError:
-        raise argparse.ArgumentTypeError("Sample must be a positive integer, percentage (e.g. 10%), or auto") from None
+        raise argparse.ArgumentTypeError(
+            "Sample must be a positive integer, percentage (e.g. 10%), or auto"
+        ) from None
 
 
 def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
@@ -68,7 +72,6 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
         type=Path,
         help="Parent directory for target-named analysis workspace (default: target parent).",
     )
-    parser.add_argument("--inventory-file", dest="inventory_file", type=Path, help=argparse.SUPPRESS)
     parser.add_argument(
         "-l",
         "--inventory-only",
@@ -91,7 +94,11 @@ def add_analysis_arguments(parser: argparse.ArgumentParser) -> None:
         help="Randomly sample this percentage of eligible images, covering every gallery (0..100, exclusive of 0).",
     )
     parser.add_argument(
-        "-z", "--sample-seed", type=int, default=0, help="Reproducible gallery sampling seed (default: 0)."
+        "-z",
+        "--sample-seed",
+        type=int,
+        default=0,
+        help="Reproducible gallery sampling seed (default: 0).",
     )
     parser.add_argument(
         "-X",
@@ -122,12 +129,18 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
             raise ValueError("Sample percentage must be greater than 0 and at most 100")
 
     if getattr(args, "inventory_policy", "refresh") == "trust" and any(
-        getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")
+        getattr(args, key, False)
+        for key in ("write", "recover", "inventory_only", "preview_dir")
     ):
-        raise ValueError("Trusted snapshots are read-only analysis only; omit writes/recovery/inventory-only/preview")
+        raise ValueError(
+            "Trusted snapshots are read-only analysis only; omit writes/recovery/inventory-only/preview"
+        )
     scratch_dir = getattr(args, "scratch_dir", None)
     if scratch_dir is not None:
-        if any(getattr(args, key, False) for key in ("write", "recover", "inventory_only", "preview_dir")):
+        if any(
+            getattr(args, key, False)
+            for key in ("write", "recover", "inventory_only", "preview_dir")
+        ):
             raise ValueError(
                 "Scratch staging is read-only analysis only; omit writes, recovery, inventory-only, and preview"
             )
@@ -138,7 +151,9 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
             validate_scratch_dir(scratch_dir, target)
     if getattr(args, "inventory_depth", "headers") == "files":
         if not getattr(args, "inventory_only", False):
-            raise ValueError("Filesystem-only depth requires --inventory-only; compression requires verified headers")
+            raise ValueError(
+                "Filesystem-only depth requires --inventory-only; compression requires verified headers"
+            )
         if getattr(args, "url", None):
             raise ValueError(
                 "Filesystem inventory does not yet support -u filters; target one gallery or use header depth"
@@ -154,7 +169,9 @@ def validate_analysis_arguments(args: argparse.Namespace) -> None:
         or args.sample is not None
         or getattr(args, "sample_percent", None) is not None
     ):
-        raise ValueError("Inventory-only cannot be combined with writes, comparison, recovery or sampling")
+        raise ValueError(
+            "Inventory-only cannot be combined with writes, comparison, recovery or sampling"
+        )
     if getattr(args, "compare_both", False):
         args.compare = True
     percent = getattr(args, "sample_percent", None)
@@ -193,7 +210,9 @@ class GallerySample:
     profile_identity: str = ""
 
     def _coverage_diagnostics(self) -> dict:
-        formats = defaultdict(lambda: {"images": 0, "bytes": 0, "sample_images": 0, "sample_bytes": 0})
+        formats = defaultdict(
+            lambda: {"images": 0, "bytes": 0, "sample_images": 0, "sample_bytes": 0}
+        )
         chosen = {image.path for image in self.images}
         all_images = [image for members in self.groups.values() for image in members]
         for image in all_images:
@@ -202,22 +221,30 @@ class GallerySample:
             row["bytes"] += image.size_bytes
             row["sample_images"] += image.path in chosen
             row["sample_bytes"] += image.size_bytes if image.path in chosen else 0
-        unsampled_formats = sorted(fmt for fmt, row in formats.items() if row["sample_images"] == 0)
+        unsampled_formats = sorted(
+            fmt for fmt, row in formats.items() if row["sample_images"] == 0
+        )
         sizes = sorted(image.size_bytes for image in all_images)
         if sizes:
             decile_idx = max(0, min(len(sizes) - 1, math.floor(0.9 * (len(sizes) - 1))))
             large_threshold = sizes[decile_idx]
-            large_images = [image for image in all_images if image.size_bytes >= large_threshold]
+            large_images = [
+                image for image in all_images if image.size_bytes >= large_threshold
+            ]
             sampled_large = sum(image.path in chosen for image in large_images)
             unsampled_large = len(large_images) - sampled_large
         else:
             large_threshold = 0
             sampled_large = 0
             unsampled_large = 0
-        tall_images = [image for image in all_images if image.width > 16383 or image.height > 16383]
+        tall_images = [
+            image for image in all_images if image.width > 16383 or image.height > 16383
+        ]
         sampled_tall = sum(image.path in chosen for image in tall_images)
         unsampled_tall = len(tall_images) - sampled_tall
-        singleton_galleries = sum(self.quotas[k] == 1 and len(v) > 1 for k, v in self.groups.items())
+        singleton_galleries = sum(
+            self.quotas[k] == 1 and len(v) > 1 for k, v in self.groups.items()
+        )
 
         gaps: list[str] = [f"unsampled_format:{fmt}" for fmt in unsampled_formats]
         if unsampled_large > 0 and sampled_large == 0:
@@ -237,7 +264,9 @@ class GallerySample:
             "unsampled_tall_webp_images": unsampled_tall,
             "singleton_sample_galleries": singleton_galleries,
             "coverage_minimum_images": len(self.groups),
-            "variance_minimum_images": sum(min(2, len(v)) for v in self.groups.values()),
+            "variance_minimum_images": sum(
+                min(2, len(v)) for v in self.groups.values()
+            ),
             "coverage_gaps": gaps,
         }
 
@@ -257,7 +286,9 @@ class GallerySample:
             "seed": self.seed,
             "sampling_revision": 3 if self.allocation_method == "metadata_proxy" else 2,
             "inventory_images": sum(map(len, self.groups.values())),
-            "inventory_bytes": sum(i.size_bytes for g in self.groups.values() for i in g),
+            "inventory_bytes": sum(
+                i.size_bytes for g in self.groups.values() for i in g
+            ),
             "sample_images": len(self.images),
             "galleries": len(self.groups),
             "sampled_galleries": sum(n > 0 for n in self.quotas.values()),
@@ -304,7 +335,10 @@ class GallerySample:
         ratios = [r.saved_bytes / max(1, r.original_bytes) for r in valid_results]
         fallback_ratio_sd = math.sqrt(variance(ratios)) if len(ratios) >= 2 else 0.15
         default_ms = (
-            sum(max(0.1, getattr(r, "elapsed_s", 0.025) * 1000.0) for r in valid_results) / len(valid_results)
+            sum(
+                max(0.1, getattr(r, "elapsed_s", 0.025) * 1000.0) for r in valid_results
+            )
+            / len(valid_results)
             if valid_results
             else 25.0
         )
@@ -320,7 +354,11 @@ class GallerySample:
             trials = [measured.get(i.path) for i in members if i.path in chosen]
             clean_trials = [t for t in trials if t is not None]
             avg_ms = (
-                sum(max(0.1, getattr(t, "elapsed_s", 0.025) * 1000.0) for t in clean_trials) / len(clean_trials)
+                sum(
+                    max(0.1, getattr(t, "elapsed_s", 0.025) * 1000.0)
+                    for t in clean_trials
+                )
+                / len(clean_trials)
                 if clean_trials
                 else default_ms
             )
@@ -342,11 +380,14 @@ class GallerySample:
                 mean_size = sum(i.size_bytes for i in members) / population
                 stratum_var[key] = max(1.0, (fallback_ratio_sd * mean_size) ** 2)
 
-        current_margin = round(1.96 * math.sqrt(current_var_total)) if exact_ci_possible else None
+        current_margin = (
+            round(1.96 * math.sqrt(current_var_total)) if exact_ci_possible else None
+        )
         precision_met = current_margin is not None and current_margin <= margin_target
 
         rec_quotas = {
-            key: min(len(members), max(self.quotas[key], min(2, len(members)))) for key, members in self.groups.items()
+            key: min(len(members), max(self.quotas[key], min(2, len(members))))
+            for key, members in self.groups.items()
         }
 
         def _projected_margin(quotas_map: Mapping[str, int]) -> float:
@@ -358,8 +399,13 @@ class GallerySample:
                     total_v += pop**2 * (1 - nh / pop) * stratum_var[key] / max(1, nh)
             return 1.96 * math.sqrt(total_v)
 
-        additional_ms = sum(max(0, rec_quotas[key] - self.quotas[key]) * stratum_ms[key] for key in self.groups)
-        max_ms = max_runtime_seconds * 1000.0 if max_runtime_seconds is not None else None
+        additional_ms = sum(
+            max(0, rec_quotas[key] - self.quotas[key]) * stratum_ms[key]
+            for key in self.groups
+        )
+        max_ms = (
+            max_runtime_seconds * 1000.0 if max_runtime_seconds is not None else None
+        )
         budget_capped = False
 
         while _projected_margin(rec_quotas) > margin_target:
@@ -394,7 +440,9 @@ class GallerySample:
             "runtime_budget_capped": budget_capped,
             "singleton_variance_imputed": singleton_imputed,
             "coverage_minimum_images": len(self.groups),
-            "variance_minimum_images": sum(min(2, len(v)) for v in self.groups.values()),
+            "variance_minimum_images": sum(
+                min(2, len(v)) for v in self.groups.values()
+            ),
             "recommended_total_samples": min(total_images, rec_total),
             "recommended_additional_confirmation_samples": add_total,
             "recommended_quotas": rec_quotas,
@@ -421,7 +469,11 @@ class GallerySample:
         ci_available = True
         for key, members in self.groups.items():
             trials = [measured.get(i.path) for i in members if i.path in chosen]
-            if len(trials) != self.quotas[key] or not trials or any(r is None or r.error for r in trials):
+            if (
+                len(trials) != self.quotas[key]
+                or not trials
+                or any(r is None or r.error for r in trials)
+            ):
                 unknown_bytes += sum(i.size_bytes for i in members)
                 unknown_images += len(members)
                 ci_available = False
@@ -433,7 +485,9 @@ class GallerySample:
                 if n < 2:
                     ci_available = False
                 else:
-                    variance_total += population**2 * (1 - n / population) * variance(values) / n
+                    variance_total += (
+                        population**2 * (1 - n / population) * variance(values) / n
+                    )
         total = sum(i.size_bytes for g in self.groups.values() for i in g)
         point = min(total - unknown_bytes, round(projected))
         std_error = math.sqrt(variance_total)
@@ -449,7 +503,9 @@ class GallerySample:
             "unestimated_bytes": unknown_bytes,
             "unestimated_images": unknown_images,
             "approximate_95_percent_interval_bytes": (
-                [max(0, round(point - margin)), min(total, round(point + margin))] if ci_available else None
+                [max(0, round(point - margin)), min(total, round(point + margin))]
+                if ci_available
+                else None
             ),
             "two_stage_adjusted_95_percent_interval_bytes": None,
             "coverage_gaps": diag["coverage_gaps"],
@@ -457,7 +513,9 @@ class GallerySample:
             "unsampled_large_images": diag["unsampled_large_images"],
             "unsampled_tall_webp_images": diag["unsampled_tall_webp_images"],
             "pilot_advisor": (
-                None if is_full or self.allocation_method == "metadata_proxy" else self.advise_sample_size(results)
+                None
+                if is_full or self.allocation_method == "metadata_proxy"
+                else self.advise_sample_size(results)
             ),
             "uncertainty": "Design-weighted estimate; normal-approximation interval, not a guarantee. "
             "Small or highly skewed samples can understate uncertainty. "
@@ -467,19 +525,27 @@ class GallerySample:
 
 
 def _allocate_quotas(
-    groups: Mapping[str, Sequence[ImageMetadata]], capacities: Mapping[str, int], target: int, proxy_weights=None
+    groups: Mapping[str, Sequence[ImageMetadata]],
+    capacities: Mapping[str, int],
+    target: int,
+    proxy_weights=None,
 ) -> dict[str, int]:
     active_keys = [key for key in groups if capacities[key] > 0]
     quotas = {key: 0 for key in groups}
     all_images = [i for g in groups.values() for i in g]
     count = max(1, len(all_images))
     total_bytes = max(1, sum(i.size_bytes for i in all_images))
-    weights = {k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes for k, v in groups.items()}
+    weights = {
+        k: 0.5 * len(v) / count + 0.5 * sum(i.size_bytes for i in v) / total_bytes
+        for k, v in groups.items()
+    }
     if proxy_weights is not None:
         weights = proxy_weights
 
     if target < len(active_keys):
-        selected_keys = sorted(active_keys, key=lambda key: (-weights[key], key))[:target]
+        selected_keys = sorted(active_keys, key=lambda key: (-weights[key], key))[
+            :target
+        ]
         for key in selected_keys:
             quotas[key] = 1
         return quotas
@@ -487,11 +553,16 @@ def _allocate_quotas(
     for key in active_keys:
         quotas[key] = 1
     remaining = target - sum(quotas.values())
-    second = sorted((key for key in active_keys if capacities[key] > 1), key=lambda key: (-weights[key], key))
+    second = sorted(
+        (key for key in active_keys if capacities[key] > 1),
+        key=lambda key: (-weights[key], key),
+    )
     for key in second[:remaining]:
         quotas[key] += 1
         remaining -= 1
-    heap = [(-weights[key], key) for key in active_keys if quotas[key] < capacities[key]]
+    heap = [
+        (-weights[key], key) for key in active_keys if quotas[key] < capacities[key]
+    ]
     heapq.heapify(heap)
     baseline = dict(quotas)
     while remaining and heap:
@@ -499,7 +570,9 @@ def _allocate_quotas(
         quotas[key] += 1
         remaining -= 1
         if quotas[key] < capacities[key]:
-            heapq.heappush(heap, (-weights[key] / (quotas[key] - baseline[key] + 1), key))
+            heapq.heappush(
+                heap, (-weights[key] / (quotas[key] - baseline[key] + 1), key)
+            )
     return quotas
 
 
@@ -521,7 +594,9 @@ def gallery_sample(
     if sample_size is not None and percent is not None:
         raise ValueError("Choose sample size or percentage, not both")
     if sample_size == "auto" and profile is None:
-        raise ValueError("Automatic sampling needs a matching completed header profile; use -U refresh")
+        raise ValueError(
+            "Automatic sampling needs a matching completed header profile; use -U refresh"
+        )
     if profile is not None:
         profile.validate(images, root, gallery_keys)
         if sample_size == "auto":
@@ -534,23 +609,38 @@ def gallery_sample(
         # can reopen them on Windows, defeating selected-only snapshot validation.
         if ".." in image.path.parts:
             raise ValueError("Sampling requires canonical image paths without '..'")
-        relative = image.path.absolute().relative_to(root) if is_directory else Path(image.path.name)
+        relative = (
+            image.path.absolute().relative_to(root)
+            if is_directory
+            else Path(image.path.name)
+        )
         key = (
             gallery_keys[image.path]
             if gallery_keys is not None
-            else (str(root / relative.parts[0]) if len(relative.parts) > 1 else str(root))
+            else (
+                str(root / relative.parts[0]) if len(relative.parts) > 1 else str(root)
+            )
         )
         groups[str(key)].append(image)
-    groups = {k: sorted(v, key=lambda i: str(i.path).casefold()) for k, v in sorted(groups.items())}
+    groups = {
+        k: sorted(v, key=lambda i: str(i.path).casefold())
+        for k, v in sorted(groups.items())
+    }
     count = len(images)
     target = (
         min(count, sample_size)
         if sample_size is not None
-        else (min(count, max(len(groups), math.ceil(count * percent / 100))) if percent is not None else count)
+        else (
+            min(count, max(len(groups), math.ceil(count * percent / 100)))
+            if percent is not None
+            else count
+        )
     )
     capacities = {key: len(members) for key, members in groups.items()}
     weights = (
-        {key: row["proxy_weight"] for key, row in profile.data["galleries"].items()} if profile is not None else None
+        {key: row["proxy_weight"] for key, row in profile.data["galleries"].items()}
+        if profile is not None
+        else None
     )
     quotas = _allocate_quotas(groups, capacities, target, weights)
     selected = []
@@ -581,7 +671,9 @@ def confirmation_sample(
     from .confirmation import validate_pilot_results
 
     if pilot.sampling_stage != "primary":
-        raise ValueError("Confirmation requires a primary measured pilot, not nested confirmation")
+        raise ValueError(
+            "Confirmation requires a primary measured pilot, not nested confirmation"
+        )
     validate_pilot_results(pilot.images, pilot_results)
     root = root.resolve()
     is_directory = root.is_dir()
@@ -589,21 +681,31 @@ def confirmation_sample(
     for key, members in pilot.groups.items():
         ranked = _rank_gallery_members(members, root, is_directory, pilot.seed)
         selected_pilot = {image.path for image in pilot.images}
-        remaining_by_gallery[key] = [image for image in ranked if image.path not in selected_pilot]
+        remaining_by_gallery[key] = [
+            image for image in ranked if image.path not in selected_pilot
+        ]
     capacities = {key: len(rem) for key, rem in remaining_by_gallery.items()}
     total_remaining = sum(capacities.values())
     if total_remaining == 0:
-        raise ValueError("No unselected images remain for a disjoint confirmation sample")
+        raise ValueError(
+            "No unselected images remain for a disjoint confirmation sample"
+        )
     if target_quotas is not None:
         quotas = {
             key: min(
-                capacities[key], max(1 if capacities[key] > 0 else 0, target_quotas.get(key, 0) - pilot.quotas[key])
+                capacities[key],
+                max(
+                    1 if capacities[key] > 0 else 0,
+                    target_quotas.get(key, 0) - pilot.quotas[key],
+                ),
             )
             for key in pilot.groups
         }
     else:
         default_target = sum(min(2, cap) for cap in capacities.values())
-        target = min(total_remaining, sample_size if sample_size is not None else default_target)
+        target = min(
+            total_remaining, sample_size if sample_size is not None else default_target
+        )
         quotas = _allocate_quotas(pilot.groups, capacities, target)
     selected = []
     for key, rem in remaining_by_gallery.items():
@@ -624,7 +726,13 @@ def print_sampling(plan: GallerySample) -> None:
     report = plan.summary()
     img_ratio = f"{report['sample_images']}/{report['inventory_images']}"
     gal_ratio = f"{report['sampled_galleries']}/{report['galleries']}"
-    print("\n" + color_text("╭─ INVENTORY SAMPLING & ALLOCATION ──────────────────────────────────────────────────────╮", "cyan"))
+    print(
+        "\n"
+        + color_text(
+            "╭─ INVENTORY SAMPLING & ALLOCATION ──────────────────────────────────────────────────────╮",
+            "cyan",
+        )
+    )
     print(
         f"│ Sampling:   {color_text(img_ratio, 'bright')} images; "
         f"{color_text(gal_ratio, 'bright')} galleries; seed {plan.seed}"
@@ -639,11 +747,19 @@ def print_sampling(plan: GallerySample) -> None:
         )
     for fmt, row in report["formats"].items():
         byte_str = format_bytes_decimal(row["bytes"])
-        pct = (row["sample_images"] / report["sample_images"] * 100) if report["sample_images"] else 0
+        pct = (
+            (row["sample_images"] / report["sample_images"] * 100)
+            if report["sample_images"]
+            else 0
+        )
         samp_str = f"{row['sample_images']:>3d} sampled"
-        print(f"│   • {fmt:5s}:  {row['images']:>6,d} images ({byte_str:>9s})  ──▶  {color_text(samp_str, 'bright')} ({pct:4.1f}%)")
+        print(
+            f"│   • {fmt:5s}:  {row['images']:>6,d} images ({byte_str:>9s})  ──▶  {color_text(samp_str, 'bright')} ({pct:4.1f}%)"
+        )
     if report["unsampled_formats"]:
-        print(f"│ Coverage note: rare formats not in sample: {', '.join(report['unsampled_formats'])}.")
+        print(
+            f"│ Coverage note: rare formats not in sample: {', '.join(report['unsampled_formats'])}."
+        )
     if report["unsampled_large_images"] and not report["sampled_large_images"]:
         thresh_str = format_bytes_decimal(report["large_image_threshold_bytes"])
         print(
@@ -661,4 +777,9 @@ def print_sampling(plan: GallerySample) -> None:
             f"│ Warning: {color_text(warn_msg, 'yellow')}; "
             "uncertainty cannot be calculated. Increase -s/-P."
         )
-    print(color_text("╰────────────────────────────────────────────────────────────────────────────────────────╯", "cyan"))
+    print(
+        color_text(
+            "╰────────────────────────────────────────────────────────────────────────────────────────╯",
+            "cyan",
+        )
+    )

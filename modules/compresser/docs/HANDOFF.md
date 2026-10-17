@@ -1,5 +1,23 @@
 # Compresser handoff
 
+2026-10-17 execution/model handoff: Tasks1/2 complete in isolated worktree
+`.worktrees/compression-inventory-estimation-20261017`, branch
+`compression-inventory-estimation-20261017`. Workspace paths now use
+`.mangadl/<target>/` and `.compresser/<target>/`; no old files are migrated.
+Comparison, inventory and deterministic progress layouts have 80/120/160-column
+fixtures. Compresser356 passed/1 skipped; MangaDL317 passed; UI subset12 passed;
+Ruff and diff-check passed. User authorized first-stage commit/push. Continue Tasks3/4
+on Luna High, stop before Task5 for Sol Medium, and retain the Windows visual gate and
+Task7/final-review escalations in the active plan's `execution-review.md`.
+
+2026-10-17 planning follow-up: draft design/CLI audit/implementation plan at
+`docs/plans/20261017-1122_inventory-estimation-and-command-redesign/`.
+Separate descriptive inventories from bounded estimation plans, replace flat compression
+arguments with operation subcommands, and use `.mangadl/<target>` / `.compresser/<target>`.
+User requests no backwards compatibility and requires preserving polished shared UI.
+Written review/execution method pending; no implementation or publication authorized.
+This replaces unimplemented historical Plan03 P8/repair Task6 proposals for this scope.
+
 2026-10-17 current checkpoint: compresser1.4.1/MangaDL2.4.1, TermDash0.8.0.
 Workspace/report plan Tasks1-5 complete and pushed on
 `compression-ui-color-and-stats-20261017`. Final gates: 326 compresser/1 skipped,

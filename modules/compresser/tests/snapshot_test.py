@@ -11,13 +11,15 @@ from PIL import Image
 from compresser.cli import main
 
 
-def test_trusted_analysis_skips_discovery_and_labels_saved_population(tmp_path, monkeypatch, capsys):
+def test_trusted_analysis_skips_discovery_and_labels_saved_population(
+    tmp_path, monkeypatch, capsys
+):
     import compresser.scanner as scanner
 
     root = tmp_path / "library"
     root.mkdir()
     Image.new("RGB", (40, 40)).save(root / "01.png")
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     Image.new("RGB", (40, 40)).save(root / "02.png")
@@ -28,7 +30,9 @@ def test_trusted_analysis_skips_discovery_and_labels_saved_population(tmp_path, 
     monkeypatch.setattr(scanner, "observe_files", forbidden)
     assert main([*args, "-U", "trust", "-f", "png", "-e", "0", "-J"]) == 0
     report = json.loads(capsys.readouterr().out)
-    assert report["total_images"] == 1  # Newly added pages are deliberately not discovered.
+    assert (
+        report["total_images"] == 1
+    )  # Newly added pages are deliberately not discovered.
     snapshot = report["inventory_snapshot"]
     assert snapshot["policy"] == "trust"
     assert snapshot["membership_verified"] is False
@@ -39,12 +43,24 @@ def test_trusted_analysis_skips_discovery_and_labels_saved_population(tmp_path, 
 
 
 @pytest.mark.parametrize("change", ["delete", "replace"])
-def test_trust_rejects_selected_source_changes_before_cached_trials(tmp_path, capsys, change):
+def test_trust_rejects_selected_source_changes_before_cached_trials(
+    tmp_path, capsys, change
+):
     root = tmp_path / "library"
     root.mkdir()
     page = root / "01.png"
     Image.new("RGB", (40, 40)).save(page)
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3"), "-f", "png", "-e", "0", "-J"]
+    args = [
+        "-i",
+        str(root),
+        "-I",
+        str(tmp_path / "state"),
+        "-f",
+        "png",
+        "-e",
+        "0",
+        "-J",
+    ]
     assert main(args) == 0  # Populate both snapshot and trial cache.
     capsys.readouterr()
     page.unlink()
@@ -58,7 +74,7 @@ def test_missing_and_file_only_snapshots_cannot_be_trusted(tmp_path, capsys):
     root = tmp_path / "library"
     root.mkdir()
     Image.new("RGB", (40, 40)).save(root / "01.png")
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-U", "trust", "-J"]) == 2
     assert "refresh" in capsys.readouterr().err.lower()
     assert main([*args, "-l", "-D", "files"]) == 0
@@ -80,12 +96,14 @@ def test_incompatible_or_invalid_snapshot_is_refused(tmp_path, capsys, damage):
     root = tmp_path / "library"
     root.mkdir()
     Image.new("RGB", (40, 40)).save(root / "01.png")
-    path = tmp_path / "inventory.sqlite3"
-    args = ["-i", str(root), "-I", str(path)]
+    path = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     with sqlite3.connect(path) as db:
-        report = json.loads(db.execute("SELECT report FROM inventory_selections").fetchone()[0])
+        report = json.loads(
+            db.execute("SELECT report FROM inventory_selections").fetchone()[0]
+        )
         if damage == "status":
             report["status"] = "incomplete"
         elif damage == "policy":
@@ -99,14 +117,16 @@ def test_incompatible_or_invalid_snapshot_is_refused(tmp_path, capsys, damage):
     assert "refresh" in capsys.readouterr().err.lower()
 
 
-def test_trusted_comparison_rechecks_sources_between_stages(tmp_path, capsys, monkeypatch):
+def test_trusted_comparison_rechecks_sources_between_stages(
+    tmp_path, capsys, monkeypatch
+):
     from compresser.engine import CompressionEngine
 
     root = tmp_path / "library"
     root.mkdir()
     page = root / "01.png"
     Image.new("RGB", (40, 40)).save(page)
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     real_batch = CompressionEngine.compress_batch
@@ -127,8 +147,8 @@ def test_aborted_refresh_preserves_whole_snapshot(tmp_path, monkeypatch, capsys)
     root = tmp_path / "library"
     root.mkdir()
     Image.new("RGB", (40, 40)).save(root / "01.png")
-    path = tmp_path / "inventory.sqlite3"
-    args = ["-i", str(root), "-I", str(path), "-l"]
+    path = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
+    args = ["-i", str(root), "-I", str(tmp_path / "state"), "-l"]
     assert main(args) == 0
     capsys.readouterr()
     with sqlite3.connect(path) as db:
@@ -140,7 +160,9 @@ def test_aborted_refresh_preserves_whole_snapshot(tmp_path, monkeypatch, capsys)
     monkeypatch.setattr(scanner, "observe_files", interrupted)
     assert main(args) == 2
     with sqlite3.connect(path) as db:
-        assert db.execute("SELECT report FROM inventory_selections").fetchall() == before
+        assert (
+            db.execute("SELECT report FROM inventory_selections").fetchall() == before
+        )
 
 
 def test_trusted_selected_link_is_refused(tmp_path, capsys):
@@ -150,7 +172,7 @@ def test_trusted_selected_link_is_refused(tmp_path, capsys):
     outside = tmp_path / "outside.png"
     Image.new("RGB", (40, 40)).save(page)
     outside.write_bytes(page.read_bytes())
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     page.unlink()
@@ -165,7 +187,7 @@ def test_trusted_selected_link_is_refused(tmp_path, capsys):
 
 def test_trusted_text_warns_about_snapshot_age_and_membership(tmp_path, capsys):
     Image.new("RGB", (40, 40)).save(tmp_path / "01.png")
-    args = ["-i", str(tmp_path), "-I", str(tmp_path.parent / f"{tmp_path.name}-inventory.sqlite3")]
+    args = ["-i", str(tmp_path), "-I", str(tmp_path.parent / f"{tmp_path.name}-state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     assert main([*args, "-U", "trust", "-f", "png", "-e", "0", "-N"]) == 0
@@ -174,12 +196,14 @@ def test_trusted_text_warns_about_snapshot_age_and_membership(tmp_path, capsys):
     assert "Use -U refresh to update." in " ".join(report.replace("│", " ").split())
 
 
-def test_trusted_sampling_does_not_resolve_every_unselected_source(tmp_path, monkeypatch, capsys):
+def test_trusted_sampling_does_not_resolve_every_unselected_source(
+    tmp_path, monkeypatch, capsys
+):
     root = tmp_path / "library"
     root.mkdir()
     for index in range(5):
         Image.new("RGB", (40, 40)).save(root / f"{index}.png")
-    args = ["-i", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["-i", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
     resolve = Path.resolve
@@ -195,4 +219,6 @@ def test_trusted_sampling_does_not_resolve_every_unselected_source(tmp_path, mon
     report = json.loads(capsys.readouterr().out)
     assert report["total_images"] == 1
     assert report["inventory_snapshot"]["selected_files_validated"] == 1
-    assert len(resolved_images) == 1  # Cache identities may resolve selected sources, never the other four.
+    assert (
+        len(resolved_images) == 1
+    )  # Cache identities may resolve selected sources, never the other four.

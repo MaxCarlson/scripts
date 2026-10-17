@@ -13,15 +13,14 @@ mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -U trust -b -Q 85 7
 mangadl compress -d 'B:\Hent\hent1imageperpage' -I 'B:\Hent' -O -n 3 -Q 85 70 -t 4
 ```
 
-Workspace: `B:\Hent\hent1imageperpage-mangadl\`. Inventory is
-`hent1imageperpage-mangadl-inventory.sqlite3`, separate trial cache is
-`hent1imageperpage-mangadl-trials.sqlite3`. Reports are automatic under `reports`:
+Workspace: `B:\Hent\.mangadl\hent1imageperpage\`. Inventory is
+`inventory.sqlite3`, separate trial cache is `trials.sqlite3`. Reports are automatic under `reports`:
 timestamped unique Markdown archives and `latest.md`. Inventory creation/refresh
 (even implicit refresh during comparison), analysis/write, comparison and preview
 summaries are saved. Detailed summary diagnostics remain in Markdown when console
 output is compact. Add -J for pure JSON stdout with report artifact paths.
-Omit -I to use the same sibling default. Do not pass the generated workspace itself
-as -I. Old explicit SQLite paths work temporarily with a warning; nothing is migrated.
+Omit -I to use the same target-named workspace beside the target. Do not pass the generated workspace itself
+as -I. File-valued -I arguments are rejected. Old sibling workspaces and inventory files are left untouched and never read or migrated; rebuild inventory in the new layout.
 Same-name targets/foreign workspace identities cannot silently share databases.
 
 Main results show format-byte-weighted **estimated** target retained/saved size even
@@ -44,12 +43,7 @@ default512MiB and per-image safeguards remain. More threads do not accelerate on
 native codec call. Real Windows resize/color and reader visual quality still need
 manual acceptance; generated-fixture tests are not a reader-quality guarantee.
 
-Compression2.0.0 uses one analysis workspace. Example:
-`mangadl compress -d 'B:\Hent\book' -I 'B:\Hent' -l` creates/reuses
-`B:\Hent\book-mangadl\book-mangadl-inventory.sqlite3`; its separate trial cache
-is `book-mangadl-trials.sqlite3`. Without -I the workspace is beside the target.
-An old explicit SQLite path is preserved with a deprecation warning, not migrated.
-Bare -O selects workspace previews; -O PATH/-K PATH retain explicit overrides.
+The same target-named workspace policy applies to both MangaDL and standalone compresser.
 Downloader source manifests, recovery journals and scratch -X remain independent.
 
 Checkpoint1.60.0/compresser0.34.0 previews honor -t/-B with bounded source-owned
@@ -200,7 +194,7 @@ metadata classifies `source_changed`, `settings_changed`, `runtime_changed`, and
 ## Quick file-extension and size inventory
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp\mangadl-inventory.sqlite3' > 'E:\Temp\file-inventory.json'
+mangadl compress -d 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp' > 'E:\Temp\file-inventory.json'
 ```
 
 No image headers/pixels are opened. JSON reports candidate counts/bytes per gallery
@@ -251,7 +245,7 @@ Cached size-only trial records cannot provide output bytes, so previews re-encod
 ## Inventory without compression
 
 ```powershell
-mangadl compress -d 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp\mangadl-inventory.sqlite3' > 'E:\Temp\mangadl-inventory.json'
+mangadl compress -d 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp' > 'E:\Temp\mangadl-inventory.json'
 ```
 
 `-l` runs no encoders. The JSON report groups eligible pages by gallery, preserving

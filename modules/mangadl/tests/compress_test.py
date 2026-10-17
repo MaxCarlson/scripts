@@ -11,7 +11,9 @@ from mangadl.destination_audit import _validate_image, _inspect_pages
 
 
 @pytest.mark.parametrize("direct", [False, True])
-def test_inventory_enumerates_each_directory_once(tmp_path, monkeypatch, capsys, direct):
+def test_inventory_enumerates_each_directory_once(
+    tmp_path, monkeypatch, capsys, direct
+):
     import os
     from collections import Counter
 
@@ -45,7 +47,9 @@ def test_inventory_enumerates_each_directory_once(tmp_path, monkeypatch, capsys,
     assert calls == {root: 1, root / "manga": 1, chapter: 1}
 
 
-def test_compress_rejects_junction_root_before_resolution(tmp_path, monkeypatch, capsys):
+def test_compress_rejects_junction_root_before_resolution(
+    tmp_path, monkeypatch, capsys
+):
     import stat
     from types import SimpleNamespace
 
@@ -77,11 +81,13 @@ def test_mangadl_auto_uses_matching_gallery_profile(tmp_path, capsys):
         "-d",
         str(root),
         "-I",
-        str(tmp_path / "inventory.sqlite3"),
+        str(tmp_path / "state"),
         "-J",
     ]
     assert main([*args, "-l"]) == 0
-    assert json.loads(capsys.readouterr().out)["sampling_profile"]["starter_samples"] == 2
+    assert (
+        json.loads(capsys.readouterr().out)["sampling_profile"]["starter_samples"] == 2
+    )
     assert main([*args, "-s", "auto", "-U", "trust", "-f", "png", "-e", "0"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["total_images"] == 2
@@ -98,7 +104,9 @@ def test_mangadl_pipeline_has_scan_evidence(tmp_path, capsys):
     assert report["settings"]["inventory_effective_workers"] == 1
 
 
-def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(tmp_path, monkeypatch, capsys):
+def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(
+    tmp_path, monkeypatch, capsys
+):
     import io
     import mangadl.compress as adapter
     from compresser.inventory_ui import InventoryProgress
@@ -127,7 +135,9 @@ def test_inventory_progress_finishes_candidate_galleries_not_nested_chapters(tmp
     assert states[-1]["overall_percent"] == 100
 
 
-def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, monkeypatch, capsys):
+def test_interactive_inventory_publishes_snapshot_and_prints_summary(
+    tmp_path, monkeypatch, capsys
+):
     import io
     import sys
 
@@ -141,11 +151,25 @@ def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, m
     image = gallery / "01.png"
     Image.new("RGB", (40, 40)).save(image)
     original = image.read_bytes()
-    inventory = tmp_path / "inventory.sqlite3"
+    inventory = tmp_path / "state" / ".mangadl" / "library" / "inventory.sqlite3"
     terminal = Terminal()
     monkeypatch.delenv("TERM", raising=False)
     monkeypatch.setattr(sys, "stderr", terminal)
-    assert main(["compress", "-d", str(root), "-l", "-D", "headers", "-I", str(inventory)]) == 0
+    assert (
+        main(
+            [
+                "compress",
+                "-d",
+                str(root),
+                "-l",
+                "-D",
+                "headers",
+                "-I",
+                str(tmp_path / "state"),
+            ]
+        )
+        == 0
+    )
     report = json.loads(capsys.readouterr().out)
     assert report["images"] == 1
     assert inventory.exists()
@@ -155,7 +179,9 @@ def test_interactive_inventory_publishes_snapshot_and_prints_summary(tmp_path, m
     assert image.read_bytes() == original
 
 
-def test_trusted_snapshot_preserves_nested_gallery_selection(tmp_path, monkeypatch, capsys):
+def test_trusted_snapshot_preserves_nested_gallery_selection(
+    tmp_path, monkeypatch, capsys
+):
     import mangadl.compress as adapter
 
     root = tmp_path / "library"
@@ -164,7 +190,7 @@ def test_trusted_snapshot_preserves_nested_gallery_selection(tmp_path, monkeypat
         chapter.mkdir(parents=True)
         Image.new("RGB", (40, 40)).save(chapter / "01.png")
         Image.new("RGB", (40, 40)).save(chapter / "cover.png")
-    args = ["compress", "-d", str(root), "-I", str(tmp_path / "inventory.sqlite3")]
+    args = ["compress", "-d", str(root), "-I", str(tmp_path / "state")]
     assert main([*args, "-l"]) == 0
     capsys.readouterr()
 
@@ -205,7 +231,7 @@ def test_fast_inventory_preserves_manga_page_exclusions(tmp_path, monkeypatch, c
                 "-D",
                 "files",
                 "-I",
-                str(tmp_path / "inventory.sqlite3"),
+                str(tmp_path / "state"),
             ]
         )
         == 0
@@ -289,7 +315,10 @@ def test_preview_uses_eligible_nested_pages_and_preserves_sources(tmp_path, caps
 
 def test_multi_quality_gallery_comparison(tmp_path, capsys):
     Image.new("RGB", (40, 40), "white").save(tmp_path / "01.png")
-    assert main(["compress", "-d", str(tmp_path), "-b", "-Q", "90", "80", "-e", "0", "-J"]) == 0
+    assert (
+        main(["compress", "-d", str(tmp_path), "-b", "-Q", "90", "80", "-e", "0", "-J"])
+        == 0
+    )
     rows = json.loads(capsys.readouterr().out)
     assert len(rows) == 10
     assert {r["quality"] for r in rows if r["mode"] == "lossy"} == {"q=90", "q=80"}
@@ -309,7 +338,7 @@ def test_inventory_only_reuses_nested_headers(tmp_path, capsys, monkeypatch):
         str(root),
         "-l",
         "-I",
-        str(tmp_path / "inventory.sqlite3"),
+        str(tmp_path / "state"),
     ]
     assert main(args) == 0
     report = json.loads(capsys.readouterr().out)
@@ -481,7 +510,9 @@ def test_compress_audit_defect_non_regression(tmp_path: Path):
     im.save(gal / "003.jpg", format="JPEG", quality=90)
 
     # Pre-audit check
-    findings_before = _inspect_pages(gal, expected_count=3, image_validator=_validate_image)
+    findings_before = _inspect_pages(
+        gal, expected_count=3, image_validator=_validate_image
+    )
     assert findings_before["completeness"] == "incomplete"
     assert findings_before["missing_pages"] == [2]
 
@@ -505,7 +536,9 @@ def test_compress_audit_defect_non_regression(tmp_path: Path):
     assert ret == 0
 
     # Post-audit check: incomplete status preserved, page 2 still missing, zero duplicate pages
-    findings_after = _inspect_pages(gal, expected_count=3, image_validator=_validate_image)
+    findings_after = _inspect_pages(
+        gal, expected_count=3, image_validator=_validate_image
+    )
     assert findings_after["completeness"] == "incomplete"
     assert findings_after["missing_pages"] == [2]
     assert len(findings_after["duplicate_pages"]) == 0
@@ -545,7 +578,9 @@ def test_exact_url_selection_and_cover_exclusion(tmp_path):
     Image.new("RGB", (40, 40)).save(cover)
     before = cover.read_bytes()
     write_source_manifest(gallery, "https://nhentai.net/g/633374/", "gallery-dl")
-    assert discover_gallery_targets(destination, ["https://nhentai.net/g/633374/"]) == [gallery]
+    assert discover_gallery_targets(destination, ["https://nhentai.net/g/633374/"]) == [
+        gallery
+    ]
     import pytest
 
     with pytest.raises(ValueError, match="unresolved"):
@@ -600,7 +635,9 @@ def test_nested_gallery_selection_and_analysis(tmp_path, capsys):
 
     assert discover_gallery_targets(root) == [gallery]
     assert discover_gallery_targets(gallery) == [gallery]
-    assert discover_gallery_targets(gallery, ["https://nhentai.net/g/633374/"]) == [gallery]
+    assert discover_gallery_targets(gallery, ["https://nhentai.net/g/633374/"]) == [
+        gallery
+    ]
     assert main(["compress", "-d", str(root), "-J", "-N"]) == 0
     result = json.loads(capsys.readouterr().out)
     assert result["inventory_images"] == 1
@@ -614,7 +651,9 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
     for name in ("chapter-1", "chapter-2"):
         chapter = gallery / name
         chapter.mkdir(parents=True)
-        Image.new("RGB", (120, 120), (80, 120, 160)).save(chapter / "001.jpg", quality=90)
+        Image.new("RGB", (120, 120), (80, 120, 160)).save(
+            chapter / "001.jpg", quality=90
+        )
     assert (
         main(
             [
@@ -639,7 +678,9 @@ def test_nested_gallery_write_preserves_chapter_paths(tmp_path):
             assert image.size == (120, 120)
 
 
-def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recommendations(tmp_path, capsys):
+def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recommendations(
+    tmp_path, capsys
+):
     from mangadl.library_index import read_source_manifest, write_source_manifest
 
     library = tmp_path / "library"
@@ -707,7 +748,10 @@ def test_mangadl_reader_acceptance_preserves_manifests_covers_archives_and_recom
         )
         == 0
     )
-    assert read_source_manifest(gallery)["canonical_url"] == "https://nhentai.net/g/633374/"
+    assert (
+        read_source_manifest(gallery)["canonical_url"]
+        == "https://nhentai.net/g/633374/"
+    )
     assert cover.read_bytes() == cover_bytes
     assert archive.read_bytes() == b"PK\x03\x04dummy-cbz"
     assert sidecar.read_text(encoding="utf-8") == '{"series": "Alpha"}'

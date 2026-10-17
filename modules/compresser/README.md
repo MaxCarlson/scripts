@@ -21,17 +21,17 @@ compresser -i 'B:\Hent\book' -I 'B:\Analysis' -U trust -b -Q 85 70 -s 200 -X 'E:
 compresser -i 'B:\Hent\book' -I 'B:\Analysis' -O -n 3 -Q 85 70 -t 4
 ```
 
-The second example uses `B:\Analysis\book-compresser\` containing
-`book-compresser-inventory.sqlite3`, `book-compresser-trials.sqlite3`,
+The second example uses `B:\Analysis\.compresser\book\` containing
+`inventory.sqlite3`, `trials.sqlite3`,
 `workspace.json`, `reports\<unique UTC run>-<operation>.md`, `reports\latest.md`,
-and preview runs under `previews`. **-I takes the parent**, not the generated
+plans under `plans`, and preview runs under `previews`. **-I takes the parent**, not the generated
 workspace folder. Nonempty unowned/foreign workspaces are refused. No old files
-are automatically moved. For a single input file, its filename stem names the workspace.
+are automatically moved. For a single input file, its full filename including extension names the workspace.
 
-Old `-I path.sqlite3` / hidden `--inventory-file` calls remain supported temporarily
-with a warning: existing inventory/trial locations stay unchanged and reports live
-in a target workspace beside that inventory. Do not switch between legacy-file and
-directory modes against an already bound workspace; choose a different -I parent.
+MangaDL uses the shared `.mangadl/<target>/` layout. The shared container can also
+contain downloader controls; only the target workspace is compression-owned.
+File-valued `-I` arguments are rejected. Old sibling workspaces and inventories are
+never read, migrated, moved or removed; rebuild inventory in the new layout.
 -K remains an expert cache-file override; -O PATH remains an external preview override;
 -X is disposable SSD staging, not persistent report storage. Inventory-only and
 cache-off do not create a trial database. Markdown includes available detailed summary
@@ -54,10 +54,11 @@ and report fallback coverage. Failed trials retain originals in the denominator.
 Small samples still produce estimates, not statistical guarantees. A completed
 census reports calculated retained bytes; these are not disk savings already applied.
 
-Analysis artifacts now use one external workspace. `-I/--workspace` selects a
-parent directory; target `book` creates `book-compresser` there (default: beside
-the target). Inventory and trial cache have readable target-based names. Old
-explicit SQLite paths remain supported with a deprecation warning; nothing is moved.
+Analysis artifacts use one external workspace. `-I/--workspace` selects a
+parent directory; target `book` creates `.compresser/book` there (default: beside
+the target). Inventory and trial cache use fixed names inside that workspace. A
+file-valued `-I` is rejected. Existing sibling workspaces and inventory files are
+left untouched and never read or migrated; rebuild inventory in the new layout.
 Use bare `-O` for preview output inside the workspace, or `-O PATH` to override.
 Scratch `-X` remains independent. Foreign/nonempty unowned workspaces are refused.
 
@@ -305,7 +306,7 @@ a forgotten trial was never measured. Durable history grows on disk until explic
 ## Fast extension/size inventory
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp\image-inventory.sqlite3' > 'E:\Temp\file-inventory.json'
+compresser -i 'B:\Hent\hent1imageperpage' -l -D files -I 'E:\Temp' > 'E:\Temp\file-inventory.json'
 ```
 
 `-D/--inventory-depth files` is an inventory-only pass using directory entries and
@@ -384,7 +385,7 @@ combined with -w/-c/-b/-s/-P/-l/recovery. Add -J for a JSON-only final report.
 ## Persistent inventory
 
 ```powershell
-compresser -i 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp\image-inventory.sqlite3' > 'E:\Temp\image-inventory.json'
+compresser -i 'B:\Hent\hent1imageperpage' -l -I 'E:\Temp' > 'E:\Temp\image-inventory.json'
 ```
 
 `-l/--inventory-only` refreshes inventory without encoding. JSON is emitted with -J
@@ -394,8 +395,7 @@ size summaries and shares; scan scopes separately report unreadable candidates.
 Headers are not full image-integrity verification. Bytes are file lengths, not
 filesystem allocation sizes. `-I/--workspace` selects the parent of a target-named
 workspace outside the input tree. Without it, the workspace is beside the target;
-hidden --inventory-file retains legacy explicit-file compatibility. Normal compression
-automatically refreshes the same inventory. Existing inventory metadata is never
+Normal compression automatically refreshes the same inventory. Existing inventory metadata is never
 evicted by the trial cache. Membership is enumerated every run; only new/changed
 headers are inspected. Successful scope refreshes remove deleted records; aborted
 scans do not publish a completed snapshot. Sources are unchanged; inventory, workspace

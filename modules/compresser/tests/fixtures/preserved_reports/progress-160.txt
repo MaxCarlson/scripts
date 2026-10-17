@@ -1,0 +1,14 @@
+[PHASE 1/2: INVENTORY DISCOVERY] [SCANNING HEADERS] 漫画 | active: 0
+Folder:  [███████████ 50%···········] 50.0% (2/4 files)
+Overall: [···········  0%···········] 0.0% (0/3 folders)
+Elapsed: 00:00:02 | ETA: unknown | Rate: 1.0 files/s (1.50 KiB/s)
+Files: 2 | 3.00 KB | 1.50 KiB/s | folders with errors: 0
+Headers reused/inspected: 1/1 | unreadable/excluded: 0
+  DISCOVERED ASSETS (LIVE)
+  ┌───────┬───────┬─────────┬───────────┐
+  │ Ext   │ Files │    Size │ Share (%) │
+  ├───────┼───────┼─────────┼───────────┤
+  │ .webp │     1 │ 2.00 KB │     66.7% │
+  │ .jpg  │     1 │ 1.00 KB │     33.3% │
+  │ Total │     2 │ 3.00 KB │    100.0% │
+  └───────┴───────┴─────────┴───────────┘

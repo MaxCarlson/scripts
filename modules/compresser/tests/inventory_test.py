@@ -19,7 +19,11 @@ def test_refresh_reuses_headers_and_removes_deleted_files(tmp_path, monkeypatch)
     store = InventoryStore(tmp_path / "inventory.sqlite3")
     first, images = scan_directory(root, inventory=store)
     original = scanner.inspect_image_file
-    monkeypatch.setattr(scanner, "inspect_image_file", lambda *a, **k: pytest.fail("Reopened unchanged header"))
+    monkeypatch.setattr(
+        scanner,
+        "inspect_image_file",
+        lambda *a, **k: pytest.fail("Reopened unchanged header"),
+    )
     assert scan_directory(root, inventory=InventoryStore(store.path)) == (first, images)
     monkeypatch.setattr(scanner, "inspect_image_file", original)
     path.unlink()
@@ -40,9 +44,16 @@ def test_abort_does_not_publish_snapshot(tmp_path):
     with sqlite3.connect(store.path) as connection:
         before = connection.execute("SELECT report FROM inventory_scans").fetchall()
     with pytest.raises(KeyboardInterrupt):
-        scan_directory(root, inventory=store, progress_callback=lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()))
+        scan_directory(
+            root,
+            inventory=store,
+            progress_callback=lambda *a: (_ for _ in ()).throw(KeyboardInterrupt()),
+        )
     with sqlite3.connect(store.path) as connection:
-        assert connection.execute("SELECT report FROM inventory_scans").fetchall() == before
+        assert (
+            connection.execute("SELECT report FROM inventory_scans").fetchall()
+            == before
+        )
 
 
 def test_inventory_only_reports_extensions_separately(tmp_path, capsys):
@@ -51,14 +62,16 @@ def test_inventory_only_reports_extensions_separately(tmp_path, capsys):
     gallery.mkdir(parents=True)
     Image.new("RGB", (40, 40)).save(gallery / "01.jpg", format="PNG")
     (gallery / "broken.jpg").write_bytes(b"not an image")
-    path = tmp_path / "inventory.sqlite3"
-    assert main(["-i", str(root), "-l", "-I", str(path)]) == 0
+    path = tmp_path / "state" / ".compresser" / "library" / "inventory.sqlite3"
+    assert main(["-i", str(root), "-l", "-I", str(tmp_path / "state")]) == 0
     report = json.loads(capsys.readouterr().out)
     row = report["galleries"]["manga"]
     assert row["extensions"][".jpg"]["images"] == 1
     assert row["formats"]["PNG"]["images"] == 1
     with sqlite3.connect(path) as connection:
-        scan = json.loads(connection.execute("SELECT report FROM inventory_scans").fetchone()[0])
+        scan = json.loads(
+            connection.execute("SELECT report FROM inventory_scans").fetchone()[0]
+        )
     assert scan["unreadable_images"] == 1
     assert main(["-i", str(root), "-l", "-I", str(root / "bad.sqlite3")]) == 2
     with pytest.raises(SystemExit):
@@ -79,7 +92,9 @@ def test_inventory_progress_tracks_folders_files_bytes_and_rates(tmp_path):
     (gal_b / "corrupt.jpg").write_bytes(b"bad")
 
     buf = io.StringIO()
-    prog = InventoryProgress(root, depth="headers", enabled=True, stream=buf, interactive=False)
+    prog = InventoryProgress(
+        root, depth="headers", enabled=True, stream=buf, interactive=False
+    )
     store = InventoryStore(tmp_path / "inv.sqlite3")
     scan_directory(root, inventory=store, progress=prog)
     prog._maybe_render(force=True)
@@ -95,4 +110,3 @@ def test_inventory_progress_tracks_folders_files_bytes_and_rates(tmp_path):
     assert "Folders: 2" in output
     assert "Files: 3/3" in output
     assert "files/s" in output
-

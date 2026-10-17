@@ -1,5 +1,11 @@
 # mangadl Immediate Project Handoff
 
+2026-10-17 compression workspace redesign: shared workspace files now use
+`.mangadl/<target>/inventory.sqlite3` and `trials.sqlite3`; old sibling paths are
+untouched and never migrated. See the compresser active plan and its isolated branch
+`compression-inventory-estimation-20261017`. MangaDL suite317 passed. First-stage
+commit/push is authorized; no production operation performed.
+
 2026-10-17 current checkpoint: compresser1.4.1/MangaDL2.4.1, TermDash0.8.0.
 Workspace/report plan Tasks1-5 complete and pushed on
 `compression-ui-color-and-stats-20261017`. Final gates: 326 compresser/1 skipped,

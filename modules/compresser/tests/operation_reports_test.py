@@ -13,29 +13,44 @@ def make_target(tmp_path):
 
 @pytest.mark.parametrize("manga", [False, True])
 @pytest.mark.parametrize("depth", ["headers", "files"])
-def test_inventory_creation_and_refresh_save_detailed_report(tmp_path, capsys, manga, depth):
+def test_inventory_creation_and_refresh_save_detailed_report(
+    tmp_path, capsys, manga, depth
+):
     target = make_target(tmp_path)
     from compresser.cli import main as standalone
     from mangadl.cli import main as mangadl
 
     main = mangadl if manga else standalone
-    flags = (["compress", "-d"] if manga else ["-i"]) + [str(target), "-I", str(tmp_path / "state"), "-l", depth, "-J"]
+    flags = (["compress", "-d"] if manga else ["-i"]) + [
+        str(target),
+        "-I",
+        str(tmp_path / "state"),
+        "-l",
+        depth,
+        "-J",
+    ]
     for _ in range(2):
         assert main(flags) == 0
         payload = json.loads(capsys.readouterr().out)
         report = payload["report_artifacts"]
         text = __import__("pathlib").Path(report["archive"]).read_text(encoding="utf-8")
-        assert "INVENTORY" in text and (".png" if depth == "files" else "PNG") in text and "book" in text
+        assert (
+            "INVENTORY" in text
+            and (".png" if depth == "files" else "PNG") in text
+            and "book" in text
+        )
         assert ("unverified" in text.lower()) == (depth == "files")
     suffix = "mangadl" if manga else "compresser"
-    ws = tmp_path / "state" / f"book-{suffix}"
-    assert (ws / f"book-{suffix}-inventory.sqlite3").exists()
-    assert not (ws / f"book-{suffix}-trials.sqlite3").exists()
+    ws = tmp_path / "state" / f".{suffix}" / "book"
+    assert (ws / "inventory.sqlite3").exists()
+    assert not (ws / "trials.sqlite3").exists()
     assert len(list((ws / "reports").glob("*-inventory.md"))) == 2
 
 
 @pytest.mark.parametrize("operation", ["analysis", "comparison", "preview"])
-def test_json_operations_save_reports_and_implicit_inventory(tmp_path, capsys, operation):
+def test_json_operations_save_reports_and_implicit_inventory(
+    tmp_path, capsys, operation
+):
     from compresser.cli import main
 
     target = make_target(tmp_path)
@@ -47,19 +62,25 @@ def test_json_operations_save_reports_and_implicit_inventory(tmp_path, capsys, o
     }[operation]
     assert main(flags) == 0
     payload = json.loads(capsys.readouterr().out)
-    artifact = (payload[0] if isinstance(payload, list) else payload)["report_artifacts"]
+    artifact = (payload[0] if isinstance(payload, list) else payload)[
+        "report_artifacts"
+    ]
     text = __import__("pathlib").Path(artifact["latest"]).read_text(encoding="utf-8")
     assert operation in text.lower() and "\x1b[" not in text
-    assert list((tmp_path / "book-compresser" / "reports").glob("*-inventory.md"))
+    assert list((tmp_path / ".compresser" / "book" / "reports").glob("*-inventory.md"))
 
 
-def test_report_failure_returns_error_without_breaking_json(tmp_path, capsys, monkeypatch):
+def test_report_failure_returns_error_without_breaking_json(
+    tmp_path, capsys, monkeypatch
+):
     import compresser.markdown_report as publication
     from compresser.cli import main
 
     target = make_target(tmp_path)
     monkeypatch.setattr(
-        publication, "publish_markdown_report", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        publication,
+        "publish_markdown_report",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
     assert main(["-i", str(target), "-l", "-J"]) == 2
     captured = capsys.readouterr()
@@ -72,9 +93,15 @@ def test_cancelled_operation_saves_partial_report(tmp_path, capsys, monkeypatch)
     from compresser.engine import CompressionEngine
 
     target = make_target(tmp_path)
-    monkeypatch.setattr(CompressionEngine, "compress_batch", lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()))
+    monkeypatch.setattr(
+        CompressionEngine,
+        "compress_batch",
+        lambda *a, **k: (_ for _ in ()).throw(KeyboardInterrupt()),
+    )
     assert main(["-i", str(target), "-f", "png", "-N"]) == 130
-    text = (tmp_path / "book-compresser" / "reports" / "latest.md").read_text(encoding="utf-8")
+    text = (tmp_path / ".compresser" / "book" / "reports" / "latest.md").read_text(
+        encoding="utf-8"
+    )
     assert "cancelled" in text.lower()
 
 
@@ -84,17 +111,21 @@ def test_invalid_arguments_create_no_workspace(tmp_path):
     target = make_target(tmp_path)
     with pytest.raises(SystemExit):
         main(["-i", str(target), "-w", "-s", "1"])
-    assert not (tmp_path / "book-compresser").exists()
+    assert not (tmp_path / ".compresser" / "book").exists()
 
 
-def test_applied_write_report_failure_warns_without_undoing_source(tmp_path, capsys, monkeypatch):
+def test_applied_write_report_failure_warns_without_undoing_source(
+    tmp_path, capsys, monkeypatch
+):
     from compresser.cli import main
     import compresser.markdown_report as publication
 
     target = make_target(tmp_path)
     before = (target / "01.png").read_bytes()
     monkeypatch.setattr(
-        publication, "publish_markdown_report", lambda *a, **k: (_ for _ in ()).throw(OSError("disk full"))
+        publication,
+        "publish_markdown_report",
+        lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")),
     )
     assert main(["-i", str(target), "-f", "png", "-w", "-J"]) == 2
     captured = capsys.readouterr()

@@ -1,0 +1,32 @@
+INVENTORY REPORT — library
+
+RUN CONTEXT
+┌────────────────────────┬─────────────────────────────────────────────────────┐
+│ Metric                 │                                               Value │
+├────────────────────────┼─────────────────────────────────────────────────────┤
+│ Target                 │                                    fixtures\library │
+│ Status                 │                                           completed │
+│ Workspace              │                                       Not specified │
+│ Target scope           │ Eligible inventoried images, not every file on disk │
+│ Selection filters      │                    All eligible galleries at target │
+│ Source writes          │               Read-only; source images not modified │
+│ Snapshot age (seconds) │                                               123.0 │
+│ Saved snapshot UTC     │                           2026-10-17T12:00:00+00:00 │
+│ Membership refreshed   │                                               False │
+└────────────────────────┴─────────────────────────────────────────────────────┘
+
+INVENTORY DETAILS
+┌─────────────────────────┬────────────────────────────┐
+│ Metric                  │                      Value │
+├─────────────────────────┼────────────────────────────┤
+│ depth                   │                      files │
+│ candidate_images        │                       1234 │
+│ candidate_bytes         │ 1.00 GiB (1,073,741,824 B) │
+│ content_verified        │                      False │
+│ galleries.gallery.files │                       1234 │
+│ galleries.gallery.bytes │ 1.00 GiB (1,073,741,824 B) │
+└─────────────────────────┴────────────────────────────┘
+
+Files-only inventory is unverified; no encoding or SSIM assessment.
+File lengths, not filesystem allocated space. Inventory creation/refresh does not compress images.
+COMPLETED — inventory
