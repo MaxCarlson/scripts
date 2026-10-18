@@ -20,8 +20,14 @@ Updated: 2026-10-17 (America/Los_Angeles).
 3. **Runtime Evaluation Harness & Symlink Decommissioning Audit (Stages 3 & 5 — COMPLETED BY ARGON)**:
    - Initialized disposable git test repo at `modules/local_agent_bridge/.pytest_tmp_root/eval_workspace` (commit `b53168d`, tag `baseline`).
    - Authored complete step-by-step execution runbook in [03_flash-execution-runbook.md](03_flash-execution-runbook.md) with exact MCP tool call JSON arguments for Scenarios A, B, C, and D, plus the Stage 5 symlink audit.
-4. **Execute Live Delegation Benchmark (Stage 4 — READY FOR GEMINI 3.8 FLASH)**:
-   - Open [03_flash-execution-runbook.md](03_flash-execution-runbook.md) and execute Steps 4.0 through 4.5 sequentially.
-   - Author `modules/local_agent_bridge/docs/BENCHMARK.md` and remove the temporary `eval_workspace` directory when finished.
+4. **Execute Live Delegation Benchmark (Stage 4 — COMPLETED)**:
+   - Executed live OpenCode MCP trials against `qwen38_23GB` in LM Studio per [03_flash-execution-runbook.md](03_flash-execution-runbook.md).
+   - Fixed Windows console charmap encoding in `commands.py` and `cli.py` (`sys.stdout`/`sys.stderr` UTF-8 reconfigure).
+   - Confirmed `local-reviewer` read-only boundary enforcement (Scenario A: tools denied, 0 edits, both bugs identified).
+   - Confirmed bounded bugfix scope and test verification (Scenario B: 3/3 passed, sentinel untouched).
+   - Confirmed async timeout resumption and explicit cancellation (Scenario C: job aborted with 0 edits).
+   - Confirmed structured output conformance (Scenario D: valid JSON matching `result.schema.json`).
+   - Documented quantitative results and token savings (~68.8%) in [BENCHMARK.md](../../BENCHMARK.md).
+   - Cleaned up temporary `eval_workspace` fixture.
 
-Refer to [03_flash-execution-runbook.md](03_flash-execution-runbook.md), [plan.md](plan.md), [design.md](design.md), [STATUS.md](STATUS.md), and [checklist.md](checklist.md) for full task breakdowns.
+Refer to [BENCHMARK.md](../../BENCHMARK.md), [03_flash-execution-runbook.md](03_flash-execution-runbook.md), [plan.md](plan.md), [design.md](design.md), [STATUS.md](STATUS.md), and [checklist.md](checklist.md) for full details.

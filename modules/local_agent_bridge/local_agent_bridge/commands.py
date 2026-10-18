@@ -6,6 +6,17 @@ import json
 from pathlib import Path
 import sys
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 from . import __version__
 from .setup.files import write_json
 from .setup.installer import apply_plan, recover_installation, remove_installation

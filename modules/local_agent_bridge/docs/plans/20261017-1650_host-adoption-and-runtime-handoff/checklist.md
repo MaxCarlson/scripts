@@ -24,13 +24,13 @@
 - [x] **[Argon Expand]** Define schema verification rules for Scenario D (`result.schema.json` vs text fallback) in [03_flash-execution-runbook.md](03_flash-execution-runbook.md).
 - [x] **[Argon Implement]** Initialize the disposable test project environment (`eval_workspace` committed at `b53168d`, tagged `baseline`).
 
-## Stage 4: Live Delegation Benchmark Execution (Ready for Flash — follow `03_flash-execution-runbook.md`)
-- [ ] **[Flash Execute]** Start local model bridge via LM Studio and OpenCode MCP (Step 4.0 in `03_flash-execution-runbook.md`).
-- [ ] **[Flash Execute]** Execute Scenario A and verify reviewer tool denials (no shell/edit) (Step 4.1 in `03_flash-execution-runbook.md`).
-- [ ] **[Flash Execute]** Execute Scenario B and verify worker diff boundaries and evidence (Step 4.2 in `03_flash-execution-runbook.md`).
-- [ ] **[Flash Execute]** Execute Scenario C and verify async state handling and cancellation recovery (Step 4.3 in `03_flash-execution-runbook.md`).
-- [ ] **[Flash Execute]** Execute Scenario D (`result.schema.json` structured output check) (Step 4.4 in `03_flash-execution-runbook.md`).
-- [ ] **[Flash Execute]** Analyze coordinator token savings, latency, and model output quality, and author `modules/local_agent_bridge/docs/BENCHMARK.md` (Step 4.5 in `03_flash-execution-runbook.md`).
+## Stage 4: Live Delegation Benchmark Execution (Completed)
+- [x] **[Flash Execute]** Start local model bridge via LM Studio and OpenCode MCP (Step 4.0 in `03_flash-execution-runbook.md`).
+- [x] **[Flash Execute]** Execute Scenario A and verify reviewer tool denials (no shell/edit) (Step 4.1 in `03_flash-execution-runbook.md`).
+- [x] **[Flash Execute]** Execute Scenario B and verify worker diff boundaries and evidence (Step 4.2 in `03_flash-execution-runbook.md`).
+- [x] **[Flash Execute]** Execute Scenario C and verify async state handling and cancellation recovery (Step 4.3 in `03_flash-execution-runbook.md`).
+- [x] **[Flash Execute]** Execute Scenario D (`result.schema.json` structured output check) (Step 4.4 in `03_flash-execution-runbook.md`).
+- [x] **[Flash Execute]** Analyze coordinator token savings, latency, and model output quality, and author `modules/local_agent_bridge/docs/BENCHMARK.md` (Step 4.5 in `03_flash-execution-runbook.md`).
 
 ## Stage 5: Legacy Decommissioning Review (Pre-Audited by Argon)
 - [x] **[Argon Expand]** Audit remaining live symlinks depending on `dotfiles/symlinked/llms` (documented in Section 3 of [03_flash-execution-runbook.md](03_flash-execution-runbook.md): `~/.claude/CLAUDE.md`, `~/.local/share/agent-abilities/*`, and rollback targets in `receipt.json`).

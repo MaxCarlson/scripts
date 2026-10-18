@@ -2,7 +2,7 @@
 
 Updated: 2026-10-17 (America/Los_Angeles).
 
-- **Current State**: Stages 1, 2, 3, and 5 (audit) complete. Ready for **Gemini 3.8 Flash** to execute Stage 4 using [03_flash-execution-runbook.md](03_flash-execution-runbook.md).
+- **Current State**: All Stages (1, 2, 3, 4, and 5) complete. Live benchmark documented in [BENCHMARK.md](../../BENCHMARK.md).
 - **Prerequisite Complete**: Commit `a617d29e` implemented `local_agent` 2.0.0 CLI, independent installer, and packaged assets. 26 unit tests passing.
 - **Stage 1 Verification**:
   - Audited `~/.codex/AGENTS.md`, `~/.codex/config.toml`, `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, and MCP configs.
@@ -17,4 +17,13 @@ Updated: 2026-10-17 (America/Los_Angeles).
 - **Stage 3 & 5 Verification**:
   - Initialized disposable evaluation repository at `modules/local_agent_bridge/.pytest_tmp_root/eval_workspace` (tagged `baseline`, commit `b53168d`) with `AGENTS.md`, `src/retry_policy.py` (2 intentional bugs), `src/forbidden_guard.py`, and `tests/retry_policy_test.py`.
   - Authored [03_flash-execution-runbook.md](03_flash-execution-runbook.md) with copy-pasteable JSON MCP payloads, pass/fail assertions, and Stage 5 symlink retirement audit.
-- **Next Immediate Action**: Switch to **Gemini 3.8 Flash** and execute Stage 4 by following [03_flash-execution-runbook.md](03_flash-execution-runbook.md) step-by-step.
+- **Stage 4 Verification (Completed)**:
+  - Fixed Windows console charmap encoding in `commands.py` and `cli.py` to ensure `sys.stdout`/`sys.stderr` safely handle Unicode glyphs.
+  - Ran live delegation trials against `qwen38_23GB` (`qwen38-27b-q6k`) in LM Studio via OpenCode MCP.
+  - Scenario A: Verified `local-reviewer` read-only boundary (tools denied, 0 files edited, both bugs accurately identified).
+  - Scenario B: Verified boundary constraints and bugfix in `src/retry_policy.py` (pytest 3/3 passed, sentinel untouched).
+  - Scenario C: Verified async observation timeout resumption without duplicate dispatch, and verified explicit cancellation via `opencode_session_abort`.
+  - Scenario D: Verified strict structured output conformance against `result.schema.json`.
+  - Authored `modules/local_agent_bridge/docs/BENCHMARK.md` recording all quantitative latency, token delta (~68.8% coordinator savings), and boundary results.
+  - Cleaned up temporary `eval_workspace` fixture.
+- **Next Immediate Action**: Stage and commit the completed documentation and CLI encoding fix.

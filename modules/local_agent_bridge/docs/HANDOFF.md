@@ -81,11 +81,19 @@ still deferred; do not retire their existing wiring prematurely.
 - Created disposable evaluation git repository at `modules/local_agent_bridge/.pytest_tmp_root/eval_workspace` (commit `b53168d`, tagged `baseline`) with `AGENTS.md`, `src/retry_policy.py` (2 intentional bugs), `src/forbidden_guard.py` (scope sentinel), and `tests/retry_policy_test.py`.
 - Authored [03_flash-execution-runbook.md](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md) containing exact copy-pasteable `opencode_worker` MCP JSON payloads, shell verification commands, pass/fail criteria for Scenarios A–D, and the complete Stage 5 symlink retirement audit.
 
-## Next stage: Stage 4 Live Delegation Benchmark Execution (Gemini 3.8 Flash)
+## Completed stage: Stage 4 Live Delegation Benchmark Execution
 
-Follow [03_flash-execution-runbook.md](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md) Steps 4.0–4.5 to run the live LM Studio / OpenCode trials and generate `modules/local_agent_bridge/docs/BENCHMARK.md`.
+- Fixed Windows console charmap encoding in `commands.py` and `cli.py` to ensure `sys.stdout`/`sys.stderr` safely handle Unicode glyphs.
+- Executed live OpenCode MCP trials against `qwen38_23GB` (`qwen38-27b-q6k`) in LM Studio per [03_flash-execution-runbook.md](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md).
+- Verified `local-reviewer` read-only boundary (Scenario A: tools denied, 0 edits, both bugs identified).
+- Verified boundary constraints and bugfix in `src/retry_policy.py` (Scenario B: pytest 3/3 passed, sentinel untouched).
+- Verified async observation timeout resumption without duplicate dispatch, and verified explicit cancellation via `opencode_session_abort` (Scenario C).
+- Verified strict structured output conformance against `result.schema.json` (Scenario D).
+- Authored [BENCHMARK.md](BENCHMARK.md) recording all quantitative latency, token delta (~68.8% coordinator savings), and boundary results.
+- Cleaned up temporary `eval_workspace` fixture.
 
 Active plan:
+[BENCHMARK.md](BENCHMARK.md),
 [Flash Runbook](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md),
 [Plan](plans/20261017-1650_host-adoption-and-runtime-handoff/plan.md),
 [design](plans/20261017-1650_host-adoption-and-runtime-handoff/design.md),

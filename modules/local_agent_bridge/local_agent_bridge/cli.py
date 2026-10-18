@@ -92,6 +92,17 @@ def _enable_windows_ansi() -> None:
 
 _enable_windows_ansi()
 
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 class Style:
     RESET = "\033[0m"
@@ -109,7 +120,7 @@ def print_header(title: str) -> None:
 
 
 def print_work(msg: str) -> None:
-    print(f"    {Style.YELLOW}â€¦ [WORK] {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.YELLOW}... [WORK] {msg}{Style.RESET}", flush=True)
 
 
 def print_info(msg: str) -> None:
@@ -117,7 +128,7 @@ def print_info(msg: str) -> None:
 
 
 def print_ok(msg: str) -> None:
-    print(f"    {Style.GREEN}âœ“ [OK]   {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.GREEN}+ [OK]   {msg}{Style.RESET}", flush=True)
 
 
 def print_warn(msg: str) -> None:
@@ -125,7 +136,7 @@ def print_warn(msg: str) -> None:
 
 
 def print_fail(msg: str) -> None:
-    print(f"    {Style.RED}âœ— [FAIL] {msg}{Style.RESET}", flush=True)
+    print(f"    {Style.RED}x [FAIL] {msg}{Style.RESET}", flush=True)
 
 
 # ---------------------------------------------------------------------------
@@ -1307,7 +1318,7 @@ def run_opencode_server_foreground(
         [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
     ) or "OpenCode"
     print(
-        f"\n{Style.GREEN}{Style.BOLD}âœ“ READY: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode ({opencode_url}) -> LM Studio/{nickname}{Style.RESET}"
+        f"\n{Style.GREEN}{Style.BOLD}==> READY: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode ({opencode_url}) -> LM Studio/{nickname}{Style.RESET}"
     )
     print(
         f"{Style.YELLOW}! Holding OpenCode server active. Press 'q' or Ctrl+C to stop and exit...{Style.RESET}\n",
@@ -1760,7 +1771,7 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
                 [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
             ) or "OpenCode"
             print(
-                f"\n{Style.GREEN}{Style.BOLD}âœ“ CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> LM Studio/{nickname} ({selection.display}){Style.RESET}"
+                f"\n{Style.GREEN}{Style.BOLD}==> CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> LM Studio/{nickname} ({selection.display}){Style.RESET}"
             )
             return 0
 
