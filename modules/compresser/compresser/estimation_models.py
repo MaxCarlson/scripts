@@ -278,6 +278,15 @@ class RecipeEstimate:
 
 
 @dataclass(frozen=True, slots=True)
+class RecipeProgressStat:
+    recipe_label: str
+    trials: int
+    input_bytes: int
+    retained_bytes: int
+    saved_bytes: int
+
+
+@dataclass(frozen=True, slots=True)
 class EstimationProgress:
     sequence: int
     stage: str
@@ -291,6 +300,12 @@ class EstimationProgress:
     remaining_seconds: float = 0.0
     estimates: tuple[RecipeEstimate, ...] = ()
     stopping_reason: str | None = None
+    last_completed_text: str = ""
+    current_savings_bytes: int = 0
+    total_source_bytes: int = 0
+    budget_total: int = 0
+    recipe_stats: tuple[RecipeProgressStat, ...] = ()
+    population_total_bytes: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

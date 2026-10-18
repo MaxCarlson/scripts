@@ -12,6 +12,7 @@ from compresser.estimation_models import (
     EstimationProgress,
     EstimationResult,
     RecipeEstimate,
+    RecipeProgressStat,
     RecipeSpec,
     current_runtime_identity,
 )
@@ -232,3 +233,45 @@ def test_plan_reporting_estimate_summary(width):
     assert "15.00 MiB" in rendered
     assert "Plan     " in rendered
     assert "Report   reports/latest.md" in rendered
+
+
+@pytest.mark.parametrize("width", [80, 120, 160])
+def test_estimation_progress_ui_live_table_and_dual_bars(width):
+    plan, result = _sample_plan_and_result()
+    stream = io.StringIO()
+    ui = EstimationProgressUI(
+        plan.root,
+        enabled=True,
+        stream=stream,
+        interactive=False,
+        max_width=width,
+        population_total_bytes=100_000_000,
+    )
+    try:
+        stats = (RecipeProgressStat("webp-lossy-80", 10, 20_000_000, 6_000_000, 14_000_000),)
+        prog = EstimationProgress(
+            sequence=1,
+            stage="pilot",
+            phase="measuring_recipes",
+            active_recipe="webp-lossy-80",
+            completed_sources=10,
+            total_sources=20,
+            new_encodes=10,
+            cache_hits=0,
+            remaining_trials=90,
+            remaining_seconds=45.0,
+            last_completed_text="img.jpg (2.00 MB) -> webp-lossy-80 (600 kB, -70.0%)",
+            budget_total=100,
+            recipe_stats=stats,
+        )
+        ui.on_progress(prog)
+        lines = ui._lines()
+        assert all(_visible_len(line) <= width for line in lines)
+        assert all("\x1b" not in line for line in lines)
+        assert any("Stage:" in line and "10/20 sources" in line for line in lines)
+        assert any("Overall:" in line and "10/100 budget" in line for line in lines)
+        assert any("MEASURED RECIPES & PROJECTED SAVINGS (LIVE)" in line for line in lines)
+        assert any("webp-lossy-80" in line and "-70.0%" in line for line in lines)
+        assert any("~66.76 MB" in line for line in lines)
+    finally:
+        ui.close()

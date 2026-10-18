@@ -1,5 +1,9 @@
 # Status
 
+2026-10-17 Task 7 follow-up: Live terminal UI upgrade & progress callback pipeline.
+Fixed progress freeze where batch trial evaluations emitted no intermediate callbacks, leaving the UI static at `Sources: 0/N`. Added per-job and per-observation callbacks to `measure_jobs`, with `StageTracker` accumulating real-time recipe stats, rolling throughput, and `Last completed` trial details.
+Upgraded `EstimationProgressUI` to match the `inventory` and `CompresserDashboard` visual standards: dual progress bars (`Stage:` and `Overall:` budget), rolling rate / ETA, live stats line, and a boxed table (`MEASURED RECIPES & PROJECTED SAVINGS (LIVE)`) displaying evaluated recipes, trial counts, sampled bytes, retained bytes, savings %, and projected whole-library savings (`Est. Lib`) bounded within 80/120/160 columns. All 537 tests passed.
+
 2026-10-17 Task 7 checkpoint: Fixed-design estimation controller, plan resume, adapters, and reports/UI
 implemented and validated on `compression-inventory-estimation-20261017`.
 Added `run_estimation` and `execute_estimate_operation` in `modules/compresser/compresser/estimation.py`.

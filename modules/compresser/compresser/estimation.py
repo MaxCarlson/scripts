@@ -4,8 +4,12 @@ from __future__ import annotations
 
 from contextlib import nullcontext
 from dataclasses import asdict, replace
+from pathlib import Path
+import threading
 import time
 from typing import Callable
+
+from termdash.utils import format_bytes_decimal
 
 from .cancellation import check_cancelled
 from .engine import CompressionEngine
@@ -16,6 +20,7 @@ from .estimation_models import (
     EstimationResult,
     RecipeEstimate,
     RecipeObservation,
+    RecipeProgressStat,
     RecipeSpec,
 )
 from .estimation_stats import allocate_confirmation, estimate_fixed
@@ -87,6 +92,9 @@ def run_estimation(
         total_new_encodes = 0
         newly_admitted_sources = 0
         progress_seq = 0
+        last_complete: tuple[RecipeEstimate, ...] = ()
+        plan_pop_bytes = sum(s.total_bytes for s in plan.strata if s.total_bytes is not None)
+        population_total_bytes = plan_pop_bytes if plan_pop_bytes > 0 else None
 
         def emit_progress(
             stage: str,
@@ -96,6 +104,11 @@ def run_estimation(
             total: int = 0,
             estimates: tuple[RecipeEstimate, ...] = (),
             stopping_reason: str | None = None,
+            last_completed_text: str = "",
+            savings_bytes: int = 0,
+            source_bytes: int = 0,
+            stage_cache_hits: int = 0,
+            recipe_stats: tuple[RecipeProgressStat, ...] = (),
         ):
             nonlocal progress_seq
             progress_seq += 1
@@ -114,14 +127,116 @@ def run_estimation(
                         active_recipe=active_recipe,
                         completed_sources=completed,
                         total_sources=total,
-                        new_encodes=total_new_encodes,
-                        cache_hits=total_cache_hits,
+                        new_encodes=trial_budget.attempted,
+                        cache_hits=total_cache_hits + stage_cache_hits,
                         remaining_trials=rem_trials,
                         remaining_seconds=rem_seconds,
-                        estimates=estimates,
+                        estimates=estimates or last_complete,
                         stopping_reason=stopping_reason,
+                        last_completed_text=last_completed_text,
+                        current_savings_bytes=savings_bytes,
+                        total_source_bytes=source_bytes,
+                        budget_total=effective_budget.max_new_encodes,
+                        recipe_stats=recipe_stats,
+                        population_total_bytes=population_total_bytes,
                     )
                 )
+
+        class StageTracker:
+            def __init__(self, stage_name: str, total_sources: int):
+                self.stage_name = stage_name
+                self.total_sources = total_sources
+                self.completed_sources = 0
+                self.stage_cache_hits = 0
+                self.lock = threading.Lock()
+                self.recipe_stats: dict[str, dict[str, int]] = {}
+
+            def _stats_tuple(self) -> tuple[RecipeProgressStat, ...]:
+                return tuple(
+                    RecipeProgressStat(
+                        recipe_label=label,
+                        trials=info["trials"],
+                        input_bytes=info["input_bytes"],
+                        retained_bytes=info["retained_bytes"],
+                        saved_bytes=info["saved_bytes"],
+                    )
+                    for label, info in sorted(self.recipe_stats.items())
+                )
+
+            def on_observation(self, obs: RecipeObservation):
+                with self.lock:
+                    if (
+                        obs.state in ("measured", "retained_by_policy")
+                        and obs.elapsed_seconds == 0.0
+                        and obs.retained_bytes is not None
+                    ):
+                        self.stage_cache_hits += 1
+                    recipe = recipes_by_id.get(obs.recipe_id)
+                    if recipe:
+                        recipe_label = f"{recipe.format}-{recipe.mode}"
+                        if recipe.quality is not None:
+                            recipe_label += f"-q{recipe.quality}"
+                    else:
+                        recipe_label = obs.recipe_id[:8]
+
+                    entry = self.recipe_stats.setdefault(
+                        recipe_label,
+                        {"trials": 0, "input_bytes": 0, "retained_bytes": 0, "saved_bytes": 0},
+                    )
+                    if obs.complete:
+                        entry["trials"] += 1
+                        entry["input_bytes"] += obs.input_bytes
+                        entry["retained_bytes"] += obs.retained_bytes or 0
+                        entry["saved_bytes"] += obs.saved_bytes or 0
+
+                    p = Path(obs.member_id)
+                    parent_part = p.parent.name
+                    if len(parent_part) > 20:
+                        parent_part = parent_part[:18] + "…"
+                    fname = f"{parent_part}/{p.name}" if parent_part else p.name
+                    in_sz = format_bytes_decimal(obs.input_bytes)
+                    if obs.complete:
+                        out_sz = format_bytes_decimal(obs.retained_bytes)
+                        if obs.input_bytes > 0:
+                            sav_pct = (
+                                f"-{(obs.saved_bytes / obs.input_bytes) * 100:.1f}%" if obs.saved_bytes > 0 else "0.0%"
+                            )
+                        else:
+                            sav_pct = "0.0%"
+                        if obs.state == "retained_by_policy":
+                            sav_desc = f"{out_sz} (kept original)"
+                        else:
+                            sav_desc = f"{out_sz}, {sav_pct}"
+                        last_text = f"{fname} ({in_sz}) -> {recipe_label} ({sav_desc})"
+                    elif obs.state == "failed":
+                        last_text = f"{fname} ({in_sz}) -> {recipe_label} (FAILED)"
+                    else:
+                        last_text = f"{fname} ({in_sz}) -> {recipe_label} ({obs.state})"
+
+                    emit_progress(
+                        self.stage_name,
+                        "measuring_recipes",
+                        active_recipe=recipe_label,
+                        completed=self.completed_sources,
+                        total=self.total_sources,
+                        last_completed_text=last_text,
+                        savings_bytes=obs.saved_bytes if obs.complete else 0,
+                        source_bytes=obs.input_bytes,
+                        stage_cache_hits=self.stage_cache_hits,
+                        recipe_stats=self._stats_tuple(),
+                    )
+
+            def on_job_completed(self, job: MeasurementJob, obs_list: list[RecipeObservation], hits: int, encodes: int):
+                with self.lock:
+                    self.completed_sources += 1
+                    emit_progress(
+                        self.stage_name,
+                        "measuring_recipes",
+                        completed=self.completed_sources,
+                        total=self.total_sources,
+                        stage_cache_hits=self.stage_cache_hits,
+                        recipe_stats=self._stats_tuple(),
+                    )
 
         # -------------------------------------------------------------
         # Stage 1: Pilot Evaluation
@@ -140,7 +255,8 @@ def run_estimation(
                 pilot_jobs.append(MeasurementJob.from_member(plan.root, member, missing_recipes))
 
         if pilot_jobs:
-            batch = measure_jobs(pilot_jobs, engine=engine, budget=trial_budget, threads=threads)
+            tracker = StageTracker("pilot", len(pilot_jobs))
+            batch = measure_jobs(pilot_jobs, engine=engine, budget=trial_budget, threads=threads, callbacks=tracker)
             total_cache_hits += batch.cache_hits
             total_new_encodes += batch.new_encodes
             newly_admitted_sources += batch.newly_admitted_sources
@@ -226,7 +342,10 @@ def run_estimation(
             confirmation_jobs = confirmation_jobs[:rem_images]
 
         if confirmation_jobs:
-            batch = measure_jobs(confirmation_jobs, engine=engine, budget=trial_budget, threads=threads)
+            tracker = StageTracker("confirmation", len(confirmation_jobs))
+            batch = measure_jobs(
+                confirmation_jobs, engine=engine, budget=trial_budget, threads=threads, callbacks=tracker
+            )
             total_cache_hits += batch.cache_hits
             total_new_encodes += batch.new_encodes
             newly_admitted_sources += batch.newly_admitted_sources
@@ -377,7 +496,8 @@ def execute_estimate_operation(args, options, *, owner: str) -> int:
 
     ui_enabled = not args.json and not getattr(args, "no_ui", False)
     threads = getattr(args, "threads", None) or 4
-    with EstimationProgressUI(workspace.target, enabled=ui_enabled) as ui:
+    pop_bytes = sum(m.size_bytes for m in population.members if m.size_bytes is not None)
+    with EstimationProgressUI(workspace.target, enabled=ui_enabled, population_total_bytes=pop_bytes or None) as ui:
         result = run_estimation(
             plan,
             engine=engine,

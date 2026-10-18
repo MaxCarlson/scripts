@@ -392,6 +392,8 @@ def measure_jobs(
             all_observations.extend(obs_list)
             total_cache_hits += hits
             total_new_encodes += encodes
+            if callbacks and hasattr(callbacks, "on_job_completed"):
+                callbacks.on_job_completed(job, obs_list, hits, encodes)
 
         if budget.is_exhausted and stopping_reason == "complete":
             stopping_reason = "max_trials_reached"
@@ -445,7 +447,10 @@ def measure_jobs(
                     all_observations.extend(obs_list)
                     total_cache_hits += hits
                     total_new_encodes += encodes
+                    if callbacks and hasattr(callbacks, "on_job_completed"):
+                        callbacks.on_job_completed(job, obs_list, hits, encodes)
                 except BudgetExceeded:
+                    interrupted_obs = []
                     for recipe in job.recipes:
                         obs = RecipeObservation(
                             member_id=job.source_identity,
@@ -458,7 +463,11 @@ def measure_jobs(
                             state="interrupted",
                         )
                         all_observations.append(obs)
+                        interrupted_obs.append(obs)
+                    if callbacks and hasattr(callbacks, "on_job_completed"):
+                        callbacks.on_job_completed(job, interrupted_obs, 0, 0)
                 except Exception:
+                    failed_obs = []
                     for recipe in job.recipes:
                         obs = RecipeObservation(
                             member_id=job.source_identity,
@@ -471,6 +480,9 @@ def measure_jobs(
                             state="failed",
                         )
                         all_observations.append(obs)
+                        failed_obs.append(obs)
+                    if callbacks and hasattr(callbacks, "on_job_completed"):
+                        callbacks.on_job_completed(job, failed_obs, 0, 0)
 
         # Handle any jobs left in scheduler.pending when budget was exhausted
         while scheduler.pending:
