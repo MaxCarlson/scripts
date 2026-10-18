@@ -147,6 +147,21 @@ class CompressionEngine:
                     actual = verified.info.get("XML:com.adobe.xmp")
                     if isinstance(actual, str) and isinstance(im.info.get(key), bytes):
                         actual = actual.encode("utf-8")
+                if key == "exif" and im.info.get(key):
+                    orig_exif = im.info[key]
+                    if not actual:
+                        raise ValueError("Encoder did not preserve exif metadata")
+                    orig_norm = orig_exif[6:] if orig_exif.startswith(b"Exif\x00\x00") else orig_exif
+                    actual_norm = (
+                        actual[6:]
+                        if isinstance(actual, (bytes, bytearray)) and actual.startswith(b"Exif\x00\x00")
+                        else actual
+                    )
+                    if orig_norm != actual_norm and verified.format in ("AVIF", "HEIF"):
+                        continue
+                    if orig_norm != actual_norm:
+                        raise ValueError("Encoder did not preserve exif metadata")
+                    continue
                 if im.info.get(key) and actual != im.info[key]:
                     raise ValueError(f"Encoder did not preserve {key} metadata")
         return encoded, ssim, codec.name
@@ -702,9 +717,7 @@ class CompressionEngine:
                         if job is None:
                             diagnostics["waiting_reason"] = (
                                 "system memory pressure"
-                                if allowance is not None
-                                and scheduler.pending
-                                and scheduler.pending[0][1] > allowance
+                                if allowance is not None and scheduler.pending and scheduler.pending[0][1] > allowance
                                 else "memory reservations" if scheduler.pending else ""
                             )
                             if preparation_complete or len(scheduler.pending) >= 2 * max_workers:

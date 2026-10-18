@@ -243,14 +243,13 @@ def run_estimation(
         # -------------------------------------------------------------
         emit_progress("pilot", "pilot_scheduling", total=len(plan.pilot_member_ids))
 
+        def is_terminal(obs: RecipeObservation | None) -> bool:
+            return obs is not None and obs.state not in ("not_started", "interrupted")
+
         pilot_jobs: list[MeasurementJob] = []
         for m_id in plan.pilot_member_ids:
             member = members_by_id[m_id]
-            missing_recipes = [
-                r
-                for r in plan.recipes
-                if (r.identity, m_id) not in known_observations or not known_observations[(r.identity, m_id)].complete
-            ]
+            missing_recipes = [r for r in plan.recipes if not is_terminal(known_observations.get((r.identity, m_id)))]
             if missing_recipes:
                 pilot_jobs.append(MeasurementJob.from_member(plan.root, member, missing_recipes))
 
@@ -274,7 +273,7 @@ def run_estimation(
         for r in plan.recipes:
             for m_id in plan.pilot_member_ids:
                 obs = known_observations.get((r.identity, m_id))
-                if obs is None or not obs.complete:
+                if not is_terminal(obs):
                     pilot_complete = False
                 if obs is not None:
                     pilot_observations.append(obs)
@@ -328,7 +327,7 @@ def run_estimation(
             recipe = recipes_by_id[group.recipe_id]
             for m_id in group.selected_ids:
                 obs = known_observations.get((recipe.identity, m_id))
-                if obs is None or not obs.complete:
+                if not is_terminal(obs):
                     member_to_recipes.setdefault(m_id, []).append(recipe)
 
         confirmation_jobs: list[MeasurementJob] = []
@@ -366,7 +365,7 @@ def run_estimation(
         for group in confirmation_design.groups:
             for m_id in group.selected_ids:
                 obs = known_observations.get((group.recipe_id, m_id))
-                if obs is None or not obs.complete:
+                if not is_terminal(obs):
                     confirmation_complete = False
                 if obs is not None:
                     confirmation_observations.append(obs)

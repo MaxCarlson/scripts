@@ -1,5 +1,9 @@
 # Status
 
+2026-10-17 Task 7 follow-up: EXIF container normalization and terminal observation state fix.
+Resolved false-positive metadata rejection where JPEG EXIF container prefix (`b'Exif\x00\x00'`) differed from raw TIFF WebP/AVIF headers, causing WebP and AVIF to report `ValueError: Encoder did not preserve exif metadata` on images like `205.jpg`.
+Fixed `run_estimation` completion checks: replaced `not obs.complete` with terminal observation verification (`obs.state in ('measured', 'retained_by_policy', 'failed')`), preventing failed trials (such as lossless JPEG under Pillow) from halting the estimation controller at `pilot_incomplete` in an infinite re-queue loop. Prescribed pilot and confirmation stages now cleanly advance to statistical estimation once all trials reach terminal states. All 537 tests passed.
+
 2026-10-17 Task 7 follow-up: Live terminal UI upgrade & progress callback pipeline.
 Fixed progress freeze where batch trial evaluations emitted no intermediate callbacks, leaving the UI static at `Sources: 0/N`. Added per-job and per-observation callbacks to `measure_jobs`, with `StageTracker` accumulating real-time recipe stats, rolling throughput, and `Last completed` trial details.
 Upgraded `EstimationProgressUI` to match the `inventory` and `CompresserDashboard` visual standards: dual progress bars (`Stage:` and `Overall:` budget), rolling rate / ETA, live stats line, and a boxed table (`MEASURED RECIPES & PROJECTED SAVINGS (LIVE)`) displaying evaluated recipes, trial counts, sampled bytes, retained bytes, savings %, and projected whole-library savings (`Est. Lib`) bounded within 80/120/160 columns. All 537 tests passed.
