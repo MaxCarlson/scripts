@@ -81,7 +81,8 @@ wrappers. For direct module execution use `python -m local_agent_bridge.commands
 - [Canonical worker prompt](local_agent_bridge/resources/skills/local-agent-handoff/resources/local-worker.md)
 - [Integration details](docs/INTEGRATION.md), [settings](docs/SETTINGS.md), [research](docs/RESEARCH.md)
 - [Validation](docs/VALIDATION.md) and [current handoff](docs/HANDOFF.md)
-- [Design](docs/plans/20261017-1602_local-agent-setup/design.md) and [implementation plan](docs/plans/20261017-1602_local-agent-setup/plan.md)
+- [Active plan (Argon)](docs/plans/20261017-1650_host-adoption-and-runtime-handoff/plan.md) and [plan handoff](docs/plans/20261017-1650_host-adoption-and-runtime-handoff/HANDOFF.md)
+- [Installer design](docs/plans/20261017-1602_local-agent-setup/design.md) and [installer stage plan](docs/plans/20261017-1602_local-agent-setup/plan.md)
 
 All 26 original dotfiles LLM assets were copied under
 `local_agent_bridge/resources/dotfiles_llms/`; one credential-shaped value in
