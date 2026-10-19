@@ -9,3 +9,6 @@
 - [x] Run offline tests, Ruff, Mypy, and Git whitespace checks; record environment-specific limitations.
 - [x] Update docs, handoff, and checklist with Sol Medium safety-review boundary.
 - [x] Commit bounded implementation and stop for Sol Medium review (`eff159c40f0929ce85f9ca9584e35753e60170c3`).
+- [x] Review model-load admission, arbitration, cooldown and ownership; reject standalone loads without a managed service (`717316713cb8a86a8a4d3f5465f31b146414766c`).
+- [x] Require coordinator-owned stop permission for automatic restart in config parsing and service preflight (`8d21630f1c5d953b1ec424fd7bb74434c5a10485`).
+- [x] Rerun all offline tests and static checks; record operational NO-GO pending independent environmental gates.
