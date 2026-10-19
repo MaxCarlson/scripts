@@ -79,8 +79,8 @@ Use an original small grep-equivalent fixture (label smoke, not canonical import
 - [x] Add exclusive byte-exact S0/S1 snapshots/hashes, patch evidence, actual changed-path audit and disposable verification copy. Raw receipt/session and separate report evidence retained. Caller supplies evidence directory; canonical core evidence layout wiring pending gate.
 - [x] Build exactly one canonical TrialResult per repetition; missing metrics unavailable. Prove S1 incorrect then S3 corrected leaves worker_first_pass false and status failed.
 - [x] Add read-only plan and guarded run/status/cleanup CLI with paired short/long arguments; associated help-catalog entry required by repository CLI conventions added narrowly.
-- [ ] Run real local model only when runtime reachable and explicitly executed; no loader configuration/service changes. Inspect actual roles/tool limits. No real run claimed if blocked.
-- [ ] Freeze task/verifier contract after first real task; commit and hand off to Flash/Luna.
+- [x] Original authorized real-model smoke pipeline run retained as timed_out under its 60-second budget; no shared runtime reconfiguration. Another live run requires separate authorization.
+- [x] Freeze corrected smoke verifier contract at suite 0.1.1 after offline P1 validation; commit and hand off to Flash/Luna. Corrected code has not had another live run.
 
 ## Remaining acceptance packages
 
@@ -114,3 +114,8 @@ Resource state uses one OS-held command lock and one durable unresolved receipt,
 104 agent tests passed, 2 Windows symlink-privilege skips; 80 core tests passed, Ruff/Mypy clean; both wheel imports/bundled plan and installed console entry passed. Canonical failed-S1 / repaired-S3 reload regression passed. No actual worker execution was performed; running runtime, model ID and explicit execution authorization remain the live gate. Source-backed terminal semantics documented in docs/TERMINATION.md. Keep early gate notes above as execution history; STATUS.md and HANDOFF.md describe the current state.
 
 Ruling: user request to implement the planned CLI includes its required associated help registration under REPO_LLM_INSTRUCTIONS.md; only one catalog entry and the owning module's synchronized version metadata were changed. No unrelated shared behavior changed. Ruling: source-proven terminal StructuredOutput with retained tool-calls is allowed only with matched requested schema and completed StructuredOutput part, plus idle session/completed timestamp/no unfinished tools; ambiguous structured data remains unconfirmed. Cost if wrong: conservative unresolved state blocks live acceptance rather than risking cleanup.
+
+
+## 2026-10-19 corrective checkpoint
+
+P1 corrections committed as 3560770b and a16d6194; full offline validation is green (agent 144 passed/2 Windows symlink skips, core 80 passed, Ruff/core Mypy clean). The original live trial is retained as timed_out; no new worker dispatched. The current verifier contract requires positive nonce-correlated completion evidence in addition to exit zero (smoke suite 0.1.1). Scope uncertainty cannot be credited as full first-attempt success. See docs/HANDOFF.md before fixture implementation. Gemini Flash owns routine expansion and the documented small core Markdown correction; high-risk lifecycle/attribution changes return to Sol. A new live benchmark requires separate authorization.

@@ -1,6 +1,6 @@
-# agent_benchmark — 1.0.0
+# agent_benchmark — 1.0.1
 
-A thin evaluator around the existing OpenCode/MCP runtime. Phase 1c's integrated pipeline is implemented and validated offline. Live acceptance is pending a running runtime, exact local model ID and explicit execution authorization.
+A thin evaluator around the existing OpenCode/MCP runtime. Phase 1c's integrated pipeline and P1 corrections are validated offline. The retained first live run was timed out under its 60-second budget; no new live run has been authorized for these corrections.
 
 ```powershell
 agent-bench plan
@@ -20,7 +20,9 @@ The worker sees a fresh public fixture. S0 and S1 are byte-exact archives outsid
 
 OpenCode 1.19.3 can leave `finish="tool-calls"` on a final StructuredOutput message. The adapter accepts that special case only with a matching requested JSON schema, a completed StructuredOutput tool, completed assistant timestamp, idle session and no incomplete tools. Arbitrary non-null structured data is insufficient. Normal abort/error confirmation and malformed-data handling preserve the corrective pass's fixes. See [source notes](docs/TERMINATION.md).
 
-The original smoke task is bundled at `agent_benchmark/tasks/py-grep-smoke` and works from installed wheels. This is trusted-fixture process isolation, not a hostile-code sandbox. Worker/report/scope audits beyond initial file scope checks belong to Phase 2.
+The original smoke task is bundled at `agent_benchmark/tasks/py-grep-smoke` and works from installed wheels. This is trusted-fixture process isolation, not a hostile-code sandbox. Snapshot and transcript scope audits retain known violations and uncertain operations separately. A verifier-passing task with uncertain scope is unscored, with unavailable scope compliance; known failures and expired task budgets retain their statuses. More complete worker-report auditing belongs to Phase 2.
+
+Verifier exit zero alone is insufficient. The runner supplies `AGENT_BENCH_COMPLETION_PATH` and `AGENT_BENCH_VERIFICATION_NONCE`; after every assertion passes, the trusted verifier writes a JSON completion receipt with matching `nonce`, `status="passed"` and positive integer `checks_completed`. A missing/invalid receipt with exit zero is an infrastructure error. Submitted `SystemExit` at import/call boundaries fails the smoke task. Suite version 0.1.1 records this corrected verifier contract; old artifacts are not rescored.
 
 Install both local packages into the intended environment:
 
@@ -28,7 +30,7 @@ Install both local packages into the intended environment:
 python -m pip install -e modules/benchmark_core -e modules/agent_benchmark
 ```
 
-`agent-bench` is a new console entry point (module version 1.0.0); reinstall/refresh wrappers when upgrading. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
+`agent-bench` was introduced at 1.0.0; install/refresh wrappers when first adopting that entry point. Existing editable installs pick up the 1.0.1 patch without wrapper changes. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
 
 Validation from repository root, using the actual repo virtualenv:
 

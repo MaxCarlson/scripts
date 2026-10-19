@@ -6,7 +6,7 @@
 - [x] Tested implementation commit da8dda2b and model-switch handoff (docs/HANDOFF.md).
 - [x] Task 1b original smoke fixture and hidden verifier (commit 85dca555; 37 passed, 1 skipped; Ruff clean).
 - [x] Full core history through user-authorized exact a1856215 merged (072683f1); runtime imports verified, reproduced shadow fixed.
-- [ ] Task 1c first real end-to-end canonical result, immutable S1 regression.
+- [x] Task 1c first real canonical result retained (timed_out); immutable S1/S3 regression passes.
 - [ ] Initial seven-task suite and auditing.
 - [ ] Repetitions, telemetry and real repeated-model reports (M1 acceptance).
 - [ ] Full ten-task suite.
@@ -20,4 +20,7 @@
 - [x] CLI requires -x/--execute; read-only previews; fresh-confirmation cleanup never rescoring results.
 - [x] OpenCode 1.19.3 StructuredOutput terminal semantics source-checked and ambiguous cases rejected.
 - [x] Both package wheels and actual virtualenv imports verified; CLI registered.
-- [ ] Explicit live authorization, exact local model ID and running shared runtime; then one real smoke trial.
+- [x] Original authorized live smoke trial recorded; no worker-first-attempt success claimed.
+- [x] P1 unknown-submission and positive-verifier-completion corrections; explicit uncertain scope scoring, full offline validation.
+- [x] Historical evidence preserved; deferred Markdown correction documented for Gemini Flash.
+- [ ] Post-correction live validation only with separate user authorization.

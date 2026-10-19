@@ -1,81 +1,50 @@
-# agent_benchmark handoff — integrated Phase 1c, scope audit corrected, live gate pending
+# agent_benchmark handoff — P1 corrective integration complete
 
 ## Workspace / commits
 
-- C:/Users/mcarls/src/scripts-agent-benchmark; branch agent/agent-benchmark. All changes local; no push/merge to main.
-- 072683f1: merged complete core history through exactly a185621552368e7ed4442659750a64ae7986ecda (authorized), preserving history.
-- f973ee67: reproduced/fixed core outer/inner package shadowing; canonical class identity preserved. benchmark-core version 0.1.1.
-- 5d9637b0: tested canonical integration, strict scoring, persistent dispatch blocking, installed CLI, packaged task. agent-benchmark version 1.0.0.
-- 2cfd66fd: associated required CLI help registration; scripts_help metadata 0.6.0.
-- Baseline corrective pass c299e1b2 preserved.
-- Current commit: scope audit corrective pass (transcript-based mutation auditing, external path detection, protected-file restoration detection, traceable re-audit utility, and regression tests).
+- C:/Users/mcarls/src/scripts-agent-benchmark; branch `agent/agent-benchmark`. Local commits only; no push or merge to main.
+- Baseline: `91d9d26b`, Gemini's scope-audit pass, preserved and reviewed.
+- `3560770b`: independent submission-start tracking and persistent unknown-submission blocking; module version 1.0.1.
+- `a16d6194ce9e949999807bb2ef3d9e115f8e4003`: positive verifier completion evidence, ownership journaling order, explicit scope uncertainty and regressions.
+- Earlier integration preserved: `072683f1` merged complete corrected core through exactly `a185621552368e7ed4442659750a64ae7986ecda`; `f973ee67` fixed canonical package shadowing; `5d9637b0` integrated pipeline/CLI; `2cfd66fd` registered CLI help. Corrective baseline `c299e1b2` remains intact.
 
 ## Current outcome
 
-The Phase 1c software pipeline is integrated and validated offline. The first live py-grep-smoke acceptance run completed at the infrastructure level (recording timed_out due to exceeding 60s budget).
+Both P1 findings reproduced with failing offline regressions before fixes. Full offline validation passes. No worker was dispatched and no shared service was contacted/reconfigured during this corrective pass. A new live benchmark requires separate user authorization.
 
-A scope auditing gap discovered during that run was addressed:
-- The filesystem snapshot audit authoritatively monitors observable S0/S1 workspace mutations, but misses external filesystem mutations (e.g., worker writing to `C:\Users\mcarls\AppData\Local\Temp\opencode\test_grep_smoke.py`) and mutations reverted before S1 capture.
-- Transcript auditing (`audit_transcript`) inspects raw OpenCode tool calls for mutation tools (`write`, `edit`, `patch`, `delete`, `rm`, `remove`).
-- Resolves relative paths against execution directory (`workdir` or workspace root), normalizes Windows case, and enforces directory boundary prefixes.
-- Identifies external mutations and edits to protected files (`instruction.md`, etc.).
-- Excludes read/inspection tools (`read`, `cat`, `glob`, `grep`, etc.) from mutation classification.
-- Classifies opaque commands (`bash`) or malformed tool inputs as `UnverifiableOperation` without guessing.
-- `audit_scope` combines snapshot and transcript audits into a unified `ScopeAudit` record, persisted to `scope-audit.json` and recorded in `checkpoints.json`.
-- `results.py` includes `scope_audit` in canonical `TrialResult.details` and respects strict scoring precedence (`timed_out` remains `timed_out` even when scope violations occur).
-- Non-destructive `reaudit_trial` supports offline verification of historical trial evidence without overwriting existing files. Verified against `reports/20261019T114143Z-dfd3bbc9`: correctly identifies 1 external violation (`test_grep_smoke.py`), 3 mutation events, and 3 unverifiable operations (`bash`). Historical acceptance run files in `reports/` were preserved untouched.
+The original live run remains at `reports/20261019T114143Z-dfd3bbc9`: exactly one canonical TrialResult, `timed_out` under the original 60-second task budget, with passing hidden verification. This is not a model task success and is not live validation of the corrected code. Read-only re-audit confirms 1 external path violation, 3 mutation events and 3 unverifiable shell operations. Historical results/evidence were not rewritten. All 32 files under reports/ retained identical path/content digest `e844621bb215b1c9b703fc83e49ba79f4a8d4355c147ff964d21ae9aeaa850b1`. Keep reports/ untracked and retain the live workspace until user review.
 
-## Interfaces to preserve
+## Interfaces and corrections to preserve
 
-- results.trial_from_attempt consumes frozen AttemptEvidence and returns canonical benchmark_core.TrialResult. Core alone owns RunInfo, MetricValue, persistence, statistics and reports. No duplicate schemas/renderers.
-- runner.run_benchmark: one task, one explicit variant, one repetition per invocation. Reserves stable persistent state before connecting; core save_run/append_result/summarize/generate_reports. Includes ordinary infrastructure/caller-cancellation outcomes as one canonical record when storage is writable.
-- Strict scoring order: uncertainty/missing evidence/execution errors -> infrastructure_error; expired worker budget -> timed_out; abnormal non-completed worker termination -> infrastructure_error; verifier infrastructure failures -> infrastructure_error; scope violation -> failed; otherwise independent verifier. Verifier pass never overrides these facts. Missing token/tool usage is unavailable, not zero.
-- Critical regression: failed canonical S1 persisted/reloaded remains failed after corrected S3 passes. No retry/repair path exists in Phase 1c. Cleanup is separate and never rewrites canonical scores.
-- state.command_lock uses OS file locking (no process/PID manager). pending.json survives exit and blocks all subsequent runs sharing the state dir, even with different report outputs. No stale-time/force override. Crash releases OS lock but retains receipt. Before-dispatch preparation failures safely release reservations when no submission was possible.
-- Default state ~/.local/share/agent-benchmark. Keep the same state dir across invocations; explicit separate state dirs are intended for isolated tests. Pending evidence pointer/diagnostics must not be removed to bypass unresolved execution.
-- runner.cleanup_trial previews unless execute=True. With execution, revalidates exact recorded handle/workspace and fresh remote termination; supported cancellation when needed. Unresolved confirmation preserves resources/blocking. Confirmed cleanup filesystem failure is separate from evaluation and may release dispatch blocking. No shared process termination.
-- bridge.py preserves corrective null/malformed-time, named aborted-error, worker report and sanitized MCP error behavior; transient HTTP observations recover within original task budget. No resubmission.
-- OpenCode 1.19.3 source confirms final StructuredOutput may retain tool-calls. This exception requires requested json_schema, completed StructuredOutput tool in final assistant, completed timestamp, idle session and no unfinished tools. Arbitrary non-null structured or ambiguous multi-assistant ordering cannot authorize cleanup. See TERMINATION.md for primary source links. Future version/schema changes require source/live evidence, not relaxed confirmation.
-- Byte-exact S0/S1 archives outside worker workspace; authoritative verification on disposable copy. Trusted fixtures only, not a hostile-code sandbox.
+- `DispatchGuard.submission_started` is set immediately before dispatch in `attempt.run_attempt`; runner reservation release uses this independent fact, never receipt emptiness. It remains true throughout an attempt. Empty/malformed receipts, transport failures, or lost receipts after possible submission keep pending.json and block later processes/output directories. Known receipt fields are merged with the initial uncertainty marker.
+- Lifecycle ownership is journaled before secondary dispatch.json evidence, retaining job/session/message IDs if that secondary write fails. Total storage failure still cannot guarantee evidence persistence; the pre-existing durable pending reservation must remain blocking.
+- `evidence.verify` requires both exit zero and a fresh completion.json receipt with matching nonce, status passed and a positive integer checks_completed. It passes AGENT_BENCH_COMPLETION_PATH and AGENT_BENCH_VERIFICATION_NONCE through the child environment. New verifiers must write that receipt only after all assertions pass. Diagnostic stdout, including a printed PASS, is not completion evidence.
+- py-grep-smoke catches BaseException specifically at submitted-module import and submitted-function call boundaries, classifying SystemExit/KeyboardInterrupt as incorrect implementation. Abrupt os._exit(0) yields infrastructure_error for missing completion evidence; it cannot pass. This remains trusted-fixture process isolation, not a sandbox against deliberate receipt forgery or arbitrary hostile code.
+- Smoke suite version is now 0.1.1 because the verifier contract changed. Historical 0.1.0 artifacts stay unchanged. Default task budget remains 60 seconds; cancellation grace remains 10 seconds. Do not pool different suite versions implicitly.
+- `ScopeAudit.to_dict()` retains separate snapshot_violations/transcript_violations and adds compliance: compliant, violated, or uncertain. Relative tool working directories resolve against worker workspace. Failed/non-completed mutations are uncertain because partial writes are possible. Missing/malformed transcripts are uncertain. OpenCode StructuredOutput is a completion-report tool, not opaque filesystem execution.
+- `results.trial_from_attempt` continues to use frozen S1 only. Known scope violations fail a verifier-passing attempt, but never overwrite earlier infrastructure_error or expired task timed_out. With only unverifiable scope operations or missing scope audit, a verifier-passing attempt becomes unscored; worker_first_pass and scope_compliance remain unavailable. Known verifier failures remain failed even when scope is uncertain. Known violations set scope_compliance=0. Violation counts are known detections, not a claim of exhaustive coverage.
+- Failed S1/corrected S3 canonical persistence regression still passes. Cleanup never changes scores and still requires fresh exact session/turn/tool reconciliation within a bounded deadline. No shared-process termination or general scheduler exists.
+- benchmark_core exclusively owns RunInfo, TrialResult, MetricValue, persistence, statistics and reporting. No core source changes in this pass. Tokens/tool telemetry remain unavailable when not collected.
 
-## Task location / CLI
+## Validation
 
-Original fixture bytes unchanged, relocated to agent_benchmark/tasks/py-grep-smoke for wheel package data. Tests and default CLI resolve the bundled location. Future fixtures belong beside it; update package-data patterns only if new asset types require it. Public worker files remain seed + instruction + manifest. Hidden verifiers never copied into worker tree.
-
-Installed console command agent-bench and python -m agent_benchmark support plan/run/status/cleanup; all args have short/long forms. run requires -x/--execute. plan/status/cleanup preview are read-only. Example live command (ONLY after separate authorization and runtime readiness):
+Interpreter: C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe. Commands from this worktree root:
 
 ```powershell
-agent-bench run -m EXACT_MODEL_ID -x -o reports
-```
-
-Inspect `agent-bench status -r reports/RUN_ID`. Cleanup preview `agent-bench cleanup -r reports/RUN_ID`; execute `... -x` only for owned trial resources. For pending worker recovery, cleanup can find the trial from the shared state receipt without -r. A corrupt or unknown-submission receipt fails closed; inspect retained diagnostics instead of blind retries.
-
-Canonical report structure: reports/<run_id>/{run.json,trials.jsonl,summary.json,summary.csv,report.md,evidence/trial-001/...}. Actual runtime/version/permission facts are saved in RunInfo metadata when available. Context/reasoning/warm-state fields remain explicitly unknown/unverified if not measured. No coordinator token savings claims.
-
-## Verification
-
-Actual interpreter: C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe. Both editable installs point to this worktree; normal and modules-first canonical imports verified for both modules. New console entry point requires reinstall/refresh when adopted elsewhere.
-
-From repository root:
-
-```powershell
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/agent_benchmark/tests -q -rs --basetemp=modules/agent_benchmark/.pytest_tmp_root/integration-final
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/benchmark_core/tests -q -rs
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/agent_benchmark/tests -q -rs --basetemp=modules/agent_benchmark/.pytest_tmp_root/p1-acceptance-final
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/benchmark_core/tests -q -rs --basetemp=modules/benchmark_core/.pytest_tmp_root/p1-acceptance-final
 & C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m ruff check modules/agent_benchmark/agent_benchmark modules/agent_benchmark/tests modules/agent_benchmark/__init__.py modules/benchmark_core
 & C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m mypy modules/benchmark_core/benchmark_core
 ```
 
-Agent: 113 passed, 2 skipped (Windows symlink privilege). Core: 80 passed; Ruff clean; Mypy clean in 9 files.
-Scope audit regression tests verify:
-- External temporary file write/edit detection.
-- Protected workspace file mutation and restoration detection (reverted edits).
-- Compliant workspace edits and non-mutating tool calls (reads/globs).
-- Malformed/unverifiable tool invocations recorded transparently as `UnverifiableOperation`.
-- Scoring precedence preservation: `timed_out` preserved over scope violations when budget expired.
-- Read-only `reaudit_trial` accurately audits historical run `reports/20261019T114143Z-dfd3bbc9` offline.
+Results: agent 144 passed, 2 skipped (Windows symlink privilege in evidence_test.py and lifecycle_test.py); core 80 passed; Ruff clean; core Mypy clean in 9 files. Initial RED runs reproduced empty-receipt release, early-exit false passes, scope-uncertainty scoring, relative-workdir misresolution, partial mutation uncertainty, malformed transcript compliance, missing ownership journal IDs and structured-report misclassification. Final checks have no known failures.
+
+## Deferred reporting correction — Gemini Flash
+
+File `modules/benchmark_core/benchmark_core/reporting.py`, function `render_report_md`: its resource-metric loop currently omits rows when available_count is zero. Render present all-unavailable metrics with mean/median N/A and available/total 0/N instead. Keep measured rows and JSON/CSV unchanged. Add offline reporter tests for entirely unavailable worker tokens and mixed availability. Keep canonical schemas unchanged. This is a small, isolated core-owner task; no core changes were made here.
 
 ## Next model allocation / copyable brief
 
-Architecture and offline integration are resolved. Gemini Flash can own routine Phase 2 fixture expansion; 6-Luna-High can own later bounded audit utilities. Keep live lifecycle/integration debugging with Sol Medium. No local-agent delegation, automated model router, generic scheduler or supervisor.
+Routine fixture expansion: Gemini Flash. Bounded audit improvements: Luna High. Return to Sol Medium for lifecycle, integration, verifier architecture or attribution issues. Work sequentially; no local-agent delegation or automated model routing.
 
-Copyable fixture brief: Work sequentially in C:/Users/mcarls/src/scripts-agent-benchmark on agent/agent-benchmark. Confirm cwd/branch/status; read this handoff and Phase 2 task descriptions in docs/plans/20261019-implementation/plan.md. Add only independently verifiable fixtures/tests under modules/agent_benchmark, using the bundled task structure. Preserve canonical scoring, lifecycle/resource ownership, CLI authorization and persistent unresolved blocking. Do not alter benchmark_core or unrelated modules, dispatch local development agents, start services, or claim real-model acceptance. Pin imported task revisions and retain actual attribution/licenses. Run focused tests plus module suite with -rs, commit tested work, update handoff. Return to Sol if verifier contracts/lifecycle architecture need changes. Live smoke acceptance still requires the user's runtime/model/authorization; do not silently treat it as done.
+Copyable next-agent instruction: Work in C:/Users/mcarls/src/scripts-agent-benchmark on agent/agent-benchmark. Confirm status/branch and read this handoff plus docs/plans/20261019-implementation/plan.md. Preserve commits 91d9d26b, 3560770b and a16d6194. Add routine Phase 2 fixtures only after the user chooses that next task; use the bundled task layout and positive verifier completion receipt contract. Do not alter shared schemas, weaken scope uncertainty/first-attempt scoring, retry a worker, repair live S1, modify reports/, or start/reconfigure services. Every live run needs separate authorization. Commit tested scoped work, update the handoff, and return to Sol for architecture/lifecycle problems.
