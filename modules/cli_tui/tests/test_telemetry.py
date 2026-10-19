@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import re
 
 from cli_tui.app import CliTuiApp
 from sysmon.sampler import ProcessStats, SystemStats, TelemetryDisplayMode
+
+_ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
 
 def test_telemetry_header_rendering_modes():
@@ -25,6 +28,7 @@ def test_telemetry_header_rendering_modes():
         pid=1234,
         name="worker",
         cpu_pct=15.0,
+        cpu_raw_pct=48.0,
         memory_rss_bytes=1024**3,
         memory_pct=6.25,
         gpu_load_pct=None,
@@ -39,21 +43,26 @@ def test_telemetry_header_rendering_modes():
     # 1. Full Mode (Option A: 2 lines)
     app.telemetry_mode = TelemetryDisplayMode.FULL
     screen_full = app.render_virtual_screen(height=20, width=80)
-    assert any("System: CPU 25%" in line and "RAM" in line for line in screen_full[:3])
+    clean_full = [_ANSI_RE.sub("", line) for line in screen_full]
+    assert any("System: CPU 25%" in line and "RAM" in line for line in clean_full[:3])
     assert any(
-        "Active: CPU 15%" in line and "worker" in line for line in screen_full[:3]
+        "Active: CPU 15%" in line and "worker" in line for line in clean_full[:3]
     )
+    # Verify ANSI color sequences are present in raw output
+    assert any("\x1b[" in line for line in screen_full[:2])
 
     # 2. Compact Mode (Option C: 1 line)
     app.telemetry_mode = TelemetryDisplayMode.COMPACT
     screen_compact = app.render_virtual_screen(height=20, width=80)
-    assert any("CPU: 25% (proc 15%)" in line for line in screen_compact[:2])
+    clean_compact = [_ANSI_RE.sub("", line) for line in screen_compact]
+    assert any("CPU: 25% (proc 15%)" in line for line in clean_compact[:2])
 
     # 3. Hidden Mode (0 lines)
     app.telemetry_mode = TelemetryDisplayMode.HIDDEN
     screen_hidden = app.render_virtual_screen(height=20, width=80)
+    clean_hidden = [_ANSI_RE.sub("", line) for line in screen_hidden]
     assert not any(
-        "System: CPU" in line or "CPU: 25%" in line for line in screen_hidden[:3]
+        "System: CPU" in line or "CPU: 25%" in line for line in clean_hidden[:3]
     )
 
 
@@ -129,10 +138,45 @@ def test_console_pane_renders_telemetry_lines():
     app = CliTuiApp(parser=p)
     app.workspace.create_pane(title="shell", pane_type=PaneType.CONSOLE)
     screen = app.render_virtual_screen(height=24, width=80)
+    clean_screen = [_ANSI_RE.sub("", line) for line in screen]
     # Header should contain telemetry
-    assert any("System: CPU" in line for line in screen[:3])
+    assert any("System: CPU" in line for line in clean_screen[:3])
     # And footer should have telemetry badge
     assert any("[t] Telemetry:" in line for line in screen[-3:])
+
+
+def test_telemetry_sub_one_percent_cpu_and_mb_ram():
+    parser = argparse.ArgumentParser(prog="testapp")
+    app = CliTuiApp(parser=parser)
+    mock_sys = SystemStats(
+        cpu_pct=15.0,
+        ram_used_bytes=40 * 1024**3,
+        ram_total_bytes=64 * 1024**3,
+        ram_pct=62.5,
+    )
+    # Low CPU (0.92% normalized, 29.5% core) and sub-1GB RAM (84.2 MB)
+    mock_proc = ProcessStats(
+        pid=89284,
+        name="python.exe",
+        cpu_pct=0.92,
+        cpu_raw_pct=29.5,
+        memory_rss_bytes=int(84.2 * 1024 * 1024),
+        memory_pct=0.13,
+        gpu_load_pct=None,
+    )
+    app._last_sys_stats = mock_sys
+    app._last_proc_stats = mock_proc
+    app.telemetry_mode = TelemetryDisplayMode.FULL
+
+    # In wide view (width >= 100), core attribution should be rendered
+    screen_wide = app.render_virtual_screen(height=20, width=120)
+    clean_wide = [_ANSI_RE.sub("", line) for line in screen_wide]
+    # Active CPU: 0.9% (30% core)
+    assert any("Active: CPU 0.9% (30% core)" in line for line in clean_wide[:3])
+    # RAM: 84.2 MB
+    assert any("84.2 MB" in line for line in clean_wide[:3])
+    # GPU fallback should be "GPU —" instead of "GPU N/A"
+    assert any("GPU —" in line for line in clean_wide[:3])
 
 
 def test_app_close_stops_sampler():

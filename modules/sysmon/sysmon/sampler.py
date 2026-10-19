@@ -41,6 +41,7 @@ class ProcessStats:
     num_threads: int = 1
     num_children: int = 0
     is_active: bool = True
+    cpu_raw_pct: float = 0.0
 
 
 def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
@@ -256,6 +257,7 @@ class HardwareSampler:
                         pid=target_pid,
                         name=proc_name,
                         cpu_pct=norm_cpu,
+                        cpu_raw_pct=total_raw_cpu,
                         memory_rss_bytes=total_rss,
                         memory_pct=mem_pct,
                         gpu_load_pct=None,
@@ -270,6 +272,7 @@ class HardwareSampler:
                             pid=target_pid,
                             name=self._process_stats.name,
                             cpu_pct=0.0,
+                            cpu_raw_pct=0.0,
                             memory_rss_bytes=self._process_stats.memory_rss_bytes,
                             memory_pct=self._process_stats.memory_pct,
                             gpu_load_pct=None,
@@ -284,6 +287,7 @@ class HardwareSampler:
                         pid=target_pid,
                         name=self._process_stats.name,
                         cpu_pct=0.0,
+                        cpu_raw_pct=0.0,
                         memory_rss_bytes=self._process_stats.memory_rss_bytes,
                         memory_pct=self._process_stats.memory_pct,
                         gpu_load_pct=None,

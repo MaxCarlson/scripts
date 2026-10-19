@@ -76,8 +76,8 @@ def test_inventory_json_contains_current_scan_counters_and_warm_reuse(tmp_path, 
     assert cold["counters"]["inventory_queries"] >= 1
     assert cold["counters"]["inventory_commits"] >= 1
     assert cold["settings"]["requested_workers"] >= 1
-    assert cold["settings"]["inventory_effective_workers"] == 1
-    assert cold["settings"]["memory_budget_mib"] == 512
+    assert cold["settings"]["memory_policy"]["requested"] == "auto"
+    assert cold["settings"]["memory_budget_mib"] >= 64
     assert {"enumeration", "metadata_lookup", "header_read", "publication"} <= cold[
         "coordinator_seconds"
     ].keys()

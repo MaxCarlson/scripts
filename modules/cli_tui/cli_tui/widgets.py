@@ -208,8 +208,13 @@ class MultiChoiceWidget(BaseWidget):
     """Multi-selection widget for list or choices."""
 
     def __init__(self, arg: CliArgument, options: Sequence[Any], value: Any) -> None:
-        super().__init__(arg, list(value) if isinstance(value, (list, tuple)) else [])
+        raw_val = list(value) if isinstance(value, (list, tuple)) else []
         self.options: Tuple[Any, ...] = tuple(options)
+        if self.options:
+            sanitized_val = [x for x in raw_val if x in self.options]
+        else:
+            sanitized_val = raw_val
+        super().__init__(arg, sanitized_val)
         self.cursor_option_idx: int = 0
 
     def handle_key(self, key: int) -> bool:

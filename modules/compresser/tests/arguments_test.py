@@ -188,3 +188,28 @@ def test_explicit_formats_support_both_without_impossible_png_or_avif_recipes():
 def test_all_does_not_expand_single_recipe_operations(operation):
     with pytest.raises(SystemExit):
         _parser().parse_args([operation, "-i", "library", "-f", "all"])
+
+
+def test_all_mode_generates_lossless_lossy_and_perceptual():
+    args = _parser().parse_args(["plan", "-i", "library", "-f", "webp", "-m", "all", "-q", "80"])
+    options = normalize_compression_arguments(args)
+    assert [(r.format, r.mode, r.quality) for r in options.recipes] == [
+        ("webp", "lossless", None),
+        ("webp", "lossy", 80),
+        ("webp", "perceptual", None),
+    ]
+
+
+def test_preview_all_formats_expands_without_png_lossy_error():
+    args = _parser().parse_args(["preview", "-i", "library", "-f", "all", "-q", "80"])
+    options = normalize_compression_arguments(args)
+    formats = {r.format for r in options.recipes}
+    assert {"auto", "webp", "jpeg", "avif", "png"} <= formats
+    # PNG should only have lossless
+    assert [r.mode for r in options.recipes if r.format == "png"] == ["lossless"]
+
+
+def test_measurement_options_memory_budget_defaults_to_auto():
+    args = _parser().parse_args(["estimate", "-i", "library"])
+    assert args.memory_budget_mib == "auto"
+

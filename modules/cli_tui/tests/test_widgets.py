@@ -163,3 +163,15 @@ def test_multichoice_widget_wrapping_lines():
     assert "keep" in lines[0]
     assert "<[ ] all>" in lines[1]
     assert not any(len(line) > 76 for line in lines)
+
+
+def test_multichoice_widget_filters_invalid_choices():
+    arg = CliArgument(
+        dest="format",
+        flags=("-f", "--format"),
+        choices=("auto", "webp", "jpeg"),
+    )
+    # Passed ['all', 'auto'] - 'all' is invalid for this widget's choices
+    widget = MultiChoiceWidget(arg, options=arg.choices, value=["all", "auto"])
+    assert widget.value == ["auto"]
+

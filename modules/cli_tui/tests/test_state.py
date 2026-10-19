@@ -179,3 +179,31 @@ def test_form_state_nargs_string_tokens_splitting():
         "-u",
         "https://site/2",
     ]
+
+
+def test_copy_matching_form_values_filters_choices():
+    from cli_tui.state import copy_matching_form_values
+
+    # Source parser accepts 'all'
+    src_parser = argparse.ArgumentParser(prog="src")
+    src_parser.add_argument("-f", "--format", nargs="+", choices=("auto", "webp", "all"))
+    src_parser.add_argument("-m", "--mode", choices=("lossless", "lossy", "both"))
+
+    # Target parser does NOT accept 'all' or 'both'
+    tgt_parser = argparse.ArgumentParser(prog="tgt")
+    tgt_parser.add_argument("-f", "--format", nargs="+", choices=("auto", "webp"))
+    tgt_parser.add_argument("-m", "--mode", choices=("lossless", "lossy"))
+
+    src_form = FormState(introspect_parser(src_parser))
+    src_form.set_value("format", ["all", "auto"])
+    src_form.set_value("mode", "both")
+
+    tgt_form = FormState(introspect_parser(tgt_parser))
+    copied = copy_matching_form_values(src_form, tgt_form)
+
+    # 'all' was stripped, 'auto' was kept
+    assert tgt_form.get_value("format") == ["auto"]
+    # 'both' is not in target choices, so mode was not copied
+    assert tgt_form.get_value("mode") is None
+    assert copied == 1
+

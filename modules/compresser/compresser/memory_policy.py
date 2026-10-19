@@ -138,7 +138,7 @@ class MemoryPolicy:
         return self._allowance
 
 
-def resolve_memory_policy(value=512, *, provider=None) -> MemoryPolicy:
+def resolve_memory_policy(value="auto", *, provider=None) -> MemoryPolicy:
     try:
         value = parse_memory_budget(value)
     except argparse.ArgumentTypeError as exc:

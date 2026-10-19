@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .console_pane import ConsolePaneRunner
-from .process_runner import OutputViewport, ProcessRunner
+from .process_runner import OutputViewport, ProcessRunner, _visible_len, wrap_ansi_line
 from .schema import CliCommand, introspect_parser
 from .state import (
     FormState,
@@ -39,6 +39,38 @@ except ImportError:
         FULL = "full"
         COMPACT = "compact"
         HIDDEN = "hidden"
+
+
+def _color_metric(
+    val_str: str,
+    pct: Optional[float] = None,
+    high: float = 85.0,
+    mid: float = 60.0,
+) -> str:
+    """Apply ANSI threshold colors: green (< mid), yellow (mid <= x < high), red (>= high)."""
+    if pct is None or val_str in ("—", "N/A"):
+        return f"\x1b[90m{val_str}\x1b[0m"
+    if pct >= high:
+        return f"\x1b[1;31m{val_str}\x1b[0m"
+    elif pct >= mid:
+        return f"\x1b[1;33m{val_str}\x1b[0m"
+    else:
+        return f"\x1b[1;32m{val_str}\x1b[0m"
+
+
+def _build_telemetry_bar(
+    prefix: str, content: str, suffix: str, fill_char: str, width: int
+) -> str:
+    """Construct a full-width box line respecting embedded ANSI escape sequences."""
+    overhead = _visible_len(prefix) + 1 + _visible_len(suffix)
+    if width <= overhead:
+        return (prefix + suffix)[:width]
+    max_inner = max(0, width - overhead)
+    if _visible_len(content) > max_inner:
+        content = wrap_ansi_line(content, max_inner)[0]
+    vis = _visible_len(content)
+    pad = max(0, max_inner - vis)
+    return f"{prefix}{content} " + (fill_char * pad) + suffix
 
 
 def addstr_ansi(stdscr: Any, y: int, x: int, line: str, max_x: int) -> None:
@@ -1167,91 +1199,134 @@ class CliTuiApp:
         sys_s: Optional[Any] = self._last_sys_stats
         proc_s: Optional[Any] = self._last_proc_stats
 
-        sys_cpu = f"{sys_s.cpu_pct:.0f}%" if sys_s else "—"
+        sep = "\x1b[90m│\x1b[0m"
+
+        # 1. System telemetry formatting
         if sys_s:
+            sys_cpu = _color_metric(f"{sys_s.cpu_pct:.0f}%", sys_s.cpu_pct)
             ram_gb = sys_s.ram_used_bytes / (1024**3)
             ram_tot = sys_s.ram_total_bytes / (1024**3)
-            sys_ram_wide = f"{ram_gb:.1f} / {ram_tot:.1f} GB ({sys_s.ram_pct:.0f}%)"
-            sys_ram_std = f"{ram_gb:.1f}G ({sys_s.ram_pct:.0f}%)"
-            sys_ram_narrow = f"{sys_s.ram_pct:.0f}%"
+            sys_ram_wide = (
+                f"{_color_metric(f'{ram_gb:.1f} / {ram_tot:.1f} GB', sys_s.ram_pct)} "
+                f"\x1b[90m({sys_s.ram_pct:.0f}%)\x1b[0m"
+            )
+            sys_ram_std = (
+                f"{_color_metric(f'{ram_gb:.1f}G', sys_s.ram_pct)} "
+                f"\x1b[90m({sys_s.ram_pct:.0f}%)\x1b[0m"
+            )
+            sys_ram_narrow = _color_metric(f"{sys_s.ram_pct:.0f}%", sys_s.ram_pct)
+
             if sys_s.gpu_load_pct is not None:
                 vram_gb = (sys_s.gpu_mem_used_bytes or 0) / (1024**3)
                 vram_tot = (sys_s.gpu_mem_total_bytes or 0) / (1024**3)
                 temp_str = f" {sys_s.gpu_temp_c:.0f}°C" if sys_s.gpu_temp_c else ""
                 gpu_name = f"{sys_s.gpu_name}: " if sys_s.gpu_name else ""
-                sys_gpu_wide = f"{sys_s.gpu_load_pct:.0f}% ({gpu_name}{vram_gb:.1f} / {vram_tot:.1f} GB{temp_str})"
-                sys_gpu_std = f"{sys_s.gpu_load_pct:.0f}% ({vram_gb:.1f}G{temp_str})"
-                sys_gpu_narrow = f"{sys_s.gpu_load_pct:.0f}%"
+                gpu_load_col = _color_metric(
+                    f"{sys_s.gpu_load_pct:.0f}%", sys_s.gpu_load_pct
+                )
+                sys_gpu_wide = f"{gpu_load_col} \x1b[90m({gpu_name}{vram_gb:.1f} / {vram_tot:.1f} GB{temp_str})\x1b[0m"
+                sys_gpu_std = (
+                    f"{gpu_load_col} \x1b[90m({vram_gb:.1f}G{temp_str})\x1b[0m"
+                )
+                sys_gpu_narrow = gpu_load_col
             else:
-                sys_gpu_wide = "N/A"
-                sys_gpu_std = "N/A"
-                sys_gpu_narrow = "N/A"
+                sys_gpu_wide = sys_gpu_std = sys_gpu_narrow = "\x1b[90mN/A\x1b[0m"
         else:
-            sys_ram_wide = sys_ram_std = sys_ram_narrow = "—"
-            sys_gpu_wide = sys_gpu_std = sys_gpu_narrow = "—"
+            sys_cpu = "\x1b[90m—\x1b[0m"
+            sys_ram_wide = sys_ram_std = sys_ram_narrow = "\x1b[90m—\x1b[0m"
+            sys_gpu_wide = sys_gpu_std = sys_gpu_narrow = "\x1b[90m—\x1b[0m"
 
+        # 2. Process telemetry formatting
         if proc_s and proc_s.is_active:
-            p_cpu = f"{proc_s.cpu_pct:.0f}%"
-            p_ram_gb = proc_s.memory_rss_bytes / (1024**3)
-            p_ram_wide = f"{p_ram_gb:.2f} GB ({proc_s.memory_pct:.0f}%)"
-            p_ram_std = f"{p_ram_gb:.1f}G"
-            p_ram_narrow = f"{p_ram_gb:.1f}G"
-            p_gpu = (
-                f"{proc_s.gpu_load_pct:.0f}%"
-                if proc_s.gpu_load_pct is not None
-                else "N/A"
+            p_cpu_text = (
+                f"{proc_s.cpu_pct:.1f}%"
+                if proc_s.cpu_pct < 10.0
+                else f"{proc_s.cpu_pct:.0f}%"
             )
-            p_info = f"(pid: {proc_s.pid} {proc_s.name})"
-            p_info_short = f"({proc_s.name})"
+            p_cpu_col = _color_metric(p_cpu_text, proc_s.cpu_pct)
+            raw_core = getattr(proc_s, "cpu_raw_pct", 0.0)
+            if raw_core >= 1.0:
+                p_cpu_wide = f"{p_cpu_col} \x1b[90m({raw_core:.0f}% core)\x1b[0m"
+            else:
+                p_cpu_wide = p_cpu_col
+            p_cpu_std = p_cpu_col
+            p_cpu_narrow = p_cpu_col
+
+            if proc_s.memory_rss_bytes < 1024**3:
+                rss_mb = proc_s.memory_rss_bytes / (1024**2)
+                p_ram_wide = (
+                    f"{_color_metric(f'{rss_mb:.1f} MB', proc_s.memory_pct)} "
+                    f"\x1b[90m({proc_s.memory_pct:.1f}%)\x1b[0m"
+                )
+                p_ram_std = _color_metric(f"{rss_mb:.0f}M", proc_s.memory_pct)
+                p_ram_narrow = _color_metric(f"{rss_mb:.0f}M", proc_s.memory_pct)
+            else:
+                p_ram_gb = proc_s.memory_rss_bytes / (1024**3)
+                p_ram_wide = (
+                    f"{_color_metric(f'{p_ram_gb:.2f} GB', proc_s.memory_pct)} "
+                    f"\x1b[90m({proc_s.memory_pct:.0f}%)\x1b[0m"
+                )
+                p_ram_std = _color_metric(f"{p_ram_gb:.1f}G", proc_s.memory_pct)
+                p_ram_narrow = _color_metric(f"{p_ram_gb:.1f}G", proc_s.memory_pct)
+
+            p_gpu = (
+                _color_metric(f"{proc_s.gpu_load_pct:.0f}%", proc_s.gpu_load_pct)
+                if proc_s.gpu_load_pct is not None
+                else "\x1b[90m—\x1b[0m"
+            )
+            p_info = f"\x1b[90m(pid: {proc_s.pid} {proc_s.name})\x1b[0m"
+            p_info_short = f"\x1b[90m({proc_s.name})\x1b[0m"
         elif proc_s and not proc_s.is_active:
-            p_cpu = "0%"
-            p_ram_wide = p_ram_std = p_ram_narrow = "0.0G"
-            p_gpu = "N/A"
-            p_info = "(done)"
-            p_info_short = "(done)"
+            p_cpu_wide = p_cpu_std = p_cpu_narrow = "\x1b[90m0%\x1b[0m"
+            p_ram_wide = p_ram_std = p_ram_narrow = "\x1b[90m0.0M\x1b[0m"
+            p_gpu = "\x1b[90m—\x1b[0m"
+            p_info = "\x1b[90m(done)\x1b[0m"
+            p_info_short = "\x1b[90m(done)\x1b[0m"
         else:
-            p_cpu = "—"
-            p_ram_wide = p_ram_std = p_ram_narrow = "—"
-            p_gpu = "—"
-            p_info = "[idle]"
-            p_info_short = "[idle]"
+            p_cpu_wide = p_cpu_std = p_cpu_narrow = "\x1b[90m—\x1b[0m"
+            p_ram_wide = p_ram_std = p_ram_narrow = "\x1b[90m—\x1b[0m"
+            p_gpu = "\x1b[90m—\x1b[0m"
+            p_info = "\x1b[90m[idle]\x1b[0m"
+            p_info_short = "\x1b[90m[idle]\x1b[0m"
 
         if self.telemetry_mode == TelemetryDisplayMode.FULL:
-            if width >= 100:
-                line1_content = (
-                    f" System: CPU {sys_cpu} │ RAM {sys_ram_wide} │ GPU {sys_gpu_wide} "
-                )
-                line2_content = (
-                    f"  Active: CPU {p_cpu} │ RAM {p_ram_wide} │ GPU {p_gpu} {p_info} "
-                )
-            elif width >= 80:
-                line1_content = (
-                    f" System: CPU {sys_cpu} │ RAM {sys_ram_std} │ GPU {sys_gpu_std} "
-                )
-                line2_content = f"  Active: CPU {p_cpu} │ RAM {p_ram_std} │ GPU {p_gpu} {p_info_short} "
-            else:
-                line1_content = (
-                    f" SYS: C {sys_cpu} M {sys_ram_narrow} G {sys_gpu_narrow} "
-                )
-                line2_content = f"  APP: C {p_cpu} M {p_ram_narrow} G {p_gpu} "
+            lbl_sys = "\x1b[1;36mSystem:\x1b[0m"
+            lbl_act = "\x1b[1;32mActive:\x1b[0m"
+            lbl_cpu = "\x1b[37mCPU\x1b[0m"
+            lbl_ram = "\x1b[37mRAM\x1b[0m"
+            lbl_gpu = "\x1b[37mGPU\x1b[0m"
 
-            bar1 = ("┌─" + line1_content)[: max(1, width - 1)].ljust(
-                max(1, width - 1), "─"
-            ) + "┐"
-            bar2 = ("│" + line2_content)[: max(1, width - 1)].ljust(
-                max(1, width - 1), "─"
-            ) + "│"
+            if width >= 100:
+                line1_content = f"{lbl_sys} {lbl_cpu} {sys_cpu} {sep} {lbl_ram} {sys_ram_wide} {sep} {lbl_gpu} {sys_gpu_wide}"
+                line2_content = f"{lbl_act} {lbl_cpu} {p_cpu_wide} {sep} {lbl_ram} {p_ram_wide} {sep} {lbl_gpu} {p_gpu} {p_info}"
+            elif width >= 80:
+                line1_content = f"{lbl_sys} {lbl_cpu} {sys_cpu} {sep} {lbl_ram} {sys_ram_std} {sep} {lbl_gpu} {sys_gpu_std}"
+                line2_content = f"{lbl_act} {lbl_cpu} {p_cpu_std} {sep} {lbl_ram} {p_ram_std} {sep} {lbl_gpu} {p_gpu} {p_info_short}"
+            else:
+                lbl_sys_nar = "\x1b[1;36mSYS:\x1b[0m"
+                lbl_act_nar = "\x1b[1;32mAPP:\x1b[0m"
+                line1_content = f"{lbl_sys_nar} \x1b[37mC\x1b[0m {sys_cpu} \x1b[37mM\x1b[0m {sys_ram_narrow} \x1b[37mG\x1b[0m {sys_gpu_narrow}"
+                line2_content = f"{lbl_act_nar} \x1b[37mC\x1b[0m {p_cpu_narrow} \x1b[37mM\x1b[0m {p_ram_narrow} \x1b[37mG\x1b[0m {p_gpu}"
+
+            bar1 = _build_telemetry_bar("┌─ ", line1_content, "┐", "─", width)
+            bar2 = _build_telemetry_bar("│  ", line2_content, "│", "─", width)
             return [bar1, bar2]
 
         elif self.telemetry_mode == TelemetryDisplayMode.COMPACT:
             if width >= 70:
-                content = f" CPU: {sys_cpu} (proc {p_cpu}) │ RAM: {sys_ram_std} (proc {p_ram_std}) │ GPU: {sys_gpu_std} (proc {p_gpu}) "
+                content = (
+                    f"\x1b[37mCPU:\x1b[0m {sys_cpu} \x1b[90m(proc {p_cpu_std})\x1b[0m {sep} "
+                    f"\x1b[37mRAM:\x1b[0m {sys_ram_std} \x1b[90m(proc {p_ram_std})\x1b[0m {sep} "
+                    f"\x1b[37mGPU:\x1b[0m {sys_gpu_std} \x1b[90m(proc {p_gpu})\x1b[0m"
+                )
             else:
-                content = f" C: {sys_cpu} ({p_cpu}) │ M: {sys_ram_narrow} ({p_ram_narrow}) │ G: {sys_gpu_narrow} "
+                content = (
+                    f"\x1b[37mC:\x1b[0m {sys_cpu} \x1b[90m({p_cpu_narrow})\x1b[0m {sep} "
+                    f"\x1b[37mM:\x1b[0m {sys_ram_narrow} \x1b[90m({p_ram_narrow})\x1b[0m {sep} "
+                    f"\x1b[37mG:\x1b[0m {sys_gpu_narrow}"
+                )
 
-            bar = ("┌─" + content)[: max(1, width - 1)].ljust(
-                max(1, width - 1), "─"
-            ) + "┐"
+            bar = _build_telemetry_bar("┌─ ", content, "┐", "─", width)
             return [bar]
 
         return []

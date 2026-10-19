@@ -57,6 +57,8 @@ def test_process_tree_attribution_and_normalization():
         assert proc_stats.is_active is True
         assert proc_stats.cpu_pct > 0.0
         assert proc_stats.cpu_pct <= 100.0
+        assert proc_stats.cpu_raw_pct > 0.0
+        assert proc_stats.cpu_raw_pct >= proc_stats.cpu_pct
         assert proc_stats.memory_rss_bytes > 0
     finally:
         proc.terminate()

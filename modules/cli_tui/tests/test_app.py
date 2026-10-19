@@ -210,3 +210,31 @@ def test_form_run_button_and_ctrl_r_shortcut():
     app.process_key(18)  # Ctrl+R
     assert app.screen_mode == TuiScreenMode.RUNNING
     assert app.runner is not None
+
+
+def test_form_argument_inspector_displays_help_and_details():
+    parser = argparse.ArgumentParser(prog="mytool")
+    parser.add_argument(
+        "-f", "--format",
+        choices=("auto", "webp", "jpeg"),
+        default="auto",
+        help="Target encoding format for images",
+    )
+    app = CliTuiApp(parser=parser)
+    app._open_form_for_command(app.root_command)
+    assert app.screen_mode == TuiScreenMode.FORM
+
+    # Cursor on first widget (--format)
+    app.form_cursor = 0
+    screen = "\n".join(app.render_virtual_screen(height=24, width=80))
+    assert "Option: -f, --format" in screen
+    assert "Help:    Target encoding format for images" in screen
+    assert "Choices: auto, webp, jpeg" in screen
+    assert "Default: auto" in screen
+
+    # Move cursor to [ Run Command ] button
+    app.form_cursor = len(app.form_widgets)
+    screen_btn = "\n".join(app.render_virtual_screen(height=24, width=80))
+    assert "Action: Run Command" in screen_btn
+    assert "Execute this command in the background" in screen_btn
+

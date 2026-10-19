@@ -158,7 +158,7 @@ class CompressionOptions:
             values["sample"] = None if self.sample == "all" else self.sample
         values["threads"] = self.threads
         values["memory_budget_mib"] = (
-            self.memory_budget if self.memory_budget is not None else 512
+            self.memory_budget if self.memory_budget is not None else "auto"
         )
         values["cache_policy"] = self.cache_policy
         values["cache_file"] = self.cache_file
@@ -313,7 +313,7 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     _recipe_options(
         plan,
         all_formats=True,
-        mode_choices=("lossless", "lossy", "perceptual", "both"),
+        mode_choices=("lossless", "lossy", "perceptual", "both", "all"),
         formats_default=None,
         mode_default=None,
         encoder_default=None,
@@ -335,7 +335,7 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     _recipe_options(
         estimate,
         all_formats=True,
-        mode_choices=("lossless", "lossy", "perceptual", "both"),
+        mode_choices=("lossless", "lossy", "perceptual", "both", "all"),
         formats_default=None,
         mode_default=None,
         encoder_default=None,
@@ -378,7 +378,7 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
         formats_required=True,
         all_formats=True,
         mode_default="both",
-        mode_choices=("lossless", "lossy", "perceptual", "both"),
+        mode_choices=("lossless", "lossy", "perceptual", "both", "all"),
     )
     compare.add_argument("-s", "--sample", type=_sample_value, default="all")
     compare.add_argument("-z", "--seed", type=int, default=0)
@@ -392,7 +392,14 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
         "preview", help="Write external full-resolution preview copies."
     )
     _common(preview, owner)
-    preview.add_argument("-f", "--format", nargs="+", choices=FORMATS, default=["webp"])
+    preview.add_argument(
+        "-f",
+        "--format",
+        nargs="+",
+        choices=(*FORMATS, "all"),
+        default=["webp"],
+        help="Target formats; all includes AUTO, WebP, JPEG, AVIF and PNG.",
+    )
     preview.add_argument(
         "-q", "--quality", type=parse_quality, action="extend", nargs="+"
     )
@@ -459,7 +466,7 @@ def _measurement_options(
         "--memory-budget",
         dest="memory_budget_mib",
         type=parse_memory_budget,
-        default=512,
+        default="auto",
     )
     parser.add_argument(
         "-k",
@@ -539,7 +546,12 @@ def normalize_compression_arguments(
         raise ValueError("File-depth inventory does not support URL filters")
 
     mode_value = getattr(namespace, "mode", None) or "lossless"
-    modes = ("lossless", "lossy") if mode_value == "both" else (mode_value,)
+    if mode_value == "both":
+        modes = ("lossless", "lossy")
+    elif mode_value == "all":
+        modes = ("lossless", "lossy", "perceptual")
+    else:
+        modes = (mode_value,)
     requested_formats = getattr(namespace, "format", None) or (
         ["webp"] if operation in ("plan", "estimate") else ["auto"]
     )
@@ -581,8 +593,10 @@ def normalize_compression_arguments(
             )
             preview_qualities = qualities or (() if image_format == "png" else (90, 80))
             for q in preview_qualities:
-                if image_format == "png" and qualities:
-                    raise ValueError("PNG does not support a lossy preview quality")
+                if image_format == "png":
+                    if qualities and not expand_all:
+                        raise ValueError("PNG does not support a lossy preview quality")
+                    continue
                 recipes.append(
                     RecipeSpec(
                         image_format, "lossy", q, perceptual_target, encoder, effort
@@ -595,21 +609,21 @@ def normalize_compression_arguments(
             if (
                 image_format == "avif"
                 and mode == "lossless"
-                and (expand_all or mode_value == "both")
+                and (expand_all or mode_value in ("both", "all"))
             ):
                 continue
             if (
                 image_format == "png"
                 and mode != "lossless"
-                and (expand_all or mode_value == "both")
+                and (expand_all or mode_value in ("both", "all"))
             ):
                 continue
-            if mode == "lossless":
-                if qualities and len(modes) == 1:
-                    raise ValueError("Quality is not valid for lossless mode")
-                q_values = (None,)
+            if mode == "lossy":
+                q_values = qualities or (80,)
             else:
-                q_values = qualities or ((80,) if mode == "lossy" else (None,))
+                if qualities and len(modes) == 1:
+                    raise ValueError(f"Quality is not valid for {mode} mode")
+                q_values = (None,)
             for q in q_values:
                 if mode == "lossy" and image_format == "png":
                     raise ValueError("PNG does not support a lossy quality recipe")

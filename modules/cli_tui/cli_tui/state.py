@@ -346,11 +346,20 @@ def copy_matching_form_values(
     if source is None or target is None:
         return 0
 
-    target_dests = {arg.dest for arg in target.command.arguments}
+    target_args_by_dest = {arg.dest: arg for arg in target.command.arguments}
     copied = 0
     for dest, val in source.values.items():
-        if dest in target_dests:
+        if dest in target_args_by_dest:
             if val is not None and val != "":
+                arg = target_args_by_dest[dest]
+                if arg.choices:
+                    if isinstance(val, (list, tuple)):
+                        filtered = [item for item in val if item in arg.choices]
+                        if not filtered:
+                            continue
+                        val = filtered
+                    elif val not in arg.choices:
+                        continue
                 target.set_value(dest, val)
                 copied += 1
     return copied
