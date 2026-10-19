@@ -67,9 +67,9 @@ Workspace interfaces: DispatchGuard.allocate(root) -> OwnedWorkspace, record(dec
 
 Files: tasks/py-grep-smoke/{task.json,instruction.md,seed/grep.py,verifier/check.py}, tests/fixture_test.py.
 Use an original small grep-equivalent fixture (label smoke, not canonical imported py-grep). Worker implements grep(pattern: str, lines: list[str], ignore_case: bool=False) -> list[str], substring match, stable order, no regex. Seed raises NotImplementedError. Only grep.py editable; instruction/public tests protected. Default task budget 60 seconds. Manifest fields: task_id, suite_version, category, allowed_paths, forbidden_paths, time_budget_seconds, verifier. Paths are relative, no .. or absolute names. Verifier is coordinator-only and invoked as Python check.py FROZEN_WORKSPACE, exit 0 pass, 1 wrong solution, 2 verifier infrastructure error. Use deterministic stdlib tests, subprocess timeout, no runtime install. Verify empty strings, Unicode, case option, duplicates and order with a known-good test-only solution. No production reference answer, no generic fixture loader needed yet. No runtime/MCP calls, no result models, no changes to lifecycle without returning to Sol.
-- [ ] Seed fails, known-good passes; infrastructure and timeout failures distinguished.
-- [ ] Pin original fixture identity/version; no false upstream attribution. Source-import/licensing work belongs to 2a.
-- [ ] Commit, record handoff; stop for Sol integration and tested core Gate 1 SHA.
+- [x] Seed fails, known-good passes; infrastructure and timeout failures distinguished.
+- [x] Pin original fixture identity/version; no false upstream attribution. Source-import/licensing work belongs to 2a.
+- [x] Commit, record handoff; stop for Sol integration and tested core Gate 1 SHA.
 
 ## Task 1c: end-to-end gate (return to Sol)
 
