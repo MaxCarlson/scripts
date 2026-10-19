@@ -222,3 +222,66 @@ async def test_transition_model_load_failure_no_blind_retry() -> None:
             load_timeout=5.0,
             poll_interval=0.01,
         )
+
+
+def test_resolve_model_provider_and_key() -> None:
+    from agent_benchmark.models_lifecycle import resolve_model_provider_and_key
+
+    # Gemini via agy aliases and prefixes
+    assert resolve_model_provider_and_key("gemini-3.8-flash") == ("gemini", "gemini-3.8-flash-high")
+    assert resolve_model_provider_and_key("gemini-4-Argon") == ("gemini", "gemini-4-argon-medium")
+    assert resolve_model_provider_and_key("gemini/gemini-4-argon-high") == ("gemini", "gemini-4-argon-high")
+    assert resolve_model_provider_and_key("gemini") == ("gemini", "gemini-4-argon-medium")
+
+    # Codex aliases and prefixes
+    assert resolve_model_provider_and_key("ChatGpt-6.1-sol") == ("codex", "gpt-6.1-sol")
+    assert resolve_model_provider_and_key("6-sol") == ("codex", "gpt-6-sol")
+    assert resolve_model_provider_and_key("6-luna") == ("codex", "gpt-6-luna")
+    assert resolve_model_provider_and_key("6-Astra") == ("codex", "gpt-6-astra")
+    assert resolve_model_provider_and_key("5.6-Luna") == ("codex", "gpt-5.6-luna")
+    assert resolve_model_provider_and_key("5.6-Terra") == ("codex", "gpt-5.6-terra")
+    assert resolve_model_provider_and_key("5.6-Sol") == ("codex", "gpt-5.6-sol")
+    assert resolve_model_provider_and_key("codex/gpt-6-astra") == ("codex", "gpt-6-astra")
+    assert resolve_model_provider_and_key("codex") == ("codex", "gpt-6.1-sol")
+
+    # Local LM Studio models
+    assert resolve_model_provider_and_key("qwen38-27b-q4km") == ("lmstudio", "qwen38-27b-q4km")
+    assert resolve_model_provider_and_key("lmstudio/qwen38-27b-q6k") == ("lmstudio", "qwen38-27b-q6k")
+
+
+@pytest.mark.asyncio
+async def test_list_gemini_and_codex_models(tmp_path) -> None:
+    from agent_benchmark.models_lifecycle import list_codex_models, list_gemini_models
+
+    async def mock_agy_runner(cmd: list[str]) -> tuple[int, str, str]:
+        out = (
+            "Fetching available models...\n"
+            "gemini-4-argon-medium\tGemini 4 Argon (Medium)\n"
+            "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n"
+            "claude-opus-5-5-low\tClaude Opus 5.5 (Low)\n"
+        )
+        return 0, out, ""
+
+    gem_models = await list_gemini_models(runner=mock_agy_runner)
+    assert len(gem_models) == 2
+    assert gem_models[0].model_key == "gemini-4-argon-medium"
+    assert gem_models[1].model_key == "gemini-3.8-flash-high"
+
+    cache_file = tmp_path / "models_cache.json"
+    cache_file.write_text(
+        json.dumps(
+            {
+                "models": [
+                    {"slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "description": "Workhorse"},
+                    {"slug": "gpt-6-astra", "display_name": "GPT-6-Astra", "description": "Frontier"},
+                    {"slug": "codex-auto-review", "display_name": "Codex Auto Review"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    cdx_models = await list_codex_models(cache_path=cache_file)
+    assert len(cdx_models) == 2
+    assert cdx_models[0].model_key == "gpt-6.1-sol"
+    assert cdx_models[1].model_key == "gpt-6-astra"
+

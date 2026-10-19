@@ -25,6 +25,8 @@ extend-exclude = [".pytest_tmp_root"]
 
 [project.scripts]
 agent-bench = "agent_benchmark.cli:main"
+agent-benchmark = "agent_benchmark.cli:main"
+agent_benchmark = "agent_benchmark.cli:main"
 
 [tool.setuptools.package-data]
 agent_benchmark = ["tasks/**/*"]

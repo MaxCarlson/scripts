@@ -32,7 +32,9 @@ from .diagnostic import run_diagnostic
 from .evidence import EVIDENCE_LIMITS, load_task
 from .models_lifecycle import (
     get_loaded_models,
+    list_codex_models,
     list_downloaded_models,
+    list_gemini_models,
 )
 from .runner import BUDGET_PROFILES, cleanup_trial, run_benchmark
 from .scheduler import ExperimentScheduler, expand_experiment_plan
@@ -159,9 +161,15 @@ def parser() -> argparse.ArgumentParser:
     )
     models_actions = models_p.add_subparsers(dest="models_command")
     models_list = models_actions.add_parser(
-        "list", help="List downloaded and loaded models"
+        "list", help="List available models across LM Studio, Gemini (via agy), and Codex"
     )
-    models_list.add_argument("-p", "--provider", default="lmstudio")
+    models_list.add_argument(
+        "-p",
+        "--provider",
+        choices=("all", "lmstudio", "gemini", "codex"),
+        default="all",
+        help="Filter models by provider (default: all)",
+    )
     models_list.add_argument("-u", "--base-url", default="http://127.0.0.1:1234")
     models_list.add_argument("--format", choices=("table", "json"), default="table")
 
@@ -327,17 +335,43 @@ def parser() -> argparse.ArgumentParser:
 def _handle_models(args: argparse.Namespace) -> int:
     cmd = getattr(args, "models_command", None) or "list"
     if cmd == "list":
+        prov = getattr(args, "provider", "all") or "all"
+
         async def _fetch():
-            res_d = list_downloaded_models()
-            res_l = get_loaded_models()
-            if inspect.isawaitable(res_d):
-                res_d = await res_d
-            if inspect.isawaitable(res_l):
-                res_l = await res_l
-            return res_d, res_l
+            downloaded, loaded, gemini_list, codex_list = [], [], [], []
+            if prov in ("all", "lmstudio"):
+                try:
+                    res_d = list_downloaded_models()
+                    if inspect.isawaitable(res_d):
+                        res_d = await res_d
+                    downloaded = res_d
+                except Exception:
+                    if prov == "lmstudio":
+                        raise
+                try:
+                    res_l = get_loaded_models()
+                    if inspect.isawaitable(res_l):
+                        res_l = await res_l
+                    loaded = res_l
+                except Exception:
+                    loaded = []
+
+            if prov in ("all", "gemini"):
+                res_g = list_gemini_models()
+                if inspect.isawaitable(res_g):
+                    res_g = await res_g
+                gemini_list = res_g
+
+            if prov in ("all", "codex"):
+                res_c = list_codex_models()
+                if inspect.isawaitable(res_c):
+                    res_c = await res_c
+                codex_list = res_c
+
+            return downloaded, loaded, gemini_list, codex_list
 
         try:
-            downloaded, loaded = asyncio.run(_fetch())
+            downloaded, loaded, gemini_list, codex_list = asyncio.run(_fetch())
         except Exception as exc:
             print(f"agent-bench: model discovery failed: {exc}", file=sys.stderr)
             return 1
@@ -346,11 +380,13 @@ def _handle_models(args: argparse.Namespace) -> int:
             out = {
                 "downloaded_models": [asdict(m) for m in downloaded],
                 "loaded_models": [asdict(m) for m in loaded],
+                "gemini_models": [asdict(m) for m in gemini_list],
+                "codex_models": [asdict(m) for m in codex_list],
             }
             print(json.dumps(out, indent=2))
         else:
-            if not downloaded:
-                print("No downloaded models found or LM Studio service unavailable.")
+            if not downloaded and not gemini_list and not codex_list:
+                print("No models found.")
                 return 0
             tbl = Table(
                 headers=["Model Key", "Architecture", "Quantization", "Status"],
@@ -364,6 +400,20 @@ def _handle_models(args: argparse.Namespace) -> int:
                     m.architecture or "N/A",
                     m.quantization or "N/A",
                     status_str,
+                )
+            for m in gemini_list:
+                tbl.add_row(
+                    m.canonical_id,
+                    m.architecture or "gemini",
+                    "cloud-cli",
+                    m.status,
+                )
+            for m in codex_list:
+                tbl.add_row(
+                    m.canonical_id,
+                    m.architecture or "gpt",
+                    "cloud-cli",
+                    m.status,
                 )
             print(tbl.render())
         return 0

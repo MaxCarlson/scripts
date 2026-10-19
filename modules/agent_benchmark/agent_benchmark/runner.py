@@ -17,10 +17,11 @@ from . import __version__
 from .git_workspace import ISOLATION_POLICY
 from .scratch import SCOPE_POLICY
 
-from .attempt import _write_json, run_attempt
+from .attempt import _write_json, run_attempt, run_cli_attempt
 from .bridge import connected_bridge
 from .evidence import EVIDENCE_LIMITS, load_task
 from .lifecycle import DispatchGuard, OwnedWorkspace, WorkerHandle, cleanup_workspace, confirm_termination
+from .models_lifecycle import resolve_model_provider_and_key
 from .results import base_metrics, trial_from_attempt, unavailable
 from .state import command_lock, journal_at, read_pending, release, reserve, reserved_trial
 
@@ -60,6 +61,7 @@ async def run_benchmark(
     grace_seconds: float = 10, request_seconds: float = 10, verifier_seconds: float = 10,
     connector=connected_bridge,
 ) -> Path:
+    resolved_provider, resolved_model = resolve_model_provider_and_key(model, default_provider=provider)
     task = load_task(task_dir)
     profile_cfg = BUDGET_PROFILES.get(budget_profile, BUDGET_PROFILES["canonical-60s"])
     if task_seconds is None:
@@ -86,7 +88,7 @@ async def run_benchmark(
                 fingerprint.update(hashlib.sha256(path.read_bytes()).digest())
         info = RunInfo(
             run_id, format_utc_timestamp(), "agent-smoke", task.suite_version, [task.task_id],
-            {"worker": {"provider": provider, "model": model, "role": agent,
+            {"worker": {"provider": resolved_provider, "model": resolved_model, "role": agent,
                         "effective_context_length": None, "effective_reasoning": None, "warm_state": "unverified"}},
             1, "worker_first_attempt_full_success",
             {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine()},
@@ -100,17 +102,24 @@ async def run_benchmark(
         save_run(run_dir, info)
         trial = None
         try:
-            async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
-                evidence = await run_attempt(
-                    task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
-                    provider=provider, model=model, agent=agent, task_seconds=effective_task_seconds,
+            if resolved_provider in ("gemini", "codex"):
+                evidence = await run_cli_attempt(
+                    task, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
+                    provider=resolved_provider, model=resolved_model, task_seconds=effective_task_seconds,
                     grace_seconds=effective_grace_seconds, verifier_seconds=verifier_seconds,
                 )
-                runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
-                info = replace(info, metadata={**info.metadata, "runtime": runtime})
-                save_run(run_dir, info, overwrite=True)  # Update only this newly owned run.
-                trial = trial_from_attempt(evidence, run_id=run_id, trial_id="trial-001", task_id=task.task_id,
-                                           variant_id="worker", repetition=1, evidence_path="evidence/trial-001")
+            else:
+                async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
+                    evidence = await run_attempt(
+                        task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
+                        provider=resolved_provider, model=resolved_model, agent=agent, task_seconds=effective_task_seconds,
+                        grace_seconds=effective_grace_seconds, verifier_seconds=verifier_seconds,
+                    )
+            runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
+            info = replace(info, metadata={**info.metadata, "runtime": runtime})
+            save_run(run_dir, info, overwrite=True)  # Update only this newly owned run.
+            trial = trial_from_attempt(evidence, run_id=run_id, trial_id="trial-001", task_id=task.task_id,
+                                       variant_id="worker", repetition=1, evidence_path="evidence/trial-001")
         except asyncio.CancelledError:
             cancelled = True
         except Exception as error:  # Top-level execution/transport boundary; never a worker pass.

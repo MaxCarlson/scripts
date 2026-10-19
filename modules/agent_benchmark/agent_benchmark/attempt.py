@@ -14,6 +14,7 @@ import hashlib
 import json
 import math
 from pathlib import Path
+import shutil
 import time
 from typing import Any
 
@@ -400,3 +401,227 @@ async def run_attempt(
                                                     receipt.get("messageId", ""), workspace.path, git_identity.root_commit)
             guard.record(decision or _unresolved(pending_handle, grace_seconds,
                          "Execution/evidence failure prevented confirmation; preserve workspace and halt dispatch"))
+
+
+async def run_cli_attempt(
+    task: Task,
+    guard: DispatchGuard,
+    *,
+    workspace_root: Path,
+    evidence_dir: Path,
+    provider: str,
+    model: str,
+    task_seconds: float | None = None,
+    grace_seconds: float = 10,
+    verifier_seconds: float = 10,
+    cli_runner: Any = None,
+) -> AttemptEvidence:
+    """Execute a benchmark trial directly via local CLI agent (`agy` for gemini, `codex` for codex)."""
+    budget = task.time_budget_seconds if task_seconds is None else task_seconds
+    for name, value in (("task_seconds", budget), ("grace_seconds", grace_seconds), ("verifier_seconds", verifier_seconds)):
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"{name} must be finite and positive")
+
+    evidence_dir.mkdir(parents=True, exist_ok=False)
+    workspace = guard.allocate(workspace_root)
+    git_identity = prepare_workspace(task, workspace.path, scope_policy=SCOPE_POLICY)
+
+    journal: dict[str, Any] = {
+        "stage": "not_submitted",
+        "workspace": asdict(workspace),
+        "task_seconds": budget,
+        "grace_seconds": grace_seconds,
+        "verifier_seconds": verifier_seconds,
+        "owned_pids": [],
+        "git": asdict(git_identity),
+        "scope_policy": SCOPE_POLICY,
+        "scratch": provenance(workspace.path),
+        "evidence_limits": asdict(EVIDENCE_LIMITS),
+    }
+    _write_json(evidence_dir / "lifecycle.json", journal)
+    s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
+    prompt = build_prompt(task, workspace.path)
+    (evidence_dir / "submitted-prompt.txt").write_bytes(prompt.encode("utf-8"))
+    _write_json(
+        evidence_dir / "prompt.json",
+        {"sha256": hashlib.sha256(prompt.encode()).hexdigest(), "scope_policy": SCOPE_POLICY, "kind": "intended_user_prompt"},
+    )
+
+    prov_low = provider.lower().strip()
+    if prov_low in ("gemini", "agy"):
+        exe = shutil.which("agy") or "agy"
+        cmd = [exe, "--model", model, "--mode", "accept-edits", "--dangerously-skip-permissions", "-p", prompt]
+    elif prov_low in ("codex", "openai", "chatgpt"):
+        exe = shutil.which("codex") or "codex"
+        cmd = [
+            exe,
+            "exec",
+            "-C",
+            str(workspace.path),
+            "-m",
+            model,
+            "--dangerously-bypass-approvals-and-sandbox",
+            "--ephemeral",
+            prompt,
+        ]
+    else:
+        raise ValueError(f"Unsupported CLI agent provider: {provider!r}")
+
+    configuration = {
+        "provider": prov_low,
+        "model": model,
+        "cli_executable": exe,
+        "git": asdict(git_identity),
+        "scope_policy": SCOPE_POLICY,
+        "scratch": provenance(workspace.path),
+        "evidence_limits": asdict(EVIDENCE_LIMITS),
+    }
+    _write_json(evidence_dir / "runtime.json", configuration)
+
+    handle = WorkerHandle(f"cli-{prov_low}", f"session-{prov_low}", "msg-001", workspace.path, git_identity.root_commit)
+    task_budget_expired = False
+    execution_error: str | None = None
+    start = time.monotonic()
+    journal["stage"] = "dispatching"
+    _write_json(evidence_dir / "lifecycle.json", journal)
+
+    stdout_str = ""
+    stderr_str = ""
+    proc: asyncio.subprocess.Process | None = None
+    terminated_cleanly = False
+
+    try:
+        guard.submission_started = True
+        if cli_runner is not None:
+            async with asyncio.timeout(budget):
+                code, stdout_str, stderr_str = await cli_runner(cmd, workspace.path)
+                terminated_cleanly = True
+                if code != 0:
+                    execution_error = f"CLIExitCode_{code}"
+        else:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(workspace.path),
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            journal.update(stage="observing", handle=asdict(handle), owned_pids=[proc.pid])
+            _write_json(evidence_dir / "lifecycle.json", journal)
+            try:
+                async with asyncio.timeout(budget):
+                    out_b, err_b = await proc.communicate()
+                    stdout_str = out_b.decode("utf-8", errors="replace")
+                    stderr_str = err_b.decode("utf-8", errors="replace")
+                    terminated_cleanly = True
+                    if (proc.returncode or 0) != 0:
+                        execution_error = f"CLIExitCode_{proc.returncode}"
+            except TimeoutError:
+                task_budget_expired = True
+                if proc.returncode is None:
+                    try:
+                        proc.kill()
+                        await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+                        terminated_cleanly = True
+                    except Exception:
+                        terminated_cleanly = False
+    except TimeoutError:
+        task_budget_expired = True
+        terminated_cleanly = True
+    except asyncio.CancelledError:
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+            except Exception:
+                pass
+        decision = _unresolved(handle, grace_seconds, "Caller cancelled CLI worker execution")
+        journal.update(stage="termination_unresolved", handle=asdict(handle), termination=asdict(decision))
+        _write_json(evidence_dir / "lifecycle.json", journal)
+        guard.record(decision)
+        raise
+    except Exception as exc:
+        execution_error = type(exc).__name__
+        terminated_cleanly = True
+
+    worker_ms = (time.monotonic() - start) * 1000
+    decision = TerminationDecision(
+        handle=handle,
+        confirmed=terminated_cleanly,
+        cancellation_requested=task_budget_expired,
+        grace_seconds=grace_seconds,
+        polls=1,
+        final_job_state="completed" if not task_budget_expired else "cancelled",
+        reasons=() if terminated_cleanly else ("CLI subprocess did not terminate within grace period",),
+    )
+    journal.update(
+        stage="terminated" if decision.confirmed else "termination_unresolved",
+        handle=asdict(handle),
+        termination=asdict(decision),
+        task_budget_expired=task_budget_expired,
+        execution_error=execution_error,
+    )
+    _write_json(evidence_dir / "lifecycle.json", journal)
+    guard.record(decision)
+
+    if stdout_str:
+        (evidence_dir / "worker-report.txt").write_text(stdout_str, encoding="utf-8")
+    if stderr_str:
+        (evidence_dir / "worker-stderr.txt").write_text(stderr_str, encoding="utf-8")
+
+    s1 = verification = None
+    changed: tuple[str, ...] = ()
+    scope: tuple[str, ...] = ()
+    audit = None
+    if decision.confirmed:
+        s1 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S1")
+        changed = tuple(changed_paths(s0, s1))
+        audit = audit_scope(task, workspace.path, s0, s1, [], scope_policy=SCOPE_POLICY)
+        scope = audit.all_violations
+        (evidence_dir / "worker.patch").write_text(
+            _patch(s0, s1, max_bytes=EVIDENCE_LIMITS.max_patch_bytes, scope_policy=SCOPE_POLICY),
+            encoding="utf-8",
+        )
+        _write_json(
+            evidence_dir / "checkpoints.json",
+            {
+                "S0": {"tree_hash": s0.tree_hash},
+                "S1": {"tree_hash": s1.tree_hash, "diff_path": "worker.patch"},
+                "changed_paths": changed,
+                "scope_policy": SCOPE_POLICY,
+                "task_changed_paths": audit.task_changed_paths,
+                "scratch_changed_paths": audit.scratch_changed_paths,
+                "snapshot_scope_violations": list(audit.snapshot_violations),
+                "transcript_scope_violations": list(audit.transcript_violations),
+                "scope_violations": list(scope),
+            },
+        )
+        _write_json(evidence_dir / "scope-audit.json", audit.to_dict())
+        verification = verify(
+            s1,
+            task.verifier,
+            evidence_dir / "verification",
+            timeout_seconds=verifier_seconds,
+            scope_policy=SCOPE_POLICY,
+        )
+        journal["stage"] = "verified"
+        _write_json(evidence_dir / "lifecycle.json", journal)
+
+    return AttemptEvidence(
+        workspace=workspace,
+        termination=decision,
+        s0=s0,
+        s1=s1,
+        verification=verification,
+        changed_paths=changed,
+        scope_violations=scope,
+        task_budget_expired=task_budget_expired,
+        execution_error=execution_error,
+        worker_ms=worker_ms,
+        wall_ms=(time.monotonic() - start) * 1000,
+        scope_audit=audit,
+        scope_policy=SCOPE_POLICY,
+        session_tokens=None,
+        tool_telemetry=None,
+    )
+

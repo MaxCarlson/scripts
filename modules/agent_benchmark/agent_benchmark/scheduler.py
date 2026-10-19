@@ -38,12 +38,13 @@ from benchmark_core import (
 )
 
 from . import __version__
-from .attempt import run_attempt
+from .attempt import run_attempt, run_cli_attempt
 from .bridge import connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
 from .git_workspace import ISOLATION_POLICY
 from .models_lifecycle import (
     CommandRunner,
+    resolve_model_provider_and_key,
     transition_model,
 )
 from .results import base_metrics, trial_from_attempt, unavailable
@@ -243,13 +244,18 @@ class ExperimentScheduler:
             if self.on_model_start:
                 self.on_model_start(model_key)
 
-            # 1. Ensure target model is loaded in LM Studio
-            await transition_model(
-                model_key,
-                allow_transitions=self.allow_model_transitions,
-                lms_path=self.lms_path,
-                runner=self.lms_runner,
+            resolved_provider, resolved_model = resolve_model_provider_and_key(
+                model_key, default_provider=self.provider
             )
+
+            # 1. Ensure target model is loaded in LM Studio (only for lmstudio provider)
+            if resolved_provider == "lmstudio":
+                await transition_model(
+                    resolved_model,
+                    allow_transitions=self.allow_model_transitions,
+                    lms_path=self.lms_path,
+                    runner=self.lms_runner,
+                )
 
             model_trials = self.plan.trials_for_model(model_key)
             if not model_trials:
@@ -274,7 +280,7 @@ class ExperimentScheduler:
                 suite_id=config.suite_id,
                 suite_version=config.suite_version,
                 task_ids=list(self.plan.task_ids),
-                variants={model_key: {"provider": self.provider, "model": model_key}},
+                variants={model_key: {"provider": resolved_provider, "model": resolved_model}},
                 repetitions=config.repetitions,
                 scoring_basis=config.scoring_basis,
                 environment={
@@ -393,35 +399,51 @@ class ExperimentScheduler:
         grace_seconds: float,
         verifier_seconds: float,
     ) -> TrialResult:
-        """Run a single live trial via OpenCodeBridge."""
+        """Run a single live trial via CLI worker (`agy`/`codex`) or OpenCodeBridge (`lmstudio`)."""
+        resolved_provider, resolved_model = resolve_model_provider_and_key(
+            trial.model_key, default_provider=self.provider
+        )
         with reserved_trial(self.state_dir, evidence_dir) as guard:
             trial_res: Optional[TrialResult] = None
             cancelled = False
             failure = "UnknownError"
             try:
-                async with connected_bridge(base_url=self.base_url) as bridge:
-                    evidence = await run_attempt(
+                if resolved_provider in ("gemini", "codex"):
+                    evidence = await run_cli_attempt(
                         task,
-                        bridge,
                         guard,
                         workspace_root=self.state_dir / "workspaces",
                         evidence_dir=evidence_dir,
-                        provider=self.provider,
-                        model=trial.model_key,
-                        agent=self.agent,
+                        provider=resolved_provider,
+                        model=resolved_model,
                         task_seconds=task_seconds,
                         grace_seconds=grace_seconds,
                         verifier_seconds=verifier_seconds,
                     )
-                    trial_res = trial_from_attempt(
-                        evidence,
-                        run_id=trial.run_id,
-                        trial_id=f"trial-{trial.trial_index + 1:03d}",
-                        task_id=trial.task_id,
-                        variant_id=trial.model_key,
-                        repetition=trial.repetition,
-                        evidence_path=f"evidence/trial-{trial.trial_index + 1:03d}",
-                    )
+                else:
+                    async with connected_bridge(base_url=self.base_url) as bridge:
+                        evidence = await run_attempt(
+                            task,
+                            bridge,
+                            guard,
+                            workspace_root=self.state_dir / "workspaces",
+                            evidence_dir=evidence_dir,
+                            provider=resolved_provider,
+                            model=resolved_model,
+                            agent=self.agent,
+                            task_seconds=task_seconds,
+                            grace_seconds=grace_seconds,
+                            verifier_seconds=verifier_seconds,
+                        )
+                trial_res = trial_from_attempt(
+                    evidence,
+                    run_id=trial.run_id,
+                    trial_id=f"trial-{trial.trial_index + 1:03d}",
+                    task_id=trial.task_id,
+                    variant_id=trial.model_key,
+                    repetition=trial.repetition,
+                    evidence_path=f"evidence/trial-{trial.trial_index + 1:03d}",
+                )
             except asyncio.CancelledError:
                 cancelled = True
             except Exception as exc:
