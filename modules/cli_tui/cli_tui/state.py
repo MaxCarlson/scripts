@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from enum import Enum, auto
+import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+import uuid
 
+from .process_runner import OutputViewport
 from .schema import CliArgument, CliCommand
 
 
@@ -12,6 +16,11 @@ class TuiScreenMode(Enum):
     RUNNING = auto()
     CONFIRM_QUIT = auto()
     IMAGE_VIEWER = auto()
+
+
+class PaneType(Enum):
+    COMMAND = "command"
+    CONSOLE = "console"
 
 
 class NavigationStack:
@@ -166,3 +175,150 @@ class FormState:
                     argv.extend([short_flag, str(val)])
 
         return argv
+
+
+@dataclass
+class PaneSession:
+    """Represents an isolated pane session within the workspace."""
+
+    id: str
+    title: str = "Main"
+    pane_type: PaneType = PaneType.COMMAND
+    screen_mode: TuiScreenMode = TuiScreenMode.MENU
+    navigation: NavigationStack = field(default_factory=NavigationStack)
+    current_form: Optional[FormState] = None
+    runner: Optional[Any] = None
+    viewport: OutputViewport = field(default_factory=OutputViewport)
+    created_at: float = field(default_factory=time.time)
+    extra_data: Dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def status_badge(self) -> str:
+        if self.pane_type == PaneType.CONSOLE:
+            return "CONSOLE"
+        if self.screen_mode == TuiScreenMode.RUNNING:
+            if self.runner and getattr(self.runner, "is_running", False):
+                return "RUNNING"
+            if self.runner and getattr(self.runner, "exit_code", None) is not None:
+                return "FINISHED" if self.runner.exit_code == 0 else "ERROR"
+            return "RUNNING"
+        if self.screen_mode == TuiScreenMode.FORM:
+            return "CONFIG"
+        if self.screen_mode == TuiScreenMode.MENU:
+            return "MENU"
+        return "IDLE"
+
+
+class PaneWorkspace:
+    """Manages the collection of open panes, cycling, and active pane selection."""
+
+    def __init__(self) -> None:
+        self.panes: List[PaneSession] = [
+            PaneSession(
+                id=uuid.uuid4().hex[:8],
+                title="Main",
+                pane_type=PaneType.COMMAND,
+                screen_mode=TuiScreenMode.MENU,
+            )
+        ]
+        self.active_index: int = 0
+
+    @property
+    def active_pane(self) -> PaneSession:
+        if not self.panes:
+            default_pane = PaneSession(
+                id=uuid.uuid4().hex[:8],
+                title="Main",
+                pane_type=PaneType.COMMAND,
+                screen_mode=TuiScreenMode.MENU,
+            )
+            self.panes.append(default_pane)
+            self.active_index = 0
+        self.active_index = max(0, min(self.active_index, len(self.panes) - 1))
+        return self.panes[self.active_index]
+
+    def create_pane(
+        self,
+        title: str = "New Pane",
+        pane_type: PaneType = PaneType.COMMAND,
+        screen_mode: TuiScreenMode = TuiScreenMode.MENU,
+    ) -> PaneSession:
+        new_pane = PaneSession(
+            id=uuid.uuid4().hex[:8],
+            title=title,
+            pane_type=pane_type,
+            screen_mode=screen_mode,
+        )
+        self.panes.append(new_pane)
+        self.active_index = len(self.panes) - 1
+        return new_pane
+
+    def cycle_next(self) -> None:
+        if self.panes:
+            self.active_index = (self.active_index + 1) % len(self.panes)
+
+    def cycle_prev(self) -> None:
+        if self.panes:
+            self.active_index = (self.active_index - 1) % len(self.panes)
+
+    def switch_to(self, index: int) -> bool:
+        if 0 <= index < len(self.panes):
+            self.active_index = index
+            return True
+        return False
+
+    def delete_pane(self, index: int) -> bool:
+        if index < 0 or index >= len(self.panes):
+            return False
+        if len(self.panes) <= 1:
+            return False
+
+        target = self.panes[index]
+        if target.runner:
+            if hasattr(target.runner, "stop"):
+                target.runner.stop()
+            elif hasattr(target.runner, "terminate"):
+                target.runner.terminate()
+
+        self.panes.pop(index)
+        if self.active_index >= len(self.panes):
+            self.active_index = len(self.panes) - 1
+        elif self.active_index > index:
+            self.active_index -= 1
+        return True
+
+    def delete_all(self) -> PaneSession:
+        for pane in self.panes:
+            if pane.runner:
+                if hasattr(pane.runner, "stop"):
+                    pane.runner.stop()
+                elif hasattr(pane.runner, "terminate"):
+                    pane.runner.terminate()
+        fresh = PaneSession(
+            id=uuid.uuid4().hex[:8],
+            title="Main",
+            pane_type=PaneType.COMMAND,
+            screen_mode=TuiScreenMode.MENU,
+        )
+        self.panes = [fresh]
+        self.active_index = 0
+        return fresh
+
+
+def copy_matching_form_values(
+    source: Optional[FormState],
+    target: Optional[FormState],
+) -> int:
+    """Copy matching argument values from source FormState to target FormState."""
+    if source is None or target is None:
+        return 0
+
+    target_dests = {arg.dest for arg in target.command.arguments}
+    copied = 0
+    for dest, val in source.values.items():
+        if dest in target_dests:
+            if val is not None and val != "":
+                target.set_value(dest, val)
+                copied += 1
+    return copied
+
