@@ -4,6 +4,15 @@ benchmark_core — Lightweight, reusable benchmarking results and reporting util
 
 __version__ = "0.1.0"
 
+from .compare import (
+    DeltaValue,
+    RunComparison,
+    VariantComparison,
+    compare_runs,
+    compare_variants,
+    compute_delta,
+    render_comparison_md,
+)
 from .models import (
     MetricQuality,
     MetricValue,
@@ -26,6 +35,12 @@ from .models import (
     trial_result_to_dict,
     trial_result_to_json,
     validate_relative_path,
+)
+from .reporting import (
+    generate_reports,
+    render_report_md,
+    render_summary_csv,
+    render_summary_json,
 )
 from .stats import (
     BenchmarkSummary,
@@ -91,4 +106,17 @@ __all__ = [
     "VariantSummary",
     "compute_metric_stats",
     "summarize",
+    # Reporting
+    "generate_reports",
+    "render_report_md",
+    "render_summary_csv",
+    "render_summary_json",
+    # Compare
+    "DeltaValue",
+    "RunComparison",
+    "VariantComparison",
+    "compare_runs",
+    "compare_variants",
+    "compute_delta",
+    "render_comparison_md",
 ]

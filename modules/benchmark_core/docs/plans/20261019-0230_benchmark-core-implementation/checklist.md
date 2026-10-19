@@ -17,11 +17,11 @@
 - [x] Commit Stage 2
 
 ## Stage 3: Reporting, Comparison, and CLI
-- [ ] Output generators (`summary.json`, wide-form deterministic `summary.csv`, `report.md`) in `benchmark_core/reporting.py`
-- [ ] Comparison utilities in `benchmark_core/compare.py`
-- [ ] CLI commands (`report`, `compare`, `import`) with short/long flags and `-w`/`--write` protection in `benchmark_core/cli.py`
-- [ ] Tests in `tests/reporting_test.py`, `tests/compare_test.py`, `tests/cli_test.py`
-- [ ] Commit Stage 3
+- [x] Output generators (`summary.json`, wide-form deterministic `summary.csv`, `report.md`) in `benchmark_core/reporting.py`
+- [x] Comparison utilities in `benchmark_core/compare.py`
+- [x] CLI commands (`report`, `compare`, `import`) with short/long flags and `-w`/`--write` protection in `benchmark_core/cli.py`
+- [x] Tests in `tests/reporting_test.py`, `tests/compare_test.py`, `tests/cli_test.py` (65 total passing tests)
+- [x] Commit Stage 3
 
 ## Stage 4: Hyperfine Importer & Final Verification
 - [ ] Hyperfine JSON importer in `benchmark_core/importers/hyperfine.py`
