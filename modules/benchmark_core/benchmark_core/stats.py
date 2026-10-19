@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 from dataclasses import dataclass, field
 import json
+import math
 import statistics
 from typing import Any, Optional
 
@@ -28,6 +29,80 @@ from .models import (
 )
 
 PRIMARY_DURATION_METRIC = "duration.wall_ms"
+
+
+@dataclass(frozen=True, slots=True)
+class ScoreConfidenceInterval:
+    """Wilson score confidence interval for a success rate / proportion."""
+
+    lower: float
+    upper: float
+    confidence: float
+    sample_size: int
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lower": self.lower,
+            "upper": self.upper,
+            "confidence": self.confidence,
+            "sample_size": self.sample_size,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ScoreConfidenceInterval:
+        return cls(
+            lower=data["lower"],
+            upper=data["upper"],
+            confidence=data.get("confidence", 0.95),
+            sample_size=data["sample_size"],
+        )
+
+
+def compute_wilson_score_interval(
+    successes: int,
+    total: int,
+    confidence: float = 0.95,
+) -> Optional[ScoreConfidenceInterval]:
+    """
+    Calculate the Wilson score confidence interval for a proportion.
+
+    Formula:
+      center = (p + z^2/(2n)) / (1 + z^2/n)
+      margin = (z / (1 + z^2/n)) * sqrt(p(1-p)/n + z^2/(4n^2))
+    where p = successes / total, n = total, and z is the normal critical value.
+    Returns None if total <= 0.
+    """
+    if total <= 0:
+        return None
+    if successes < 0 or successes > total:
+        raise ValueError(f"successes ({successes}) must be between 0 and total ({total})")
+
+    if abs(confidence - 0.95) < 1e-4:
+        z = 1.959963984540054
+    elif abs(confidence - 0.90) < 1e-4:
+        z = 1.6448536269514722
+    elif abs(confidence - 0.99) < 1e-4:
+        z = 2.5758293035489004
+    else:
+        z = 1.959963984540054
+
+    n = float(total)
+    p = float(successes) / n
+    z2 = z * z
+
+    denom = 1.0 + (z2 / n)
+    center = (p + (z2 / (2.0 * n))) / denom
+    margin = (z / denom) * math.sqrt((p * (1.0 - p) / n) + (z2 / (4.0 * n * n)))
+
+    lower = max(0.0, round(center - margin, 4))
+    upper = min(1.0, round(center + margin, 4))
+
+    return ScoreConfidenceInterval(
+        lower=lower,
+        upper=upper,
+        confidence=confidence,
+        sample_size=total,
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,6 +195,7 @@ class TaskSummary:
     success_rate: Optional[float]
     metrics: dict[str, MetricStats]
     duration: DurationStats
+    confidence_interval: Optional[ScoreConfidenceInterval] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -132,12 +208,15 @@ class TaskSummary:
             "unscored": self.unscored,
             "eligible_count": self.eligible_count,
             "success_rate": self.success_rate,
+            "confidence_interval": self.confidence_interval.to_dict() if self.confidence_interval else None,
             "metrics": {k: v.to_dict() for k, v in sorted(self.metrics.items())},
             "duration": self.duration.to_dict(),
         }
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> TaskSummary:
+        ci_data = data.get("confidence_interval")
+        ci = ScoreConfidenceInterval.from_dict(ci_data) if ci_data else None
         return cls(
             task_id=data["task_id"],
             total_trials=data["total_trials"],
@@ -150,6 +229,7 @@ class TaskSummary:
             success_rate=data.get("success_rate"),
             metrics={k: MetricStats.from_dict(v) for k, v in data.get("metrics", {}).items()},
             duration=DurationStats.from_dict(data["duration"]),
+            confidence_interval=ci,
         )
 
 
@@ -172,6 +252,7 @@ class VariantSummary:
     metrics: dict[str, MetricStats]
     duration: DurationStats
     tasks: dict[str, TaskSummary]
+    confidence_interval: Optional[ScoreConfidenceInterval] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -186,6 +267,7 @@ class VariantSummary:
             "eligible_count": self.eligible_count,
             "micro_success_rate": self.micro_success_rate,
             "macro_success_rate": self.macro_success_rate,
+            "confidence_interval": self.confidence_interval.to_dict() if self.confidence_interval else None,
             "insufficiently_sampled_tasks": list(self.insufficiently_sampled_tasks),
             "metrics": {k: v.to_dict() for k, v in sorted(self.metrics.items())},
             "duration": self.duration.to_dict(),
@@ -194,6 +276,8 @@ class VariantSummary:
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> VariantSummary:
+        ci_data = data.get("confidence_interval")
+        ci = ScoreConfidenceInterval.from_dict(ci_data) if ci_data else None
         return cls(
             variant_id=data["variant_id"],
             configuration=data.get("configuration", {}),
@@ -206,6 +290,7 @@ class VariantSummary:
             eligible_count=data["eligible_count"],
             micro_success_rate=data.get("micro_success_rate"),
             macro_success_rate=data.get("macro_success_rate"),
+            confidence_interval=ci,
             insufficiently_sampled_tasks=data.get("insufficiently_sampled_tasks", []),
             metrics={k: MetricStats.from_dict(v) for k, v in data.get("metrics", {}).items()},
             duration=DurationStats.from_dict(data["duration"]),
@@ -351,7 +436,7 @@ def compute_metric_stats(
     )
 
 
-def _compute_duration_stats(trials: list[TrialResult]) -> DurationStats:
+def compute_duration_stats(trials: list[TrialResult]) -> DurationStats:
     """
     Extract duration metrics for:
     - all-scored trials: passed, failed, timed_out
@@ -389,7 +474,10 @@ def _compute_duration_stats(trials: list[TrialResult]) -> DurationStats:
     return DurationStats(all_scored=all_scored_stats, successful_only=successful_stats)
 
 
-def _summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
+_compute_duration_stats = compute_duration_stats
+
+
+def summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
     """Summarize trials for a single task."""
     total_trials = len(trials)
     status_counts: dict[str, int] = {s.value: 0 for s in TrialStatus}
@@ -421,6 +509,12 @@ def _summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
 
     duration = _compute_duration_stats(trials)
 
+    ci = (
+        compute_wilson_score_interval(passed, eligible_count)
+        if eligible_count > 0
+        else None
+    )
+
     return TaskSummary(
         task_id=task_id,
         total_trials=total_trials,
@@ -433,7 +527,11 @@ def _summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
         success_rate=success_rate,
         metrics=metric_stats,
         duration=duration,
+        confidence_interval=ci,
     )
+
+
+_summarize_task = summarize_task
 
 
 def summarize(
@@ -540,6 +638,12 @@ def summarize(
 
         v_duration = _compute_duration_stats(v_trials)
 
+        v_ci = (
+            compute_wilson_score_interval(v_passed, v_eligible)
+            if v_eligible > 0
+            else None
+        )
+
         variant_summaries[vid] = VariantSummary(
             variant_id=vid,
             configuration=v_config,
@@ -556,6 +660,7 @@ def summarize(
             metrics=v_metric_stats,
             duration=v_duration,
             tasks=task_summaries,
+            confidence_interval=v_ci,
         )
 
     return BenchmarkSummary(

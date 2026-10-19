@@ -15,10 +15,12 @@ reports/
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
-from typing import Iterable, Union
+from typing import Iterable, Optional, Union
 
-from .models import RunInfo, TrialResult
+from .compare import ExperimentComparison
+from .models import Experiment, RunInfo, TrialResult
 
 
 class BenchmarkStorageError(Exception):
@@ -230,3 +232,82 @@ def load_run(run_dir: Union[Path, str]) -> tuple[RunInfo, list[TrialResult]]:
     run_info = load_run_info(dir_path / "run.json")
     trials = load_trials(dir_path / "trials.jsonl")
     return run_info, trials
+
+
+def save_experiment(
+    experiment_dir: Union[Path, str],
+    experiment: Experiment,
+    comparison: Optional[ExperimentComparison] = None,
+    overwrite: bool = False,
+) -> Path:
+    """
+    Save an Experiment manifest, run references, and optional comparison to disk.
+
+    Writes:
+      - experiment.json: Full experiment manifest
+      - run-references.json: List of constituent run references
+      - comparison.json: Experiment comparison metrics (if provided)
+    """
+    dir_path = Path(experiment_dir)
+    dir_path.mkdir(parents=True, exist_ok=True)
+
+    manifest_file = dir_path / "experiment.json"
+    if manifest_file.exists() and not overwrite:
+        raise FileExistsError(f"Experiment manifest already exists at {manifest_file}")
+
+    # Atomic write for experiment.json
+    tmp_manifest = dir_path / f"experiment.json.tmp.{os.getpid()}"
+    tmp_manifest.write_text(experiment.to_json(), encoding="utf-8")
+    tmp_manifest.replace(manifest_file)
+
+    # Write run-references.json
+    refs_file = dir_path / "run-references.json"
+    tmp_refs = dir_path / f"run-references.json.tmp.{os.getpid()}"
+    refs_data = [ref.to_dict() for ref in experiment.run_refs]
+    tmp_refs.write_text(json.dumps(refs_data, indent=2, ensure_ascii=False), encoding="utf-8")
+    tmp_refs.replace(refs_file)
+
+    # Write comparison.json if comparison provided
+    if comparison is not None:
+        comp_file = dir_path / "comparison.json"
+        tmp_comp = dir_path / f"comparison.json.tmp.{os.getpid()}"
+        tmp_comp.write_text(comparison.to_json(), encoding="utf-8")
+        tmp_comp.replace(comp_file)
+
+    return dir_path
+
+
+def load_experiment(
+    experiment_dir: Union[Path, str],
+) -> tuple[Experiment, Optional[ExperimentComparison]]:
+    """
+    Load an Experiment and its optional ExperimentComparison from disk.
+
+    Returns:
+        Tuple of (Experiment, Optional[ExperimentComparison]).
+    """
+    dir_path = Path(experiment_dir)
+    manifest_file = dir_path / "experiment.json"
+    if not manifest_file.is_file():
+        raise FileNotFoundError(f"Missing experiment manifest at {manifest_file}")
+
+    try:
+        exp_data = json.loads(manifest_file.read_text(encoding="utf-8"))
+        experiment = Experiment.from_dict(exp_data)
+    except Exception as exc:
+        raise CorruptedDataError(
+            f"Failed to load experiment at {manifest_file}: {exc}"
+        ) from exc
+
+    comparison: Optional[ExperimentComparison] = None
+    comp_file = dir_path / "comparison.json"
+    if comp_file.is_file():
+        try:
+            comp_data = json.loads(comp_file.read_text(encoding="utf-8"))
+            comparison = ExperimentComparison.from_dict(comp_data)
+        except Exception as exc:
+            raise CorruptedDataError(
+                f"Failed to load comparison at {comp_file}: {exc}"
+            ) from exc
+
+    return experiment, comparison

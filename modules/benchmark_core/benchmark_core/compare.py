@@ -7,11 +7,24 @@ and provides explicit warnings when scoring bases, suite versions, or units mism
 
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 import json
-from typing import Any, Optional
+from typing import Any, Optional, Sequence
 
-from .stats import BenchmarkSummary, VariantSummary
+from .models import ExperimentConfig, MetricValue, RunInfo, TrialResult, TrialStatus
+from .stats import (
+    BenchmarkSummary,
+    DurationStats,
+    MetricStats,
+    ScoreConfidenceInterval,
+    TaskSummary,
+    VariantSummary,
+    compute_duration_stats,
+    compute_metric_stats,
+    compute_wilson_score_interval,
+    summarize_task,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +303,438 @@ def render_comparison_md(comparison: RunComparison) -> str:
                     m_delta = vc.metrics[mk]
                     m_vals, m_diff = _fmt_delta(m_delta, is_rate=False)
                     lines.append(f"| `{vid}` | `{mk}` | {m_vals} | {m_diff} |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+# =============================================================================
+# Multi-Run Experiment Aggregation & Eligibility Enforcement
+# =============================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class RunCompatibilityCheck:
+    """Outcome of validating a constituent run against an experiment specification."""
+
+    run_id: str
+    is_compatible: bool
+    is_eligible: bool
+    rejection_reasons: list[str]
+    ineligibility_reasons: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "is_compatible": self.is_compatible,
+            "is_eligible": self.is_eligible,
+            "rejection_reasons": list(self.rejection_reasons),
+            "ineligibility_reasons": list(self.ineligibility_reasons),
+        }
+
+
+def check_run_compatibility(
+    run_info: RunInfo,
+    config: ExperimentConfig,
+) -> RunCompatibilityCheck:
+    """
+    Validate a single RunInfo against target ExperimentConfig.
+
+    Checks:
+    - Compatibility (hard reject if false):
+      * Suite ID must match
+      * Suite version must match
+      * Scoring basis must match
+      * Evaluated tasks must overlap with experiment planned tasks
+    - Eligibility (reference-only if false):
+      * Run's metadata comparison_eligible flag (default True)
+      * Budget profile match against config.budget_profile
+    """
+    rejections: list[str] = []
+    ineligibilities: list[str] = []
+
+    if run_info.suite_id != config.suite_id:
+        rejections.append(
+            f"Suite ID mismatch: run has '{run_info.suite_id}', expected '{config.suite_id}'"
+        )
+
+    if run_info.suite_version != config.suite_version:
+        rejections.append(
+            f"Suite version mismatch: run has '{run_info.suite_version}', expected '{config.suite_version}'"
+        )
+
+    if run_info.scoring_basis != config.scoring_basis:
+        rejections.append(
+            f"Scoring basis mismatch: run has '{run_info.scoring_basis}', expected '{config.scoring_basis}'"
+        )
+
+    common_tasks = set(run_info.task_ids).intersection(config.task_ids)
+    if not common_tasks:
+        rejections.append(
+            f"No overlapping tasks: run tasks {sorted(run_info.task_ids)} do not intersect experiment tasks {sorted(config.task_ids)}"
+        )
+
+    is_compatible = len(rejections) == 0
+
+    run_meta = run_info.metadata or {}
+    explicit_eligible = run_meta.get("comparison_eligible", True)
+    if not explicit_eligible:
+        reason = run_meta.get(
+            "exclusion_reason", "Run metadata explicitly flagged comparison_eligible=False"
+        )
+        ineligibilities.append(str(reason))
+
+    run_budget = run_meta.get("budget_profile") or run_info.environment.get("budget_profile")
+    if run_budget and config.budget_profile and run_budget != config.budget_profile:
+        ineligibilities.append(
+            f"Budget profile mismatch: run used '{run_budget}', expected '{config.budget_profile}'"
+        )
+
+    is_eligible = is_compatible and len(ineligibilities) == 0
+
+    return RunCompatibilityCheck(
+        run_id=run_info.run_id,
+        is_compatible=is_compatible,
+        is_eligible=is_eligible,
+        rejection_reasons=rejections,
+        ineligibility_reasons=ineligibilities,
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class AggregatedVariantMetrics:
+    """Aggregated results for one variant across constituent runs in an experiment."""
+
+    variant_id: str
+    is_eligible: bool
+    exclusion_reasons: list[str]
+    total_trials: int
+    passed: int
+    failed: int
+    timed_out: int
+    infrastructure_error: int
+    unscored: int
+    scored_denominator: int  # passed + failed + timed_out
+    strict_acceptance_rate: Optional[float]  # passed / scored_denominator
+    confidence_interval_95: Optional[ScoreConfidenceInterval]
+    task_summaries: dict[str, TaskSummary]
+    metrics: dict[str, MetricStats]
+    duration: DurationStats
+    constituent_run_ids: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "variant_id": self.variant_id,
+            "is_eligible": self.is_eligible,
+            "exclusion_reasons": list(self.exclusion_reasons),
+            "total_trials": self.total_trials,
+            "passed": self.passed,
+            "failed": self.failed,
+            "timed_out": self.timed_out,
+            "infrastructure_error": self.infrastructure_error,
+            "unscored": self.unscored,
+            "scored_denominator": self.scored_denominator,
+            "strict_acceptance_rate": self.strict_acceptance_rate,
+            "confidence_interval_95": (
+                self.confidence_interval_95.to_dict() if self.confidence_interval_95 else None
+            ),
+            "task_summaries": {k: v.to_dict() for k, v in sorted(self.task_summaries.items())},
+            "metrics": {k: v.to_dict() for k, v in sorted(self.metrics.items())},
+            "duration": self.duration.to_dict(),
+            "constituent_run_ids": list(self.constituent_run_ids),
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> AggregatedVariantMetrics:
+        ci_data = data.get("confidence_interval_95")
+        ci = ScoreConfidenceInterval.from_dict(ci_data) if ci_data else None
+        return cls(
+            variant_id=data["variant_id"],
+            is_eligible=data["is_eligible"],
+            exclusion_reasons=data.get("exclusion_reasons", []),
+            total_trials=data["total_trials"],
+            passed=data["passed"],
+            failed=data["failed"],
+            timed_out=data["timed_out"],
+            infrastructure_error=data["infrastructure_error"],
+            unscored=data["unscored"],
+            scored_denominator=data["scored_denominator"],
+            strict_acceptance_rate=data.get("strict_acceptance_rate"),
+            confidence_interval_95=ci,
+            task_summaries={
+                k: TaskSummary.from_dict(v) for k, v in data.get("task_summaries", {}).items()
+            },
+            metrics={k: MetricStats.from_dict(v) for k, v in data.get("metrics", {}).items()},
+            duration=DurationStats.from_dict(data["duration"]),
+            constituent_run_ids=data.get("constituent_run_ids", []),
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentComparison:
+    """Comprehensive multi-run, multi-variant comparison outcome."""
+
+    experiment_id: str
+    config: ExperimentConfig
+    eligible_variants: dict[str, AggregatedVariantMetrics]
+    reference_variants: dict[str, AggregatedVariantMetrics]
+    incompatible_runs: list[dict[str, Any]]
+    canonical_rankings: list[str]  # Only eligible variants, sorted by strict acceptance descending
+    warnings: list[str]
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "experiment_id": self.experiment_id,
+            "config": self.config.to_dict(),
+            "eligible_variants": {k: v.to_dict() for k, v in sorted(self.eligible_variants.items())},
+            "reference_variants": {k: v.to_dict() for k, v in sorted(self.reference_variants.items())},
+            "incompatible_runs": copy.deepcopy(self.incompatible_runs),
+            "canonical_rankings": list(self.canonical_rankings),
+            "warnings": list(self.warnings),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ExperimentComparison:
+        return cls(
+            experiment_id=data["experiment_id"],
+            config=ExperimentConfig.from_dict(data["config"]),
+            eligible_variants={
+                k: AggregatedVariantMetrics.from_dict(v)
+                for k, v in data.get("eligible_variants", {}).items()
+            },
+            reference_variants={
+                k: AggregatedVariantMetrics.from_dict(v)
+                for k, v in data.get("reference_variants", {}).items()
+            },
+            incompatible_runs=data.get("incompatible_runs", []),
+            canonical_rankings=data.get("canonical_rankings", []),
+            warnings=data.get("warnings", []),
+        )
+
+    @classmethod
+    def from_json(cls, json_str: str) -> ExperimentComparison:
+        return cls.from_dict(json.loads(json_str))
+
+
+def aggregate_experiment(
+    config: ExperimentConfig,
+    runs: Sequence[tuple[RunInfo, Sequence[TrialResult]]],
+) -> ExperimentComparison:
+    """
+    Aggregate multiple benchmark runs into an ExperimentComparison.
+
+    Enforces:
+    1. Compatibility check: Mismatched suite_id, suite_version, or scoring_basis
+       causes run rejection into `incompatible_runs`.
+    2. Eligibility segregation: Runs flagged comparison_eligible=False or with mismatched
+       budget_profile are segregated into `reference_variants`. They NEVER enter
+       `eligible_variants` or `canonical_rankings`.
+    3. Scored denominator: trials with status in (passed, failed, timed_out) form
+       the denominator. Infrastructure errors and unscored trials do NOT increment
+       scored_denominator and are isolated in diagnostic counts.
+    4. Wilson 95% score confidence interval calculated on scored denominator.
+    5. Canonical rankings: sorted strictly by (strict_acceptance_rate DESC, duration ASC)
+       among eligible variants only.
+    """
+    eligible_variant_trials: dict[str, list[TrialResult]] = {}
+    reference_variant_trials: dict[str, list[TrialResult]] = {}
+    variant_exclusion_reasons: dict[str, list[str]] = {}
+    variant_constituent_runs: dict[str, set[str]] = {}
+    incompatible_runs: list[dict[str, Any]] = []
+    warnings: list[str] = []
+
+    for run_info, trials in runs:
+        check = check_run_compatibility(run_info, config)
+        if not check.is_compatible:
+            incompatible_runs.append(
+                {"run_id": run_info.run_id, "reasons": check.rejection_reasons}
+            )
+            warnings.append(
+                f"Incompatible run '{run_info.run_id}' rejected: {'; '.join(check.rejection_reasons)}"
+            )
+            continue
+
+        for t in trials:
+            vid = t.variant_id
+            variant_constituent_runs.setdefault(vid, set()).add(run_info.run_id)
+            if not check.is_eligible:
+                variant_exclusion_reasons.setdefault(vid, []).extend(check.ineligibility_reasons)
+                reference_variant_trials.setdefault(vid, []).append(t)
+            else:
+                eligible_variant_trials.setdefault(vid, []).append(t)
+
+    # If any run for a variant was ineligible, treat the combined variant as ineligible
+    demoted_vids = set(variant_exclusion_reasons.keys()).intersection(eligible_variant_trials.keys())
+    for vid in demoted_vids:
+        all_trials = eligible_variant_trials.pop(vid, []) + reference_variant_trials.pop(vid, [])
+        reference_variant_trials[vid] = all_trials
+        warnings.append(
+            f"Variant '{vid}' demoted to reference comparisons due to ineligible constituent runs: "
+            f"{'; '.join(sorted(set(variant_exclusion_reasons[vid])))}"
+        )
+
+    def _build_variant_metrics(
+        vid: str,
+        trials: list[TrialResult],
+        is_eligible: bool,
+    ) -> AggregatedVariantMetrics:
+        total_trials = len(trials)
+        passed = sum(1 for t in trials if t.status == TrialStatus.PASSED)
+        failed = sum(1 for t in trials if t.status == TrialStatus.FAILED)
+        timed_out = sum(1 for t in trials if t.status == TrialStatus.TIMED_OUT)
+        infra = sum(1 for t in trials if t.status == TrialStatus.INFRASTRUCTURE_ERROR)
+        unscored = sum(1 for t in trials if t.status == TrialStatus.UNSCORED)
+
+        scored_denominator = passed + failed + timed_out
+        strict_rate = (
+            round(passed / scored_denominator, 4) if scored_denominator > 0 else None
+        )
+        ci = (
+            compute_wilson_score_interval(passed, scored_denominator, 0.95)
+            if scored_denominator > 0
+            else None
+        )
+
+        # Task summaries
+        task_summaries: dict[str, TaskSummary] = {}
+        all_task_ids = sorted(set(config.task_ids).union({t.task_id for t in trials}))
+        for tid in all_task_ids:
+            t_trials = [t for t in trials if t.task_id == tid]
+            task_summaries[tid] = summarize_task(tid, t_trials)
+
+        duration = compute_duration_stats(trials)
+
+        # Custom metrics
+        metrics_by_name: dict[str, list[MetricValue]] = {}
+        for t in trials:
+            for m_name, mv in t.metrics.items():
+                metrics_by_name.setdefault(m_name, []).append(mv)
+
+        metric_stats = {
+            m_name: compute_metric_stats(m_name, mvs, expected_total=total_trials)
+            for m_name, mvs in sorted(metrics_by_name.items())
+        }
+
+        reasons = sorted(set(variant_exclusion_reasons.get(vid, [])))
+        run_ids = sorted(variant_constituent_runs.get(vid, []))
+
+        return AggregatedVariantMetrics(
+            variant_id=vid,
+            is_eligible=is_eligible,
+            exclusion_reasons=reasons,
+            total_trials=total_trials,
+            passed=passed,
+            failed=failed,
+            timed_out=timed_out,
+            infrastructure_error=infra,
+            unscored=unscored,
+            scored_denominator=scored_denominator,
+            strict_acceptance_rate=strict_rate,
+            confidence_interval_95=ci,
+            task_summaries=task_summaries,
+            metrics=metric_stats,
+            duration=duration,
+            constituent_run_ids=run_ids,
+        )
+
+    eligible_variants: dict[str, AggregatedVariantMetrics] = {}
+    for vid, v_trials in sorted(eligible_variant_trials.items()):
+        eligible_variants[vid] = _build_variant_metrics(vid, v_trials, is_eligible=True)
+
+    reference_variants: dict[str, AggregatedVariantMetrics] = {}
+    for vid, v_trials in sorted(reference_variant_trials.items()):
+        reference_variants[vid] = _build_variant_metrics(vid, v_trials, is_eligible=False)
+
+    # Canonical rankings: sorted strictly by (strict_rate DESC, duration ASC)
+    # ONLY from eligible_variants
+    def _rank_key(item: tuple[str, AggregatedVariantMetrics]) -> tuple[float, float]:
+        _, m = item
+        rate = m.strict_acceptance_rate if m.strict_acceptance_rate is not None else -1.0
+        dur_mean = (
+            m.duration.all_scored.mean
+            if m.duration.all_scored and m.duration.all_scored.mean is not None
+            else float("inf")
+        )
+        return (rate, -dur_mean)
+
+    sorted_eligible = sorted(eligible_variants.items(), key=_rank_key, reverse=True)
+    canonical_rankings = [vid for vid, _ in sorted_eligible]
+
+    return ExperimentComparison(
+        experiment_id=config.experiment_id,
+        config=config,
+        eligible_variants=eligible_variants,
+        reference_variants=reference_variants,
+        incompatible_runs=incompatible_runs,
+        canonical_rankings=canonical_rankings,
+        warnings=warnings,
+    )
+
+
+def render_experiment_comparison_md(comparison: ExperimentComparison) -> str:
+    """Render an experiment comparison as readable Markdown."""
+    lines: list[str] = [
+        f"# Benchmark Experiment Comparison: `{comparison.experiment_id}`",
+        "",
+        f"- **Suite ID:** `{comparison.config.suite_id}` (v{comparison.config.suite_version})",
+        f"- **Budget Profile:** `{comparison.config.budget_profile}`",
+        f"- **Scoring Basis:** `{comparison.config.scoring_basis}`",
+        f"- **Created At:** `{comparison.config.created_at}`",
+        "",
+    ]
+
+    if comparison.warnings:
+        lines.append("## Warnings & Incompatibilities")
+        lines.append("")
+        for w in comparison.warnings:
+            lines.append(f"> [!WARNING] {w}")
+        lines.append("")
+
+    lines.append("## Canonical Model Leaderboard (Eligible Only)")
+    lines.append("")
+    if not comparison.eligible_variants:
+        lines.append("*No comparison-eligible variants recorded.*")
+        lines.append("")
+    else:
+        lines.append(
+            "| Rank | Variant | Strict Acceptance Rate (Wilson 95% CI) | Scored Denom (Pass / Fail / Timeout) | Infra Errors | Unscored | Mean Duration |"
+        )
+        lines.append("|---|---|---|---|---|---|---|")
+        for rank, vid in enumerate(comparison.canonical_rankings, start=1):
+            vm = comparison.eligible_variants[vid]
+            rate_str = f"{vm.strict_acceptance_rate * 100:.1f}%" if vm.strict_acceptance_rate is not None else "N/A"
+            if vm.confidence_interval_95:
+                ci = vm.confidence_interval_95
+                ci_str = f" [{ci.lower * 100:.1f}% &ndash; {ci.upper * 100:.1f}%]"
+            else:
+                ci_str = ""
+            rate_full = f"{rate_str}{ci_str}"
+            denom_str = f"{vm.scored_denominator} ({vm.passed} / {vm.failed} / {vm.timed_out})"
+            dur_str = (
+                f"{vm.duration.all_scored.mean:.1f} ms"
+                if vm.duration.all_scored and vm.duration.all_scored.mean is not None
+                else "N/A"
+            )
+            lines.append(
+                f"| {rank} | `{vid}` | **{rate_full}** | {denom_str} | {vm.infrastructure_error} | {vm.unscored} | {dur_str} |"
+            )
+        lines.append("")
+
+    if comparison.reference_variants:
+        lines.append("## Reference & Comparison-Ineligible Variants")
+        lines.append("")
+        lines.append("> [!NOTE] These variants were evaluated under experimental budget profiles or flagged ineligible. They do not enter canonical rankings.")
+        lines.append("")
+        lines.append("| Variant | Exclusion Reason | Strict Acceptance Rate | Scored Denom | Infra Errors |")
+        lines.append("|---|---|---|---|---|")
+        for vid, vm in sorted(comparison.reference_variants.items()):
+            reasons = "; ".join(vm.exclusion_reasons) if vm.exclusion_reasons else "Ineligible"
+            rate_str = f"{vm.strict_acceptance_rate * 100:.1f}%" if vm.strict_acceptance_rate is not None else "N/A"
+            denom_str = f"{vm.scored_denominator} ({vm.passed} / {vm.failed} / {vm.timed_out})"
+            lines.append(f"| `{vid}` | {reasons} | {rate_str} | {denom_str} | {vm.infrastructure_error} |")
         lines.append("")
 
     return "\n".join(lines)

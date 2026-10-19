@@ -514,6 +514,337 @@ class RunInfo:
         return cls.from_dict(json.loads(json_str))
 
 
+@dataclass(frozen=True, slots=True)
+class ExperimentConfig:
+    """
+    Configuration for a multi-run, multi-variant benchmark experiment.
+
+    Attributes:
+        experiment_id: Unique experiment identifier string.
+        created_at: ISO 8601 UTC timestamp string.
+        suite_id: Benchmark suite identifier.
+        suite_version: Benchmark suite version string.
+        task_ids: List of evaluated task identifiers.
+        variant_ids: List of evaluated variant identifiers.
+        repetitions: Planned repetitions per task/variant (>= 1).
+        scoring_basis: Specification of what success measures.
+        budget_profile: Budget profile name (e.g. 'canonical-60s').
+        random_seed: Optional integer seed for reproducible scheduling.
+        metadata: Consumer-supplied metadata dictionary.
+    """
+
+    experiment_id: str
+    created_at: str
+    suite_id: str
+    suite_version: str
+    task_ids: list[str]
+    variant_ids: list[str]
+    repetitions: int
+    scoring_basis: str
+    budget_profile: str
+    random_seed: Optional[int] = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for str_field, val in [
+            ("experiment_id", self.experiment_id),
+            ("suite_id", self.suite_id),
+            ("suite_version", self.suite_version),
+            ("scoring_basis", self.scoring_basis),
+            ("budget_profile", self.budget_profile),
+        ]:
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"ExperimentConfig.{str_field} must be a non-empty string, got {val!r}")
+
+        norm_created_at = parse_utc_timestamp(self.created_at)
+        object.__setattr__(self, "created_at", norm_created_at)
+
+        if not isinstance(self.task_ids, (list, tuple)) or not self.task_ids:
+            raise ValueError("ExperimentConfig.task_ids must be a non-empty list of strings")
+        cleaned_tasks = [str(t) for t in self.task_ids]
+        for t in cleaned_tasks:
+            if not t.strip():
+                raise ValueError("ExperimentConfig.task_ids contains empty or whitespace task ID")
+        object.__setattr__(self, "task_ids", cleaned_tasks)
+
+        if not isinstance(self.variant_ids, (list, tuple)) or not self.variant_ids:
+            raise ValueError("ExperimentConfig.variant_ids must be a non-empty list of strings")
+        cleaned_variants = [str(v) for v in self.variant_ids]
+        for v in cleaned_variants:
+            if not v.strip():
+                raise ValueError("ExperimentConfig.variant_ids contains empty or whitespace variant ID")
+        object.__setattr__(self, "variant_ids", cleaned_variants)
+
+        if isinstance(self.repetitions, bool) or not isinstance(self.repetitions, int) or self.repetitions < 1:
+            raise ValueError(f"ExperimentConfig.repetitions must be a positive int >= 1, got {self.repetitions!r}")
+
+        if self.random_seed is not None and (isinstance(self.random_seed, bool) or not isinstance(self.random_seed, int)):
+            raise TypeError(f"ExperimentConfig.random_seed must be an int or None, got {type(self.random_seed).__name__}")
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError(f"ExperimentConfig.metadata must be a dict, got {type(self.metadata).__name__}")
+        _assert_json_compatible(self.metadata, "ExperimentConfig.metadata")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "experiment_id": self.experiment_id,
+            "created_at": self.created_at,
+            "suite_id": self.suite_id,
+            "suite_version": self.suite_version,
+            "task_ids": list(self.task_ids),
+            "variant_ids": list(self.variant_ids),
+            "repetitions": self.repetitions,
+            "scoring_basis": self.scoring_basis,
+            "budget_profile": self.budget_profile,
+            "random_seed": self.random_seed,
+            "metadata": copy.deepcopy(self.metadata),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ExperimentConfig:
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict for ExperimentConfig, got {type(data).__name__}")
+        required = {
+            "experiment_id",
+            "created_at",
+            "suite_id",
+            "suite_version",
+            "task_ids",
+            "variant_ids",
+            "repetitions",
+            "scoring_basis",
+            "budget_profile",
+        }
+        missing = required - data.keys()
+        if missing:
+            raise ValueError(f"Missing required fields for ExperimentConfig: {sorted(missing)}")
+        allowed = required | {"random_seed", "metadata"}
+        extra = data.keys() - allowed
+        if extra:
+            raise ValueError(f"Unexpected fields for ExperimentConfig: {sorted(extra)}")
+
+        return cls(
+            experiment_id=data["experiment_id"],
+            created_at=data["created_at"],
+            suite_id=data["suite_id"],
+            suite_version=data["suite_version"],
+            task_ids=data["task_ids"],
+            variant_ids=data["variant_ids"],
+            repetitions=data["repetitions"],
+            scoring_basis=data["scoring_basis"],
+            budget_profile=data["budget_profile"],
+            random_seed=data.get("random_seed"),
+            metadata=data.get("metadata", {}),
+        )
+
+    @classmethod
+    def from_json(cls, json_str: str) -> ExperimentConfig:
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass(frozen=True, slots=True)
+class ExperimentRunRef:
+    """
+    Immutable reference to a constituent run within an experiment.
+
+    Attributes:
+        run_id: Unique batch execution ID of the constituent run.
+        run_dir: Directory or safe relative path where the run artifacts reside.
+        variant_id: Configuration variant identifier evaluated by this run.
+        suite_id: Identifier of the benchmark suite.
+        suite_version: Version identifier of the suite.
+        scoring_basis: Specification of what success measures.
+        budget_profile: Budget profile name.
+        comparison_eligible: Whether this run meets canonical comparison criteria.
+        exclusion_reasons: Explicit list of reasons if comparison_eligible is False.
+        metadata: Consumer-supplied metadata.
+    """
+
+    run_id: str
+    run_dir: str
+    variant_id: str
+    suite_id: str
+    suite_version: str
+    scoring_basis: str
+    budget_profile: str
+    comparison_eligible: bool
+    exclusion_reasons: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for str_field, val in [
+            ("run_id", self.run_id),
+            ("run_dir", self.run_dir),
+            ("variant_id", self.variant_id),
+            ("suite_id", self.suite_id),
+            ("suite_version", self.suite_version),
+            ("scoring_basis", self.scoring_basis),
+            ("budget_profile", self.budget_profile),
+        ]:
+            if not isinstance(val, str) or not val.strip():
+                raise ValueError(f"ExperimentRunRef.{str_field} must be a non-empty string, got {val!r}")
+
+        if not isinstance(self.comparison_eligible, bool):
+            raise TypeError(
+                f"ExperimentRunRef.comparison_eligible must be a bool, got {type(self.comparison_eligible).__name__}"
+            )
+
+        if not isinstance(self.exclusion_reasons, (list, tuple)):
+            raise TypeError(
+                f"ExperimentRunRef.exclusion_reasons must be a list of strings, got {type(self.exclusion_reasons).__name__}"
+            )
+        clean_reasons = [str(r).strip() for r in self.exclusion_reasons if str(r).strip()]
+        object.__setattr__(self, "exclusion_reasons", clean_reasons)
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError(f"ExperimentRunRef.metadata must be a dict, got {type(self.metadata).__name__}")
+        _assert_json_compatible(self.metadata, "ExperimentRunRef.metadata")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "run_id": self.run_id,
+            "run_dir": self.run_dir,
+            "variant_id": self.variant_id,
+            "suite_id": self.suite_id,
+            "suite_version": self.suite_version,
+            "scoring_basis": self.scoring_basis,
+            "budget_profile": self.budget_profile,
+            "comparison_eligible": self.comparison_eligible,
+            "exclusion_reasons": list(self.exclusion_reasons),
+            "metadata": copy.deepcopy(self.metadata),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> ExperimentRunRef:
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict for ExperimentRunRef, got {type(data).__name__}")
+        required = {
+            "run_id",
+            "run_dir",
+            "variant_id",
+            "suite_id",
+            "suite_version",
+            "scoring_basis",
+            "budget_profile",
+            "comparison_eligible",
+        }
+        missing = required - data.keys()
+        if missing:
+            raise ValueError(f"Missing required fields for ExperimentRunRef: {sorted(missing)}")
+        allowed = required | {"exclusion_reasons", "metadata"}
+        extra = data.keys() - allowed
+        if extra:
+            raise ValueError(f"Unexpected fields for ExperimentRunRef: {sorted(extra)}")
+
+        return cls(
+            run_id=data["run_id"],
+            run_dir=data["run_dir"],
+            variant_id=data["variant_id"],
+            suite_id=data["suite_id"],
+            suite_version=data["suite_version"],
+            scoring_basis=data["scoring_basis"],
+            budget_profile=data["budget_profile"],
+            comparison_eligible=data["comparison_eligible"],
+            exclusion_reasons=data.get("exclusion_reasons", []),
+            metadata=data.get("metadata", {}),
+        )
+
+    @classmethod
+    def from_json(cls, json_str: str) -> ExperimentRunRef:
+        return cls.from_dict(json.loads(json_str))
+
+
+@dataclass(frozen=True, slots=True)
+class Experiment:
+    """
+    Top-level container for an experiment manifest and its constituent runs.
+
+    Attributes:
+        config: Experiment configuration and provenance.
+        run_refs: List of immutable references to constituent runs.
+        metadata: Consumer-supplied metadata.
+    """
+
+    config: ExperimentConfig
+    run_refs: list[ExperimentRunRef]
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.config, ExperimentConfig):
+            raise TypeError(
+                f"Experiment.config must be an ExperimentConfig instance, got {type(self.config).__name__}"
+            )
+
+        if not isinstance(self.run_refs, (list, tuple)):
+            raise TypeError(
+                f"Experiment.run_refs must be a list of ExperimentRunRef, got {type(self.run_refs).__name__}"
+            )
+        for ref in self.run_refs:
+            if not isinstance(ref, ExperimentRunRef):
+                raise TypeError(
+                    f"Items in Experiment.run_refs must be ExperimentRunRef, got {type(ref).__name__}"
+                )
+        object.__setattr__(self, "run_refs", list(self.run_refs))
+
+        if not isinstance(self.metadata, dict):
+            raise TypeError(f"Experiment.metadata must be a dict, got {type(self.metadata).__name__}")
+        _assert_json_compatible(self.metadata, "Experiment.metadata")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "config": self.config.to_dict(),
+            "run_refs": [ref.to_dict() for ref in self.run_refs],
+            "metadata": copy.deepcopy(self.metadata),
+        }
+
+    def to_json(self) -> str:
+        return json.dumps(self.to_dict(), indent=2, ensure_ascii=False)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> Experiment:
+        if not isinstance(data, dict):
+            raise TypeError(f"Expected dict for Experiment, got {type(data).__name__}")
+        required = {"config", "run_refs"}
+        missing = required - data.keys()
+        if missing:
+            raise ValueError(f"Missing required fields for Experiment: {sorted(missing)}")
+        allowed = required | {"metadata"}
+        extra = data.keys() - allowed
+        if extra:
+            raise ValueError(f"Unexpected fields for Experiment: {sorted(extra)}")
+
+        config_data = data["config"]
+        config = (
+            config_data
+            if isinstance(config_data, ExperimentConfig)
+            else ExperimentConfig.from_dict(config_data)
+        )
+
+        raw_refs = data["run_refs"]
+        if not isinstance(raw_refs, list):
+            raise TypeError(f"run_refs must be a list, got {type(raw_refs).__name__}")
+        parsed_refs = [
+            r if isinstance(r, ExperimentRunRef) else ExperimentRunRef.from_dict(r)
+            for r in raw_refs
+        ]
+
+        return cls(
+            config=config,
+            run_refs=parsed_refs,
+            metadata=data.get("metadata", {}),
+        )
+
+    @classmethod
+    def from_json(cls, json_str: str) -> Experiment:
+        return cls.from_dict(json.loads(json_str))
+
+
 # Top-level functional serialization helpers for module convenience
 def metric_value_to_dict(mv: MetricValue) -> dict[str, Any]:
     return mv.to_dict()
@@ -561,3 +892,51 @@ def run_info_to_json(ri: RunInfo) -> str:
 
 def run_info_from_json(s: str) -> RunInfo:
     return RunInfo.from_json(s)
+
+
+def experiment_config_to_dict(ec: ExperimentConfig) -> dict[str, Any]:
+    return ec.to_dict()
+
+
+def experiment_config_from_dict(d: dict[str, Any]) -> ExperimentConfig:
+    return ExperimentConfig.from_dict(d)
+
+
+def experiment_config_to_json(ec: ExperimentConfig) -> str:
+    return ec.to_json()
+
+
+def experiment_config_from_json(s: str) -> ExperimentConfig:
+    return ExperimentConfig.from_json(s)
+
+
+def experiment_run_ref_to_dict(ref: ExperimentRunRef) -> dict[str, Any]:
+    return ref.to_dict()
+
+
+def experiment_run_ref_from_dict(d: dict[str, Any]) -> ExperimentRunRef:
+    return ExperimentRunRef.from_dict(d)
+
+
+def experiment_run_ref_to_json(ref: ExperimentRunRef) -> str:
+    return ref.to_json()
+
+
+def experiment_run_ref_from_json(s: str) -> ExperimentRunRef:
+    return ExperimentRunRef.from_json(s)
+
+
+def experiment_to_dict(exp: Experiment) -> dict[str, Any]:
+    return exp.to_dict()
+
+
+def experiment_from_dict(d: dict[str, Any]) -> Experiment:
+    return Experiment.from_dict(d)
+
+
+def experiment_to_json(exp: Experiment) -> str:
+    return exp.to_json()
+
+
+def experiment_from_json(s: str) -> Experiment:
+    return Experiment.from_json(s)
