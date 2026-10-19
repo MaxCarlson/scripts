@@ -1,64 +1,64 @@
-# agent_benchmark handoff — second model-switch checkpoint (Task 1b complete)
+# agent_benchmark handoff — Phase 1c core integration gate
 
-## Goal and location
-
-Implement the thin independent coding-worker evaluator in the user-supplied consolidated plan plus final amendment. Model switching concerns the agent implementing the software; no local-agent delegation is allowed.
+## Location and tested commits
 
 - Workspace: C:/Users/mcarls/src/scripts-agent-benchmark
 - Branch: agent/agent-benchmark
-- Tested implementation commit (1b): 85dca55522a867e4fafbb4299ca493d869fc2d5f
-- Preceding foundation commit (1a): da8dda2bbe69b41a40c6938753b96ed259de62b8
-- Base: 46768a8d
-- Ownership: modules/agent_benchmark only. Do not edit benchmark_core, local_agent_bridge, other worktrees or unrelated paths.
-- Full staged plan/model table: plans/20261019-implementation/plan.md
-- Current status/checklist: plans/20261019-implementation/{STATUS.md,checklist.md}
+- Independent adapter/evidence commit: 709d961d
+- Tested attempt-flow/review-fixes commit: 641f618674fff82e1572d5a09ee2683bb2a1fc32
+- Task 1b baseline: 85dca555; preceding handoff d098e519
+- Module version: 0.3.0
+- Ownership: modules/agent_benchmark. Do not edit another worktree, benchmark_core or local_agent_bridge.
 
-## Completed slice (Task 1a + Task 1b)
+## Hard integration gate
 
-### 1a: Bounded lifecycle safety foundation (`agent_benchmark/lifecycle.py`)
-- `WorkerHandle`: durable job/session/message IDs and workspace.
-- `Observation`: fresh session/turn/tool evidence; cached cancelled/completed job status cannot establish termination.
-- `LifecycleBridge` async protocol: `cancel(handle)`, `observe(handle)`.
-- `confirm_termination`: finite cancellation+confirmation budget (default 10s), uncertainty diagnostics, no unbounded await of cancelled I/O.
-- `DispatchGuard`: allocate fresh owned workspace; latch unresolved decision to halt batch and emit warning.
-- `cleanup_workspace`: exact path ownership and termination checks, bounded Windows-lock retries; returns `CleanupOutcome` separately from evaluation, never kills processes.
+User explicitly says: do NOT merge benchmark_core until they provide its final corrected tested SHA and validation results. The earlier Gate 1 SHA and the currently visible branch tip are insufficient. No core commit has been incorporated. Ask the user for the final tested SHA/evidence, then incorporate the COMPLETE corrected branch at that exact SHA, not only Gate 1. Do not create provisional RunInfo, TrialResult or MetricValue replacements.
 
-### 1b: Deterministic task fixture and verifier (`tasks/py-grep-smoke/`, `tests/fixture_test.py`)
-- Original smoke fixture (`tasks/py-grep-smoke`):
-  - `task.json`: Manifest with `task_id` ("py-grep-smoke"), `suite_version` ("0.1.0"), `category` ("smoke"), `time_budget_seconds` (60), `allowed_paths` (["grep.py"]), `forbidden_paths` (["instruction.md", "task.json"]), and relative `verifier` path ("verifier/check.py"). All paths relative, no `..`.
-  - `instruction.md`: Worker instructions specifying substring `grep(pattern, lines, ignore_case=False) -> list[str]`, stable ordering, duplicate preservation, case handling, empty strings, Unicode, and editing constraints.
-  - `seed/grep.py`: Deliberately raises `NotImplementedError`. Worker can edit only `grep.py`.
-  - `verifier/check.py`: Coordinator-only stdlib verifier running against frozen workspace, outside worker tree. Exit 0 for pass, 1 for incorrect implementation, 2 for verifier infrastructure failure. Verifies basic match, no match, default and explicit case sensitivity, order preservation, duplicates, empty pattern/lines, literal substring handling (no regex interpretations), Unicode, and non-mutation of input.
-- `tests/fixture_test.py`: Comprehensive test suite verifying manifest validity, seed failure (exit 1), known-good success (exit 0), infrastructure errors (exit 2), bad implementations (exit 1), missing files (exit 1), and timeout distinction (`subprocess.TimeoutExpired`).
+Stay on Codex Sol Medium for remaining Phase 1c integration. This is an integration gate, not a cheaper-model handoff. After canonical integration and first real task are proven, use the model allocation table in plans/20261019-implementation/plan.md for fixtures/audits.
 
-## Validation and review
+## Implemented independent interfaces
 
-From `modules/agent_benchmark`:
+- evidence.load_task(Path) -> Task: pinned original smoke task; relative manifest paths validated.
+- evidence.prepare_workspace(task, workspace): only seed, instruction and manifest; hidden verifier never copied into worker workspace.
+- evidence.capture(workspace, destination) -> Snapshot: exclusive byte-exact archive, frozen byte mapping and tree hash; refuse links/overwrite.
+- evidence.verify(snapshot, verifier, output, timeout_seconds=10) -> Verification: stdlib verifier in an owned bounded subprocess against a disposable copy outside worker workspace; archived snapshot checked before/after; stdout/stderr retained. Verification statuses are verifier facts, not a competing TrialResult.
+- bridge.connected_bridge(base_url=..., request_seconds=10): official MCP SDK 1.30.0 / offline npx opencode-mcp@3.0.0, auto-serve disabled; raw authenticated httpx requests share configured server. Existing credentials passed through environment, never logged. No shared service lifecycle changes.
+- OpenCodeBridge.preflight: read-only explicit connected lmstudio model and local-worker/reviewer role check. Records actual OpenCode version and observed permissions.
+- OpenCodeBridge.dispatch: fire once without sessionId; durable IDs retained; uncertain submission never retried. Per-attempt transcript resets. SubmissionUncertain retains any returned receipt IDs.
+- OpenCodeBridge.observe: fresh session identity/directory + full messages + current status; exact submitted user turn and assistant parentID, finished final step, no incomplete tools. Terminal cached jobs never authorize cleanup. Missing session status entry means idle only in a valid response map with matching completed messages/session. No live-session samples captured yet: tests use installed-schema-shaped data.
+- OpenCodeBridge.cancel: validate latest user turn still owns session before supported job_cancel; acknowledge alone is never proof of termination.
+- attempt.run_attempt(task, bridge, guard, workspace_root=..., evidence_dir=..., provider=..., model=..., agent=..., task_seconds=None, grace_seconds=10, poll_seconds=.1, verifier_seconds=10) -> frozen AttemptEvidence. No result serialization/report renderer. Canonical adapter must consume termination, snapshots, verifier, actual changed paths/scope, expired-task vs infrastructure flags and monotonic durations.
+- Existing lifecycle.DispatchGuard / cleanup_workspace unchanged. Keep one guard per batch; future CLI must inspect durable unresolved journals across invocations before dispatch. Workspace retained by default, cleanup always separate.
+
+## Evidence and invariants
+
+Each attempt owns a fresh worker directory and exclusive evidence directory. lifecycle.json is written before dispatch and updated with handles/budgets/termination; dispatch.json retains raw receipt; session.json full raw messages; worker-report.json or .txt separate report; S0/S1 archive directories and checkpoints.json hashes; worker.patch; verification/stdout.txt + stderr.txt and disposable workspace.
+
+S1 is never captured while termination is unresolved. Unresolved attempts retain IDs/workspace/diagnostics and latch batch stop. Any post-dispatch journaling error still latches the in-memory guard even if diagnostics cannot be written (e.g. disk full). External asyncio cancellation propagates after guard/diagnostic retention where writable. No process inspection/killing by name, no supervisor, no scheduler.
+
+Critical evidence regression: bad S1 then corrected S3 still retains failed first Verification and unchanged S1 bytes. The CANONICAL TrialResult version of this regression remains required after core gate. Correct code after expired task budget must not turn into a canonical first-attempt pass; request/transport timeout is infrastructure uncertainty, not automatically budget expiration. Cleanup errors must never rewrite a separately verified result.
+
+## Validation and limitations
+
+From modules/agent_benchmark:
 
 ```powershell
-python -m pytest tests -q --basetemp=.pytest_tmp_root/lifecycle --tb=short
+python -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
 python -m ruff check agent_benchmark tests tasks
 ```
 
-Results:
-- Tests: 37 passed, 1 skipped (Windows symlink privilege unavailable in 1a); 0 failures.
-- Ruff: All checks passed clean across `agent_benchmark`, `tests`, and `tasks`.
+69 passed, 2 skipped (Windows symlink privileges); Ruff passed. Native read-only review found journaling/sticky-stop and stale-transcript bugs; both reproduced RED then fixed GREEN. Transport timeout attribution separately reproduced/fixed. Initial sandboxed sibling-worktree baseline hit write denial; elevated baseline reproduced 37 passed/1 skipped. Official MCP SDK installed in active repo venv (1.30.0); pre-existing invalid-distribution pip warnings observed, no cleanup attempted.
 
-## Verified runtime constraints
+Read-only runtime readiness: connected_bridge(request_seconds=2) failed ConnectTimeout before MCP startup. No worker/model dispatched, no real benchmark success, no shared services changed. Offline tests do not establish real MCP execution, effective role isolation or cancellation termination against live OpenCode. Package usage currently programmatic from module directory; task packaging and installed CLI acceptance remain pending. Trusted fixtures and unprivileged processes, not a hostile-code sandbox.
 
-- OpenCode 1.19.3 installed; opencode-mcp 3.0.0.
-- Verifier runs strictly outside the worker workspace as a separate unprivileged process against a frozen snapshot.
-- No upstream copyrighted content imported; fixture is an original smoke implementation (`suite_version: 0.1.0`).
+## Remaining Phase 1c
 
-## Next package: 1c integration (Return to Codex 6.1 Sol Medium)
+1. User supplies final corrected complete core SHA + validation; incorporate exactly it, run focused core checks, import authoritative contracts.
+2. Add canonical TrialResult mapping and core persistence/evidence layout. Exactly one result per repetition; worker_first_attempt_full_success. Missing tokens unavailable, never zero. Unconfirmed termination without reliable evaluation remains infrastructure_error/uncertainty. No retry/repair improves S1.
+3. Add canonical bad-S1 / corrected-S3 regression and cleanup-failure-does-not-overwrite-score integration regression.
+4. Add guarded CLI/read-only plan/status/cleanup and explicit -x/--execute run authorization. Paired short/long flags. Obtain narrow help-registry ownership exception before editing outside this module; none was requested or used yet. Ensure cross-invocation unresolved journal detection.
+5. Recheck existing runtime availability without starting/configuring services. Real-model validation only when explicitly executed; report unavailable runtime honestly. Freeze task/verifier contract after real evidence, update tested handoff then switch cheaper agent for routine fixtures/audits.
 
-Resume Phase 1c integration:
-1. Obtain tested `benchmark_core` Gate 1 commit SHA and evidence; cherry-pick into this branch and import canonical types (`RunInfo`, `TrialResult`, `MetricValue`, etc.).
-2. Add minimal supported MCP client adapter for OpenCode / opencode-mcp 3.0.0; bypass terminal cache via fresh session/message reconciliation.
-3. Wire lifecycle (1a) and task fixture (1b) with byte-exact S0/S1 snapshots outside the worker workspace.
-4. Establish the critical canonical regression: verify S1 incorrect, then prove repair S3 leaves worker first-pass false and status failed.
-5. Provide guarded CLI with paired arguments.
+## Copyable resume instruction
 
-## Copyable next-agent instruction
-
-Work sequentially in C:/Users/mcarls/src/scripts-agent-benchmark on agent/agent-benchmark. Confirm cwd, branch and Git status before edits. Read modules/agent_benchmark/docs/HANDOFF.md and task 1c of modules/agent_benchmark/docs/plans/20261019-implementation/plan.md. Incorporate tested benchmark_core Gate 1 commit once available. Integrate lifecycle foundation (commit da8dda2b) with py-grep-smoke fixture (commit 85dca555). Maintain verifier isolation outside worker workspace and enforce S0/S1 immutability. No local-agent delegation, and no edits outside modules/agent_benchmark without authorization.
+Resume Phase 1c in C:/Users/mcarls/src/scripts-agent-benchmark, branch agent/agent-benchmark. Confirm cwd/branch/status. Read this handoff and plan task 1c. First obtain the user's FINAL corrected tested benchmark_core SHA and validation; do not integrate an earlier commit or current unapproved branch tip. Independent code/tests are complete at 641f618674fff82e1572d5a09ee2683bb2a1fc32 (69 passed, 2 skips; Ruff clean). Use authoritative core imports for canonical emission and add immutable first-attempt attribution regressions. No local-agent delegation or unrelated edits. No real-model success has been validated. Continue with Sol Medium for integration; use tested commits and update this handoff at the next useful model-switch checkpoint.
