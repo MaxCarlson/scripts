@@ -92,6 +92,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         description="Concurrent, resumable manga/gallery download manager.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("-T", "--tui", action="store_true", help="Launch the interactive terminal user interface.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     mode_descriptions = {
@@ -486,6 +487,11 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         "--json",
         action="store_true",
         help="Emit machine-readable JSON output.",
+    )
+    subparsers.add_parser(
+        "tui",
+        help="Interactive terminal user interface for MangaDL operations.",
+        description="Choose operations and configure arguments in an interactive terminal dashboard.",
     )
     return parser
 

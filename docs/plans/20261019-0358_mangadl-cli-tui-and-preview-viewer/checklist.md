@@ -33,12 +33,12 @@
   - [x] 1.5.5: Commit Task 1.5
 
 ## Stage 2: MangaDL TUI Integration (`mangadl tui`)
-- [ ] Task 2.1: MangaDL Parser Exposure & CLI Wiring
-  - [ ] 2.1.1: Write failing test for `mangadl tui` and `mangadl --tui` (`tests/cli_test.py`)
-  - [ ] 2.1.2: Verify test failure
-  - [ ] 2.1.3: Update `cli_core.py` and `cli.py` to route to TUI launcher
-  - [ ] 2.1.4: Run tests and verify all pass
-  - [ ] 2.1.5: Commit Task 2.1
+- [x] Task 2.1: MangaDL Parser Exposure & CLI Wiring
+  - [x] 2.1.1: Write failing test for `mangadl tui` and `mangadl --tui` (`tests/cli_test.py`)
+  - [x] 2.1.2: Verify test failure
+  - [x] 2.1.3: Update `cli_core.py` and `cli.py` to route to TUI launcher
+  - [x] 2.1.4: Run tests and verify all pass
+  - [x] 2.1.5: Commit Task 2.1
 - [ ] Task 2.2: MangaDL TUI Launcher & Menu Customization (`mangadl.tui`)
   - [ ] 2.2.1: Write failing test for MangaDL TUI launcher and category grouping (`tests/tui_test.py`)
   - [ ] 2.2.2: Verify test failure

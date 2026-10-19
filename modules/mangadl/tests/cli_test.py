@@ -903,3 +903,18 @@ def test_interactive_site_selection_filters_runtime_registry(
     monkeypatch.setattr(builtins, "input", lambda prompt="": "1")
 
     assert _interactive_auth_site(targets, "manganelo") == "manganelo"
+
+
+def test_mangadl_tui_subcommand_dispatch(monkeypatch):
+    called = []
+    monkeypatch.setattr("mangadl.cli._launch_tui", lambda argv: called.append(argv) or 0)
+    assert main(["tui"]) == 0
+    assert len(called) == 1
+
+
+def test_mangadl_tui_flag_dispatch(monkeypatch):
+    called = []
+    monkeypatch.setattr("mangadl.cli._launch_tui", lambda argv: called.append(argv) or 0)
+    assert main(["--tui"]) == 0
+    assert len(called) == 1
+

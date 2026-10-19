@@ -132,8 +132,16 @@ def _run_command(raw_argv: list[str], parser: argparse.ArgumentParser) -> int:
     return _core._run(args)
 
 
+def _launch_tui(argv: list[str]) -> int:
+    from .tui import launch_tui
+
+    return launch_tui(argv)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and raw_argv[0] in ("tui", "-T", "--tui"):
+        return _launch_tui(raw_argv)
     parser = build_parser(raw_argv)
     try:
         if raw_argv and raw_argv[0] == "covers":
