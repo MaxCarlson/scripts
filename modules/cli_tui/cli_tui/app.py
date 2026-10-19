@@ -553,6 +553,11 @@ class CliTuiApp:
         return False
 
     def _handle_form_key(self, key: int) -> bool:
+        # Universal Run shortcut (Ctrl+R=18 or F5) from anywhere in form
+        if key in (18, getattr(curses, "KEY_F5", 269)):
+            self._start_execution()
+            return True
+
         total_items = len(self.form_widgets) + 3  # widgets + [Run], [Preview], [Back]
         if self.form_cursor < len(self.form_widgets):
             active_widget = self.form_widgets[self.form_cursor]
@@ -570,7 +575,7 @@ class CliTuiApp:
         elif key in (curses.KEY_DOWN, ord("j")):
             self.form_cursor = (self.form_cursor + 1) % total_items
             return True
-        elif key in (curses.KEY_LEFT, curses.KEY_RIGHT):
+        elif key in (curses.KEY_RIGHT, ord("l")):
             if self.form_cursor < len(self.form_widgets):
                 active_widget = self.form_widgets[self.form_cursor]
                 handled = active_widget.handle_key(key)
@@ -579,6 +584,23 @@ class CliTuiApp:
                         active_widget.arg.dest, active_widget.value
                     )
                 return handled
+            else:
+                button_idx = (self.form_cursor - len(self.form_widgets) + 1) % 3
+                self.form_cursor = len(self.form_widgets) + button_idx
+                return True
+        elif key in (curses.KEY_LEFT, ord("h")):
+            if self.form_cursor < len(self.form_widgets):
+                active_widget = self.form_widgets[self.form_cursor]
+                handled = active_widget.handle_key(key)
+                if self.current_form:
+                    self.current_form.set_value(
+                        active_widget.arg.dest, active_widget.value
+                    )
+                return handled
+            else:
+                button_idx = (self.form_cursor - len(self.form_widgets) - 1 + 3) % 3
+                self.form_cursor = len(self.form_widgets) + button_idx
+                return True
         elif key in (10, 13, ord(" ")):
             if self.form_cursor < len(self.form_widgets):
                 active_widget = self.form_widgets[self.form_cursor]
@@ -707,9 +729,24 @@ class CliTuiApp:
         elif self.screen_mode == TuiScreenMode.FORM:
             if self._is_widget_editing():
                 return ["[Enter] Done", "[Esc] Cancel", "[Typing] Input"]
+
+            run_focused = self.form_cursor == len(self.form_widgets)
+            prev_focused = self.form_cursor == len(self.form_widgets) + 1
+            back_focused = self.form_cursor == len(self.form_widgets) + 2
+
+            if run_focused:
+                action_badge = "[Enter] Run Command"
+            elif prev_focused:
+                action_badge = "[Enter] Preview CLI"
+            elif back_focused:
+                action_badge = "[Enter] Back to Menu"
+            else:
+                action_badge = "[Enter/Space] Edit"
+
             badges = [
+                "[Ctrl+R] Run",
                 "[↑/↓] Navigate",
-                "[Enter/Space] Edit",
+                action_badge,
                 "[Esc] Back",
                 "[p] Panes",
                 "[Shift+Esc] New Pane",
@@ -1058,17 +1095,6 @@ class CliTuiApp:
 
         elif self.screen_mode == TuiScreenMode.FORM:
             cmd = self.current_command
-            content_lines = [
-                "",
-                f"  Configure arguments for: {cmd.prog or cmd.name}",
-                "",
-            ]
-            for idx, widget in enumerate(self.form_widgets):
-                is_focused = idx == self.form_cursor
-                for w_line in widget.render_lines(width - 4, is_focused):
-                    content_lines.append("  " + w_line)
-
-            content_lines.append("")
             run_focused = self.form_cursor == len(self.form_widgets)
             prev_focused = self.form_cursor == len(self.form_widgets) + 1
             back_focused = self.form_cursor == len(self.form_widgets) + 2
@@ -1076,7 +1102,21 @@ class CliTuiApp:
             btn_run = "▶ [ Run Command ]" if run_focused else "  [ Run Command ]"
             btn_prev = "▶ [ Preview CLI ]" if prev_focused else "  [ Preview CLI ]"
             btn_back = "▶ [ Back ]" if back_focused else "  [ Back ]"
-            content_lines.append(f"  {btn_run}   {btn_prev}   {btn_back}")
+            button_row = f"  {btn_run}   {btn_prev}   {btn_back}"
+
+            content_lines = [
+                "",
+                f"  Configure arguments for: {cmd.prog or cmd.name}",
+                f"  {button_row.strip()}",
+                f"  {'─' * max(20, width - 6)}",
+            ]
+            for idx, widget in enumerate(self.form_widgets):
+                is_focused = idx == self.form_cursor
+                for w_line in widget.render_lines(width - 4, is_focused):
+                    content_lines.append("  " + w_line)
+
+            content_lines.append("")
+            content_lines.append(button_row)
 
             if self.current_form:
                 argv = self.current_form.build_argv(executable=self.executable)

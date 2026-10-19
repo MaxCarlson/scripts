@@ -2,12 +2,22 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import shlex
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 import uuid
 
 from .process_runner import OutputViewport
 from .schema import CliArgument, CliCommand
+
+
+def _split_arg_tokens(val: str) -> List[str]:
+    """Split a space or comma separated string into individual command-line tokens."""
+    try:
+        tokens = shlex.split(val.strip())
+    except ValueError:
+        tokens = val.strip().split()
+    return [t.rstrip(",").strip() for t in tokens if t.rstrip(",").strip()]
 
 
 class TuiScreenMode(Enum):
@@ -110,6 +120,8 @@ class FormState:
             if val is not None and val != "":
                 if isinstance(val, (list, tuple)):
                     argv.extend(str(item) for item in val)
+                elif arg.nargs in ("+", "*") and isinstance(val, str):
+                    argv.extend(_split_arg_tokens(val))
                 else:
                     argv.append(str(val))
 
@@ -152,23 +164,24 @@ class FormState:
                 if count_val > base_default:
                     diff = count_val - base_default
                     argv.extend([short_flag] * diff)
-            elif arg.action_type == "append":
-                if isinstance(val, (list, tuple)):
-                    for item in val:
-                        if item is not None and str(item) != "":
-                            argv.extend([short_flag, str(item)])
-                elif isinstance(val, str) and val.strip():
-                    argv.extend([short_flag, val.strip()])
             elif arg.nargs in ("+", "*"):
                 if isinstance(val, (list, tuple)):
                     items = [str(x) for x in val if x is not None and str(x) != ""]
                 elif isinstance(val, str) and val.strip():
-                    items = [val.strip()]
+                    items = _split_arg_tokens(val)
                 else:
                     items = []
                 if items:
                     argv.append(short_flag)
                     argv.extend(items)
+            elif arg.action_type in ("append", "extend"):
+                if isinstance(val, (list, tuple)):
+                    for item in val:
+                        if item is not None and str(item) != "":
+                            argv.extend([short_flag, str(item)])
+                elif isinstance(val, str) and val.strip():
+                    for token in _split_arg_tokens(val):
+                        argv.extend([short_flag, token])
             else:
                 # Regular option with value
                 if val is not None and str(val) != "":
