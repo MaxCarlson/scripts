@@ -73,7 +73,7 @@ Use an original small grep-equivalent fixture (label smoke, not canonical import
 
 ## Task 1c: end-to-end gate (return to Sol)
 
-- [ ] Obtain tested Gate 1 commit SHA and its evidence. Cherry-pick that commit into this branch, run its focused tests; import canonical types. Never inspect/edit another agent worktree.
+- [ ] Obtain the complete corrected benchmark_core branch final tested SHA and validation from the user. Incorporate that exact complete branch, run focused tests; import canonical types. Do not integrate the earlier Gate 1 commit alone or an unapproved branch tip. Never inspect/edit another agent worktree.
 - [ ] Add minimal supported MCP client adapter, fire once without sessionId, preserve IDs/unknown submission; no auto-resubmit. Fresh raw session reconciliation must bypass bridge's terminal cache. Test adapter against installed 3.0.0 message/status samples before live work.
 - [ ] Add bounded task observation separate from cancellation deadline. Persist IDs before observation and unresolved diagnostics on timeout/error. Record run metadata with effective deadlines.
 - [ ] Add byte-exact S0/S1 snapshots and hashes, patch evidence, verification on frozen S1 outside worker workspace; record actual added/removed/modified files. Preserve verifier/report/transcript separately under core evidence directory.
@@ -89,3 +89,12 @@ Use an original small grep-equivalent fixture (label smoke, not canonical import
 3: Selected tasks/variants, repetitions, ordering seed, runtime/model/context/reasoning configuration, tokens and tool telemetry. Canonical persistence/reports only; all-scored and success-only durations, missing data visible. Run actual repeated variants before M1 claim.
 4: Full ten-task suite plus permission-resume, versions/revisions frozen, all amendment regressions including no workspace reuse after unresolved task. No process supervisor or GPU scheduler.
 M2: Start grep/multifile/small-feature paired workflows, worker retry S2/coordinator repair S3 optional, compact evidence for each, later-stage costs separate. Explicitly document unavailable coordinator control or token attribution; no invented savings.
+
+
+## Phase 1c execution update (2026-10-19)
+
+The user explicitly gates core integration on their final corrected SHA and validation, still pending. Independent work proceeds first: evidence.py (task loading, byte snapshots, disposable verifier copy), bridge.py (official MCP SDK 1.30.x client, pinned cached bridge, fresh raw HTTP session/message reads), then attempt.py (execution evidence only, no replacement canonical result types). No live worker run or inference dispatch is authorized as development assistance. Any actual benchmark validation must be separately and explicitly executed and accurately reported.
+
+Interface decisions: OpenCodeBridge.dispatch returns WorkerHandle; preflight verifies explicit connected lmstudio model/role without auto-start; observe corroborates session identity/directory, submitted user message, final assistant and tool status via raw HTTP. SDK transport uses OPENCODE_AUTO_SERVE=false and offline opencode-mcp@3.0.0. Snapshot is a frozen in-memory byte mapping plus exclusive archived directory; verification uses a disposable copy and checks archived hash before/after. Scope is measured from actual checkpoint paths. Directory isolation remains a trusted-fixture safeguard, not an OS sandbox.
+
+Current independent component tests: 57 passed, 2 symlink-privilege skips; Ruff passed. New SDK dependency installed in active repository venv; unrelated pre-existing invalid-distribution pip warnings observed, no cleanup attempted. Initial un-elevated baseline hit sibling-worktree write denial; elevated focused run passed 37/1 baseline.
