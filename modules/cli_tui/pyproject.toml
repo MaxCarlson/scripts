@@ -25,3 +25,4 @@ dev = [
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_functions = ["test_*"]
+addopts = "--basetemp=.pytest_tmp"

@@ -1,6 +1,7 @@
 """cli_tui - Reusable argparse-to-termdash interactive TUI engine."""
 
 from .app import CliTuiApp, PostRunAction
+from .preview_set import PreviewItem, PreviewSet, PreviewVariant, scan_preview_directory
 from .process_runner import OutputViewport, ProcessRunner
 from .schema import CliArgument, CliCommand, introspect_parser
 from .state import FormState, NavigationStack, TuiScreenMode
@@ -13,7 +14,11 @@ __all__ = [
     "NavigationStack",
     "OutputViewport",
     "PostRunAction",
+    "PreviewItem",
+    "PreviewSet",
+    "PreviewVariant",
     "ProcessRunner",
     "TuiScreenMode",
     "introspect_parser",
+    "scan_preview_directory",
 ]

@@ -53,12 +53,12 @@
   - [x] 2.3.5: Commit Task 2.3
 
 ## Stage 3: Side-by-Side Comparison Image Viewer
-- [ ] Task 3.1: Preview Set Scanner & Data Model (`cli_tui.preview_set`)
-  - [ ] 3.1.1: Write failing test for scanning and grouping preview variants (`tests/test_preview_set.py`)
-  - [ ] 3.1.2: Verify test failure
-  - [ ] 3.1.3: Implement `cli_tui/preview_set.py`
-  - [ ] 3.1.4: Run tests and verify all pass
-  - [ ] 3.1.5: Commit Task 3.1
+- [x] Task 3.1: Preview Set Scanner & Data Model (`cli_tui.preview_set`)
+  - [x] 3.1.1: Write failing test for scanning and grouping preview variants (`tests/test_preview_set.py`)
+  - [x] 3.1.2: Verify test failure
+  - [x] 3.1.3: Implement `cli_tui/preview_set.py`
+  - [x] 3.1.4: Run tests and verify all pass
+  - [x] 3.1.5: Commit Task 3.1
 - [ ] Task 3.2: Native GUI Side-by-Side Viewer (`cli_tui.image_viewer`)
   - [ ] 3.2.1: Write failing test for viewer state, Left/Right quality cycling, Up/Down image cycling (`tests/test_image_viewer.py`)
   - [ ] 3.2.2: Verify test failure
