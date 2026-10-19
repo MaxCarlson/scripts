@@ -62,7 +62,9 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         dest="start_miner",
         help="Start the legacy miner target during service startup if configured.",
     )
-    serve_parser.add_argument("--start-process", metavar="NAME", help="Explicitly start a configured process at startup.")
+    serve_parser.add_argument(
+        "--start-process", metavar="NAME", help="Explicitly start a configured process at startup."
+    )
     serve_parser.add_argument(
         "-s",
         "--stop-miner-on-shutdown",

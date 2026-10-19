@@ -136,9 +136,13 @@ class CoordinatorService:
         if self.start_miner_on_ready and self.system.miner_adapter is None:
             messages.append("ERROR: Requested miner startup has no miner adapter.")
         if self.start_process_on_ready and self.start_process_on_ready not in self.system.supervisors:
-            messages.append(f"ERROR: Requested process startup targets unknown process '{self.start_process_on_ready}'.")
+            messages.append(
+                f"ERROR: Requested process startup targets unknown process '{self.start_process_on_ready}'."
+            )
         if self.stop_process_on_shutdown and self.stop_process_on_shutdown not in self.system.supervisors:
-            messages.append(f"ERROR: Requested shutdown stop targets unknown process '{self.stop_process_on_shutdown}'.")
+            messages.append(
+                f"ERROR: Requested shutdown stop targets unknown process '{self.stop_process_on_shutdown}'."
+            )
         for resource in self.system.lease_mgr.tracked_resources():
             if self.system.lease_mgr.is_restart_inhibited(resource):
                 hold = self.system.lease_mgr.get_inhibition(resource)

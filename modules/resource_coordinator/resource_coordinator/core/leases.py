@@ -384,9 +384,7 @@ class LeaseManager:
         if not pending:
             self._pending_reservations.pop(reservation.resource, None)
 
-    def _can_grant_locked(
-        self, resource: str, lease_type: LeaseType, reservation: LeaseReservation
-    ) -> bool:
+    def _can_grant_locked(self, resource: str, lease_type: LeaseType, reservation: LeaseReservation) -> bool:
         active = self._active.get(resource, [])
         pending = self._pending_reservations.get(resource, [])
         try:
