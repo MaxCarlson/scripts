@@ -18,10 +18,10 @@ def test_tab_strip_shown_and_cycles_when_multiple_panes():
     app.workspace.create_pane(title="compress plan", pane_type=PaneType.COMMAND)
     screen = "\n".join(app.render_virtual_screen(height=24, width=80))
 
-    # Top line must render tabs
-    assert "1:" in screen[0:100]
-    assert "2: compress plan" in screen[0:100]
-    assert "▶" in screen[0:100]
+    # Top lines must render tabs
+    tab_line = [line for line in screen.splitlines() if "1:" in line][0]
+    assert "2: compress plan" in tab_line
+    assert "▶" in tab_line
 
     # Cycle to previous pane with '['
     app.process_key(ord("["))

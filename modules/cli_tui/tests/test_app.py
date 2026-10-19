@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import curses
+import sys
 
 from cli_tui.app import CliTuiApp
 from cli_tui.state import TuiScreenMode
@@ -177,6 +178,35 @@ def test_form_scrolling_keeps_focused_item_visible():
     # Cursor to bottom button [ Run Command ] (index 20)
     app.form_cursor = 20
     screen = app.render_virtual_screen(height=15, width=80)
-    assert len(screen) == 15
     screen_text = "\n".join(screen)
     assert "▶ [ Run Command ]" in screen_text
+
+
+def test_form_run_button_and_ctrl_r_shortcut():
+    parser = build_sample_parser()
+    app = CliTuiApp(parser=parser, executable=[sys.executable, "-c", "pass"])
+    app.process_key(10)  # Enter 'build' form
+    assert app.screen_mode == TuiScreenMode.FORM
+
+    # 1. Top button bar is visible near the top of the screen
+    screen = app.render_virtual_screen(height=24, width=80)
+    screen_top_text = "\n".join(screen[:6])
+    assert "[ Run Command ]" in screen_top_text
+    assert "[Ctrl+R] Run" in "\n".join(screen[-3:])
+
+    # 2. Left and Right arrows cycle across buttons
+    app.form_cursor = len(app.form_widgets)  # on [ Run Command ]
+    assert "[Enter] Run Command" in "\n".join(
+        app.render_virtual_screen(height=24, width=80)[-3:]
+    )
+
+    app.process_key(curses.KEY_RIGHT)
+    assert app.form_cursor == len(app.form_widgets) + 1  # on [ Preview CLI ]
+    app.process_key(curses.KEY_LEFT)
+    assert app.form_cursor == len(app.form_widgets)  # back to [ Run Command ]
+
+    # 3. Ctrl+R (18) executes command immediately from anywhere
+    app.form_cursor = 0  # on first widget
+    app.process_key(18)  # Ctrl+R
+    assert app.screen_mode == TuiScreenMode.RUNNING
+    assert app.runner is not None

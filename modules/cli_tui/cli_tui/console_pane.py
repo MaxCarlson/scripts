@@ -3,7 +3,7 @@ from __future__ import annotations
 import curses
 import os
 import sys
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from .process_runner import ProcessRunner
 
@@ -29,6 +29,18 @@ class ConsolePaneRunner:
         if self.active_runner:
             return bool(self.active_runner.is_running)
         return False
+
+    @property
+    def proc(self) -> Optional[Any]:
+        if self.active_runner:
+            return self.active_runner.proc
+        return None
+
+    @property
+    def pid(self) -> Optional[int]:
+        if self.active_runner:
+            return self.active_runner.pid
+        return None
 
     @property
     def lines(self) -> List[str]:

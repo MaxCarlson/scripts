@@ -148,3 +148,34 @@ def test_form_state_append_string_and_empty_list():
     form.set_value("url", "https://example.com/ch1")
     argv = form.build_argv(executable=["mangadl"])
     assert argv == ["mangadl", "-u", "https://example.com/ch1"]
+
+
+def test_form_state_nargs_string_tokens_splitting():
+    parser = argparse.ArgumentParser(prog="mangadl")
+    parser.add_argument("-q", "--quality", nargs="+", type=int)
+    parser.add_argument("-u", "--url", action="append")
+    parser.add_argument("files", nargs="*")
+
+    cmd = introspect_parser(parser)
+    form = FormState(cmd)
+
+    # Multi-value nargs option given space-separated string "80 70"
+    form.set_value("quality", "80 70")
+    # Multi-value append option given space-separated string "u1 u2"
+    form.set_value("url", "https://site/1 https://site/2")
+    # Positional nargs given space-separated string "a.txt b.txt"
+    form.set_value("files", "a.txt b.txt")
+
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == [
+        "mangadl",
+        "a.txt",
+        "b.txt",
+        "-q",
+        "80",
+        "70",
+        "-u",
+        "https://site/1",
+        "-u",
+        "https://site/2",
+    ]
