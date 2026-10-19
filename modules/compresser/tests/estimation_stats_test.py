@@ -82,7 +82,15 @@ def test_census_signed_growth_unsampled_and_singleton_uncertainty():
     census = estimate_group((), (10, 20), ((0, -20), (1, -10)))
     assert (census.estimated_saved_bytes, census.variance) == (-30, 0)
     assert estimate_group((6,), (), ()).estimated_saved_bytes == 6
-    assert estimate_group((6,), (10, 20), ()).estimated_saved_bytes is None
+    unsampled = estimate_group((6,), (10, 20), ())
+    assert unsampled.estimated_saved_bytes == 6
+    assert unsampled.variance is None
+    assert unsampled.gaps == ("unsampled remainder",)
+    pred = LinearPredictor(origin_x=10, mean_offset=0, mean_savings=4, slope=0.5, origin_y=4)
+    unsampled_pred = estimate_group((6,), (10, 20), (), predictor=pred)
+    assert unsampled_pred.estimated_saved_bytes == 27
+    assert unsampled_pred.variance is None
+    assert unsampled_pred.gaps == ("unsampled remainder",)
     singleton = estimate_group((6,), (10, 20), ((0, 3),))
     assert singleton.estimated_saved_bytes == 12
     assert singleton.variance is None
@@ -132,6 +140,18 @@ def test_missing_failed_and_singleton_draws_never_get_complete_intervals(tmp_pat
     (result,) = estimate_fixed(singleton_plan, design, pilot, confirmation_observations(singleton_plan, design))
     assert result.estimated_saved_bytes is not None
     assert result.interval is None
+
+    # Unsampled remainder stratum has a pilot-projected point estimate but no interval
+    unsampled_plan = make_plan(tmp_path, [100] * 12, max_images=2, pilot=2)
+    unsampled_pilot = observe(unsampled_plan, unsampled_plan.pilot_member_ids)
+    unsampled_design = allocate_confirmation(unsampled_plan, unsampled_pilot)
+    assert all(len(g.selected_ids) == 0 for g in unsampled_design.groups)
+    (unsampled_result,) = estimate_fixed(unsampled_plan, unsampled_design, unsampled_pilot, ())
+    assert unsampled_result.estimated_saved_bytes is not None
+    assert unsampled_result.variance is None
+    assert unsampled_result.interval is None
+    assert not unsampled_result.complete
+    assert any("unsampled remainder" in g for g in unsampled_result.gaps)
 
 
 def test_duplicate_stale_runtime_and_unselected_results_fail_closed(tmp_path):
@@ -229,6 +249,13 @@ def test_allocation_keeps_coverage_floors_then_accounts_for_observed_cost(tmp_pa
     design = allocate_confirmation(plan, pilot)
     assert [len(row.selected_ids) for row in design.groups] == [2, 6]
     assert all(row.allocation_basis == "measured_pilot" for row in design.groups)
+
+
+def test_allocation_exhausts_allowance_in_group_order_when_below_floor_quota(tmp_path):
+    plan = make_plan(tmp_path, [100] * 30, groups=["JPEG"] * 10 + ["PNG"] * 10 + ["WEBP"] * 10, max_images=6, pilot=3)
+    pilot = observe(plan, plan.pilot_member_ids)
+    design = allocate_confirmation(plan, pilot)
+    assert [len(row.selected_ids) for row in design.groups] == [2, 1, 0]
 
 
 def test_zero_byte_census_has_undefined_percentage(tmp_path):

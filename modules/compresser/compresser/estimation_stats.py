@@ -62,13 +62,16 @@ def estimate_group(
     known = sum(pilot_savings)
     if count == size:
         return GroupEstimate(known + sum(saved for _, saved in confirmation), 0.0, size, count)
-    if not count:
-        return GroupEstimate(None, None, size, 0, ("unsampled remainder",))
-    residuals = [predictor.residual(remaining_bytes[index], saved) for index, saved in confirmation]
-    mean = math.fsum(residuals) / count
     predicted_total = size * predictor.mean_savings + predictor.slope * (
         sum(remaining_bytes) - size * predictor.origin_x - size * predictor.mean_offset
     )
+    if not count:
+        total = math.fsum((known + size * predictor.origin_y, predicted_total))
+        if not math.isfinite(total):
+            raise ValueError("Nonfinite fixed estimate")
+        return GroupEstimate(total, None, size, 0, ("unsampled remainder",))
+    residuals = [predictor.residual(remaining_bytes[index], saved) for index, saved in confirmation]
+    mean = math.fsum(residuals) / count
     total = math.fsum((known + size * predictor.origin_y, predicted_total, size * mean))
     if not math.isfinite(total):
         raise ValueError("Nonfinite fixed estimate")

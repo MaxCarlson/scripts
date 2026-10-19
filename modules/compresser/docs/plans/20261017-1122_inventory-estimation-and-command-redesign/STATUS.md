@@ -1,5 +1,12 @@
 # Status
 
+2026-10-19 Task 7 follow-up: Stratum remainder prediction, clean single-panel summary reporting, and Windows UTF-8 console output.
+Resolved dash-values (`—`) on incomplete confirmation runs: added pilot-projected point estimation for unsampled stratum remainders (`count == 0`), preserving statistical integrity (`variance = None`, `interval = None`, `complete = False`) while reporting real library-wide saved bytes and savings % for all working recipes.
+Replaced 230-char wrapped stratum gap lists in summary tables with a concise `Gaps` column (`6/11 confirmed`, `unresolved`), moving detailed stratum gap lists and failed trials to summary annotations below the table to guarantee single-panel rendering on 80/120/160 columns without panel splitting.
+Added Windows safe printing in `report_session.py`: reconfigures stdout/stderr streams to UTF-8 and falls back to UTF-8 buffer writes, eliminating `UnicodeEncodeError: 'charmap'` and question mark replacement on CP1252 consoles.
+Repaired stale failed records in user's saved plan `plan-60b15df8fb2aa29c2c22` for `205.jpg` following EXIF container normalization.
+Validation: 505 passed, 1 skipped in compresser suite; 33 passed in mangadl compress suite. Ruff and Black 120 passed on all edited files. Live estimate execution on `plan-60b15df8fb2aa29c2c22` verified with clean single-panel output and accurate projections.
+
 2026-10-17 Task 7 follow-up: EXIF container normalization and terminal observation state fix.
 Resolved false-positive metadata rejection where JPEG EXIF container prefix (`b'Exif\x00\x00'`) differed from raw TIFF WebP/AVIF headers, causing WebP and AVIF to report `ValueError: Encoder did not preserve exif metadata` on images like `205.jpg`.
 Fixed `run_estimation` completion checks: replaced `not obs.complete` with terminal observation verification (`obs.state in ('measured', 'retained_by_policy', 'failed')`), preventing failed trials (such as lossless JPEG under Pillow) from halting the estimation controller at `pilot_incomplete` in an infinite re-queue loop. Prescribed pilot and confirmation stages now cleanly advance to statistical estimation once all trials reach terminal states. All 537 tests passed.

@@ -294,7 +294,20 @@ def build_estimate_summary(
             if est.variance is not None and est.variance >= 0
             else "—"
         )
-        gaps = ", ".join(est.gaps) if est.gaps else "none"
+        if not est.gaps:
+            gaps_desc = "none"
+        elif any("unresolved" in g for g in est.gaps):
+            gaps_desc = "unresolved"
+        elif any("unsampled remainder" in g for g in est.gaps):
+            tot = len(est.groups) if est.groups else 1
+            unsampled_cnt = sum(1 for g in est.groups if any("unsampled remainder" in gap for gap in g.gaps))
+            gaps_desc = f"{tot - unsampled_cnt}/{tot} confirmed"
+        elif any("singleton" in g for g in est.gaps):
+            tot = len(est.groups) if est.groups else 1
+            singleton_cnt = sum(1 for g in est.groups if any("singleton" in gap for gap in g.gaps))
+            gaps_desc = f"{tot - singleton_cnt}/{tot} (singleton)"
+        else:
+            gaps_desc = "incomplete"
         rows.append(
             [
                 f"{fmt} {mode}" + (f" {q}" if q != "—" else ""),
@@ -304,7 +317,7 @@ def build_estimate_summary(
                 saved,
                 pct,
                 stddev,
-                gaps,
+                gaps_desc,
             ]
         )
 
@@ -315,6 +328,28 @@ def build_estimate_summary(
         annotations.append(
             f"Incomplete run ({result.stopping_reason}); rerun estimate with additional budget to continue."
         )
+
+    unsampled_strata = sorted(
+        {gap.rsplit(": ", 1)[0] for est in result.estimates for gap in est.gaps if "unsampled remainder" in gap}
+    )
+    if unsampled_strata:
+        annotations.append(f"Unconfirmed strata (pilot-projected): {', '.join(unsampled_strata)}")
+
+    unresolved_by_recipe: dict[str, list[str]] = {}
+    for est in result.estimates:
+        r = recipes_by_id.get(est.recipe_id)
+        r_name = (
+            (f"{_format_name(r.format)} {r.mode}" + (f" {r.quality}" if r and r.quality is not None else ""))
+            if r
+            else est.recipe_id[:8]
+        )
+        failures = sorted({gap.rsplit(": ", 1)[0] for gap in est.gaps if "unresolved" in gap})
+        if failures:
+            unresolved_by_recipe[r_name] = failures
+    if unresolved_by_recipe:
+        for r_name, strata in unresolved_by_recipe.items():
+            strata_desc = f"{', '.join(strata[:3])}..." if len(strata) > 3 else ", ".join(strata)
+            annotations.append(f"Unresolved in {r_name} (failed trials): {strata_desc}")
 
     warnings = []
     if plan.coverage_gaps:
@@ -349,12 +384,19 @@ def render_estimate_summary(
 
     lines.append("")
     if summary.rows:
+        headers = summary.headers
+        rows = summary.rows
+        alignments = ["left", "left", "left", "right", "right", "right", "right", "left"]
+        if width < 100 and len(headers) == 8:
+            headers = ("Recipe", "Est. Saved", "Savings %", "StdDev", "Gaps")
+            rows = tuple((r[0], r[4], r[5], r[6], r[7]) for r in rows)
+            alignments = ["left", "right", "right", "right", "left"]
         table = render_table_panels(
-            summary.headers,
-            summary.rows,
+            headers,
+            rows,
             identity_columns=(0,),
             max_width=width,
-            alignments=["left", "left", "left", "right", "right", "right", "right", "left"],
+            alignments=alignments,
         )
         for panel in table:
             lines.extend(panel.splitlines())

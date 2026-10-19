@@ -18,6 +18,24 @@ def current_session():
     return _current.get()
 
 
+def _safe_print(text: str, file=None, flush: bool = False) -> None:
+    target = file or sys.stdout
+    if hasattr(target, "reconfigure"):
+        try:
+            target.reconfigure(encoding="utf-8", errors="replace")
+        except Exception:
+            pass
+    try:
+        print(text, file=target, flush=flush)
+    except UnicodeEncodeError:
+        if hasattr(target, "buffer"):
+            target.buffer.write((text + "\n").encode("utf-8", errors="replace"))
+            if flush:
+                target.buffer.flush()
+        else:
+            print(text.encode("ascii", errors="replace").decode("ascii"), file=target, flush=flush)
+
+
 class ReportSession:
     def __init__(self, args):
         self.args = args
@@ -133,7 +151,7 @@ class ReportSession:
             )
 
     def render(self, report):
-        print(
+        _safe_print(
             reporting.render_console_report(
                 report,
                 width=shutil.get_terminal_size().columns,
@@ -191,7 +209,7 @@ class ReportSession:
 
             from .plan_reporting import build_plan_summary, render_plan_summary
 
-            print(
+            _safe_print(
                 render_plan_summary(
                     build_plan_summary(plan, population_count=population_count),
                     report_path=artifacts.get("latest"),
@@ -214,7 +232,7 @@ class ReportSession:
 
             from .plan_reporting import build_estimate_summary, render_estimate_summary
 
-            print(
+            _safe_print(
                 render_estimate_summary(
                     build_estimate_summary(plan, result, population_count=population_count),
                     report_path=artifacts.get("latest"),

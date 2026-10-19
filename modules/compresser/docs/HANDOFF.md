@@ -1,5 +1,12 @@
 # Compresser handoff
 
+2026-10-19 Task 7 follow-up: Stratum remainder prediction, clean single-panel summary reporting, and Windows UTF-8 console output.
+Fixed dash-values (`—`) on incomplete confirmation runs: unsampled remainder strata (`count == 0`) now compute pilot-projected point savings while preserving statistical integrity (`variance = None`, `interval = None`, `complete = False`).
+Replaced wide multi-line stratum gap lists with concise `Gaps` column (`6/11 confirmed`, `unresolved`), moving unconfirmed strata and unresolved failure annotations below the table to guarantee single-panel rendering on 80/120/160 columns without panel splits.
+Added Windows safe printing in `report_session.py`: reconfigures stdout/stderr streams to UTF-8 and safely writes UTF-8 buffer bytes on CP1252 consoles.
+Repaired stale failed records in user's saved plan `plan-60b15df8fb2aa29c2c22` for `205.jpg` following EXIF container normalization.
+Validation: 505 passed, 1 skipped in compresser suite; 33 passed in mangadl compress suite. Ruff and Black 120 passed on all edited files. Live estimate execution on `plan-60b15df8fb2aa29c2c22` verified with clean single-panel output and accurate projections. Unrelated local-agent-bridge files remain untouched.
+
 2026-10-17 compact plan output: Task1 composer/tests committed at f6e784ac; Task2 routes default plan output through the compact summary while preserving -v, Markdown and JSON. Source/docs target3.2.0. Compresser464/1 skip, MangaDL exit0, scripts-help55, changed-range Black/Ruff and installed CLI smoke checks pass. Windows visual acceptance at80/120/160 remains open because this session has no native desktop window access. Broader estimator Task6 remains paused.
 
 2026-10-17 snapshot lookup fix: header inventory was published with MangaDL owner

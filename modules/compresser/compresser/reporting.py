@@ -216,7 +216,20 @@ def build_estimate_report(
             if est.variance is not None and est.variance >= 0
             else "—"
         )
-        gaps = ", ".join(est.gaps) if est.gaps else "None"
+        if not est.gaps:
+            gaps_desc = "None"
+        elif any("unresolved" in g for g in est.gaps):
+            gaps_desc = "Unresolved"
+        elif any("unsampled remainder" in g for g in est.gaps):
+            tot = len(est.groups) if est.groups else 1
+            unsampled_cnt = sum(1 for g in est.groups if any("unsampled remainder" in gap for gap in g.gaps))
+            gaps_desc = f"{tot - unsampled_cnt}/{tot} confirmed"
+        elif any("singleton" in g for g in est.gaps):
+            tot = len(est.groups) if est.groups else 1
+            singleton_cnt = sum(1 for g in est.groups if any("singleton" in gap for gap in g.gaps))
+            gaps_desc = f"{tot - singleton_cnt}/{tot} (singleton)"
+        else:
+            gaps_desc = ", ".join(est.gaps)
         estimate_rows.append(
             [
                 est.recipe_id,
@@ -226,7 +239,7 @@ def build_estimate_report(
                 saved,
                 pct,
                 stddev,
-                gaps,
+                gaps_desc,
             ]
         )
 
