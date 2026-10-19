@@ -1,223 +1,346 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
-from typing import Any, Iterable, Iterator
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
 
-from lmstui.http_client import HttpClient, now_seconds
-from lmstui.sse import iter_sse_events
+from lmstui.config import Config, normalize_root_base_url
+from lmstui.http_client import HttpClient
+from lmstui.sse import (
+    extract_delta_text,
+    iter_openai_stream_chunks,
+)
+
+
+@dataclass(frozen=True)
+class ModelItem:
+    id: str
+    state: Optional[str] = None
+    type: Optional[str] = None
+    max_context_length: Optional[int] = None
+    quantization: Optional[str] = None
+    owned_by: Optional[str] = None
 
 
 @dataclass(frozen=True)
 class ChatStreamChunk:
     text: str
+    reasoning: str = ""
+    raw: Optional[Dict[str, Any]] = None
 
 
 @dataclass(frozen=True)
 class ChatResult:
     text: str
-    raw: dict[str, Any] | None
-    stats: dict[str, Any] | None
-    usage: dict[str, Any] | None
-    model_info: dict[str, Any] | None
-    runtime: dict[str, Any] | None
-    client_metrics: dict[str, Any]
+    raw: Optional[Dict[str, Any]] = None
+    stats: Optional[Dict[str, Any]] = None
+    usage: Optional[Dict[str, Any]] = None
+    model_info: Optional[Dict[str, Any]] = None
+    runtime: Optional[Dict[str, Any]] = None
+    client_metrics: Optional[Dict[str, Any]] = None
 
 
 class LMStudioAPI:
-    def __init__(self, base_url: str, api_mode: str, http: HttpClient) -> None:
-        self._base = base_url.rstrip("/")
-        self._mode = api_mode
-        self._http = http
+    def __init__(
+        self,
+        target: Any = "http://127.0.0.1:1234",
+        timeout_seconds: float = 60.0,
+        api_key: Optional[str] = None,
+        verbose: bool = False,
+    ) -> None:
+        if target is None or target == "":
+            self._root = "http://127.0.0.1:1234"
+            self._timeout = float(timeout_seconds) if timeout_seconds is not None else 60.0
+            self._api_key = api_key
+            self._verbose = bool(verbose)
+        elif isinstance(target, Config):
+            self._root = target.base_url_root
+            self._timeout = target.timeout_seconds
+            self._api_key = None
+            self._verbose = False
+        elif hasattr(target, "base_url"):
+            # ClientConfig compatible
+            self._root = normalize_root_base_url(target.base_url)
+            self._timeout = float(getattr(target, "timeout_seconds", timeout_seconds or 60.0))
+            self._api_key = getattr(target, "api_key", api_key)
+            self._verbose = bool(getattr(target, "verbose", verbose))
+        else:
+            self._root = normalize_root_base_url(str(target))
+            self._timeout = float(timeout_seconds) if timeout_seconds is not None else 60.0
+            self._api_key = api_key
+            self._verbose = bool(verbose)
 
-    def resolve_mode(self) -> str:
-        if self._mode in ("rest", "openai"):
-            return self._mode
+        self._http = HttpClient(
+            timeout_seconds=self._timeout,
+            api_key=self._api_key,
+        )
 
-        code, _ = self._http.get_json(f"{self._base}/api/v0/models")
-        if code == 200:
-            return "rest"
+    def close(self) -> None:
+        pass
 
-        code2, _ = self._http.get_json(f"{self._base}/v1/models")
-        if code2 == 200:
-            return "openai"
+    @property
+    def base_url_root(self) -> str:
+        return self._root
 
-        return "rest"
+    @property
+    def rest_base(self) -> str:
+        return f"{self._root}/api/v0"
 
-    def list_models(self) -> dict[str, Any] | str:
-        mode = self.resolve_mode()
-        if mode == "rest":
-            code, payload = self._http.get_json(f"{self._base}/api/v0/models")
-            if code != 200:
-                raise RuntimeError(f"REST models failed: {payload}")
-            if not isinstance(payload, dict):
-                raise RuntimeError(f"REST models returned non-json: {payload}")
-            return payload
+    @property
+    def openai_base(self) -> str:
+        return f"{self._root}/v1"
 
-        code, payload = self._http.get_json(f"{self._base}/v1/models")
-        if code != 200:
-            raise RuntimeError(f"OpenAI models failed: {payload}")
-        if not isinstance(payload, dict):
-            raise RuntimeError(f"OpenAI models returned non-json: {payload}")
-        return payload
+    def ping(self) -> Tuple[str, str]:
+        """
+        Check connectivity, trying REST API v0 then OpenAI v1.
+        """
+        try:
+            res = self._http.get_json(f"{self.rest_base}/models")
+            if isinstance(res, dict):
+                count = len(res.get("data", []))
+                return "online", f"LM Studio REST v0 responding ({count} models available)"
+        except Exception:
+            pass
 
-    def model_info(self, model_id: str) -> dict[str, Any]:
-        mode = self.resolve_mode()
-        if mode == "rest":
-            code, payload = self._http.get_json(f"{self._base}/api/v0/models/{model_id}")
-            if code != 200 or not isinstance(payload, dict):
-                raise RuntimeError(f"REST model info failed: {payload}")
-            return payload
+        try:
+            res = self._http.get_json(f"{self.openai_base}/models")
+            if isinstance(res, dict):
+                count = len(res.get("data", []))
+                return "online", f"LM Studio OpenAI v1 responding ({count} models available)"
+        except Exception as e:
+            return "offline", str(e)
+
+        return "offline", "Server returned unexpected response"
+
+    def list_models(self) -> Dict[str, Any]:
+        """
+        Retrieve models dictionary from REST API or OpenAI API.
+        """
+        try:
+            data = self._http.get_json(f"{self.rest_base}/models")
+            if isinstance(data, dict):
+                return data
+        except Exception:
+            pass
+
+        data = self._http.get_json(f"{self.openai_base}/models")
+        if not isinstance(data, dict):
+            raise RuntimeError(f"Expected dict from /models, got: {type(data)}")
+        return data
+
+    def list_models_rest(self) -> List[ModelItem]:
+        data = self._http.get_json(f"{self.rest_base}/models")
+        if not isinstance(data, dict):
+            return []
+        items: List[ModelItem] = []
+        for m in data.get("data", []):
+            if isinstance(m, dict):
+                items.append(
+                    ModelItem(
+                        id=m.get("id", ""),
+                        state=m.get("state"),
+                        type=m.get("type"),
+                        max_context_length=m.get("max_context_length"),
+                        quantization=m.get("quantization"),
+                        owned_by=m.get("owned_by"),
+                    )
+                )
+        return items
+
+    def list_models_openai(self) -> List[ModelItem]:
+        data = self._http.get_json(f"{self.openai_base}/models")
+        if not isinstance(data, dict):
+            return []
+        items: List[ModelItem] = []
+        for m in data.get("data", []):
+            if isinstance(m, dict):
+                items.append(
+                    ModelItem(
+                        id=m.get("id", ""),
+                        owned_by=m.get("owned_by"),
+                    )
+                )
+        return items
+
+    def get_model_rest(self, model_id: str) -> Dict[str, Any]:
+        return self.model_info(model_id)
+
+    def model_info(self, model_id: str) -> Dict[str, Any]:
+        try:
+            data = self._http.get_json(f"{self.rest_base}/models/{model_id}")
+            if isinstance(data, dict) and data.get("id"):
+                return data
+        except Exception:
+            pass
 
         models = self.list_models()
-        if not isinstance(models, dict):
-            raise RuntimeError("Unexpected models format")
         for item in models.get("data", []):
             if isinstance(item, dict) and item.get("id") == model_id:
                 return item
         raise RuntimeError(f"Model not found: {model_id}")
 
-    def chat(
+    def resolve_model(
         self,
-        model_id: str,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-        stream: bool,
-        use_rest: bool | None = None,
-    ) -> ChatResult | Iterator[ChatStreamChunk]:
-        mode = self.resolve_mode() if use_rest is None else ("rest" if use_rest else "openai")
-        if stream:
-            return self._chat_stream(mode, model_id, messages, temperature, max_tokens)
-        return self._chat_once(mode, model_id, messages, temperature, max_tokens)
-
-    def embeddings(self, model_id: str, inputs: list[str], use_rest: bool | None = None) -> dict[str, Any]:
-        mode = self.resolve_mode() if use_rest is None else ("rest" if use_rest else "openai")
-        url = f"{self._base}/api/v0/embeddings" if mode == "rest" else f"{self._base}/v1/embeddings"
-        payload = {"model": model_id, "input": inputs if len(inputs) > 1 else inputs[0]}
-        code, body = self._http.post_json(url, payload)
-        if code != 200 or not isinstance(body, dict):
-            raise RuntimeError(f"Embeddings failed: {body}")
-        return body
-
-    def _chat_once(
-        self,
-        mode: str,
-        model_id: str,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-    ) -> ChatResult:
-        url = f"{self._base}/api/v0/chat/completions" if mode == "rest" else f"{self._base}/v1/chat/completions"
-        payload = {
-            "model": model_id,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": False,
-        }
-
-        t0 = now_seconds()
-        code, body = self._http.post_json(url, payload)
-        t1 = now_seconds()
-
-        if code != 200 or not isinstance(body, dict):
-            raise RuntimeError(f"Chat failed: {body}")
-
-        text = (
-            (((body.get("choices") or [{}])[0] or {}).get("message") or {}).get("content")
-            or (((body.get("choices") or [{}])[0] or {}).get("text"))
-            or ""
-        )
-
-        stats = body.get("stats") if isinstance(body.get("stats"), dict) else None
-        usage = body.get("usage") if isinstance(body.get("usage"), dict) else None
-        model_info = body.get("model_info") if isinstance(body.get("model_info"), dict) else None
-        runtime = body.get("runtime") if isinstance(body.get("runtime"), dict) else None
-
-        client_metrics = {
-            "client_total_seconds": round(t1 - t0, 6),
-        }
-
-        return ChatResult(
-            text=text,
-            raw=body,
-            stats=stats,
-            usage=usage,
-            model_info=model_info,
-            runtime=runtime,
-            client_metrics=client_metrics,
-        )
-
-    def _chat_stream(
-        self,
-        mode: str,
-        model_id: str,
-        messages: list[dict[str, str]],
-        temperature: float,
-        max_tokens: int,
-    ) -> Iterator[ChatStreamChunk]:
-        url = f"{self._base}/api/v0/chat/completions" if mode == "rest" else f"{self._base}/v1/chat/completions"
-        payload = {
-            "model": model_id,
-            "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
-            "stream": True,
-        }
-
-        stream_resp = self._http.post_json_stream(url, payload)
-
-        if stream_resp.status != 200:
-            raise RuntimeError(f"Streaming chat failed with HTTP {stream_resp.status}")
-
-        for event in iter_sse_events(stream_resp.stream):
-            data = event.data.strip()
-            if data == "[DONE]":
-                return
-
+        explicit_model: Optional[str] = None,
+    ) -> Tuple[str, Optional[str], Optional[Dict[str, Any]]]:
+        """
+        Resolve model to use:
+        - If explicit_model provided: returns (explicit_model, None, info)
+        - If omitted: auto-picks loaded model deterministically.
+          Warns if multiple loaded models exist.
+          Raises RuntimeError if 0 loaded models exist.
+        """
+        if explicit_model:
             try:
-                obj = json.loads(data)
+                info = self.model_info(explicit_model)
             except Exception:
-                continue
+                info = {"id": explicit_model}
+            return explicit_model, None, info
 
-            for chunk_text in _extract_stream_text(obj):
-                if chunk_text:
-                    yield ChatStreamChunk(text=chunk_text)
+        models_data = self.list_models()
+        raw_items = [m for m in models_data.get("data", []) if isinstance(m, dict)]
+
+        # Find loaded models
+        loaded = [m for m in raw_items if m.get("state") == "loaded"]
+        if not loaded and raw_items:
+            # If server does not report state (e.g. OpenAI endpoint), treat all listed models as candidates
+            loaded = raw_items
+
+        if not loaded:
+            raise RuntimeError(
+                "No loaded model found in LM Studio. Please specify -m/--model or load a model in LM Studio."
+            )
+
+        # Deterministic sort by id
+        loaded_sorted = sorted(loaded, key=lambda m: str(m.get("id", "")))
+        selected = loaded_sorted[0]
+        selected_id = str(selected.get("id", ""))
+
+        warning: Optional[str] = None
+        if len(loaded_sorted) > 1:
+            other_ids = [repr(str(m.get("id", ""))) for m in loaded_sorted[1:]]
+            warning = (
+                f"Warning: Multiple models loaded. Using default model '{selected_id}'. "
+                f"Other loaded models: {', '.join(other_ids)}."
+            )
+
+        return selected_id, warning, selected
+
+    def chat_completions(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: Optional[int] = None,
+        stream: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Union[Dict[str, Any], Iterator[Dict[str, Any]]]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if max_tokens is not None and max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+        if extra:
+            payload.update(extra)
+
+        url = f"{self.openai_base}/chat/completions"
+
+        if stream:
+            lines = self._http.stream_lines("POST", url, json_body=payload)
+            return iter_openai_stream_chunks(lines)
+
+        res = self._http.post_json(url, json_body=payload)
+        if not isinstance(res, dict):
+            raise RuntimeError(f"Expected dict response from {url}, got: {type(res)}")
+        return res
+
+    def chat_rest(
+        self,
+        model: str,
+        messages: List[Dict[str, str]],
+        temperature: float = 0.7,
+        max_tokens: int = -1,
+        stream: bool = False,
+    ) -> Union[Dict[str, Any], Iterator[str]]:
+        """
+        Backwards compatibility method for cli.py and repl.py.
+        """
+        payload: Dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if max_tokens > 0:
+            payload["max_tokens"] = max_tokens
+
+        url = f"{self.rest_base}/chat/completions"
+        try:
+            if stream:
+                return self._http.stream_lines("POST", url, json_body=payload)
+            return self._http.post_json(url, json_body=payload)
+        except Exception:
+            # Fallback to OpenAI base
+            url_v1 = f"{self.openai_base}/chat/completions"
+            if stream:
+                return self._http.stream_lines("POST", url_v1, json_body=payload)
+            return self._http.post_json(url_v1, json_body=payload)
+
+    def iter_stream_text_from_lines(self, lines: Iterator[str]) -> Iterator[str]:
+        """
+        Backwards compatibility helper: converts raw SSE lines into text chunks.
+        """
+        for chunk in iter_openai_stream_chunks(lines):
+            delta = extract_delta_text(chunk)
+            if delta:
+                yield delta
+
+    def responses(
+        self,
+        model: str,
+        input_text: str,
+        temperature: float = 0.7,
+        max_output_tokens: Optional[int] = None,
+        stream: bool = False,
+        extra: Optional[Dict[str, Any]] = None,
+    ) -> Union[Dict[str, Any], Iterator[Dict[str, Any]]]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": input_text,
+            "temperature": temperature,
+            "stream": stream,
+        }
+        if max_output_tokens is not None and max_output_tokens > 0:
+            payload["max_output_tokens"] = max_output_tokens
+        if extra:
+            payload.update(extra)
+
+        url = f"{self.openai_base}/responses"
+        if stream:
+            lines = self._http.stream_lines("POST", url, json_body=payload)
+            return iter_openai_stream_chunks(lines)
+
+        res = self._http.post_json(url, json_body=payload)
+        if not isinstance(res, dict):
+            raise RuntimeError(f"Expected dict response from {url}, got: {type(res)}")
+        return res
+
+    def embeddings_rest(self, model: str, text: str) -> Dict[str, Any]:
+        return self.embeddings(model=model, inputs=[text])
+
+    def embeddings(self, model: str, inputs: List[str]) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "model": model,
+            "input": inputs if len(inputs) > 1 else inputs[0],
+        }
+        try:
+            return self._http.post_json(f"{self.rest_base}/embeddings", json_body=payload)
+        except Exception:
+            return self._http.post_json(f"{self.openai_base}/embeddings", json_body=payload)
 
 
-def _extract_stream_text(obj: dict[str, Any]) -> Iterable[str]:
-    """
-    Works with typical OpenAI Chat Completions streaming:
-      choices[0].delta.content
-    Some servers may emit:
-      choices[0].text
-    """
-    choices = obj.get("choices")
-    if not isinstance(choices, list):
-        return []
-
-    out: list[str] = []
-    for choice in choices:
-        if not isinstance(choice, dict):
-            continue
-
-        delta = choice.get("delta")
-        if isinstance(delta, dict):
-            content = delta.get("content")
-            if isinstance(content, str) and content:
-                out.append(content)
-                continue
-
-        text = choice.get("text")
-        if isinstance(text, str) and text:
-            out.append(text)
-            continue
-
-        message = choice.get("message")
-        if isinstance(message, dict):
-            content2 = message.get("content")
-            if isinstance(content2, str) and content2:
-                out.append(content2)
-
-    return out
+# Compatibility aliases
+LmStudioApi = LMStudioAPI
+LMStudioClient = LMStudioAPI

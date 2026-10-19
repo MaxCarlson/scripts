@@ -4,8 +4,8 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lmstui"
-version = "0.1.0"
-description = "Termux-friendly CLI/TUI helpers for LM Studio REST/OpenAI-compatible servers."
+version = "1.0.0"
+description = "Fast, dependency-free CLI for LM Studio with streaming, model auto-selection, and defaults persistence."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -16,7 +16,9 @@ dependencies = []
 dev = ["pytest>=7.0"]
 
 [project.scripts]
-lmstui = "lmstui.cli:main"
+lmst = "lmstui.cli:main_lmst"
+lmstui = "lmstui.cli:main_lmstui"
+lmc = "lmstui.cli:main_lmc"
 
 [tool.setuptools]
 package-dir = {"" = "."}
@@ -25,6 +27,9 @@ package-dir = {"" = "."}
 where = ["."]
 include = ["lmstui*"]
 
+[tool.setuptools.package-data]
+lmstui = ["*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q"
+addopts = "-q --basetemp=modules/lmstui/.pytest_tmp_root"

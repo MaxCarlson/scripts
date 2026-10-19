@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Sequence, Tuple
+from typing import Any, Dict, List, Sequence, Tuple
 
 
 def format_table(rows: List[Dict[str, Any]], columns: Sequence[Tuple[str, str]]) -> str:

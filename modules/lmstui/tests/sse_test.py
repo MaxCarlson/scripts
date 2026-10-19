@@ -1,4 +1,10 @@
-from lmstui.sse import SseEvent, extract_delta_text, iter_openai_stream_chunks, parse_sse_events
+from lmstui.sse import (
+    extract_delta_text,
+    extract_reasoning_delta,
+    iter_openai_stream_chunks,
+    iter_sse_events,
+    parse_sse_events,
+)
 
 
 def test_parse_sse_events_basic():
@@ -13,6 +19,20 @@ def test_parse_sse_events_basic():
     evs = list(parse_sse_events(lines))
     assert evs[0].data == "{\"a\": 1}"
     assert evs[1].data == "[DONE]"
+
+
+def test_iter_sse_events_alias():
+    lines = iter(
+        [
+            "data: hello",
+            "",
+            "data: [DONE]",
+            "",
+        ]
+    )
+    evs = list(iter_sse_events(lines))
+    assert len(evs) == 2
+    assert evs[0].data == "hello"
 
 
 def test_iter_openai_stream_chunks_stops_on_done():
@@ -34,3 +54,10 @@ def test_iter_openai_stream_chunks_stops_on_done():
 def test_extract_delta_text_handles_missing():
     assert extract_delta_text({}) == ""
     assert extract_delta_text({"choices": []}) == ""
+
+
+def test_extract_reasoning_delta():
+    chunk = {"choices": [{"delta": {"reasoning_content": "Thinking about step 1..."}}]}
+    assert extract_reasoning_delta(chunk) == "Thinking about step 1..."
+    assert extract_reasoning_delta({}) == ""
+

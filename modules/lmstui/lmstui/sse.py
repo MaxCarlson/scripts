@@ -55,6 +55,10 @@ def parse_sse_events(lines: Iterator[str]) -> Iterator[SseEvent]:
         yield ev
 
 
+# Compatibility alias for callers expecting iter_sse_events
+iter_sse_events = parse_sse_events
+
+
 def iter_openai_stream_chunks(lines: Iterator[str]) -> Iterator[Dict[str, Any]]:
     """
     Given raw lines from an OpenAI-compatible streaming response (SSE),
@@ -74,17 +78,62 @@ def iter_openai_stream_chunks(lines: Iterator[str]) -> Iterator[Dict[str, Any]]:
 
 def extract_delta_text(chunk: Dict[str, Any]) -> str:
     """
-    Supports common OpenAI streaming shapes:
+    Supports common OpenAI and LM Studio streaming shapes for assistant output:
       - chat.completion.chunk: choices[0].delta.content
-      - responses stream: output_text deltas may differ; we do best-effort.
+      - legacy completion: choices[0].text
+      - responses stream: output[0].content[0].text or delta string.
+    Note: Does not extract reasoning_content to prevent accidental dumping.
     """
     choices = chunk.get("choices")
     if isinstance(choices, list) and choices:
-        delta = choices[0].get("delta", {})
-        if isinstance(delta, dict):
-            content = delta.get("content")
-            if isinstance(content, str):
-                return content
+        c0 = choices[0]
+        if isinstance(c0, dict):
+            delta = c0.get("delta")
+            if isinstance(delta, dict):
+                content = delta.get("content")
+                if isinstance(content, str):
+                    return content
+            text = c0.get("text")
+            if isinstance(text, str):
+                return text
+
+    # Responses API deltas
+    delta = chunk.get("delta")
+    if isinstance(delta, str):
+        return delta
+
+    output = chunk.get("output")
+    if isinstance(output, list) and output:
+        parts = output[0].get("content")
+        if isinstance(parts, list) and parts:
+            p0 = parts[0]
+            if isinstance(p0, dict) and isinstance(p0.get("text"), str):
+                return p0["text"]
+
     if "output_text" in chunk and isinstance(chunk["output_text"], str):
         return chunk["output_text"]
     return ""
+
+
+def extract_reasoning_delta(chunk: Dict[str, Any]) -> str:
+    """
+    Extract reasoning/thinking tokens when reported.
+    """
+    choices = chunk.get("choices")
+    if isinstance(choices, list) and choices:
+        c0 = choices[0]
+        if isinstance(c0, dict):
+            delta = c0.get("delta")
+            if isinstance(delta, dict):
+                reasoning = delta.get("reasoning_content") or delta.get("reasoning")
+                if isinstance(reasoning, str):
+                    return reasoning
+    return ""
+
+
+def extract_usage_from_chunk(chunk: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    usage = chunk.get("usage")
+    if isinstance(usage, dict):
+        return usage
+    return None
+

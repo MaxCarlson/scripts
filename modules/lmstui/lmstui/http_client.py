@@ -3,10 +3,15 @@ from __future__ import annotations
 import json
 import socket
 import ssl
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
-from typing import Any, Dict, Iterable, Iterator, Optional, Tuple
+from typing import Any, Dict, Iterator, Optional
+
+
+def now_seconds() -> float:
+    return time.time()
 
 
 @dataclass(frozen=True)
@@ -24,9 +29,15 @@ class HttpError(RuntimeError):
 
 
 class HttpClient:
-    def __init__(self, timeout_seconds: float = 60.0, verify_tls: bool = True):
+    def __init__(
+        self,
+        timeout_seconds: float = 60.0,
+        verify_tls: bool = True,
+        api_key: Optional[str] = None,
+    ):
         self._timeout = float(timeout_seconds)
         self._verify_tls = bool(verify_tls)
+        self._api_key = api_key
 
     def _ssl_context(self) -> ssl.SSLContext | None:
         if self._verify_tls:
@@ -46,6 +57,8 @@ class HttpClient:
     ) -> HttpResponse:
         method = method.upper().strip()
         headers = dict(headers or {})
+        if self._api_key:
+            headers.setdefault("Authorization", f"Bearer {self._api_key}")
 
         data: bytes | None = None
         if json_body is not None:
@@ -97,6 +110,8 @@ class HttpClient:
         """
         method = method.upper().strip()
         headers = dict(headers or {})
+        if self._api_key:
+            headers.setdefault("Authorization", f"Bearer {self._api_key}")
 
         data: bytes | None = None
         if json_body is not None:

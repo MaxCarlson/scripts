@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-import shlex
 import subprocess
 from dataclasses import dataclass
-from typing import Iterator, List, Optional
+from typing import Iterator, List
 
 
 @dataclass(frozen=True)
