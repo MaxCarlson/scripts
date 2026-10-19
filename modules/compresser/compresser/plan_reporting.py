@@ -6,9 +6,10 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import math
 from pathlib import Path
+from typing import Sequence
 
 from termdash.table import render_table_panels, wrap_display_text
-from termdash.utils import color_text
+from termdash.utils import color_text, format_bytes_decimal
 
 from .estimation_models import EstimationPlan, EstimationResult
 
@@ -50,6 +51,32 @@ def _age(seconds: float) -> str:
 def _format_name(value: str) -> str:
     normalized = value.casefold()
     return _FORMAT_NAMES.get(normalized, value.upper())
+
+
+def _format_strata_group(strata_keys: Sequence[str]) -> str:
+    from collections import defaultdict
+
+    by_fmt: dict[str, list[tuple[int, str]]] = defaultdict(list)
+    for k in strata_keys:
+        parts = k.split("|")
+        fmt = _format_name(parts[0].lower())
+        if len(parts) >= 3 and parts[2].startswith("log2:"):
+            exp_str = parts[2][5:]
+            if exp_str.isdigit():
+                exp = int(exp_str)
+                size_str = f"~{format_bytes_decimal(1 << exp)}"
+                by_fmt[fmt].append((exp, size_str))
+                continue
+            elif exp_str == "all":
+                by_fmt[fmt].append((-1, "all sizes"))
+                continue
+        by_fmt[fmt].append((999, k))
+
+    parts_out = []
+    for fmt, items in sorted(by_fmt.items()):
+        items_sorted = [s for _, s in sorted(items, key=lambda x: x[0])]
+        parts_out.append(f"{fmt} ({', '.join(items_sorted)})")
+    return "; ".join(parts_out)
 
 
 def _count_label(count: int, singular: str, plural: str | None = None) -> str:
@@ -325,15 +352,26 @@ def build_estimate_summary(
         "Fixed-design stratified estimate; variance represents sample variation.",
     ]
     if result.stopping_reason != "complete":
-        annotations.append(
-            f"Incomplete run ({result.stopping_reason}); rerun estimate with additional budget to continue."
-        )
+        if result.stopping_reason == "missing_group_coverage":
+            budget_str = (
+                f"{plan.budget.max_new_encodes:,} trials" if plan.budget and plan.budget.max_new_encodes else "budget"
+            )
+            annotations.append(
+                f"Incomplete run (missing_group_coverage); plan budget ({budget_str}) was exhausted during design allocation. "
+                "Create a new plan with -T (e.g. -T 2500) for full confirmation and StdDev."
+            )
+        elif result.stopping_reason in ("max_trials_reached", "deadline_exceeded", "pilot_incomplete"):
+            annotations.append(
+                f"Incomplete run ({result.stopping_reason}); rerun estimate with additional budget to continue."
+            )
+        else:
+            annotations.append(f"Incomplete run ({result.stopping_reason}).")
 
     unsampled_strata = sorted(
         {gap.rsplit(": ", 1)[0] for est in result.estimates for gap in est.gaps if "unsampled remainder" in gap}
     )
     if unsampled_strata:
-        annotations.append(f"Unconfirmed strata (pilot-projected): {', '.join(unsampled_strata)}")
+        annotations.append(f"Unconfirmed strata (pilot-projected): {_format_strata_group(unsampled_strata)}")
 
     unresolved_by_recipe: dict[str, list[str]] = {}
     for est in result.estimates:
@@ -348,8 +386,11 @@ def build_estimate_summary(
             unresolved_by_recipe[r_name] = failures
     if unresolved_by_recipe:
         for r_name, strata in unresolved_by_recipe.items():
-            strata_desc = f"{', '.join(strata[:3])}..." if len(strata) > 3 else ", ".join(strata)
-            annotations.append(f"Unresolved in {r_name} (failed trials): {strata_desc}")
+            if "lossless" in r_name.lower() and "jpeg" in r_name.lower():
+                annotations.append(f"Unresolved in {r_name}: all trials failed (requires -A cli-jpegtran)")
+            else:
+                strata_desc = _format_strata_group(strata)
+                annotations.append(f"Unresolved in {r_name} (failed trials): {strata_desc}")
 
     warnings = []
     if plan.coverage_gaps:
