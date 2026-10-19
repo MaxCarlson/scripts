@@ -30,6 +30,10 @@ class Worker:
     async def preflight(self, directory, **kwargs):
         return {"opencode_version": "mock", **kwargs}
 
+    async def prepare_session(self, directory, *, project_id):
+        self.project_id = project_id
+        return {"id": "session-1", "directory": str(directory), "projectID": project_id}
+
     async def dispatch(self, workspace, prompt, **kwargs):
         assert not (workspace / "verifier").exists()
         if self.uncertain:
@@ -39,7 +43,7 @@ class Worker:
         if self.extra:
             (workspace / "instruction.md").write_text("changed")
         self.last_receipt = {"jobId": "job-1", "sessionId": "session-1", "messageId": "user-1"}
-        return WorkerHandle("job-1", "session-1", "user-1", workspace)
+        return WorkerHandle("job-1", "session-1", "user-1", workspace, self.project_id)
 
     async def observe(self, handle):
         if self.unresolved:

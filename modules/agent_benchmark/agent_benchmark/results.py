@@ -81,5 +81,6 @@ def trial_from_attempt(
                         "diagnostics": list(attempt.termination.diagnostics)},
         "job_id": attempt.termination.handle.job_id, "session_id": attempt.termination.handle.session_id,
         "message_id": attempt.termination.handle.message_id,
+        "project_id": attempt.termination.handle.project_id or None,
     }
     return TrialResult(run_id, trial_id, task_id, variant_id, repetition, status, metrics, details)

@@ -12,6 +12,9 @@ import uuid
 from benchmark_core import (RunInfo, TrialResult, append_result, format_utc_timestamp,
                             generate_reports, load_run, save_run, summarize)
 
+from . import __version__
+from .git_workspace import ISOLATION_POLICY
+
 from .attempt import _write_json, run_attempt
 from .bridge import connected_bridge
 from .evidence import load_task
@@ -52,7 +55,8 @@ async def run_benchmark(
                 {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine()},
                 {"cancel_grace_seconds": grace_seconds, "task_seconds": task.time_budget_seconds if task_seconds is None else task_seconds,
                  "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
-                 "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None},
+                 "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
+                 "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY},
             )
             save_run(run_dir, info)
             trial = None
@@ -138,7 +142,10 @@ async def cleanup_trial(
             # No worker was dispatched. Preserve its small diagnostic workspace.
             release(state, pending)
             return {"removed": False, "termination_confirmed": True, "diagnostic": "No worker dispatched; state released"}
-        handle = WorkerHandle(raw.get("job_id", ""), raw.get("session_id", ""), raw.get("message_id", ""), workspace.path)
+        handle = WorkerHandle(raw.get("job_id", ""), raw.get("session_id", ""), raw.get("message_id", ""),
+                              workspace.path, raw.get("project_id", ""))
+        if journal.get("git") and handle.project_id != journal["git"].get("root_commit"):
+            raise RuntimeError("Recorded job project does not match owned trial Git identity")
         if not handle.session_id or not handle.message_id or not handle.job_id:
             raise RuntimeError("Submission ownership unknown; preserve workspace and pending receipt")
         async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:

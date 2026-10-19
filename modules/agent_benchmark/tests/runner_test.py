@@ -164,6 +164,12 @@ def test_unknown_submission_survives_restart_and_refuses_dispatch(tmp_path, resp
         async def preflight(self, directory, **kwargs):
             return {"version": "offline"}
 
+        async def prepare_session(self, directory, *, project_id):
+            # Mock empty-session API binding; actual API validation has separate transport tests.
+            self.project_context = {"id": project_id, "directory": str(directory)}
+            self.prepared_session = {"id": "session-1", "projectID": project_id, "directory": str(directory)}
+            return self.prepared_session
+
     async def fire(name, args):
         if response == "transport":
             raise ConnectionError("Response lost after submission")
@@ -220,3 +226,60 @@ def test_post_submission_evidence_failure_preserves_ids_and_pending_receipt(tmp_
     assert journal["handle"]["job_id"] == "job-1"
     assert journal["handle"]["session_id"] == "session-1"
     assert journal["handle"]["message_id"] == "user-1"
+
+
+
+@pytest.mark.parametrize("failure", ["project", "session", None])
+def test_real_adapter_project_gate_and_canonical_provenance_offline(tmp_path, failure):
+    import json
+    import httpx
+    from agent_benchmark.bridge import OpenCodeBridge
+    from agent_benchmark.git_workspace import ISOLATION_POLICY
+    from attempt_test import GOOD
+    from bridge_test import messages
+    from bridge_isolation_test import remote
+    from project_isolation_test import git
+
+    requests, submissions = [], []
+    state = {"submitted": False}
+    def service(request):
+        directory = Path(request.headers["x-opencode-directory"])
+        project = git(directory, "rev-parse", "HEAD")
+        overrides = {}
+        if failure == "project":
+            overrides[("GET", "/path")] = {"directory": str(directory), "worktree": str(directory.parent)}
+        if failure == "session":
+            overrides[("GET", "/session/session-1")] = {"id": "session-1", "directory": str(directory), "projectID": "global"}
+        if state["submitted"]:
+            overrides[("GET", "/session/session-1/message")] = messages()
+        return remote(directory, overrides, requests, project_id=project)(request)
+    async def submit(name, args):
+        submissions.append(args)
+        assert failure is None and args["sessionId"] == "session-1"
+        (Path(args["directory"]) / "grep.py").write_text(GOOD, encoding="utf-8")
+        state["submitted"] = True
+        return {"jobId": "job-1", "sessionId": "session-1", "messageId": "user-1"}
+    @asynccontextmanager
+    async def connection(**kwargs):
+        async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(service)) as http:
+            yield OpenCodeBridge(submit, http)
+    run_dir = asyncio.run(run_benchmark(TASK, reports=tmp_path / "reports", state=tmp_path / "state",
+                                        model="model-a", connector=connection, task_seconds=2))
+    info, trials = load_run(run_dir)
+    assert len(trials) == 1
+    assert read_pending(tmp_path / "state") is None
+    assert info.metadata["isolation_policy"] == ISOLATION_POLICY
+    journal = json.loads((run_dir / "evidence/trial-001/lifecycle.json").read_text())
+    assert journal["git"]["root_commit"]
+    if failure:
+        assert not submissions and trials[0].status == "infrastructure_error"
+        assert journal["stage"] == "preflight_failed"
+        assert not (run_dir / "evidence/trial-001/dispatch.json").exists()
+        if failure == "session":
+            persisted = json.loads((run_dir / "evidence/trial-001/session-preflight.json").read_text())
+            assert persisted["persisted"]["projectID"] == "global"
+    else:
+        assert len(submissions) == 1 and trials[0].status == "passed"
+        runtime = info.metadata["runtime"]
+        assert runtime["project"]["id"] == runtime["git"]["root_commit"] == trials[0].details["project_id"]
+        assert runtime["session"]["projectID"] == trials[0].details["project_id"]

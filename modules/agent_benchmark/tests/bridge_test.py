@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from agent_benchmark.bridge import OpenCodeBridge, parse_observation
+from bridge_isolation_test import PROJECT, prepare as prepare_bridge, remote as project_remote
 from agent_benchmark.lifecycle import WorkerHandle
 
 HANDLE = WorkerHandle("job-1", "session-1", "user-1", Path("C:/owned/trial-1"))
@@ -74,12 +75,13 @@ def test_dispatch_uses_fresh_session_and_retains_bridge_identifiers(tmp_path):
         return {"status": "accepted", "jobId": "job-1", "sessionId": "session-1", "messageId": "user-1"}
 
     async def run():
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(project_remote(tmp_path))) as http:
             bridge = OpenCodeBridge(call_tool, http)
+            await prepare_bridge(bridge, tmp_path)
             handle = await bridge.dispatch(tmp_path, "work", provider="lmstudio", model="explicit-model", agent="local-worker")
             assert handle.workspace == tmp_path
             assert handle.job_id == "job-1"
-            assert "sessionId" not in received[0][1]
+            assert received[0][1]["sessionId"] == "session-1"
             assert received[0][1]["modelID"] == "explicit-model"
 
     asyncio.run(run())
@@ -132,8 +134,9 @@ def test_new_submission_does_not_reuse_previous_transcript(tmp_path):
         raise RuntimeError("lost submit response")
 
     async def run():
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(project_remote(tmp_path))) as http:
             bridge = OpenCodeBridge(uncertain, http)
+            await prepare_bridge(bridge, tmp_path)
             bridge.last_history = messages()
             from agent_benchmark.bridge import SubmissionUncertain
             with pytest.raises(SubmissionUncertain):
@@ -149,6 +152,8 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
             return httpx.Response(200, json={"version": "1.19.3"})
         if request.url.path == "/provider":
             return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": ["lmstudio"]})
+        if request.url.path in ("/path", "/project/current"):
+            return project_remote(tmp_path)(request)
         return httpx.Response(200, json=[{"name": "local-worker", "permission": [{"permission": "task", "action": "deny"}]}])
 
     async def unused(name, args):
@@ -157,14 +162,14 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
     async def run():
         async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
             bridge = OpenCodeBridge(unused, http)
-            facts = await bridge.preflight(tmp_path, provider="lmstudio", model="model-a", agent="local-worker")
+            facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="local-worker")
             assert facts["model"] == "model-a" and facts["opencode_version"] == "1.19.3"
             with pytest.raises(ValueError):
-                await bridge.preflight(tmp_path, provider="lmstudio", model="missing", agent="local-worker")
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="missing", agent="local-worker")
             with pytest.raises(ValueError):
-                await bridge.preflight(tmp_path, provider="cloud", model="model-a", agent="local-worker")
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="cloud", model="model-a", agent="local-worker")
             with pytest.raises(ValueError):
-                await bridge.preflight(tmp_path, provider="lmstudio", model="model-a", agent="unknown")
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="unknown")
 
     asyncio.run(run())
 
@@ -177,8 +182,9 @@ def test_bridge_error_retains_any_durable_identifiers(tmp_path):
         raise SubmissionUncertain(receipt)
 
     async def run():
-        async with httpx.AsyncClient() as http:
+        async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(project_remote(tmp_path))) as http:
             bridge = OpenCodeBridge(failed, http)
+            await prepare_bridge(bridge, tmp_path)
             with pytest.raises(SubmissionUncertain) as error:
                 await bridge.dispatch(tmp_path, "work", provider="lmstudio", model="model-a", agent="local-worker")
             assert error.value.receipt["jobId"] == "durable-job"

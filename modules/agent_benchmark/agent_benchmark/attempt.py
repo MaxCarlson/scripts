@@ -94,17 +94,27 @@ async def run_attempt(
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
-    prepare_workspace(task, workspace.path)
+    git_identity = prepare_workspace(task, workspace.path)
     s0 = capture(workspace.path, evidence_dir / "S0")
     # Worker processes belong to OpenCode's shared process tree, not local subprocess
     # supervision; owned_pids is intentionally empty.
     journal = {"stage": "not_submitted", "workspace": asdict(workspace), "task_seconds": budget,
-               "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": []}
+               "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": [],
+               "git": asdict(git_identity)}
     _write_json(evidence_dir / "lifecycle.json", journal)
     try:
-        configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent)
+        configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent,
+                                               project_id=git_identity.root_commit)
+        prepared_session = await bridge.prepare_session(workspace.path, project_id=git_identity.root_commit)
+        configuration.update(git=asdict(git_identity), session=prepared_session)
+        journal["prepared_session"] = prepared_session
+        _write_json(evidence_dir / "session-preflight.json", getattr(bridge, "session_evidence", prepared_session))
+        _write_json(evidence_dir / "lifecycle.json", journal)
     except Exception as error:
         journal.update(stage="preflight_failed", diagnostic=type(error).__name__)
+        session_evidence = getattr(bridge, "session_evidence", {})
+        if session_evidence:
+            _write_json(evidence_dir / "session-preflight.json", session_evidence)
         _write_json(evidence_dir / "lifecycle.json", journal)
         raise
     _write_json(evidence_dir / "runtime.json", configuration)
@@ -150,7 +160,7 @@ async def run_attempt(
         except asyncio.CancelledError:
             receipt = bridge.last_receipt
             handle = handle or WorkerHandle(receipt.get("jobId", "unconfirmed"), receipt.get("sessionId", ""),
-                                            receipt.get("messageId", ""), workspace.path)
+                                            receipt.get("messageId", ""), workspace.path, git_identity.root_commit)
             decision = _unresolved(handle, grace_seconds, "Caller cancelled observation; remote worker may still be active")
             _write_json(evidence_dir / "dispatch.json", receipt)
             journal.update(stage="termination_unresolved", handle=asdict(handle), termination=asdict(decision))
@@ -167,7 +177,7 @@ async def run_attempt(
         receipt = bridge.last_receipt
         _write_json(evidence_dir / "dispatch.json", receipt)
         handle = handle or WorkerHandle(receipt.get("jobId", "unconfirmed"), receipt.get("sessionId", ""),
-                                        receipt.get("messageId", ""), workspace.path)
+                                        receipt.get("messageId", ""), workspace.path, git_identity.root_commit)
         if handle.session_id and handle.message_id and handle.job_id:
             try:
                 decision = await confirm_termination(
@@ -245,6 +255,6 @@ async def run_attempt(
         if dispatch_started and (decision is None or not decision.confirmed) and guard.unresolved is None:
             receipt = bridge.last_receipt
             pending_handle = handle or WorkerHandle(receipt.get("jobId", "unconfirmed"), receipt.get("sessionId", ""),
-                                                    receipt.get("messageId", ""), workspace.path)
+                                                    receipt.get("messageId", ""), workspace.path, git_identity.root_commit)
             guard.record(decision or _unresolved(pending_handle, grace_seconds,
                          "Execution/evidence failure prevented confirmation; preserve workspace and halt dispatch"))

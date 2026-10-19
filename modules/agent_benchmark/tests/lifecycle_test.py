@@ -135,7 +135,7 @@ def test_cleanup_failure_does_not_change_verified_result(tmp_path, monkeypatch):
     decision = decide(Bridge([idle()]), handle_for(workspace))
     original_decision = decision
 
-    def locked(path):
+    def locked(path, **kwargs):
         raise PermissionError("locked")
 
     monkeypatch.setattr("agent_benchmark.lifecycle.shutil.rmtree", locked)
@@ -160,11 +160,11 @@ def test_transient_windows_lock_retries_then_removes_only_owned_directory(tmp_pa
     unrelated.mkdir()
     calls = []
 
-    def once_locked(path):
+    def once_locked(path, **kwargs):
         calls.append(path)
         if len(calls) == 1:
             raise PermissionError("temporary Windows lock")
-        real_remove(path)
+        real_remove(path, **kwargs)
 
     monkeypatch.setattr("agent_benchmark.lifecycle.shutil.rmtree", once_locked)
     outcome = cleanup_workspace(workspace, decide(Bridge([idle()]), handle_for(workspace)), retry_seconds=0)
@@ -241,7 +241,7 @@ def test_non_lock_cleanup_failure_is_not_retried(tmp_path, monkeypatch):
     workspace = DispatchGuard().allocate(tmp_path)
     decision = decide(Bridge([idle()]), handle_for(workspace))
 
-    def failed(path):
+    def failed(path, **kwargs):
         raise OSError("unexpected filesystem failure")
 
     monkeypatch.setattr("agent_benchmark.lifecycle.shutil.rmtree", failed)
@@ -285,3 +285,32 @@ def test_external_cancellation_propagates_without_authorizing_cleanup(tmp_path):
     with pytest.raises(asyncio.CancelledError):
         decide(CancelledBridge([]), handle_for(workspace))
     assert workspace.path.exists()
+
+
+
+def test_readonly_git_objects_removed_only_after_confirmed_termination(tmp_path):
+    from agent_benchmark.evidence import load_task, prepare_workspace
+    from attempt_test import TASK
+    workspace = DispatchGuard().allocate(tmp_path)
+    prepare_workspace(load_task(TASK), workspace.path)
+    decision = decide(Bridge([idle()]), handle_for(workspace))
+    unconfirmed = replace(decision, confirmed=False)
+    assert not cleanup_workspace(workspace, unconfirmed).removed
+    assert (workspace.path / ".git/objects").is_dir()
+    assert cleanup_workspace(workspace, decision).removed
+    assert not workspace.path.exists()
+
+
+def test_git_readonly_cleanup_handler_never_changes_unrelated_paths(tmp_path, monkeypatch):
+    import os
+    workspace = DispatchGuard().allocate(tmp_path / "owned")
+    unrelated = tmp_path / "unrelated.txt"
+    unrelated.write_text("retained")
+    decision = decide(Bridge([idle()]), handle_for(workspace))
+    chmods = []
+    monkeypatch.setattr("agent_benchmark.lifecycle.os.chmod", lambda *args: chmods.append(args))
+    def permission_failure(path, *, onexc):
+        onexc(os.unlink, unrelated, PermissionError("outside owned Git directory"))
+    monkeypatch.setattr("agent_benchmark.lifecycle.shutil.rmtree", permission_failure)
+    assert not cleanup_workspace(workspace, decision, attempts=1).removed
+    assert not chmods and unrelated.read_text() == "retained"

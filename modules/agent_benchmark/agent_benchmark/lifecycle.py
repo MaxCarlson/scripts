@@ -11,6 +11,8 @@ import asyncio
 from collections.abc import Awaitable
 from dataclasses import dataclass
 import math
+import os
+import stat
 from pathlib import Path
 import shutil
 import tempfile
@@ -25,6 +27,7 @@ class WorkerHandle:
     session_id: str
     message_id: str
     workspace: Path
+    project_id: str = ""  # Empty only for retained pre-isolation evidence.
 
 
 @dataclass(frozen=True)
@@ -229,9 +232,20 @@ def cleanup_workspace(
         or path.resolve().parent != workspace.root
     ):
         return CleanupOutcome(False, 0, "Workspace ownership or resolved path check failed")
+    def remove_readonly_git_file(function, target, error):
+        candidate = Path(target)
+        # Git object files are read-only on Windows. This exception is confined
+        # to confirmed, owned repository files; locks still use bounded retries.
+        if (isinstance(error, PermissionError) and candidate.is_file() and not candidate.is_symlink()
+                and candidate.resolve().is_relative_to(path / ".git")):
+            os.chmod(candidate, candidate.stat().st_mode | stat.S_IWRITE)
+            function(target)
+            return
+        raise error
+
     for attempt in range(1, attempts + 1):
         try:
-            shutil.rmtree(path)
+            shutil.rmtree(path, onexc=remove_readonly_git_file)
             return CleanupOutcome(True, attempt)
         except FileNotFoundError:
             if not path.exists():

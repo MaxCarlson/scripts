@@ -58,7 +58,7 @@ def test_unavailable_tokens_are_not_zero_and_cleanup_cannot_rewrite_score(tmp_pa
     assert isinstance(trial.metrics["tokens.worker.input"], MetricValue)
     assert trial.metrics["tokens.worker.input"].value is None
     assert trial.metrics["tokens.worker.input"].quality == "unavailable"
-    def locked(path):
+    def locked(path, **kwargs):
         raise PermissionError("locked")
     monkeypatch.setattr("agent_benchmark.lifecycle.shutil.rmtree", locked)
     assert not cleanup_workspace(evidence.workspace, evidence.termination, attempts=1).removed

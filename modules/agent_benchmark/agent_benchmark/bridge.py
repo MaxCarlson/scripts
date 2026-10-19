@@ -135,12 +135,22 @@ class OpenCodeBridge:
         self.http = http
         self.last_receipt: dict = {}
         self.last_history: list = []
+        self.project_context: dict | None = None
+        self.prepared_session: dict | None = None
+        self.submission_attempted = False
+        self.session_creation_attempted = False
+        self.session_evidence: dict = {}
 
-    async def preflight(self, directory: Path, *, provider: str, model: str, agent: str) -> dict:
-        """Read-only check; explicit configured local model and worker role required."""
+    async def preflight(self, directory: Path, *, provider: str, model: str, agent: str, project_id: str) -> dict:
+        """Read-only model/role and exact trial-project validation; no prompt submission."""
+        if self.submission_attempted or self.session_creation_attempted or self.prepared_session is not None:
+            raise RuntimeError("Use a fresh bridge for each trial")
+        self.project_context = None
         health = await self._get("/global/health", directory)
         providers = await self._get("/provider", directory)
         agents = await self._get("/agent", directory)
+        if not isinstance(health, dict) or not isinstance(providers, dict) or not isinstance(agents, list):
+            raise RuntimeError("Malformed runtime/model/role preflight response")
         if provider != "lmstudio":
             raise ValueError("This initial slice supports only explicit lmstudio models")
         configured = next((p for p in providers.get("all", []) if p.get("id") == provider), None)
@@ -150,36 +160,115 @@ class OpenCodeBridge:
         role = next((a for a in agents if a.get("name") == agent), None)
         if role is None or agent not in ("local-worker", "local-reviewer"):
             raise ValueError("Requested bounded local role is unavailable")
-        # Preserve the role permissions as observable configuration, not a sandbox claim.
+        project = await self._validate_project(directory, project_id)
+        self.project_context = project
+        # Preserve permissions/configuration as observations, not a sandbox claim.
         return {"opencode_version": health.get("version"), "provider": provider, "model": model,
-                "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0"}
+                "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0",
+                "project": project}
+
+    @staticmethod
+    def _same_directory(value: object, directory: Path) -> bool:
+        if not isinstance(value, str) or not value:
+            return False
+        try:
+            candidate = Path(value)
+            return candidate.is_absolute() and candidate.resolve() == directory.resolve()
+        except (OSError, ValueError):
+            return False
+
+    async def _validate_project(self, directory: Path, project_id: str) -> dict:
+        if (not isinstance(project_id, str) or len(project_id) != 40
+                or any(c not in "0123456789abcdef" for c in project_id)):
+            raise RuntimeError("A committed trial Git project ID is required")
+        path_info = await self._get("/path", directory)
+        if (not isinstance(path_info, dict)
+                or not self._same_directory(path_info.get("directory"), directory)
+                or not self._same_directory(path_info.get("worktree"), directory)):
+            raise RuntimeError("OpenCode directory/worktree does not match trial workspace")
+        project = await self._get("/project/current", directory)
+        if (not isinstance(project, dict) or project.get("id") != project_id
+                or project.get("vcs") != "git"
+                or not self._same_directory(project.get("worktree"), directory)):
+            raise RuntimeError("OpenCode project must match the unique trial Git root commit")
+        return {"id": project_id, "vcs": "git", "directory": str(directory.resolve()),
+                "worktree": str(directory.resolve())}
+
+    def _validate_session(self, session: object, directory: Path, project_id: str, session_id: str = "") -> dict:
+        if (not isinstance(session, dict) or not isinstance(session.get("id"), str) or not session["id"]
+                or session_id and session["id"] != session_id
+                or not self._same_directory(session.get("directory"), directory)
+                or session.get("projectID") != project_id):
+            raise RuntimeError("Session identity/directory/project mismatch; inference refused")
+        return session
+
+    async def prepare_session(self, directory: Path, *, project_id: str) -> dict:
+        """Create exactly one empty session, then validate its persisted binding."""
+        if self.prepared_session is not None or self.submission_attempted or self.session_creation_attempted:
+            raise RuntimeError("Use a fresh session and bridge for each trial")
+        if (not self.project_context or self.project_context["id"] != project_id
+                or not self._same_directory(self.project_context["directory"], directory)):
+            raise RuntimeError("Project preflight is required before session creation")
+        # Recheck the project before the first remote mutation; never retry POST.
+        await self._validate_project(directory, project_id)
+        self.session_creation_attempted = True
+        response = await self.http.post("/session", json={"title": "agent-benchmark first attempt"},
+                                        headers={"x-opencode-directory": str(directory.resolve())})
+        response.raise_for_status()
+        self.session_evidence["created"] = response.json()
+        session = self._validate_session(self.session_evidence["created"], directory, project_id)
+        sid = quote(session["id"], safe="")
+        self.session_evidence["persisted"] = await self._get(f"/session/{sid}", directory)
+        persisted = self._validate_session(self.session_evidence["persisted"], directory, project_id, session["id"])
+        history = await self._get(f"/session/{sid}/message", directory)
+        statuses = await self._get("/session/status", directory)
+        self.session_evidence.update(history_empty=history == [], statuses=statuses)
+        state = statuses.get(session["id"], "idle") if isinstance(statuses, dict) else None
+        state = state.get("type") if isinstance(state, dict) else state
+        if history != [] or not isinstance(statuses, dict) or state != "idle":
+            raise RuntimeError("New benchmark session is not empty and idle; inference refused")
+        self.prepared_session = {"id": persisted["id"], "directory": str(directory.resolve()),
+                                 "projectID": project_id}
+        return dict(self.prepared_session)
 
     async def dispatch(self, workspace: Path, prompt: str, *, provider: str, model: str, agent: str) -> WorkerHandle:
+        if self.submission_attempted:
+            raise RuntimeError("Inference may be submitted only once per fresh session")
         if not provider or not model or not agent:
             raise ValueError("Explicit provider, model and role are required")
+        if not self.prepared_session or not self.project_context:
+            raise RuntimeError("Validated project and empty session required before inference")
+        session = self._validate_session(self.prepared_session, workspace, self.project_context["id"])
         self.last_history = []
-        self.last_receipt = {"directory": str(workspace), "status": "unknown"}
+        self.last_receipt = {"directory": str(workspace), "status": "unknown", "sessionId": session["id"],
+                             "projectID": session["projectID"]}
+        self.submission_attempted = True
+
+        def remember(receipt: dict) -> None:
+            # A mismatched response must not redirect cancellation to another session.
+            if receipt.get("sessionId", session["id"]) != session["id"]:
+                self.last_receipt["received_receipt"] = receipt
+            self.last_receipt.update({k: v for k, v in receipt.items() if k not in ("sessionId", "projectID")})
+
         try:
             receipt = await self.call_tool("opencode_fire", {
-                "directory": str(workspace), "prompt": prompt, "providerID": provider,
-                "modelID": model, "agent": agent, "title": "agent-benchmark first attempt",
+                "directory": str(workspace), "sessionId": session["id"], "prompt": prompt,
+                "providerID": provider, "modelID": model, "agent": agent,
+                "title": "agent-benchmark first attempt",
             })
             if isinstance(receipt, dict):
-                self.last_receipt.update(receipt)
+                remember(receipt)
         except Exception as error:
-            if isinstance(error, SubmissionUncertain):
-                if isinstance(error.receipt, dict):
-                    self.last_receipt.update(error.receipt)
+            if isinstance(error, SubmissionUncertain) and isinstance(error.receipt, dict):
+                remember(error.receipt)
             raise SubmissionUncertain(self.last_receipt) from error
-        if not isinstance(receipt, dict):
+        if (not isinstance(receipt, dict) or receipt.get("sessionId") != session["id"]
+                or not all(isinstance(receipt.get(k), str) and receipt[k] for k in ("jobId", "messageId"))):
             raise SubmissionUncertain(self.last_receipt)
-        if not all(isinstance(receipt.get(k), str) and receipt[k] for k in ("jobId", "sessionId", "messageId")):
-            raise SubmissionUncertain(self.last_receipt)
-        # Unknown status with known handles is observed, never re-submitted.
-        return WorkerHandle(receipt["jobId"], receipt["sessionId"], receipt["messageId"], workspace)
+        return WorkerHandle(receipt["jobId"], session["id"], receipt["messageId"], workspace, session["projectID"])
 
     async def _get(self, path: str, directory: Path) -> object:
-        response = await self.http.get(path, params={"directory": str(directory)})
+        response = await self.http.get(path, headers={"x-opencode-directory": str(directory.resolve())})
         response.raise_for_status()
         return response.json()
 
@@ -187,8 +276,9 @@ class OpenCodeBridge:
         sid = quote(handle.session_id, safe="")
         session = await self._get(f"/session/{sid}", handle.workspace)
         if (not isinstance(session, dict) or session.get("id") != handle.session_id
-                or Path(session.get("directory", "")).resolve() != handle.workspace.resolve()):
-            return Observation("unknown", None, False, True, False, "Session identity/directory mismatch")
+                or not self._same_directory(session.get("directory"), handle.workspace)
+                or handle.project_id and session.get("projectID") != handle.project_id):
+            return Observation("unknown", None, False, True, False, "Session identity/directory/project mismatch")
         history = await self._get(f"/session/{sid}/message", handle.workspace)
         # Read status after messages; never substitute a cached terminal job response.
         statuses = await self._get("/session/status", handle.workspace)
@@ -198,7 +288,12 @@ class OpenCodeBridge:
     async def cancel(self, handle: WorkerHandle) -> object:
         if not handle.session_id or not handle.message_id or not handle.job_id:
             raise RuntimeError("No confirmed job/session ownership; cancellation refused")
+        if handle.project_id:
+            session = await self._get(f"/session/{quote(handle.session_id, safe='')}", handle.workspace)
+            self._validate_session(session, handle.workspace, handle.project_id, handle.session_id)
         history = await self._get(f"/session/{quote(handle.session_id, safe='')}/message", handle.workspace)
+        if not isinstance(history, list):
+            raise RuntimeError("Missing session history; cancellation refused")
         users = [m for m in _ordered(history) if m["info"].get("role") == "user"]
         if (not users or users[-1]["info"].get("id") != handle.message_id
                 or users[-1]["info"].get("sessionID") != handle.session_id):
