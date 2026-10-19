@@ -13,12 +13,12 @@
   - [x] 1.2.3: Implement `cli_tui/state.py`
   - [x] 1.2.4: Run tests and verify all pass
   - [x] 1.2.5: Commit Task 1.2
-- [ ] Task 1.3: Form Field Widgets & Rendering (`cli_tui.widgets`)
-  - [ ] 1.3.1: Write failing test for widget key handling and value toggling (`tests/test_widgets.py`)
-  - [ ] 1.3.2: Verify test failure
-  - [ ] 1.3.3: Implement `cli_tui/widgets.py` using termdash color/border styles
-  - [ ] 1.3.4: Run tests and verify all pass
-  - [ ] 1.3.5: Commit Task 1.3
+- [x] Task 1.3: Form Field Widgets & Rendering (`cli_tui.widgets`)
+  - [x] 1.3.1: Write failing test for widget key handling and value toggling (`tests/test_widgets.py`)
+  - [x] 1.3.2: Verify test failure
+  - [x] 1.3.3: Implement `cli_tui/widgets.py` using termdash color/border styles
+  - [x] 1.3.4: Run tests and verify all pass
+  - [x] 1.3.5: Commit Task 1.3
 - [ ] Task 1.4: Real-time Streaming Process Runner (`cli_tui.process_runner`)
   - [ ] 1.4.1: Write failing test for process streaming, deque buffering, and cancellation (`tests/test_process_runner.py`)
   - [ ] 1.4.2: Verify test failure
