@@ -22,6 +22,24 @@ from .state import (
 )
 from .widgets import BaseWidget, create_widget_for_arg
 
+try:
+    from sysmon.sampler import (
+        HardwareSampler,
+        ProcessStats,
+        SystemStats,
+        TelemetryDisplayMode,
+    )
+except ImportError:
+    HardwareSampler = None  # type: ignore
+    ProcessStats = None  # type: ignore
+    SystemStats = None  # type: ignore
+    from enum import Enum
+
+    class TelemetryDisplayMode(Enum):  # type: ignore
+        FULL = "full"
+        COMPACT = "compact"
+        HIDDEN = "hidden"
+
 
 def addstr_ansi(stdscr: Any, y: int, x: int, line: str, max_x: int) -> None:
     """Render a line with ANSI color and style sequences onto a curses window."""
@@ -187,6 +205,21 @@ class CliTuiApp:
         self.is_confirming_quit: bool = False
         self.is_showing_preview: bool = False
         self.is_terminated: bool = False
+
+        self.telemetry_mode: TelemetryDisplayMode = (
+            TelemetryDisplayMode.FULL
+            if HardwareSampler is not None
+            else TelemetryDisplayMode.HIDDEN
+        )
+        self.sampler: Optional[Any] = None
+        if HardwareSampler is not None:
+            try:
+                self.sampler = HardwareSampler(interval=0.5)
+                self.sampler.start()
+            except Exception:
+                self.sampler = None
+        self._last_sys_stats: Optional[Any] = None
+        self._last_proc_stats: Optional[Any] = None
 
     def add_post_run_action(self, action: PostRunAction) -> None:
         """Register a post-run action callback."""
@@ -1002,7 +1035,94 @@ class CliTuiApp:
         lines.extend(footer_lines)
         return lines[:height]
 
-    def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
+    def _update_telemetry(self) -> None:
+        if self.sampler:
+            sys_s, proc_s = self.sampler.get_snapshots()
+            if sys_s is not None:
+                self._last_sys_stats = sys_s
+            if proc_s is not None:
+                self._last_proc_stats = proc_s
+
+    def _format_telemetry_lines(self, width: int) -> List[str]:
+        self._update_telemetry()
+        if self.telemetry_mode == TelemetryDisplayMode.HIDDEN:
+            return []
+
+        sys_s: Optional[Any] = self._last_sys_stats
+        proc_s: Optional[Any] = self._last_proc_stats
+
+        sys_cpu = f"{sys_s.cpu_pct:.0f}%" if sys_s else "—"
+        if sys_s:
+            ram_gb = sys_s.ram_used_bytes / (1024**3)
+            ram_tot = sys_s.ram_total_bytes / (1024**3)
+            sys_ram_wide = f"{ram_gb:.1f} / {ram_tot:.1f} GB ({sys_s.ram_pct:.0f}%)"
+            sys_ram_std = f"{ram_gb:.1f}G ({sys_s.ram_pct:.0f}%)"
+            sys_ram_narrow = f"{sys_s.ram_pct:.0f}%"
+            if sys_s.gpu_load_pct is not None:
+                vram_gb = (sys_s.gpu_mem_used_bytes or 0) / (1024**3)
+                vram_tot = (sys_s.gpu_mem_total_bytes or 0) / (1024**3)
+                temp_str = f" {sys_s.gpu_temp_c:.0f}°C" if sys_s.gpu_temp_c else ""
+                gpu_name = f"{sys_s.gpu_name}: " if sys_s.gpu_name else ""
+                sys_gpu_wide = f"{sys_s.gpu_load_pct:.0f}% ({gpu_name}{vram_gb:.1f} / {vram_tot:.1f} GB{temp_str})"
+                sys_gpu_std = f"{sys_s.gpu_load_pct:.0f}% ({vram_gb:.1f}G{temp_str})"
+                sys_gpu_narrow = f"{sys_s.gpu_load_pct:.0f}%"
+            else:
+                sys_gpu_wide = "N/A"
+                sys_gpu_std = "N/A"
+                sys_gpu_narrow = "N/A"
+        else:
+            sys_ram_wide = sys_ram_std = sys_ram_narrow = "—"
+            sys_gpu_wide = sys_gpu_std = sys_gpu_narrow = "—"
+
+        if proc_s and proc_s.is_active:
+            p_cpu = f"{proc_s.cpu_pct:.0f}%"
+            p_ram_gb = proc_s.memory_rss_bytes / (1024**3)
+            p_ram_wide = f"{p_ram_gb:.2f} GB ({proc_s.memory_pct:.0f}%)"
+            p_ram_std = f"{p_ram_gb:.1f}G"
+            p_ram_narrow = f"{p_ram_gb:.1f}G"
+            p_gpu = f"{proc_s.gpu_load_pct:.0f}%" if proc_s.gpu_load_pct is not None else "N/A"
+            p_info = f"(pid: {proc_s.pid} {proc_s.name})"
+            p_info_short = f"({proc_s.name})"
+        elif proc_s and not proc_s.is_active:
+            p_cpu = "0%"
+            p_ram_wide = p_ram_std = p_ram_narrow = "0.0G"
+            p_gpu = "N/A"
+            p_info = "(done)"
+            p_info_short = "(done)"
+        else:
+            p_cpu = "—"
+            p_ram_wide = p_ram_std = p_ram_narrow = "—"
+            p_gpu = "—"
+            p_info = "[idle]"
+            p_info_short = "[idle]"
+
+        if self.telemetry_mode == TelemetryDisplayMode.FULL:
+            if width >= 100:
+                line1_content = f" System: CPU {sys_cpu} │ RAM {sys_ram_wide} │ GPU {sys_gpu_wide} "
+                line2_content = f"  Active: CPU {p_cpu} │ RAM {p_ram_wide} │ GPU {p_gpu} {p_info} "
+            elif width >= 80:
+                line1_content = f" System: CPU {sys_cpu} │ RAM {sys_ram_std} │ GPU {sys_gpu_std} "
+                line2_content = f"  Active: CPU {p_cpu} │ RAM {p_ram_std} │ GPU {p_gpu} {p_info_short} "
+            else:
+                line1_content = f" SYS: C {sys_cpu} M {sys_ram_narrow} G {sys_gpu_narrow} "
+                line2_content = f"  APP: C {p_cpu} M {p_ram_narrow} G {p_gpu} "
+
+            bar1 = ("┌─" + line1_content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "┐"
+            bar2 = ("│" + line2_content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "│"
+            return [bar1, bar2]
+
+        elif self.telemetry_mode == TelemetryDisplayMode.COMPACT:
+            if width >= 70:
+                content = f" CPU: {sys_cpu} (proc {p_cpu}) │ RAM: {sys_ram_std} (proc {p_ram_std}) │ GPU: {sys_gpu_std} (proc {p_gpu}) "
+            else:
+                content = f" C: {sys_cpu} ({p_cpu}) │ M: {sys_ram_narrow} ({p_ram_narrow}) │ G: {sys_gpu_narrow} "
+
+            bar = ("┌─" + content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "┐"
+            return [bar]
+
+        return []
+
+    def render_virtual_screen(self, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
         if getattr(self, "is_showing_new_pane_choice", False):
             return self.render_new_pane_choice_dialog(height=height, width=width)
@@ -1059,6 +1179,9 @@ class CliTuiApp:
             return lines[:height]
 
         lines = []
+        telemetry_lines = self._format_telemetry_lines(width)
+        lines.extend(telemetry_lines)
+
         if len(self.workspace.panes) > 1:
             header = self.render_tab_strip(width)
         else:
@@ -1072,13 +1195,13 @@ class CliTuiApp:
             raw_lines = runner.lines if runner else []
             visible_width = max(10, width - 4)
             _, _, total_l = self.viewport.get_scroll_bounds(
-                raw_lines, height=max(1, height - 6), width=visible_width
+                raw_lines, height=max(1, height - len(telemetry_lines) - 6), width=visible_width
             )
-            is_scrollable = total_l > max(1, height - 6)
+            is_scrollable = total_l > max(1, height - len(telemetry_lines) - 6)
 
         badges = self._get_active_hotkey_badges(is_scrollable=is_scrollable)
         footer_lines = format_hotkey_footer(badges, width)
-        inner_height = max(1, height - 1 - len(footer_lines))
+        inner_height = max(1, height - len(telemetry_lines) - 1 - len(footer_lines))
 
         if self.screen_mode == TuiScreenMode.MENU:
             cmd = self.current_command
