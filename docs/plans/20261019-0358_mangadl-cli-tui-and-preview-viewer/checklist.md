@@ -25,12 +25,12 @@
   - [x] 1.4.3: Implement `cli_tui/process_runner.py`
   - [x] 1.4.4: Run tests and verify all pass
   - [x] 1.4.5: Commit Task 1.4
-- [ ] Task 1.5: Main Application Controller & Universal Keys (`cli_tui.app`)
-  - [ ] 1.5.1: Write failing test for `q` confirmation, `Q` immediate quit, and `Esc` back (`tests/test_app.py`)
-  - [ ] 1.5.2: Verify test failure
-  - [ ] 1.5.3: Implement `cli_tui/app.py`
-  - [ ] 1.5.4: Run tests and verify all pass
-  - [ ] 1.5.5: Commit Task 1.5
+- [x] Task 1.5: Main Application Controller & Universal Keys (`cli_tui.app`)
+  - [x] 1.5.1: Write failing test for `q` confirmation, `Q` immediate quit, and `Esc` back (`tests/test_app.py`)
+  - [x] 1.5.2: Verify test failure
+  - [x] 1.5.3: Implement `cli_tui/app.py`
+  - [x] 1.5.4: Run tests and verify all pass
+  - [x] 1.5.5: Commit Task 1.5
 
 ## Stage 2: MangaDL TUI Integration (`mangadl tui`)
 - [ ] Task 2.1: MangaDL Parser Exposure & CLI Wiring
