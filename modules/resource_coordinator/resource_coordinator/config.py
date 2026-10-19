@@ -5,6 +5,7 @@ Configuration parser, validation, and system factory.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -14,7 +15,6 @@ import yaml  # type: ignore[import-untyped]
 from resource_coordinator.adapters.lmstudio.gateway import LMStudioGateway
 from resource_coordinator.adapters.miners.adapter import MinerAdapter
 from resource_coordinator.core.actions import Action, StartProcessAction, StopProcessAction
-from resource_coordinator.core.conditions import ProcessRunningCondition
 from resource_coordinator.core.events import EventDispatcher
 from resource_coordinator.core.leases import LeaseManager, LeaseType
 from resource_coordinator.core.policies import Policy, PolicyEngine
@@ -50,6 +50,7 @@ class ProcessConfig:
     allow_external_stop: bool = False
     allow_external_restart: bool = False
     adopt_external: bool = False
+    allow_force_termination: bool = False
 
 
 @dataclass
@@ -76,7 +77,25 @@ class CoordinatorConfig:
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CoordinatorConfig":
+        if not isinstance(data, dict):
+            raise TypeError("Configuration must be a mapping")
+        if str(data.get("version", "1.0")) != "1.0":
+            raise ValueError("Unsupported configuration version")
         svc_raw = data.get("service", {})
+        for section in [*data.get("processes", {}).values(), *data.get("policies", [])]:
+            for key, value in section.items():
+                if key in {
+                    "new_console",
+                    "allow_external_stop",
+                    "allow_external_restart",
+                    "adopt_external",
+                    "allow_force_termination",
+                    "stop_process",
+                    "restart_process",
+                    "only_if_stopped_by_coordinator",
+                }:
+                    if not isinstance(value, bool):
+                        raise TypeError(f"{key} must be a boolean")
         svc = ServiceConfig(
             listen_host=svc_raw.get("listen_host", "127.0.0.1"),
             listen_port=int(svc_raw.get("listen_port", 1235)),
@@ -102,6 +121,7 @@ class CoordinatorConfig:
                 allow_external_stop=bool(p_data.get("allow_external_stop", adopt)),
                 allow_external_restart=bool(p_data.get("allow_external_restart", adopt)),
                 adopt_external=adopt,
+                allow_force_termination=p_data.get("allow_force_termination", False),
             )
 
         policies = []
@@ -117,13 +137,33 @@ class CoordinatorConfig:
                     resource=pol_data.get("resource") or pol_data.get("lease", {}).get("resource", "gpu.inference"),
                     lease_type=pol_data.get("lease_type", "shared"),
                     cooldown_seconds=float(
-                        pol_data.get("cooldown_seconds") or pol_data.get("release", {}).get("cooldown_seconds", 60.0)
+                        pol_data.get("cooldown_seconds", pol_data.get("release", {}).get("cooldown_seconds", 60.0))
                     ),
                     restart_process=bool(pol_data.get("restart_process", True)),
                     only_if_stopped_by_coordinator=bool(pol_data.get("only_if_stopped_by_coordinator", True)),
                 )
             )
 
+        for process in processes.values():
+            if process.backend not in {"windows", "fake"}:
+                raise ValueError(f"Unknown backend: {process.backend}")
+            if process.backend == "windows" and not Path(process.executable).is_absolute():
+                raise ValueError("Windows process executable must be an absolute path")
+        for policy in policies:
+            if policy.target_process and policy.target_process not in processes:
+                raise ValueError(f"Unknown target process: {policy.target_process}")
+            LeaseType(policy.lease_type)
+        durations = [p.cooldown_seconds for p in policies] + [p.stop_timeout_seconds for p in policies]
+        durations += [p.stop_timeout_seconds for p in processes.values()]
+        durations += [float(r.get("cooldown_seconds", 60)) for r in data.get("resources", {}).values()]
+        if any(not math.isfinite(value) or value < 0 for value in durations):
+            raise ValueError("Durations must be finite and nonnegative")
+        if not 0 < svc.listen_port < 65536:
+            raise ValueError("Listen port is out of range")
+        if svc.state_persistence_path:
+            raise ValueError("State persistence is not implemented")
+        if svc.bounded_drain_seconds:
+            raise ValueError("Bounded drain is disabled pending cancellation-safe implementation")
         return cls(
             version=str(data.get("version", "1.0")),
             service=svc,
@@ -219,6 +259,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
                 allow_external_stop=p_cfg.allow_external_stop,
                 allow_external_restart=p_cfg.allow_external_restart,
                 adopt_external=p_cfg.adopt_external,
+                allow_force_termination=p_cfg.allow_force_termination,
             )
         supervisor = ProcessSupervisor(backend=backend, event_dispatcher=dispatcher)
         supervisors[name] = supervisor
@@ -234,7 +275,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
 
         if pol_cfg.target_process and pol_cfg.target_process in supervisors:
             target_sup = supervisors[pol_cfg.target_process]
-            condition = ProcessRunningCondition(target_sup)
+            condition = None
             if pol_cfg.stop_process:
                 actions.append(
                     StopProcessAction(

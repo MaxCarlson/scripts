@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import getpass
 import json
 import logging
+import os
 import sys
 from typing import List, Optional
 
@@ -33,12 +35,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     # serve
     serve_parser = subparsers.add_parser("serve", help="Run the coordination reverse proxy service.")
     serve_parser.add_argument(
-        "-l", "--listen", default="127.0.0.1:1235", help="Host:port to bind the gateway (default: 127.0.0.1:1235)."
+        "-l", "--listen", default=None, help="Host:port to bind the gateway (default: 127.0.0.1:1235)."
     )
     serve_parser.add_argument(
         "-u",
         "--upstream",
-        default="http://127.0.0.1:1234",
+        default=None,
         help="Upstream LM Studio URL (default: http://127.0.0.1:1234).",
     )
     serve_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
@@ -64,6 +66,11 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default="gpu.inference",
         help="Resource name to clear inhibition for (default: gpu.inference).",
     )
+
+    recover_parser.add_argument(
+        "-f", "--force", action="store_true", help="Explicitly override unverifiable upstream state."
+    )
+    recover_parser.add_argument("-n", "--reason", required=True, help="Operator evidence/reason for recovery.")
 
     # config
     config_parser = subparsers.add_parser("config", help="Inspect or validate configuration.")
@@ -204,35 +211,19 @@ async def _async_miner_status(config_path: Optional[str], as_json: bool) -> int:
 
 
 async def _async_miner_pause(config_path: Optional[str], timeout: float) -> int:
-    config = load_config(config_path)
-    system = build_system(config)
-    if not system.miner_adapter:
-        print("No miner process configured.", file=sys.stderr)
-        return 1
-    system.miner_adapter.set_manual_override(True)
-    success = await system.miner_adapter.pause(timeout=timeout, origin="manual")
-    if success:
-        print(f"Miner '{system.miner_adapter.supervisor.name}' paused successfully (manual override set).")
-        return 0
-    else:
-        print(f"Failed to pause miner '{system.miner_adapter.supervisor.name}'.", file=sys.stderr)
-        return 1
+    print(
+        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 async def _async_miner_resume(config_path: Optional[str]) -> int:
-    config = load_config(config_path)
-    system = build_system(config)
-    if not system.miner_adapter:
-        print("No miner process configured.", file=sys.stderr)
-        return 1
-    system.miner_adapter.set_manual_override(False)
-    success = await system.miner_adapter.resume(origin="manual", only_if_stopped_by_coordinator=False)
-    if success:
-        print(f"Miner '{system.miner_adapter.supervisor.name}' resumed successfully (manual override cleared).")
-        return 0
-    else:
-        print(f"Failed to resume miner '{system.miner_adapter.supervisor.name}'.", file=sys.stderr)
-        return 1
+    print(
+        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
+        file=sys.stderr,
+    )
+    return 1
 
 
 def cmd_miner(args: argparse.Namespace) -> int:
@@ -246,10 +237,22 @@ def cmd_miner(args: argparse.Namespace) -> int:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
-    url = f"{args.url.rstrip('/')}/_coordinator/recover?resource={args.resource}"
+    token = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+    if not args.force or not token:
+        print(
+            "Recovery requires --force and RESOURCE_COORDINATOR_RECOVERY_TOKEN; verify upstream has stopped first.",
+            file=sys.stderr,
+        )
+        return 1
+    url = f"{args.url.rstrip('/')}/_coordinator/recover"
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.post(url)
+            resp = client.post(
+                url,
+                params={"resource": args.resource},
+                headers={"Authorization": f"Bearer {token}"},
+                json={"override": True, "operator": getpass.getuser(), "reason": args.reason},
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 if data.get("status") == "cleared":

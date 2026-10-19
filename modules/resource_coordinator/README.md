@@ -30,3 +30,15 @@ resource-coordinator config show
 ```
 
 The alias `gpu-coordinator` is also provided for backward compatibility.
+
+## Phase B review checkpoint
+
+Version 0.2.0 has passed 99 offline tests. Actual Windows/Krig/LM Studio integration remains unverified. See [review findings and readiness](docs/PHASE_B_REVIEW.md) before selecting a supervised experiment or unattended deployment.
+
+Recovery is disabled unless the service has `RESOURCE_COORDINATOR_RECOVERY_TOKEN`; the operator CLI needs the same environment token:
+
+```powershell
+resource-coordinator recover --force --reason "Independently verified all earlier upstream execution has stopped"
+```
+
+Recovery is an explicit operator override, not proof of upstream idle. Active/pending claims reject recovery. Standalone `miner pause/resume` are disabled because they cannot read the running daemon's safety state. Forceful Windows stop requires explicit `allow_force_termination: true`; external stop and restart permissions remain separate. Enabled persistence/bounded-drain settings are rejected until implemented safely. Unknown state-mutating HTTP routes return 501. Reinstall editable package metadata/dependencies for the 0.2.0 minor version before a separately authorized operational test.

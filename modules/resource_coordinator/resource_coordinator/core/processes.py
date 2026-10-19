@@ -222,12 +222,15 @@ class WindowsProcessBackend:
         allow_external_stop: bool = False,
         allow_external_restart: bool = False,
         adopt_external: bool = False,
+        allow_force_termination: bool = False,
     ) -> None:
         self.name = name
         self.executable = executable
         self.arguments = list(arguments or [])
         self.working_directory = working_directory
         self.new_console = new_console
+        self.allow_force_termination = allow_force_termination
+        self._console_group_pid: Optional[int] = None
         self.allow_external_stop = allow_external_stop or adopt_external
         self.allow_external_restart = allow_external_restart or adopt_external
         self.adopt_external = adopt_external or (self.allow_external_stop and self.allow_external_restart)
@@ -240,15 +243,14 @@ class WindowsProcessBackend:
 
     def _same_executable(self, process: psutil.Process) -> bool:
         try:
+            # Ignore inaccessible unrelated processes, but fail closed for a matching name.
+            if process.name().casefold() != Path(self.executable).name.casefold():
+                return False
             exe = process.exe()
             expected = os.path.normcase(os.path.realpath(self.executable))
             actual = os.path.normcase(os.path.realpath(exe))
-            if actual == expected:
-                return True
-            if not os.path.isabs(self.executable):
-                return process.name().casefold() == Path(self.executable).name.casefold()
-            return False
-        except (psutil.Error, OSError):
+            return actual == expected
+        except psutil.NoSuchProcess:
             return False
 
     def _find_owned_process(self) -> Optional[psutil.Process]:
@@ -262,7 +264,7 @@ class WindowsProcessBackend:
             if not self._same_executable(p):
                 return None
             return p
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
+        except psutil.NoSuchProcess:
             return None
 
     def _find_external_process(self) -> Optional[psutil.Process]:
@@ -272,6 +274,13 @@ class WindowsProcessBackend:
         return None
 
     async def status(self) -> ProcessInfo:
+        try:
+            return await self._status()
+        except (psutil.Error, OSError):
+            logger.warning("Cannot verify process '%s' state", self.name)
+            return ProcessInfo(self.name, ProcessState.UNKNOWN, executable=self.executable)
+
+    async def _status(self) -> ProcessInfo:
         owned = self._find_owned_process()
         if owned is not None and owned.is_running():
             return ProcessInfo(
@@ -317,23 +326,19 @@ class WindowsProcessBackend:
         if st.state == ProcessState.RUNNING:
             logger.info("Process '%s' is already running (owned)", self.name)
             return True
-        if st.state == ProcessState.EXTERNAL_RUNNING and not self.allow_external_restart:
-            logger.warning(
-                "Process '%s' is running externally and allow_external_restart is False; refusing start",
-                self.name,
-            )
+        if st.state == ProcessState.UNKNOWN:
             return False
-
+        if st.state == ProcessState.EXTERNAL_RUNNING:
+            return True
+        if st.state != ProcessState.STOPPED:
+            return False
         launch_kwargs: Dict[str, Any] = {
             "cwd": self.working_directory or None,
             "shell": False,
         }
         if self.new_console and os.name == "nt":
-            # CREATE_NEW_CONSOLE + CREATE_NEW_PROCESS_GROUP enables CTRL_BREAK_EVENT signal handling
-            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10) | getattr(
-                subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200
-            )
-            launch_kwargs["creationflags"] = flags
+            # Windows ignores NEW_PROCESS_GROUP when NEW_CONSOLE is present.
+            launch_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
         else:
             launch_kwargs.update(
                 stdin=subprocess.DEVNULL,
@@ -341,12 +346,16 @@ class WindowsProcessBackend:
                 stderr=subprocess.DEVNULL,
             )
 
+        if os.name == "nt" and not self.new_console:
+            launch_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
+
         cmd = [self.executable, *self.arguments]
         try:
             self._proc = subprocess.Popen(cmd, **launch_kwargs)
             self._owned_pid = self._proc.pid
             p = psutil.Process(self._proc.pid)
             self._owned_create_time = p.create_time()
+            self._console_group_pid = self._proc.pid if os.name == "nt" and not self.new_console else None
             self._last_started_at = time.time()
             logger.info("Started process '%s' (PID %d)", self.name, self._owned_pid)
             return True
@@ -358,73 +367,76 @@ class WindowsProcessBackend:
         st = await self.status()
         if st.state == ProcessState.STOPPED:
             return True
-
-        if st.state == ProcessState.EXTERNAL_RUNNING and not self.allow_external_stop:
-            logger.warning(
-                "Process '%s' is running externally and allow_external_stop is False; cannot stop",
-                self.name,
-            )
+        if st.state not in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
             return False
+        if st.state == ProcessState.EXTERNAL_RUNNING and not self.allow_external_stop:
+            return False
+        children: Optional[list[psutil.Process]] = None
 
-        p = self._find_owned_process()
-        if p is None and self.allow_external_stop:
-            p = self._find_external_process()
-
-        if p is None:
-            self._proc = None
-            self._owned_pid = None
-            self._owned_create_time = None
-            return True
+        def children_stopped() -> bool:
+            if children is None:
+                return False
+            try:
+                return all(not child.is_running() for child in children)
+            except psutil.Error:
+                return False
 
         try:
-            # 1. Attempt graceful shutdown signal on Windows console processes
+            p = self._find_owned_process()
+            if p is None and self.allow_external_stop:
+                p = self._find_external_process()
+            # Never switch targets between discovery and action.
+            if p is None or p.pid != st.pid or st.create_time is None or p.create_time() != st.create_time:
+                return False
+            children = p.children(recursive=True)
             graceful_sent = False
-            if os.name == "nt":
-                try:
-                    import ctypes
+            if os.name == "nt" and st.is_coordinator_owned and p.pid == self._console_group_pid:
+                import ctypes
 
-                    # GenerateConsoleCtrlEvent: 1 is CTRL_BREAK_EVENT, 0 is CTRL_C_EVENT
-                    # Signal process group so CUDA driver and miner can synchronize and unload
-                    ret = ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, p.pid)
-                    if ret != 0:
-                        graceful_sent = True
-                except Exception as sig_err:
-                    logger.debug("Console break event dispatch failed: %s", sig_err)
-
+                graceful_sent = bool(ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, p.pid))
             if not graceful_sent:
+                if not self.allow_force_termination:
+                    logger.warning("No verified console group for '%s'; forceful termination is disabled", self.name)
+                    return False
+                logger.warning("Forcefully terminating '%s'; Windows terminate is not graceful", self.name)
                 p.terminate()
-
             stopped = await self.wait_stopped(timeout=timeout)
-            if not stopped:
-                logger.warning("Process '%s' did not terminate gracefully in %.1fs; terminating", self.name, timeout)
-                p.terminate()
+            if not stopped and self.allow_force_termination:
+                # psutil's Process methods check PID reuse before signalling.
+                if p.is_running() and p.create_time() == st.create_time:
+                    p.kill()
                 stopped = await self.wait_stopped(timeout=3.0)
-            if not stopped:
-                logger.warning("Process '%s' did not respond to terminate; killing", self.name)
-                p.kill()
-                stopped = await self.wait_stopped(timeout=3.0)
-
+            if not children_stopped():
+                logger.error("Descendant processes remain for '%s'; stop is unverified", self.name)
+                return False
             if stopped:
                 self._last_stopped_at = time.time()
                 self._proc = None
                 self._owned_pid = None
                 self._owned_create_time = None
+                self._console_group_pid = None
             return stopped
-        except (psutil.NoSuchProcess, psutil.AccessDenied):
-            self._proc = None
-            self._owned_pid = None
-            self._owned_create_time = None
-            return True
-        except Exception as exc:
+        except psutil.AccessDenied:
+            logger.error("Access denied stopping '%s'; stop is unverified", self.name)
+            return False
+        except psutil.NoSuchProcess:
+            return children_stopped() and await self.wait_stopped(timeout=timeout)
+        except (psutil.Error, OSError) as exc:
             logger.error("Error stopping process '%s': %s", self.name, exc)
             return False
 
     async def wait_stopped(self, timeout: float = 10.0) -> bool:
-        deadline = time.time() + timeout
-        while time.time() < deadline:
+        deadline = time.monotonic() + timeout
+        absent_since: Optional[float] = None
+        while time.monotonic() < deadline:
             st = await self.status()
             if st.state == ProcessState.STOPPED:
-                return True
+                if absent_since is None:
+                    absent_since = time.monotonic()
+                if time.monotonic() - absent_since >= 0.3:
+                    return True
+            else:
+                absent_since = None
             await asyncio.sleep(0.1)
         return False
 
@@ -450,6 +462,7 @@ class ProcessSupervisor:
         self.backend = backend
         self.dispatcher = event_dispatcher or EventDispatcher()
         self.was_stopped_by_coordinator = False
+        self._stopped_external = False
         self.is_manual_override = False
         self._lock = asyncio.Lock()
 
@@ -501,6 +514,7 @@ class ProcessSupervisor:
             if success:
                 if origin == "coordinator":
                     self.was_stopped_by_coordinator = True
+                    self._stopped_external = info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL
                 await self.dispatcher.emit(
                     "process.stopped",
                     {
@@ -533,10 +547,14 @@ class ProcessSupervisor:
                 return False
 
             info = await self.backend.status()
-            if info.state == ProcessState.RUNNING:
+            if info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
                 return True
+            if info.state != ProcessState.STOPPED:
+                return False
 
-            if info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_restart:
+            if (
+                self._stopped_external or info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL
+            ) and not self.allow_external_restart:
                 logger.warning(
                     "Process '%s' was externally launched and allow_external_restart is False; skipping start",
                     self.name,

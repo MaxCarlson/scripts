@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, Dict, Optional, Sequence
 
+import anyio
+
 from .processes import ProcessState, ProcessSupervisor
 
 logger = logging.getLogger(__name__)
@@ -216,11 +218,21 @@ class CommandAction(Action):
                     duration_seconds=duration,
                 )
         except asyncio.TimeoutError:
+            with anyio.CancelScope(shield=True):
+                if proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
             return ActionResult(
                 outcome=ActionOutcome.FAILURE,
                 message=f"Command '{self.name}' timed out after {self.timeout_seconds}s",
                 duration_seconds=time.time() - start_time,
             )
+        except asyncio.CancelledError:
+            with anyio.CancelScope(shield=True):
+                if "proc" in locals() and proc.returncode is None:
+                    proc.kill()
+                    await proc.wait()
+            raise
         except Exception as exc:
             return ActionResult(
                 outcome=ActionOutcome.FAILURE,

@@ -1,10 +1,10 @@
 # Plan Status: Resource Coordinator Core Implementation
 
-**Plan:** `20261019-0915_resource-coordinator-core`  
-**Current Stage:** Phase B Hardening Complete (Stages 1, 2, and Phase B hardening implemented, 48 tests passing offline, lint and typing clean)  
-**Branch:** `resource-coordinator-20261019-0915`  
-**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-20261019-0915`  
-**Approval State:** Phase B Reliability Hardening complete; stopping at review checkpoint for Codex Sol Medium review.  
+**Plan:** `20261019-0915_resource-coordinator-core`
+**Current Stage:** Phase B architecture review checkpoint complete; 99 offline tests passing; unattended deployment blocked
+**Branch:** `resource-coordinator-20261019-0915`
+**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-20261019-0915`
+**Approval State:** Corrections authorized for commit. No live integration, merge, or unattended operation authorized.
 
 ## Summary of Operations
 - **2026-10-19 09:15**: Initial investigation complete. Isolated worktree established at `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-20261019-0915`. Master architecture specification, stage plans, and documentation hierarchy created.
@@ -41,6 +41,14 @@
   # Success: no issues found in 13 source files
   ```
 
+## Architecture Review Checkpoint
+
+- Reviewed baseline `0c946e96`; bounded safety corrections committed with this status.
+- Latest validation: 99 offline tests passed (51 new cases); Ruff check and format clean (26 files), Mypy clean (13 source files).
+- Prior 48-test evidence above describes the baseline only. See [review report](../../PHASE_B_REVIEW.md) for current commands, corrections, remaining risks, and durable-state requirements.
+- Version 0.2.0. Recovery now requires authentication and attributed override; standalone miner mutation and bounded drain are disabled; forceful process termination is opt-in.
+- Cross-resource serialization, crash reconciliation/persistence, external-supervisor control, and live Windows/TCP evidence remain open.
+
 ## Next Action
-- Stage and commit Phase B deliverables on branch `resource-coordinator-20261019-0915`.
-- Stop at review checkpoint for Codex Sol Medium architecture review.
+
+Stop at the review checkpoint. User reviews the report and separately authorizes either follow-up architecture work or preparation/execution of one supervised live experiment. No merge or live execution is implied.

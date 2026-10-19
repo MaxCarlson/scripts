@@ -13,6 +13,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, AsyncIterator, Dict, List, Optional
 
+import anyio
+
 from .events import EventDispatcher
 
 logger = logging.getLogger(__name__)
@@ -90,6 +92,7 @@ class LeaseReservation:
         self._lease: Optional[Lease] = None
         self._is_active = False
         self._is_closed = False
+        self._activation_lock = asyncio.Lock()
 
     @property
     def is_active(self) -> bool:
@@ -101,20 +104,22 @@ class LeaseReservation:
 
     async def activate(self, timeout: Optional[float] = None) -> Lease:
         """Promote reservation from pending to active lease."""
-        if self._is_closed:
-            raise RuntimeError("Cannot activate a closed reservation")
-        if self._is_active and self._lease is not None:
-            return self._lease
-        self._lease = await self.manager._promote_reservation(self, timeout=timeout)
-        self._is_active = True
-        return self._lease
+        async with self._activation_lock:
+            if self._is_closed:
+                raise RuntimeError("Cannot activate a closed reservation")
+            if self._is_active and self._lease is not None:
+                return self._lease
+            lease = await self.manager._promote_reservation(self, timeout=timeout)
+            if self._is_closed:
+                raise RuntimeError("Reservation closed during activation")
+            return lease
 
     async def close(self) -> None:
         """Close reservation, releasing active lease or unwinding pending claim."""
         if self._is_closed:
             return
-        self._is_closed = True
-        await self.manager._close_reservation(self)
+        with anyio.CancelScope(shield=True):
+            await self.manager._close_reservation(self)
 
     async def __aenter__(self) -> LeaseReservation:
         return self
@@ -212,6 +217,11 @@ class LeaseManager:
         )
         async with self._lock:
             self._cancel_cooldown_locked(resource)
+            # Later activity cannot resolve an earlier request's unknown execution state.
+            if resource in self._inhibitions:
+                previous = self._inhibitions[resource]
+                previous.details.setdefault("additional_uncertain_holders", []).append(inhibition.to_dict())
+                return previous
             self._inhibitions[resource] = inhibition
 
         logger.warning(
@@ -223,12 +233,20 @@ class LeaseManager:
         await self.dispatcher.emit("resource.restart_inhibited", {"inhibition": inhibition.to_dict()})
         return inhibition
 
-    async def clear_inhibition(self, resource: str, origin: str = "recovery") -> Optional[RestartInhibition]:
+    async def clear_inhibition(
+        self, resource: str, origin: str = "recovery", *, require_all_idle: bool = False
+    ) -> Optional[RestartInhibition]:
         """
         Clear a protective restart inhibition and start idle cooldown if eligible.
         """
         removed: Optional[RestartInhibition] = None
         async with self._condition:
+            if (
+                (require_all_idle and (any(self._active.values()) or any(self._pending.values())))
+                or self.active_count(resource)
+                or self.pending_count(resource)
+            ):
+                raise RuntimeError("Cannot recover a resource with active or pending requests")
             removed = self._inhibitions.pop(resource, None)
             if removed is not None:
                 logger.info(
@@ -270,16 +288,6 @@ class LeaseManager:
             return
 
         cooldown = self.get_resource_cooldown(resource)
-        if cooldown <= 0.0:
-            # Emit idle immediately if cooldown is 0
-            asyncio.create_task(
-                self.dispatcher.emit(
-                    "resource.idle",
-                    {"resource": resource, "cooldown_seconds": 0.0},
-                )
-            )
-            return
-
         end_time = time.time() + cooldown
         self._cooldown_ends[resource] = end_time
 
@@ -287,8 +295,8 @@ class LeaseManager:
             try:
                 await asyncio.sleep(cooldown)
                 async with self._lock:
-                    self._cooldown_tasks.pop(resource, None)
-                    self._cooldown_ends.pop(resource, None)
+                    if self.active_count(resource) or self.pending_count(resource):
+                        return
                     if self.is_restart_inhibited(resource):
                         logger.warning(
                             "Resource '%s' cooldown expired but restart is inhibited; skipping idle emit",
@@ -302,6 +310,10 @@ class LeaseManager:
                 logger.info("Resource '%s' cooldown expired; resource is now idle", resource)
             except asyncio.CancelledError:
                 pass
+            finally:
+                if self._cooldown_tasks.get(resource) is asyncio.current_task():
+                    self._cooldown_tasks.pop(resource, None)
+                    self._cooldown_ends.pop(resource, None)
 
         task = asyncio.create_task(_cooldown_worker())
         self._cooldown_tasks[resource] = task
@@ -339,11 +351,6 @@ class LeaseManager:
             self._cancel_cooldown_locked(resource)
             self._pending[resource] = self._pending.get(resource, 0) + 1
 
-        await self.dispatcher.emit(
-            "resource.lease_requested",
-            {"resource": resource, "lease_type": lease_type.value, "holder_id": holder},
-        )
-
         reservation = LeaseReservation(
             manager=self,
             resource=resource,
@@ -352,6 +359,10 @@ class LeaseManager:
             metadata=metadata,
         )
         try:
+            await self.dispatcher.emit(
+                "resource.lease_requested",
+                {"resource": resource, "lease_type": lease_type.value, "holder_id": holder},
+            )
             yield reservation
         finally:
             await reservation.close()
@@ -364,12 +375,14 @@ class LeaseManager:
         resource = reservation.resource
         lease_type = reservation.lease_type
         holder = reservation.holder_id
-        deadline = time.time() + timeout if timeout is not None else None
+        deadline = time.monotonic() + timeout if timeout is not None else None
 
         async with self._condition:
             while not self._can_grant_locked(resource, lease_type):
+                if reservation._is_closed:
+                    raise RuntimeError("Reservation closed while waiting")
                 if deadline is not None:
-                    remaining = deadline - time.time()
+                    remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         raise TimeoutError(f"Timed out acquiring lease on resource '{resource}'")
                     try:
@@ -379,6 +392,8 @@ class LeaseManager:
                 else:
                     await self._condition.wait()
 
+            if reservation._is_closed:
+                raise RuntimeError("Cannot promote a closed reservation")
             # Decrement pending and grant active lease
             current_pending = self._pending.get(resource, 1) - 1
             if current_pending <= 0:
@@ -393,11 +408,18 @@ class LeaseManager:
                 metadata=reservation.metadata,
             )
             self._active.setdefault(resource, []).append(lease)
+            # Publish ownership before callbacks can suspend or cancel promotion.
+            reservation._lease = lease
+            reservation._is_active = True
 
         await self.dispatcher.emit("resource.acquired", {"lease": lease.to_dict()})
         return lease
 
     async def _close_reservation(self, reservation: LeaseReservation) -> None:
+        async with self._condition:
+            if reservation._is_closed:
+                return
+            reservation._is_closed = True
         if reservation.is_active and reservation.lease is not None:
             await self.release(reservation.lease)
         else:
@@ -451,12 +473,11 @@ class LeaseManager:
         resource = lease.resource
         async with self._condition:
             active_list = self._active.get(resource, [])
-            if lease in active_list:
-                active_list.remove(lease)
-                if not active_list:
-                    self._active.pop(resource, None)
-
-            await self.dispatcher.emit("resource.released", {"lease": lease.to_dict()})
+            if lease not in active_list:
+                return
+            active_list.remove(lease)
+            if not active_list:
+                self._active.pop(resource, None)
 
             if not self._active.get(resource):
                 # No active leases remaining
@@ -464,3 +485,5 @@ class LeaseManager:
                     self._start_cooldown_locked(resource)
 
             self._condition.notify_all()
+
+        await self.dispatcher.emit("resource.released", {"lease": lease.to_dict()})

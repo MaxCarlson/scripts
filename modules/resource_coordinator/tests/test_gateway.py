@@ -28,7 +28,9 @@ def create_mock_upstream_app(gateway: LMStudioGateway):
                 yield b"data: [DONE]\n\n"
 
             return StreamingResponse(event_generator(), media_type="text/event-stream")
-        return JSONResponse({"id": "chat-123", "choices": [{"message": {"content": "Hello World"}}]})
+        return JSONResponse(
+            {"id": "chat-123", "choices": [{"finish_reason": "stop", "message": {"content": "Hello World"}}]}
+        )
 
     async def handle_error(request):
         return JSONResponse({"error": "Model overloaded"}, status_code=500)

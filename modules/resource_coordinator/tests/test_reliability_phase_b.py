@@ -439,6 +439,7 @@ async def test_recovery_endpoint_via_gateway():
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
+        recovery_token="test-token",
     )
     app = gateway.create_app()
     client = httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway")
@@ -451,7 +452,11 @@ async def test_recovery_endpoint_via_gateway():
     assert data["gpu_inference"]["inhibition"]["reason"] == "Test failure"
 
     # Recover
-    rec_resp = await client.post("/_coordinator/recover?resource=gpu.inference")
+    rec_resp = await client.post(
+        "/_coordinator/recover?resource=gpu.inference",
+        headers={"Authorization": "Bearer test-token"},
+        json={"override": True, "operator": "test", "reason": "offline verified"},
+    )
     assert rec_resp.status_code == 200
     rec_data = rec_resp.json()
     assert rec_data["status"] == "cleared"

@@ -38,8 +38,17 @@
 - [x] Add focused offline concurrency and reliability tests in `tests/test_reliability_phase_b.py`
 
 ## Stage 3: Verification, Documentation & Handoff
-- [x] Run full test suite with coverage (48 offline tests passing)
+- [x] Run full offline test suite (baseline 48; reviewed 99 passing; coverage not measured)
 - [x] Run code format and lint checks (`ruff check`, `ruff format`, `mypy`)
 - [x] Update README, HANDOFF, and STATUS docs with execution evidence
-- [ ] Commit staged deliverables
-- [ ] Deliver final report and handoff to Codex Sol Medium
+- [x] Commit reviewed deliverables on the separate branch
+- [x] Complete architecture review and checkpoint report
+
+## Architecture Review Follow-up Gates
+
+- [x] Fix bounded lease, cancellation, completion, recovery, process-control and configuration defects with offline regressions.
+- [x] Record live-test prerequisites and minimum durable state in `docs/PHASE_B_REVIEW.md`.
+- [ ] Review actual live-test stop method and isolated configuration; obtain explicit live authorization.
+- [ ] Resolve cross-resource/process serialization and model-load policy gaps.
+- [ ] Implement durable state, startup reconciliation, lifecycle controls and durable operator audit before unattended use.
+- [ ] Verify actual Windows Krig/CUDA and LM Studio/TCP behavior under separate authorization.

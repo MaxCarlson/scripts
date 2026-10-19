@@ -4,18 +4,20 @@ Transparent asynchronous reverse proxy gateway for LM Studio with inference acti
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
-import time
+import os
+import secrets
 import uuid
-from typing import AsyncIterator, Dict, Optional, Set
+from typing import AsyncIterator, Awaitable, Callable, Dict, Optional, Set
 
+import anyio
 import httpx
 from starlette.applications import Starlette
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
+from starlette.types import Receive, Scope, Send
 
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
@@ -42,6 +44,9 @@ INFERENCE_PATHS: Set[str] = {
     "/v1/responses",
     "/api/v1/chat",
     "/api/v0/chat/completions",
+    "/api/v0/completions",
+    "/api/v0/embeddings",
+    "/v1/messages",
 }
 
 MODEL_LOAD_PATHS: Set[str] = {
@@ -77,77 +82,86 @@ class StreamCompletionDetector:
         self.confirmed = False
         self.finish_reason: Optional[str] = None
         self.termination_state = "active"
-        self._buffer = ""
+        self._buffer = b""
+        self._failed = False
 
     def feed(self, chunk: bytes) -> None:
-        if self.confirmed:
-            return
-        text = chunk.decode("utf-8", errors="replace")
-        self._buffer += text
-        while "\n" in self._buffer:
-            line, self._buffer = self._buffer.split("\n", 1)
-            line = line.strip()
-            if not line:
-                continue
-            if line in ("data: [DONE]", "[DONE]", "event: done", "event: finish"):
+        # Parse complete SSE frames; choice/tool boundaries are not request completion.
+        self._buffer = (self._buffer + chunk).replace(b"\r\n", b"\n")
+        while b"\n\n" in self._buffer:
+            frame, self._buffer = self._buffer.split(b"\n\n", 1)
+            payload = b"\n".join(line[5:].lstrip() for line in frame.split(b"\n") if line.startswith(b"data:"))
+            if payload == b"[DONE]":
                 self.confirmed = True
                 self.termination_state = "confirmed_done_marker"
-                return
-            if line.startswith("data:"):
-                payload = line[5:].strip()
-                if payload == "[DONE]":
+                continue
+            try:
+                data = json.loads(payload)
+            except (ValueError, TypeError):
+                continue
+            if not isinstance(data, dict):
+                continue
+            if "error" in data or data.get("type") in {"error", "response.failed", "response.incomplete"}:
+                self._failed = True
+            if data.get("type") == "chat.end":
+                result = data.get("result", {})
+                if isinstance(result, dict) and isinstance(result.get("output"), list):
                     self.confirmed = True
-                    self.termination_state = "confirmed_done_marker"
-                    return
-                try:
-                    data = json.loads(payload)
-                    if isinstance(data, dict):
-                        choices = data.get("choices")
-                        if choices and isinstance(choices, list) and len(choices) > 0:
-                            fr = choices[0].get("finish_reason")
-                            if fr is not None:
-                                self.finish_reason = str(fr)
-                                self.confirmed = True
-                                self.termination_state = f"confirmed_finish_reason:{fr}"
-                                return
-                except Exception:
-                    pass
+                    self.termination_state = "confirmed_chat_end"
+            elif data.get("type") == "response.completed":
+                response = data.get("response", {})
+                if isinstance(response, dict) and response.get("status") == "completed":
+                    self.confirmed = True
+                    self.termination_state = "confirmed_response_completed"
+        if len(self._buffer) > 1024 * 1024:
+            self._buffer = b""
+            self._failed = True
+        if self._failed:
+            self.confirmed = False
+            self.termination_state = "uncertain_error_or_oversized_frame"
 
     def finalize(self) -> bool:
-        if self.confirmed:
-            return True
-        rem = self._buffer.strip()
-        if rem in ("data: [DONE]", "[DONE]", "event: done", "event: finish"):
-            self.confirmed = True
-            self.termination_state = "confirmed_done_marker"
-            return True
-        if rem.startswith("data:"):
-            payload = rem[5:].strip()
-            if payload == "[DONE]":
-                self.confirmed = True
-                self.termination_state = "confirmed_done_marker"
-                return True
-        return False
+        return self.confirmed and not self._failed and not self._buffer.strip()
 
     @staticmethod
-    def check_non_streaming(status_code: int, body: bytes) -> bool:
+    def check_non_streaming(status_code: int, body: bytes, path: str = "") -> bool:
         if status_code != 200:
-            return False
-        if not body:
             return False
         try:
             data = json.loads(body)
-            if isinstance(data, dict):
-                if "error" in data:
-                    return False
-                if "choices" in data and isinstance(data["choices"], list):
-                    return True
-                if "data" in data and isinstance(data["data"], list):
-                    return True
-                return True
-        except Exception:
+        except (ValueError, TypeError):
             return False
-        return False
+        if not isinstance(data, dict) or "error" in data:
+            return False
+        choices = data.get("choices")
+        if isinstance(choices, list) and choices:
+            return all(isinstance(c, dict) and c.get("finish_reason") is not None for c in choices)
+        if data.get("status") == "completed":
+            return isinstance(data.get("output"), list)
+        if "model_instance_id" in data and isinstance(data.get("output"), list):
+            return isinstance(data.get("stats"), dict)
+        embeddings = data.get("data")
+        if isinstance(embeddings, list) and embeddings:
+            return all(isinstance(e, dict) and isinstance(e.get("embedding"), list) for e in embeddings)
+        # Explicit synchronous model-load result; does not establish inference completion.
+        return (
+            path.rstrip("/") in MODEL_LOAD_PATHS
+            and data.get("status") == "loaded"
+            and (isinstance(data.get("instance_id"), str) or isinstance(data.get("model"), str))
+        )
+
+
+class _CoordinatedStreamingResponse(StreamingResponse):
+    def __init__(self, *args, cleanup: Callable[[], Awaitable[None]], **kwargs):
+        super().__init__(*args, **kwargs)
+        self._cleanup = cleanup
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await self._cleanup()
 
 
 class LMStudioGateway:
@@ -162,6 +176,7 @@ class LMStudioGateway:
         lease_manager: Optional[LeaseManager] = None,
         timeout_seconds: float = 120.0,
         bounded_drain_seconds: Optional[float] = None,
+        recovery_token: Optional[str] = None,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
@@ -169,13 +184,16 @@ class LMStudioGateway:
         self.timeout_seconds = timeout_seconds
         self.bounded_drain_seconds = bounded_drain_seconds
         self._http_client: Optional[httpx.AsyncClient] = None
+        self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+        if bounded_drain_seconds:
+            raise ValueError("Bounded drain is disabled until cancellation-safe upstream draining is verified")
 
     def get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 base_url=self.upstream_url,
                 timeout=httpx.Timeout(self.timeout_seconds, connect=10.0),
-                follow_redirects=True,
+                follow_redirects=False,
             )
         return self._http_client
 
@@ -220,14 +238,39 @@ class LMStudioGateway:
         )
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
-        """Clear protective restart inhibition and restore idle scheduling."""
+        """Explicit authenticated operator override; no upstream idle verifier exists yet."""
+        if not self.recovery_token:
+            return JSONResponse({"error": "Recovery is disabled: configure an operator token"}, status_code=503)
+        supplied = request.headers.get("authorization", "")
+        if not secrets.compare_digest(supplied, "Bearer " + self.recovery_token):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "An explicit operator override body is required"}, status_code=400)
+        if not isinstance(payload, dict) or payload.get("override") is not True:
+            return JSONResponse(
+                {"error": "Upstream idle cannot be verified; explicit override is required"}, status_code=409
+            )
+        operator = payload.get("operator")
+        reason = payload.get("reason")
+        if not isinstance(operator, str) or not operator.strip() or not isinstance(reason, str) or not reason.strip():
+            return JSONResponse({"error": "Operator and reason are required"}, status_code=400)
         resource = request.query_params.get("resource", "gpu.inference")
-        cleared = await self.lease_mgr.clear_inhibition(resource, origin="api_recovery")
+        try:
+            cleared = await self.lease_mgr.clear_inhibition(
+                resource, origin=f"operator_override:{operator}:{reason}", require_all_idle=True
+            )
+        except RuntimeError as exc:
+            return JSONResponse({"error": str(exc)}, status_code=409)
         return JSONResponse(
             {
                 "status": "cleared" if cleared else "none",
                 "resource": resource,
                 "previous_inhibition": cleared.to_dict() if cleared else None,
+                "operator": operator,
+                "reason": reason,
+                "upstream_verified_idle": False,
             }
         )
 
@@ -273,6 +316,10 @@ class LMStudioGateway:
                 model_name=model_name,
             )
         else:
+            if method not in {"GET", "HEAD", "OPTIONS"}:
+                return JSONResponse(
+                    {"error": "Unsupported state-mutating endpoint; coordination is required"}, status_code=501
+                )
             # Metadata / read request - forward directly without stopping mining
             return await self._forward_direct(request, path, body, request_id)
 
@@ -296,187 +343,88 @@ class LMStudioGateway:
             "resource": resource,
         }
 
-        # 1. ATOMIC REGISTRATION: reserve pending claim and cancel idle cooldown BEFORE blocking hooks
-        reservation_cm = self.lease_mgr.reserve(
-            resource=resource,
-            lease_type=lease_type,
-            holder_id=request_id,
-            metadata={"model": model_name, "path": path},
-        )
+        reservation_cm = self.lease_mgr.reserve(resource, lease_type, request_id, {"model": model_name, "path": path})
         reservation = await reservation_cm.__aenter__()
+        upstream_resp: Optional[httpx.Response] = None
+        forwarded = False
+        completed = False
+        response_owns_cleanup = False
+        cleaned = False
 
-        # 2. Blocking hooks: allows miner to be stopped and verified stopped before proceeding
+        async def cleanup() -> None:
+            nonlocal cleaned
+            if cleaned:
+                return
+            cleaned = True
+            with anyio.CancelScope(shield=True):
+                try:
+                    if forwarded and not completed:
+                        await self.lease_mgr.inhibit_restart(
+                            resource,
+                            "Stream ended without completion signal or execution termination uncertain",
+                            request_id,
+                            {"model": model_name, "path": path},
+                        )
+                    await self.dispatcher.emit(
+                        finish_event,
+                        {
+                            **event_data,
+                            "status": "completed" if completed else "uncertain" if forwarded else "rejected",
+                        },
+                    )
+                finally:
+                    try:
+                        if upstream_resp is not None:
+                            await upstream_resp.aclose()
+                    finally:
+                        await reservation_cm.__aexit__(None, None, None)
+
         try:
             await self.dispatcher.emit_blocking(event_name, event_data, origin="lmstudio_gateway")
-        except VetoOperation as veto:
-            logger.warning("Request %s vetoed by coordinator: %s", request_id, veto)
-            await reservation_cm.__aexit__(None, None, None)
-            return JSONResponse(
-                {
-                    "error": {
-                        "message": str(veto),
-                        "type": "coordinator_veto",
-                        "request_id": request_id,
-                    }
-                },
-                status_code=503,
-            )
-        except Exception as exc:
-            logger.error("Pre-inference coordination failed for %s: %s", request_id, exc)
-            await reservation_cm.__aexit__(None, None, None)
-            return JSONResponse(
-                {
-                    "error": {
-                        "message": f"Pre-inference coordination failure: {exc}",
-                        "type": "coordinator_failure",
-                        "request_id": request_id,
-                    }
-                },
-                status_code=500,
-            )
-
-        # 3. Promote reservation to active lease
-        try:
             await reservation.activate(timeout=self.timeout_seconds)
-        except Exception as exc:
-            logger.error("Failed to activate lease for %s: %s", request_id, exc)
-            await reservation_cm.__aexit__(None, None, None)
-            return JSONResponse(
-                {"error": {"message": f"Failed to activate lease: {exc}", "type": "coordinator_lease_error"}},
-                status_code=500,
-            )
-
-        client = self.get_http_client()
-        upstream_req = self._build_upstream_request(client, request, path, body, request_id)
-
-        try:
+            client = self.get_http_client()
+            upstream_req = self._build_upstream_request(client, request, path, body, request_id)
+            forwarded = True  # send may have reached upstream even if it raises/cancels
             upstream_resp = await client.send(upstream_req, stream=True)
-        except Exception as exc:
-            logger.error("Failed to reach upstream for %s: %s", request_id, exc)
-            await self.lease_mgr.inhibit_restart(
-                resource=resource,
-                reason=f"Failed to connect to upstream LM Studio: {exc}",
-                holder_id=request_id,
-                details={"error": str(exc), "model": model_name},
-            )
-            await self.dispatcher.emit(finish_event, {**event_data, "status": "upstream_error", "error": str(exc)})
-            await reservation_cm.__aexit__(type(exc), exc, exc.__traceback__)
-            return JSONResponse(
-                {"error": {"message": f"Failed to connect to LM Studio: {exc}", "type": "upstream_error"}},
-                status_code=502,
-            )
+            content_type = upstream_resp.headers.get("content-type", "")
+            clean_headers = self._clean_headers(upstream_resp.headers, request_id)
+            if "text/event-stream" in content_type:
+                detector = StreamCompletionDetector()
+                response = upstream_resp
 
-        content_type = upstream_resp.headers.get("content-type", "")
-        is_streaming = (
-            "text/event-stream" in content_type or upstream_resp.headers.get("transfer-encoding") == "chunked"
-        )
-        clean_headers = self._clean_headers(upstream_resp.headers, request_id)
-
-        if is_streaming:
-            detector = StreamCompletionDetector(is_sse="text/event-stream" in content_type)
-
-            async def _stream_body() -> AsyncIterator[bytes]:
-                interrupted = False
-                interrupted_exc: Optional[BaseException] = None
-                try:
-                    async for chunk in upstream_resp.aiter_bytes():
+                async def stream_body() -> AsyncIterator[bytes]:
+                    nonlocal completed
+                    async for chunk in response.aiter_bytes():
                         detector.feed(chunk)
                         yield chunk
-                except (asyncio.CancelledError, Exception) as stream_exc:
-                    interrupted = True
-                    interrupted_exc = stream_exc
-                    logger.warning("Streaming interrupted for %s: %s", request_id, stream_exc)
-                finally:
-                    detector.finalize()
+                    # Require both protocol completion and normal EOF, never a choice-level marker alone.
+                    completed = response.status_code == 200 and detector.finalize()
 
-                    # Bounded drain: optional, explicitly opt-in best-effort drain on client disconnect
-                    if (
-                        interrupted
-                        and not detector.confirmed
-                        and self.bounded_drain_seconds
-                        and self.bounded_drain_seconds > 0
-                    ):
-                        logger.info(
-                            "Attempting bounded drain for %s (up to %.1fs)", request_id, self.bounded_drain_seconds
-                        )
-                        try:
-                            drain_deadline = time.time() + self.bounded_drain_seconds
-                            while time.time() < drain_deadline and not detector.confirmed:
-                                rem = drain_deadline - time.time()
-                                if rem <= 0:
-                                    break
-                                chunk = await asyncio.wait_for(upstream_resp.aiter_bytes().__anext__(), timeout=rem)
-                                detector.feed(chunk)
-                        except (StopAsyncIteration, asyncio.TimeoutError, Exception) as drain_exc:
-                            logger.debug("Bounded drain ended for %s: %s", request_id, drain_exc)
-                        detector.finalize()
-
-                    await upstream_resp.aclose()
-
-                    if detector.confirmed:
-                        if self.lease_mgr.is_restart_inhibited(resource):
-                            await self.lease_mgr.clear_inhibition(resource, origin="inference_recovery")
-                        await self.dispatcher.emit(
-                            finish_event,
-                            {**event_data, "status": "completed", "termination": detector.termination_state},
-                        )
-                    else:
-                        reason = (
-                            "Client disconnected before stream completed"
-                            if interrupted
-                            else "Stream ended without completion signal"
-                        )
-                        logger.warning("Inference termination uncertain for %s: %s", request_id, reason)
-                        await self.lease_mgr.inhibit_restart(
-                            resource=resource,
-                            reason=reason,
-                            holder_id=request_id,
-                            details={
-                                "model": model_name,
-                                "path": path,
-                                "error": str(interrupted_exc) if interrupted_exc else None,
-                            },
-                        )
-                        await self.dispatcher.emit(
-                            finish_event,
-                            {**event_data, "status": "uncertain", "error": reason},
-                        )
-
-                    await reservation_cm.__aexit__(None, None, None)
-
-            return StreamingResponse(
-                _stream_body(),
-                status_code=upstream_resp.status_code,
-                headers=clean_headers,
-                media_type=content_type,
-            )
-        else:
-            try:
-                content = await upstream_resp.aread()
-                is_ok = StreamCompletionDetector.check_non_streaming(upstream_resp.status_code, content)
-                if is_ok:
-                    if self.lease_mgr.is_restart_inhibited(resource):
-                        await self.lease_mgr.clear_inhibition(resource, origin="inference_recovery")
-                    await self.dispatcher.emit(finish_event, {**event_data, "status": "completed"})
-                else:
-                    reason = f"Upstream returned status {upstream_resp.status_code} or malformed response"
-                    logger.warning("Inference response uncertain for %s: %s", request_id, reason)
-                    await self.lease_mgr.inhibit_restart(
-                        resource=resource,
-                        reason=reason,
-                        holder_id=request_id,
-                        details={"status_code": upstream_resp.status_code, "model": model_name, "path": path},
-                    )
-                    await self.dispatcher.emit(finish_event, {**event_data, "status": "uncertain", "error": reason})
-
-                return Response(
-                    content=content,
-                    status_code=upstream_resp.status_code,
+                result = _CoordinatedStreamingResponse(
+                    stream_body(),
+                    status_code=response.status_code,
                     headers=clean_headers,
+                    media_type=content_type,
+                    cleanup=cleanup,
                 )
-            finally:
-                await upstream_resp.aclose()
-                await reservation_cm.__aexit__(None, None, None)
+                response_owns_cleanup = True
+                return result
+            content = await upstream_resp.aread()
+            completed = StreamCompletionDetector.check_non_streaming(upstream_resp.status_code, content, path)
+            return Response(content=content, status_code=upstream_resp.status_code, headers=clean_headers)
+        except VetoOperation as exc:
+            return JSONResponse(
+                {"error": {"message": str(exc), "type": "coordinator_veto", "request_id": request_id}}, status_code=503
+            )
+        except Exception as exc:
+            logger.error("Coordinated request %s failed: %s", request_id, exc)
+            return JSONResponse(
+                {"error": {"message": "Coordinated request failed", "type": "upstream_error"}},
+                status_code=502 if forwarded else 500,
+            )
+        finally:
+            if not response_owns_cleanup:
+                await cleanup()
 
     async def _forward_direct(self, request: Request, path: str, body: bytes, request_id: str) -> Response:
         """Forward a read/metadata request without acquiring a lease or interrupting mining."""
@@ -527,7 +475,7 @@ class LMStudioGateway:
     def _clean_headers(self, headers: httpx.Headers, request_id: str) -> Dict[str, str]:
         clean: Dict[str, str] = {}
         for k, v in headers.items():
-            if k.lower() not in HOP_BY_HOP_HEADERS:
+            if k.lower() not in HOP_BY_HOP_HEADERS | {"content-encoding", "content-length"}:
                 clean[k] = v
         clean["x-coordinator-request-id"] = request_id
         return clean

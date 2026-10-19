@@ -95,6 +95,15 @@ class PolicyEngine:
         if not resource:
             return
 
+        resources = {p.resource for p in self._policies.values() if p.resource}
+        if any(
+            self.lease_mgr.active_count(r)
+            or self.lease_mgr.pending_count(r)
+            or self.lease_mgr.is_restart_inhibited(r)
+            or (r != resource and self.lease_mgr.is_cooling_down(r))
+            for r in resources
+        ):
+            return
         for policy in self._policies.values():
             if policy.resource == resource and policy.after_release_actions:
                 logger.info(
