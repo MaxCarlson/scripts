@@ -1,0 +1,249 @@
+"""
+Command-line interface for Resource Coordinator.
+"""
+
+from __future__ import annotations
+
+import argparse
+import asyncio
+import json
+import logging
+import sys
+from typing import List, Optional
+
+import httpx
+import uvicorn
+
+from resource_coordinator import __version__
+from resource_coordinator.config import build_system, load_config
+
+logger = logging.getLogger("resource_coordinator")
+
+
+def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        prog="resource-coordinator",
+        description="General-purpose resource coordination framework and LM Studio proxy gateway.",
+    )
+    parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging.")
+
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    # serve
+    serve_parser = subparsers.add_parser("serve", help="Run the coordination reverse proxy service.")
+    serve_parser.add_argument(
+        "-l", "--listen", default="127.0.0.1:1235", help="Host:port to bind the gateway (default: 127.0.0.1:1235)."
+    )
+    serve_parser.add_argument(
+        "-u",
+        "--upstream",
+        default="http://127.0.0.1:1234",
+        help="Upstream LM Studio URL (default: http://127.0.0.1:1234).",
+    )
+    serve_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
+    serve_parser.add_argument(
+        "-f", "--fake-miner", action="store_true", help="Use in-memory fake miner backend instead of real process."
+    )
+
+    # status
+    status_parser = subparsers.add_parser("status", help="Query coordinator service status.")
+    status_parser.add_argument(
+        "-u", "--url", default="http://127.0.0.1:1235", help="Coordinator gateway URL (default: http://127.0.0.1:1235)."
+    )
+    status_parser.add_argument("-j", "--json", action="store_true", help="Output status in JSON format.")
+
+    # config
+    config_parser = subparsers.add_parser("config", help="Inspect or validate configuration.")
+    config_sub = config_parser.add_subparsers(dest="config_command", required=True)
+    show_parser = config_sub.add_parser("show", help="Show active configuration.")
+    show_parser.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    show_parser.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
+
+    validate_parser = config_sub.add_parser("validate", help="Validate a configuration file.")
+    validate_parser.add_argument("-c", "--config", required=True, help="Path to configuration YAML.")
+
+    # miner
+    miner_parser = subparsers.add_parser("miner", help="Manage miner workload and overrides.")
+    miner_sub = miner_parser.add_subparsers(dest="miner_command", required=True)
+    m_status = miner_sub.add_parser("status", help="Get current miner process status.")
+    m_status.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    m_status.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
+
+    m_pause = miner_sub.add_parser("pause", help="Pause mining process and set manual override.")
+    m_pause.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    m_pause.add_argument("-t", "--timeout", type=float, default=10.0, help="Stop timeout in seconds.")
+
+    m_resume = miner_sub.add_parser("resume", help="Clear manual override and resume mining.")
+    m_resume.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+
+    return parser.parse_args(args)
+
+
+def cmd_serve(args: argparse.Namespace) -> int:
+    config = load_config(args.config)
+    if args.listen:
+        parts = args.listen.split(":")
+        config.service.listen_host = parts[0]
+        config.service.listen_port = int(parts[1]) if len(parts) > 1 else 1235
+    if args.upstream:
+        config.service.upstream_url = args.upstream
+
+    system = build_system(config, use_fake_processes=args.fake_miner)
+    app = system.gateway.create_app()
+
+    print(f"Starting Resource Coordinator Gateway v{__version__}")
+    print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
+    print(f"Upstream host: {config.service.upstream_url}")
+    print(f"Managed procs: {list(system.supervisors.keys())}")
+    print("Press Ctrl+C to terminate.")
+
+    uvicorn.run(
+        app,
+        host=config.service.listen_host,
+        port=config.service.listen_port,
+        log_level="info" if args.verbose else "warning",
+    )
+    return 0
+
+
+def cmd_status(args: argparse.Namespace) -> int:
+    url = f"{args.url.rstrip('/')}/_coordinator/status"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.get(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                if args.json:
+                    print(json.dumps(data, indent=2))
+                else:
+                    print(f"Coordinator Status: {data.get('status')}")
+                    print(f"Upstream URL:       {data.get('upstream_url')}")
+                    gpu_data = data.get("gpu_inference", {})
+                    print(f"Active inferences:  {gpu_data.get('active_count')}")
+                    print(f"Pending requests:   {gpu_data.get('pending_count')}")
+                    print(f"Cooling down:       {gpu_data.get('is_cooling_down')}")
+                    if gpu_data.get("is_cooling_down"):
+                        print(f"Cooldown remaining: {gpu_data.get('cooldown_remaining')}s")
+                return 0
+            else:
+                print(f"Error querying coordinator ({resp.status_code}): {resp.text}", file=sys.stderr)
+                return 1
+    except Exception as exc:
+        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_config(args: argparse.Namespace) -> int:
+    if args.config_command == "show":
+        config = load_config(args.config)
+        data = {
+            "version": config.version,
+            "service": config.service.__dict__,
+            "resources": config.resources,
+            "processes": {k: v.__dict__ for k, v in config.processes.items()},
+            "policies": [p.__dict__ for p in config.policies],
+        }
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Version:   {config.version}")
+            print(f"Listen:    {config.service.listen_host}:{config.service.listen_port}")
+            print(f"Upstream:  {config.service.upstream_url}")
+            print(f"Processes: {list(config.processes.keys())}")
+            print(f"Policies:  {[p.name for p in config.policies]}")
+        return 0
+
+    elif args.config_command == "validate":
+        try:
+            load_config(args.config)
+            print("Configuration is valid.")
+            return 0
+        except Exception as exc:
+            print(f"Configuration validation failed: {exc}", file=sys.stderr)
+            return 1
+    return 0
+
+
+async def _async_miner_status(config_path: Optional[str], as_json: bool) -> int:
+    config = load_config(config_path)
+    system = build_system(config)
+    if not system.miner_adapter:
+        print("No miner process configured.", file=sys.stderr)
+        return 1
+    st = await system.miner_adapter.status()
+    override = system.miner_adapter.is_manual_override
+    data = {**st.to_dict(), "manual_override": override}
+    if as_json:
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"Miner Name:       {st.name}")
+        print(f"State:            {st.state.value}")
+        print(f"PID:              {st.pid}")
+        print(f"Coordinator owned:{st.is_coordinator_owned}")
+        print(f"Manual override:  {override}")
+    return 0
+
+
+async def _async_miner_pause(config_path: Optional[str], timeout: float) -> int:
+    config = load_config(config_path)
+    system = build_system(config)
+    if not system.miner_adapter:
+        print("No miner process configured.", file=sys.stderr)
+        return 1
+    system.miner_adapter.set_manual_override(True)
+    success = await system.miner_adapter.pause(timeout=timeout, origin="manual")
+    if success:
+        print(f"Miner '{system.miner_adapter.supervisor.name}' paused successfully (manual override set).")
+        return 0
+    else:
+        print(f"Failed to pause miner '{system.miner_adapter.supervisor.name}'.", file=sys.stderr)
+        return 1
+
+
+async def _async_miner_resume(config_path: Optional[str]) -> int:
+    config = load_config(config_path)
+    system = build_system(config)
+    if not system.miner_adapter:
+        print("No miner process configured.", file=sys.stderr)
+        return 1
+    system.miner_adapter.set_manual_override(False)
+    success = await system.miner_adapter.resume(origin="manual", only_if_stopped_by_coordinator=False)
+    if success:
+        print(f"Miner '{system.miner_adapter.supervisor.name}' resumed successfully (manual override cleared).")
+        return 0
+    else:
+        print(f"Failed to resume miner '{system.miner_adapter.supervisor.name}'.", file=sys.stderr)
+        return 1
+
+
+def cmd_miner(args: argparse.Namespace) -> int:
+    if args.miner_command == "status":
+        return asyncio.run(_async_miner_status(args.config, args.json))
+    elif args.miner_command == "pause":
+        return asyncio.run(_async_miner_pause(args.config, args.timeout))
+    elif args.miner_command == "resume":
+        return asyncio.run(_async_miner_resume(args.config))
+    return 0
+
+
+def main(argv: Optional[List[str]] = None) -> None:
+    args = parse_args(argv)
+    log_level = logging.DEBUG if args.verbose else logging.INFO
+    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+
+    code = 0
+    if args.command == "serve":
+        code = cmd_serve(args)
+    elif args.command == "status":
+        code = cmd_status(args)
+    elif args.command == "config":
+        code = cmd_config(args)
+    elif args.command == "miner":
+        code = cmd_miner(args)
+
+    sys.exit(code)
+
+
+if __name__ == "__main__":
+    main()
