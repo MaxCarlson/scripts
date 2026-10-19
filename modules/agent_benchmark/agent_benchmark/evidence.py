@@ -313,6 +313,42 @@ class UnverifiableOperation:
     message_id: str
     call_id: str
     input_summary: dict[str, Any]
+    category: str = "arbitrary_execution"
+
+
+def classify_shell_command(command: str | None) -> tuple[str, str]:
+    """Classify shell commands for audit diagnostics without assuming execution is harmless.
+
+    Returns (category, reason).
+    Categories:
+      - 'trusted_probe': exact trusted benchmark temp_probe command
+      - 'read_only_inspection': static pattern matches read-only inspection without redirection
+      - 'arbitrary_execution': general shell execution that could perform filesystem mutations
+    """
+    if not command or not isinstance(command, str):
+        return "arbitrary_execution", "Opaque execution tool cannot statically verify filesystem mutations"
+    cmd_strip = command.strip()
+
+    # Check for redirection operators (>, >>, Out-File, Set-Content, Tee-Object, Add-Content)
+    has_redirect = any(op in cmd_strip for op in (">", ">>", "Out-File", "Set-Content", "Tee-Object", "Add-Content"))
+    if not has_redirect:
+        tokens = [t.strip() for t in cmd_strip.split("|") if t.strip()]
+        read_only_prefixes = (
+            "get-childitem", "ls", "dir", "gci",
+            "select-object", "select",
+            "measure-object", "measure",
+            "where-object", "where",
+            "format-table", "ft", "format-list", "fl",
+            "get-content", "cat", "type", "gc",
+            "git status", "git diff", "git log",
+        )
+        if tokens and all(any(part.lower().startswith(p) for p in read_only_prefixes) for part in tokens):
+            return "read_only_inspection", "Read-only inspection command without redirection"
+
+    if "temp_probe.py" in cmd_strip and "sanity_grep" not in cmd_strip:
+        return "trusted_probe", "Trusted benchmark probe command execution"
+
+    return "arbitrary_execution", "Opaque execution tool cannot statically verify filesystem mutations"
 
 
 @dataclass(frozen=True)
@@ -522,12 +558,14 @@ def audit_transcript(
                 summary: dict[str, Any] = {}
                 if isinstance(cmd, str):
                     summary["command"] = cmd[:120]
+                cat, reason = classify_shell_command(cmd if isinstance(cmd, str) else None)
                 unverifiable_ops.append(UnverifiableOperation(
                     tool=tool,
-                    reason=f"Opaque execution tool '{tool}' cannot statically verify filesystem mutations",
+                    reason=reason,
                     message_id=msg_id,
                     call_id=call_id,
                     input_summary=summary,
+                    category=cat,
                 ))
 
     return (

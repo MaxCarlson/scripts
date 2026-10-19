@@ -65,4 +65,17 @@
 - [x] Share reservation/guard/release with scored runner; reuse cancellation/reconciliation/cleanup.
 - [x] Offline ordering, missing tracing, identity/prompt, failed/ambiguous submission, restart, timeout, cancellation, write failure and cleanup tests.
 - [x] Full agent/core checks, applicable typing, historical integrity; commit code 6e319c8a and documentation.
-- [ ] Separate authorization for exactly one Qwen diagnostic; do not execute now.
+- [x] Authorized live Qwen diagnostic smoke executed (smoke-20261019T154712Z-e5afebaf): 22/22 hidden verifier passed, prompt attributed, probe verified, clean cancellation at 60.28s budget expiration.
+
+
+## Post-Smoke Analysis & Scoring Redesign (Gemini)
+
+- [x] Inspect smoke artifacts (acceptance.json, lifecycle.json, scope-audit.json, session.json, session-identity.json).
+- [x] Investigate 112,871 input tokens: confirmed exact cumulative sum across 10 assistant turns (peak context 13,791; initial prompt 8,192).
+- [x] Analyze 4 shell invocations: distinguish trusted probe, read-only inspection, and worker execution.
+- [x] Implement shell command classification in `evidence.py` without weakening scope compliance.
+- [x] Implement token/tool telemetry extraction in `attempt.py` and populate measured metrics in `results.py`.
+- [x] Implement multi-dimensional scoring dimensions (`agent.functional_pass`, `agent.budget_pass`, `agent.clean_termination`, `turn_completion`).
+- [x] Implement reproducible budget matrix (`BUDGET_PROFILES`) and CLI `--budget-profile` with comparison eligibility gating.
+- [x] Add comprehensive regression tests in `scoring_redesign_test.py` (7 tests, all passing; full suite 243 passed, 3 skipped; core 82 passed, 1 skipped).
+- [ ] Sol Medium review and integration.

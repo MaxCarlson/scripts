@@ -15,6 +15,7 @@ import json
 import math
 from pathlib import Path
 import time
+from typing import Any
 
 import httpx
 
@@ -42,6 +43,66 @@ class AttemptEvidence:
     wall_ms: float
     scope_audit: ScopeAudit | None = None
     scope_policy: str | None = None
+    session_tokens: dict[str, Any] | None = None
+    tool_telemetry: dict[str, Any] | None = None
+
+
+def extract_telemetry(session: Any, history: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Extract token and tool efficiency telemetry from session identity and history."""
+    tokens_data: dict[str, Any] = {}
+    tools_data: dict[str, Any] = {}
+
+    if isinstance(session, dict):
+        raw_tokens = session.get("tokens")
+        if isinstance(raw_tokens, dict):
+            if isinstance(raw_tokens.get("input"), (int, float)):
+                tokens_data["input"] = int(raw_tokens["input"])
+            if isinstance(raw_tokens.get("output"), (int, float)):
+                tokens_data["output"] = int(raw_tokens["output"])
+            if isinstance(raw_tokens.get("reasoning"), (int, float)):
+                tokens_data["reasoning"] = int(raw_tokens["reasoning"])
+
+    if isinstance(history, list):
+        inputs = []
+        tool_counts: dict[str, int] = {}
+        tool_failures = 0
+        total_calls = 0
+
+        for msg in history:
+            if not isinstance(msg, dict):
+                continue
+            info = msg.get("info")
+            if isinstance(info, dict) and info.get("role") == "assistant":
+                t_info = info.get("tokens")
+                if isinstance(t_info, dict) and isinstance(t_info.get("input"), (int, float)):
+                    inp_val = int(t_info["input"])
+                    if inp_val > 0:
+                        inputs.append(inp_val)
+            parts = msg.get("parts")
+            if isinstance(parts, list):
+                for p in parts:
+                    if isinstance(p, dict) and p.get("type") == "tool":
+                        tname = str(p.get("tool") or "unknown")
+                        tool_counts[tname] = tool_counts.get(tname, 0) + 1
+                        total_calls += 1
+                        st = p.get("state")
+                        if isinstance(st, dict):
+                            if st.get("status") == "error":
+                                tool_failures += 1
+                            elif st.get("metadata", {}).get("exit", 0) != 0:
+                                tool_failures += 1
+
+        if inputs:
+            tokens_data["initial_prompt"] = inputs[0]
+            tokens_data["peak_context"] = max(inputs)
+            if "input" not in tokens_data:
+                tokens_data["input"] = sum(inputs)
+        if total_calls > 0:
+            tools_data["total_calls"] = total_calls
+            tools_data["total_failures"] = tool_failures
+            tools_data["tool_counts"] = tool_counts
+
+    return tokens_data, tools_data
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -250,6 +311,12 @@ async def run_attempt(
         _write_json(evidence_dir / "lifecycle.json", journal)
         guard.record(decision)
         _write_json(evidence_dir / "session.json", bridge.last_history)
+        session_tokens, tool_telemetry = extract_telemetry(
+            getattr(bridge, "last_session", None),
+            bridge.last_history,
+        )
+        if getattr(bridge, "last_session", None) is not None:
+            _write_json(evidence_dir / "session-identity.json", bridge.last_session)
         assistants = [message for message in bridge.last_history
                       if isinstance(message.get("info"), dict)
                       and message["info"].get("parentID") == handle.message_id
@@ -304,8 +371,12 @@ async def run_attempt(
                                   scope_policy=SCOPE_POLICY)
             journal["stage"] = "verified"
             _write_json(evidence_dir / "lifecycle.json", journal)
-        return AttemptEvidence(workspace, decision, s0, s1, verification, changed, scope, task_budget_expired,
-                               execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit, scope_policy=SCOPE_POLICY)
+        return AttemptEvidence(
+            workspace, decision, s0, s1, verification, changed, scope, task_budget_expired,
+            execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit, scope_policy=SCOPE_POLICY,
+            session_tokens=session_tokens if session_tokens else None,
+            tool_telemetry=tool_telemetry if tool_telemetry else None,
+        )
     finally:
         # Persistence can fail after remote submission (disk full/permissions).
         # Safety cannot depend on a successful journal write or its exception path.

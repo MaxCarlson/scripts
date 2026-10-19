@@ -7,6 +7,7 @@ import hashlib
 import json
 from pathlib import Path
 import platform
+from typing import Any
 import uuid
 
 from benchmark_core import (RunInfo, TrialResult, append_result, format_utc_timestamp,
@@ -24,13 +25,54 @@ from .results import base_metrics, trial_from_attempt, unavailable
 from .state import command_lock, journal_at, read_pending, release, reserve, reserved_trial
 
 
+BUDGET_PROFILES: dict[str, dict[str, Any]] = {
+    "canonical-60s": {
+        "task_seconds": 60.0,
+        "grace_seconds": 10.0,
+        "comparison_eligible": True,
+        "description": "Canonical 60-second observation budget for cross-model leaderboard comparisons",
+    },
+    "extended-90s": {
+        "task_seconds": 90.0,
+        "grace_seconds": 10.0,
+        "comparison_eligible": False,
+        "description": "Extended 90-second experimental budget for local LLMs and complex reasoning",
+    },
+    "extended-120s": {
+        "task_seconds": 120.0,
+        "grace_seconds": 15.0,
+        "comparison_eligible": False,
+        "description": "Extended 120-second experimental budget for lower-throughput local hardware",
+    },
+    "extended-180s": {
+        "task_seconds": 180.0,
+        "grace_seconds": 20.0,
+        "comparison_eligible": False,
+        "description": "Extended 180-second experimental budget for large quantization or slow local inference",
+    },
+}
+
+
 async def run_benchmark(
     task_dir: Path, *, reports: Path, state: Path, model: str, provider: str = "lmstudio",
     agent: str = "local-worker", base_url: str = "http://127.0.0.1:4096", task_seconds: float | None = None,
+    budget_profile: str = "canonical-60s",
     grace_seconds: float = 10, request_seconds: float = 10, verifier_seconds: float = 10,
     connector=connected_bridge,
 ) -> Path:
     task = load_task(task_dir)
+    profile_cfg = BUDGET_PROFILES.get(budget_profile, BUDGET_PROFILES["canonical-60s"])
+    if task_seconds is None:
+        effective_task_seconds = profile_cfg["task_seconds"]
+        effective_grace_seconds = profile_cfg["grace_seconds"]
+        comparison_eligible = profile_cfg["comparison_eligible"]
+        effective_profile = budget_profile
+    else:
+        effective_task_seconds = task_seconds
+        effective_grace_seconds = grace_seconds
+        comparison_eligible = False if task_seconds != 60.0 else profile_cfg["comparison_eligible"]
+        effective_profile = "custom" if task_seconds != 60.0 else budget_profile
+
     state, reports = state.resolve(), reports.resolve()
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     run_dir = reports / run_id
@@ -48,7 +90,8 @@ async def run_benchmark(
                         "effective_context_length": None, "effective_reasoning": None, "warm_state": "unverified"}},
             1, "worker_first_attempt_full_success",
             {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine()},
-            {"cancel_grace_seconds": grace_seconds, "task_seconds": task.time_budget_seconds if task_seconds is None else task_seconds,
+            {"cancel_grace_seconds": effective_grace_seconds, "task_seconds": effective_task_seconds,
+             "budget_profile": effective_profile, "comparison_eligible": comparison_eligible,
              "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
              "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
              "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
@@ -60,8 +103,8 @@ async def run_benchmark(
             async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
                 evidence = await run_attempt(
                     task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
-                    provider=provider, model=model, agent=agent, task_seconds=task_seconds,
-                    grace_seconds=grace_seconds, verifier_seconds=verifier_seconds,
+                    provider=provider, model=model, agent=agent, task_seconds=effective_task_seconds,
+                    grace_seconds=effective_grace_seconds, verifier_seconds=verifier_seconds,
                 )
                 runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
                 info = replace(info, metadata={**info.metadata, "runtime": runtime})

@@ -9,7 +9,7 @@ def unavailable(unit: str, reason: str) -> MetricValue:
     return MetricValue(None, unit, "agent_benchmark", "unavailable", reason)
 
 
-def base_metrics() -> dict[str, MetricValue]:
+def base_metrics(session_tokens: dict | None = None, tool_telemetry: dict | None = None) -> dict[str, MetricValue]:
     metrics = {f"tokens.{actor}.{direction}": unavailable("tokens", "No attributable runtime counter collected")
                for actor in ("worker", "coordinator") for direction in ("input", "output")}
     for key in ("agent.worker_after_retry_pass", "agent.workflow_final_pass"):
@@ -18,6 +18,44 @@ def base_metrics() -> dict[str, MetricValue]:
         metrics[key] = unavailable("count", "Tool telemetry not collected in Phase 1c")
     for key in ("agent.local_retries", "agent.coordinator_repairs"):
         metrics[key] = MetricValue(0, "count", "harness", "derived")
+
+    if session_tokens:
+        if "input" in session_tokens:
+            metrics["tokens.worker.input"] = MetricValue(
+                session_tokens["input"], "tokens", "opencode_session", "measured",
+                "Cumulative prompt tokens transmitted across all turns",
+            )
+        if "output" in session_tokens:
+            metrics["tokens.worker.output"] = MetricValue(
+                session_tokens["output"], "tokens", "opencode_session", "measured",
+                "Total completion tokens generated across all turns",
+            )
+        if "reasoning" in session_tokens:
+            metrics["tokens.worker.reasoning"] = MetricValue(
+                session_tokens["reasoning"], "tokens", "opencode_session", "measured",
+                "Reasoning/thinking tokens generated across all turns",
+            )
+        if "peak_context" in session_tokens:
+            metrics["tokens.worker.peak_context"] = MetricValue(
+                session_tokens["peak_context"], "tokens", "opencode_history", "derived",
+                "Maximum context window tokens in any single turn",
+            )
+        if "initial_prompt" in session_tokens:
+            metrics["tokens.worker.initial_prompt"] = MetricValue(
+                session_tokens["initial_prompt"], "tokens", "opencode_history", "derived",
+                "Baseline prompt tokens for initial turn",
+            )
+
+    if tool_telemetry:
+        if "total_calls" in tool_telemetry:
+            metrics["tools.calls"] = MetricValue(
+                tool_telemetry["total_calls"], "count", "opencode_history", "derived",
+            )
+        if "total_failures" in tool_telemetry:
+            metrics["tools.failures"] = MetricValue(
+                tool_telemetry["total_failures"], "count", "opencode_history", "derived",
+            )
+
     return metrics
 
 
@@ -44,7 +82,7 @@ def trial_from_attempt(
         status = "unscored"
     else:
         status = attempt.verification.status
-    metrics = base_metrics()
+    metrics = base_metrics(attempt.session_tokens, attempt.tool_telemetry)
     metrics.update({
         "duration.wall_ms": MetricValue(attempt.wall_ms, "ms", "monotonic", "measured"),
         "duration.worker_ms": MetricValue(attempt.worker_ms, "ms", "monotonic", "measured"),
@@ -53,6 +91,13 @@ def trial_from_attempt(
         "agent.worker_first_pass": (unavailable("boolean", "Evaluation prevented by infrastructure or scope uncertainty")
                                     if status in ("infrastructure_error", "unscored") else
                                     MetricValue(int(status == "passed"), "boolean", "independent_verifier_and_audit", "derived")),
+        "agent.functional_pass": (MetricValue(int(attempt.verification.status == "passed"), "boolean", "hidden_verifier", "derived")
+                                  if attempt.verification and attempt.termination.confirmed
+                                  else unavailable("boolean", "No reliable S1 verifier outcome")),
+        "agent.budget_pass": (MetricValue(int(not attempt.task_budget_expired), "boolean", "task_budget", "derived")
+                              if attempt.termination.confirmed and not attempt.execution_error
+                              else unavailable("boolean", "No reliable budget measurement")),
+        "agent.clean_termination": MetricValue(int(attempt.termination.confirmed), "boolean", "lifecycle_harness", "derived"),
         "agent.scope_violations": (MetricValue(
             len(attempt.scope_violations), "count",
             "snapshot_and_transcript" if attempt.scope_audit else "checkpoint_diff", "derived")
@@ -68,6 +113,10 @@ def trial_from_attempt(
     checkpoints = {"S0": {"tree_hash": attempt.s0.tree_hash}}
     if attempt.s1:
         checkpoints["S1"] = {"tree_hash": attempt.s1.tree_hash, "diff_path": f"{evidence_path}/worker.patch"}
+    unverifiable_cats: dict[str, int] = {}
+    if attempt.scope_audit and attempt.scope_audit.unverifiable_operations:
+        for op in attempt.scope_audit.unverifiable_operations:
+            unverifiable_cats[op.category] = unverifiable_cats.get(op.category, 0) + 1
     details = {
         "scoring_basis": "worker_first_attempt_full_success", "checkpoints": checkpoints,
         "evidence_path": evidence_path, "changed_paths": list(attempt.changed_paths),
@@ -79,9 +128,14 @@ def trial_from_attempt(
         "task_budget_expired": attempt.task_budget_expired,
         "execution_error": attempt.execution_error,
         "verifier_status": attempt.verification.status if attempt.verification else None,
+        "turn_completion": ("completed" if (observation and observation.job_status == "completed" and not attempt.task_budget_expired)
+                            else ("aborted_at_budget" if attempt.task_budget_expired else "unconfirmed")),
         "termination": {"confirmed": attempt.termination.confirmed,
                         "grace_seconds": attempt.termination.grace_seconds,
                         "diagnostics": list(attempt.termination.diagnostics)},
+        "session_tokens": attempt.session_tokens,
+        "tool_telemetry": attempt.tool_telemetry,
+        "unverifiable_categories": unverifiable_cats if unverifiable_cats else None,
         "job_id": attempt.termination.handle.job_id, "session_id": attempt.termination.handle.session_id,
         "message_id": attempt.termination.handle.message_id,
         "project_id": attempt.termination.handle.project_id or None,

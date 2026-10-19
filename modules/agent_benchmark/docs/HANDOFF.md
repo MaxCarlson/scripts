@@ -1,6 +1,41 @@
-# agent_benchmark handoff — revised unscored smoke ready, not executed
+# agent_benchmark handoff — post-smoke analysis and scoring redesign ready
 
-## Current diagnostic revision — 2026-10-19
+## Current scoring redesign revision — 2026-10-19
+
+Worktree `C:/Users/mcarls/src/scripts-agent-scoring`; branch `agent/scoring-redesign-20261019`.
+Package source: 1.4.0 (scoring/telemetry extension). Suite/verifier remains 0.1.1 and scratch policy remains `trial-local-scratch-v1`.
+Historical benchmark artifacts and evidence remain 100% immutable and unchanged.
+
+### Smoke Execution & Empirical Findings
+The authorized live Qwen diagnostic smoke test was executed against `qwen38_23GB` on LM Studio / OpenCode 1.19.3:
+- Artifacts: `integration-acceptance/smoke-20261019T154712Z-e5afebaf`
+- Infrastructure, isolated git project root, and session preflight: PASSED.
+- Submitted user prompt attribution: PASSED (exact SHA-256 match `543801ae4b60ca07e5348cf0c35abc50df3c67a7f06890fd118d2bbc1c13add4`).
+- Trial-local scratch policy: PASSED (only `.agent-bench-scratch` and `grep.py` mutated; zero out-of-scope writes).
+- Trusted temp probe: PASSED (artifacts verified, marker retained, call verified).
+- Hidden verification: PASSED (22/22 checks completed, nonce verified, 0-byte stderr).
+- Task budget: Expired at 60.28s while generating final text report; cancellation requested and confirmed in 0.266s.
+- Durable dispatch lock: Released cleanly (`pending_worker: null`).
+
+### Scoring & Telemetry Redesign Implementation
+1. **Token Accounting**:
+   - Demonstrated that OpenCode's `session.tokens.input` (112,871) is the exact cumulative sum across all 10 assistant turns ($8192 + 8669 + \dots + 13791 = 112871$).
+   - The model's peak context window was 13,791 tokens; initial prompt was 8,192 tokens; output tokens 2,477 (1,368 reasoning tokens, 55.2%).
+   - `extract_telemetry` in `attempt.py` captures these counters, and `results.py` emits them as measured/derived metrics instead of `unavailable`.
+2. **Shell Command Classification**:
+   - Added `classify_shell_command` in `evidence.py` categorizing shell operations into `trusted_probe`, `read_only_inspection`, and `arbitrary_execution`.
+   - Preserves strict scope auditing: scope compliance remains `uncertain` whenever unverifiable operations exist, preventing false-positive compliance claims while enriching audit diagnostics.
+3. **Multi-Dimensional Scoring**:
+   - Emits `agent.functional_pass` (boolean: 1 when verifier passes on S1), `agent.budget_pass` (boolean: 1 when within budget), `agent.clean_termination` (boolean), and `details.turn_completion`.
+   - The canonical `agent.worker_first_pass` and `status` (`passed`, `timed_out`, `failed`, `unscored`, `infrastructure_error`) remain 100% unchanged.
+4. **Reproducible Experimental Budget Matrix**:
+   - Added `BUDGET_PROFILES`: `canonical-60s` (60s/10s, `comparison_eligible=True`), `extended-90s` (90s/10s), `extended-120s` (120s/15s), `extended-180s` (180s/20s).
+   - Added CLI `--budget-profile` to `plan` and `run`. Non-canonical or custom budgets strictly enforce `comparison_eligible=False`.
+
+Validation: 243 agent tests passed, 3 Windows symlink skips; 82 core tests passed, 1 skip; Ruff clean; Core Mypy clean. 7 new focused regression tests in `scoring_redesign_test.py` pass.
+Ready for Sol Medium review.
+
+## Prior diagnostic revision — 2026-10-19
 
 Worktree C:/Users/mcarls/src/scripts-agent-benchmark; branch agent/agent-benchmark. Code/tests: 6e319c8af78cde38458e40163c762dac5ff5b866. Package source 1.3.0; suite/verifier 0.1.1 and scratch policy trial-local-scratch-v1 unchanged. No live inference, worker dispatch, local shared-service request/configuration change or historical rewrite. Documentation commit follows.
 

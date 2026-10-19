@@ -15,7 +15,7 @@ import httpx
 from . import __version__
 from .scratch import SCOPE_POLICY, SCRATCH_NAME
 from .evidence import EVIDENCE_LIMITS, load_task
-from .runner import cleanup_trial, run_benchmark
+from .runner import BUDGET_PROFILES, cleanup_trial, run_benchmark
 from .diagnostic import run_diagnostic
 from .state import read_pending
 
@@ -37,6 +37,8 @@ def parser() -> argparse.ArgumentParser:
                             help="Persistent dispatch receipts, shared across output locations")
         if name in ("plan", "run"):
             action.add_argument("-t", "--task", type=Path, default=Path(__file__).parent / "tasks/py-grep-smoke")
+            action.add_argument("--budget-profile", choices=tuple(BUDGET_PROFILES.keys()), default="canonical-60s",
+                                help="Reproducible budget profile (default: canonical-60s)")
         if name in ("status", "cleanup"):
             action.add_argument("-r", "--run-dir", type=Path)
         if name in ("run", "cleanup", "smoke"):
@@ -72,6 +74,8 @@ def main(argv: list[str] | None = None) -> int:
                               "time_budget_seconds": task.time_budget_seconds, "allowed_paths": task.allowed_paths,
                               "forbidden_paths": task.forbidden_paths,
                               "scope_policy": SCOPE_POLICY, "scratch_path": SCRATCH_NAME,
+                              "budget_profile": args.budget_profile,
+                              "budget_profiles": {k: {"task_seconds": v["task_seconds"], "grace_seconds": v["grace_seconds"], "comparison_eligible": v["comparison_eligible"]} for k, v in BUDGET_PROFILES.items()},
                               "evidence_limits": asdict(EVIDENCE_LIMITS), "pending_worker": read_pending(args.state_dir)}, indent=2))
         elif args.command == "status":
             value = {"pending_worker": read_pending(args.state_dir)}
@@ -89,8 +93,8 @@ def main(argv: list[str] | None = None) -> int:
         elif args.command == "run":
             directory = asyncio.run(run_benchmark(
                 args.task, reports=args.output_dir, state=args.state_dir, model=args.model, provider=args.provider,
-                agent=args.agent, base_url=args.base_url, task_seconds=args.budget, grace_seconds=args.cancel_grace,
-                request_seconds=args.request_timeout, verifier_seconds=args.verifier_timeout,
+                agent=args.agent, base_url=args.base_url, task_seconds=args.budget, budget_profile=args.budget_profile,
+                grace_seconds=args.cancel_grace, request_seconds=args.request_timeout, verifier_seconds=args.verifier_timeout,
             ))
             print(directory)
             _, trials = load_run(directory)
