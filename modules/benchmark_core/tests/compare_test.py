@@ -77,16 +77,64 @@ def test_compare_runs_matching_and_scoring_basis_mismatch() -> None:
     # Must flag critical warning about scoring basis mismatch
     assert any("CRITICAL: Scoring basis mismatch" in w for w in comp.warnings)
 
-    # Check variant delta
+    # Check variant delta - success rate deltas MUST be suppressed when scoring basis mismatches
     vc = comp.variant_comparisons["var-1"]
     assert vc.micro_success_rate.baseline == 0.5
     assert vc.micro_success_rate.candidate == 1.0
-    assert vc.micro_success_rate.absolute_change == 0.5
+    assert vc.micro_success_rate.absolute_change is None
+    assert vc.micro_success_rate.percentage_change is None
 
     # Check Markdown rendering
     md = render_comparison_md(comp)
     assert "# Benchmark Comparison: `run-b` vs `run-a`" in md
     assert "CRITICAL: Scoring basis mismatch" in md
+
+
+def test_compare_runs_matching_scoring_basis_computes_deltas() -> None:
+    run_a = RunInfo(
+        run_id="run-a",
+        created_at="2026-10-19T02:00:00Z",
+        suite_id="eval-suite",
+        suite_version="1.0",
+        task_ids=["t1"],
+        variants={"var-1": {}},
+        repetitions=2,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    trials_a = [
+        TrialResult("run-a", "a1", "t1", "var-1", 1, TrialStatus.PASSED,
+                    metrics={"duration.wall_ms": MetricValue(1000.0, "ms", "timer", "measured")}),
+        TrialResult("run-a", "a2", "t1", "var-1", 2, TrialStatus.FAILED,
+                    metrics={"duration.wall_ms": MetricValue(1000.0, "ms", "timer", "measured")}),
+    ]
+
+    # Run B with SAME scoring basis
+    run_b = RunInfo(
+        run_id="run-b",
+        created_at="2026-10-19T03:00:00Z",
+        suite_id="eval-suite",
+        suite_version="1.0",
+        task_ids=["t1"],
+        variants={"var-1": {}},
+        repetitions=2,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    trials_b = [
+        TrialResult("run-b", "b1", "t1", "var-1", 1, TrialStatus.PASSED,
+                    metrics={"duration.wall_ms": MetricValue(800.0, "ms", "timer", "measured")}),
+        TrialResult("run-b", "b2", "t1", "var-1", 2, TrialStatus.PASSED,
+                    metrics={"duration.wall_ms": MetricValue(800.0, "ms", "timer", "measured")}),
+    ]
+
+    summary_a = summarize(run_a, trials_a)
+    summary_b = summarize(run_b, trials_b)
+    comp = compare_runs(summary_a, summary_b)
+
+    vc = comp.variant_comparisons["var-1"]
+    assert vc.micro_success_rate.baseline == 0.5
+    assert vc.micro_success_rate.candidate == 1.0
+    assert vc.micro_success_rate.absolute_change == 0.5
+    assert vc.micro_success_rate.percentage_change == 100.0
 
 
 def test_compare_runs_unit_mismatch_warning() -> None:

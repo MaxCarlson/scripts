@@ -97,10 +97,15 @@ class RunComparison:
 def compare_variants(
     baseline_var: VariantSummary,
     candidate_var: VariantSummary,
+    suppress_success_deltas: bool = False,
 ) -> VariantComparison:
     """Compare two VariantSummary instances."""
-    micro_delta = compute_delta(baseline_var.micro_success_rate, candidate_var.micro_success_rate)
-    macro_delta = compute_delta(baseline_var.macro_success_rate, candidate_var.macro_success_rate)
+    if suppress_success_deltas:
+        micro_delta = DeltaValue(baseline_var.micro_success_rate, candidate_var.micro_success_rate, None, None)
+        macro_delta = DeltaValue(baseline_var.macro_success_rate, candidate_var.macro_success_rate, None, None)
+    else:
+        micro_delta = compute_delta(baseline_var.micro_success_rate, candidate_var.micro_success_rate)
+        macro_delta = compute_delta(baseline_var.macro_success_rate, candidate_var.macro_success_rate)
 
     b_all_dur = baseline_var.duration.all_scored.mean if baseline_var.duration.all_scored else None
     c_all_dur = candidate_var.duration.all_scored.mean if candidate_var.duration.all_scored else None
@@ -117,7 +122,10 @@ def compare_variants(
         c_m = candidate_var.metrics.get(mk)
         b_val = b_m.mean if b_m else None
         c_val = c_m.mean if c_m else None
-        metric_deltas[mk] = compute_delta(b_val, c_val)
+        if b_m and c_m and b_m.unit != c_m.unit:
+            metric_deltas[mk] = DeltaValue(b_val, c_val, None, None)
+        else:
+            metric_deltas[mk] = compute_delta(b_val, c_val)
 
     return VariantComparison(
         variant_id=candidate_var.variant_id,
@@ -145,7 +153,8 @@ def compare_runs(
     warnings: list[str] = []
 
     # Scoring basis verification
-    if baseline.run_info.scoring_basis != candidate.run_info.scoring_basis:
+    scoring_basis_mismatch = (baseline.run_info.scoring_basis != candidate.run_info.scoring_basis)
+    if scoring_basis_mismatch:
         warnings.append(
             f"CRITICAL: Scoring basis mismatch! Baseline uses '{baseline.run_info.scoring_basis}', "
             f"while candidate uses '{candidate.run_info.scoring_basis}'. Comparing success rates directly is invalid."
@@ -156,6 +165,15 @@ def compare_runs(
         warnings.append(
             f"WARNING: Suite ID mismatch! Baseline is '{baseline.run_info.suite_id}', "
             f"while candidate is '{candidate.run_info.suite_id}'."
+        )
+
+    # Suite fingerprint verification
+    base_fp = baseline.run_info.metadata.get("suite_fingerprint")
+    cand_fp = candidate.run_info.metadata.get("suite_fingerprint")
+    if base_fp and cand_fp and base_fp != cand_fp:
+        warnings.append(
+            f"CRITICAL: Suite fingerprint mismatch! Baseline is '{base_fp}', while candidate is '{cand_fp}'. "
+            "Benchmark tasks or suite contents may differ."
         )
 
     # Suite version verification
@@ -186,7 +204,11 @@ def compare_runs(
                         f"WARNING: Unit mismatch for metric '{mk}' on variant '{vid}': "
                         f"baseline uses '{b_m.unit}', candidate uses '{c_m.unit}'."
                     )
-            variant_comps[vid] = compare_variants(base_var, cand_var)
+            variant_comps[vid] = compare_variants(
+                base_var,
+                cand_var,
+                suppress_success_deltas=scoring_basis_mismatch,
+            )
 
     return RunComparison(
         baseline_run_id=baseline.run_info.run_id,

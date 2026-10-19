@@ -59,7 +59,8 @@ class TestMetricValue:
 
     def test_all_metric_qualities(self) -> None:
         for q in VALID_QUALITIES:
-            mv = MetricValue(value=1.0, unit="x", source="src", quality=q)
+            val = None if q == MetricQuality.UNAVAILABLE else 1.0
+            mv = MetricValue(value=val, unit="x", source="src", quality=q)
             assert mv.quality == q
 
     def test_invalid_quality_rejected(self) -> None:

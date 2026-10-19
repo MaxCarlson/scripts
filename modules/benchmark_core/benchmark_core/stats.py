@@ -44,6 +44,8 @@ class MetricStats:
     min: Optional[float]
     max: Optional[float]
     stdev: Optional[float]
+    measured_mean: Optional[float] = None
+    estimated_mean: Optional[float] = None
     quality_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +60,8 @@ class MetricStats:
             "min": self.min,
             "max": self.max,
             "stdev": self.stdev,
+            "measured_mean": self.measured_mean,
+            "estimated_mean": self.estimated_mean,
             "quality_counts": copy.deepcopy(self.quality_counts),
         }
 
@@ -74,6 +78,8 @@ class MetricStats:
             min=data.get("min"),
             max=data.get("max"),
             stdev=data.get("stdev"),
+            measured_mean=data.get("measured_mean"),
+            estimated_mean=data.get("estimated_mean"),
             quality_counts=data.get("quality_counts", {}),
         )
 
@@ -238,28 +244,43 @@ class BenchmarkSummary:
         return cls.from_dict(json.loads(json_str))
 
 
-def compute_metric_stats(name: str, metric_values: list[MetricValue]) -> MetricStats:
+def compute_metric_stats(
+    name: str,
+    metric_values: list[MetricValue],
+    expected_total: Optional[int] = None,
+) -> MetricStats:
     """
     Calculate descriptive statistics for a collection of MetricValues.
 
     Distinguishes available vs missing/unavailable, counts qualities,
-    and calculates mean, median, min, max, stdev.
+    and calculates mean, median, min, max, stdev, measured_mean, and estimated_mean.
+    Rejects incompatible units within the same metric name.
     """
     observation_count = len(metric_values)
-    if observation_count == 0:
+    if expected_total is not None and expected_total > observation_count:
+        observation_count = expected_total
+
+    if len(metric_values) == 0:
         return MetricStats(
             name=name,
             unit="",
-            observation_count=0,
+            observation_count=observation_count,
             available_count=0,
-            missing_count=0,
+            missing_count=observation_count,
             mean=None,
             median=None,
             min=None,
             max=None,
             stdev=None,
+            measured_mean=None,
+            estimated_mean=None,
             quality_counts={q: 0 for q in sorted(VALID_QUALITIES)},
         )
+
+    # Unit validation
+    units = {mv.unit for mv in metric_values if mv.unit}
+    if len(units) > 1:
+        raise ValueError(f"Incompatible units found for metric '{name}': {sorted(units)}")
 
     unit = metric_values[0].unit
 
@@ -276,6 +297,20 @@ def compute_metric_stats(name: str, metric_values: list[MetricValue]) -> MetricS
     available_count = len(available_floats)
     missing_count = observation_count - available_count
 
+    measured_floats: list[float] = [
+        float(mv.value)
+        for mv in metric_values
+        if mv.value is not None and str(mv.quality) == MetricQuality.MEASURED
+    ]
+    measured_mean = round(statistics.mean(measured_floats), 4) if measured_floats else None
+
+    estimated_floats: list[float] = [
+        float(mv.value)
+        for mv in metric_values
+        if mv.value is not None and str(mv.quality) == MetricQuality.ESTIMATED
+    ]
+    estimated_mean = round(statistics.mean(estimated_floats), 4) if estimated_floats else None
+
     if available_count == 0:
         return MetricStats(
             name=name,
@@ -288,6 +323,8 @@ def compute_metric_stats(name: str, metric_values: list[MetricValue]) -> MetricS
             min=None,
             max=None,
             stdev=None,
+            measured_mean=None,
+            estimated_mean=None,
             quality_counts=quality_counts,
         )
 
@@ -308,6 +345,8 @@ def compute_metric_stats(name: str, metric_values: list[MetricValue]) -> MetricS
         min=min_val,
         max=max_val,
         stdev=stdev_val,
+        measured_mean=measured_mean,
+        estimated_mean=estimated_mean,
         quality_counts=quality_counts,
     )
 
@@ -376,7 +415,7 @@ def _summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
             metrics_by_name.setdefault(m_name, []).append(mv)
 
     metric_stats = {
-        name: compute_metric_stats(name, mvs)
+        name: compute_metric_stats(name, mvs, expected_total=total_trials)
         for name, mvs in sorted(metrics_by_name.items())
     }
 
@@ -413,6 +452,13 @@ def summarize(
     """
     if generated_at is None:
         generated_at = format_utc_timestamp()
+
+    # Verify trials belong to this run
+    for t in trials:
+        if t.run_id != run_info.run_id:
+            raise ValueError(
+                f"Trial '{t.trial_id}' belongs to run '{t.run_id}', but RunInfo has run_id '{run_info.run_id}'"
+            )
 
     # Group trials by variant_id
     trials_by_variant: dict[str, list[TrialResult]] = {vid: [] for vid in run_info.variants.keys()}
@@ -488,7 +534,7 @@ def summarize(
                 v_metrics_by_name.setdefault(m_name, []).append(mv)
 
         v_metric_stats = {
-            name: compute_metric_stats(name, mvs)
+            name: compute_metric_stats(name, mvs, expected_total=total_trials)
             for name, mvs in sorted(v_metrics_by_name.items())
         }
 

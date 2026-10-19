@@ -23,7 +23,7 @@ from ..models import (
     TrialStatus,
     format_utc_timestamp,
 )
-from ..storage import append_results, save_run
+from ..storage import save_run
 
 
 def _slugify(text: str) -> str:
@@ -61,7 +61,8 @@ def parse_hyperfine_data(
 
     variants: dict[str, dict[str, Any]] = {}
     trials: list[TrialResult] = []
-    task_ids: list[str] = []
+    task_id = suite_id
+    task_ids: list[str] = [suite_id]
     max_reps = 1
 
     for res_idx, res in enumerate(results_list, start=1):
@@ -86,8 +87,6 @@ def parse_hyperfine_data(
         # Variant ID
         variant_slug = _slugify(command)
         variant_id = f"var_{res_idx}_{variant_slug}"
-        task_id = f"task_{res_idx}_{variant_slug}"
-        task_ids.append(task_id)
 
         v_config: dict[str, Any] = {
             "command": command,
@@ -166,6 +165,7 @@ def import_hyperfine(
     run_id: Optional[str] = None,
     output_dir: Optional[Union[Path, str]] = None,
     write: bool = False,
+    overwrite: bool = False,
 ) -> tuple[RunInfo, list[TrialResult]]:
     """
     Import a Hyperfine JSON export file.
@@ -176,6 +176,8 @@ def import_hyperfine(
         run_id: Optional run ID.
         output_dir: If write=True, destination directory for run.json and trials.jsonl.
         write: If True, writes authoritative files to output_dir.
+        overwrite: If True, explicitly authorizes replacing existing records in output_dir.
+                   If False and authoritative records exist, raises FileExistsError.
 
     Returns:
         Tuple of (RunInfo, list[TrialResult]).
@@ -196,10 +198,28 @@ def import_hyperfine(
         if output_dir is None:
             raise ValueError("output_dir must be specified when write=True")
         out_p = Path(output_dir)
-        save_run(out_p, run_info, overwrite=True)
+        out_p.mkdir(parents=True, exist_ok=True)
+        target_run = out_p / "run.json"
         target_trials = out_p / "trials.jsonl"
-        if target_trials.exists():
-            target_trials.unlink()
-        append_results(out_p, trials, allow_duplicate=False)
+
+        if not overwrite and (target_run.exists() or target_trials.exists()):
+            raise FileExistsError(
+                f"Destination directory {out_p} already contains authoritative benchmark records "
+                "('run.json' or 'trials.jsonl'). Pass overwrite=True to explicitly authorize replacing them."
+            )
+
+        # Write run.json safely
+        save_run(out_p, run_info, overwrite=overwrite)
+
+        # Write trials.jsonl safely using atomic rename to prevent partial/duplicate writes
+        temp_trials = out_p / "trials.jsonl.tmp"
+        try:
+            with temp_trials.open("w", encoding="utf-8") as f:
+                for t in trials:
+                    f.write(t.to_json() + "\n")
+            temp_trials.replace(target_trials)
+        finally:
+            if temp_trials.exists():
+                temp_trials.unlink(missing_ok=True)
 
     return run_info, trials

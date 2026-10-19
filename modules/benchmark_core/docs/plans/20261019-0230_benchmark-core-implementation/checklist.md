@@ -29,3 +29,12 @@
 - [x] End-to-end synthetic agent benchmark integration test
 - [x] Final docs and verification summary
 - [x] Commit Stage 4
+
+## Stage 5: Correctness & Independent Review Pass
+- [x] Incompatible metric unit rejection and measured vs estimated distinction in `stats.py`
+- [x] Strict `MetricValue.value` / `quality` invariant enforcement in `models.py`
+- [x] Cross-run comparison invalid delta suppression (scoring basis, units, suite fingerprint check) in `compare.py`
+- [x] Hyperfine safe re-import, overwrite authorization (`-O`/`--overwrite`), and duplicate prevention in `importers/hyperfine.py` and `cli.py`
+- [x] Missing-metric accounting (`expected_total`) and Hyperfine command grouping under common benchmark task
+- [x] Trial `run_id` validation against declared `RunInfo` in `stats.py` and `storage.py`
+- [x] Targeted regression tests in `tests/correctness_review_test.py` (79 total passing tests across suite)

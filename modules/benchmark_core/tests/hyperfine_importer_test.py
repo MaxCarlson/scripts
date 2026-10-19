@@ -123,3 +123,28 @@ def test_cli_import_subcommand(tmp_path: Path, sample_hyperfine_json: Path, caps
     assert "Successfully parsed Hyperfine benchmark" in captured.out
     assert (out_dir / "run.json").is_file()
     assert (out_dir / "trials.jsonl").is_file()
+
+    # Second import without --overwrite must fail safely and not destroy data
+    exit_code_dup = main([
+        "import",
+        "--format", "hyperfine",
+        "--input-file", str(sample_hyperfine_json),
+        "--output-dir", str(out_dir),
+        "--write",
+    ])
+    assert exit_code_dup == 1
+    captured_dup = capsys.readouterr()
+    assert "already contains authoritative benchmark records" in captured_dup.err
+
+    # Third import with -O / --overwrite authorizes safe replacement
+    exit_code_overwrite = main([
+        "import",
+        "--format", "hyperfine",
+        "--input-file", str(sample_hyperfine_json),
+        "--output-dir", str(out_dir),
+        "--write",
+        "-O",
+    ])
+    assert exit_code_overwrite == 0
+    captured_ow = capsys.readouterr()
+    assert "Successfully parsed Hyperfine benchmark" in captured_ow.out

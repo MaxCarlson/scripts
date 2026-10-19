@@ -147,6 +147,16 @@ def append_results(
     if not trials_list:
         return target_file
 
+    # Validate trial run_ids match run.json if present
+    run_file = dir_path / "run.json"
+    if run_file.is_file():
+        expected_run_info = load_run_info(run_file)
+        for t in trials_list:
+            if t.run_id != expected_run_info.run_id:
+                raise ValueError(
+                    f"Trial '{t.trial_id}' belongs to run '{t.run_id}', but run directory has run_id '{expected_run_info.run_id}'"
+                )
+
     if not allow_duplicate:
         existing_ids = get_existing_trial_ids(target_file)
         seen_batch: set[str] = set()

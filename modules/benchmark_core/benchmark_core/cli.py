@@ -118,6 +118,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="Write imported records to disk (default is dry-run validation)",
     )
     import_parser.add_argument(
+        "-O", "--overwrite",
+        action="store_true",
+        help="Authorize replacing existing run.json and trials.jsonl in output-dir",
+    )
+    import_parser.add_argument(
         "-v", "--verbose",
         action="store_true",
         help="Enable detailed logging output",
@@ -206,6 +211,7 @@ def handle_import(args: argparse.Namespace) -> int:
                 suite_id=args.suite_id,
                 output_dir=Path(args.output_dir) if args.write else None,
                 write=args.write,
+                overwrite=args.overwrite,
             )
             print(
                 f"Successfully parsed Hyperfine benchmark: {len(run_info.variants)} variants, "

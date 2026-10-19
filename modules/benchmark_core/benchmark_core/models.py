@@ -198,6 +198,13 @@ class MetricValue:
                 )
             if math.isnan(self.value) or math.isinf(self.value):
                 raise ValueError(f"Metric value cannot be NaN or Infinity, got {self.value}")
+            if q_str == MetricQuality.UNAVAILABLE:
+                raise ValueError(f"Unavailable metric cannot have numeric value {self.value!r}. Missing metrics must have value=None.")
+        else:
+            if q_str != MetricQuality.UNAVAILABLE:
+                raise ValueError(
+                    f"Missing metric with value=None must have quality='unavailable', got {self.quality!r}"
+                )
 
         # Validate reason
         if self.reason is not None and not isinstance(self.reason, str):

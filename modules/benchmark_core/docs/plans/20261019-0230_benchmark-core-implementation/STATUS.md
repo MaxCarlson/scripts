@@ -1,6 +1,6 @@
 # Plan Status: `benchmark_core` Implementation
 
 - **Date:** 2026-10-19
-- **Current Stage:** Stage 4 (Hyperfine Importer & Final Verification) Complete — Plan Complete
+- **Current Stage:** Stage 5 (Correctness & Independent Review Pass) Complete — Plan Complete
 - **Next Action:** Ready for integration with `agent_benchmark`.
-- **Verification:** `pytest modules/benchmark_core/tests/` (69 passed in 0.17s).
+- **Verification:** `pytest modules/benchmark_core/tests/` (79 passed in 0.18s), `ruff check` (clean), `mypy` (18 source files clean).
