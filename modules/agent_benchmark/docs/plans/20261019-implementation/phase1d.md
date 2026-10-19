@@ -1,6 +1,6 @@
 # Phase 1d — OpenCode project isolation
 
-Status: implemented and tested offline; stop for review and separately authorized non-inference API verification.
+Status: implemented and tested offline; separately authorized non-inference API acceptance now completed. Exact project/empty-session bindings passed; generated-prompt inheritance and actual inference remain unverified. See the current HANDOFF.md and reports/20261019T141839Z-phase1d-api-af4085b5/ACCEPTANCE.md. Stop for review.
 
 ## Authorized design and boundaries
 
@@ -57,9 +57,9 @@ Optional broad `mypy ... modules/agent_benchmark/agent_benchmark` is not clean: 
 
 Historical reports: 59 files; unchanged path/content digest 4560c4d9b3b0c3a8d0865f57d3e0d6e9a043e46054ce10507e8645d179baa3fb. No live API request, worker execution, service reconfiguration or artifact regeneration occurred in Phase 1d.
 
-## Required separate verification checkpoint
+## Original non-inference verification checklist (superseded by acceptance evidence)
 
-Not executed; needs a new user authorization for a non-inference API probe:
+The following was the planned probe matrix. The authorized acceptance exercised two committed repositories, exact header/project/session validation and negative binding checks; it did not create additional uninitialized/unborn controls, which remain covered offline. No inference was performed:
 
 1. Use owned fresh control directories (uninitialized and unborn Git) plus two distinct benchmark-prepared committed repositories. Never initialize or change a historical workspace or the home repository.
 2. Call GET /path and GET /project/current with the common directory header. Confirm ancestor/global control behavior and exact trial directory/worktree/Git/root-commit project IDs for both prepared repositories. Assert distinct prepared project IDs.

@@ -1,4 +1,12 @@
-# agent_benchmark handoff — Phase 1d offline isolation checkpoint
+# agent_benchmark handoff — Phase 1d non-inference acceptance checkpoint
+
+## Current acceptance — 2026-10-19
+
+User-authorized non-inference acceptance on HEAD 90b0e552 passed real OpenCode 1.19.3 directory/worktree/project validation and two persisted empty-session bindings. Distinct projects: cd6e7662a4835e98004521cdcbf6a4c05ca6f2c7 and 81c49b24fc18e7a94a4984c08291cb099e688983. Eight incorrect-binding checks rejected; no inference. Both sessions were confirmed empty/idle/childless, deleted, and returned 404 afterward. Prepared workspaces and byte-identical S0/S1 archives remain for review. Shared pending state absent and unchanged; all 59 historical files unchanged.
+
+Evidence: reports/20261019T141839Z-phase1d-api-af4085b5/ACCEPTANCE.md, acceptance.json, config-inspection.json and validation-summary.json. Focused regressions: 49 passed; acceptance-only mocked empty-session faults: 3 passed (lost response, malformed response, persisted mismatch, cleanup and fresh-process state). No production implementation changes or new commit in this acceptance; only current documentation and new untracked evidence.
+
+Configuration inspection found identical effective configurations and global agent-file provenance across trials. Generated system-prompt inheritance remains UNVERIFIED because no prompt was submitted. Global ~/.claude/CLAUDE.md remains a candidate dependency; runtime local-worker permissions explicitly allow shared Temp/opencode/*. Logical isolation does not remove that permission or alter strict scope policy. No services were reconfigured. The complete prepared-session MCP inference path requires separate live-worker authorization. Stop here; no Qwen trial or suite expansion.
 
 ## Workspace / commits
 
@@ -8,7 +16,7 @@
 - 15efb1dc72eca0a7ef2f28e261b85cb49ab6bb61: header-only routing, exact project/root-commit validation, validated empty-session creation before MCP inference, project-bound reconciliation/cleanup and provenance.
 - Complete corrected core history through a1856215 remains integrated; no benchmark_core source changes in Phase 1d.
 
-## Outcome / stop boundary
+## Prior offline implementation checkpoint
 
 Phase 1d is implemented and validated offline only. No live worker or live local API probe was run in this phase. No shared services or historical artifacts were changed. Stop for review and separately authorized non-inference API verification; do not start suite expansion or another model run.
 

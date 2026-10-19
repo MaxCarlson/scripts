@@ -36,5 +36,5 @@
 - [x] Preserve persistent blocking, timeout precedence, frozen S1, historical evidence and canonical contracts.
 - [x] Record versioned environment/Git/session provenance; handle confirmed owned Windows Git cleanup.
 - [x] Full offline pytest/Ruff and applicable core/new-helper Mypy checks; document optional legacy agent-wide Mypy diagnostics.
-- [ ] Separately authorized non-inference API probe; no shared-service changes or worker dispatch.
+- [x] Separately authorized non-inference API acceptance: two unique projects/empty sessions; mismatch rejection, unchanged S0/S1/history; 49+3 offline tests. See current HANDOFF.md for global dependencies and unverified prompt construction.
 - [ ] Separately authorized post-isolation live-worker acceptance.
