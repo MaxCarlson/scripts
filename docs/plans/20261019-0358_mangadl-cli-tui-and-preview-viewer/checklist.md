@@ -1,12 +1,12 @@
 # Checklist: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
 
 ## Stage 1: Reusable CLI TUI Engine (`modules/cli_tui`)
-- [ ] Task 1.1: Package Scaffolding & Argparse Introspection (`cli_tui.schema`)
-  - [ ] 1.1.1: Write failing test for parser introspection (`tests/test_schema.py`)
-  - [ ] 1.1.2: Verify test failure
-  - [ ] 1.1.3: Implement `cli_tui/schema.py`
-  - [ ] 1.1.4: Run tests and verify all pass
-  - [ ] 1.1.5: Commit Task 1.1
+- [x] Task 1.1: Package Scaffolding & Argparse Introspection (`cli_tui.schema`)
+  - [x] 1.1.1: Write failing test for parser introspection (`tests/test_schema.py`)
+  - [x] 1.1.2: Verify test failure
+  - [x] 1.1.3: Implement `cli_tui/schema.py`
+  - [x] 1.1.4: Run tests and verify all pass
+  - [x] 1.1.5: Commit Task 1.1
 - [ ] Task 1.2: TUI Navigation & Form State Models (`cli_tui.state`)
   - [ ] 1.2.1: Write failing test for state navigation and argv synthesis (`tests/test_state.py`)
   - [ ] 1.2.2: Verify test failure
