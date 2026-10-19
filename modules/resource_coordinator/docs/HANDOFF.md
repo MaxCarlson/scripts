@@ -1,6 +1,14 @@
 # Resource Coordinator current handoff
 
-Current workstream: **Phase D supervised-test environment preflight**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, reviewed coordinator commit `e548941f7cea477decf571825769abc42e36e433`.
+Current workstream: **minimal LM Studio activity automation**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, based on preflight commit `44ce5d6ec9b56ecb75c2cfb4ff848b85964c2764`.
+
+Offline implementation adds explicit known model-load handling on the existing `gpu.inference` resource with an exclusive lease, matching process-stop policy and the same cooldown as inference. Pending exclusive reservations now prevent later shared admission, and final idle restart actions share an arbitration lock with request registration. Generic opt-in service/CLI process lifecycle controls were added while retaining legacy miner flags. `LeaseManager` accepts a monotonic clock and async sleeper for deterministic cooldown tests. See [minimal automation configuration and route limits](../README.md) and [implementation plan/status](plans/20261019-1600_minimal-lmstudio-activity/STATUS.md).
+
+**Sol Medium review required before any live test:** this enables managed model-load routes that Phase D previously rejected, changes exclusive/shared arbitration ordering, and serializes idle restart actions with request reservation. Offline validation does not establish host readiness or authorize process/model control. The preflight below remains NO-GO; no live test, process control, inference, or shared configuration change occurred.
+
+Validation: the module suite passed with 10 test cases requiring pytest temporary-directory access and one subprocess test excluded. Those temporary-directory cases fail in this Windows sandbox because pytest receives `WinError 3/5` on the module's configured temp root; `test_command_action` cannot launch its subprocess here. Ruff lint passes. Ruff format check reports existing module-wide formatting drift. Mypy reports only missing `types-psutil` stubs in existing files. The reviewed result must include the exact commit SHA when committed.
+
+## Historical Phase D supervised-test preflight
 
 Review outcome: **CONDITIONAL GO**, operational NO-GO until independent prerequisites and separate user authorization. Unattended NO-GO. No live operation, merge or push was performed or authorized by this outcome.
 

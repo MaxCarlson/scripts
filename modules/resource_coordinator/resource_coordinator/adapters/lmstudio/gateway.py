@@ -51,7 +51,7 @@ def is_inference_request(method: str, path: str) -> bool:
 
 def is_model_load_request(method: str, path: str) -> bool:
     """Determine whether an incoming request represents model loading."""
-    return OperationClassifier.classify(method, path) == OperationKind.MODEL_MUTATION
+    return OperationClassifier.classify(method, path) == OperationKind.MODEL_LOAD
 
 
 class StreamCompletionDetector:
@@ -359,7 +359,7 @@ class LMStudioGateway:
         if decision.operation_kind in {OperationKind.METADATA_READ, OperationKind.UNKNOWN_READ}:
             return await self._forward_direct(request, path, body, request_id)
 
-        if decision.operation_kind in {OperationKind.INFERENCE, OperationKind.MODEL_MUTATION}:
+        if decision.operation_kind in {OperationKind.INFERENCE, OperationKind.MODEL_LOAD}:
             assert decision.resource is not None
             assert decision.lease_type is not None
             assert decision.event_name is not None
@@ -390,7 +390,7 @@ class LMStudioGateway:
         finish_event: str,
         model_name: str,
     ) -> Response:
-        """Forward an inference or model load request with atomic registration and robust termination tracking."""
+        """Forward protected inference or model load with robust termination tracking."""
         event_data = {
             "request_id": request_id,
             "path": path,

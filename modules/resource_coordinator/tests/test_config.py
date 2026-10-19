@@ -1,6 +1,8 @@
 from pathlib import Path
 
-from resource_coordinator.config import build_system, load_config
+import pytest
+
+from resource_coordinator.config import CoordinatorConfig, build_system, load_config
 
 
 def test_load_default_config():
@@ -48,3 +50,21 @@ def test_build_system_from_config():
     assert "krig" in system.supervisors
     assert system.miner_adapter is not None
     assert system.gateway.upstream_url == "http://127.0.0.1:1234"
+
+
+def test_config_rejects_zero_idle_timeout_when_restart_is_enabled():
+    data = {
+        "version": "1.0",
+        "processes": {"worker": {"backend": "fake"}},
+        "policies": [
+            {
+                "name": "restart-worker",
+                "trigger_event": "lmstudio.inference_requested",
+                "target_process": "worker",
+                "resource": "gpu.inference",
+                "cooldown_seconds": 0,
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="positive idle timeout"):
+        CoordinatorConfig.from_dict(data)

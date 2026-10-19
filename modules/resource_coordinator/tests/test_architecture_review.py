@@ -447,7 +447,7 @@ async def test_standalone_miner_mutation_refused_without_daemon_state(operation,
 
 
 @pytest.mark.asyncio
-async def test_idle_restart_in_progress_is_cancelled_by_new_reservation():
+async def test_idle_restart_holds_arbitration_boundary_before_new_reservation():
     from resource_coordinator.core.actions import StartProcessAction
     from resource_coordinator.core.policies import Policy, PolicyEngine
     from resource_coordinator.core.processes import FakeProcessBackend, ProcessSupervisor
@@ -472,7 +472,9 @@ async def test_idle_restart_in_progress_is_cancelled_by_new_reservation():
     await asyncio.wait_for(entered.wait(), 1)
     async with manager.reserve("gpu"):
         await asyncio.sleep(0.15)
-        assert not backend.running
+        # The idle action won the arbitration lock before this reservation could
+        # register. The request is admitted only after the start action settles.
+        assert backend.running
 
 
 @pytest.mark.asyncio

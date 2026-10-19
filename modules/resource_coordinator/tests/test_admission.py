@@ -30,13 +30,10 @@ def test_operation_classifier_inference_endpoints():
         assert OperationClassifier.classify("GET", path) != OperationKind.INFERENCE
 
 
-def test_operation_classifier_model_mutation():
-    for path in [
-        "/api/v0/model/load",
-        "/api/v0/model/unload",
-        "/api/v1/models/load",
-        "/api/v1/models/unload",
-    ]:
+def test_operation_classifier_model_load_and_unload():
+    for path in ["/api/v0/model/load", "/api/v1/models/load"]:
+        assert OperationClassifier.classify("POST", path) == OperationKind.MODEL_LOAD
+    for path in ["/api/v0/model/unload", "/api/v1/models/unload"]:
         assert OperationClassifier.classify("POST", path) == OperationKind.MODEL_MUTATION
 
 
@@ -136,5 +133,41 @@ def test_admission_controller_model_load_without_blocking_policy():
     dispatcher.on("lmstudio.model_load_requested", lambda e: None, is_blocking=True)
     dec_allowed = controller.evaluate("POST", "/api/v0/model/load")
     assert dec_allowed.allowed is True
-    assert dec_allowed.resource == "gpu.model_loading"
+    assert dec_allowed.resource == "gpu.inference"
     assert dec_allowed.lease_type == LeaseType.EXCLUSIVE
+
+
+def test_managed_model_load_requires_matching_stop_policy():
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"worker": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                },
+                {
+                    "name": "stop-for-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                },
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system)
+    service._state = ServiceState.READY
+    controller = AdmissionController(service=service, event_dispatcher=system.dispatcher)
+
+    decision = controller.evaluate("POST", "/api/v0/model/load")
+    assert decision.allowed is True
+    assert decision.operation_kind == OperationKind.MODEL_LOAD
+    assert decision.resource == "gpu.inference"
+    assert decision.lease_type == LeaseType.EXCLUSIVE
+    assert controller.evaluate("POST", "/api/v0/model/unload").allowed is False

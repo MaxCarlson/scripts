@@ -41,6 +41,8 @@ class CoordinatorService:
         drain_timeout_seconds: float = 30.0,
         start_miner_on_ready: bool = False,
         stop_miner_on_shutdown: bool = False,
+        start_process_on_ready: Optional[str] = None,
+        stop_process_on_shutdown: Optional[str] = None,
         **kwargs: Any,
     ) -> None:
         self.system = system
@@ -49,12 +51,41 @@ class CoordinatorService:
             raise ValueError("Drain timeout must be finite and positive")
         self.start_miner_on_ready = bool(kwargs.get("start_miner_on_startup", start_miner_on_ready))
         self.stop_miner_on_shutdown = stop_miner_on_shutdown
+        self.start_process_on_ready = start_process_on_ready
+        self.stop_process_on_shutdown = stop_process_on_shutdown
         self._state = ServiceState.CREATED
         self._failure_reason: Optional[str] = None
         self._startup_task: Optional[asyncio.Task] = None
         self._stop_lock = asyncio.Lock()
         self._aborted = False
         self.system.gateway.set_service(self)
+
+    def has_model_load_policy(self) -> bool:
+        """Whether a configured blocking policy stops the process under inference arbitration."""
+        load_policies = [
+            policy
+            for policy in self.system.config.policies
+            if (
+                policy.trigger_event == "lmstudio.model_load_requested"
+                and policy.target_process in self.system.supervisors
+                and policy.stop_process
+                and policy.restart_process
+                and policy.resource == "gpu.inference"
+                and policy.lease_type == "exclusive"
+            )
+        ]
+        return any(
+            any(
+                inference.trigger_event == "lmstudio.inference_requested"
+                and inference.target_process == load.target_process
+                and inference.stop_process
+                and inference.restart_process
+                and inference.resource == "gpu.inference"
+                and inference.cooldown_seconds == load.cooldown_seconds
+                for inference in self.system.config.policies
+            )
+            for load in load_policies
+        )
 
     @property
     def state(self) -> ServiceState:
@@ -104,6 +135,10 @@ class CoordinatorService:
                     messages.append(f"ERROR: '{name}' has no supported shared-console stop mode.")
         if self.start_miner_on_ready and self.system.miner_adapter is None:
             messages.append("ERROR: Requested miner startup has no miner adapter.")
+        if self.start_process_on_ready and self.start_process_on_ready not in self.system.supervisors:
+            messages.append(f"ERROR: Requested process startup targets unknown process '{self.start_process_on_ready}'.")
+        if self.stop_process_on_shutdown and self.stop_process_on_shutdown not in self.system.supervisors:
+            messages.append(f"ERROR: Requested shutdown stop targets unknown process '{self.stop_process_on_shutdown}'.")
         for resource in self.system.lease_mgr.tracked_resources():
             if self.system.lease_mgr.is_restart_inhibited(resource):
                 hold = self.system.lease_mgr.get_inhibition(resource)
@@ -142,6 +177,12 @@ class CoordinatorService:
                 info = await self.system.miner_adapter.status()
                 if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
                     raise RuntimeError("Requested miner launch was not verified coordinator-owned RUNNING")
+            if self.start_process_on_ready:
+                supervisor = self.system.supervisors[self.start_process_on_ready]
+                success = await supervisor.start(only_if_stopped_by_coordinator=False)
+                info = await supervisor.status()
+                if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                    raise RuntimeError("Requested process launch was not verified coordinator-owned RUNNING")
             if self._state != ServiceState.PREFLIGHT or self.system.lease_mgr.restarts_blocked:
                 return False
             self._state = ServiceState.READY
@@ -203,6 +244,16 @@ class CoordinatorService:
                             uncertain = (
                                 uncertain or (await self.system.miner_adapter.status()).state != ProcessState.STOPPED
                             )
+                if self.stop_process_on_shutdown:
+                    supervisor = self.system.supervisors[self.stop_process_on_shutdown]
+                    info = await supervisor.status()
+                    if info.state != ProcessState.STOPPED:
+                        if not info.is_coordinator_owned:
+                            uncertain = True
+                        else:
+                            stopped = await asyncio.wait_for(supervisor.stop(timeout=5.0), timeout=7.0)
+                            uncertain = uncertain or not stopped
+                            uncertain = uncertain or (await supervisor.status()).state != ProcessState.STOPPED
                 await asyncio.wait_for(self.system.gateway.close(), timeout=2.0)
                 self._state = (
                     ServiceState.RECONCILIATION_REQUIRED if uncertain or self._aborted else ServiceState.STOPPED

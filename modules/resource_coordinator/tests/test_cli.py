@@ -62,6 +62,13 @@ def test_cli_parse_args_serve_options():
     assert args.drain_timeout == 15.0
 
 
+def test_cli_parse_args_generic_process_controls():
+    args = parse_args(["serve", "--fake-process", "--start-process", "worker", "--stop-process-on-shutdown", "worker"])
+    assert args.fake_miner is True
+    assert args.start_process == "worker"
+    assert args.stop_process_on_shutdown == "worker"
+
+
 def test_cli_parse_args_preflight():
     args = parse_args(["preflight", "-c", "config.yaml", "-f", "-j"])
     assert args.command == "preflight"

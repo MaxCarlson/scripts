@@ -30,3 +30,10 @@
 - Branch/worktree: `resource-coordinator-phase-d`, reviewed coordinator commit `e548941f7cea477decf571825769abc42e36e433`.
 - [Preflight report](../SUPERVISED_TEST_PREFLIGHT_20261019.md) records a **NO-GO** host snapshot and an ignored, inactive private config draft. Krig is stopped; Qwen is resident/CLI-IDLE; no live process-control validation occurred. OpenCode listens on port 4096. Watchdog exclusion, one-client isolation, upstream idle, VRAM/compute headroom and crash-time intervention remain open.
 - Next: Sol Medium reviews the preflight. Operator supplies the exact watchdog inventory and out-of-band intervention method and closes remaining acceptance gates before any separate execution authorization. No test or live operation was performed.
+
+## Minimal LM Studio activity automation
+
+- Plan/status: [20261019-1600 minimal activity automation](20261019-1600_minimal-lmstudio-activity/STATUS.md).
+- Branch: `resource-coordinator-phase-d`, based on `44ce5d6e`.
+- Offline implementation enables known model-load paths under exclusive `gpu.inference` leases with matching configured stop/restart policies; generic process lifecycle is opt-in. Unload and unknown mutation paths remain closed.
+- Sol Medium review required for model-load admission, shared-resource exclusive arbitration, and atomic idle-restart/request boundary. Host preflight remains NO-GO. No live operation, merge, or push.

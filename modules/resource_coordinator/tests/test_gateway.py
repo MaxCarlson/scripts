@@ -258,7 +258,7 @@ async def test_gateway_model_load_and_mining_resumption():
         trigger_event="lmstudio.model_load_requested",
         condition=ProcessRunningCondition(supervisor),
         actions=[StopProcessAction(supervisor=supervisor, wait_until_stopped=True)],
-        resource="gpu.model_loading",
+        resource="gpu.inference",
         lease_type=LeaseType.EXCLUSIVE,
         cooldown_seconds=0.1,
         after_release_actions=[StartProcessAction(supervisor=supervisor, only_if_stopped_by_coordinator=True)],
@@ -287,14 +287,67 @@ async def test_gateway_model_load_and_mining_resumption():
     assert resp.status_code == 200
     assert resp.json()["status"] == "loaded"
 
-    # Miner was stopped during load
+    # Process was stopped during load
     assert backend.running is False
+    assert lease_mgr.is_cooling_down("gpu.inference") is True
 
-    # Model load completed; model remains in memory; cooldown starts
-    assert lease_mgr.is_cooling_down("gpu.model_loading") is True
-
-    # Wait for cooldown to expire
+    # The model remains loaded; the process resumes after the shared GPU idle window.
     await asyncio.sleep(0.15)
-
-    # Mining resumes even though the model is loaded!
     assert backend.running is True
+
+
+@pytest.mark.asyncio
+async def test_managed_model_load_stops_process_before_upstream_forwarding():
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.service import CoordinatorService
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"worker": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                    "cooldown_seconds": 60,
+                },
+                {
+                    "name": "stop-for-model-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 60,
+                },
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    supervisor = system.supervisors["worker"]
+    await supervisor.start(only_if_stopped_by_coordinator=False)
+    backend = supervisor.backend
+    service = CoordinatorService(system)
+    assert await service.start()
+
+    state_at_forward = []
+
+    async def load(request):
+        state_at_forward.append(backend.running)
+        return JSONResponse({"status": "loaded", "model": "test-model"})
+
+    upstream = Starlette(routes=[Route("/api/v0/model/load", load, methods=["POST"])])
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=upstream),
+        base_url="http://mock-lmstudio",
+    )
+    client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    )
+
+    response = await client.post("/api/v0/model/load", json={"model": "test-model"})
+    assert response.status_code == 200
+    assert state_at_forward == [False]
+    assert system.lease_mgr.is_cooling_down("gpu.inference")

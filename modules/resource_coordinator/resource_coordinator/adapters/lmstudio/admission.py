@@ -21,7 +21,8 @@ class OperationKind(str, Enum):
 
     METADATA_READ = "metadata_read"  # Harmless read/inspection (e.g. GET /v1/models)
     INFERENCE = "inference"  # Protected active token generation (e.g. POST /v1/chat/completions)
-    MODEL_MUTATION = "model_mutation"  # Protected model load/unload (e.g. POST /api/v0/model/load)
+    MODEL_LOAD = "model_load"  # Protected model load (POST /api/v0/model/load)
+    MODEL_MUTATION = "model_mutation"  # Unsupported model unload or other managed mutation
     INTERNAL_COORDINATOR = "internal_coordinator"  # Built-in coordinator endpoints (/_coordinator/*)
     UNSUPPORTED_MUTATING = "unsupported_mutating"  # Uncoordinated state-mutating requests (fail closed)
     UNKNOWN_READ = "unknown_read"  # Unrecognized GET/HEAD/OPTIONS request
@@ -39,13 +40,14 @@ KNOWN_INFERENCE_PATHS: Set[str] = {
     "/api/v1/chat",
 }
 
-KNOWN_MODEL_MUTATION_PATHS: Set[str] = {
+MODEL_LOAD_PATHS: Set[str] = {
     "/api/v0/model/load",
-    "/api/v0/model/unload",
     "/api/v1/models/load",
+}
+KNOWN_MODEL_MUTATION_PATHS: Set[str] = {
+    "/api/v0/model/unload",
     "/api/v1/models/unload",
 }
-MODEL_LOAD_PATHS = KNOWN_MODEL_MUTATION_PATHS
 
 KNOWN_METADATA_PATHS: Set[str] = {
     "/v1/models",
@@ -71,7 +73,10 @@ class OperationClassifier:
             if norm_path in KNOWN_INFERENCE_PATHS:
                 return OperationKind.INFERENCE
 
-            # 3. Model load/unload endpoints
+            if norm_path in MODEL_LOAD_PATHS:
+                return OperationKind.MODEL_LOAD
+
+            # 3. Model unload remains unsupported pending coordinated teardown.
             if norm_path in KNOWN_MODEL_MUTATION_PATHS:
                 return OperationKind.MODEL_MUTATION
 
@@ -185,12 +190,21 @@ class AdmissionController:
             )
 
         elif kind == OperationKind.MODEL_MUTATION:
-            if self.service is not None:
+            return AdmissionDecision(
+                False,
+                503,
+                "uncoordinated_model_mutation",
+                "Model unload is disabled pending coordinated teardown",
+                kind,
+            )
+
+        elif kind == OperationKind.MODEL_LOAD:
+            if self.service is not None and not self.service.has_model_load_policy():
                 return AdmissionDecision(
                     False,
                     503,
                     "uncoordinated_model_mutation",
-                    "Managed model mutation is disabled pending transactional arbitration",
+                    "Model loading requires a configured stop policy on gpu.inference with an exclusive lease",
                     kind,
                 )
             if not self.dispatcher.has_blocking_listeners("lmstudio.model_load_requested"):
@@ -204,7 +218,7 @@ class AdmissionController:
             return AdmissionDecision(
                 allowed=True,
                 operation_kind=kind,
-                resource="gpu.model_loading",
+                resource="gpu.inference",
                 lease_type=LeaseType.EXCLUSIVE,
                 event_name="lmstudio.model_load_requested",
                 finish_event="lmstudio.model_load_finished",

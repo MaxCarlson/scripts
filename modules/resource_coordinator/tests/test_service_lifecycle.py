@@ -33,6 +33,34 @@ async def test_service_startup_to_ready(minimal_system):
 
 
 @pytest.mark.asyncio
+async def test_service_can_explicitly_start_generic_configured_process():
+    from resource_coordinator.config import CoordinatorConfig
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"worker": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_process_on_ready="worker")
+
+    assert await service.start() is True
+    info = await system.supervisors["worker"].status()
+    assert info.state.value == "running"
+    assert info.is_coordinator_owned
+
+
+@pytest.mark.asyncio
 async def test_service_preflight_fails_on_broken_policy():
     config = CoordinatorConfig.from_dict(
         {

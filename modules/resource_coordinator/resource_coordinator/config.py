@@ -153,11 +153,38 @@ class CoordinatorConfig:
             if policy.target_process and policy.target_process not in processes:
                 raise ValueError(f"Unknown target process: {policy.target_process}")
             LeaseType(policy.lease_type)
+        load_policies = [p for p in policies if p.trigger_event == "lmstudio.model_load_requested"]
+        for load_policy in load_policies:
+            if (
+                not load_policy.target_process
+                or not load_policy.stop_process
+                or not load_policy.restart_process
+                or load_policy.resource != "gpu.inference"
+                or LeaseType(load_policy.lease_type) != LeaseType.EXCLUSIVE
+            ):
+                raise ValueError(
+                    "Model-load policy must stop a configured process on gpu.inference with an exclusive lease"
+                )
+            inference_policies = [
+                p
+                for p in policies
+                if p.trigger_event == "lmstudio.inference_requested"
+                and p.target_process == load_policy.target_process
+                and p.stop_process
+                and p.restart_process
+                and p.resource == "gpu.inference"
+            ]
+            if not inference_policies:
+                raise ValueError("Model-load policy must target the same process as an inference stop policy")
+            if any(p.cooldown_seconds != load_policy.cooldown_seconds for p in inference_policies):
+                raise ValueError("Model-load and inference policies for one process must use the same idle timeout")
         durations = [p.cooldown_seconds for p in policies] + [p.stop_timeout_seconds for p in policies]
         durations += [p.stop_timeout_seconds for p in processes.values()]
         durations += [float(r.get("cooldown_seconds", 60)) for r in data.get("resources", {}).values()]
         if any(not math.isfinite(value) or value < 0 for value in durations):
             raise ValueError("Durations must be finite and nonnegative")
+        if any(policy.restart_process and policy.cooldown_seconds <= 0 for policy in policies):
+            raise ValueError("Restarting process policies require a positive idle timeout")
         if not 0 < svc.listen_port < 65536:
             raise ValueError("Listen port is out of range")
         if svc.state_persistence_path:

@@ -51,20 +51,26 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     serve_parser.add_argument(
         "-f",
         "--fake-miner",
+        "--fake-process",
         action="store_true",
-        help="Use in-memory fake miner backend instead of real process.",
+        help="Use in-memory fake process backends instead of real processes.",
     )
     serve_parser.add_argument(
         "-m",
         "--start-miner",
         action="store_true",
-        help="Start miner during service startup if configured.",
+        dest="start_miner",
+        help="Start the legacy miner target during service startup if configured.",
     )
+    serve_parser.add_argument("--start-process", metavar="NAME", help="Explicitly start a configured process at startup.")
     serve_parser.add_argument(
         "-s",
         "--stop-miner-on-shutdown",
         action="store_true",
         help="Stop miner during service shutdown if configured.",
+    )
+    serve_parser.add_argument(
+        "--stop-process-on-shutdown", metavar="NAME", help="Stop a coordinator-owned configured process at shutdown."
     )
     serve_parser.add_argument(
         "-t",
@@ -83,8 +89,9 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     preflight_parser.add_argument(
         "-f",
         "--fake-miner",
+        "--fake-process",
         action="store_true",
-        help="Use in-memory fake miner backend.",
+        help="Use in-memory fake process backends.",
     )
     preflight_parser.add_argument("-j", "--json", action="store_true", help="Output preflight result in JSON format.")
 
@@ -197,6 +204,8 @@ def cmd_serve(args: argparse.Namespace) -> int:
         system=system,
         start_miner_on_startup=getattr(args, "start_miner", False),
         stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
+        start_process_on_ready=getattr(args, "start_process", None),
+        stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
         drain_timeout=getattr(args, "drain_timeout", 30.0),
     )
     app = system.gateway.create_app(service)

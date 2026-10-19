@@ -46,3 +46,35 @@ Recovery is an explicit operator override, not proof of upstream idle. Active/pe
 ## Phase C safety checkpoint
 
 Current preparation version: **0.3.0**, with 151 passing offline tests. **NO-GO for a supervised live test** until the missing coordinator-owned startup/admission path and deployment prerequisites are reviewed. The template denies external adoption/control and force, uses inherited-console group mode, and requires local placeholder replacement. Persistence helpers do not provide service crash recovery. See [Phase C review](docs/PHASE_C_SAFETY_REVIEW.md) for prioritized findings and [blocked acceptance checklist](docs/SUPERVISED_LIVE_ACCEPTANCE_PLAN.md). Telemetry T1 remains on its separate branch; it has not been merged here.
+# Single-process LM Studio activity automation
+
+The gateway can coordinate one configured process with inference and explicit model-load requests. Both operations use the shared `gpu.inference` arbitration resource: inference takes a shared lease, while model loading takes an exclusive lease. A pending model load blocks later inference admission until the load is admitted, and both paths use the same idle timeout. The existing process supervisor records whether it stopped a running process; a process already stopped when the request arrives is not automatically restarted.
+
+Use the existing YAML configuration. Configure an inference stop policy and, when managed model loading is desired, a matching model-load policy. Their target process and cooldown must match:
+
+```yaml
+processes:
+  background_worker:
+    backend: windows
+    executable: 'C:\Tools\worker.exe'
+    arguments: []
+    working_directory: 'C:\Tools'
+    allow_external_stop: false
+    allow_external_restart: false
+    allow_force_termination: false
+policies:
+  - name: stop-for-inference
+    trigger_event: lmstudio.inference_requested
+    target_process: background_worker
+    resource: gpu.inference
+    lease_type: shared
+    cooldown_seconds: 300
+  - name: stop-for-model-load
+    trigger_event: lmstudio.model_load_requested
+    target_process: background_worker
+    resource: gpu.inference
+    lease_type: exclusive
+    cooldown_seconds: 300
+```
+
+Model unload and unknown mutating routes remain rejected. Clients must use the coordinator gateway to receive this protection; requests sent directly to LM Studio bypass the coordinator and cannot be observed. No process is started at coordinator startup unless an operator explicitly supplies `--start-process NAME`. Generic lifecycle flags are available as `--fake-process`, `--start-process NAME`, and `--stop-process-on-shutdown NAME`; the legacy miner flags remain supported.

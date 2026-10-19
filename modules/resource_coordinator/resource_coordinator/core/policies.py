@@ -91,27 +91,20 @@ class PolicyEngine:
 
     async def _on_resource_idle(self, event: Event) -> None:
         """Trigger after_release_actions when a resource becomes idle."""
-        if self.lease_mgr.restarts_blocked:
-            return
         resource = event.data.get("resource")
         if not resource:
             return
 
-        resources = self.lease_mgr.tracked_resources() | {p.resource for p in self._policies.values() if p.resource}
-        if any(
-            self.lease_mgr.active_count(r)
-            or self.lease_mgr.pending_count(r)
-            or self.lease_mgr.is_restart_inhibited(r)
-            or (r != resource and self.lease_mgr.is_cooling_down(r))
-            for r in resources
-        ):
-            return
-        for policy in self._policies.values():
-            if policy.resource == resource and policy.after_release_actions:
-                logger.info(
-                    "Executing after-release actions for policy '%s' on idle resource '%s'", policy.name, resource
-                )
-                for action in policy.after_release_actions:
-                    res = await action.execute(event.data)
-                    if not res.is_ok:
-                        logger.warning("After-release action in policy '%s' failed: %s", policy.name, res.message)
+        async def execute_actions() -> None:
+            for policy in self._policies.values():
+                if policy.resource == resource and policy.after_release_actions:
+                    logger.info(
+                        "Executing after-release actions for policy '%s' on idle resource '%s'", policy.name, resource
+                    )
+                    for action in policy.after_release_actions:
+                        res = await action.execute(event.data)
+                        if not res.is_ok:
+                            logger.warning("After-release action in policy '%s' failed: %s", policy.name, res.message)
+
+        policy_resources = {policy.resource for policy in self._policies.values() if policy.resource}
+        await self.lease_mgr.run_if_idle(resource, execute_actions, policy_resources)
