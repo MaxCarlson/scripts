@@ -13,6 +13,7 @@ from .compare import (
     compute_delta,
     render_comparison_md,
 )
+from .importers import import_hyperfine
 from .models import (
     MetricQuality,
     MetricValue,
@@ -119,4 +120,6 @@ __all__ = [
     "compare_variants",
     "compute_delta",
     "render_comparison_md",
+    # Importers
+    "import_hyperfine",
 ]

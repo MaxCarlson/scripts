@@ -24,8 +24,8 @@
 - [x] Commit Stage 3
 
 ## Stage 4: Hyperfine Importer & Final Verification
-- [ ] Hyperfine JSON importer in `benchmark_core/importers/hyperfine.py`
-- [ ] Tests in `tests/hyperfine_importer_test.py`
-- [ ] End-to-end synthetic agent benchmark integration test
-- [ ] Final docs and verification summary
-- [ ] Commit Stage 4
+- [x] Hyperfine JSON importer in `benchmark_core/importers/hyperfine.py`
+- [x] Tests in `tests/hyperfine_importer_test.py` (69 total passing tests)
+- [x] End-to-end synthetic agent benchmark integration test
+- [x] Final docs and verification summary
+- [x] Commit Stage 4
