@@ -129,12 +129,13 @@ def test_admission_controller_model_load_without_blocking_policy():
     assert dec.status_code == 503
     assert dec.error_type == "uncoordinated_model_mutation"
 
-    # Register blocking listener
+    # A standalone gateway cannot prove that a managed process was stopped,
+    # so a listener alone must not authorize a model load.
     dispatcher.on("lmstudio.model_load_requested", lambda e: None, is_blocking=True)
     dec_allowed = controller.evaluate("POST", "/api/v0/model/load")
-    assert dec_allowed.allowed is True
-    assert dec_allowed.resource == "gpu.inference"
-    assert dec_allowed.lease_type == LeaseType.EXCLUSIVE
+    assert dec_allowed.allowed is False
+    assert dec_allowed.status_code == 503
+    assert dec_allowed.error_type == "uncoordinated_model_mutation"
 
 
 def test_managed_model_load_requires_matching_stop_policy():

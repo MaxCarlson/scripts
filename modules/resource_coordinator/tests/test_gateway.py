@@ -239,7 +239,7 @@ async def test_gateway_concurrent_requests_share_stop():
 
 
 @pytest.mark.asyncio
-async def test_gateway_model_load_and_mining_resumption():
+async def test_standalone_gateway_model_load_is_rejected_even_with_stop_hook():
     from resource_coordinator.core.actions import StartProcessAction, StopProcessAction
     from resource_coordinator.core.conditions import ProcessRunningCondition
     from resource_coordinator.core.policies import Policy, PolicyEngine
@@ -282,18 +282,12 @@ async def test_gateway_model_load_and_mining_resumption():
 
     assert backend.running is True
 
-    # Trigger model load
+    # Without a managed service, the gateway cannot verify configured process
+    # ownership and must reject the mutation even though a stop hook exists.
     resp = await client.post("/api/v0/model/load", json={"model": "qwen38_23GB"})
-    assert resp.status_code == 200
-    assert resp.json()["status"] == "loaded"
-
-    # Process was stopped during load
-    assert backend.running is False
-    assert lease_mgr.is_cooling_down("gpu.inference") is True
-
-    # The model remains loaded; the process resumes after the shared GPU idle window.
-    await asyncio.sleep(0.15)
+    assert resp.status_code == 503
     assert backend.running is True
+    assert lease_mgr.active_count("gpu.inference") == 0
 
 
 @pytest.mark.asyncio

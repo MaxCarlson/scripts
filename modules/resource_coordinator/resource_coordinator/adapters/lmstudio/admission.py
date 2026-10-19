@@ -199,12 +199,12 @@ class AdmissionController:
             )
 
         elif kind == OperationKind.MODEL_LOAD:
-            if self.service is not None and not self.service.has_model_load_policy():
+            if self.service is None or not self.service.has_model_load_policy():
                 return AdmissionDecision(
                     False,
                     503,
                     "uncoordinated_model_mutation",
-                    "Model loading requires a configured stop policy on gpu.inference with an exclusive lease",
+                    "Model loading requires a managed service and configured stop policy on gpu.inference with an exclusive lease",
                     kind,
                 )
             if not self.dispatcher.has_blocking_listeners("lmstudio.model_load_requested"):
