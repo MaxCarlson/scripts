@@ -27,7 +27,9 @@
 ## Stage 4: Live Delegation Benchmark Execution (Completed)
 - [x] **[Flash Execute]** Start local model bridge via LM Studio and OpenCode MCP (Step 4.0 in `03_flash-execution-runbook.md`).
 - [x] **[Flash Execute]** Execute Scenario A and verify reviewer tool denials (no shell/edit) (Step 4.1 in `03_flash-execution-runbook.md`).
-- [x] **[Flash Execute]** Execute Scenario B and verify worker diff boundaries and evidence (Step 4.2 in `03_flash-execution-runbook.md`).
+- [ ] **[Audit correction]** Execute Scenario B with an actual local worker and
+  retain job output, diff and test evidence. The earlier coordinator fix did not
+  satisfy worker boundary validation.
 - [x] **[Flash Execute]** Execute Scenario C and verify async state handling and cancellation recovery (Step 4.3 in `03_flash-execution-runbook.md`).
 - [x] **[Flash Execute]** Execute Scenario D (`result.schema.json` structured output check) (Step 4.4 in `03_flash-execution-runbook.md`).
 - [x] **[Flash Execute]** Analyze coordinator token savings, latency, and model output quality, and author `modules/local_agent_bridge/docs/BENCHMARK.md` (Step 4.5 in `03_flash-execution-runbook.md`).

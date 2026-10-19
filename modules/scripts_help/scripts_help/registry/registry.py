@@ -275,11 +275,11 @@ REGISTRY: dict = {
         "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
         "items": [
             {
-                "name": "local_agent (module)",
+                "name": "local-agent (module)",
                 "path": "modules/local_agent_bridge",
                 "desc": "Set up Codex/Antigravity profiles and manage the local LM Studio/OpenCode bridge",
-                "help_cmd": ["local_agent", "--help"],
-                "version": "2.0.0",
+                "help_cmd": ["local-agent", "--help"],
+                "version": "3.0.0",
             },
             {
                 "name": "run_tests.py",

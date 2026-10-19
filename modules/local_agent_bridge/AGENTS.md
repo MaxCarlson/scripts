@@ -2,7 +2,8 @@
 
 - The moved loader implementation is `local_agent_bridge/cli.py`.
 - Preserve its arguments, defaults and operational behavior when changing it.
-- The main CLI is `local_agent_bridge/commands.py`, exposed as `local_agent`.
+- The main CLI is `local_agent_bridge/commands.py`, exposed as `local-agent`
+  with `local_agent` retained as an alias.
 - The independent installer lives in `local_agent_bridge/setup/`; do not depend
   on or invoke the unreviewed agent_abilities/agent_skills managers.
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "scripts_help"
-version = "0.5.0"
+version = "0.5.1"
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):
 # 0.1.0 — initial release: interactive help browser, version-staleness checks
 # 0.2.0 — added: AI drift-update offer in cli + post-install hook; glow/README viewer in program info

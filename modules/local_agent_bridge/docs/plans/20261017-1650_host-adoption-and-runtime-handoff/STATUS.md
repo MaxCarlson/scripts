@@ -2,7 +2,10 @@
 
 Updated: 2026-10-17 (America/Los_Angeles).
 
-- **Current State**: All Stages (1, 2, 3, 4, and 5) complete. Live benchmark documented in [BENCHMARK.md](../../BENCHMARK.md).
+- **Current State (corrected 2026-10-19)**: Stage 4 is incomplete: Scenario B
+  records coordinator edits, not a worker edit trial. Other reported runtime
+  results have not been independently reproduced. Stage 5 audited retention;
+  legacy decommissioning was not performed. See [AUDIT.md](../../AUDIT.md).
 - **Prerequisite Complete**: Commit `a617d29e` implemented `local_agent` 2.0.0 CLI, independent installer, and packaged assets. 26 unit tests passing.
 - **Stage 1 Verification**:
   - Audited `~/.codex/AGENTS.md`, `~/.codex/config.toml`, `~/.gemini/GEMINI.md`, `~/.gemini/settings.json`, and MCP configs.
@@ -26,4 +29,5 @@ Updated: 2026-10-17 (America/Los_Angeles).
   - Scenario D: Verified strict structured output conformance against `result.schema.json`.
   - Authored `modules/local_agent_bridge/docs/BENCHMARK.md` recording all quantitative latency, token delta (~68.8% coordinator savings), and boundary results.
   - Cleaned up temporary `eval_workspace` fixture.
-- **Next Immediate Action**: Stage and commit the completed documentation and CLI encoding fix.
+- **Next Immediate Action**: Review the independent audit and pending host plan;
+  run the missing worker scenario only after delegation is authorized.

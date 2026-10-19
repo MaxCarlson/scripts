@@ -146,10 +146,16 @@ def patch_config(text: str, kind: str, wanted: list[dict], previous: list[dict])
                 edits.append({'keys': keys, 'list_item': rule, 'added': True,
                               'before': prior['before'] if prior else current, 'keep_empty': keep_empty})
             continue
-        desired = {'present': True, 'value': item['value']}
+        desired = {'present': True, 'value': item['value']} if item.get('present', True) else {'present': False}
         if prior and current != prior['after']:
+            if item.get('default'):
+                # Defaults seed missing settings; later user choices belong to
+                # the user and must also survive uninstall.
+                continue
             raise ValueError(f'Managed configuration field changed: {".".join(keys)}')
-        if item.get('default') and current['present'] and not prior:
+        if item.get('default') and current['present']:
+            if prior:
+                edits.append(prior)
             continue
         before = prior['before'] if prior else current
         if current != desired:

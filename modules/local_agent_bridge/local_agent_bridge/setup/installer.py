@@ -8,7 +8,7 @@ from pathlib import Path
 import uuid
 
 from .files import (atomic_write, capture, create_link, digest, erase, inspect,
-                    restore, tree_digest, write_json)
+                    restore, tree_digest, validate_snapshot, write_json)
 from .manifest import Layout
 from .planner import Operation, Plan, build_plan, load_receipt
 from .profiles import parse_config, revert_edit, serialize, strip_block
@@ -121,6 +121,8 @@ def removal_operation(layout: Layout, rid: str, record: dict) -> Operation:
             op.details['restore'] = record['original']
         if current == expected_state(op):
             op.action = 'unchanged'
+        elif op.action == 'restore':
+            validate_snapshot(op.details['restore'])
     except (OSError, ValueError, KeyError) as exc:
         op.conflict = str(exc)
         op.action = 'conflict'
@@ -139,7 +141,7 @@ def _rollback(layout: Layout, journal: dict) -> list[str]:
             continue
         try:
             restore(path, change['before'])
-        except OSError:
+        except (OSError, ValueError):
             errors.append(f'Could not restore: {path}')
     if not errors:
         journal['status'] = 'rolled_back'
@@ -184,7 +186,7 @@ def _transact(plan: Plan, operations: list[Operation], receipt: dict) -> dict:
     with install_lock(layout):
         journal_path = layout.state / 'journal.json'
         if journal_path.exists() and json.loads(journal_path.read_text())['status'] in {'applying', 'recovery_required'}:
-            raise ValueError('Interrupted setup: run local_agent setup recover first')
+            raise ValueError('Interrupted setup: run local-agent setup recover first')
         if inspect(layout.state / 'receipt.json') != plan.receipt_state:
             raise ValueError('stale installation receipt')
         run = uuid.uuid4().hex

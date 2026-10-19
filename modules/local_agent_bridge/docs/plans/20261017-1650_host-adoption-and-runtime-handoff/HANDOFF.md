@@ -1,5 +1,10 @@
 # Plan Handoff: Host Adoption and Runtime Handoff
 
+Audit correction (2026-10-19): [AUDIT.md](../../AUDIT.md) supersedes completion
+claims below. Scenario B was coordinator verification; worker scope remains
+untested. Current host drift and pending changes differ from this historical
+snapshot. Continue from [the audit status](../20261019_bridge-audit/STATUS.md).
+
 Updated: 2026-10-17 (America/Los_Angeles).
 
 ## For Argon Taking Over:

@@ -6,157 +6,185 @@
       "path": "AGENTS.local.template.md",
       "source_sha256": "1fd6aae3cddf0718ba383015f5bf82958923df4851109cc09eb303ae49b8c8c4",
       "copied_sha256": "1fd6aae3cddf0718ba383015f5bf82958923df4851109cc09eb303ae49b8c8c4",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "1fd6aae3cddf0718ba383015f5bf82958923df4851109cc09eb303ae49b8c8c4"
     },
     {
       "path": "AGENTS.md",
       "source_sha256": "a248818a984269b001f28bf4e961327f0edd1499aee5abc404eeb9e332a1047b",
       "copied_sha256": "a248818a984269b001f28bf4e961327f0edd1499aee5abc404eeb9e332a1047b",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "a248818a984269b001f28bf4e961327f0edd1499aee5abc404eeb9e332a1047b"
     },
     {
       "path": "claude/CLAUDE.md",
       "source_sha256": "ca1bc580d61215eb299ce00d3a15324e1c3060c3951cba9d094d9ab1385c3366",
       "copied_sha256": "ca1bc580d61215eb299ce00d3a15324e1c3060c3951cba9d094d9ab1385c3366",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "ca1bc580d61215eb299ce00d3a15324e1c3060c3951cba9d094d9ab1385c3366"
     },
     {
       "path": "claude/settings.json",
       "source_sha256": "732bc61f469ebfd9b026f8104ef4305b5872330268b4dd70947d32fdf9f2286d",
       "copied_sha256": "dbc8b26a9ab2976b7f97c38e2709abea71b9a0de30d7f40da147978dd8091202",
-      "redactions": 1
+      "redactions": 1,
+      "packaged_sha256": "d19e6b509d296de025a237842fc8c0fd7abe3f9bd477577bfd1fd88b284cfc8c"
     },
     {
       "path": "codex/AGENTS.md",
       "source_sha256": "17440698bde50f41e5bb48c3b36c1b30116b2831b045d5abc5f0a93d94795dc2",
       "copied_sha256": "17440698bde50f41e5bb48c3b36c1b30116b2831b045d5abc5f0a93d94795dc2",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "17440698bde50f41e5bb48c3b36c1b30116b2831b045d5abc5f0a93d94795dc2"
     },
     {
       "path": "codex/config.toml",
       "source_sha256": "124841412b0e6dd3c1cc348435e9c7523248ac26d9324da1be146a93eaf9ff27",
       "copied_sha256": "124841412b0e6dd3c1cc348435e9c7523248ac26d9324da1be146a93eaf9ff27",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "0010f8f534ce97cfa5e2c34a9fe60b8db24b127efa733d699a040397c5510a01"
     },
     {
       "path": "custom_agents/agents/test-verify.agent.md",
       "source_sha256": "e259caea1e2d3bed86bd5e04323c2c37bc2f026ab50aad25fd20c23763749bb1",
       "copied_sha256": "e259caea1e2d3bed86bd5e04323c2c37bc2f026ab50aad25fd20c23763749bb1",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "a02ee8516dc628951eeacf74b8e91167f05fb13a2b17b862b7f32e0527018c58"
     },
     {
       "path": "custom_agents/instructions/github/copilot-instructions.md",
       "source_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
       "copied_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
     },
     {
       "path": "custom_agents/instructions/test-verify.instructions.md",
       "source_sha256": "eb83ba2bfd1de4091c65620e081e6ac3caf8ed636341c1e1e1d4d8845064bbef",
       "copied_sha256": "eb83ba2bfd1de4091c65620e081e6ac3caf8ed636341c1e1e1d4d8845064bbef",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "ec82e09a5e6a3e7448dd306af43c0e66ae551e58b1868ed2a9f88d0a98aacaa3"
     },
     {
       "path": "custom_agents/prompts/test-verify.prompt.md",
       "source_sha256": "b46a434c83fc30df63c2b1cd0d7ba76fd24bac72c7a0ee895e61a77e3e41f1c9",
       "copied_sha256": "b46a434c83fc30df63c2b1cd0d7ba76fd24bac72c7a0ee895e61a77e3e41f1c9",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "bbaeea28e05281f6620bd98735d1d0d0639be3cff712b45b1a5b28c6e4838370"
     },
     {
       "path": "custom_agents/README.md",
       "source_sha256": "8fe8081b54e074810caf526f81731d006240c0574ef1361240376afc99444119",
       "copied_sha256": "8fe8081b54e074810caf526f81731d006240c0574ef1361240376afc99444119",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "87d44f7e81c408a235d142fff56452cda8b79f709086d6d77f7ad885515eba0d"
     },
     {
       "path": "custom_agents/skills/test-verify/SKILL.md",
       "source_sha256": "7db699fd72cb307b780080403ab94e97aa772092daac11ac2519d87eaae6b3bf",
       "copied_sha256": "7db699fd72cb307b780080403ab94e97aa772092daac11ac2519d87eaae6b3bf",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "9c847795f4eb54d212cb5a56da3917f39ecda9fb4ff65d8286b97c8c3cb291a1"
     },
     {
       "path": "custom_agents/symlinks.sh",
       "source_sha256": "2649d4e06359784df5830fcb3a29b6619c96285c0147d534fc86e96a1a07858c",
       "copied_sha256": "2649d4e06359784df5830fcb3a29b6619c96285c0147d534fc86e96a1a07858c",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "0f5a7e32b355fd38f2ee247dd03e313617ccd5a89e3a7446b7116cf0d094062b"
     },
     {
       "path": "custom_agents/templates/agent.template.md",
       "source_sha256": "01ad0a8e34302286103345a573b330906ded3494623037b0a3e20463fb5e86ec",
       "copied_sha256": "01ad0a8e34302286103345a573b330906ded3494623037b0a3e20463fb5e86ec",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "fb0755c5a1fb4b35ea5df9d5c6113bee2ad6102ec8c0e868f5f2196ac73940e2"
     },
     {
       "path": "custom_agents/templates/instruction.template.md",
       "source_sha256": "e8ff4c45bfadd35d7631111d6b2faf828656232e4b0b22e8a3f17dd9d0fc2ba5",
       "copied_sha256": "e8ff4c45bfadd35d7631111d6b2faf828656232e4b0b22e8a3f17dd9d0fc2ba5",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "59ca332768be08a999618539be0246824317cafe5d75aa4feb295905203d6a48"
     },
     {
       "path": "custom_agents/templates/prompt.template.md",
       "source_sha256": "16b948378b741a3938acc54c6531f02f28d72952745c72f73ab22ef1f193df66",
       "copied_sha256": "16b948378b741a3938acc54c6531f02f28d72952745c72f73ab22ef1f193df66",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "89a2bf9d83ce71cd519c9fd10d83e5cb321108e0f2a34b8904beedf223e20dd2"
     },
     {
       "path": "custom_agents/templates/skill.template.md",
       "source_sha256": "632c57eeddb81df2675b4875d365ecf7092550deda7926dbfa5cc0e24f2ad44a",
       "copied_sha256": "632c57eeddb81df2675b4875d365ecf7092550deda7926dbfa5cc0e24f2ad44a",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "3863cce8dbf8bddbea0d3ac22c9f94c2a67cbeb7668562cc2b097b9b7e562c6d"
     },
     {
       "path": "gemini/GEMINI.md",
       "source_sha256": "610c6e27c7f5a3bef01f4dc6864f13f06002a7e0508d37fdda38a123507e92be",
       "copied_sha256": "610c6e27c7f5a3bef01f4dc6864f13f06002a7e0508d37fdda38a123507e92be",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "f50154dacab5f97989eb56d6397c068467e80ceddedae1a3c37c4cad6754434b"
     },
     {
       "path": "gemini/settings.json",
       "source_sha256": "646fd2100b4271ad784130e4dcf32bf8b523005ff48db076544bb76425154c6b",
       "copied_sha256": "646fd2100b4271ad784130e4dcf32bf8b523005ff48db076544bb76425154c6b",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "b82fe20176ec3040fb90f0c310829fed7155067c4c320c8906386ffaa415cef8"
     },
     {
       "path": "README.md",
       "source_sha256": "06ce8121b6d7e9d3b3606d670d55406f81cdb18d94bebfcb6b936173301e206d",
       "copied_sha256": "06ce8121b6d7e9d3b3606d670d55406f81cdb18d94bebfcb6b936173301e206d",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "0668e6163c1001266989f33353f4e37b1dd16b6d9083c82e66b971c1e2cbc53b"
     },
     {
       "path": "research-request-template.md",
       "source_sha256": "c858a10417ccfb51d0b0a1ef1e2d27048b8e0e6927fb99e1dd4bd0317b2fd2cc",
       "copied_sha256": "c858a10417ccfb51d0b0a1ef1e2d27048b8e0e6927fb99e1dd4bd0317b2fd2cc",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "c858a10417ccfb51d0b0a1ef1e2d27048b8e0e6927fb99e1dd4bd0317b2fd2cc"
     },
     {
       "path": "scripts/AGENTS.md",
       "source_sha256": "d1768a94d58b4672dd405aa0110bf86c7364ddf32dea46bef3d90eaac807cfd7",
       "copied_sha256": "d1768a94d58b4672dd405aa0110bf86c7364ddf32dea46bef3d90eaac807cfd7",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "1a3195008f26aca92fb60abea83d39dbf45d84d465f03db6c7aca56c3f6f8542"
     },
     {
       "path": "scripts/claude",
       "source_sha256": "5b8662f3228a88aaa17b280d784fd40f540de155538df90d52441a2beda94c0c",
       "copied_sha256": "5b8662f3228a88aaa17b280d784fd40f540de155538df90d52441a2beda94c0c",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "fd637579581470140b2af02b90746aae292aa9516ee706caf38120aa685b7797"
     },
     {
       "path": "scripts/gemini",
       "source_sha256": "2c6a2a867d077042eb14cd38348fe02c360661bd6db0a9475de4da3837f36dbf",
       "copied_sha256": "2c6a2a867d077042eb14cd38348fe02c360661bd6db0a9475de4da3837f36dbf",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "42411a99f8c7bcddec700f4de0a76609710af633a98a9ee4cf64aba2ea20f3a5"
     },
     {
       "path": "scripts/GEMINI.md",
       "source_sha256": "9286684e918e7906e303199b9f0008d7b115b7575cf240270b2a5c82bb90abe3",
       "copied_sha256": "9286684e918e7906e303199b9f0008d7b115b7575cf240270b2a5c82bb90abe3",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "3ac5a6fa590d7b9d9feffdbf885be4eeda112253189389fff427810ccd9f4fe1"
     },
     {
       "path": "symlinks.sh",
       "source_sha256": "e5babf1be4baf985690548e9cb35a92fd7683ca86ec300ecfaeb17d115425e55",
       "copied_sha256": "e5babf1be4baf985690548e9cb35a92fd7683ca86ec300ecfaeb17d115425e55",
-      "redactions": 0
+      "redactions": 0,
+      "packaged_sha256": "01eff66d9773dd2d7c55c4e040d5d37ef9972d05d87980f5dbeb027ab940f07b"
     }
-  ]
+  ],
+  "packaged_hash_normalization": "CRLF to LF",
+  "hash_notes": "source_sha256 and copied_sha256 describe the historical migration snapshot. packaged_sha256 validates current archived text after CRLF to LF normalization; README.md and symlinks.sh differ from the recorded copy snapshot."
 }

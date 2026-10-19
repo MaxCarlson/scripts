@@ -150,8 +150,18 @@ def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
     model = oc.get('model', '')
     alias = model.split('/', 1)[1] if isinstance(model, str) and model.startswith('lmstudio/') else None
     if mode == 'local' and not alias:
-        plan.warnings.append('Local model alias is not configured; use local_agent run before dispatch.')
+        plan.warnings.append('Local model alias is not configured; use local-agent run before dispatch.')
     bridge = bridge_settings(alias)
+
+    def connection(rid: str) -> dict:
+        # Keep an intentional runtime port switch recorded by our writer.
+        # Other bridge settings continue to come from the packaged manifest.
+        from copy import deepcopy
+        desired = deepcopy(bridge)
+        for edit in resources.get(rid, {}).get('edits', []):
+            if edit['keys'][-2:] == ['env', 'OPENCODE_BASE_URL'] and edit.get('after', {}).get('present'):
+                desired['env']['OPENCODE_BASE_URL'] = edit['after']['value']
+        return desired
 
     def original_bridge(rid: str, path: Path, kind: str) -> bool:
         prior = resources.get(rid)
@@ -214,14 +224,29 @@ def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
             op.action = 'conflict'
 
         if client == 'codex':
-            template = parse_config((assets() / 'dotfiles_llms/codex/config.toml').read_text(), 'toml')
+            template = parse_config((assets() / 'profiles/codex.toml').read_text(), 'toml')
             wanted = [{'keys': keys, 'value': value, 'default': True} for keys, value in leaves(template)]
+            config_path = root / 'config.toml'
+            try:
+                current = parse_config(config_path.read_text(encoding='utf-8-sig') if config_path.is_file() else '', 'toml')
+            except ValueError:
+                current = {}  # The config operation reports malformed TOML as a conflict.
+            for key in ['file_opener', 'hide_agent_reasoning', 'show_raw_agent_reasoning',
+                        'project_doc_max_bytes', 'project_doc_fallback_filenames']:
+                legacy = lookup(current, ['history', key])
+                if legacy['present']:
+                    # Correct the old template's TOML table scope. Explicit
+                    # root values win; otherwise retain the legacy value.
+                    for item in wanted:
+                        if item['keys'] == [key]:
+                            item['value'] = legacy['value']
+                wanted.append({'keys': ['history', key], 'present': False})
             if mode == 'local':
                 wanted += [{'keys': ['mcp_servers', 'opencode_worker'] + keys, 'value': value}
-                           for keys, value in leaves({**bridge, 'enabled': True})]
+                           for keys, value in leaves({**connection('codex.config'), 'enabled': True})]
             elif original_bridge('codex.config', root / 'config.toml', 'toml'):
                 wanted.append({'keys': ['mcp_servers', 'opencode_worker', 'enabled'], 'value': False})
-            config('codex.config', client, root / 'config.toml', 'toml', wanted)
+            config('codex.config', client, config_path, 'toml', wanted)
         else:
             template = parse_config((assets() / 'dotfiles_llms/gemini/settings.json').read_text(), 'json')
             config('agy.defaults', client, root / 'settings.json', 'json',
@@ -231,7 +256,7 @@ def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
                 if mode != 'local' and not original_bridge('agy.' + suffix, path, 'json'):
                     continue
                 wanted = [{'keys': ['mcpServers', 'opencode_worker'] + keys, 'value': value}
-                          for keys, value in leaves({**bridge, 'disabled': False})] if mode == 'local' else [
+                          for keys, value in leaves({**connection('agy.' + suffix), 'disabled': False})] if mode == 'local' else [
                               {'keys': ['mcpServers', 'opencode_worker', 'disabled'], 'value': True}]
                 config('agy.' + suffix, client, path, 'json', wanted)
             if mode == 'local':

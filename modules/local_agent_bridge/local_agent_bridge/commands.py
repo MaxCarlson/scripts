@@ -24,7 +24,18 @@ from .setup.planner import build_plan
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog='local_agent', description='Set up coding agents and run the local model bridge.')
+    parser = argparse.ArgumentParser(
+        prog='local-agent', description='Set up coding agents and run the local model bridge.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='''How to setup Global AGENTS.md and other LLM files:
+  local-agent setup plan -c codex agy -m local -s auto
+  local-agent setup apply
+  local-agent setup status -j
+
+How to run the local model setup & codex/agy integration:
+  local-agent run -m qwen/qwen3.8-27b@q6_k -c 32768
+  local-agent run -M qwen38_23GB
+  local-agent model list''')
     parser.add_argument('-V', '--version', action='version', version=__version__)
     groups = parser.add_subparsers(dest='group')
     setup = groups.add_parser('setup', help='Plan, install, inspect or remove agent setup')
@@ -88,7 +99,7 @@ def main(argv: list[str] | None = None) -> int:
         from . import cli
         if '-h' not in arguments and '--help' not in arguments:
             if not (Path.home() / '.local/share/local-agent/receipt.json').is_file():
-                print('Notice: delegation resources are not installed; run local_agent setup plan/apply.')
+                print('Notice: delegation resources are not installed; run local-agent setup plan/apply.')
         return cli.main(arguments[1:], runtime_only=True)
     args = parser.parse_args(arguments)
     if not args.group:

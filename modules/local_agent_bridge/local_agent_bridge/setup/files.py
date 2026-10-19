@@ -124,7 +124,19 @@ def capture(path: Path, backup: Path, *, follow: bool) -> dict:
     return result
 
 
+def validate_snapshot(snapshot: dict) -> None:
+    """Reject missing or damaged backup data before removing any destination."""
+    state = snapshot['state']
+    if state['kind'] == 'missing' or state['kind'] == 'link' and not snapshot['follow']:
+        return  # Restoring an entry or an absence requires no copied data.
+    backup = Path(snapshot['backup'])
+    expected = {'kind': 'directory' if state['kind'] == 'directory' else 'file', 'hash': state['hash']}
+    if inspect(backup) != expected:
+        raise ValueError(f'Backup is missing or changed: {backup}')
+
+
 def restore(path: Path, snapshot: dict) -> None:
+    validate_snapshot(snapshot)
     before = snapshot['state']
     backup = Path(snapshot['backup'])
     if snapshot['follow'] and before['kind'] == 'link':

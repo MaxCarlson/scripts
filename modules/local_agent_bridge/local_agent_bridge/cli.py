@@ -59,8 +59,10 @@ BRIDGE_NAME = "opencode_worker"
 BRIDGE_PACKAGE = "opencode-mcp@3.0.0"
 
 HOME_DIR = Path.home()
-OPENCODE_CONFIG_PATH = HOME_DIR / ".config" / "opencode" / "opencode.json"
-CODEX_CONFIG_PATH = HOME_DIR / ".codex" / "config.toml"
+OPENCODE_CONFIG_PATH = (
+    Path(os.environ.get('XDG_CONFIG_HOME', str(HOME_DIR / '.config'))).expanduser() / 'opencode/opencode.json'
+)
+CODEX_CONFIG_PATH = Path(os.environ.get('CODEX_HOME', str(HOME_DIR / '.codex'))).expanduser() / 'config.toml'
 
 # Google Gemini Antigravity (`agy`) configuration & cache paths
 GEMINI_DIR = HOME_DIR / ".gemini"
@@ -928,6 +930,11 @@ def remove_agy_mcp_configs() -> None:
 def handle_delete_model(nickname: str, opencode_port: int) -> None:
     print_header(f"Removing named model '{nickname}'...")
 
+    cfg = load_opencode_config()
+    models_map = get_configured_models_map(cfg)
+    if nickname not in models_map:
+        raise RuntimeError(f"Nickname '{nickname}' does not exist in {OPENCODE_CONFIG_PATH}.")
+
     loaded, _ = get_loaded_instance(nickname)
     if loaded is not None:
         print_work(f"Unloading '{nickname}' from LM Studio memory (`lms unload {nickname}`)...")
@@ -947,31 +954,28 @@ def handle_delete_model(nickname: str, opencode_port: int) -> None:
 
         remaining = list(models_map.keys())
         if remaining:
-            next_nick = remaining[0]
             if cfg.get("model") == f"{PROVIDER_ID}/{nickname}":
+                next_nick = remaining[0]
                 cfg["model"] = f"{PROVIDER_ID}/{next_nick}"
                 print_info(f"Switched active OpenCode model to '{PROVIDER_ID}/{next_nick}'")
-            save_opencode_config(cfg)
-            update_codex_mcp_toml(next_nick, opencode_port)
-            update_agy_mcp_configs(next_nick, opencode_port)
-            print_ok(f"Updated Codex & Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{next_nick}'")
+                save_opencode_config(cfg)
+                update_codex_mcp_toml(next_nick, opencode_port)
+                update_agy_mcp_configs(next_nick, opencode_port)
+                print_ok(f"Updated Codex & Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{next_nick}'")
+            else:
+                save_opencode_config(cfg)
         else:
             prov = cfg.get("provider")
             if isinstance(prov, dict) and PROVIDER_ID in prov:
                 del prov[PROVIDER_ID]
             if cfg.get("model") == f"{PROVIDER_ID}/{nickname}":
                 cfg.pop("model", None)
-            if not prov:
-                OPENCODE_CONFIG_PATH.unlink(missing_ok=True)
-                print_ok(f"Removed empty OpenCode config file {OPENCODE_CONFIG_PATH}")
-            else:
-                save_opencode_config(cfg)
-                print_ok(f"Removed '{PROVIDER_ID}' provider from {OPENCODE_CONFIG_PATH}")
+            save_opencode_config(cfg)
+            print_ok(f"Removed '{PROVIDER_ID}' provider from {OPENCODE_CONFIG_PATH}")
 
             if CODEX_CONFIG_PATH.is_file():
-                raw_toml = CODEX_CONFIG_PATH.read_text(encoding="utf-8", errors="replace")
-                cleaned = remove_toml_table_prefix(raw_toml, f"mcp_servers.{BRIDGE_NAME}")
-                CODEX_CONFIG_PATH.write_text(cleaned, encoding="utf-8")
+                from .setup.runtime_config import remove_codex_bridge
+                remove_codex_bridge(CODEX_CONFIG_PATH, HOME_DIR)
                 print_ok(f"Removed '[mcp_servers.{BRIDGE_NAME}]' from {CODEX_CONFIG_PATH}")
 
             remove_agy_mcp_configs()
@@ -990,20 +994,23 @@ def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_po
         raise RuntimeError(
             f"Nickname '{old_nick}' does not exist in {OPENCODE_CONFIG_PATH}."
         )
+    if new_nick in models_map:
+        raise RuntimeError(f"Nickname '{new_nick}' already exists; choose an unused nickname.")
 
     entry = models_map.pop(old_nick)
     models_map[new_nick] = entry
-    if cfg.get("model") == f"{PROVIDER_ID}/{old_nick}":
+    was_active = cfg.get("model") == f"{PROVIDER_ID}/{old_nick}"
+    if was_active:
         cfg["model"] = f"{PROVIDER_ID}/{new_nick}"
 
     save_opencode_config(cfg)
     print_ok(f"Renamed '{old_nick}' -> '{new_nick}' in {OPENCODE_CONFIG_PATH}")
 
-    update_codex_mcp_toml(new_nick, opencode_port)
-    print_ok(f"Updated Codex MCP '{BRIDGE_NAME}' default model to '{new_nick}' in {CODEX_CONFIG_PATH}")
-
-    update_agy_mcp_configs(new_nick, opencode_port)
-    print_ok(f"Updated Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{new_nick}'")
+    if was_active:
+        update_codex_mcp_toml(new_nick, opencode_port)
+        print_ok(f"Updated Codex MCP '{BRIDGE_NAME}' default model to '{new_nick}' in {CODEX_CONFIG_PATH}")
+        update_agy_mcp_configs(new_nick, opencode_port)
+        print_ok(f"Updated Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{new_nick}'")
 
     loaded, _ = get_loaded_instance(old_nick)
     if loaded is not None:
@@ -1065,9 +1072,11 @@ def handle_ls_command() -> None:
         try:
             parsed = tomllib.loads(CODEX_CONFIG_PATH.read_text(encoding="utf-8", errors="replace"))
             bridge = (parsed.get("mcp_servers") or {}).get(BRIDGE_NAME)
-            if bridge:
+            if bridge and bridge.get('enabled', True):
                 env_model = (bridge.get("env") or {}).get("OPENCODE_DEFAULT_MODEL", "?")
                 print_ok(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' enabled (model: '{env_model}')")
+            elif bridge:
+                print_info(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' disabled")
             else:
                 print_info(f"Codex MCP ({CODEX_CONFIG_PATH}) : '{BRIDGE_NAME}' not configured")
         except Exception:
@@ -1250,6 +1259,9 @@ def run_opencode_server_foreground(
     proc: subprocess.Popen[str] | None = None
     opencode_state = "Started and running"
 
+    if health and not health.get('healthy'):
+        raise RuntimeError(f'Existing OpenCode service is unhealthy at {opencode_url}; inspect it before restarting.')
+
     if health and health.get("healthy"):
         ok, reason = verify_opencode_provider(opencode_url, nickname)
         if ok:
@@ -1258,12 +1270,10 @@ def run_opencode_server_foreground(
                 f"OpenCode HTTP Server: {opencode_state} at {opencode_url} ({PROVIDER_ID}/{nickname})"
             )
         else:
-            print_warn(
-                f"Existing OpenCode server on port {opencode_port} has stale config ({reason}); restarting..."
+            raise RuntimeError(
+                f"OpenCode is already running on port {opencode_port} with stale config ({reason}); "
+                "stop/restart that server explicitly. It was not started by this command."
             )
-            stop_process_on_port_windows(opencode_port)
-            time.sleep(1.0)
-            health = None
 
     if not health:
         print_work(
@@ -1375,18 +1385,18 @@ def run_opencode_server_foreground(
 # ---------------------------------------------------------------------------
 def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="local_agent run" if runtime_only else "local-agent-bridge",
+        prog="local-agent run" if runtime_only else "python -m local_agent_bridge",
         description="Configure, load, and manage local LM Studio models for Codex and Antigravity (`agy`) via OpenCode.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""Examples:
-  local-agent-bridge ls
-  local-agent-bridge -m qwen/qwen3.8-27b@q4_k_m
-  local-agent-bridge -m qwen/qwen3.8-27b -v q6_k -c 32768
-  local-agent-bridge -M qwen38_23GB -m qwen/qwen3.8-27b@q6_k
-  local-agent-bridge -M qwen38_17GB
-  local-agent-bridge --rename-model qwen38_17GB qwen-q4
-  local-agent-bridge -D qwen-q4
-  local-agent-bridge -m qwen/qwen3.8-27b@q6_k -N
+  python -m local_agent_bridge ls
+  python -m local_agent_bridge -m qwen/qwen3.8-27b@q4_k_m
+  python -m local_agent_bridge -m qwen/qwen3.8-27b -v q6_k -c 32768
+  python -m local_agent_bridge -M qwen38_23GB -m qwen/qwen3.8-27b@q6_k
+  python -m local_agent_bridge -M qwen38_17GB
+  python -m local_agent_bridge --rename-model qwen38_17GB qwen-q4
+  python -m local_agent_bridge -D qwen-q4
+  python -m local_agent_bridge -m qwen/qwen3.8-27b@q6_k -N
 """,
     )
     parser.set_defaults(command=None, ls=False, delete_model="", rename_model=None)
@@ -1508,7 +1518,7 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
         help="Optional override path for LM Studio's downloaded models directory.",
     )
     if runtime_only:
-        parser.epilog = "Examples:\n  local_agent run -M qwen38_23GB\n  local_agent run -m qwen/qwen3.8-27b@q6_k -c 32768"
+        parser.epilog = "Examples:\n  local-agent run -M qwen38_23GB\n  local-agent run -m qwen/qwen3.8-27b@q6_k -c 32768"
     return parser
 
 

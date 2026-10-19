@@ -1,5 +1,18 @@
 # Local agent setup handoff
 
+## Current audit: 2026-10-19
+
+Release 3.0.0 is under review on `main`, uncommitted. The primary command is
+`local-agent`; `local_agent` remains an alias. See [AUDIT.md](AUDIT.md) and the
+[audit checklist](plans/20261019_bridge-audit/STATUS.md) for confirmed defects,
+fixes, commands and current host findings. The chronological record below is
+historical: its zero-drift and completed worker-scope claims are superseded.
+No host setup was applied and no local model job was submitted during this audit.
+Next: review/apply the previewed host changes when authorized, then run a permitted
+worker evaluation with retained evidence; keep legacy dotfiles links.
+
+---
+
 Updated: 2026-10-17 (America/Los_Angeles).
 
 Branch: `compression-inventory-estimation-20261017`. Module/package stays

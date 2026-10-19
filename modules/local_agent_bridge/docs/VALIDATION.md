@@ -1,5 +1,10 @@
 # Current installer validation
 
+The independent 2026-10-19 audit supersedes the historical status below:
+[AUDIT.md](AUDIT.md). Release 3.0.0 has 47 passing focused tests and one
+Windows file-symlink privilege skip. No inference was requested during the audit.
+Historical benchmark reports are qualified in [BENCHMARK.md](BENCHMARK.md).
+
 The 2.0.0 independent installer passed 26 focused checks with one host file-symlink
 privilege skip. Wheel build/assets/entry points and an isolated wheel lifecycle
 also passed. See [HANDOFF.md](HANDOFF.md) for exact commands and limits. Real
@@ -12,7 +17,8 @@ below remain acceptance criteria for that next stage.
 
 Invoke the module with `python -m local_agent_bridge --help` from its installed
 environment. Confirm it exposes the existing loader options. The installed
-`local-agent-bridge` console script uses the same CLI entry point.
+`local-agent` console script exposes setup/model/run; `python -m local_agent_bridge`
+retains the original loader interface.
 
 Validate SKILL.md metadata with the skill-creator validator, resolve local Markdown
 links, parse example JSON, and confirm the prompt reference resolves relative to
