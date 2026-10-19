@@ -21,8 +21,11 @@ dev = [
   "pytest>=7.0",
 ]
 
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["cli_tui*"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py", "*_test.py"]
 python_functions = ["test_*"]
-addopts = "--basetemp=.pytest_tmp"
