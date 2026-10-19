@@ -1,0 +1,42 @@
+{
+  "run_id": "run-20261019-0230-llm-eval",
+  "created_at": "2026-10-19T02:30:00Z",
+  "suite_id": "agent-coding-eval",
+  "suite_version": "1.2.0",
+  "task_ids": [
+    "task_fibonacci",
+    "task_string_reverse",
+    "task_sqlite_schema"
+  ],
+  "variants": {
+    "qwen2.5-coder-7b": {
+      "model_id": "qwen2.5-coder-7b-instruct",
+      "quantization": "Q4_K_M",
+      "context_length": 8192,
+      "reasoning_budget": 0,
+      "inference_engine": "lm_studio",
+      "engine_version": "0.3.9"
+    },
+    "deepseek-r1-distill-7b": {
+      "model_id": "deepseek-r1-distill-qwen-7b",
+      "quantization": "Q4_K_M",
+      "context_length": 16384,
+      "reasoning_budget": 2048,
+      "inference_engine": "lm_studio",
+      "engine_version": "0.3.9"
+    }
+  },
+  "repetitions": 2,
+  "scoring_basis": "worker_first_attempt_full_success",
+  "environment": {
+    "os": "Windows 11",
+    "python": "3.12.10",
+    "gpu": "NVIDIA RTX 4090",
+    "cuda_driver": "560.94"
+  },
+  "metadata": {
+    "suite_fingerprint": "sha256:e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "random_seed": 42,
+    "dispatch_mode": "sequential"
+  }
+}

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "benchmark-core"
+version = "0.1.0"
+description = "Lightweight, reusable benchmarking results, aggregation, and reporting utility"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+benchmark-core = "benchmark_core.cli:main"
+benchmark_core = "benchmark_core.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["benchmark_core*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+benchmark_core = ["py.typed"]
+
+[tool.setuptools.exclude-package-data]
+benchmark_core = ["**/__pycache__/*", "**/*.pyc"]
