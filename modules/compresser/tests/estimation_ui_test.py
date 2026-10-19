@@ -406,7 +406,7 @@ def test_estimate_summary_sorting_and_highlighting():
     assert any(
         "estimate" in cmd and "-f webp -m lossy -q 85 70 -T 3000" in cmd for cmd in sorted_summary.example_commands
     )
-    assert any("preview" in cmd and "-f webp -m lossy -q 85 70 -c 10" in cmd for cmd in sorted_summary.example_commands)
+    assert any("preview" in cmd and "-f webp -q 85 70 -n 10" in cmd for cmd in sorted_summary.example_commands)
     assert any("estimate" in cmd and "-f webp -m lossless -T 3000" in cmd for cmd in sorted_summary.example_commands)
 
     # Unsorted summary

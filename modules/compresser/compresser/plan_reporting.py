@@ -489,7 +489,7 @@ def build_estimate_summary(
             )
             example_commands.append(
                 f"• Visual quality preview (sample side-by-side images before applying):\n"
-                f"    {prog} preview {flag_t}{flag_ws} -f {fmt} -m lossy{q_flag} -c 10"
+                f"    {prog} preview {flag_t}{flag_ws} -f {fmt}{q_flag} -n 10"
             )
     if best_lossless_est and len(estimates) > 1:
         r = recipes_by_id.get(best_lossless_est.recipe_id)
