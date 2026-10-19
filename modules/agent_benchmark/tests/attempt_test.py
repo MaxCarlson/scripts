@@ -174,3 +174,68 @@ def test_disk_failure_after_dispatch_still_latches_unresolved_ownership(tmp_path
     assert guard.unresolved.handle.workspace.exists()
     with pytest.raises(RuntimeError, match="Dispatch halted"):
         guard.allocate(tmp_path / "workers")
+
+
+def test_null_structured_preserves_text_worker_report(tmp_path):
+    worker = Worker()
+    worker.last_history = [
+        {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": {"created": 1}}, "parts": []},
+        {"info": {"id": "assistant-1", "sessionID": "session-1", "parentID": "user-1", "role": "assistant",
+                  "time": {"created": 2, "completed": 3}, "finish": "stop", "structured": None},
+         "parts": [{"type": "text", "text": "Worker text completion report"}]},
+    ]
+    result = attempt(tmp_path, worker)
+    assert result.termination.confirmed
+    assert (tmp_path / "evidence/worker-report.txt").read_text(encoding="utf-8") == "Worker text completion report"
+    assert not (tmp_path / "evidence/worker-report.json").exists()
+
+
+def test_observation_loop_recovers_from_bounded_transient_http_errors(tmp_path):
+    import httpx
+
+    class TransientFlakyWorker(Worker):
+        def __init__(self):
+            super().__init__()
+            self.error_count = 0
+
+        async def observe(self, handle):
+            if self.error_count < 2:
+                self.error_count += 1
+                raise httpx.ConnectError("Transient connection drop")
+            return Observation("completed", "idle", True, False, True)
+
+    worker = TransientFlakyWorker()
+    result = attempt(tmp_path, worker, task_seconds=10)
+    assert not result.task_budget_expired
+    assert result.execution_error is None
+    assert result.termination.confirmed
+    assert worker.error_count == 2
+
+
+def test_observation_loop_halts_after_exceeding_max_consecutive_errors(tmp_path):
+    import httpx
+
+    class PersistentlyBrokenWorker(Worker):
+        async def observe(self, handle):
+            raise httpx.ConnectError("Persistent server failure")
+
+        async def cancel(self, handle):
+            return {"status": "cancelled"}
+
+    worker = PersistentlyBrokenWorker()
+    result = attempt(tmp_path, worker, task_seconds=10)
+    assert result.execution_error == "ConnectError"
+
+
+def test_malformed_time_in_attempt_history_does_not_crash(tmp_path):
+    worker = Worker()
+    worker.last_history = [
+        {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": None}, "parts": []},
+        {"info": {"id": "assistant-1", "sessionID": "session-1", "parentID": "user-1", "role": "assistant",
+                  "time": None, "finish": "stop"},
+         "parts": [{"type": "text", "text": "Completed successfully"}]},
+    ]
+    result = attempt(tmp_path, worker)
+    assert result.termination.confirmed
+    assert (tmp_path / "evidence/worker-report.txt").read_text(encoding="utf-8") == "Completed successfully"
+

@@ -14,8 +14,8 @@ Thin evaluator for local coding workers. Version 0.3.0 provides the independent 
 From this module directory:
 
 ```powershell
-python -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
-python -m ruff check agent_benchmark tests tasks
+& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
+& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m ruff check agent_benchmark tests tasks
 ```
 
 Install module dependencies using the repository environment (`python -m pip install -e .`). The existing `opencode-mcp@3.0.0` must be installed/cached separately. The adapter uses offline npx, never starts shared services, and accepts auth through existing OPENCODE_SERVER_USERNAME/PASSWORD environment variables without logging them.

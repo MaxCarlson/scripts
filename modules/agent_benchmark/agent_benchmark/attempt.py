@@ -14,6 +14,8 @@ import math
 from pathlib import Path
 import time
 
+import httpx
+
 from .bridge import OpenCodeBridge
 from .evidence import Snapshot, Task, Verification, capture, changed_paths, prepare_workspace, verify
 from .lifecycle import DispatchGuard, OwnedWorkspace, TerminationDecision, WorkerHandle, confirm_termination
@@ -92,6 +94,8 @@ async def run_attempt(
     workspace = guard.allocate(workspace_root)
     prepare_workspace(task, workspace.path)
     s0 = capture(workspace.path, evidence_dir / "S0")
+    # Worker processes belong to OpenCode's shared process tree, not local subprocess
+    # supervision; owned_pids is intentionally empty.
     journal = {"stage": "not_submitted", "workspace": asdict(workspace), "task_seconds": budget,
                "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": []}
     _write_json(evidence_dir / "lifecycle.json", journal)
@@ -124,8 +128,18 @@ async def run_attempt(
                 _write_json(evidence_dir / "dispatch.json", bridge.last_receipt)
                 journal.update(stage="observing", handle=asdict(handle))
                 _write_json(evidence_dir / "lifecycle.json", journal)
+                consecutive_errors = 0
+                max_consecutive_errors = 3
                 while True:
-                    observation = await bridge.observe(handle)
+                    try:
+                        observation = await bridge.observe(handle)
+                        consecutive_errors = 0
+                    except httpx.HTTPError:
+                        consecutive_errors += 1
+                        if consecutive_errors > max_consecutive_errors:
+                            raise
+                        await asyncio.sleep(poll_seconds)
+                        continue
                     if observation.confirms_termination:
                         break
                     await asyncio.sleep(poll_seconds)
@@ -171,15 +185,30 @@ async def run_attempt(
         guard.record(decision)
         _write_json(evidence_dir / "session.json", bridge.last_history)
         assistants = [message for message in bridge.last_history
-                      if message.get("info", {}).get("parentID") == handle.message_id
-                      and message.get("info", {}).get("sessionID") == handle.session_id
-                      and message.get("info", {}).get("role") == "assistant"]
+                      if isinstance(message.get("info"), dict)
+                      and message["info"].get("parentID") == handle.message_id
+                      and message["info"].get("sessionID") == handle.session_id
+                      and message["info"].get("role") == "assistant"]
         if assistants:
-            final = max(assistants, key=lambda m: (m["info"].get("time", {}).get("created", 0), m["info"].get("id", "")))
-            if "structured" in final["info"]:
-                _write_json(evidence_dir / "worker-report.json", final["info"]["structured"])
+            def _msg_sort_key(m: object) -> tuple[float, str]:
+                if not isinstance(m, dict):
+                    return (0.0, "")
+                info = m.get("info")
+                if not isinstance(info, dict):
+                    return (0.0, "")
+                time_info = info.get("time")
+                created = time_info.get("created") if isinstance(time_info, dict) else 0
+                if not isinstance(created, (int, float)) or isinstance(created, bool) or not math.isfinite(created):
+                    created = 0.0
+                return (float(created), str(info.get("id") or ""))
+
+            final = max(assistants, key=_msg_sort_key)
+            final_info = final.get("info") if isinstance(final.get("info"), dict) else {}
+            if final_info.get("structured") is not None:
+                _write_json(evidence_dir / "worker-report.json", final_info["structured"])
             else:
-                text = "\n".join(part.get("text", "") for part in final.get("parts", []) if part.get("type") == "text")
+                parts = final.get("parts") if isinstance(final.get("parts"), list) else []
+                text = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict) and part.get("type") == "text")
                 (evidence_dir / "worker-report.txt").write_text(text, encoding="utf-8")
         s1 = verification = None
         changed = scope = ()

@@ -4,8 +4,9 @@
 
 - Workspace: C:/Users/mcarls/src/scripts-agent-benchmark
 - Branch: agent/agent-benchmark
+- Corrective audit pass commit: b7e45f3e
+- Prior attempt-flow/review-fixes commit: 641f618674fff82e1572d5a09ee2683bb2a1fc32
 - Independent adapter/evidence commit: 709d961d
-- Tested attempt-flow/review-fixes commit: 641f618674fff82e1572d5a09ee2683bb2a1fc32
 - Task 1b baseline: 85dca555; preceding handoff d098e519
 - Module version: 0.3.0
 - Ownership: modules/agent_benchmark. Do not edit another worktree, benchmark_core or local_agent_bridge.
@@ -40,16 +41,37 @@ Critical evidence regression: bad S1 then corrected S3 still retains failed firs
 
 ## Validation and limitations
 
-From modules/agent_benchmark:
+From modules/agent_benchmark, using the repo virtualenv:
 
 ```powershell
-python -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
-python -m ruff check agent_benchmark tests tasks
+& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
+& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m ruff check agent_benchmark tests tasks
 ```
 
-69 passed, 2 skipped (Windows symlink privileges); Ruff passed. Native read-only review found journaling/sticky-stop and stale-transcript bugs; both reproduced RED then fixed GREEN. Transport timeout attribution separately reproduced/fixed. Initial sandboxed sibling-worktree baseline hit write denial; elevated baseline reproduced 37 passed/1 skipped. Official MCP SDK installed in active repo venv (1.30.0); pre-existing invalid-distribution pip warnings observed, no cleanup attempted.
+80 passed, 2 skipped (Windows symlink privileges); Ruff passed cleanly.
+
+### Corrective pass fixes (Priority 1, 2, 3)
+
+1. **OpenCode termination correctness**:
+   - Fixed `parse_observation()` in `bridge.py`: intermediate assistant turns with `finish="tool-calls"` and `"structured": None` were previously confirmed due to checking `"structured" in final`. Now requires `final.get("structured") is not None`.
+   - Handled aborted/error assistant turns (e.g. `MessageAbortedError`) where `time.completed` was missing/None: treats authoritative `error` dict as abnormal terminal evidence when session is idle and no tools remain running.
+   - Guarded message history sorting (`_ordered`) and observation parsing against null/malformed timestamps and non-dict fields.
+2. **Confirmed correctness & diagnostics**:
+   - Fixed `attempt.py` dropping worker text report (`worker-report.txt`) when `structured: None`.
+   - Preserved MCP error text diagnostics in `connected_bridge.call_tool` from `result.content` when tool execution fails, while sanitizing any `OPENCODE_SERVER_PASSWORD` credentials (`***`).
+   - Added offline `connected_bridge` unit tests (invalid timeout, missing npx, health failure, tool error & credential masking).
+   - Added bounded observation recovery on transient `httpx.HTTPError` (up to 3 consecutive errors within task budget, never resubmitting workers or converting unavailable observations into termination).
+   - Documented explicit venv Python path in `README.md` and `HANDOFF.md`.
+3. **Supervision boundaries**:
+   - Documented `owned_pids=[]` in `lifecycle.json` as intentionally empty because worker processes belong to OpenCode's shared process tree, not local subprocess supervision.
 
 Read-only runtime readiness: connected_bridge(request_seconds=2) failed ConnectTimeout before MCP startup. No worker/model dispatched, no real benchmark success, no shared services changed. Offline tests do not establish real MCP execution, effective role isolation or cancellation termination against live OpenCode. Package usage currently programmatic from module directory; task packaging and installed CLI acceptance remain pending. Trusted fixtures and unprivileged processes, not a hostile-code sandbox.
+
+## Protocol notes for Sol Medium
+
+1. When `finish == "tool-calls"`, `structured` is absent or `None` unless the tool call step was accompanied by structured completion data.
+2. On abort (`MessageAbortedError`), OpenCode populates `assistant.info.error = {"name": "MessageAbortedError", ...}` but omits or sets `time.completed` to `None`. The session status transitions to idle (or disappears from `/session/status` map, which OpenCode treats as idle). Our implementation requires `bool(error)` plus `idle` session state plus `tools_running == False` to confirm termination.
+3. `opencode-mcp` tool errors return `{content: [{type: 'text', text: msg}], isError: true}` without structuredContent; the bridge extracts and sanitizes this text for diagnostics.
 
 ## Remaining Phase 1c
 
@@ -61,4 +83,5 @@ Read-only runtime readiness: connected_bridge(request_seconds=2) failed ConnectT
 
 ## Copyable resume instruction
 
-Resume Phase 1c in C:/Users/mcarls/src/scripts-agent-benchmark, branch agent/agent-benchmark. Confirm cwd/branch/status. Read this handoff and plan task 1c. First obtain the user's FINAL corrected tested benchmark_core SHA and validation; do not integrate an earlier commit or current unapproved branch tip. Independent code/tests are complete at 641f618674fff82e1572d5a09ee2683bb2a1fc32 (69 passed, 2 skips; Ruff clean). Use authoritative core imports for canonical emission and add immutable first-attempt attribution regressions. No local-agent delegation or unrelated edits. No real-model success has been validated. Continue with Sol Medium for integration; use tested commits and update this handoff at the next useful model-switch checkpoint.
+Resume Phase 1c in C:/Users/mcarls/src/scripts-agent-benchmark, branch agent/agent-benchmark. Confirm cwd/branch/status. Read this handoff and plan task 1c. First obtain the user's FINAL corrected tested benchmark_core SHA and validation; do not integrate an earlier commit or current unapproved branch tip. Independent code/tests are complete (80 passed, 2 skips; Ruff clean). Use authoritative core imports for canonical emission and add immutable first-attempt attribution regressions. No local-agent delegation or unrelated edits. No real-model success has been validated. Continue with Sol Medium for integration; use tested commits and update this handoff at the next useful model-switch checkpoint.
+

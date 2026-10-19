@@ -183,3 +183,150 @@ def test_bridge_error_retains_any_durable_identifiers(tmp_path):
             assert bridge.last_receipt["messageId"] == "known-turn"
 
     asyncio.run(run())
+
+
+def test_intermediate_tool_call_with_null_structured_does_not_confirm_termination():
+    data = messages()
+    data[1]["info"]["finish"] = "tool-calls"
+    data[1]["info"]["structured"] = None
+    assert not parse_observation(HANDLE, {}, data).confirms_termination
+
+
+def test_aborted_assistant_without_completed_time_confirms_when_idle_and_no_running_tools():
+    data = messages()
+    data[1]["info"]["error"] = {"name": "MessageAbortedError", "message": "Turn aborted"}
+    data[1]["info"]["time"] = {"created": 2}  # No "completed" timestamp
+    obs = parse_observation(HANDLE, {}, data)
+    assert obs.job_status == "cancelled"
+    assert obs.turn_finished
+    assert obs.confirms_termination
+
+
+def test_null_and_malformed_time_in_message_history_does_not_crash():
+    data = [
+        {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": None}, "parts": []},
+        {"info": {"id": "assistant-1", "sessionID": "session-1", "parentID": "user-1", "role": "assistant",
+                  "time": {"created": 2, "completed": 3}, "finish": "stop"}, "parts": []},
+    ]
+    obs = parse_observation(HANDLE, {}, data)
+    assert obs.confirms_termination
+
+
+def test_connected_bridge_rejects_non_positive_or_non_finite_timeout():
+    from agent_benchmark.bridge import connected_bridge
+
+    async def run():
+        with pytest.raises(ValueError, match="Request timeout must be finite and positive"):
+            async with connected_bridge(request_seconds=0):
+                pass
+        with pytest.raises(ValueError, match="Request timeout must be finite and positive"):
+            async with connected_bridge(request_seconds=-1):
+                pass
+        with pytest.raises(ValueError, match="Request timeout must be finite and positive"):
+            async with connected_bridge(request_seconds=float("inf")):
+                pass
+
+    asyncio.run(run())
+
+
+def test_connected_bridge_missing_npx_raises_filenotfounderror(monkeypatch):
+    import shutil
+    from agent_benchmark.bridge import connected_bridge
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: None)
+
+    async def run():
+        with pytest.raises(FileNotFoundError, match="npx is unavailable"):
+            async with connected_bridge():
+                pass
+
+    asyncio.run(run())
+
+
+def test_connected_bridge_fails_if_health_check_fails(monkeypatch):
+    import shutil
+    from agent_benchmark.bridge import connected_bridge
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: "mock-npx")
+
+    def mock_transport_handler(request):
+        if request.url.path == "/global/health":
+            return httpx.Response(500, json={"error": "service down"})
+        return httpx.Response(200)
+
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(mock_transport_handler)
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    async def run():
+        with pytest.raises(httpx.HTTPStatusError):
+            async with connected_bridge():
+                pass
+
+    asyncio.run(run())
+
+
+def test_connected_bridge_tool_error_preserves_content_and_masks_password(monkeypatch):
+    from contextlib import asynccontextmanager
+    import shutil
+    from unittest.mock import AsyncMock, MagicMock
+    from agent_benchmark.bridge import SubmissionUncertain, connected_bridge
+
+    monkeypatch.setattr(shutil, "which", lambda cmd: "mock-npx")
+    monkeypatch.setenv("OPENCODE_SERVER_PASSWORD", "super_secret_token_123")
+
+    def mock_transport_handler(request):
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        return httpx.Response(200)
+
+    original_client = httpx.AsyncClient
+
+    def mock_client(*args, **kwargs):
+        kwargs["transport"] = httpx.MockTransport(mock_transport_handler)
+        return original_client(*args, **kwargs)
+
+    monkeypatch.setattr(httpx, "AsyncClient", mock_client)
+
+    mock_result = MagicMock()
+    mock_result.isError = True
+    mock_result.structuredContent = None
+    text_content = MagicMock()
+    text_content.type = "text"
+    text_content.text = "Error: authentication failed with super_secret_token_123 in request"
+    mock_result.content = [text_content]
+
+    mock_session = AsyncMock()
+    mock_session.initialize = AsyncMock()
+    mock_session.call_tool = AsyncMock(return_value=mock_result)
+
+    @asynccontextmanager
+    async def mock_stdio_client(params):
+        yield (MagicMock(), MagicMock())
+
+    @asynccontextmanager
+    async def mock_client_session(read, write, read_timeout_seconds=None):
+        yield mock_session
+
+    import mcp
+    import mcp.client.stdio
+
+    monkeypatch.setattr(mcp.client.stdio, "stdio_client", mock_stdio_client)
+    monkeypatch.setattr(mcp, "ClientSession", mock_client_session)
+
+    async def run():
+        async with connected_bridge() as bridge:
+            with pytest.raises(SubmissionUncertain) as exc_info:
+                await bridge.call_tool("opencode_fire", {})
+            receipt = exc_info.value.receipt
+            assert "error" in receipt
+            assert "super_secret_token_123" not in receipt["error"]
+            assert "***" in receipt["error"]
+            assert receipt["error"] == "Error: authentication failed with *** in request"
+
+    asyncio.run(run())
+

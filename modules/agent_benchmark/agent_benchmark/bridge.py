@@ -31,7 +31,19 @@ class SubmissionUncertain(RuntimeError):
 
 
 def _ordered(history: list) -> list:
-    return sorted(history, key=lambda m: (m["info"].get("time", {}).get("created", 0), m["info"]["id"]))
+    def _sort_key(m: object) -> tuple[float, str]:
+        if not isinstance(m, dict):
+            return (0.0, "")
+        info = m.get("info")
+        if not isinstance(info, dict):
+            return (0.0, "")
+        time_info = info.get("time")
+        created = time_info.get("created") if isinstance(time_info, dict) else 0
+        if not isinstance(created, (int, float)) or isinstance(created, bool) or not math.isfinite(created):
+            created = 0.0
+        return (float(created), str(info.get("id") or ""))
+
+    return sorted(history, key=_sort_key)
 
 
 def parse_observation(handle: WorkerHandle, statuses: object, history: object) -> Observation:
@@ -45,22 +57,37 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
         return unknown
     try:
         history = _ordered(history)
-        if any(not isinstance(m["info"].get("id"), str) or m["info"].get("sessionID") != handle.session_id
+        if any(not isinstance(m, dict) or not isinstance(m.get("info"), dict)
+               or not isinstance(m["info"].get("id"), str)
+               or m["info"].get("sessionID") != handle.session_id
                for m in history):
             return unknown
-        users = [m for m in history if m["info"].get("role") == "user"]
+        users = [m for m in history if isinstance(m.get("info"), dict) and m["info"].get("role") == "user"]
         if not users or users[-1]["info"]["id"] != handle.message_id:
             return unknown
-        assistants = [m for m in history if m["info"].get("role") == "assistant"
+        assistants = [m for m in history if isinstance(m.get("info"), dict)
+                      and m["info"].get("role") == "assistant"
                       and m["info"].get("parentID") == handle.message_id]
         if not assistants:
             return unknown
-        final = assistants[-1]["info"]
-        completed = final.get("time", {}).get("completed")
-        finished = (isinstance(completed, (int, float)) and not isinstance(completed, bool)
-                    and math.isfinite(completed)
-                    and ("structured" in final or bool(final.get("error"))
-                         or final.get("finish") not in (None, "tool-calls", "unknown")))
+        final = assistants[-1]["info"] if isinstance(assistants[-1].get("info"), dict) else {}
+        error = final.get("error") if isinstance(final.get("error"), dict) else {}
+        has_authoritative_error = bool(error)
+        time_info = final.get("time") if isinstance(final.get("time"), dict) else {}
+        completed = time_info.get("completed")
+        has_completed_time = (
+            isinstance(completed, (int, float))
+            and not isinstance(completed, bool)
+            and math.isfinite(completed)
+        )
+        finish_reason = final.get("finish")
+        has_valid_structured = final.get("structured") is not None
+
+        normal_finished = has_completed_time and (
+            has_valid_structured
+            or (finish_reason is not None and finish_reason not in ("tool-calls", "unknown"))
+        )
+        finished = normal_finished or has_authoritative_error
         tools_running = False
         for message in assistants:
             parts = message.get("parts")
@@ -70,12 +97,14 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
             for part in parts:
                 if not isinstance(part, dict):
                     tools_running = True
-                elif part.get("type") == "tool" and part.get("state", {}).get("status") not in ("completed", "error"):
+                elif part.get("type") == "tool" and (
+                    not isinstance(part.get("state"), dict)
+                    or part["state"].get("status") not in ("completed", "error")
+                ):
                     tools_running = True
         raw = statuses.get(handle.session_id, "idle")
         state = raw if isinstance(raw, str) else raw.get("type", raw.get("state", "unknown"))
-        error = final.get("error") or {}
-        status = ("cancelled" if error.get("name") == "MessageAbortedError" else "failed") if error else (
+        status = ("cancelled" if error.get("name") == "MessageAbortedError" else "failed") if has_authoritative_error else (
             "completed" if finished else "running"
         )
         return Observation(status, state, finished, tools_running, True)
@@ -190,7 +219,20 @@ async def connected_bridge(*, base_url: str = "http://127.0.0.1:4096", request_s
                     result = await session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=request_seconds))
                     data = result.structuredContent
                     if result.isError or not isinstance(data, dict) or data.get("isError"):
-                        raise SubmissionUncertain(data if isinstance(data, dict) else {})
+                        payload = dict(data) if isinstance(data, dict) else {}
+                        if "error" not in payload and getattr(result, "content", None):
+                            text_parts = [
+                                getattr(c, "text", "") for c in result.content
+                                if getattr(c, "type", "") == "text" and isinstance(getattr(c, "text", None), str)
+                            ]
+                            if text_parts:
+                                raw_err = "\n".join(text_parts)
+                                if password and password in raw_err:
+                                    raw_err = raw_err.replace(password, "***")
+                                payload["error"] = raw_err
+                        if isinstance(payload.get("error"), str) and password and password in payload["error"]:
+                            payload["error"] = payload["error"].replace(password, "***")
+                        raise SubmissionUncertain(payload)
                     return data
 
                 yield OpenCodeBridge(call_tool, http)
