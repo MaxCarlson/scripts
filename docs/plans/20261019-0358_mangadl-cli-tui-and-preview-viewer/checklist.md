@@ -59,12 +59,12 @@
   - [x] 3.1.3: Implement `cli_tui/preview_set.py`
   - [x] 3.1.4: Run tests and verify all pass
   - [x] 3.1.5: Commit Task 3.1
-- [ ] Task 3.2: Native GUI Side-by-Side Viewer (`cli_tui.image_viewer`)
-  - [ ] 3.2.1: Write failing test for viewer state, Left/Right quality cycling, Up/Down image cycling (`tests/test_image_viewer.py`)
-  - [ ] 3.2.2: Verify test failure
-  - [ ] 3.2.3: Implement `cli_tui/image_viewer.py` with Tkinter + Pillow
-  - [ ] 3.2.4: Run tests and verify all pass
-  - [ ] 3.2.5: Commit Task 3.2
+- [x] Task 3.2: Native GUI Side-by-Side Viewer (`cli_tui.image_viewer`)
+  - [x] 3.2.1: Write failing test for viewer state, Left/Right quality cycling, Up/Down image cycling (`tests/test_image_viewer.py`)
+  - [x] 3.2.2: Verify test failure
+  - [x] 3.2.3: Implement `cli_tui/image_viewer.py` with Tkinter + Pillow
+  - [x] 3.2.4: Run tests and verify all pass
+  - [x] 3.2.5: Commit Task 3.2
 - [ ] Task 3.3: Integration with MangaDL & Standalone CLI
   - [ ] 3.3.1: Write failing test for `compress preview --view` and TUI viewer button
   - [ ] 3.3.2: Verify test failure
