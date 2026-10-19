@@ -20,20 +20,27 @@ The authorized live Qwen diagnostic smoke test was executed against `qwen38_23GB
 ### Scoring & Telemetry Redesign Implementation
 1. **Token Accounting**:
    - Demonstrated that OpenCode's `session.tokens.input` (112,871) is the exact cumulative sum across all 10 assistant turns ($8192 + 8669 + \dots + 13791 = 112871$).
-   - The model's peak context window was 13,791 tokens; initial prompt was 8,192 tokens; output tokens 2,477 (1,368 reasoning tokens, 55.2%).
-   - `extract_telemetry` in `attempt.py` captures these counters, and `results.py` emits them as measured/derived metrics instead of `unavailable`.
-2. **Shell Command Classification**:
+   - The model's peak context window was 13,791 tokens; initial prompt was 8,192 tokens.
+   - OpenCode's `session.tokens.output` field records visible completion tokens (2,477) while `reasoning` records thinking tokens (1,368). Total generated tokens is $2,477 + 1,368 = 3,845$. The reasoning share of total generated output is $1,368 / 3,845 \approx 35.58\%$ ($55.23\%$ relative to visible text).
+   - `extract_telemetry` and `results.py` emit:
+     - `tokens.worker.output`: 3,845 (total generated tokens).
+     - `tokens.worker.content`: 2,477 (visible completion tokens).
+     - `tokens.worker.reasoning`: 1,368 (thinking tokens).
+2. **Conservative Shell Command Classification**:
    - Added `classify_shell_command` in `evidence.py` categorizing shell operations into `trusted_probe`, `read_only_inspection`, and `arbitrary_execution`.
-   - Preserves strict scope auditing: scope compliance remains `uncertain` whenever unverifiable operations exist, preventing false-positive compliance claims while enriching audit diagnostics.
-3. **Multi-Dimensional Scoring**:
+   - Normalized across command separators (`;`, `\r\n`, `\n`, `&&`, `||`). Any redirection (`>`, `Out-File`, `Set-Content`), command chaining, or dynamic process invocation prevents `read_only_inspection`. Probe detection strictly requires preceding statements to be benign scratch environment variable sets.
+   - Preserves strict scope auditing: scope compliance remains `uncertain` whenever any unverifiable shell operations exist, preventing false-positive compliance claims while enriching audit diagnostics.
+3. **Multi-Dimensional Scoring & Metric Guardrails**:
    - Emits `agent.functional_pass` (boolean: 1 when verifier passes on S1), `agent.budget_pass` (boolean: 1 when within budget), `agent.clean_termination` (boolean), and `details.turn_completion`.
+   - Guardrails: `agent.functional_pass` and `agent.budget_pass` evaluate to `unavailable` if an `infrastructure_error` occurs, execution errored, or verification was skipped, eliminating false passing metrics on aborted runs.
    - The canonical `agent.worker_first_pass` and `status` (`passed`, `timed_out`, `failed`, `unscored`, `infrastructure_error`) remain 100% unchanged.
-4. **Reproducible Experimental Budget Matrix**:
+4. **Reproducible Experimental Budget Matrix & Comparison Eligibility Gap**:
    - Added `BUDGET_PROFILES`: `canonical-60s` (60s/10s, `comparison_eligible=True`), `extended-90s` (90s/10s), `extended-120s` (120s/15s), `extended-180s` (180s/20s).
-   - Added CLI `--budget-profile` to `plan` and `run`. Non-canonical or custom budgets strictly enforce `comparison_eligible=False`.
+   - Added CLI `--budget-profile` to `plan` and `run`. Non-canonical or custom budgets strictly enforce `comparison_eligible=False` in `RunInfo.metadata`.
+   - **Remaining architectural gap**: No multi-run comparison / leaderboard ingestion pipeline currently exists in `benchmark_core` or `agent_benchmark`. Filtering of `comparison_eligible=False` runs must be enforced by downstream leaderboard ingestion tools when cross-run aggregation is implemented.
 
-Validation: 243 agent tests passed, 3 Windows symlink skips; 82 core tests passed, 1 skip; Ruff clean; Core Mypy clean. 7 new focused regression tests in `scoring_redesign_test.py` pass.
-Ready for Sol Medium review.
+Validation: 244 agent tests passed, 3 Windows symlink skips; 82 core tests passed, 1 skip (83 in worktree with historical runs); Ruff clean; Core Mypy clean. 8 focused regression tests in `scoring_redesign_test.py` pass.
+Ready for integration into `agent/agent-benchmark`.
 
 ## Prior diagnostic revision — 2026-10-19
 

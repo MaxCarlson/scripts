@@ -329,23 +329,57 @@ def classify_shell_command(command: str | None) -> tuple[str, str]:
         return "arbitrary_execution", "Opaque execution tool cannot statically verify filesystem mutations"
     cmd_strip = command.strip()
 
-    # Check for redirection operators (>, >>, Out-File, Set-Content, Tee-Object, Add-Content)
-    has_redirect = any(op in cmd_strip for op in (">", ">>", "Out-File", "Set-Content", "Tee-Object", "Add-Content"))
-    if not has_redirect:
-        tokens = [t.strip() for t in cmd_strip.split("|") if t.strip()]
-        read_only_prefixes = (
-            "get-childitem", "ls", "dir", "gci",
-            "select-object", "select",
-            "measure-object", "measure",
-            "where-object", "where",
-            "format-table", "ft", "format-list", "fl",
-            "get-content", "cat", "type", "gc",
-            "git status", "git diff", "git log",
-        )
-        if tokens and all(any(part.lower().startswith(p) for p in read_only_prefixes) for part in tokens):
+    # Redirection operators or file-writing cmdlets prevent read-only / probe classification
+    if any(op in cmd_strip for op in (">", ">>", "Out-File", "Set-Content", "Tee-Object", "Add-Content")):
+        return "arbitrary_execution", "Command contains output redirection or file-writing operators"
+
+    # Dynamic execution or background invocation
+    if any(tok in cmd_strip for tok in ("Start-Process", "Start-Job", "Invoke-Expression", "iex")):
+        return "arbitrary_execution", "Command uses dynamic invocation or background process spawning"
+
+    # Normalize statement separators to handle chained commands: ';', '\n', '\r', '&&', '||'
+    normalized = cmd_strip.replace("\r\n", ";").replace("\n", ";").replace("&&", ";").replace("||", ";")
+    statements = [s.strip() for s in normalized.split(";") if s.strip()]
+
+    read_only_prefixes = (
+        "get-childitem", "ls", "dir", "gci",
+        "select-object", "select",
+        "measure-object", "measure",
+        "where-object", "where",
+        "format-table", "ft", "format-list", "fl",
+        "get-content", "cat", "type", "gc",
+        "git status", "git diff", "git log",
+    )
+
+    # Read-only inspection must be a single pipeline of known read-only commands
+    if len(statements) == 1:
+        pipe_tokens = [t.strip() for t in statements[0].split("|") if t.strip()]
+        if pipe_tokens and all(
+            any(t.lower() == p or t.lower().startswith(p + " ") for p in read_only_prefixes)
+            for t in pipe_tokens
+        ):
             return "read_only_inspection", "Read-only inspection command without redirection"
 
-    if "temp_probe.py" in cmd_strip and "sanity_grep" not in cmd_strip:
+    # Trusted probe command pattern:
+    # Diagnostic smoke test sets scratch env variables then executes temp_probe.py:
+    # $env:TEMP = ...; $env:TMP = ...; $env:TMPDIR = ...; & '...' -I -B .\temp_probe.py
+    # Every statement before the final probe execution must be a benign scratch env assignment
+    is_probe_run = False
+    all_env_sets_or_probe = True
+    for stmt in statements:
+        s_lower = stmt.lower()
+        if any(s_lower.startswith(f"$env:{v}") for v in ("temp", "tmp", "tmpdir")):
+            continue
+        elif "temp_probe.py" in s_lower and "sanity_grep" not in s_lower:
+            if "-c " in s_lower or "--command" in s_lower:
+                all_env_sets_or_probe = False
+                break
+            is_probe_run = True
+        else:
+            all_env_sets_or_probe = False
+            break
+
+    if is_probe_run and all_env_sets_or_probe:
         return "trusted_probe", "Trusted benchmark probe command execution"
 
     return "arbitrary_execution", "Opaque execution tool cannot statically verify filesystem mutations"

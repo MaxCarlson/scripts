@@ -33,6 +33,11 @@ def test_classify_shell_command():
     cat, _ = classify_shell_command("git status")
     assert cat == "read_only_inspection"
 
+    # Chained commands with semicolons, newlines, or logical operators must NOT be classified as read-only
+    assert classify_shell_command("Get-ChildItem -Force; rm -rf /")[0] == "arbitrary_execution"
+    assert classify_shell_command("dir\nRemove-Item file.txt")[0] == "arbitrary_execution"
+    assert classify_shell_command("ls && echo hacked")[0] == "arbitrary_execution"
+
     # Redirection prevents read-only classification
     cat, _ = classify_shell_command("Get-ChildItem > files.txt")
     assert cat == "arbitrary_execution"
@@ -46,6 +51,10 @@ def test_classify_shell_command():
     )
     assert cat == "trusted_probe"
     assert "Trusted benchmark probe" in reason
+
+    # Attempting to chain arbitrary commands with probe must be classified as arbitrary_execution
+    assert classify_shell_command("echo hacked; python temp_probe.py")[0] == "arbitrary_execution"
+    assert classify_shell_command("python -c 'import os' temp_probe.py")[0] == "arbitrary_execution"
 
     # Worker test script execution (unverifiable shell)
     cat, _ = classify_shell_command(
@@ -113,7 +122,9 @@ def test_extract_telemetry_from_session_and_history():
 
     tokens_data, tools_data = extract_telemetry(session, history)
     assert tokens_data["input"] == 112871
-    assert tokens_data["output"] == 2477
+    # Total generated tokens is visible completion tokens + reasoning tokens (2477 + 1368 = 3845)
+    assert tokens_data["output"] == 3845
+    assert tokens_data["content"] == 2477
     assert tokens_data["reasoning"] == 1368
     assert tokens_data["initial_prompt"] == 8192
     assert tokens_data["peak_context"] == 13791
@@ -131,7 +142,8 @@ def test_trial_from_attempt_with_telemetry_and_scoring_dimensions(tmp_path):
 
     session_tokens = {
         "input": 112871,
-        "output": 2477,
+        "output": 3845,
+        "content": 2477,
         "reasoning": 1368,
         "initial_prompt": 8192,
         "peak_context": 13791,
@@ -161,7 +173,8 @@ def test_trial_from_attempt_with_telemetry_and_scoring_dimensions(tmp_path):
     assert trial_timeout.metrics["agent.clean_termination"].value == 1
     assert trial_timeout.metrics["tokens.worker.input"].value == 112871
     assert trial_timeout.metrics["tokens.worker.input"].quality == "measured"
-    assert trial_timeout.metrics["tokens.worker.output"].value == 2477
+    assert trial_timeout.metrics["tokens.worker.output"].value == 3845
+    assert trial_timeout.metrics["tokens.worker.content"].value == 2477
     assert trial_timeout.metrics["tokens.worker.reasoning"].value == 1368
     assert trial_timeout.metrics["tokens.worker.peak_context"].value == 13791
     assert trial_timeout.metrics["tokens.worker.initial_prompt"].value == 8192
@@ -185,6 +198,50 @@ def test_trial_from_attempt_with_telemetry_and_scoring_dimensions(tmp_path):
     assert trial_pass.metrics["agent.functional_pass"].value == 1
     assert trial_pass.metrics["agent.budget_pass"].value == 1
     assert trial_pass.details["turn_completion"] == "completed"
+
+
+def test_trial_from_attempt_guardrails_prevent_false_passing(tmp_path):
+    from attempt_test import Worker, attempt
+    from agent_benchmark.evidence import Verification
+
+    worker = Worker()
+    ev = attempt(tmp_path, worker)
+
+    # Subcase 1: Infrastructure error in verifier
+    broken_verification = Verification("infrastructure_error", 1, "", "crash", 50.0)
+    ev_infra = replace(ev, verification=broken_verification)
+    trial_infra = trial_from_attempt(
+        ev_infra, run_id="r1", trial_id="t1", task_id="py-grep-smoke",
+        variant_id="model", repetition=1, evidence_path="evidence/t1",
+    )
+    assert trial_infra.status == "infrastructure_error"
+    assert trial_infra.metrics["agent.worker_first_pass"].quality == "unavailable"
+    assert trial_infra.metrics["agent.functional_pass"].quality == "unavailable"
+    assert trial_infra.metrics["agent.budget_pass"].quality == "unavailable"
+
+    # Subcase 2: Execution error during attempt
+    ev_exec_err = replace(ev, execution_error="TransportError")
+    trial_exec_err = trial_from_attempt(
+        ev_exec_err, run_id="r1", trial_id="t1", task_id="py-grep-smoke",
+        variant_id="model", repetition=1, evidence_path="evidence/t1",
+    )
+    assert trial_exec_err.status == "infrastructure_error"
+    assert trial_exec_err.metrics["agent.functional_pass"].quality == "unavailable"
+    assert trial_exec_err.metrics["agent.budget_pass"].quality == "unavailable"
+
+    # Subcase 3: Uncertain scope audit prevents false pass
+    op = UnverifiableOperation("bash", "Opaque command", "m1", "c1", {"cmd": "ls"}, "arbitrary_execution")
+    uncertain_audit = ScopeAudit((), (), (), ("grep.py",), (), (op,))
+    ev_uncertain = replace(ev, scope_audit=uncertain_audit)
+    trial_uncertain = trial_from_attempt(
+        ev_uncertain, run_id="r1", trial_id="t1", task_id="py-grep-smoke",
+        variant_id="model", repetition=1, evidence_path="evidence/t1",
+    )
+    assert trial_uncertain.status == "unscored"
+    assert trial_uncertain.metrics["agent.worker_first_pass"].quality == "unavailable"
+    assert trial_uncertain.metrics["agent.scope_compliance"].quality == "unavailable"
+    # Functional verifier outcome is still preserved
+    assert trial_uncertain.metrics["agent.functional_pass"].value == 1
 
 
 def test_trial_from_attempt_backward_compatibility_when_no_telemetry(tmp_path):
@@ -228,3 +285,4 @@ def test_plan_cli_outputs_budget_profile_info(capsys):
     assert "canonical-60s" in payload["budget_profiles"]
     assert payload["budget_profiles"]["canonical-60s"]["comparison_eligible"] is True
     assert payload["budget_profiles"]["extended-90s"]["comparison_eligible"] is False
+

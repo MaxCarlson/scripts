@@ -55,12 +55,19 @@ def extract_telemetry(session: Any, history: Any) -> tuple[dict[str, Any], dict[
     if isinstance(session, dict):
         raw_tokens = session.get("tokens")
         if isinstance(raw_tokens, dict):
-            if isinstance(raw_tokens.get("input"), (int, float)):
-                tokens_data["input"] = int(raw_tokens["input"])
-            if isinstance(raw_tokens.get("output"), (int, float)):
-                tokens_data["output"] = int(raw_tokens["output"])
-            if isinstance(raw_tokens.get("reasoning"), (int, float)):
-                tokens_data["reasoning"] = int(raw_tokens["reasoning"])
+            inp = raw_tokens.get("input")
+            out = raw_tokens.get("output")
+            reasoning = raw_tokens.get("reasoning")
+            if isinstance(inp, (int, float)):
+                tokens_data["input"] = int(inp)
+            out_val = int(out) if isinstance(out, (int, float)) else 0
+            reason_val = int(reasoning) if isinstance(reasoning, (int, float)) else 0
+            if isinstance(out, (int, float)) or isinstance(reasoning, (int, float)):
+                # OpenCode's 'output' field is visible content tokens only.
+                # Standard LLM accounting counts total generated tokens (content + reasoning) as output tokens.
+                tokens_data["output"] = out_val + reason_val
+                tokens_data["content"] = out_val
+                tokens_data["reasoning"] = reason_val
 
     if isinstance(history, list):
         inputs = []
@@ -109,7 +116,14 @@ def _write_json(path: Path, data: object) -> None:
     # Evidence journaling only: canonical run/trial serialization belongs to core.
     temporary = path.with_suffix(".tmp")
     temporary.write_text(json.dumps(data, default=str, ensure_ascii=False, indent=2), encoding="utf-8")
-    temporary.replace(path)
+    for retry in range(5):
+        try:
+            temporary.replace(path)
+            break
+        except PermissionError:
+            if retry == 4:
+                raise
+            time.sleep(0.02)
 
 
 def _capture_checkpoint(workspace: Path, evidence_dir: Path, journal: dict, checkpoint: str) -> Snapshot:

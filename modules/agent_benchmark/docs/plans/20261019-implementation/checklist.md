@@ -72,10 +72,13 @@
 
 - [x] Inspect smoke artifacts (acceptance.json, lifecycle.json, scope-audit.json, session.json, session-identity.json).
 - [x] Investigate 112,871 input tokens: confirmed exact cumulative sum across 10 assistant turns (peak context 13,791; initial prompt 8,192).
-- [x] Analyze 4 shell invocations: distinguish trusted probe, read-only inspection, and worker execution.
-- [x] Implement shell command classification in `evidence.py` without weakening scope compliance.
+- [x] Correct token accounting: total output tokens = 3,845 ($2477 \text{ content} + 1368 \text{ reasoning}$); reasoning share = 35.58%. Emitted as `tokens.worker.output`, `tokens.worker.content`, `tokens.worker.reasoning`.
+- [x] Analyze 4 shell invocations: distinguish trusted probe, read-only inspection, and arbitrary execution.
+- [x] Harden shell command classification in `evidence.py` (statement normalization, single-pipeline check, scratch-env probe validation) while strictly keeping scope compliance `uncertain`.
 - [x] Implement token/tool telemetry extraction in `attempt.py` and populate measured metrics in `results.py`.
 - [x] Implement multi-dimensional scoring dimensions (`agent.functional_pass`, `agent.budget_pass`, `agent.clean_termination`, `turn_completion`).
-- [x] Implement reproducible budget matrix (`BUDGET_PROFILES`) and CLI `--budget-profile` with comparison eligibility gating.
-- [x] Add comprehensive regression tests in `scoring_redesign_test.py` (7 tests, all passing; full suite 243 passed, 3 skipped; core 82 passed, 1 skipped).
-- [ ] Sol Medium review and integration.
+- [x] Harden metric guardrails: fail closed to `unavailable` on `infrastructure_error` or missing execution/verification.
+- [x] Implement reproducible budget matrix (`BUDGET_PROFILES`) and CLI `--budget-profile` with comparison eligibility gating; document downstream leaderboard ingestion gap.
+- [x] Add comprehensive regression tests in `scoring_redesign_test.py` (8 tests, all passing; full suite 244 passed, 3 skipped; core 82 passed, 1 skipped; Ruff clean; Mypy clean).
+- [x] Harden atomic file replacement in `attempt._write_json` with retry for Windows `PermissionError`.
+- [ ] Integration into `agent/agent-benchmark`.

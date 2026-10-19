@@ -28,7 +28,12 @@ def base_metrics(session_tokens: dict | None = None, tool_telemetry: dict | None
         if "output" in session_tokens:
             metrics["tokens.worker.output"] = MetricValue(
                 session_tokens["output"], "tokens", "opencode_session", "measured",
-                "Total completion tokens generated across all turns",
+                "Total completion tokens generated (content + reasoning) across all turns",
+            )
+        if "content" in session_tokens:
+            metrics["tokens.worker.content"] = MetricValue(
+                session_tokens["content"], "tokens", "opencode_session", "measured",
+                "Visible completion tokens generated across all turns",
             )
         if "reasoning" in session_tokens:
             metrics["tokens.worker.reasoning"] = MetricValue(
@@ -91,12 +96,19 @@ def trial_from_attempt(
         "agent.worker_first_pass": (unavailable("boolean", "Evaluation prevented by infrastructure or scope uncertainty")
                                     if status in ("infrastructure_error", "unscored") else
                                     MetricValue(int(status == "passed"), "boolean", "independent_verifier_and_audit", "derived")),
-        "agent.functional_pass": (MetricValue(int(attempt.verification.status == "passed"), "boolean", "hidden_verifier", "derived")
-                                  if attempt.verification and attempt.termination.confirmed
-                                  else unavailable("boolean", "No reliable S1 verifier outcome")),
-        "agent.budget_pass": (MetricValue(int(not attempt.task_budget_expired), "boolean", "task_budget", "derived")
-                              if attempt.termination.confirmed and not attempt.execution_error
-                              else unavailable("boolean", "No reliable budget measurement")),
+        "agent.functional_pass": (
+            MetricValue(int(attempt.verification.status == "passed"), "boolean", "hidden_verifier", "derived")
+            if (attempt.verification and attempt.termination.confirmed
+                and not attempt.execution_error
+                and attempt.verification.status in ("passed", "failed"))
+            else unavailable("boolean", "Evaluation prevented by infrastructure error or unconfirmed termination")
+        ),
+        "agent.budget_pass": (
+            MetricValue(int(not attempt.task_budget_expired), "boolean", "task_budget", "derived")
+            if (attempt.termination.confirmed and not attempt.execution_error
+                and status != "infrastructure_error")
+            else unavailable("boolean", "Evaluation prevented by infrastructure error or unconfirmed termination")
+        ),
         "agent.clean_termination": MetricValue(int(attempt.termination.confirmed), "boolean", "lifecycle_harness", "derived"),
         "agent.scope_violations": (MetricValue(
             len(attempt.scope_violations), "count",
