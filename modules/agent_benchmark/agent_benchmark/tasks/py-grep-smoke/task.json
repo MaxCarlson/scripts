@@ -1,0 +1,14 @@
+{
+  "task_id": "py-grep-smoke",
+  "suite_version": "0.1.1",
+  "category": "smoke",
+  "allowed_paths": [
+    "grep.py"
+  ],
+  "forbidden_paths": [
+    "instruction.md",
+    "task.json"
+  ],
+  "time_budget_seconds": 60,
+  "verifier": "verifier/check.py"
+}

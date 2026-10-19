@@ -275,6 +275,13 @@ REGISTRY: dict = {
         "desc": "Package repos for LLMs, apply AI patches, download datasets, automate AI web UIs",
         "items": [
             {
+                "name": "agent-bench (module)",
+                "path": "modules/agent_benchmark",
+                "desc": "Independently verify local coding workers with guarded execution and canonical reports",
+                "help_cmd": ["agent-bench", "--help"],
+                "version": "1.0.0",
+            },
+            {
                 "name": "local-agent (module)",
                 "path": "modules/local_agent_bridge",
                 "desc": "Set up Codex/Antigravity profiles and manage the local LM Studio/OpenCode bridge",
