@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from cli_tui.state import TuiScreenMode
 from mangadl.tui import build_tui_app
 
@@ -110,3 +112,57 @@ def test_post_run_preview_callback_action(monkeypatch):
     handled = app.process_key(ord("v"))
     assert handled is True
     assert callback_called == [True]
+
+
+def test_compress_preview_view_flag():
+    from mangadl.cli import build_parser
+
+    parser = build_parser()
+    args = parser.parse_args(["compress", "preview", "-d", "somedir", "--view"])
+    assert args.view is True
+
+    args_short = parser.parse_args(["compress", "preview", "-d", "somedir", "-V"])
+    assert args_short.view is True
+
+
+def test_compress_preview_view_invocation(tmp_path: Path, monkeypatch):
+    viewer_destinations = []
+    monkeypatch.setattr(
+        "cli_tui.image_viewer.launch_image_viewer",
+        lambda destination=None, **kwargs: viewer_destinations.append(destination),
+    )
+    monkeypatch.setattr(
+        "compresser.preview_pipeline.run_preview_pipeline",
+        lambda *args, **kwargs: 0,
+    )
+    monkeypatch.setattr(
+        "compresser.preview._select_sources",
+        lambda *args, **kwargs: [
+            type("DummyImg", (), {"path": tmp_path / "img.png"})()
+        ],
+    )
+
+    from mangadl.cli import build_parser
+    from compresser.preview import run_preview_cli
+
+    preview_out = tmp_path.parent / f"{tmp_path.name}-previews"
+    parser = build_parser()
+    args = parser.parse_args(
+        [
+            "compress",
+            "preview",
+            "-d",
+            str(tmp_path),
+            "--view",
+            "-O",
+            str(preview_out),
+        ]
+    )
+    assert args.view is True
+
+    ret = run_preview_cli(
+        args, [type("DummyImg", (), {"path": tmp_path / "img.png"})()], tmp_path
+    )
+    assert ret == 0
+    assert len(viewer_destinations) == 1
+    assert viewer_destinations[0].parent == preview_out.resolve()

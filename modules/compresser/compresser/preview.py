@@ -23,9 +23,12 @@ def validate_preview_arguments(args: argparse.Namespace) -> None:
         if count is not None:
             raise ValueError("--preview-count requires --preview-dir")
         if qualities is not None and not (
-            getattr(args, "compare_both", False) or (args.compare and args.mode == "lossy")
+            getattr(args, "compare_both", False)
+            or (args.compare and args.mode == "lossy")
         ):
-            raise ValueError("--qualities requires preview, --compare-both, or --compare -m lossy")
+            raise ValueError(
+                "--qualities requires preview, --compare-both, or --compare -m lossy"
+            )
         return
     if count is not None and count < 1:
         raise ValueError("Preview count must be positive")
@@ -42,9 +45,14 @@ def validate_preview_arguments(args: argparse.Namespace) -> None:
             "Preview cannot be combined with write, comparison, recovery, inventory-only or sampling; use -n"
         )
     if args.mode != "lossless":
-        raise ValueError("Preview includes lossless and fixed lossy qualities; omit -m and use -Q")
+        raise ValueError(
+            "Preview includes lossless and fixed lossy qualities; omit -m and use -Q"
+        )
     formats = getattr(args, "preview_formats", ()) or (args.format,)
-    if any(image_format not in ("auto", "webp", "jpeg", "avif", "png") for image_format in formats):
+    if any(
+        image_format not in ("auto", "webp", "jpeg", "avif", "png")
+        for image_format in formats
+    ):
         raise ValueError("Preview formats must be auto, webp, jpeg, avif or png")
     source = getattr(args, "input", None) or getattr(args, "destination", None)
     if source is not None:
@@ -60,7 +68,9 @@ def _fingerprint(path: Path) -> tuple:
 
 
 def _save_manifest(path: Path, report: dict) -> None:
-    descriptor, temporary = tempfile.mkstemp(prefix=".manifest-", suffix=".tmp", dir=path.parent)
+    descriptor, temporary = tempfile.mkstemp(
+        prefix=".manifest-", suffix=".tmp", dir=path.parent
+    )
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
             json.dump(report, stream, indent=2)
@@ -81,7 +91,9 @@ def _save_manifest(path: Path, report: dict) -> None:
             os.unlink(temporary)
 
 
-def _select_sources(images: Sequence[ImageMetadata], root: Path, count: int, seed: int) -> list[ImageMetadata]:
+def _select_sources(
+    images: Sequence[ImageMetadata], root: Path, count: int, seed: int
+) -> list[ImageMetadata]:
     directory = root.is_dir()
     return sorted(
         images,
@@ -91,27 +103,51 @@ def _select_sources(images: Sequence[ImageMetadata], root: Path, count: int, see
     )[:count]
 
 
-def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], root: Path) -> int:
+def run_preview_cli(
+    args: argparse.Namespace, images: Sequence[ImageMetadata], root: Path
+) -> int:
     """Generate independent source-owned previews with one manifest coordinator."""
     from .preview_pipeline import run_preview_pipeline
 
     root = root.expanduser().resolve()
-    base = args.preview_dir.expanduser().resolve()
+    base = (
+        getattr(args, "preview_dir", None)
+        or getattr(args, "output", None)
+        or (root / "previews")
+    )
+    base = base.expanduser().resolve()
     if base == root or (root.is_dir() and root in base.parents):
         raise ValueError("Preview output must be outside the source tree")
-    selected = _select_sources(images, root, args.preview_count or 3, getattr(args, "sample_seed", 0))
+    preview_count = getattr(args, "preview_count", getattr(args, "count", 3)) or 3
+    selected = _select_sources(
+        images, root, preview_count, getattr(args, "sample_seed", 0)
+    )
     if not selected:
         raise ValueError("No eligible images available for preview")
-    qualities = list(dict.fromkeys(args.preview_qualities or [90, 80]))
-    formats = tuple(dict.fromkeys(getattr(args, "preview_formats", ()) or (args.format,)))
+    raw_qualities = getattr(args, "preview_qualities", getattr(args, "quality", None))
+    qualities = list(dict.fromkeys(raw_qualities or [90, 80]))
+    raw_formats = getattr(args, "preview_formats", ()) or getattr(
+        args, "format", ("webp",)
+    )
+    if isinstance(raw_formats, str):
+        raw_formats = (raw_formats,)
+    formats = tuple(dict.fromkeys(raw_formats))
     base.mkdir(parents=True, exist_ok=True)
-    run = base / (datetime.now(timezone.utc).strftime("preview-%Y%m%d-%H%M%S-") + uuid4().hex[:8])
+    run = base / (
+        datetime.now(timezone.utc).strftime("preview-%Y%m%d-%H%M%S-") + uuid4().hex[:8]
+    )
     run.mkdir()
     variants = []
     for image_format in formats:
         prefix = f"{image_format}-" if len(formats) > 1 else ""
         variants.append(
-            {"name": f"{prefix}lossless", "format": image_format, "mode": "lossless", "quality": None, "status": "pending"}
+            {
+                "name": f"{prefix}lossless",
+                "format": image_format,
+                "mode": "lossless",
+                "quality": None,
+                "status": "pending",
+            }
         )
         if image_format != "png":
             variants.extend(
@@ -135,7 +171,11 @@ def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], r
         "execution": "bounded source workers; variants serial per source; coordinator-owned manifest",
         "note": "Full-resolution copies, including larger candidates. Quality is not a fidelity percentage. Size-only analysis cache cannot supply preview bytes.",
         "images": [
-            {"source": str(meta.path), "status": "pending", "variants": [dict(item) for item in variants]}
+            {
+                "source": str(meta.path),
+                "status": "pending",
+                "variants": [dict(item) for item in variants],
+            }
             for meta in selected
         ],
     }
@@ -147,11 +187,24 @@ def run_preview_cli(args: argparse.Namespace, images: Sequence[ImageMetadata], r
 
     session = current_session()
     if session:
-        report["report_artifacts"] = session.save(build_preview_report(report, context=session.context))
+        report["report_artifacts"] = session.save(
+            build_preview_report(report, context=session.context)
+        )
     if args.json:
         print(json.dumps(report, indent=2))
     else:
         print(f"Preview {report['status']}: {run / 'manifest.json'}")
         if session:
             session.print_artifacts()
+
+    if getattr(args, "view", False) and status == 0:
+        try:
+            from cli_tui.image_viewer import launch_image_viewer
+
+            launch_image_viewer(destination=run)
+        except Exception as exc:
+            import sys
+
+            print(f"Note: Could not launch comparison viewer ({exc})", file=sys.stderr)
+
     return status

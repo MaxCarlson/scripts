@@ -65,9 +65,9 @@
   - [x] 3.2.3: Implement `cli_tui/image_viewer.py` with Tkinter + Pillow
   - [x] 3.2.4: Run tests and verify all pass
   - [x] 3.2.5: Commit Task 3.2
-- [ ] Task 3.3: Integration with MangaDL & Standalone CLI
-  - [ ] 3.3.1: Write failing test for `compress preview --view` and TUI viewer button
-  - [ ] 3.3.2: Verify test failure
-  - [ ] 3.3.3: Implement `--view` flag and TUI link
-  - [ ] 3.3.4: Run tests and verify all pass
-  - [ ] 3.3.5: Commit Task 3.3
+- [x] Task 3.3: Integration with MangaDL & Standalone CLI
+  - [x] 3.3.1: Write failing test for `compress preview --view` and TUI viewer button
+  - [x] 3.3.2: Verify test failure
+  - [x] 3.3.3: Implement `--view` flag and TUI link
+  - [x] 3.3.4: Run tests and verify all pass
+  - [x] 3.3.5: Commit Task 3.3

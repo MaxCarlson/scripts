@@ -12,8 +12,24 @@ import re
 from .estimation_models import RecipeSpec
 
 FORMATS = ("auto", "webp", "jpeg", "avif", "png", "keep")
-ENCODERS = ("auto", "pillow-jpeg", "pillow-webp", "pillow-png", "pillow-avif", "cli-jpegtran")
-OPERATIONS = ("inventory", "plan", "estimate", "analyze", "compare", "preview", "apply", "recover")
+ENCODERS = (
+    "auto",
+    "pillow-jpeg",
+    "pillow-webp",
+    "pillow-png",
+    "pillow-avif",
+    "cli-jpegtran",
+)
+OPERATIONS = (
+    "inventory",
+    "plan",
+    "estimate",
+    "analyze",
+    "compare",
+    "preview",
+    "apply",
+    "recover",
+)
 _WORKSPACE_PREVIEW = Path("__workspace_preview__")
 
 
@@ -23,18 +39,28 @@ def parse_quality(value: str) -> int:
         quality = Decimal(value)
         if "." in value and Decimal(0) < quality <= Decimal(1):
             quality *= 100
-        if not quality.is_finite() or quality != quality.to_integral_value() or not 1 <= quality <= 100:
+        if (
+            not quality.is_finite()
+            or quality != quality.to_integral_value()
+            or not 1 <= quality <= 100
+        ):
             raise ValueError
         return int(quality)
     except (InvalidOperation, ValueError):
-        raise argparse.ArgumentTypeError("Use quality 1..100 or an exact fraction such as 0.85") from None
+        raise argparse.ArgumentTypeError(
+            "Use quality 1..100 or an exact fraction such as 0.85"
+        ) from None
 
 
 def parse_duration(value: str) -> float:
     """Parse a positive finite seconds/minutes/hours duration."""
-    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([smh]?)\s*", value, flags=re.IGNORECASE)
+    match = re.fullmatch(
+        r"\s*(\d+(?:\.\d+)?)\s*([smh]?)\s*", value, flags=re.IGNORECASE
+    )
     if not match:
-        raise argparse.ArgumentTypeError("Use a positive duration such as 30s, 5m, or 1.5h")
+        raise argparse.ArgumentTypeError(
+            "Use a positive duration such as 30s, 5m, or 1.5h"
+        )
     number = Decimal(match.group(1))
     if not number.is_finite() or number <= 0:
         raise argparse.ArgumentTypeError("Duration must be positive and finite")
@@ -88,20 +114,36 @@ class CompressionOptions:
         values["inventory_only"] = self.operation == "inventory"
         values["recover"] = self.operation == "recover"
         values["compare"] = self.operation == "compare"
-        values["compare_both"] = self.operation == "compare" and getattr(parsed, "mode", None) == "both"
-        values["preview_dir"] = (
-            (self.output if self.output is not None else _WORKSPACE_PREVIEW) if self.operation == "preview" else None
+        values["compare_both"] = (
+            self.operation == "compare" and getattr(parsed, "mode", None) == "both"
         )
-        values["preview_count"] = self.preview_count if self.operation == "preview" else None
-        preview_qualities = [item.quality for item in self.recipes if item.quality is not None]
-        values["preview_qualities"] = preview_qualities or None if self.operation in ("preview", "compare") else None
+        values["preview_dir"] = (
+            (self.output if self.output is not None else _WORKSPACE_PREVIEW)
+            if self.operation == "preview"
+            else None
+        )
+        values["preview_count"] = (
+            self.preview_count if self.operation == "preview" else None
+        )
+        preview_qualities = [
+            item.quality for item in self.recipes if item.quality is not None
+        ]
+        values["preview_qualities"] = (
+            preview_qualities or None
+            if self.operation in ("preview", "compare")
+            else None
+        )
         recipe = self.recipes[0] if self.recipes else None
         values["format"] = recipe.format if recipe else "auto"
         values["preview_formats"] = (
-            tuple(dict.fromkeys(item.format for item in self.recipes)) if self.operation == "preview" else ()
+            tuple(dict.fromkeys(item.format for item in self.recipes))
+            if self.operation == "preview"
+            else ()
         )
         values["mode"] = recipe.mode if recipe else "lossless"
-        values["quality"] = recipe.quality if recipe and recipe.quality is not None else 80
+        values["quality"] = (
+            recipe.quality if recipe and recipe.quality is not None else 80
+        )
         values["perceptual_target"] = recipe.perceptual_target if recipe else 0.990
         values["algorithm"] = recipe.encoder if recipe else "auto"
         values["effort"] = recipe.effort if recipe else 6
@@ -115,7 +157,9 @@ class CompressionOptions:
         else:
             values["sample"] = None if self.sample == "all" else self.sample
         values["threads"] = self.threads
-        values["memory_budget_mib"] = self.memory_budget if self.memory_budget is not None else 512
+        values["memory_budget_mib"] = (
+            self.memory_budget if self.memory_budget is not None else 512
+        )
         values["cache_policy"] = self.cache_policy
         values["cache_file"] = self.cache_file
         values["scratch_dir"] = self.scratch_dir
@@ -134,23 +178,54 @@ class CompressionOptions:
 def _target(parser: argparse.ArgumentParser, owner: str) -> None:
     if owner == "mangadl":
         parser.add_argument(
-            "-d", "--destination", type=Path, required=True, help="Destination library root or gallery."
+            "-d",
+            "--destination",
+            type=Path,
+            required=True,
+            help="Destination library root or gallery.",
         )
     else:
-        parser.add_argument("-i", "--input", type=Path, required=True, help="Input image file or directory.")
+        parser.add_argument(
+            "-i",
+            "--input",
+            type=Path,
+            required=True,
+            help="Input image file or directory.",
+        )
 
 
-def _common(parser: argparse.ArgumentParser, owner: str, *, workspace: bool = True, filters: bool = True) -> None:
+def _common(
+    parser: argparse.ArgumentParser,
+    owner: str,
+    *,
+    workspace: bool = True,
+    filters: bool = True,
+) -> None:
     _target(parser, owner)
     if workspace:
-        parser.add_argument("-I", "--workspace", type=Path, help="Parent directory for the target workspace.")
+        parser.add_argument(
+            "-I",
+            "--workspace",
+            type=Path,
+            help="Parent directory for the target workspace.",
+        )
     if filters and owner == "mangadl":
         parser.add_argument(
-            "-u", "--url", action="append", default=[], help="Select an exact source URL or folder; repeatable."
+            "-u",
+            "--url",
+            action="append",
+            default=[],
+            help="Select an exact source URL or folder; repeatable.",
         )
-    parser.add_argument("-J", "--json", action="store_true", help="Emit machine-readable JSON.")
-    parser.add_argument("-N", "--no-ui", action="store_true", help="Disable live terminal progress.")
-    parser.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic output.")
+    parser.add_argument(
+        "-J", "--json", action="store_true", help="Emit machine-readable JSON."
+    )
+    parser.add_argument(
+        "-N", "--no-ui", action="store_true", help="Disable live terminal progress."
+    )
+    parser.add_argument(
+        "-v", "--verbose", action="count", default=0, help="Increase diagnostic output."
+    )
 
 
 def _recipe_options(
@@ -181,7 +256,10 @@ def _recipe_options(
         ),
     )
     parser.add_argument(
-        "-m", "--mode", choices=mode_choices or ("lossless", "lossy", "perceptual"), default=mode_default
+        "-m",
+        "--mode",
+        choices=mode_choices or ("lossless", "lossy", "perceptual"),
+        default=mode_default,
     )
     parser.add_argument(
         "-q",
@@ -192,9 +270,13 @@ def _recipe_options(
         default=quality_default,
         help="Quality 1..100 or exact fraction such as 0.85; repeat for multiple qualities.",
     )
-    parser.add_argument("-p", "--perceptual-target", type=float, default=perceptual_default)
+    parser.add_argument(
+        "-p", "--perceptual-target", type=float, default=perceptual_default
+    )
     parser.add_argument("-A", "--encoder", choices=ENCODERS, default=encoder_default)
-    parser.add_argument("-e", "--effort", type=int, choices=range(7), default=effort_default)
+    parser.add_argument(
+        "-e", "--effort", type=int, choices=range(7), default=effort_default
+    )
 
 
 def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> None:
@@ -203,7 +285,9 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
         raise ValueError("owner must be 'compresser' or 'mangadl'")
     parent.set_defaults(_compression_owner=owner)
     parent.description = "Inventory, estimate, analyze, compare, preview, apply, or recover compression work."
-    parent.epilog = "Use an operation subcommand; bare command prints help and performs no scan."
+    parent.epilog = (
+        "Use an operation subcommand; bare command prints help and performs no scan."
+    )
     operations = parent.add_subparsers(dest="operation", metavar="OPERATION")
     operations.add_parser(
         "inventory",
@@ -213,10 +297,18 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     # Rebuild inventory parser with its own option group rather than sharing a flat argument surface.
     inventory = operations.choices["inventory"]
     _common(inventory, owner)
-    inventory.add_argument("-D", "--depth", dest="inventory_depth", choices=("files", "headers"), default="headers")
+    inventory.add_argument(
+        "-D",
+        "--depth",
+        dest="inventory_depth",
+        choices=("files", "headers"),
+        default="headers",
+    )
     inventory.add_argument("-t", "--threads", type=int, default=4)
 
-    plan = operations.add_parser("plan", help="Create or inspect a bounded estimation plan.")
+    plan = operations.add_parser(
+        "plan", help="Create or inspect a bounded estimation plan."
+    )
     _common(plan, owner)
     _recipe_options(
         plan,
@@ -236,7 +328,9 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     plan.add_argument("-F", "--allow-larger", action="store_true")
     plan.add_argument("-r", "--plan-id")
 
-    estimate = operations.add_parser("estimate", help="Execute or resume a bounded estimation plan.")
+    estimate = operations.add_parser(
+        "estimate", help="Execute or resume a bounded estimation plan."
+    )
     _common(estimate, owner)
     _recipe_options(
         estimate,
@@ -270,10 +364,14 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     analyze.add_argument("-s", "--sample", type=_sample_value, default="all")
     analyze.add_argument("-z", "--seed", type=int, default=0)
     analyze.add_argument("-F", "--allow-larger", action="store_true")
-    analyze.add_argument("-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh")
+    analyze.add_argument(
+        "-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh"
+    )
     _measurement_options(analyze, scratch=True)
 
-    compare = operations.add_parser("compare", help="Benchmark an explicit set of recipes.")
+    compare = operations.add_parser(
+        "compare", help="Benchmark an explicit set of recipes."
+    )
     _common(compare, owner)
     _recipe_options(
         compare,
@@ -285,43 +383,91 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     compare.add_argument("-s", "--sample", type=_sample_value, default="all")
     compare.add_argument("-z", "--seed", type=int, default=0)
     compare.add_argument("-F", "--allow-larger", action="store_true")
-    compare.add_argument("-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh")
+    compare.add_argument(
+        "-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh"
+    )
     _measurement_options(compare, scratch=True)
 
-    preview = operations.add_parser("preview", help="Write external full-resolution preview copies.")
+    preview = operations.add_parser(
+        "preview", help="Write external full-resolution preview copies."
+    )
     _common(preview, owner)
     preview.add_argument("-f", "--format", nargs="+", choices=FORMATS, default=["webp"])
-    preview.add_argument("-q", "--quality", type=parse_quality, action="extend", nargs="+")
+    preview.add_argument(
+        "-q", "--quality", type=parse_quality, action="extend", nargs="+"
+    )
     preview.add_argument("-A", "--encoder", choices=ENCODERS, default="auto")
     preview.add_argument("-e", "--effort", type=int, choices=range(7), default=6)
     preview.add_argument("-n", "--count", type=_positive_int, default=3)
-    preview.add_argument("-O", "--output", type=Path, nargs="?", const=_WORKSPACE_PREVIEW)
-    preview.add_argument("-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh")
+    preview.add_argument(
+        "-O", "--output", type=Path, nargs="?", const=_WORKSPACE_PREVIEW
+    )
+    preview.add_argument(
+        "-V",
+        "--view",
+        action="store_true",
+        help="Launch side-by-side comparison image viewer after preview generation.",
+    )
+    preview.add_argument(
+        "-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh"
+    )
     _measurement_options(preview)
 
-    apply = operations.add_parser("apply", help="Apply one exact recipe to source images.")
+    apply = operations.add_parser(
+        "apply", help="Apply one exact recipe to source images."
+    )
     _common(apply, owner)
     _recipe_options(apply, formats_default=["auto"])
-    apply.add_argument("-w", "--write", action="store_true", help="Required to mutate source images.")
-    apply.add_argument("-L", "--allow-lossy", action="store_true", help="Required for lossy or perceptual writes.")
+    apply.add_argument(
+        "-w", "--write", action="store_true", help="Required to mutate source images."
+    )
+    apply.add_argument(
+        "-L",
+        "--allow-lossy",
+        action="store_true",
+        help="Required for lossy or perceptual writes.",
+    )
     apply.add_argument("-F", "--allow-larger", action="store_true")
-    apply.add_argument("-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh")
+    apply.add_argument(
+        "-U", "--inventory-policy", choices=("refresh", "snapshot"), default="refresh"
+    )
     _measurement_options(apply)
 
-    recover = operations.add_parser("recover", help="Preview or apply one exact transaction recovery.")
+    recover = operations.add_parser(
+        "recover", help="Preview or apply one exact transaction recovery."
+    )
     _common(recover, owner, workspace=False, filters=False)
-    recover.add_argument("-w", "--write", action="store_true", help="Apply the previewed recovery.")
     recover.add_argument(
-        "-C", "--confirm", dest="confirm_recovery", help="Exact fresh recovery token required with --write."
+        "-w", "--write", action="store_true", help="Apply the previewed recovery."
+    )
+    recover.add_argument(
+        "-C",
+        "--confirm",
+        dest="confirm_recovery",
+        help="Exact fresh recovery token required with --write.",
     )
 
 
-def _measurement_options(parser: argparse.ArgumentParser, *, scratch: bool = False) -> None:
+def _measurement_options(
+    parser: argparse.ArgumentParser, *, scratch: bool = False
+) -> None:
     parser.add_argument("-t", "--threads", type=_positive_int, default=4)
     from .memory_policy import parse_memory_budget
 
-    parser.add_argument("-B", "--memory-budget", dest="memory_budget_mib", type=parse_memory_budget, default=512)
-    parser.add_argument("-k", "--cache", dest="cache_policy", choices=("use", "refresh", "off"), default="use")
+    parser.add_argument(
+        "-B",
+        "--memory-budget",
+        dest="memory_budget_mib",
+        type=parse_memory_budget,
+        default=512,
+    )
+    parser.add_argument(
+        "-k",
+        "--cache",
+        dest="cache_policy",
+        choices=("use", "refresh", "off"),
+        default="use",
+    )
     parser.add_argument("-K", "--cache-file", type=Path)
     if scratch:
         parser.add_argument("-X", "--scratch-dir", type=Path)
@@ -347,7 +493,9 @@ def _positive_decimal(value: str) -> float:
             raise ValueError
         return converted
     except (InvalidOperation, ValueError):
-        raise argparse.ArgumentTypeError("must be a finite number greater than 0 and at most 100") from None
+        raise argparse.ArgumentTypeError(
+            "must be a finite number greater than 0 and at most 100"
+        ) from None
 
 
 def _sample_value(value: str) -> int | str:
@@ -360,11 +508,15 @@ def _sample_value(value: str) -> int | str:
                 raise ValueError
             return f"{percent.normalize()}%"
         except (InvalidOperation, ValueError):
-            raise argparse.ArgumentTypeError("sample percentage must be greater than 0 and at most 100") from None
+            raise argparse.ArgumentTypeError(
+                "sample percentage must be greater than 0 and at most 100"
+            ) from None
     return _positive_int(value)
 
 
-def normalize_compression_arguments(namespace: argparse.Namespace) -> CompressionOptions:
+def normalize_compression_arguments(
+    namespace: argparse.Namespace,
+) -> CompressionOptions:
     """Validate one parsed leaf and return an immutable adapter contract."""
     operation = getattr(namespace, "operation", None)
     owner = getattr(namespace, "_compression_owner", None)
@@ -372,7 +524,9 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         raise ValueError("Choose a compression operation: " + ", ".join(OPERATIONS))
     if owner not in ("compresser", "mangadl"):
         raise ValueError("Compression parser did not identify its owning adapter")
-    target = getattr(namespace, "input", None) or getattr(namespace, "destination", None)
+    target = getattr(namespace, "input", None) or getattr(
+        namespace, "destination", None
+    )
     if target is None:
         raise ValueError("A target is required")
     filters = tuple(getattr(namespace, "url", ()) or ())
@@ -394,7 +548,11 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         dict.fromkeys(
             expanded
             for requested in requested_formats
-            for expanded in (("auto", "webp", "jpeg", "avif", "png") if requested == "all" else (requested,))
+            for expanded in (
+                ("auto", "webp", "jpeg", "avif", "png")
+                if requested == "all"
+                else (requested,)
+            )
         )
     )
     qualities = tuple(dict.fromkeys(getattr(namespace, "quality", None) or ()))
@@ -416,19 +574,35 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
     recipes: list[RecipeSpec] = []
     for image_format in formats:
         if operation == "preview":
-            recipes.append(RecipeSpec(image_format, "lossless", None, perceptual_target, encoder, effort))
+            recipes.append(
+                RecipeSpec(
+                    image_format, "lossless", None, perceptual_target, encoder, effort
+                )
+            )
             preview_qualities = qualities or (() if image_format == "png" else (90, 80))
             for q in preview_qualities:
                 if image_format == "png" and qualities:
                     raise ValueError("PNG does not support a lossy preview quality")
-                recipes.append(RecipeSpec(image_format, "lossy", q, perceptual_target, encoder, effort))
+                recipes.append(
+                    RecipeSpec(
+                        image_format, "lossy", q, perceptual_target, encoder, effort
+                    )
+                )
             continue
         for mode in modes:
             # A mixed request enumerates supported recipes rather than an impossible
             # Cartesian product. Keep invalid explicit single-mode requests visible.
-            if image_format == "avif" and mode == "lossless" and (expand_all or mode_value == "both"):
+            if (
+                image_format == "avif"
+                and mode == "lossless"
+                and (expand_all or mode_value == "both")
+            ):
                 continue
-            if image_format == "png" and mode != "lossless" and (expand_all or mode_value == "both"):
+            if (
+                image_format == "png"
+                and mode != "lossless"
+                and (expand_all or mode_value == "both")
+            ):
                 continue
             if mode == "lossless":
                 if qualities and len(modes) == 1:
@@ -441,19 +615,31 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
                     raise ValueError("PNG does not support a lossy quality recipe")
                 if mode != "lossy" and q is not None:
                     raise ValueError("Quality is only valid for lossy recipes")
-                recipe = RecipeSpec(image_format, mode, q, perceptual_target, encoder, effort)
+                recipe = RecipeSpec(
+                    image_format, mode, q, perceptual_target, encoder, effort
+                )
                 if recipe not in recipes:
                     recipes.append(recipe)
 
     if operation in ("plan", "estimate"):
-        policy = "allow-larger" if getattr(namespace, "allow_larger", False) else "keep-if-larger"
-        recipes = [replace(recipe, retained_original_policy=policy) for recipe in recipes]
+        policy = (
+            "allow-larger"
+            if getattr(namespace, "allow_larger", False)
+            else "keep-if-larger"
+        )
+        recipes = [
+            replace(recipe, retained_original_policy=policy) for recipe in recipes
+        ]
     write = bool(getattr(namespace, "write", False))
     allow_lossy = bool(getattr(namespace, "allow_lossy", False))
     confirmation = getattr(namespace, "confirm_recovery", None)
     if operation == "apply" and not write:
         raise ValueError("apply requires --write")
-    if operation == "apply" and any(recipe.mode != "lossless" for recipe in recipes) and not allow_lossy:
+    if (
+        operation == "apply"
+        and any(recipe.mode != "lossless" for recipe in recipes)
+        and not allow_lossy
+    ):
         raise ValueError("Lossy or perceptual apply requires --allow-lossy")
     if operation == "recover" and write and not confirmation:
         raise ValueError("recover --write requires --confirm TOKEN")
@@ -468,11 +654,22 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
     max_time = getattr(namespace, "max_time", None)
     accuracy = getattr(namespace, "accuracy_pp", None)
     if operation in ("plan", "estimate") and (
-        sample is not None or accuracy is not None and getattr(namespace, "allow_larger", False)
+        sample is not None
+        or accuracy is not None
+        and getattr(namespace, "allow_larger", False)
     ):
-        raise ValueError("Plan/estimate use --max-images; --sample is for exact analyze/compare operations")
+        raise ValueError(
+            "Plan/estimate use --max-images; --sample is for exact analyze/compare operations"
+        )
     if operation not in ("plan", "estimate") and any(
-        value is not None for value in (max_images, max_trials, max_time, accuracy, getattr(namespace, "plan_id", None))
+        value is not None
+        for value in (
+            max_images,
+            max_trials,
+            max_time,
+            accuracy,
+            getattr(namespace, "plan_id", None),
+        )
     ):
         raise ValueError("Plan budgets and --plan are only valid for plan/estimate")
     inventory_policy = getattr(namespace, "inventory_policy", "refresh")
@@ -494,7 +691,9 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         filters=filters,
         recipes=tuple(recipes),
         inventory_depth=depth,
-        inventory_policy="trust" if inventory_policy == "snapshot" else inventory_policy,
+        inventory_policy=(
+            "trust" if inventory_policy == "snapshot" else inventory_policy
+        ),
         sample=None if sample == "all" else sample,
         seed=seed,
         max_images=max_images,
@@ -505,14 +704,26 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         plan_recipes_explicit=(
             any(
                 getattr(namespace, name, None) is not None
-                for name in ("format", "mode", "quality", "perceptual_target", "encoder", "effort")
+                for name in (
+                    "format",
+                    "mode",
+                    "quality",
+                    "perceptual_target",
+                    "encoder",
+                    "effort",
+                )
             )
             if operation in ("plan", "estimate")
             else False
         ),
-        plan_seed_explicit=seed_value is not None if operation in ("plan", "estimate") else False,
+        plan_seed_explicit=(
+            seed_value is not None if operation in ("plan", "estimate") else False
+        ),
         plan_budget_explicit=(
-            any(value is not None for value in (max_images, max_trials, max_time, accuracy))
+            any(
+                value is not None
+                for value in (max_images, max_trials, max_time, accuracy)
+            )
             or bool(getattr(namespace, "allow_larger", False))
             if operation in ("plan", "estimate")
             else False

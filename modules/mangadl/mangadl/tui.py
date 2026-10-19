@@ -48,7 +48,7 @@ def build_tui_app() -> CliTuiApp:
             from cli_tui.image_viewer import launch_image_viewer
 
             launch_image_viewer(destination=destination)
-        except ImportError:
+        except Exception:
             pass
 
     app.add_post_run_action(
