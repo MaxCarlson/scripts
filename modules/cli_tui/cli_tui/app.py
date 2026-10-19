@@ -139,6 +139,8 @@ class CliTuiApp:
         )
         self.menu_cursor: int = 0
 
+        self.is_pane_manager_open: bool = False
+        self.manager_cursor: int = 0
         self.is_confirming_quit: bool = False
         self.is_showing_preview: bool = False
         self.is_terminated: bool = False
@@ -277,7 +279,11 @@ class CliTuiApp:
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
-        # 0. Preview dialog dismissal
+        # 0a. Pane Manager active key routing
+        if getattr(self, "is_pane_manager_open", False):
+            return self._handle_pane_manager_key(key)
+
+        # 0b. Preview dialog dismissal
         if getattr(self, "is_showing_preview", False):
             if key in (10, 13, 27, ord(" "), ord("q"), ord("Q")):
                 self.is_showing_preview = False
@@ -363,6 +369,13 @@ class CliTuiApp:
                 self.cycle_pane_next()
                 return True
 
+        # Pane manager toggle
+        if key in (ord("p"), ord("P")):
+            if not self._is_widget_editing():
+                self.is_pane_manager_open = True
+                self.manager_cursor = self.workspace.active_index
+                return True
+
         # 5. Screen-specific dispatch
         if self.screen_mode == TuiScreenMode.MENU:
             return self._handle_menu_key(key)
@@ -371,6 +384,50 @@ class CliTuiApp:
         elif self.screen_mode == TuiScreenMode.RUNNING:
             return self._handle_running_key(key)
 
+        return False
+
+    def _handle_pane_manager_key(self, key: int) -> bool:
+        """Handle user input while Split Pane Manager overlay is active."""
+        if key == 27:  # Esc closes manager
+            self.is_pane_manager_open = False
+            return True
+        elif key in (10, 13):  # Enter switches to highlighted pane
+            self.switch_pane(self.manager_cursor)
+            self.is_pane_manager_open = False
+            return True
+        elif key in (curses.KEY_UP, ord("k")):
+            if self.workspace.panes:
+                self.manager_cursor = (self.manager_cursor - 1) % len(
+                    self.workspace.panes
+                )
+            return True
+        elif key in (curses.KEY_DOWN, ord("j")):
+            if self.workspace.panes:
+                self.manager_cursor = (self.manager_cursor + 1) % len(
+                    self.workspace.panes
+                )
+            return True
+        elif key in (curses.KEY_PPAGE,):
+            if 0 <= self.manager_cursor < len(self.workspace.panes):
+                self.workspace.panes[self.manager_cursor].viewport.scroll_page_up(15)
+            return True
+        elif key in (curses.KEY_NPAGE,):
+            if 0 <= self.manager_cursor < len(self.workspace.panes):
+                self.workspace.panes[self.manager_cursor].viewport.scroll_page_down(15)
+            return True
+        elif key == ord("d"):
+            if len(self.workspace.panes) > 1:
+                self.workspace.delete_pane(self.manager_cursor)
+                if self.manager_cursor >= len(self.workspace.panes):
+                    self.manager_cursor = max(0, len(self.workspace.panes) - 1)
+                self._restore_active_pane_state()
+            return True
+        elif key == ord("D"):
+            self.workspace.delete_all()
+            self.manager_cursor = 0
+            self._restore_active_pane_state()
+            self.is_pane_manager_open = False
+            return True
         return False
 
     def _handle_menu_key(self, key: int) -> bool:
@@ -545,8 +602,100 @@ class CliTuiApp:
 
         return full_content.ljust(width - 1, "─") + suffix
 
+    def render_pane_manager(self, *, height: int = 24, width: int = 80) -> List[str]:
+        """Render the 30/70 split Pane Tree & Preview Manager overlay."""
+        lines: List[str] = []
+        header = f"┌─ {self.title} Pane Manager ".ljust(width - 1, "─") + "┐"
+        lines.append(header)
+
+        inner_height = max(1, height - 3)
+
+        if width < 60:
+            content_w = max(10, width - 2)
+            lines.append(
+                f"│{' PANES (' + str(len(self.workspace.panes)) + ' Active)'.ljust(content_w)}│"
+            )
+            lines.append(f"├{'─' * content_w}┤")
+            for i, p in enumerate(self.workspace.panes):
+                ptr = "▶ " if i == self.manager_cursor else "  "
+                lines.append(
+                    f"│{(' ' + ptr + str(i + 1) + '. ' + p.title)[:content_w].ljust(content_w)}│"
+                )
+                lines.append(
+                    f"│{('     ' + p.status_badge)[:content_w].ljust(content_w)}│"
+                )
+            while len(lines) < height - 1:
+                lines.append(f"│{' ' * content_w}│")
+        else:
+            left_w = max(18, int(width * 0.30))
+            right_w = max(18, width - 3 - left_w)
+
+            total_panes = len(self.workspace.panes)
+            if self.manager_cursor >= total_panes:
+                self.manager_cursor = max(0, total_panes - 1)
+            target_pane = (
+                self.workspace.panes[self.manager_cursor]
+                if total_panes > 0
+                else self.workspace.active_pane
+            )
+
+            col1_title = f" PANES ({total_panes} Active)"
+            col2_title = f" PREVIEW: Pane {self.manager_cursor + 1} ({target_pane.title})"
+
+            lines.append(
+                f"│{col1_title[:left_w].ljust(left_w)}│{col2_title[:right_w].ljust(right_w)}│"
+            )
+            lines.append(f"├{'─' * left_w}┼{'─' * right_w}┤")
+
+            left_items: List[str] = []
+            for i, p in enumerate(self.workspace.panes):
+                ptr = "▶ " if i == self.manager_cursor else "  "
+                left_items.append(f" {ptr}{i + 1}. {p.title}")
+                left_items.append(f"     {p.status_badge}")
+                left_items.append("")
+
+            right_items: List[str] = []
+            status_text = f"Status: {target_pane.status_badge}"
+            if target_pane.runner and hasattr(target_pane.runner, "elapsed_seconds"):
+                status_text += f"  |  Elapsed: {target_pane.runner.elapsed_seconds:.1f}s"
+            right_items.append(f"   {status_text}")
+            right_items.append("")
+
+            raw_lines = target_pane.runner.lines if target_pane.runner else []
+            visible = target_pane.viewport.get_visible_lines(
+                raw_lines, height=max(1, inner_height - 3), width=max(10, right_w - 4)
+            )
+            for vline in visible:
+                right_items.append(f"   {vline}")
+
+            content_rows = max(1, inner_height - 3)
+            for r in range(content_rows):
+                l_text = left_items[r] if r < len(left_items) else ""
+                r_text = right_items[r] if r < len(right_items) else ""
+                lines.append(
+                    f"│{l_text[:left_w].ljust(left_w)}│{r_text[:right_w].ljust(right_w)}│"
+                )
+
+            lines.append(f"└{'─' * left_w}┴{'─' * right_w}┘")
+
+        footer = (
+            "└─ [Enter] Switch  [n] New Pane  [d] Delete  [D] Delete All  [Esc] Close ".ljust(
+                width - 1, "─"
+            )
+            + "┘"
+        )
+        if len(lines) < height:
+            lines.append(footer)
+        else:
+            lines[height - 1] = footer
+
+        return lines[:height]
+
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
+        if getattr(self, "is_pane_manager_open", False):
+            return self.render_pane_manager(height=height, width=width)
+
         if getattr(self, "is_showing_preview", False):
             lines: List[str] = []
             path_str = " > ".join([self.title] + self.navigation.path + ["Preview"])
