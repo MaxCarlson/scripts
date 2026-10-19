@@ -126,6 +126,7 @@ async def run_attempt(
         try:
             async with observation_budget:
                 dispatch_started = True
+                guard.submission_started = True
                 handle = await bridge.dispatch(workspace.path, prompt, provider=provider, model=model, agent=agent)
                 _write_json(evidence_dir / "dispatch.json", bridge.last_receipt)
                 journal.update(stage="observing", handle=asdict(handle))

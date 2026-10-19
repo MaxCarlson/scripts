@@ -59,19 +59,16 @@ async def run_benchmark(
             try:
                 async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
                     started_attempt, safe = True, False
-                    # A fresh bridge starts without a receipt. dispatch() marks a
-                    # possible submission before its first remote mutation. Thus a
-                    # preparation failure with no receipt cannot leave an active worker.
-                    bridge.last_receipt = {}
+                    guard = DispatchGuard()
                     try:
                         evidence = await run_attempt(
-                            task, bridge, DispatchGuard(), workspace_root=state / "workspaces", evidence_dir=evidence_dir,
+                            task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
                             provider=provider, model=model, agent=agent, task_seconds=task_seconds,
                             grace_seconds=grace_seconds, verifier_seconds=verifier_seconds,
                         )
                     finally:
-                        if not bridge.last_receipt:
-                            safe = True
+                        # Empty/malformed replies say nothing about remote submission.
+                        safe = not guard.submission_started
                     runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
                     info = replace(info, metadata={**info.metadata, "runtime": runtime})
                     save_run(run_dir, info, overwrite=True)  # Update only this newly owned run.

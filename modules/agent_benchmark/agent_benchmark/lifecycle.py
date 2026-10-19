@@ -170,6 +170,8 @@ class DispatchGuard:
 
     def __init__(self) -> None:
         self.unresolved: TerminationDecision | None = None
+        # Monotonic attempt fact: response contents cannot undo a possible dispatch.
+        self.submission_started = False
 
     def record(self, decision: TerminationDecision) -> None:
         if not decision.confirmed:

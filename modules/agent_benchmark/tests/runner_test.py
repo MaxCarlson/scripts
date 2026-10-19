@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 from benchmark_core import load_run
@@ -144,3 +145,50 @@ def test_external_cancel_persists_one_infrastructure_result_and_pending_receipt(
     trials = load_run(directories[0])[1]
     assert len(trials) == 1 and trials[0].status == "infrastructure_error"
     assert read_pending(tmp_path / "state") is not None
+
+
+@pytest.mark.parametrize("response", [{}, None, [], {"jobId": "known-job"}, "transport", "empty_error", "known_error",
+                                      {"jobId": 17, "sessionId": [], "messageId": None}])
+def test_unknown_submission_survives_restart_and_refuses_dispatch(tmp_path, response):
+    import json
+    import httpx
+    from agent_benchmark.bridge import OpenCodeBridge, SubmissionUncertain
+
+    class UncertainBridge(OpenCodeBridge):
+        async def preflight(self, directory, **kwargs):
+            return {"version": "offline"}
+
+    async def fire(name, args):
+        if response == "transport":
+            raise ConnectionError("Response lost after submission")
+        if response == "known_error":
+            raise SubmissionUncertain({"jobId": "known-job"})
+        if response == "empty_error":
+            raise SubmissionUncertain({})
+        return response
+
+    @asynccontextmanager
+    async def connection(**kwargs):
+        async with httpx.AsyncClient() as http:
+            yield UncertainBridge(fire, http)
+
+    with pytest.warns(RuntimeWarning, match="Unresolved"):
+        run_dir = run(tmp_path, connection)
+    assert load_run(run_dir)[1][0].status == "infrastructure_error"
+    assert read_pending(tmp_path / "state") is not None
+    evidence = run_dir / "evidence/trial-001"
+    journal = json.loads((evidence / "lifecycle.json").read_text())
+    assert journal["stage"] == "termination_unresolved"
+    assert not journal["termination"]["confirmed"]
+    assert (evidence / "S0").is_dir() and not (evidence / "S1").exists()
+    assert Path(journal["workspace"]["path"]).is_dir()
+    if response == "known_error" or (isinstance(response, dict) and response.get("jobId") == "known-job"):
+        assert journal["handle"]["job_id"] == "known-job"
+        assert json.loads((evidence / "dispatch.json").read_text())["jobId"] == "known-job"
+    restarted = subprocess.run(
+        [sys.executable, "-m", "agent_benchmark", "run", "-x", "-m", "offline",
+         "-s", str(tmp_path / "state"), "-o", str(tmp_path / "second-reports")],
+        capture_output=True, text=True, timeout=10,
+    )
+    assert restarted.returncode != 0 and "unresolved" in restarted.stderr.lower()
+    assert not (tmp_path / "second-reports").exists()

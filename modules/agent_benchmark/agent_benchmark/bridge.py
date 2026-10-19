@@ -164,15 +164,17 @@ class OpenCodeBridge:
                 "directory": str(workspace), "prompt": prompt, "providerID": provider,
                 "modelID": model, "agent": agent, "title": "agent-benchmark first attempt",
             })
-            self.last_receipt = receipt if isinstance(receipt, dict) else self.last_receipt
+            if isinstance(receipt, dict):
+                self.last_receipt.update(receipt)
         except Exception as error:
             if isinstance(error, SubmissionUncertain):
-                self.last_receipt = error.receipt
+                if isinstance(error.receipt, dict):
+                    self.last_receipt.update(error.receipt)
             raise SubmissionUncertain(self.last_receipt) from error
         if not isinstance(receipt, dict):
             raise SubmissionUncertain(self.last_receipt)
         if not all(isinstance(receipt.get(k), str) and receipt[k] for k in ("jobId", "sessionId", "messageId")):
-            raise SubmissionUncertain(receipt)
+            raise SubmissionUncertain(self.last_receipt)
         # Unknown status with known handles is observed, never re-submitted.
         return WorkerHandle(receipt["jobId"], receipt["sessionId"], receipt["messageId"], workspace)
 
