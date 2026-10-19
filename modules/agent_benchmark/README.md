@@ -1,27 +1,42 @@
-# agent_benchmark
+# agent_benchmark — 1.0.0
 
-Thin evaluator for local coding workers. Version 0.3.0 provides the independent Phase 1c components:
-
-- Supported pinned MCP dispatch/cancel adapter, with fresh OpenCode session/message/tool reconciliation.
-- Bounded first-attempt observation and termination confirmation, durable recovery evidence, sticky dispatch stop for unresolved execution.
-- Fresh owned workspaces, byte-exact S0/S1 checkpoints, actual-path scope auditing and separate verifier processes against disposable S1 copies.
-- Original `py-grep-smoke` task and deterministic hidden verifier.
-
-**Canonical result emission and CLI are pending the user's final corrected, tested benchmark_core SHA.** No competing result models exist. No actual model run has been validated; a read-only readiness check timed out. This is not Milestone 1 completion.
-
-[Implementation plan](docs/plans/20261019-implementation/plan.md) contains model allocation, architecture and gates. [Handoff](docs/HANDOFF.md) records exact resume instructions.
-
-From this module directory:
+A thin evaluator around the existing OpenCode/MCP runtime. Phase 1c's integrated pipeline is implemented and validated offline. Live acceptance is pending a running runtime, exact local model ID and explicit execution authorization.
 
 ```powershell
-& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests -q --basetemp=.pytest_tmp_root/phase1c-final --tb=short
-& "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m ruff check agent_benchmark tests tasks
+agent-bench plan
+agent-bench run -m MODEL_ID -x
+agent-bench status -r reports/RUN_ID
+agent-bench cleanup -r reports/RUN_ID       # preview
+agent-bench cleanup -r reports/RUN_ID -x    # fresh reconciliation, then owned cleanup
 ```
 
-Install module dependencies using the repository environment (`python -m pip install -e .`). The existing `opencode-mcp@3.0.0` must be installed/cached separately. The adapter uses offline npx, never starts shared services, and accepts auth through existing OPENCODE_SERVER_USERNAME/PASSWORD environment variables without logging them.
+`run` requires `-x/--execute`; plan, status and cleanup preview do not write or call models. Services must already be running. No command starts or reconfigures shared OpenCode/LM Studio services. Explicit configured LM Studio models only; no cloud fallback.
 
-Programmatic boundaries: `evidence.load_task`, `bridge.connected_bridge`, and `attempt.run_attempt`. Actual execution requires an explicit caller action; there is no enabled benchmark CLI yet. Keep one DispatchGuard for the batch. S1 is captured only after fresh termination evidence; unresolved jobs have no scoreable S1 and halt further dispatch. `AttemptEvidence` carries internal evidence references, not a serialized benchmark result. Canonical integration must preserve expired-task and infrastructure-error facts even if the verifier passes after cancellation.
+The default persistent state is `~/.local/share/agent-benchmark`, shared across output locations. Use the same `-s/--state-dir` across invocations; an unresolved job blocks later runs even if they use another report directory. An OS-held command lock serializes run/cleanup, while the unresolved receipt survives process exit. Never delete the receipt to bypass uncertain execution. `cleanup -x` requests supported cancellation when needed, then requires fresh matching session/turn/tool evidence. It preserves resources and blocking if termination cannot be confirmed. Cleanup failures never rescore trials.
 
-A cached job status or abort acknowledgement cannot prove termination. Shared services/processes are never terminated. Filesystem cleanup is separate from task scoring. Fixture isolation is not a hostile-code sandbox; use trusted offline tasks and unprivileged execution.
+Each invocation currently runs one smoke task, one explicit model and one repetition. `benchmark_core` alone supplies RunInfo, TrialResult, MetricValue, persistence, statistics and JSON/CSV/Markdown reporting. Outputs are `reports/<run_id>/{run.json,trials.jsonl,summary.json,summary.csv,report.md,evidence/}`. Exactly one trial is persisted per attempted repetition, including ordinary infrastructure failures and caller cancellation when storage is writable. Filesystem failures cannot guarantee persistence; uncertain execution still blocks dispatch.
 
-Primary API references: [MCP SDK v1 client](https://github.com/modelcontextprotocol/python-sdk/blob/v1.x/docs/client.md), [OpenCode server](https://opencode.ai/docs/server/). Installed SDK 1.30.0 signatures and bridge 3.0.0 source were inspected during implementation.
+The worker sees a fresh public fixture. S0 and S1 are byte-exact archives outside it; a hidden verifier runs on a disposable S1 copy. Canonical scoring is `worker_first_attempt_full_success`. Expired task budgets, execution errors, unresolved termination and disqualifying scope changes cannot become passes from verifier output. Coordinator repair never changes the frozen worker score. Token/tool counters that are not collected remain unavailable. Retries, coordinator comparisons and multi-model repetition support remain later packages.
+
+OpenCode 1.19.3 can leave `finish="tool-calls"` on a final StructuredOutput message. The adapter accepts that special case only with a matching requested JSON schema, a completed StructuredOutput tool, completed assistant timestamp, idle session and no incomplete tools. Arbitrary non-null structured data is insufficient. Normal abort/error confirmation and malformed-data handling preserve the corrective pass's fixes. See [source notes](docs/TERMINATION.md).
+
+The original smoke task is bundled at `agent_benchmark/tasks/py-grep-smoke` and works from installed wheels. This is trusted-fixture process isolation, not a hostile-code sandbox. Worker/report/scope audits beyond initial file scope checks belong to Phase 2.
+
+Install both local packages into the intended environment:
+
+```powershell
+python -m pip install -e modules/benchmark_core -e modules/agent_benchmark
+```
+
+`agent-bench` is a new console entry point (module version 1.0.0); reinstall/refresh wrappers when upgrading. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
+
+Validation from repository root, using the actual repo virtualenv:
+
+```powershell
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/agent_benchmark/tests -q -rs --basetemp=modules/agent_benchmark/.pytest_tmp_root/final
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/benchmark_core/tests -q -rs
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m ruff check modules/agent_benchmark/agent_benchmark modules/agent_benchmark/tests modules/benchmark_core
+& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m mypy modules/benchmark_core/benchmark_core
+```
+
+[Plan/model allocation](docs/plans/20261019-implementation/plan.md) · [Current handoff](docs/HANDOFF.md)

@@ -73,12 +73,12 @@ Use an original small grep-equivalent fixture (label smoke, not canonical import
 
 ## Task 1c: end-to-end gate (return to Sol)
 
-- [ ] Obtain the complete corrected benchmark_core branch final tested SHA and validation from the user. Incorporate that exact complete branch, run focused tests; import canonical types. Do not integrate the earlier Gate 1 commit alone or an unapproved branch tip. Never inspect/edit another agent worktree.
+- [x] Obtain the complete corrected benchmark_core branch final tested SHA and validation from the user. Incorporate that exact complete branch, run focused tests; import canonical types. Do not integrate the earlier Gate 1 commit alone or an unapproved branch tip. Never inspect/edit another agent worktree.
 - [x] Add supported MCP SDK adapter, fire without sessionId, preserve IDs/unknown submission and avoid resubmission. Fresh HTTP reconciliation bypasses terminal cache. Installed 3.0.0 schema/source and SDK signatures checked; transport tests use constructed schema-shaped fixtures, not captured live-session samples. Live validation pending.
 - [x] Add bounded attempt observation distinct from cancellation grace, durable identifiers and unresolved diagnostics. Effective budgets in lifecycle evidence; canonical RunInfo metadata wiring pending core gate.
 - [x] Add exclusive byte-exact S0/S1 snapshots/hashes, patch evidence, actual changed-path audit and disposable verification copy. Raw receipt/session and separate report evidence retained. Caller supplies evidence directory; canonical core evidence layout wiring pending gate.
-- [ ] Build exactly one canonical TrialResult per repetition; missing metrics unavailable. Prove S1 incorrect then S3 corrected leaves worker_first_pass false and status failed.
-- [ ] Add read-only plan and guarded run/status/cleanup CLI with paired short/long arguments. Request narrow help-registry ownership exception before editing outside assigned module.
+- [x] Build exactly one canonical TrialResult per repetition; missing metrics unavailable. Prove S1 incorrect then S3 corrected leaves worker_first_pass false and status failed.
+- [x] Add read-only plan and guarded run/status/cleanup CLI with paired short/long arguments; associated help-catalog entry required by repository CLI conventions added narrowly.
 - [ ] Run real local model only when runtime reachable and explicitly executed; no loader configuration/service changes. Inspect actual roles/tool limits. No real run claimed if blocked.
 - [ ] Freeze task/verifier contract after first real task; commit and hand off to Flash/Luna.
 
@@ -103,3 +103,14 @@ Current independent component tests: 57 passed, 2 symlink-privilege skips; Ruff 
 Independent flow update: attempt.run_attempt produces only frozen AttemptEvidence references (workspace, termination decision, snapshots, verification, scope facts and monotonic durations). It does not emit/serialize benchmark results or determine canonical status. Canonical adapter must map actual task-budget expiration separately from HTTP timeout/infrastructure failure, preserve uncertainty without verifier/S1, and never improve worker-first-attempt outcome after S3 repair. Worker workspace is retained by default. Core CLI/status/cleanup must inspect durable unresolved journals across invocations before dispatch; the existing DispatchGuard is batch-local. Evidence journaling failure still latches the in-memory guard before exception escapes. An uncooperative blocking transport is forbidden by the bridge protocol; actual transport cancellation remains a live validation item.
 
 2026-10-19 checkpoint: 69 passed, 2 Windows symlink-privilege skips; Ruff clean. Read-only runtime readiness timed out (ConnectTimeout); no MCP worker/model invocation. No core branch integration performed. Stop and request user's final corrected core SHA + validation.
+
+
+## Integrated Phase 1c checkpoint (2026-10-19)
+
+User authorization supersedes earlier integration gate: merged full core history through exactly a1856215 via 072683f1, then fixed only reproduced import shadowing (f973ee67). Canonical pipeline/CLI at 5d9637b0; required narrow help registration at 2cfd66fd. Module version 1.0.0 for new console entry; core compatibility fix version 0.1.1. Built task now lives in agent_benchmark/tasks/py-grep-smoke (same fixture bytes, bundled package data), not the old module-root tasks/ directory.
+
+Resource state uses one OS-held command lock and one durable unresolved receipt, not a scheduler/process manager. Default state location is stable across output directories; separate invocations must share it. Cleanup confirms fresh matching remote termination before removal and never alters canonical scores. Pre-dispatch preparation failures cannot strand active-worker blocking. Runtime-close cleanup errors are retained separately without rewriting a verified score. Exact workspace identity is checked before cleanup.
+
+104 agent tests passed, 2 Windows symlink-privilege skips; 80 core tests passed, Ruff/Mypy clean; both wheel imports/bundled plan and installed console entry passed. Canonical failed-S1 / repaired-S3 reload regression passed. No actual worker execution was performed; running runtime, model ID and explicit execution authorization remain the live gate. Source-backed terminal semantics documented in docs/TERMINATION.md. Keep early gate notes above as execution history; STATUS.md and HANDOFF.md describe the current state.
+
+Ruling: user request to implement the planned CLI includes its required associated help registration under REPO_LLM_INSTRUCTIONS.md; only one catalog entry and the owning module's synchronized version metadata were changed. No unrelated shared behavior changed. Ruling: source-proven terminal StructuredOutput with retained tool-calls is allowed only with matched requested schema and completed StructuredOutput part, plus idle session/completed timestamp/no unfinished tools; ambiguous structured data remains unconfirmed. Cost if wrong: conservative unresolved state blocks live acceptance rather than risking cleanup.

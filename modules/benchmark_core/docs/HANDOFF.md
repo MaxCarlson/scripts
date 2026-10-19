@@ -24,3 +24,8 @@
   - Missing-metric accounting (`expected_total`) across trials and Hyperfine command variant grouping under common task.
   - Trial `run_id` validation against declared `RunInfo` in storage and stats.
 - Full verification passed on Windows: 79 passed in 0.18s, ruff clean, mypy clean.
+
+
+## Consumer integration compatibility correction
+
+On agent/agent-benchmark, full history through a1856215 was merged via 072683f1. A reproduced runtime import failure with modules/ first selected the empty outer wrapper. Commit f973ee67 loads the inner package in the canonical benchmark_core namespace, preserving class identity; version 0.1.1. No result/scoring/report semantics changed. Consumer-branch verification: 80 pytest tests passed (including import regression), Ruff clean, Mypy clean (9 source files). Original agent/benchmark-core worktree/branch was not edited.
