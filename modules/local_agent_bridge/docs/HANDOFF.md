@@ -1,5 +1,42 @@
 # Local agent setup handoff
 
+## Authorized host migration completed: 2026-10-19
+
+The user authorized applying the prepared bridge setup. A fresh fingerprint plan
+confirmed exactly three updates: codex.config, codex.skill and agy.skill, with no
+conflicts or warnings. Applied with:
+
+```powershell
+.venv/Scripts/local-agent.exe setup apply -i modules/local_agent_bridge/.pytest_tmp_root/authorized-host-plan.json -j
+```
+
+Post-apply `local-agent setup status -j` returned 0: all 15 resources unchanged,
+no conflicts or warnings. The five misplaced Codex settings are now at the root;
+history contains only persistence. Approval policy remains on-request. Semantic
+fingerprints verified unrelated Codex settings, and byte fingerprints verified
+both global instruction files were preserved. The installation journal is
+complete. `local-agent setup remove -j` preview returned 0; removal was not run.
+No local model, runtime server or miner operation was invoked. Prior host-drift
+statements below and in the audit reports are historical and now superseded.
+
+Remaining: model behavior/worker trials and benchmark research. The mining
+request is deferred; proposed offline contract-test infrastructure was postponed
+pending the research report. Existing staged compresser changes remain untouched.
+
+## Follow-up: tools investigation and deferred request
+
+The audit below was committed and pushed as `d0eeb895` before this follow-up.
+[TOOLS_AUDIT.md](TOOLS_AUDIT.md) records resolved OpenCode 1.19.3 diagnostics:
+local-worker has read/write/edit/bash; local-reviewer intentionally cannot
+write or execute shell commands. No persistent worker write block was found,
+and no local inference or permission changes were made. Live behavior remains
+unverified under the user's no-delegation instruction.
+
+The [GPU workload coordination request](plans/20261019_gpu-workload-coordination/plan.md)
+is written down only, explicitly deferred. Do not start implementation or modify
+the miner based on this note. Remaining validation/migration work is listed in
+TOOLS_AUDIT.md. Preserve concurrent unrelated compresser edits.
+
 ## Current audit: 2026-10-19
 
 Release 3.0.0 is under review on `main`, uncommitted. The primary command is
