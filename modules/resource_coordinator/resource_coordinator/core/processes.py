@@ -30,6 +30,14 @@ class ProcessState(str, Enum):
     UNKNOWN = "unknown"
 
 
+class ProcessLifecycleOwner(str, Enum):
+    """Identifies the entity managing the lifecycle of a process."""
+
+    COORDINATOR = "coordinator"  # Launched directly by coordinator
+    EXTERNAL = "external"  # Discovered running under external launcher/supervisor
+    UNMANAGED = "unmanaged"  # Stopped or unmanaged
+
+
 @dataclass(frozen=True)
 class ProcessInfo:
     """Snapshot of a process's state and ownership."""
@@ -39,6 +47,7 @@ class ProcessInfo:
     pid: Optional[int] = None
     create_time: Optional[float] = None
     executable: Optional[str] = None
+    lifecycle_owner: ProcessLifecycleOwner = ProcessLifecycleOwner.UNMANAGED
     is_coordinator_owned: bool = False
     last_stopped_at: Optional[float] = None
     last_started_at: Optional[float] = None
@@ -50,6 +59,7 @@ class ProcessInfo:
             "pid": self.pid,
             "create_time": self.create_time,
             "executable": self.executable,
+            "lifecycle_owner": self.lifecycle_owner.value,
             "is_coordinator_owned": self.is_coordinator_owned,
             "last_stopped_at": self.last_stopped_at,
             "last_started_at": self.last_started_at,
@@ -60,6 +70,8 @@ class ProcessBackend(Protocol):
     """Protocol for managed process backends."""
 
     name: str
+    allow_external_stop: bool
+    allow_external_restart: bool
 
     async def status(self) -> ProcessInfo: ...
     async def start(self) -> bool: ...
@@ -80,24 +92,36 @@ class FakeProcessBackend:
         stop_delay: float = 0.0,
         start_delay: float = 0.0,
         external: bool = False,
+        allow_external_stop: bool = False,
+        allow_external_restart: bool = False,
+        relaunch_delay: Optional[float] = None,
     ) -> None:
         self.name = name
         self.executable = executable
         self.running = running
-        self.is_coordinator_owned = not external if running else False
+        self.lifecycle_owner = (
+            ProcessLifecycleOwner.EXTERNAL
+            if (running and external)
+            else (ProcessLifecycleOwner.COORDINATOR if running else ProcessLifecycleOwner.UNMANAGED)
+        )
+        self.is_coordinator_owned = self.lifecycle_owner == ProcessLifecycleOwner.COORDINATOR
         self.fail_start = fail_start
         self.fail_stop = fail_stop
         self.stop_delay = stop_delay
         self.start_delay = start_delay
+        self.allow_external_stop = allow_external_stop or not external
+        self.allow_external_restart = allow_external_restart or not external
+        self.relaunch_delay = relaunch_delay
         self.pid = 12345 if running else None
         self.create_time = time.time() if running else None
         self.last_stopped_at: Optional[float] = None
         self.last_started_at: Optional[float] = time.time() if running else None
+        self._relaunch_task: Optional[asyncio.Task] = None
 
     async def status(self) -> ProcessInfo:
         if not self.running:
             state = ProcessState.STOPPED
-        elif not self.is_coordinator_owned:
+        elif self.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL:
             state = ProcessState.EXTERNAL_RUNNING
         else:
             state = ProcessState.RUNNING
@@ -108,7 +132,8 @@ class FakeProcessBackend:
             pid=self.pid,
             create_time=self.create_time,
             executable=self.executable,
-            is_coordinator_owned=self.is_coordinator_owned,
+            lifecycle_owner=self.lifecycle_owner,
+            is_coordinator_owned=self.lifecycle_owner == ProcessLifecycleOwner.COORDINATOR,
             last_stopped_at=self.last_stopped_at,
             last_started_at=self.last_started_at,
         )
@@ -118,7 +143,17 @@ class FakeProcessBackend:
             await asyncio.sleep(self.start_delay)
         if self.fail_start:
             return False
+        if self.running:
+            return True
+        if self.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_restart:
+            logger.warning(
+                "Process '%s' is externally owned and allow_external_restart is False; refusing start",
+                self.name,
+            )
+            return False
+
         self.running = True
+        self.lifecycle_owner = ProcessLifecycleOwner.COORDINATOR
         self.is_coordinator_owned = True
         self.pid = 12345
         self.create_time = time.time()
@@ -126,6 +161,15 @@ class FakeProcessBackend:
         return True
 
     async def stop(self, timeout: float = 10.0) -> bool:
+        if not self.running:
+            return True
+        if self.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_stop:
+            logger.warning(
+                "Process '%s' is running externally and allow_external_stop is False; refusing stop",
+                self.name,
+            )
+            return False
+
         if self.stop_delay > 0:
             await asyncio.sleep(self.stop_delay)
         if self.fail_stop:
@@ -134,6 +178,21 @@ class FakeProcessBackend:
         self.pid = None
         self.create_time = None
         self.last_stopped_at = time.time()
+
+        if self.relaunch_delay is not None and self.relaunch_delay > 0:
+            delay = self.relaunch_delay
+
+            async def _auto_relaunch() -> None:
+                await asyncio.sleep(delay)
+                self.running = True
+                self.lifecycle_owner = ProcessLifecycleOwner.EXTERNAL
+                self.is_coordinator_owned = False
+                self.pid = 12346
+                self.create_time = time.time()
+                logger.warning("External supervisor automatically relaunched process '%s'", self.name)
+
+            self._relaunch_task = asyncio.create_task(_auto_relaunch())
+
         return True
 
     async def wait_stopped(self, timeout: float = 10.0) -> bool:
@@ -150,6 +209,7 @@ class WindowsProcessBackend:
     Windows process management backend with PID and creation-time verification.
 
     Prevents PID recycling hazards and verifies process ownership.
+    Supports separate permissions for external stop and external restart.
     """
 
     def __init__(
@@ -159,6 +219,8 @@ class WindowsProcessBackend:
         arguments: Optional[Sequence[str]] = None,
         working_directory: Optional[str] = None,
         new_console: bool = False,
+        allow_external_stop: bool = False,
+        allow_external_restart: bool = False,
         adopt_external: bool = False,
     ) -> None:
         self.name = name
@@ -166,7 +228,9 @@ class WindowsProcessBackend:
         self.arguments = list(arguments or [])
         self.working_directory = working_directory
         self.new_console = new_console
-        self.adopt_external = adopt_external
+        self.allow_external_stop = allow_external_stop or adopt_external
+        self.allow_external_restart = allow_external_restart or adopt_external
+        self.adopt_external = adopt_external or (self.allow_external_stop and self.allow_external_restart)
 
         self._proc: Optional[subprocess.Popen] = None
         self._owned_pid: Optional[int] = None
@@ -216,6 +280,7 @@ class WindowsProcessBackend:
                 pid=owned.pid,
                 create_time=owned.create_time(),
                 executable=self.executable,
+                lifecycle_owner=ProcessLifecycleOwner.COORDINATOR,
                 is_coordinator_owned=True,
                 last_stopped_at=self._last_stopped_at,
                 last_started_at=self._last_started_at,
@@ -229,6 +294,7 @@ class WindowsProcessBackend:
                 pid=external.pid,
                 create_time=external.create_time(),
                 executable=self.executable,
+                lifecycle_owner=ProcessLifecycleOwner.EXTERNAL,
                 is_coordinator_owned=False,
                 last_stopped_at=self._last_stopped_at,
                 last_started_at=self._last_started_at,
@@ -240,6 +306,7 @@ class WindowsProcessBackend:
             pid=None,
             create_time=None,
             executable=self.executable,
+            lifecycle_owner=ProcessLifecycleOwner.UNMANAGED,
             is_coordinator_owned=False,
             last_stopped_at=self._last_stopped_at,
             last_started_at=self._last_started_at,
@@ -250,8 +317,11 @@ class WindowsProcessBackend:
         if st.state == ProcessState.RUNNING:
             logger.info("Process '%s' is already running (owned)", self.name)
             return True
-        if st.state == ProcessState.EXTERNAL_RUNNING and not self.adopt_external:
-            logger.warning("Process '%s' is running externally and not adopted; refusing start", self.name)
+        if st.state == ProcessState.EXTERNAL_RUNNING and not self.allow_external_restart:
+            logger.warning(
+                "Process '%s' is running externally and allow_external_restart is False; refusing start",
+                self.name,
+            )
             return False
 
         launch_kwargs: Dict[str, Any] = {
@@ -259,7 +329,11 @@ class WindowsProcessBackend:
             "shell": False,
         }
         if self.new_console and os.name == "nt":
-            launch_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10)
+            # CREATE_NEW_CONSOLE + CREATE_NEW_PROCESS_GROUP enables CTRL_BREAK_EVENT signal handling
+            flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0x10) | getattr(
+                subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200
+            )
+            launch_kwargs["creationflags"] = flags
         else:
             launch_kwargs.update(
                 stdin=subprocess.DEVNULL,
@@ -285,12 +359,15 @@ class WindowsProcessBackend:
         if st.state == ProcessState.STOPPED:
             return True
 
-        if st.state == ProcessState.EXTERNAL_RUNNING and not self.adopt_external:
-            logger.warning("Process '%s' is running externally and cannot be stopped", self.name)
+        if st.state == ProcessState.EXTERNAL_RUNNING and not self.allow_external_stop:
+            logger.warning(
+                "Process '%s' is running externally and allow_external_stop is False; cannot stop",
+                self.name,
+            )
             return False
 
         p = self._find_owned_process()
-        if p is None and self.adopt_external:
+        if p is None and self.allow_external_stop:
             p = self._find_external_process()
 
         if p is None:
@@ -300,12 +377,33 @@ class WindowsProcessBackend:
             return True
 
         try:
-            p.terminate()
+            # 1. Attempt graceful shutdown signal on Windows console processes
+            graceful_sent = False
+            if os.name == "nt":
+                try:
+                    import ctypes
+
+                    # GenerateConsoleCtrlEvent: 1 is CTRL_BREAK_EVENT, 0 is CTRL_C_EVENT
+                    # Signal process group so CUDA driver and miner can synchronize and unload
+                    ret = ctypes.windll.kernel32.GenerateConsoleCtrlEvent(1, p.pid)
+                    if ret != 0:
+                        graceful_sent = True
+                except Exception as sig_err:
+                    logger.debug("Console break event dispatch failed: %s", sig_err)
+
+            if not graceful_sent:
+                p.terminate()
+
             stopped = await self.wait_stopped(timeout=timeout)
             if not stopped:
-                logger.warning("Process '%s' did not terminate in time; killing", self.name)
+                logger.warning("Process '%s' did not terminate gracefully in %.1fs; terminating", self.name, timeout)
+                p.terminate()
+                stopped = await self.wait_stopped(timeout=3.0)
+            if not stopped:
+                logger.warning("Process '%s' did not respond to terminate; killing", self.name)
                 p.kill()
                 stopped = await self.wait_stopped(timeout=3.0)
+
             if stopped:
                 self._last_stopped_at = time.time()
                 self._proc = None
@@ -339,12 +437,15 @@ class ProcessSupervisor:
     - Coordinator pause ownership (`was_stopped_by_coordinator`).
     - Manual user override (`is_manual_override`).
     - Event publishing (`process.stop_requested`, `process.stopped`, etc.).
+    - Fine-grained permission delegation (`allow_external_stop`, `allow_external_restart`).
     """
 
     def __init__(
         self,
         backend: ProcessBackend,
         event_dispatcher: Optional[EventDispatcher] = None,
+        allow_external_stop: Optional[bool] = None,
+        allow_external_restart: Optional[bool] = None,
     ) -> None:
         self.backend = backend
         self.dispatcher = event_dispatcher or EventDispatcher()
@@ -352,9 +453,22 @@ class ProcessSupervisor:
         self.is_manual_override = False
         self._lock = asyncio.Lock()
 
+        if allow_external_stop is not None:
+            self.backend.allow_external_stop = allow_external_stop
+        if allow_external_restart is not None:
+            self.backend.allow_external_restart = allow_external_restart
+
     @property
     def name(self) -> str:
         return self.backend.name
+
+    @property
+    def allow_external_stop(self) -> bool:
+        return getattr(self.backend, "allow_external_stop", False)
+
+    @property
+    def allow_external_restart(self) -> bool:
+        return getattr(self.backend, "allow_external_restart", False)
 
     async def status(self) -> ProcessInfo:
         return await self.backend.status()
@@ -371,6 +485,13 @@ class ProcessSupervisor:
             if info.state == ProcessState.STOPPED:
                 return True
 
+            if info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_stop:
+                logger.warning(
+                    "Process '%s' is externally owned and allow_external_stop is False; refusing stop",
+                    self.name,
+                )
+                return False
+
             await self.dispatcher.emit(
                 "process.stop_requested",
                 {"name": self.name, "origin": origin, "timeout": timeout},
@@ -386,6 +507,7 @@ class ProcessSupervisor:
                         "name": self.name,
                         "origin": origin,
                         "was_stopped_by_coordinator": self.was_stopped_by_coordinator,
+                        "lifecycle_owner": info.lifecycle_owner.value,
                     },
                 )
             else:
@@ -399,7 +521,7 @@ class ProcessSupervisor:
         """
         Start the process.
 
-        Respects manual override and coordinator ownership policies.
+        Respects manual override, coordinator ownership, and external restart permissions.
         """
         async with self._lock:
             if self.is_manual_override:
@@ -413,6 +535,13 @@ class ProcessSupervisor:
             info = await self.backend.status()
             if info.state == ProcessState.RUNNING:
                 return True
+
+            if info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_restart:
+                logger.warning(
+                    "Process '%s' was externally launched and allow_external_restart is False; skipping start",
+                    self.name,
+                )
+                return False
 
             await self.dispatcher.emit(
                 "process.start_requested",

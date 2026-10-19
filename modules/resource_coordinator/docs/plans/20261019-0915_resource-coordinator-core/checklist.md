@@ -27,9 +27,19 @@
 - [x] Implement `tests/test_cli.py`
 - [x] Verify Stage 2 tests pass offline
 
+## Stage 2b: Phase B Reliability Hardening
+- [x] Implement atomic request registration (`reserve()` in `LeaseManager` canceling cooldown and incrementing pending count before blocking hooks)
+- [x] Implement `StreamCompletionDetector` parsing SSE chunks for `data: [DONE]` and `finish_reason`
+- [x] Implement protective `RestartInhibition` in `LeaseManager` preventing mining restart upon uncertain termination, client disconnect, or upstream errors
+- [x] Separate `allow_external_stop` from `allow_external_restart` and track `ProcessLifecycleOwner`
+- [x] Model Windows console graceful shutdown signal (`CTRL_BREAK_EVENT` via `GenerateConsoleCtrlEvent`)
+- [x] Sanitize machine-specific miner paths and wallet identifiers in default config and docs
+- [x] Implement recovery endpoint `POST /_coordinator/recover` and CLI command `resource-coordinator recover`
+- [x] Add focused offline concurrency and reliability tests in `tests/test_reliability_phase_b.py`
+
 ## Stage 3: Verification, Documentation & Handoff
-- [x] Run full test suite with coverage
-- [x] Run code format and lint checks (`ruff check`, `black --check`)
+- [x] Run full test suite with coverage (48 offline tests passing)
+- [x] Run code format and lint checks (`ruff check`, `ruff format`, `mypy`)
 - [x] Update README, HANDOFF, and STATUS docs with execution evidence
 - [ ] Commit staged deliverables
 - [ ] Deliver final report and handoff to Codex Sol Medium

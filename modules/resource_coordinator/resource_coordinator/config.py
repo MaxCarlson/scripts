@@ -9,17 +9,18 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 
 from resource_coordinator.adapters.lmstudio.gateway import LMStudioGateway
 from resource_coordinator.adapters.miners.adapter import MinerAdapter
-from resource_coordinator.core.actions import StartProcessAction, StopProcessAction
+from resource_coordinator.core.actions import Action, StartProcessAction, StopProcessAction
 from resource_coordinator.core.conditions import ProcessRunningCondition
 from resource_coordinator.core.events import EventDispatcher
 from resource_coordinator.core.leases import LeaseManager, LeaseType
 from resource_coordinator.core.policies import Policy, PolicyEngine
 from resource_coordinator.core.processes import (
     FakeProcessBackend,
+    ProcessBackend,
     ProcessSupervisor,
     WindowsProcessBackend,
 )
@@ -33,6 +34,7 @@ class ServiceConfig:
     listen_port: int = 1235
     upstream_url: str = "http://127.0.0.1:1234"
     state_persistence_path: str = ""
+    bounded_drain_seconds: Optional[float] = None
 
 
 @dataclass
@@ -45,6 +47,8 @@ class ProcessConfig:
     stop_timeout_seconds: float = 10.0
     restart_cooldown_seconds: float = 60.0
     new_console: bool = False
+    allow_external_stop: bool = False
+    allow_external_restart: bool = False
     adopt_external: bool = False
 
 
@@ -78,10 +82,14 @@ class CoordinatorConfig:
             listen_port=int(svc_raw.get("listen_port", 1235)),
             upstream_url=svc_raw.get("upstream_url", "http://127.0.0.1:1234"),
             state_persistence_path=svc_raw.get("state_persistence_path", ""),
+            bounded_drain_seconds=(
+                float(svc_raw["bounded_drain_seconds"]) if svc_raw.get("bounded_drain_seconds") is not None else None
+            ),
         )
 
         processes = {}
         for p_name, p_data in data.get("processes", {}).items():
+            adopt = bool(p_data.get("adopt_external", False))
             processes[p_name] = ProcessConfig(
                 name=p_name,
                 backend=p_data.get("backend", "windows"),
@@ -91,7 +99,9 @@ class CoordinatorConfig:
                 stop_timeout_seconds=float(p_data.get("stop_timeout_seconds", 10.0)),
                 restart_cooldown_seconds=float(p_data.get("restart_cooldown_seconds", 60.0)),
                 new_console=bool(p_data.get("new_console", False)),
-                adopt_external=bool(p_data.get("adopt_external", False)),
+                allow_external_stop=bool(p_data.get("allow_external_stop", adopt)),
+                allow_external_restart=bool(p_data.get("allow_external_restart", adopt)),
+                adopt_external=adopt,
             )
 
         policies = []
@@ -126,24 +136,26 @@ class CoordinatorConfig:
 def load_config(path: Optional[Union[str, Path]] = None) -> CoordinatorConfig:
     """Load and parse coordinator configuration from YAML/JSON file or defaults."""
     if path is None:
-        # Default configuration
+        # Default configuration with sanitized paths and pool addresses
         return CoordinatorConfig(
             service=ServiceConfig(),
             processes={
                 "krig": ProcessConfig(
                     name="krig",
                     backend="windows",
-                    executable=r"C:\Users\mcarls\src\Mining\vendor\krig-miner-1.5.6\krig-miner.exe",
+                    executable=r"C:\Mining\krig-miner.exe",
                     arguments=[
                         "--coin",
                         "pearl",
                         "--url",
-                        "stratum+ssl://prl-us.kryptex.network:8048",
+                        "stratum+ssl://prl-us.example-pool.network:8048",
                         "--user",
-                        "krxXPVG8JN/Xeres",
+                        "0x0000000000000000000000000000000000000000/Worker1",
                     ],
-                    working_directory=r"C:\Users\mcarls\src\Mining\vendor\krig-miner-1.5.6",
+                    working_directory=r"C:\Mining",
                     new_console=True,
+                    allow_external_stop=False,
+                    allow_external_restart=False,
                 )
             },
             policies=[
@@ -188,8 +200,15 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
     miner_adapter: Optional[MinerAdapter] = None
 
     for name, p_cfg in config.processes.items():
+        backend: ProcessBackend
         if use_fake_processes or p_cfg.backend == "fake":
-            backend = FakeProcessBackend(name=name, running=False, executable=p_cfg.executable)
+            backend = FakeProcessBackend(
+                name=name,
+                running=False,
+                executable=p_cfg.executable,
+                allow_external_stop=p_cfg.allow_external_stop,
+                allow_external_restart=p_cfg.allow_external_restart,
+            )
         else:
             backend = WindowsProcessBackend(
                 name=name,
@@ -197,6 +216,8 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
                 arguments=p_cfg.arguments,
                 working_directory=p_cfg.working_directory,
                 new_console=p_cfg.new_console,
+                allow_external_stop=p_cfg.allow_external_stop,
+                allow_external_restart=p_cfg.allow_external_restart,
                 adopt_external=p_cfg.adopt_external,
             )
         supervisor = ProcessSupervisor(backend=backend, event_dispatcher=dispatcher)
@@ -207,8 +228,8 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
             miner_adapter = MinerAdapter(supervisor=supervisor, event_dispatcher=dispatcher)
 
     for pol_cfg in config.policies:
-        actions = []
-        after_release_actions = []
+        actions: List[Action] = []
+        after_release_actions: List[Action] = []
         condition = None
 
         if pol_cfg.target_process and pol_cfg.target_process in supervisors:
@@ -246,6 +267,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
         upstream_url=config.service.upstream_url,
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
+        bounded_drain_seconds=config.service.bounded_drain_seconds,
     )
 
     return CoordinatorSystem(

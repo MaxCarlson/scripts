@@ -118,17 +118,19 @@ resources:
 processes:
   krig:
     backend: "windows"
-    executable: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6\\krig-miner.exe"
+    executable: "C:\\Mining\\krig-miner.exe"
     arguments:
       - "--coin"
       - "pearl"
       - "--url"
-      - "stratum+ssl://prl-us.kryptex.network:8048"
+      - "stratum+ssl://prl-us.example-pool.network:8048"
       - "--user"
-      - "krxXPVG8JN/Xeres"
-    working_directory: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6"
+      - "0x0000000000000000000000000000000000000000/Worker1"
+    working_directory: "C:\\Mining"
     stop_timeout_seconds: 10.0
     restart_cooldown_seconds: 60.0
+    allow_external_stop: false
+    allow_external_restart: false
 
 policies:
   - name: prioritize-local-inference
@@ -156,15 +158,24 @@ policies:
 
 ---
 
-## 5. Operational & Safety Limitations
+## 5. Operational & Safety Limitations and Implementation Realities
 
-1. **Direct Port 1234 Bypass**:
-   Clients sending requests directly to `http://127.0.0.1:1234` bypass the gateway. The coordinator cannot intercept or coordinate unrouted traffic.
-2. **Process Ownership & Adoption**:
-   Processes started outside the coordinator are detected as `EXTERNAL_RUNNING`. The coordinator will not terminate or restart an external process unless explicit adoption configuration is set.
-3. **PID Recycling Protection**:
-   All process handles check PID + `create_time` before sending signals. If a PID has terminated and the OS reuses the PID, the coordinator recognizes the process as deceased rather than signalling an unrelated process.
-4. **Streaming Disconnects**:
-   If an HTTP client disconnects while streaming SSE, the gateway cancels the upstream request and releases the active lease, preventing leaked inference holds.
-5. **Crash Recovery**:
-   On coordinator restart, it inspects persisted state. If process ownership is uncertain or ambiguous, it logs a warning and does **not** restart the miner.
+1. **Atomic Request Registration**:
+   Incoming inference requests register a pending claim and cancel active idle cooldowns immediately upon arrival, prior to running blocking pre-inference hooks (e.g. process shutdown).
+2. **Uncertain Inference Termination & Protective Restart Inhibition**:
+   Closing an upstream HTTP connection does NOT prove that LM Studio has halted GPU inference. Incomplete SSE streams, client disconnects before `[DONE]`, and upstream HTTP 5xx errors are treated as uncertain terminations. The coordinator imposes a protective `RestartInhibition`, preventing automatic miner restart until explicit administrator recovery (`resource-coordinator recover`) or subsequent confirmed successful inference completion.
+3. **Optional Bounded Drain (Best-Effort)**:
+   An optional `bounded_drain_seconds` setting may be configured to attempt draining upstream bytes upon client disconnect. This is explicitly documented as a best-effort drain, not a hard guarantee; if `[DONE]` does not arrive within the drain window, restart remains inhibited.
+4. **Separation of External Process Permissions**:
+   The coordinator strictly separates:
+   - Permission to stop an external process (`allow_external_stop`).
+   - Permission to restart that process (`allow_external_restart`).
+   - Ownership of a coordinator-initiated pause (`was_stopped_by_coordinator`).
+   - Lifecycle ownership (`ProcessLifecycleOwner`: COORDINATOR, EXTERNAL, UNMANAGED).
+5. **Windows Shutdown Mechanics**:
+   On Windows, console applications like `krig-miner.exe` are stopped gracefully using `GenerateConsoleCtrlEvent(1, pid)` (`CTRL_BREAK_EVENT`) to permit CUDA driver synchronization and memory cleanup before escalating to `terminate()` or `kill()`.
+6. **Telemetry & Feature Status**:
+   - **GPU Monitoring**: Currently mocked via `monitors/gpu.py`. Full NVML / `pynvml` integration is scheduled for Phase C.
+   - **State Persistence**: Configuration supports `state_persistence_path`, but active disk state persistence is deferred to Phase C.
+   - **Model TTL Lifecycle**: Model unloading based on inactivity timers is deferred to Phase D.
+   - **Direct Port 1234 Bypass**: Clients connecting directly to port 1234 bypass coordination. Client configuration migration to port 1235 is scheduled for Phase E.

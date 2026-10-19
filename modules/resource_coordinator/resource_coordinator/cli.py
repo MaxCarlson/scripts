@@ -53,6 +53,18 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
     status_parser.add_argument("-j", "--json", action="store_true", help="Output status in JSON format.")
 
+    # recover
+    recover_parser = subparsers.add_parser("recover", help="Clear restart inhibition on coordinator.")
+    recover_parser.add_argument(
+        "-u", "--url", default="http://127.0.0.1:1235", help="Coordinator gateway URL (default: http://127.0.0.1:1235)."
+    )
+    recover_parser.add_argument(
+        "-r",
+        "--resource",
+        default="gpu.inference",
+        help="Resource name to clear inhibition for (default: gpu.inference).",
+    )
+
     # config
     config_parser = subparsers.add_parser("config", help="Inspect or validate configuration.")
     config_sub = config_parser.add_subparsers(dest="config_command", required=True)
@@ -125,6 +137,12 @@ def cmd_status(args: argparse.Namespace) -> int:
                     print(f"Cooling down:       {gpu_data.get('is_cooling_down')}")
                     if gpu_data.get("is_cooling_down"):
                         print(f"Cooldown remaining: {gpu_data.get('cooldown_remaining')}s")
+                    inhibited = gpu_data.get("is_restart_inhibited", False)
+                    print(f"Restart inhibited:  {inhibited}")
+                    if inhibited and gpu_data.get("inhibition"):
+                        inh = gpu_data["inhibition"]
+                        print(f"  Reason:           {inh.get('reason')}")
+                        print(f"  Holder ID:        {inh.get('holder_id')}")
                 return 0
             else:
                 print(f"Error querying coordinator ({resp.status_code}): {resp.text}", file=sys.stderr)
@@ -227,6 +245,26 @@ def cmd_miner(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_recover(args: argparse.Namespace) -> int:
+    url = f"{args.url.rstrip('/')}/_coordinator/recover?resource={args.resource}"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(url)
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("status") == "cleared":
+                    print(f"Cleared restart inhibition on resource '{args.resource}'. Idle cooldown restored.")
+                else:
+                    print(f"No active restart inhibition found on resource '{args.resource}'.")
+                return 0
+            else:
+                print(f"Error recovering coordinator ({resp.status_code}): {resp.text}", file=sys.stderr)
+                return 1
+    except Exception as exc:
+        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -237,6 +275,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         code = cmd_serve(args)
     elif args.command == "status":
         code = cmd_status(args)
+    elif args.command == "recover":
+        code = cmd_recover(args)
     elif args.command == "config":
         code = cmd_config(args)
     elif args.command == "miner":
