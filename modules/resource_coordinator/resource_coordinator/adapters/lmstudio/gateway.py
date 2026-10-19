@@ -9,7 +9,7 @@ import logging
 import os
 import secrets
 import uuid
-from typing import AsyncIterator, Awaitable, Callable, Dict, Optional, Set
+from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Set
 
 import anyio
 import httpx
@@ -19,6 +19,12 @@ from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
 from starlette.types import Receive, Scope, Send
 
+from resource_coordinator.adapters.lmstudio.admission import (
+    MODEL_LOAD_PATHS,
+    AdmissionController,
+    OperationClassifier,
+    OperationKind,
+)
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
 
@@ -37,38 +43,15 @@ HOP_BY_HOP_HEADERS: Set[str] = {
     "host",
 }
 
-INFERENCE_PATHS: Set[str] = {
-    "/v1/chat/completions",
-    "/v1/completions",
-    "/v1/embeddings",
-    "/v1/responses",
-    "/api/v1/chat",
-    "/api/v0/chat/completions",
-    "/api/v0/completions",
-    "/api/v0/embeddings",
-    "/v1/messages",
-}
-
-MODEL_LOAD_PATHS: Set[str] = {
-    "/api/v0/model/load",
-    "/api/v1/models/load",
-}
-
 
 def is_inference_request(method: str, path: str) -> bool:
     """Determine whether an incoming request represents active inference."""
-    if method.upper() != "POST":
-        return False
-    normalized = path.rstrip("/")
-    return normalized in INFERENCE_PATHS or normalized.endswith("/chat/completions")
+    return OperationClassifier.classify(method, path) == OperationKind.INFERENCE
 
 
 def is_model_load_request(method: str, path: str) -> bool:
     """Determine whether an incoming request represents model loading."""
-    if method.upper() != "POST":
-        return False
-    normalized = path.rstrip("/")
-    return normalized in MODEL_LOAD_PATHS or normalized.endswith("/models/load")
+    return OperationClassifier.classify(method, path) == OperationKind.MODEL_MUTATION
 
 
 class StreamCompletionDetector:
@@ -177,6 +160,7 @@ class LMStudioGateway:
         timeout_seconds: float = 120.0,
         bounded_drain_seconds: Optional[float] = None,
         recovery_token: Optional[str] = None,
+        admission_controller: Optional[AdmissionController] = None,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
@@ -185,8 +169,13 @@ class LMStudioGateway:
         self.bounded_drain_seconds = bounded_drain_seconds
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+        self.admission_controller = admission_controller or AdmissionController(event_dispatcher=self.dispatcher)
         if bounded_drain_seconds:
             raise ValueError("Bounded drain is disabled until cancellation-safe upstream draining is verified")
+
+    def set_service(self, service: Any) -> None:
+        """Bind a coordinator service to gate admission on service readiness."""
+        self.admission_controller.set_service(service)
 
     def get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
@@ -202,18 +191,26 @@ class LMStudioGateway:
             await self._http_client.aclose()
             self._http_client = None
 
-    def create_app(self) -> Starlette:
+    def create_app(self, service: Optional[Any] = None) -> Starlette:
         """Create Starlette ASGI application for the proxy."""
+        if service is not None:
+            self.set_service(service)
         from contextlib import asynccontextmanager
 
         @asynccontextmanager
         async def lifespan(app: Starlette):
+            if service is not None and hasattr(service, "start") and service.state.value == "created":
+                await service.start()
             yield
-            await self.close()
+            if service is not None and hasattr(service, "stop") and service.state.value != "stopped":
+                await service.stop()
+            else:
+                await self.close()
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
             Route("/_coordinator/recover", self.handle_coordinator_recover, methods=["POST"]),
+            Route("/_coordinator/abort", self.handle_coordinator_abort, methods=["POST"]),
             Route("/{path:path}", self.handle_proxy, methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]),
         ]
         app = Starlette(routes=routes, lifespan=lifespan)
@@ -222,9 +219,12 @@ class LMStudioGateway:
     async def handle_coordinator_status(self, request: Request) -> JSONResponse:
         """Expose internal coordinator health, lease metrics, and restart inhibition state."""
         inhibition = self.lease_mgr.get_inhibition("gpu.inference")
+        svc = self.admission_controller.service
         return JSONResponse(
             {
                 "status": "online",
+                "service_state": svc.state.value if svc else "standalone",
+                "is_ready": svc.is_ready if svc else True,
                 "upstream_url": self.upstream_url,
                 "gpu_inference": {
                     "active_count": self.lease_mgr.active_count("gpu.inference"),
@@ -236,6 +236,21 @@ class LMStudioGateway:
                 },
             }
         )
+
+    async def handle_coordinator_abort(self, request: Request) -> JSONResponse:
+        """Trigger emergency abort to stop admission and prevent miner restarts."""
+        svc = self.admission_controller.service
+        if not svc:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        reason = "operator_abort_endpoint"
+        try:
+            body = await request.json()
+            if isinstance(body, dict) and body.get("reason"):
+                reason = str(body["reason"])
+        except Exception:
+            pass
+        res = await svc.emergency_abort(reason=reason)
+        return JSONResponse(res)
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
         """Explicit authenticated operator override; no upstream idle verifier exists yet."""
@@ -279,6 +294,22 @@ class LMStudioGateway:
         method = request.method
         request_id = f"coord-{uuid.uuid4().hex[:12]}"
 
+        # Evaluate admission decision through centralized controller
+        decision = self.admission_controller.evaluate(method, path)
+        if not decision.allowed:
+            svc = self.admission_controller.service
+            return JSONResponse(
+                {
+                    "error": {
+                        "code": decision.error_type,
+                        "type": decision.error_type,
+                        "message": decision.error_message,
+                        "service_state": svc.state.value if svc else "standalone",
+                    }
+                },
+                status_code=decision.status_code,
+            )
+
         # Read body
         body = await request.body()
         model_name = ""
@@ -290,42 +321,27 @@ class LMStudioGateway:
             except Exception:
                 pass
 
-        # Check if inference or model load
-        if is_inference_request(method, path):
-            return await self._proxy_with_coordination(
-                request=request,
-                path=path,
-                body=body,
-                request_id=request_id,
-                resource="gpu.inference",
-                lease_type=LeaseType.SHARED,
-                event_name="lmstudio.inference_requested",
-                finish_event="lmstudio.inference_finished",
-                model_name=model_name,
-            )
-        elif is_model_load_request(method, path):
-            if not self.dispatcher.has_blocking_listeners("lmstudio.model_load_requested"):
-                return JSONResponse(
-                    {"error": "Model loading requires an explicit blocking coordination policy"}, status_code=503
-                )
-            return await self._proxy_with_coordination(
-                request=request,
-                path=path,
-                body=body,
-                request_id=request_id,
-                resource="gpu.model_loading",
-                lease_type=LeaseType.EXCLUSIVE,
-                event_name="lmstudio.model_load_requested",
-                finish_event="lmstudio.model_load_finished",
-                model_name=model_name,
-            )
-        else:
-            if method not in {"GET", "HEAD", "OPTIONS"}:
-                return JSONResponse(
-                    {"error": "Unsupported state-mutating endpoint; coordination is required"}, status_code=501
-                )
-            # Metadata / read request - forward directly without stopping mining
+        if decision.operation_kind in {OperationKind.METADATA_READ, OperationKind.UNKNOWN_READ}:
             return await self._forward_direct(request, path, body, request_id)
+
+        if decision.operation_kind in {OperationKind.INFERENCE, OperationKind.MODEL_MUTATION}:
+            assert decision.resource is not None
+            assert decision.lease_type is not None
+            assert decision.event_name is not None
+            assert decision.finish_event is not None
+            return await self._proxy_with_coordination(
+                request=request,
+                path=path,
+                body=body,
+                request_id=request_id,
+                resource=decision.resource,
+                lease_type=decision.lease_type,
+                event_name=decision.event_name,
+                finish_event=decision.finish_event,
+                model_name=model_name,
+            )
+
+        return JSONResponse({"error": "Unhandled admission decision"}, status_code=500)
 
     async def _proxy_with_coordination(
         self,

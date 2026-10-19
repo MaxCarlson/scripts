@@ -52,3 +52,67 @@ def test_cli_config_validate(tmp_path, capsys):
     assert code == 0
     captured = capsys.readouterr()
     assert "Configuration is valid." in captured.out
+
+
+def test_cli_parse_args_serve_options():
+    args = parse_args(["serve", "--start-miner", "--stop-miner-on-shutdown", "--drain-timeout", "15.0"])
+    assert args.command == "serve"
+    assert args.start_miner is True
+    assert args.stop_miner_on_shutdown is True
+    assert args.drain_timeout == 15.0
+
+
+def test_cli_parse_args_preflight():
+    args = parse_args(["preflight", "-c", "config.yaml", "-f", "-j"])
+    assert args.command == "preflight"
+    assert args.config == "config.yaml"
+    assert args.fake_miner is True
+    assert args.json is True
+
+
+def test_cli_parse_args_abort():
+    args = parse_args(["abort", "-u", "http://localhost:1235", "-r", "test emergency abort", "-j"])
+    assert args.command == "abort"
+    assert args.url == "http://localhost:1235"
+    assert args.reason == "test emergency abort"
+    assert args.json is True
+
+
+def test_cli_cmd_preflight(tmp_path, capsys):
+    from resource_coordinator.cli import cmd_preflight
+
+    cfg = tmp_path / "valid.yaml"
+    cfg.write_text("version: '1.0'\nprocesses: {}\npolicies: []\n", encoding="utf-8")
+    args = parse_args(["preflight", "-c", str(cfg), "-f", "-j"])
+    code = cmd_preflight(args)
+    assert code == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["passed"] is True
+
+
+def test_cli_cmd_abort_mock(monkeypatch, capsys):
+    from unittest.mock import MagicMock
+    import httpx
+    from resource_coordinator.cli import cmd_abort
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "status": "aborted",
+        "state": "stopped",
+        "message": "Emergency abort executed",
+    }
+
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.post.return_value = mock_resp
+
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: mock_client)
+
+    args = parse_args(["abort", "-r", "manual abort test", "-j"])
+    code = cmd_abort(args)
+    assert code == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["status"] == "aborted"

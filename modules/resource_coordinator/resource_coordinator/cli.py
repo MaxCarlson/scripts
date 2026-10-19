@@ -54,6 +54,55 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Use in-memory fake miner backend instead of real process.",
     )
+    serve_parser.add_argument(
+        "--start-miner",
+        action="store_true",
+        help="Start miner during service startup if configured.",
+    )
+    serve_parser.add_argument(
+        "--stop-miner-on-shutdown",
+        action="store_true",
+        help="Stop miner during service shutdown if configured.",
+    )
+    serve_parser.add_argument(
+        "--drain-timeout",
+        type=float,
+        default=30.0,
+        help="Timeout in seconds for draining active requests during shutdown (default: 30.0).",
+    )
+
+    # preflight
+    preflight_parser = subparsers.add_parser(
+        "preflight",
+        help="Run preflight validation on coordinator configuration and environment.",
+    )
+    preflight_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
+    preflight_parser.add_argument(
+        "-f",
+        "--fake-miner",
+        action="store_true",
+        help="Use in-memory fake miner backend.",
+    )
+    preflight_parser.add_argument("-j", "--json", action="store_true", help="Output preflight result in JSON format.")
+
+    # abort
+    abort_parser = subparsers.add_parser(
+        "abort",
+        help="Trigger emergency abort on running coordinator service.",
+    )
+    abort_parser.add_argument(
+        "-u",
+        "--url",
+        default="http://127.0.0.1:1235",
+        help="Coordinator gateway URL (default: http://127.0.0.1:1235).",
+    )
+    abort_parser.add_argument(
+        "-r",
+        "--reason",
+        default="Manual operator emergency abort",
+        help="Reason for emergency abort.",
+    )
+    abort_parser.add_argument("-j", "--json", action="store_true", help="Output abort response in JSON format.")
 
     # status
     status_parser = subparsers.add_parser("status", help="Query coordinator service status.")
@@ -139,12 +188,21 @@ def cmd_serve(args: argparse.Namespace) -> int:
         config.service.upstream_url = args.upstream
 
     system = build_system(config, use_fake_processes=args.fake_miner)
-    app = system.gateway.create_app()
+    from resource_coordinator.core.service import CoordinatorService
+
+    service = CoordinatorService(
+        system=system,
+        start_miner_on_startup=getattr(args, "start_miner", False),
+        stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
+        drain_timeout=getattr(args, "drain_timeout", 30.0),
+    )
+    app = system.gateway.create_app(service)
 
     print(f"Starting Resource Coordinator Gateway v{__version__}")
     print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
     print(f"Upstream host: {config.service.upstream_url}")
     print(f"Managed procs: {list(system.supervisors.keys())}")
+    print(f"Service state: {service.state.value}")
     print("Press Ctrl+C to terminate.")
 
     uvicorn.run(
@@ -167,6 +225,8 @@ def cmd_status(args: argparse.Namespace) -> int:
                     print(json.dumps(data, indent=2))
                 else:
                     print(f"Coordinator Status: {data.get('status')}")
+                    print(f"Service State:      {data.get('service_state')}")
+                    print(f"Ready:              {data.get('is_ready')}")
                     print(f"Upstream URL:       {data.get('upstream_url')}")
                     gpu_data = data.get("gpu_inference", {})
                     print(f"Active inferences:  {gpu_data.get('active_count')}")
@@ -388,6 +448,60 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     return asyncio.run(_async_diagnose(args.config, args.url, args.json))
 
 
+async def _async_preflight(config_path: Optional[str], fake_miner: bool, as_json: bool) -> int:
+    config = load_config(config_path)
+    system = build_system(config, use_fake_processes=fake_miner)
+    from resource_coordinator.core.service import CoordinatorService
+
+    service = CoordinatorService(system=system)
+    passed, messages = service.preflight_check()
+    if as_json:
+        data = {
+            "passed": passed,
+            "messages": messages,
+            "errors": [m for m in messages if m.startswith("ERROR")],
+            "warnings": [m for m in messages if m.startswith("WARNING")],
+        }
+        print(json.dumps(data, indent=2))
+    else:
+        print(f"Preflight status: {'PASSED' if passed else 'FAILED'}")
+        for msg in messages:
+            print(f"  {msg}")
+    return 0 if passed else 1
+
+
+def cmd_preflight(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_preflight(args.config, args.fake_miner, args.json))
+
+
+def cmd_abort(args: argparse.Namespace) -> int:
+    url = f"{args.url.rstrip('/')}/_coordinator/abort"
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            resp = client.post(url, json={"reason": args.reason})
+            if resp.status_code == 200:
+                data = resp.json()
+                if args.json:
+                    print(json.dumps(data, indent=2))
+                else:
+                    print("Emergency abort acknowledged by coordinator:")
+                    print(f"  Status:        {data.get('status')}")
+                    print(f"  Service State: {data.get('service_state') or data.get('state')}")
+                    print(f"  Reason:        {data.get('reason')}")
+                    if data.get("inhibited_resources"):
+                        print(f"  Inhibited:     {', '.join(data['inhibited_resources'])}")
+                return 0
+            else:
+                print(
+                    f"Error triggering coordinator abort ({resp.status_code}): {resp.text}",
+                    file=sys.stderr,
+                )
+                return 1
+    except Exception as exc:
+        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
 def main(argv: Optional[List[str]] = None) -> None:
     args = parse_args(argv)
     log_level = logging.DEBUG if args.verbose else logging.INFO
@@ -406,6 +520,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         code = cmd_miner(args)
     elif args.command == "diagnose":
         code = cmd_diagnose(args)
+    elif args.command == "preflight":
+        code = cmd_preflight(args)
+    elif args.command == "abort":
+        code = cmd_abort(args)
 
     sys.exit(code)
 
