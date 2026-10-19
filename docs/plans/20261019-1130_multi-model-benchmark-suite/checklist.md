@@ -15,11 +15,11 @@
 - [x] 1.6: Write offline tests in `benchmark_core/tests/experiment_test.py` and verify all existing tests pass.
 
 ## Stage 2: `agent_benchmark` Multi-Model Discovery, Planning, and Safe Model Lifecycle
-- [ ] 2.1: Implement LM Studio model discovery and loaded model detection in `agent_benchmark/lifecycle.py`.
-- [ ] 2.2: Implement safe model transition logic with explicit error handling and VRAM stabilization checks.
-- [ ] 2.3: Implement `expand_experiment_plan` and `ExperimentScheduler` enforcing sequential local execution (1 active GPU trial) in `agent_benchmark/scheduler.py`.
-- [ ] 2.4: Validate existing dispatch-receipt guards and preserve durable recovery.
-- [ ] 2.5: Write offline unit tests with mock LM Studio API responses in `agent_benchmark/tests/scheduler_test.py`.
+- [x] 2.1: Implement LM Studio model discovery and loaded model detection in `agent_benchmark/models_lifecycle.py` and re-export in `lifecycle.py`.
+- [x] 2.2: Implement safe model transition logic with explicit error handling and VRAM stabilization checks.
+- [x] 2.3: Implement `expand_experiment_plan` and `ExperimentScheduler` enforcing sequential local execution (1 active GPU trial) in `agent_benchmark/scheduler.py`.
+- [x] 2.4: Validate existing dispatch-receipt guards and preserve durable recovery.
+- [x] 2.5: Write offline unit tests with mock LM Studio API responses in `agent_benchmark/tests/models_lifecycle_test.py` and `agent_benchmark/tests/scheduler_test.py`.
 
 ## Stage 3: `termdash` Bounded Live Terminal Dashboard & Quiet Mode
 - [ ] 3.1: Implement `ExperimentDashboard` consuming `termdash.LiveBlock` and `termdash.table`.

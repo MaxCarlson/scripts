@@ -1,33 +1,29 @@
 # STATUS — Multi-Model Benchmarking
 
 **Plan:** `20261019-1130_multi-model-benchmark-suite`  
-**Current Stage:** Stage 1 Complete & Verified (Ready for Stage 2)  
+**Current Stage:** Stage 2 Complete & Verified (Ready for Stage 3)  
 **Active Worktree:** `C:\Users\mcarls\src\scripts-multi-model-benchmark`  
 **Active Branch:** `agent/multi-model-benchmark-20261019-1130`  
 **Baseline Commit:** `91d04f5d`  
-**Last Updated:** 2026-10-19T11:46:00-07:00
+**Stage 1 Commit:** `8ec27f46`  
+**Last Updated:** 2026-10-19T11:56:00-07:00
 
 ---
 
 ## Current Status
-- Stage 1 (`benchmark_core` generic experiment models, comparison eligibility enforcement, denominator preservation, and Wilson confidence intervals) implemented and thoroughly verified:
-  - Added `ExperimentConfig`, `ExperimentRunRef`, `Experiment` models in `modules/benchmark_core/benchmark_core/models.py`.
-  - Added `ScoreConfidenceInterval` and `compute_wilson_score_interval` (95% CI) in `modules/benchmark_core/benchmark_core/stats.py`.
-  - Implemented production comparison eligibility filtering and aggregation in `modules/benchmark_core/benchmark_core/compare.py`:
-    - Strict scored denominator: `passed + failed + timed_out`. `failed` and `timed_out` trials remain in denominator.
-    - Infrastructure errors and unscored trials are isolated and do not pollute the scored denominator.
-    - Ineligible runs (`comparison_eligible=False` or mismatched budget profiles) are segregated to `reference_variants` and excluded from `canonical_rankings`.
-    - Variant demotion: if any constituent run for a variant is ineligible, the variant is demoted to `reference_variants`.
-    - Hard compatibility checks on `suite_id`, `suite_version`, `scoring_basis`, and overlapping `task_ids`.
-  - Implemented atomic experiment persistence (`save_experiment`, `load_experiment`) in `modules/benchmark_core/benchmark_core/storage.py`.
-  - Added comprehensive test suite in `modules/benchmark_core/tests/experiment_test.py`.
-  - All 92 `benchmark_core` tests passed (1 skipped).
-  - All 244 `agent_benchmark` tests passed (3 skipped).
-  - All 76 `termdash` tests passed (1 skipped).
-  - Code hygiene: `ruff check modules/benchmark_core` passed (0 errors); `mypy --explicit-package-bases modules/benchmark_core/benchmark_core` passed (0 errors).
+- **Stage 1 (`benchmark_core`)**: Committed (`8ec27f46`). All experiment models, Wilson CIs, production comparison eligibility enforcement, denominator preservation, and atomic storage implemented and tested (92 passed).
+- **Stage 2 (`agent_benchmark` model discovery, planning, & safe lifecycle)**: Implemented and verified:
+  - `modules/agent_benchmark/agent_benchmark/models_lifecycle.py`: Implemented `list_downloaded_models` (rich metadata parse, HTTP fallback), `get_loaded_models`, `get_loaded_model`, and `transition_model` with strict authorization checks, VRAM release verification, and zero blind retries on service errors.
+  - Re-exported model lifecycle operations in `modules/agent_benchmark/agent_benchmark/lifecycle.py`.
+  - `modules/agent_benchmark/agent_benchmark/scheduler.py`: Implemented `expand_experiment_plan` (batched model grouping, deterministic sequencing) and `ExperimentScheduler` (enforces strictly 1 active trial on GPU, per-trial reservation, event callbacks, and incremental experiment persistence).
+  - Tests added: `modules/agent_benchmark/tests/models_lifecycle_test.py` (7 tests) and `modules/agent_benchmark/tests/scheduler_test.py` (4 tests).
+  - All 255 `agent_benchmark` tests pass.
+  - All 92 `benchmark_core` tests pass.
+  - All 76 `termdash` tests pass.
+  - Code hygiene: `ruff check modules/agent_benchmark` clean (0 errors); mypy clean on new modules.
 
 ---
 
 ## Next Action
-1. Stop for user manual validation / confirmation of Stage 1 completion.
-2. Upon user approval, commit Stage 1 and proceed to Stage 2 (`agent_benchmark` multi-model discovery, planning, and safe model lifecycle).
+1. Stop for user manual validation / confirmation of Stage 2 completion.
+2. Upon user approval, commit Stage 2 and proceed to Stage 3 (`termdash` bounded live terminal dashboard & `-Q`/`--quiet` mode).

@@ -16,7 +16,7 @@ include = ["agent_benchmark*"]
 namespaces = false
 
 [tool.pytest.ini_options]
-pythonpath = ["."]
+pythonpath = [".", "../benchmark_core"]
 testpaths = ["tests"]
 
 [tool.ruff]

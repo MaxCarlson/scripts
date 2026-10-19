@@ -257,3 +257,39 @@ def cleanup_workspace(
                 return CleanupOutcome(False, attempt, f"Cleanup failed: {type(error).__name__}")
             time.sleep(retry_seconds)
     raise AssertionError("unreachable")
+
+
+# Re-export model lifecycle operations from models_lifecycle
+from .models_lifecycle import (  # noqa: E402
+    DownloadedModelInfo,
+    LoadedModelInfo,
+    ModelDiscoveryError,
+    ModelTransitionError,
+    ModelTransitionNotAuthorizedError,
+    get_loaded_model,
+    get_loaded_models,
+    list_downloaded_models,
+    transition_model,
+)
+
+__all__ = [
+    "WorkerHandle",
+    "Observation",
+    "LifecycleBridge",
+    "TerminationDecision",
+    "confirm_termination",
+    "OwnedWorkspace",
+    "DispatchGuard",
+    "CleanupOutcome",
+    "cleanup_workspace",
+    "DownloadedModelInfo",
+    "LoadedModelInfo",
+    "ModelDiscoveryError",
+    "ModelTransitionError",
+    "ModelTransitionNotAuthorizedError",
+    "get_loaded_model",
+    "get_loaded_models",
+    "list_downloaded_models",
+    "transition_model",
+]
+
