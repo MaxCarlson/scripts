@@ -3,5 +3,6 @@ __pycache__/
 .pytest_cache/
 .pytest_tmp_root/
 *.egg-info/
+config.supervised.private.yaml
 dist/
 build/
