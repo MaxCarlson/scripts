@@ -553,8 +553,8 @@ class CliTuiApp:
                 self.manager_cursor = self.workspace.active_index
                 return True
 
-        # Telemetry mode toggle: 't' / 'T' (when not editing) or Ctrl+H (ASCII 8)
-        if key == 8 or (key in (ord("t"), ord("T")) and not self._is_widget_editing()):
+        # Telemetry mode toggle: 't' / 'T' or Ctrl+H (ASCII 8) when not editing form widget
+        if not self._is_widget_editing() and (key == 8 or key in (ord("t"), ord("T"))):
             self.cycle_telemetry_mode()
             return True
 
@@ -1106,21 +1106,34 @@ class CliTuiApp:
 
     def render_console_pane(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render interactive shell console inside the pane viewport."""
+        telemetry_lines = self._format_telemetry_lines(width)
         pane = self.workspace.active_pane
         runner = pane.runner
-        lines: List[str] = []
+        lines: List[str] = list(telemetry_lines)
         if len(self.workspace.panes) > 1:
             header = self.render_tab_strip(width)
         else:
             header = f"┌─ {self.title} > Shell Console ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
-        badges = ["[Enter] Execute", "[p] Panes", "[Shift+Esc] New Pane"]
+        badge_map = {
+            TelemetryDisplayMode.FULL: "[t] Telemetry: Full",
+            TelemetryDisplayMode.COMPACT: "[t] Telemetry: Compact",
+            TelemetryDisplayMode.HIDDEN: "[t] Telemetry: Off",
+        }
+        telemetry_badge = badge_map.get(self.telemetry_mode, "[t] Telemetry: Full")
+
+        badges = [
+            "[Enter] Execute",
+            "[p] Panes",
+            telemetry_badge,
+            "[Shift+Esc] New Pane",
+        ]
         if len(self.workspace.panes) > 1:
             badges.append("[[]/[]] Prev/Next")
         badges.extend(["[Esc] Panes", "[exit] Close"])
         footer_lines = format_hotkey_footer(badges, width)
-        inner_height = max(1, height - 1 - len(footer_lines))
+        inner_height = max(1, height - len(telemetry_lines) - 1 - len(footer_lines))
 
         raw_lines = runner.lines if runner else []
         visible = pane.viewport.get_visible_lines(
@@ -1379,22 +1392,146 @@ class CliTuiApp:
                 content_lines.append(f"  Runner:      {runner_str}")
                 content_lines.append(f"  Command:     {cmd_str}")
 
-            if len(content_lines) > inner_height:
+            show_inspector = inner_height >= 14
+            inspector_lines: List[str] = []
+            if show_inspector:
+                border_w = max(20, width - 4)
+                if self.form_cursor < len(self.form_widgets):
+                    active_arg = self.form_widgets[self.form_cursor].arg
+                    flags_str = (
+                        ", ".join(active_arg.flags)
+                        if active_arg.flags
+                        else active_arg.dest
+                    )
+                    title = f" Option: {flags_str} "
+                    h_top = ("  ┌─" + title)[: border_w - 1].ljust(
+                        border_w - 1, "─"
+                    ) + "┐"
+                    help_str = active_arg.help or "(No description provided)"
+                    h_help = (
+                        f"  │ Help:    {help_str}"[: border_w - 1].ljust(border_w - 1)
+                        + "│"
+                    )
+                    choices_part = (
+                        f"Choices: {', '.join(str(c) for c in active_arg.choices)}"
+                        if active_arg.choices
+                        else "Choices: any"
+                    )
+                    def_part = (
+                        f"Default: {active_arg.default}"
+                        if active_arg.default is not None
+                        else "Default: None"
+                    )
+                    h_choices = (
+                        f"  │ {choices_part}  │  {def_part}"[: border_w - 1].ljust(
+                            border_w - 1
+                        )
+                        + "│"
+                    )
+                    req_label = "Required" if active_arg.required else "Optional"
+                    nargs_label = (
+                        f" (nargs: {active_arg.nargs})" if active_arg.nargs else ""
+                    )
+                    type_label = (
+                        f"Type: {active_arg.action_type}{nargs_label} [{req_label}]"
+                    )
+                    h_type = (
+                        f"  │ {type_label}"[: border_w - 1].ljust(border_w - 1) + "│"
+                    )
+                    h_bot = "  └" + ("─" * (border_w - 2)) + "┘"
+                    inspector_lines = [h_top, h_help, h_choices, h_type, h_bot]
+                elif run_focused:
+                    h_top = ("  ┌─ Action: Run Command ")[: border_w - 1].ljust(
+                        border_w - 1, "─"
+                    ) + "┐"
+                    h_desc = (
+                        "  │ Execute this command in the background with the configured arguments."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_key = (
+                        "  │ Shortcut: Enter or Space on this button to start execution."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_hint = (
+                        "  │ Process output will stream live in the running viewport."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_bot = "  └" + ("─" * (border_w - 2)) + "┘"
+                    inspector_lines = [h_top, h_desc, h_key, h_hint, h_bot]
+                elif prev_focused:
+                    h_top = ("  ┌─ Action: Preview CLI ")[: border_w - 1].ljust(
+                        border_w - 1, "─"
+                    ) + "┐"
+                    h_desc = (
+                        "  │ View the exact command line invocation string and tokens."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_key = (
+                        "  │ Shortcut: Enter or Space on this button."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_hint = (
+                        "  │ Safe view mode; does not start any subprocess."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_bot = "  └" + ("─" * (border_w - 2)) + "┘"
+                    inspector_lines = [h_top, h_desc, h_key, h_hint, h_bot]
+                elif back_focused:
+                    h_top = ("  ┌─ Action: Back ")[: border_w - 1].ljust(
+                        border_w - 1, "─"
+                    ) + "┐"
+                    h_desc = (
+                        "  │ Return to the previous menu or subcommand list."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_key = (
+                        "  │ Shortcut: Enter or Space on this button, or press Esc."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_hint = (
+                        "  │ Discards unsaved configuration changes."[
+                            : border_w - 1
+                        ].ljust(border_w - 1)
+                        + "│"
+                    )
+                    h_bot = "  └" + ("─" * (border_w - 2)) + "┘"
+                    inspector_lines = [h_top, h_desc, h_key, h_hint, h_bot]
+
+            form_height = inner_height - len(inspector_lines)
+            if len(content_lines) > form_height:
                 focused_line_idx = 0
                 for i, line in enumerate(content_lines):
                     if "▶" in line:
                         focused_line_idx = i
                         break
-                half_h = inner_height // 2
+                half_h = form_height // 2
                 start_idx = max(
-                    0, min(focused_line_idx - half_h, len(content_lines) - inner_height)
+                    0, min(focused_line_idx - half_h, len(content_lines) - form_height)
                 )
-                visible_form_lines = content_lines[start_idx : start_idx + inner_height]
+                visible_form_lines = content_lines[start_idx : start_idx + form_height]
             else:
                 visible_form_lines = list(content_lines)
-                while len(visible_form_lines) < inner_height:
+                while len(visible_form_lines) < form_height:
                     visible_form_lines.append("")
-            lines.extend(visible_form_lines[:inner_height])
+            lines.extend(visible_form_lines[:form_height])
+            if inspector_lines:
+                lines.extend(inspector_lines)
 
         elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
@@ -1433,17 +1570,36 @@ class CliTuiApp:
         lines.extend(footer_lines)
         return lines[:height]
 
+    def close(self) -> None:
+        """Cleanly terminate runners and background telemetry sampler."""
+        self.workspace.terminate_all()
+        if self.runner and self.runner.is_running:
+            self.runner.terminate()
+        if self.sampler is not None:
+            self.sampler.stop()
+
+    def __enter__(self) -> CliTuiApp:
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            if getattr(self, "sampler", None) is not None:
+                self.sampler.stop()
+        except Exception:
+            pass
+
     def run(self) -> int:
         """Run the interactive curses TUI."""
         try:
             return curses.wrapper(self._curses_loop)
         except KeyboardInterrupt:
-            self.workspace.terminate_all()
-            if self.runner and self.runner.is_running:
-                self.runner.terminate()
+            self.close()
             return 0
         finally:
-            self.workspace.terminate_all()
+            self.close()
 
     def _curses_loop(self, stdscr: Any) -> int:
         curses.curs_set(0)
@@ -1474,7 +1630,5 @@ class CliTuiApp:
             except curses.error:
                 pass
 
-        self.workspace.terminate_all()
-        if self.runner and self.runner.is_running:
-            self.runner.terminate()
+        self.close()
         return 0

@@ -100,3 +100,45 @@ def test_multi_pane_telemetry_pid_synchronization():
 
     app._switch_to_pane(p2.id)
     assert app.sampler._target_pid is None
+
+
+def test_backspace_in_form_text_widget_not_intercepted_by_telemetry():
+    p = argparse.ArgumentParser(prog="sample")
+    p.add_argument("--name", default="hello")
+    app = CliTuiApp(parser=p)
+    app._open_form_for_command(app.root_command)
+    assert app.telemetry_mode == TelemetryDisplayMode.FULL
+    assert app.form_widgets
+    widget = app.form_widgets[0]
+    widget.is_editing = True
+    widget.value = "abc"
+    widget.cursor_pos = 3
+
+    # Send ASCII 8 (Backspace) while editing text
+    handled = app.process_key(8)
+    assert handled is True
+    assert widget.value == "ab"
+    # Telemetry mode must NOT cycle
+    assert app.telemetry_mode == TelemetryDisplayMode.FULL
+
+
+def test_console_pane_renders_telemetry_lines():
+    from cli_tui.state import PaneType
+
+    p = argparse.ArgumentParser(prog="sample")
+    app = CliTuiApp(parser=p)
+    app.workspace.create_pane(title="shell", pane_type=PaneType.CONSOLE)
+    screen = app.render_virtual_screen(height=24, width=80)
+    # Header should contain telemetry
+    assert any("System: CPU" in line for line in screen[:3])
+    # And footer should have telemetry badge
+    assert any("[t] Telemetry:" in line for line in screen[-3:])
+
+
+def test_app_close_stops_sampler():
+    p = argparse.ArgumentParser(prog="sample")
+    with CliTuiApp(parser=p) as app:
+        assert app.sampler is not None
+        assert app.sampler._running is True
+    # Upon exit from context manager
+    assert app.sampler._running is False

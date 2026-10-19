@@ -40,21 +40,28 @@ def test_process_tree_attribution_and_normalization():
 
     from sysmon.sampler import ProcessStats
 
-    # Spawn child python process executing sleep
-    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.0)"])
+    # Spawn child python process executing busy CPU loop for 0.8s
+    code = "import time; t0 = time.time()\nwhile time.time() - t0 < 0.8: pass"
+    proc = subprocess.Popen([sys.executable, "-c", code])
     sampler = HardwareSampler(interval=0.05)
     sampler.set_target_pid(proc.pid)
     try:
+        # Tick 1 establishes baseline
+        sampler._sample_tick()
+        time.sleep(0.1)
+        # Tick 2 computes non-zero delta
         sampler._sample_tick()
         _, proc_stats = sampler.get_snapshots()
         assert isinstance(proc_stats, ProcessStats)
         assert proc_stats.pid == proc.pid
         assert proc_stats.is_active is True
-        assert 0.0 <= proc_stats.cpu_pct <= 100.0
+        assert proc_stats.cpu_pct > 0.0
+        assert proc_stats.cpu_pct <= 100.0
         assert proc_stats.memory_rss_bytes > 0
     finally:
         proc.terminate()
         proc.wait()
+        sampler.stop()
 
 
 def test_process_exit_and_nosuchprocess_handling():

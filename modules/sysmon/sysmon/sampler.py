@@ -53,8 +53,8 @@ def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
                 "name": g.name,
                 "id": g.id,
                 "load": g.load * 100.0,
-                "mem_used": g.memoryUsed,
-                "mem_total": g.memoryTotal,
+                "mem_used": float(g.memoryUsed) * 1024 * 1024,
+                "mem_total": float(g.memoryTotal) * 1024 * 1024,
                 "temp": g.temperature,
             }
             for g in GPUtil.getGPUs()
@@ -104,13 +104,22 @@ class HardwareSampler:
         self._process_stats: Optional[ProcessStats] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._stop_event = threading.Event()
+        self._proc_cache: dict[int, psutil.Process] = {}
 
-        self._last_gpu_query = 0.0
+        self._last_gpu_query = -float("inf")
         self._cached_gpu_rows: List[dict] = []
         self._gpu_min_interval = 1.5
 
         # Initialize psutil cpu percent baseline
         psutil.cpu_percent(interval=None)
+
+    def __enter__(self) -> HardwareSampler:
+        self.start()
+        return self
+
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
+        self.stop()
 
     def start(self) -> None:
         """Start the background sampling thread."""
@@ -118,6 +127,7 @@ class HardwareSampler:
             if self._running:
                 return
             self._running = True
+            self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._run_loop, daemon=True, name="HardwareSamplerThread"
             )
@@ -129,6 +139,8 @@ class HardwareSampler:
             if not self._running:
                 return
             self._running = False
+            self._stop_event.set()
+            self._proc_cache.clear()
             thread = self._thread
             self._thread = None
 
@@ -138,6 +150,8 @@ class HardwareSampler:
     def set_target_pid(self, pid: Optional[int]) -> None:
         """Set or clear the active process PID to track."""
         with self._lock:
+            if self._target_pid != pid:
+                self._proc_cache.clear()
             self._target_pid = pid
             if pid is None:
                 self._process_stats = None
@@ -155,10 +169,7 @@ class HardwareSampler:
 
         # 2. System GPU (throttled to >=1.5s interval to minimize overhead)
         now = time.monotonic()
-        if (
-            now - self._last_gpu_query >= self._gpu_min_interval
-            or not self._cached_gpu_rows
-        ):
+        if now - self._last_gpu_query >= self._gpu_min_interval:
             self._cached_gpu_rows, _ = _gpu_info_safe()
             self._last_gpu_query = now
 
@@ -201,6 +212,11 @@ class HardwareSampler:
                     except (psutil.NoSuchProcess, psutil.AccessDenied):
                         pass
 
+                    current_pids = {p.pid for p in procs}
+                    for cached_pid in list(self._proc_cache.keys()):
+                        if cached_pid not in current_pids:
+                            del self._proc_cache[cached_pid]
+
                     total_raw_cpu = 0.0
                     total_rss = 0
                     total_threads = 0
@@ -208,11 +224,19 @@ class HardwareSampler:
 
                     for p in procs:
                         try:
-                            total_raw_cpu += p.cpu_percent(interval=None)
-                            mem_info = p.memory_info()
+                            cached_proc = self._proc_cache.get(p.pid)
+                            if cached_proc is None:
+                                cached_proc = p
+                                self._proc_cache[p.pid] = cached_proc
+                                cached_proc.cpu_percent(interval=None)
+                            else:
+                                total_raw_cpu += cached_proc.cpu_percent(interval=None)
+
+                            mem_info = cached_proc.memory_info()
                             total_rss += mem_info.rss
-                            total_threads += p.num_threads()
+                            total_threads += cached_proc.num_threads()
                         except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            self._proc_cache.pop(p.pid, None)
                             continue
 
                     logical_cores = psutil.cpu_count(logical=True) or 1
@@ -271,16 +295,15 @@ class HardwareSampler:
 
         with self._lock:
             self._system_stats = sys_snap
-            self._process_stats = proc_snap
+            if self._target_pid == target_pid:
+                self._process_stats = proc_snap
 
     def _run_loop(self) -> None:
         """Background thread worker loop."""
-        while True:
-            with self._lock:
-                if not self._running:
-                    break
+        while not self._stop_event.is_set():
             try:
                 self._sample_tick()
             except Exception:
                 pass
-            time.sleep(self.interval)
+            if self._stop_event.wait(timeout=self.interval):
+                break
