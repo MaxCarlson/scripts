@@ -184,8 +184,91 @@ class HardwareSampler:
             gpu_temp_c=gpu_temp,
         )
 
+        # 3. Process Tree Telemetry
+        proc_snap = None
+        target_pid = self._target_pid
+        if target_pid is not None:
+            try:
+                root_proc = psutil.Process(target_pid)
+                zombie_status = getattr(psutil, "STATUS_ZOMBIE", "zombie")
+                if root_proc.is_running() and root_proc.status() != zombie_status:
+                    procs = [root_proc]
+                    try:
+                        procs.extend(root_proc.children(recursive=True))
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
+                    total_raw_cpu = 0.0
+                    total_rss = 0
+                    total_threads = 0
+                    num_children = len(procs) - 1
+
+                    for p in procs:
+                        try:
+                            total_raw_cpu += p.cpu_percent(interval=None)
+                            mem_info = p.memory_info()
+                            total_rss += mem_info.rss
+                            total_threads += p.num_threads()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
+
+                    logical_cores = psutil.cpu_count(logical=True) or 1
+                    norm_cpu = min(100.0, max(0.0, total_raw_cpu / logical_cores))
+                    mem_pct = (
+                        min(100.0, max(0.0, (total_rss / vm.total) * 100.0))
+                        if vm.total
+                        else 0.0
+                    )
+
+                    try:
+                        proc_name = root_proc.name()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        proc_name = f"PID {target_pid}"
+
+                    proc_snap = ProcessStats(
+                        pid=target_pid,
+                        name=proc_name,
+                        cpu_pct=norm_cpu,
+                        memory_rss_bytes=total_rss,
+                        memory_pct=mem_pct,
+                        gpu_load_pct=None,
+                        gpu_mem_used_bytes=None,
+                        num_threads=max(1, total_threads),
+                        num_children=max(0, num_children),
+                        is_active=True,
+                    )
+                else:
+                    if self._process_stats and self._process_stats.pid == target_pid:
+                        proc_snap = ProcessStats(
+                            pid=target_pid,
+                            name=self._process_stats.name,
+                            cpu_pct=0.0,
+                            memory_rss_bytes=self._process_stats.memory_rss_bytes,
+                            memory_pct=self._process_stats.memory_pct,
+                            gpu_load_pct=None,
+                            gpu_mem_used_bytes=None,
+                            num_threads=0,
+                            num_children=0,
+                            is_active=False,
+                        )
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                if self._process_stats and self._process_stats.pid == target_pid:
+                    proc_snap = ProcessStats(
+                        pid=target_pid,
+                        name=self._process_stats.name,
+                        cpu_pct=0.0,
+                        memory_rss_bytes=self._process_stats.memory_rss_bytes,
+                        memory_pct=self._process_stats.memory_pct,
+                        gpu_load_pct=None,
+                        gpu_mem_used_bytes=None,
+                        num_threads=0,
+                        num_children=0,
+                        is_active=False,
+                    )
+
         with self._lock:
             self._system_stats = sys_snap
+            self._process_stats = proc_snap
 
     def _run_loop(self) -> None:
         """Background thread worker loop."""

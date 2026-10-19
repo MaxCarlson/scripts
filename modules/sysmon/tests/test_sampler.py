@@ -32,3 +32,35 @@ def test_sampler_graceful_gpu_fallback(monkeypatch):
     assert sys_stats is not None
     assert sys_stats.gpu_load_pct is None
     assert sys_stats.gpu_mem_used_bytes is None
+
+
+def test_process_tree_attribution_and_normalization():
+    import subprocess
+    import sys
+
+    from sysmon.sampler import ProcessStats
+
+    # Spawn child python process executing sleep
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(1.0)"])
+    sampler = HardwareSampler(interval=0.05)
+    sampler.set_target_pid(proc.pid)
+    try:
+        sampler._sample_tick()
+        _, proc_stats = sampler.get_snapshots()
+        assert isinstance(proc_stats, ProcessStats)
+        assert proc_stats.pid == proc.pid
+        assert proc_stats.is_active is True
+        assert 0.0 <= proc_stats.cpu_pct <= 100.0
+        assert proc_stats.memory_rss_bytes > 0
+    finally:
+        proc.terminate()
+        proc.wait()
+
+
+def test_process_exit_and_nosuchprocess_handling():
+    sampler = HardwareSampler(interval=0.05)
+    # Set non-existent PID
+    sampler.set_target_pid(9999999)
+    sampler._sample_tick()
+    _, proc_stats = sampler.get_snapshots()
+    assert proc_stats is None or proc_stats.is_active is False
