@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import curses
-from typing import Any, Sequence, Tuple
+from typing import Any, List, Sequence, Tuple
 
 from .schema import CliArgument
 
@@ -36,6 +36,10 @@ class BaseWidget:
         """Render widget line for console."""
         focus_mark = "▶ " if is_focused else "  "
         return f"{focus_mark}{self.label}: {self.value}"
+
+    def render_lines(self, width: int, is_focused: bool) -> List[str]:
+        """Render widget line(s) fitting width."""
+        return [self.render_line(width, is_focused)]
 
 
 class BooleanWidget(BaseWidget):
@@ -147,11 +151,22 @@ class TextWidget(BaseWidget):
 
     def render_line(self, width: int, is_focused: bool) -> str:
         focus_mark = "▶ " if is_focused else "  "
+        prefix = f"{focus_mark}{self.label}: "
+        avail = max(10, width - len(prefix) - 4)
+        val = str(self.value or "")
         if self.is_editing:
-            val_display = f"[{self.value}▏]"
+            if len(val) > avail:
+                start = max(0, self.cursor_pos - avail + 2)
+                sub_val = val[start : start + avail]
+                val_display = f"[{sub_val}▏]"
+            else:
+                val_display = f"[{val}▏]"
         else:
-            val_display = f"[ {self.value or '—'} ]"
-        return f"{focus_mark}{self.label}: {val_display}"
+            if len(val) > avail:
+                val_display = f"[ ...{val[-(avail - 3) :]} ]"
+            else:
+                val_display = f"[ {val or '—'} ]"
+        return f"{prefix}{val_display}"
 
 
 class CountWidget(BaseWidget):
@@ -222,16 +237,48 @@ class MultiChoiceWidget(BaseWidget):
             return True
         return False
 
-    def render_line(self, width: int, is_focused: bool) -> str:
+    def render_lines(self, width: int, is_focused: bool) -> List[str]:
         focus_mark = "▶ " if is_focused else "  "
-        rendered_opts = []
+        label_prefix = f"{focus_mark}{self.label}: "
+        indent_prefix = " " * len(label_prefix)
+
+        rendered_opts: List[str] = []
         for idx, opt in enumerate(self.options):
             checked = "[X]" if opt in self.value else "[ ]"
             if is_focused and idx == self.cursor_option_idx:
                 rendered_opts.append(f"<{checked} {opt}>")
             else:
                 rendered_opts.append(f"{checked} {opt}")
-        return f"{focus_mark}{self.label}: {'  '.join(rendered_opts)}"
+
+        if not rendered_opts:
+            return [label_prefix]
+
+        lines: List[str] = []
+        current_line = label_prefix
+        avail_width = max(20, width)
+
+        for opt_str in rendered_opts:
+            candidate = (
+                f"{current_line}{opt_str}"
+                if current_line == label_prefix
+                else f"{current_line}  {opt_str}"
+            )
+            if len(candidate) <= avail_width or (
+                current_line == label_prefix
+                and len(candidate) <= len(label_prefix) + len(opt_str)
+            ):
+                current_line = candidate
+            else:
+                lines.append(current_line)
+                current_line = f"{indent_prefix}{opt_str}"
+
+        if current_line:
+            lines.append(current_line)
+
+        return lines
+
+    def render_line(self, width: int, is_focused: bool) -> str:
+        return "\n".join(self.render_lines(width, is_focused))
 
 
 def create_widget_for_arg(arg: CliArgument, value: Any) -> BaseWidget:

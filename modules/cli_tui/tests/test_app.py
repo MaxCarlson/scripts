@@ -139,3 +139,44 @@ def test_addstr_ansi_parsing(monkeypatch):
     # 3. Bold Green text (code 1;32 -> bold + pair 2 -> 200)
     addstr_ansi(stdscr, y=2, x=0, line="\033[1;32mBold Green\033[0m", max_x=80)
     stdscr.addstr.assert_called_once_with(2, 0, "Bold Green", curses.A_BOLD | 200)
+
+
+def test_failed_command_esc_and_enter_return_to_form():
+    parser = build_sample_parser()
+    app = CliTuiApp(parser=parser)
+    app.process_key(10)  # Enter 'build' form
+    app.current_form.set_value("target", "my_target")
+
+    class FailedRunner:
+        is_running = False
+        exit_code = 2
+        elapsed_seconds = 0.5
+        lines = ["error: argument --quality invalid"]
+
+    app.runner = FailedRunner()
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+
+    # Esc returns to form with arguments preserved
+    app.process_key(27)
+    assert app.screen_mode == TuiScreenMode.FORM
+    assert app.current_form.get_value("target") == "my_target"
+
+    # Re-enter running screen, Enter also returns to form
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+    app.process_key(10)
+    assert app.screen_mode == TuiScreenMode.FORM
+    assert app.current_form.get_value("target") == "my_target"
+
+
+def test_form_scrolling_keeps_focused_item_visible():
+    p = argparse.ArgumentParser(prog="many_args")
+    for i in range(20):
+        p.add_argument(f"--arg{i}", default=f"val{i}")
+    app = CliTuiApp(parser=p)
+    app._open_form_for_command(app.root_command)
+    # Cursor to bottom button [ Run Command ] (index 20)
+    app.form_cursor = 20
+    screen = app.render_virtual_screen(height=15, width=80)
+    assert len(screen) == 15
+    screen_text = "\n".join(screen)
+    assert "▶ [ Run Command ]" in screen_text

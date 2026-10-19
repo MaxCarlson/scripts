@@ -75,6 +75,8 @@ def test_finished_pane_preservation_and_rerun():
     assert app.workspace.active_index == 0
     assert app.screen_mode == TuiScreenMode.RUNNING
 
-    # Esc in finished pane should switch to another pane, NOT wipe to form
+    # Esc in finished pane should return to form with args preserved
     app.process_key(27)
-    assert app.workspace.active_index == 1
+    assert app.screen_mode == TuiScreenMode.FORM
+    assert app.current_form is not None
+    assert app.current_form.get_value("destination") == "hent1"

@@ -94,6 +94,47 @@ def addstr_ansi(stdscr: Any, y: int, x: int, line: str, max_x: int) -> None:
             curr_x += len(to_draw)
 
 
+def format_hotkey_footer(badges: Sequence[str], width: int) -> List[str]:
+    """Format hotkey badges into 1, 2, or 3 box-drawn footer lines fitting width."""
+    if not badges:
+        return ["└─".ljust(width - 1, "─") + "┘"]
+
+    rows: List[List[str]] = []
+    current_row: List[str] = []
+    # "├─ " or "└─ " (3 chars) + " " before suffix (1 char) + suffix (1 char) = 5 chars overhead
+    avail_width = max(10, width - 5)
+
+    current_len = 0
+    for badge in badges:
+        badge_len = len(badge)
+        needed = badge_len if not current_row else current_len + 2 + badge_len
+        if needed <= avail_width:
+            current_row.append(badge)
+            current_len = needed
+        else:
+            if current_row:
+                rows.append(current_row)
+            current_row = [badge]
+            current_len = badge_len
+
+    if current_row:
+        rows.append(current_row)
+
+    lines: List[str] = []
+    total_rows = len(rows)
+    for idx, row in enumerate(rows):
+        is_last = idx == total_rows - 1
+        prefix = "└─ " if is_last else "├─ "
+        suffix = "┘" if is_last else "┤"
+        content = "  ".join(row)
+        full_line = f"{prefix}{content} "
+        if len(full_line) > width - 1:
+            full_line = full_line[: max(0, width - 2)] + " "
+        lines.append(full_line.ljust(width - 1, "─") + suffix)
+
+    return lines
+
+
 @dataclass
 class PostRunAction:
     """Action callback offered after a process run finishes."""
@@ -364,11 +405,11 @@ class CliTuiApp:
                 return True
             elif self.screen_mode == TuiScreenMode.RUNNING:
                 if not self.runner or not self.runner.is_running:
-                    if len(self.workspace.panes) > 1:
-                        self.cycle_pane_prev()
+                    if self.current_form:
+                        self.navigation.current_screen = TuiScreenMode.FORM
                         return True
                     else:
-                        # In single pane mode, keep finished view intact
+                        self.navigation.current_screen = TuiScreenMode.MENU
                         return True
                 return True
             elif self.screen_mode == TuiScreenMode.MENU:
@@ -605,8 +646,12 @@ class CliTuiApp:
                     return True
         elif key in (10, 13):
             if not self.runner or not self.runner.is_running:
-                self.navigation.current_screen = TuiScreenMode.FORM
-                return True
+                if self.current_form:
+                    self.navigation.current_screen = TuiScreenMode.FORM
+                    return True
+                else:
+                    self.navigation.current_screen = TuiScreenMode.MENU
+                    return True
 
         # Check post-run action callbacks when runner is finished
         if not self.runner or not self.runner.is_running:
@@ -623,6 +668,71 @@ class CliTuiApp:
                         return True
 
         return False
+
+    def _get_active_hotkey_badges(self, *, is_scrollable: bool = False) -> List[str]:
+        """Return complete list of active hotkey badges for the current screen."""
+        if self.is_confirming_quit:
+            return [
+                "Are you sure you want to exit?",
+                "[y] Yes",
+                "[n] No",
+                "[Esc] Cancel",
+            ]
+
+        has_multiple_panes = len(self.workspace.panes) > 1
+
+        if self.screen_mode == TuiScreenMode.RUNNING:
+            if self.runner and self.runner.is_running:
+                badges = ["[c] Cancel", "[s] Branch", "[p] Panes"]
+                if has_multiple_panes:
+                    badges.append("[[]/[]] Prev/Next")
+                badges.append("[Shift+Esc] New Pane")
+                if is_scrollable:
+                    badges.append("[↑/↓] Scroll")
+                badges.extend(["[q] Quit", "[Q] Force Quit"])
+                return badges
+            else:
+                badges = ["[q] Quit", "[Q] Force Quit", "[Esc] Back", "[p] Panes"]
+                if has_multiple_panes:
+                    badges.append("[[]/[]] Prev/Next")
+                badges.extend(["[s] Branch", "[r] Re-run"])
+                for action in self.post_run_actions:
+                    if action.predicate is None or action.predicate(self):
+                        badges.append(action.label)
+                if is_scrollable:
+                    badges.append("[↑/↓] Scroll")
+                badges.append("[Enter] Return")
+                return badges
+
+        elif self.screen_mode == TuiScreenMode.FORM:
+            if self._is_widget_editing():
+                return ["[Enter] Done", "[Esc] Cancel", "[Typing] Input"]
+            badges = [
+                "[↑/↓] Navigate",
+                "[Enter/Space] Edit",
+                "[Esc] Back",
+                "[p] Panes",
+                "[Shift+Esc] New Pane",
+            ]
+            if has_multiple_panes:
+                badges.append("[[]/[]] Prev/Next")
+            badges.extend(["[q] Quit", "[Q] Force Quit"])
+            return badges
+
+        elif self.screen_mode == TuiScreenMode.MENU:
+            badges = [
+                "[↑/↓] Navigate",
+                "[Enter] Select",
+                "[Esc] Back",
+                "[p] Panes",
+                "[Shift+Esc] New Pane",
+            ]
+            if has_multiple_panes:
+                badges.append("[[]/[]] Prev/Next")
+            badges.extend(["[q] Quit", "[Q] Force Quit"])
+            return badges
+
+        return ["[q] Quit", "[Q] Force Quit", "[Esc] Back", "[p] Panes"]
 
     def render_tab_strip(self, width: int) -> str:
         """Render the top tab strip showing open panes and active focus."""
@@ -661,11 +771,18 @@ class CliTuiApp:
 
     def render_pane_manager(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render the 30/70 split Pane Tree & Preview Manager overlay."""
+        badges = ["[Enter] Switch", "[n] New Pane", "[d] Delete", "[D] Delete All"]
+        if len(self.workspace.panes) > 1:
+            badges.append("[↑/↓] Select")
+        badges.extend(["[PgUp/PgDn] Scroll", "[Esc] Close"])
+        footer_lines = format_hotkey_footer(badges, width)
+        footer_count = len(footer_lines)
+
         lines: List[str] = []
         header = f"┌─ {self.title} Pane Manager ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
-        inner_height = max(1, height - 3)
+        inner_height = max(1, height - 1 - footer_count)
 
         if width < 60:
             content_w = max(10, width - 2)
@@ -681,7 +798,7 @@ class CliTuiApp:
                 lines.append(
                     f"│{('     ' + p.status_badge)[:content_w].ljust(content_w)}│"
                 )
-            while len(lines) < height - 1:
+            while len(lines) < height - footer_count:
                 lines.append(f"│{' ' * content_w}│")
         else:
             left_w = max(18, int(width * 0.30))
@@ -771,7 +888,7 @@ class CliTuiApp:
                 for vline in visible:
                     right_items.append(f"   {vline}")
 
-            content_rows = max(1, inner_height - 3)
+            content_rows = max(1, height - 4 - footer_count)
             for r in range(content_rows):
                 l_text = left_items[r] if r < len(left_items) else ""
                 r_text = right_items[r] if r < len(right_items) else ""
@@ -781,34 +898,24 @@ class CliTuiApp:
 
             lines.append(f"└{'─' * left_w}┴{'─' * right_w}┘")
 
-        footer_text = (
-            "└─ [Enter] Switch  [n] New Pane  [d] Delete  [D] Delete All  [Esc] Close "
-        )
-        if width < 74:
-            footer_text = (
-                "└─ [Enter] Switch  [n] New  [d] Del  [D] Del All  [Esc] Close "
-            )
-        if len(footer_text) > width - 1:
-            footer_text = "└─ [Enter] Switch  [d] Del  [Esc] Close "
-        if len(footer_text) > width - 1:
-            avail = max(0, width - 1 - len("└─ ") - 1)
-            footer_text = f"└─ {footer_text[3 : 3 + avail]} "
-        footer = footer_text.ljust(width - 1, "─") + "┘"
-        if len(lines) < height:
-            lines.append(footer)
-        else:
-            lines[height - 1] = footer
-
+        lines.extend(footer_lines)
         return lines[:height]
 
     def render_new_pane_choice_dialog(
         self, *, height: int = 24, width: int = 80
     ) -> List[str]:
         """Render modal dialog prompting choice between Command Menu and Console."""
+        badges = [
+            "[1] New Command (Menu)",
+            "[2] Interactive Shell Console",
+            "[Esc] Cancel",
+        ]
+        footer_lines = format_hotkey_footer(badges, width)
+        inner_height = max(1, height - 1 - len(footer_lines))
+
         lines: List[str] = []
         header = f"┌─ {self.title} Pane Manager ".ljust(width - 1, "─") + "┐"
         lines.append(header)
-        inner_height = max(1, height - 3)
         content_lines = [
             "",
             "  Create New Workspace Pane:",
@@ -821,8 +928,7 @@ class CliTuiApp:
         while len(content_lines) < inner_height:
             content_lines.append("")
         lines.extend(content_lines[:inner_height])
-        footer = "└─ [1/2] Choose  [Esc] Cancel ".ljust(width - 1, "─") + "┘"
-        lines.append(footer)
+        lines.extend(footer_lines)
         return lines[:height]
 
     def render_console_pane(self, *, height: int = 24, width: int = 80) -> List[str]:
@@ -836,7 +942,13 @@ class CliTuiApp:
             header = f"┌─ {self.title} > Shell Console ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
-        inner_height = max(1, height - 3)
+        badges = ["[Enter] Execute", "[p] Panes", "[Shift+Esc] New Pane"]
+        if len(self.workspace.panes) > 1:
+            badges.append("[[]/[]] Prev/Next")
+        badges.extend(["[Esc] Panes", "[exit] Close"])
+        footer_lines = format_hotkey_footer(badges, width)
+        inner_height = max(1, height - 1 - len(footer_lines))
+
         raw_lines = runner.lines if runner else []
         visible = pane.viewport.get_visible_lines(
             raw_lines, height=max(1, inner_height - 2), width=max(10, width - 4)
@@ -850,13 +962,7 @@ class CliTuiApp:
         content_lines.append(f"  [{cwd}]> {inp}█")
         lines.extend(content_lines[:inner_height])
 
-        footer = (
-            "└─ [Enter] Execute  [p] Pane Manager  [Shift+Esc] New Pane ".ljust(
-                width - 1, "─"
-            )
-            + "┘"
-        )
-        lines.append(footer)
+        lines.extend(footer_lines)
         return lines[:height]
 
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
@@ -871,11 +977,14 @@ class CliTuiApp:
             return self.render_console_pane(height=height, width=width)
 
         if getattr(self, "is_showing_preview", False):
-            lines: List[str] = []
+            lines = []
             path_str = " > ".join([self.title] + self.navigation.path + ["Preview"])
             header = f"┌─ {path_str} (CLI Command Preview) ".ljust(width - 1, "─") + "┐"
             lines.append(header)
-            inner_height = max(1, height - 3)
+            footer_lines = format_hotkey_footer(
+                ["[Esc/Enter/Space] Close Preview"], width
+            )
+            inner_height = max(1, height - 1 - len(footer_lines))
             cwd = os.getcwd()
             runner_str = (
                 " ".join(self.executable) if self.executable else sys.executable
@@ -909,8 +1018,7 @@ class CliTuiApp:
             while len(content_lines) < inner_height:
                 content_lines.append("")
             lines.extend(content_lines[:inner_height])
-            footer = "└─ [Esc/Enter] Close Preview ".ljust(width - 1, "─") + "┘"
-            lines.append(footer)
+            lines.extend(footer_lines)
             return lines[:height]
 
         lines = []
@@ -921,7 +1029,19 @@ class CliTuiApp:
             header = f"┌─ {path_str} ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
-        inner_height = max(1, height - 3)
+        is_scrollable = False
+        if self.screen_mode == TuiScreenMode.RUNNING:
+            runner = self.runner
+            raw_lines = runner.lines if runner else []
+            visible_width = max(10, width - 4)
+            _, _, total_l = self.viewport.get_scroll_bounds(
+                raw_lines, height=max(1, height - 6), width=visible_width
+            )
+            is_scrollable = total_l > max(1, height - 6)
+
+        badges = self._get_active_hotkey_badges(is_scrollable=is_scrollable)
+        footer_lines = format_hotkey_footer(badges, width)
+        inner_height = max(1, height - 1 - len(footer_lines))
 
         if self.screen_mode == TuiScreenMode.MENU:
             cmd = self.current_command
@@ -945,7 +1065,8 @@ class CliTuiApp:
             ]
             for idx, widget in enumerate(self.form_widgets):
                 is_focused = idx == self.form_cursor
-                content_lines.append("  " + widget.render_line(width - 4, is_focused))
+                for w_line in widget.render_lines(width - 4, is_focused):
+                    content_lines.append("  " + w_line)
 
             content_lines.append("")
             run_focused = self.form_cursor == len(self.form_widgets)
@@ -972,9 +1093,22 @@ class CliTuiApp:
                 content_lines.append(f"  Runner:      {runner_str}")
                 content_lines.append(f"  Command:     {cmd_str}")
 
-            while len(content_lines) < inner_height:
-                content_lines.append("")
-            lines.extend(content_lines[:inner_height])
+            if len(content_lines) > inner_height:
+                focused_line_idx = 0
+                for i, line in enumerate(content_lines):
+                    if "▶" in line:
+                        focused_line_idx = i
+                        break
+                half_h = inner_height // 2
+                start_idx = max(
+                    0, min(focused_line_idx - half_h, len(content_lines) - inner_height)
+                )
+                visible_form_lines = content_lines[start_idx : start_idx + inner_height]
+            else:
+                visible_form_lines = list(content_lines)
+                while len(visible_form_lines) < inner_height:
+                    visible_form_lines.append("")
+            lines.extend(visible_form_lines[:inner_height])
 
         elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
@@ -1010,43 +1144,7 @@ class CliTuiApp:
                 content_lines.append("")
             lines.extend(content_lines[:inner_height])
 
-        # Footer
-        if self.is_confirming_quit:
-            footer = (
-                "└─ Are you sure you want to exit? (y/n) ".ljust(width - 1, "─") + "┘"
-            )
-        elif self.screen_mode == TuiScreenMode.RUNNING and (
-            not self.runner or not self.runner.is_running
-        ):
-            active_actions = [
-                a
-                for a in self.post_run_actions
-                if a.predicate is None or a.predicate(self)
-            ]
-            parts = ["[q] Quit", "[Esc] Back", "[s] Branch", "[r] Re-run"]
-            if active_actions:
-                parts.extend(a.label for a in active_actions)
-            if total_l > visible_height:
-                parts.append("[↑/↓] Scroll")
-            parts.append("[Enter] Return")
-
-            full_parts = list(parts)
-            if width >= 95:
-                full_parts.insert(1, "[Q] Force Quit")
-
-            footer_str = f"└─ {'  '.join(full_parts)} ".ljust(width - 1, "─") + "┘"
-            if len(footer_str) > width:
-                footer_str = f"└─ {'  '.join(parts)} ".ljust(width - 1, "─") + "┘"
-            footer = footer_str
-        else:
-            footer = (
-                "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Select ".ljust(
-                    width - 1, "─"
-                )
-                + "┘"
-            )
-        lines.append(footer)
-
+        lines.extend(footer_lines)
         return lines[:height]
 
     def run(self) -> int:

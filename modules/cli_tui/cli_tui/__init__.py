@@ -1,6 +1,6 @@
 """cli_tui - Reusable argparse-to-termdash interactive TUI engine."""
 
-from .app import CliTuiApp, PostRunAction
+from .app import CliTuiApp, PostRunAction, format_hotkey_footer
 from .image_viewer import ImageViewerState, SideBySideImageViewer, launch_image_viewer
 from .preview_set import PreviewItem, PreviewSet, PreviewVariant, scan_preview_directory
 from .process_runner import OutputViewport, ProcessRunner
@@ -16,6 +16,7 @@ __all__ = [
     "NavigationStack",
     "OutputViewport",
     "PostRunAction",
+    "format_hotkey_footer",
     "PreviewItem",
     "PreviewSet",
     "PreviewVariant",

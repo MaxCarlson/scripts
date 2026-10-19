@@ -146,3 +146,20 @@ def test_create_widget_for_count_arg():
     # Right arrow increments
     widget.handle_key(curses.KEY_RIGHT)
     assert widget.value == 1
+
+
+def test_multichoice_widget_wrapping_lines():
+    arg = CliArgument(
+        dest="format",
+        flags=("-f", "--format"),
+        choices=("auto", "webp", "jpeg", "avif", "png", "keep", "all"),
+    )
+    widget = MultiChoiceWidget(arg, options=arg.choices, value=[])
+    widget.cursor_option_idx = 6  # On 'all'
+
+    lines = widget.render_lines(width=76, is_focused=True)
+    assert len(lines) == 2
+    assert "auto" in lines[0]
+    assert "keep" in lines[0]
+    assert "<[ ] all>" in lines[1]
+    assert not any(len(line) > 76 for line in lines)
