@@ -128,9 +128,10 @@ async def run_attempt(
                 dispatch_started = True
                 guard.submission_started = True
                 handle = await bridge.dispatch(workspace.path, prompt, provider=provider, model=model, agent=agent)
-                _write_json(evidence_dir / "dispatch.json", bridge.last_receipt)
                 journal.update(stage="observing", handle=asdict(handle))
+                # Persist recovery ownership before writing secondary receipt evidence.
                 _write_json(evidence_dir / "lifecycle.json", journal)
+                _write_json(evidence_dir / "dispatch.json", bridge.last_receipt)
                 consecutive_errors = 0
                 max_consecutive_errors = 3
                 while True:

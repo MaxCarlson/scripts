@@ -87,3 +87,46 @@ def test_scope_audit_in_details_and_timed_out_precedence(tmp_path):
     assert trial.details["scope_violations"] == ["C:/temp/outside.py"]
     assert trial.details["scope_audit"]["transcript_violations"] == ["C:/temp/outside.py"]
 
+
+
+@pytest.mark.parametrize("budget_expired, code, expected", [
+    (False, None, "unscored"), (True, None, "timed_out"),
+    (False, "def grep(*args, **kwargs): return []\n", "failed"),
+])
+def test_opaque_operations_never_imply_scope_compliance(tmp_path, budget_expired, code, expected):
+    worker = Worker() if code is None else Worker(code)
+    worker.last_history = [{
+        "info": {"id": "assistant-1", "sessionID": "session-1", "role": "assistant", "parentID": "user-1"},
+        "parts": [{"type": "tool", "callID": "call-shell", "tool": "bash", "state": {
+            "status": "completed", "input": {"command": "python -B public_check.py"},
+            "output": "ok", "time": {"start": 1, "end": 2},
+        }}],
+    }]
+    evidence = replace(attempt(tmp_path, worker), task_budget_expired=budget_expired)
+    trial = convert(evidence, tmp_path)
+    assert trial.status == expected
+    assert trial.metrics["agent.scope_compliance"].quality == "unavailable"
+    assert trial.details["scope_audit"]["compliance"] == "uncertain"
+    assert trial.metrics["agent.worker_first_pass"].value != 1
+    if expected == "unscored":
+        assert trial.metrics["agent.worker_first_pass"].value is None
+
+
+
+def test_structured_completion_report_is_not_an_opaque_filesystem_operation(tmp_path):
+    worker = Worker()
+    worker.last_history[0]["parts"].append({
+        "type": "tool", "tool": "StructuredOutput", "callID": "report-1",
+        "state": {"status": "completed", "input": {"outcome": "completed", "changed_paths": ["grep.py"]},
+                  "output": "Structured output accepted", "time": {"start": 1, "end": 2}},
+    })
+    trial = convert(attempt(tmp_path, worker), tmp_path)
+    assert trial.status == "passed"
+    assert trial.metrics["agent.scope_compliance"].value == 1
+    assert not trial.details["scope_audit"]["unverifiable_operations"]
+
+
+def test_missing_scope_audit_cannot_be_scored_full_success(tmp_path):
+    trial = convert(replace(attempt(tmp_path, Worker()), scope_audit=None), tmp_path)
+    assert trial.status == "unscored"
+    assert trial.metrics["agent.scope_compliance"].value is None

@@ -147,7 +147,7 @@ def test_external_cancel_persists_one_infrastructure_result_and_pending_receipt(
     assert read_pending(tmp_path / "state") is not None
 
 
-@pytest.mark.parametrize("response", [{}, None, [], {"jobId": "known-job"}, "transport", "empty_error", "known_error",
+@pytest.mark.parametrize("response", [{}, None, [], {"jobId": "known-job"}, "transport", "empty_error", "known_error", "lost_receipt",
                                       {"jobId": 17, "sessionId": [], "messageId": None}])
 def test_unknown_submission_survives_restart_and_refuses_dispatch(tmp_path, response):
     import json
@@ -155,6 +155,12 @@ def test_unknown_submission_survives_restart_and_refuses_dispatch(tmp_path, resp
     from agent_benchmark.bridge import OpenCodeBridge, SubmissionUncertain
 
     class UncertainBridge(OpenCodeBridge):
+        async def dispatch(self, *args, **kwargs):
+            if response == "lost_receipt":
+                self.last_receipt = {}
+                raise ConnectionError("Submission may exist despite missing receipt")
+            return await super().dispatch(*args, **kwargs)
+
         async def preflight(self, directory, **kwargs):
             return {"version": "offline"}
 
@@ -192,3 +198,25 @@ def test_unknown_submission_survives_restart_and_refuses_dispatch(tmp_path, resp
     )
     assert restarted.returncode != 0 and "unresolved" in restarted.stderr.lower()
     assert not (tmp_path / "second-reports").exists()
+
+
+
+def test_post_submission_evidence_failure_preserves_ids_and_pending_receipt(tmp_path, monkeypatch):
+    import json
+    import agent_benchmark.attempt as flow
+    write = flow._write_json
+
+    def fail_dispatch_evidence(path, data):
+        if path.name == "dispatch.json":
+            raise OSError("dispatch evidence cannot be persisted")
+        return write(path, data)
+
+    monkeypatch.setattr(flow, "_write_json", fail_dispatch_evidence)
+    with pytest.warns(RuntimeWarning, match="Unresolved"):
+        run_dir = run(tmp_path)
+    assert read_pending(tmp_path / "state") is not None
+    assert load_run(run_dir)[1][0].status == "infrastructure_error"
+    journal = json.loads((run_dir / "evidence/trial-001/lifecycle.json").read_text())
+    assert journal["handle"]["job_id"] == "job-1"
+    assert journal["handle"]["session_id"] == "session-1"
+    assert journal["handle"]["message_id"] == "user-1"

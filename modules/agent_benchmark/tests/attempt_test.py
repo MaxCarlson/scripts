@@ -21,6 +21,11 @@ class Worker:
 
     def __init__(self, code=GOOD, *, unresolved=False, uncertain=False, extra=False):
         self.code, self.unresolved, self.uncertain, self.extra = code, unresolved, uncertain, extra
+        self.last_history = [{"info": {"id": "assistant-1", "role": "assistant", "sessionID": "session-1",
+                                      "parentID": "user-1"}, "parts": [{
+            "type": "tool", "tool": "write", "callID": "write-grep",
+            "state": {"status": "completed", "input": {"filePath": "grep.py"}},
+        }]}]
 
     async def preflight(self, directory, **kwargs):
         return {"opencode_version": "mock", **kwargs}

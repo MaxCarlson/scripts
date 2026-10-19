@@ -9,6 +9,7 @@ import math
 import os
 from pathlib import Path, PureWindowsPath
 import platform
+import secrets
 import shutil
 import subprocess
 import sys
@@ -144,6 +145,8 @@ def verify(snapshot: Snapshot, verifier: Path, output: Path, *, timeout_seconds:
     snapshot.check_intact()
     output.mkdir(parents=True, exist_ok=False)
     _write_tree(snapshot.files, output / "workspace")
+    nonce = secrets.token_hex(32)
+    completion_path = (output / "completion.json").resolve()
     start = time.monotonic()
     code = None
     stdout = stderr = ""
@@ -151,10 +154,24 @@ def verify(snapshot: Snapshot, verifier: Path, output: Path, *, timeout_seconds:
         completed = subprocess.run(
             [sys.executable, "-I", "-B", str(verifier.resolve()), str((output / "workspace").resolve())],
             cwd=output, capture_output=True, timeout=timeout_seconds,
+            env={**os.environ, "AGENT_BENCH_VERIFICATION_NONCE": nonce,
+                 "AGENT_BENCH_COMPLETION_PATH": str(completion_path)},
         )
         code = completed.returncode
         stdout, stderr = completed.stdout.decode("utf-8", "replace"), completed.stderr.decode("utf-8", "replace")
         status = {0: "passed", 1: "failed"}.get(code, "infrastructure_error")
+        if code == 0:
+            try:
+                completion = json.loads(completion_path.read_text(encoding="utf-8"))
+                if (not isinstance(completion, dict) or completion.get("nonce") != nonce
+                        or completion.get("status") != "passed"
+                        or type(completion.get("checks_completed")) is not int
+                        or completion["checks_completed"] < 1):
+                    raise ValueError("Invalid completion receipt")
+            except (OSError, ValueError):
+                status = "infrastructure_error"
+                stderr += "\nVerifier exited zero without a valid positive completion receipt"
+
     except subprocess.TimeoutExpired as error:
         status = "timed_out"
         stdout = (error.stdout or b"").decode("utf-8", "replace")
@@ -171,6 +188,7 @@ def verify(snapshot: Snapshot, verifier: Path, output: Path, *, timeout_seconds:
 MUTATION_TOOLS: frozenset[str] = frozenset({"write", "edit", "patch", "delete", "rm", "remove"})
 NON_MUTATING_TOOLS: frozenset[str] = frozenset({
     "read", "cat", "view", "grep", "glob", "find", "list", "ls", "browse", "web", "fetch",
+    "StructuredOutput",  # OpenCode completion-report tool; no filesystem execution.
 })
 
 
@@ -204,8 +222,15 @@ class ScopeAudit:
     mutation_events: tuple[MutationEvent, ...]
     unverifiable_operations: tuple[UnverifiableOperation, ...]
 
+    @property
+    def compliance(self) -> str:
+        if self.all_violations:
+            return "violated"
+        return "uncertain" if self.unverifiable_operations else "compliant"
+
     def to_dict(self) -> dict[str, Any]:
         return {
+            "compliance": self.compliance,
             "snapshot_violations": list(self.snapshot_violations),
             "transcript_violations": list(self.transcript_violations),
             "all_violations": list(self.all_violations),
@@ -273,18 +298,24 @@ def audit_transcript(
     mutated_paths_set: set[str] = set()
     violations_set: set[str] = set()
 
-    if not isinstance(history, list):
-        return ((), (), (), ())
+    if not isinstance(history, list) or not history:
+        return ((), (), (), (UnverifiableOperation("unknown", "Missing or malformed transcript", "", "", {}),))
 
     for msg in history:
         if not isinstance(msg, dict):
+            unverifiable_ops.append(UnverifiableOperation("unknown", "Malformed transcript message", "", "", {}))
             continue
-        msg_id = str((msg.get("info") or {}).get("id") or "")
+        info = msg.get("info")
+        msg_id = str(info.get("id") or "") if isinstance(info, dict) else ""
         parts = msg.get("parts")
         if not isinstance(parts, list):
+            unverifiable_ops.append(UnverifiableOperation("unknown", "Missing transcript parts", msg_id, "", {}))
             continue
         for part in parts:
-            if not isinstance(part, dict) or part.get("type") != "tool":
+            if not isinstance(part, dict):
+                unverifiable_ops.append(UnverifiableOperation("unknown", "Malformed transcript part", msg_id, "", {}))
+                continue
+            if part.get("type") != "tool":
                 continue
             tool = str(part.get("tool") or "")
             call_id = str(part.get("callID") or "")
@@ -316,12 +347,11 @@ def audit_transcript(
 
                 raw_path_str = raw_path.strip()
                 workdir = inp_dict.get("workdir") or inp_dict.get("cwd")
-                if isinstance(workdir, str) and workdir.strip():
-                    exec_dir = Path(workdir.strip()).resolve()
-                else:
-                    exec_dir = workspace_resolved
-
                 try:
+                    exec_dir = workspace_resolved
+                    if isinstance(workdir, str) and workdir.strip():
+                        candidate = Path(workdir.strip())
+                        exec_dir = (candidate if candidate.is_absolute() else workspace_resolved / candidate).resolve()
                     target_p = Path(raw_path_str)
                     resolved_p = target_p.resolve() if target_p.is_absolute() else (exec_dir / target_p).resolve()
                 except Exception as exc:
@@ -362,6 +392,11 @@ def audit_transcript(
 
                 if status == "completed" and not in_scope:
                     violations_set.add(canonical_path)
+                elif status != "completed":
+                    unverifiable_ops.append(UnverifiableOperation(
+                        tool, "Mutation did not complete; partial writes cannot be ruled out",
+                        msg_id, call_id, {"target_path": raw_path_str, "status": status},
+                    ))
 
             else:
                 cmd = inp_dict.get("command") or inp_dict.get("cmd")

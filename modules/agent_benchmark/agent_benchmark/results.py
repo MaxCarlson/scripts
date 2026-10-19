@@ -39,6 +39,9 @@ def trial_from_attempt(
         status = "infrastructure_error"
     elif attempt.scope_violations:
         status = "failed"
+    elif (attempt.verification.status == "passed"
+          and (attempt.scope_audit is None or attempt.scope_audit.compliance == "uncertain")):
+        status = "unscored"
     else:
         status = attempt.verification.status
     metrics = base_metrics()
@@ -47,13 +50,21 @@ def trial_from_attempt(
         "duration.worker_ms": MetricValue(attempt.worker_ms, "ms", "monotonic", "measured"),
         "duration.verification_ms": (MetricValue(attempt.verification.duration_ms, "ms", "monotonic", "measured")
                                      if attempt.verification else unavailable("ms", "No reliable S1 to verify")),
-        "agent.worker_first_pass": (unavailable("boolean", "Evaluation prevented by infrastructure uncertainty")
-                                    if status == "infrastructure_error" else
+        "agent.worker_first_pass": (unavailable("boolean", "Evaluation prevented by infrastructure or scope uncertainty")
+                                    if status in ("infrastructure_error", "unscored") else
                                     MetricValue(int(status == "passed"), "boolean", "independent_verifier_and_audit", "derived")),
-        "agent.scope_violations": (MetricValue(len(attempt.scope_violations), "count", "checkpoint_diff", "derived")
+        "agent.scope_violations": (MetricValue(
+            len(attempt.scope_violations), "count",
+            "snapshot_and_transcript" if attempt.scope_audit else "checkpoint_diff", "derived")
                                    if attempt.s1 is not None and attempt.termination.confirmed
                                    else unavailable("count", "No reliable S1 scope audit")),
     })
+    if attempt.scope_violations and attempt.termination.confirmed:
+        metrics["agent.scope_compliance"] = MetricValue(0, "boolean", "independent_scope_audit", "derived")
+    elif attempt.scope_audit and attempt.scope_audit.compliance == "compliant" and attempt.termination.confirmed:
+        metrics["agent.scope_compliance"] = MetricValue(1, "boolean", "independent_scope_audit", "derived")
+    else:
+        metrics["agent.scope_compliance"] = unavailable("boolean", "Scope could not be fully verified")
     checkpoints = {"S0": {"tree_hash": attempt.s0.tree_hash}}
     if attempt.s1:
         checkpoints["S1"] = {"tree_hash": attempt.s1.tree_hash, "diff_path": f"{evidence_path}/worker.patch"}

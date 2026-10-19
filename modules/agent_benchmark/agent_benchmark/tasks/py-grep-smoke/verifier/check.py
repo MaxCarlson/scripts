@@ -10,6 +10,8 @@ Exit codes:
 """
 
 import importlib.util
+import json
+import os
 from pathlib import Path
 import sys
 
@@ -41,7 +43,7 @@ def main() -> None:
             sys.exit(1)
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
-    except Exception as exc:
+    except BaseException as exc:  # Submitted module termination is an incorrect solution.
         print(f"Incorrect implementation: error loading grep.py: {exc}", file=sys.stderr)
         sys.exit(1)
 
@@ -50,6 +52,7 @@ def main() -> None:
         sys.exit(1)
 
     grep_fn = mod.grep
+    checks_completed = 0
 
     def run_case(
         name: str,
@@ -59,13 +62,14 @@ def main() -> None:
         ignore_case: bool = False,
         pass_kwarg: bool = True,
     ) -> None:
+        nonlocal checks_completed
         lines_copy = list(lines)
         try:
             if pass_kwarg:
                 actual = grep_fn(pattern, lines, ignore_case=ignore_case)
             else:
                 actual = grep_fn(pattern, lines)
-        except Exception as exc:
+        except BaseException as exc:  # Includes submitted SystemExit/KeyboardInterrupt.
             print(f"Incorrect implementation: case '{name}' raised exception: {exc}", file=sys.stderr)
             sys.exit(1)
 
@@ -90,6 +94,8 @@ def main() -> None:
                 file=sys.stderr,
             )
             sys.exit(1)
+
+        checks_completed += 1
 
     # 1. Basic match and no match
     run_case(
@@ -170,6 +176,14 @@ def main() -> None:
         ["learn λ-calculus today"],
     )
 
+    # A zero process exit can come from worker code. Emit positive evidence only
+    # after every assertion; stdout is diagnostic and is never a pass credential.
+    completion_path = os.environ.get("AGENT_BENCH_COMPLETION_PATH")
+    if completion_path:
+        Path(completion_path).write_text(json.dumps({
+            "nonce": os.environ["AGENT_BENCH_VERIFICATION_NONCE"],
+            "status": "passed", "checks_completed": checks_completed,
+        }), encoding="utf-8")
     print("PASS: all grep tests passed successfully", file=sys.stdout)
     sys.exit(0)
 

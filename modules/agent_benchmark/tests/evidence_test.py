@@ -47,7 +47,12 @@ def test_authoritative_verifier_runs_on_disposable_copy(tmp_path):
     (worker / "grep.py").write_text("seed")
     snap = capture(worker, tmp_path / "S1")
     verifier = tmp_path / "check.py"
-    verifier.write_text("import sys; from pathlib import Path; (Path(sys.argv[1]) / 'grep.py').write_text('modified')")
+    verifier.write_text(
+        "import sys, os, json; from pathlib import Path; "
+        "(Path(sys.argv[1]) / 'grep.py').write_text('modified'); "
+        "Path(os.environ['AGENT_BENCH_COMPLETION_PATH']).write_text(json.dumps({"
+        "'nonce': os.environ['AGENT_BENCH_VERIFICATION_NONCE'], 'status': 'passed', 'checks_completed': 1}))"
+    )
     result = verify(snap, verifier, tmp_path / "verification", timeout_seconds=2)
     assert result.status == "passed"
     assert (snap.path / "grep.py").read_text() == "seed"
@@ -263,3 +268,83 @@ def test_reaudit_trial_traceably_audits_without_overwriting(tmp_path):
     audit_dict = audit.to_dict()
     assert isinstance(json.dumps(audit_dict), str)
 
+
+
+@pytest.mark.parametrize("code", [
+    "raise SystemExit(0)\n",
+    "def grep(*args, **kwargs): raise SystemExit(0)\n",
+    "import os; os._exit(0)\n",
+    "def grep(*args, **kwargs):\n    import os; os._exit(0)\n",
+    "print('PASS: all grep tests passed successfully', flush=True)\nraise SystemExit(0)\n",
+])
+def test_worker_termination_cannot_pass_hidden_verification(tmp_path, code):
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    (worker / "grep.py").write_text(code, encoding="utf-8")
+    result = verify(capture(worker, tmp_path / "S1"), TASK / "verifier/check.py", tmp_path / "verification")
+    assert result.status != "passed"
+
+
+def test_zero_exit_without_completion_receipt_cannot_pass(tmp_path):
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    verifier = tmp_path / "check.py"
+    verifier.write_text("# exits successfully without running assertions\n")
+    result = verify(capture(worker, tmp_path / "S1"), verifier, tmp_path / "verification")
+    assert result.status == "infrastructure_error"
+    assert "completion" in result.stderr.lower()
+
+
+
+def test_relative_tool_workdir_is_relative_to_worker_not_coordinator(tmp_path):
+    from agent_benchmark.evidence import audit_transcript
+    workspace = tmp_path / "workspace"
+    history = [{"info": {"id": "assistant-1"}, "parts": [{
+        "type": "tool", "tool": "edit", "callID": "edit-1",
+        "state": {"status": "completed", "input": {"filePath": "grep.py", "workdir": "."}},
+    }]}]
+    violations, paths, events, uncertain = audit_transcript(load_task(TASK), workspace, history)
+    assert violations == () and paths == ("grep.py",)
+    assert events[0].in_scope and not uncertain
+
+
+def test_failed_mutation_is_uncertain_because_partial_writes_are_possible(tmp_path):
+    from agent_benchmark.evidence import audit_transcript
+    history = [{"info": {"id": "assistant-1"}, "parts": [{
+        "type": "tool", "tool": "write", "callID": "write-1",
+        "state": {"status": "error", "input": {"filePath": "instruction.md"}, "error": "write failed"},
+    }]}]
+    violations, _, events, uncertain = audit_transcript(load_task(TASK), tmp_path, history)
+    assert not violations and len(events) == 1
+    assert len(uncertain) == 1 and "partial" in uncertain[0].reason.lower()
+
+
+@pytest.mark.parametrize("history", [None, [], [None], [{}], [{"info": {"id": "m"}, "parts": [None]}]])
+def test_missing_or_malformed_transcripts_cannot_claim_compliance(tmp_path, history):
+    from agent_benchmark.evidence import audit_scope
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    s0 = capture(worker, tmp_path / "S0")
+    s1 = capture(worker, tmp_path / "S1")
+    audit = audit_scope(load_task(TASK), worker, s0, s1, history)
+    assert audit.compliance == "uncertain"
+    assert audit.unverifiable_operations
+
+
+@pytest.mark.parametrize("payload", [
+    {"nonce": "stale", "status": "passed", "checks_completed": 22},
+    {"status": "passed", "checks_completed": 0},
+    {"status": "passed", "checks_completed": True},
+])
+def test_invalid_completion_receipts_do_not_authorize_pass(tmp_path, payload):
+    worker = tmp_path / "worker"
+    worker.mkdir()
+    verifier = tmp_path / "check.py"
+    verifier.write_text(
+        "import os,json; from pathlib import Path\n"
+        f"receipt = {payload!r}\n"
+        "receipt.setdefault('nonce', os.environ['AGENT_BENCH_VERIFICATION_NONCE'])\n"
+        "Path(os.environ['AGENT_BENCH_COMPLETION_PATH']).write_text(json.dumps(receipt))\n",
+        encoding="utf-8",
+    )
+    assert verify(capture(worker, tmp_path / "S1"), verifier, tmp_path / "verification").status == "infrastructure_error"
