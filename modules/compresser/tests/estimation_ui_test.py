@@ -275,3 +275,161 @@ def test_estimation_progress_ui_live_table_and_dual_bars(width):
         assert any("~66.76 MB" in line for line in lines)
     finally:
         ui.close()
+
+
+def _sample_multi_recipe_plan_and_result():
+    r_webp_lossless = RecipeSpec(
+        "webp", "lossless", None, 0.99, "pillow", 4, runtime_identity=current_runtime_identity()
+    )
+    r_webp_85 = RecipeSpec("webp", "lossy", 85, 0.99, "pillow", 4, runtime_identity=current_runtime_identity())
+    r_webp_70 = RecipeSpec("webp", "lossy", 70, 0.99, "pillow", 4, runtime_identity=current_runtime_identity())
+    r_jpeg_lossless = RecipeSpec(
+        "jpeg", "lossless", None, 0.99, "pillow", 4, runtime_identity=current_runtime_identity()
+    )
+    r_auto_lossless = RecipeSpec(
+        "auto", "lossless", None, 0.99, "pillow", 4, runtime_identity=current_runtime_identity()
+    )
+    recipes = (r_auto_lossless, r_webp_lossless, r_webp_85, r_webp_70, r_jpeg_lossless)
+    budget = EstimationBudget(100, 2000, 600.0, 32)
+    plan = EstimationPlan.create(
+        population_id="pop-multi-1",
+        root=Path("fixtures/library"),
+        owner="mangadl",
+        depth="headers",
+        filters=(),
+        inventory_completed="2026-10-17T12:00:00+00:00",
+        seed=42,
+        accuracy_pp=None,
+        allow_larger=False,
+        recipes=recipes,
+        budget=budget,
+        strata=(),
+        selected_member_ids=(),
+        recipe_quotas=(),
+        members=(),
+        pilot_member_ids=(),
+    )
+    est_auto_lossless = RecipeEstimate(
+        recipe_id=r_auto_lossless.identity,
+        plan_identity=plan.design_identity,
+        confirmation_identity="conf-auto-lossless",
+        estimated_saved_bytes=100 * 1024 * 1024,
+        variance=1024 * 1024,
+        total_input_bytes=1024 * 1024 * 1024,
+        savings_percent=10.0,
+        interval=(90 * 1024 * 1024, 110 * 1024 * 1024),
+        groups=(),
+        gaps=(),
+    )
+    est_webp_lossless = RecipeEstimate(
+        recipe_id=r_webp_lossless.identity,
+        plan_identity=plan.design_identity,
+        confirmation_identity="conf-webp-lossless",
+        estimated_saved_bytes=100 * 1024 * 1024,
+        variance=1024 * 1024,
+        total_input_bytes=1024 * 1024 * 1024,
+        savings_percent=10.0,
+        interval=(90 * 1024 * 1024, 110 * 1024 * 1024),
+        groups=(),
+        gaps=(),
+    )
+    est_webp_85 = RecipeEstimate(
+        recipe_id=r_webp_85.identity,
+        plan_identity=plan.design_identity,
+        confirmation_identity="conf-webp-85",
+        estimated_saved_bytes=250 * 1024 * 1024,
+        variance=1024 * 1024,
+        total_input_bytes=1024 * 1024 * 1024,
+        savings_percent=25.0,
+        interval=(240 * 1024 * 1024, 260 * 1024 * 1024),
+        groups=(),
+        gaps=(),
+    )
+    est_webp_70 = RecipeEstimate(
+        recipe_id=r_webp_70.identity,
+        plan_identity=plan.design_identity,
+        confirmation_identity="conf-webp-70",
+        estimated_saved_bytes=400 * 1024 * 1024,
+        variance=1024 * 1024,
+        total_input_bytes=1024 * 1024 * 1024,
+        savings_percent=40.0,
+        interval=(390 * 1024 * 1024, 410 * 1024 * 1024),
+        groups=(),
+        gaps=(),
+    )
+    est_jpeg_lossless = RecipeEstimate(
+        recipe_id=r_jpeg_lossless.identity,
+        plan_identity=plan.design_identity,
+        confirmation_identity="conf-jpeg-lossless",
+        estimated_saved_bytes=None,
+        variance=None,
+        total_input_bytes=1024 * 1024 * 1024,
+        savings_percent=None,
+        interval=None,
+        groups=(),
+        gaps=("unresolved",),
+    )
+    estimates = (est_auto_lossless, est_webp_lossless, est_webp_85, est_webp_70, est_jpeg_lossless)
+    result = EstimationResult(
+        plan=plan,
+        estimates=estimates,
+        stopping_reason="complete",
+        stage="confirmation",
+        cache_hits=10,
+        new_encodes=50,
+        newly_admitted_sources=20,
+        total_observations=60,
+        last_complete_estimates=estimates,
+    )
+    return plan, result
+
+
+def test_estimate_summary_sorting_and_highlighting():
+    plan, result = _sample_multi_recipe_plan_and_result()
+
+    # Sorted summary (default)
+    sorted_summary = build_estimate_summary(plan, result, population_count=100, sort=True, owner="mangadl")
+    assert sorted_summary.rows[0][0] == "WebP lossy 70 (best lossy)"
+    assert sorted_summary.row_tones[0] == "green"
+    assert sorted_summary.rows[1][0] == "WebP lossy 85"
+    assert sorted_summary.row_tones[1] is None
+    # Best lossless preferred specific format (WebP) over AUTO on tie
+    assert sorted_summary.rows[2][0] == "WebP lossless (best lossless)"
+    assert sorted_summary.row_tones[2] == "cyan"
+    assert sorted_summary.rows[3][0] == "AUTO lossless"
+    assert sorted_summary.row_tones[3] is None
+    assert sorted_summary.rows[4][0] == "JPEG lossless"
+    assert sorted_summary.rows[4][4] == "—"
+
+    # Example commands
+    assert len(sorted_summary.example_commands) == 3
+    assert any(
+        "estimate" in cmd and "-f webp -m lossy -q 85 70 -T 3000" in cmd for cmd in sorted_summary.example_commands
+    )
+    assert any("preview" in cmd and "-f webp -m lossy -q 85 70 -c 10" in cmd for cmd in sorted_summary.example_commands)
+    assert any("estimate" in cmd and "-f webp -m lossless -T 3000" in cmd for cmd in sorted_summary.example_commands)
+
+    # Unsorted summary
+    unsorted_summary = build_estimate_summary(plan, result, population_count=100, sort=False, owner="mangadl")
+    assert unsorted_summary.rows[0][0] == "AUTO lossless"
+    assert unsorted_summary.rows[1][0] == "WebP lossless (best lossless)"
+
+
+@pytest.mark.parametrize("width", [80, 120, 160])
+@pytest.mark.parametrize("color", [False, True])
+def test_estimate_summary_rendering_layout_and_color(width, color):
+    plan, result = _sample_multi_recipe_plan_and_result()
+    summary = build_estimate_summary(plan, result, population_count=100, sort=True, owner="mangadl")
+    rendered = render_estimate_summary(summary, report_path="reports/latest.md", width=width, color=color)
+
+    assert all(_visible_len(line) <= width for line in rendered.splitlines())
+    assert "WebP lossy 70 (best lossy)" in rendered
+    assert "WebP lossless (best lossless)" in rendered
+    assert "Next-step commands" in rendered
+    assert "mangadl compress estimate" in rendered
+    assert "mangadl compress preview" in rendered
+
+    if not color:
+        assert "\x1b" not in rendered
+    else:
+        assert "\x1b" in rendered

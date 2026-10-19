@@ -1,5 +1,11 @@
 # Compresser handoff
 
+2026-10-19 Task 7 follow-up: Summary table sorting (-S/--sort), winning recipe highlighting, and recommended next-step commands.
+Summary tables in final estimate printouts and Markdown reports are now sorted descending by savings by default (with tiebreaker preferring concrete formats over AUTO), controlled via `-S/--sort` (or `--no-sort`).
+The best lossy and best lossless options are highlighted directly in the table with color coding (`green` for best lossy, `cyan` for best lossless) and badges `(best lossy)` and `(best lossless)`.
+A formatted `Next-step commands` recommendation section below the table provides copy-pasteable deeper analysis commands targeting the winning recipe with all evaluated lossy qualities (e.g. `-q 85 70`), an in-depth estimate with increased trial budget (`-T`), and a visual quality preview command (`preview -c 10`).
+Validation: 506 passed, 1 skipped in compresser suite; Ruff and Black 120 clean on all modified files; live CLI execution verified against `plan-60b15df8fb2aa29c2c22`. Unrelated `local_agent_bridge` files remain untouched.
+
 2026-10-19 Task 7 follow-up: Stratum remainder prediction, clean single-panel summary reporting, and Windows UTF-8 console output.
 Fixed dash-values (`—`) on incomplete confirmation runs: unsampled remainder strata (`count == 0`) now compute pilot-projected point savings while preserving statistical integrity (`variance = None`, `interval = None`, `complete = False`).
 Replaced wide multi-line stratum gap lists with concise `Gaps` column (`6/11 confirmed`, `unresolved`), moving unconfirmed strata and unresolved failure annotations below the table to guarantee single-panel rendering on 80/120/160 columns without panel splits.

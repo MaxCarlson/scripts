@@ -179,6 +179,7 @@ def build_estimate_report(
     *,
     population_count: int,
     context: ReportContext,
+    sort: bool = True,
 ) -> CompressionReport:
     from datetime import datetime, timezone
     import math
@@ -203,8 +204,19 @@ def build_estimate_report(
     ]
 
     recipes_by_id = {r.identity: r for r in plan.recipes}
+    estimates = list(result.estimates)
+    if sort:
+        estimates.sort(
+            key=lambda est: (
+                est.estimated_saved_bytes is not None,
+                est.estimated_saved_bytes if est.estimated_saved_bytes is not None else -float("inf"),
+                est.savings_percent if est.savings_percent is not None else -float("inf"),
+                1 if recipes_by_id.get(est.recipe_id) and recipes_by_id.get(est.recipe_id).format != "auto" else 0,
+            ),
+            reverse=True,
+        )
     estimate_rows = []
-    for est in result.estimates:
+    for est in estimates:
         r = recipes_by_id.get(est.recipe_id)
         fmt = r.format if r else "—"
         mode = r.mode if r else "—"

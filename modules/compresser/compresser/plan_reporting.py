@@ -282,6 +282,8 @@ class EstimateSummary:
     warnings: tuple[str, ...]
     plan_id: str
     stopping_reason: str
+    row_tones: tuple[str | None, ...] = ()
+    example_commands: tuple[str, ...] = ()
 
 
 def build_estimate_summary(
@@ -290,6 +292,9 @@ def build_estimate_summary(
     *,
     population_count: int,
     now: datetime | None = None,
+    sort: bool = True,
+    owner: str = "mangadl",
+    invocation_args: object | None = None,
 ) -> EstimateSummary:
     current = now or datetime.now(timezone.utc)
     if current.tzinfo is None:
@@ -305,9 +310,40 @@ def build_estimate_summary(
     )
 
     headers = ["Recipe", "Format", "Mode", "Quality", "Est. Saved", "Savings %", "StdDev", "Gaps"]
-    rows = []
     recipes_by_id = {r.identity: r for r in plan.recipes}
-    for est in result.estimates:
+
+    estimates = list(result.estimates)
+    if sort:
+        estimates.sort(
+            key=lambda est: (
+                est.estimated_saved_bytes is not None,
+                est.estimated_saved_bytes if est.estimated_saved_bytes is not None else -float("inf"),
+                est.savings_percent if est.savings_percent is not None else -float("inf"),
+                1 if recipes_by_id.get(est.recipe_id) and recipes_by_id.get(est.recipe_id).format != "auto" else 0,
+            ),
+            reverse=True,
+        )
+
+    best_lossy_est = None
+    best_lossless_est = None
+    for est in estimates:
+        r = recipes_by_id.get(est.recipe_id)
+        if not r or est.estimated_saved_bytes is None or est.estimated_saved_bytes <= 0:
+            continue
+        if r.mode == "lossy":
+            if best_lossy_est is None or est.estimated_saved_bytes > (best_lossy_est.estimated_saved_bytes or 0):
+                best_lossy_est = est
+        elif r.mode == "lossless":
+            if best_lossless_est is None or est.estimated_saved_bytes > (best_lossless_est.estimated_saved_bytes or 0):
+                best_lossless_est = est
+            elif est.estimated_saved_bytes == (best_lossless_est.estimated_saved_bytes or 0):
+                prev_r = recipes_by_id.get(best_lossless_est.recipe_id)
+                if prev_r and prev_r.format == "auto" and r.format != "auto":
+                    best_lossless_est = est
+
+    rows = []
+    row_tones: list[str | None] = []
+    for est in estimates:
         r = recipes_by_id.get(est.recipe_id)
         fmt = _format_name(r.format) if r else "—"
         mode = r.mode if r else "—"
@@ -335,9 +371,21 @@ def build_estimate_summary(
             gaps_desc = f"{tot - singleton_cnt}/{tot} (singleton)"
         else:
             gaps_desc = "incomplete"
+
+        recipe_base = f"{fmt} {mode}" + (f" {q}" if q != "—" else "")
+        if est is best_lossy_est and len(estimates) > 1:
+            recipe_label = f"{recipe_base} (best lossy)"
+            row_tones.append("green")
+        elif est is best_lossless_est and len(estimates) > 1:
+            recipe_label = f"{recipe_base} (best lossless)"
+            row_tones.append("cyan")
+        else:
+            recipe_label = recipe_base
+            row_tones.append(None)
+
         rows.append(
             [
-                f"{fmt} {mode}" + (f" {q}" if q != "—" else ""),
+                recipe_label,
                 fmt,
                 mode,
                 q,
@@ -366,6 +414,22 @@ def build_estimate_summary(
             )
         else:
             annotations.append(f"Incomplete run ({result.stopping_reason}).")
+
+    from .reporting import binary_bytes
+
+    if best_lossy_est and len(estimates) > 1:
+        r = recipes_by_id.get(best_lossy_est.recipe_id)
+        if r and best_lossy_est.estimated_saved_bytes is not None:
+            sav = binary_bytes(round(best_lossy_est.estimated_saved_bytes))
+            pct = f"{best_lossy_est.savings_percent:.1f}%" if best_lossy_est.savings_percent is not None else ""
+            q_str = f" q{r.quality}" if r.quality is not None else ""
+            annotations.append(f"Best lossy option: {_format_name(r.format)} lossy{q_str} ({sav} saved, {pct})")
+    if best_lossless_est and len(estimates) > 1:
+        r = recipes_by_id.get(best_lossless_est.recipe_id)
+        if r and best_lossless_est.estimated_saved_bytes is not None:
+            sav = binary_bytes(round(best_lossless_est.estimated_saved_bytes))
+            pct = f"{best_lossless_est.savings_percent:.1f}%" if best_lossless_est.savings_percent is not None else ""
+            annotations.append(f"Best lossless option: {_format_name(r.format)} lossless ({sav} saved, {pct})")
 
     unsampled_strata = sorted(
         {gap.rsplit(": ", 1)[0] for est in result.estimates for gap in est.gaps if "unsampled remainder" in gap}
@@ -396,6 +460,46 @@ def build_estimate_summary(
     if plan.coverage_gaps:
         warnings.append(f"Coverage gaps: {', '.join(plan.coverage_gaps)}")
 
+    prog = "mangadl compress" if owner == "mangadl" else "compresser"
+    target_raw = getattr(invocation_args, "destination", None) or getattr(invocation_args, "input", None) or plan.root
+    flag_t = f"-d {target_raw}" if owner == "mangadl" else f"-i {target_raw}"
+    ws = getattr(invocation_args, "workspace", None)
+    flag_ws = f" -I {ws}" if ws else ""
+    threads = getattr(invocation_args, "threads", None)
+    flag_th = f" -t {threads}" if threads and threads > 1 else ""
+
+    lossy_qs = sorted(
+        {r.quality for r in plan.recipes if r.mode == "lossy" and r.quality is not None},
+        reverse=True,
+    )
+    qs_str = " ".join(str(q) for q in lossy_qs)
+
+    current_budget = plan.budget.max_new_encodes or 2000
+    deeper_trials = max(3000, int(current_budget * 1.5))
+
+    example_commands = []
+    if best_lossy_est and len(estimates) > 1:
+        r = recipes_by_id.get(best_lossy_est.recipe_id)
+        if r:
+            fmt = r.format.lower()
+            q_flag = f" -q {qs_str}" if qs_str else (f" -q {r.quality}" if r.quality is not None else "")
+            example_commands.append(
+                f"• In-depth estimate for best lossy option ({_format_name(fmt)} with evaluated qualities):\n"
+                f"    {prog} estimate {flag_t}{flag_ws} -f {fmt} -m lossy{q_flag} -T {deeper_trials}{flag_th}"
+            )
+            example_commands.append(
+                f"• Visual quality preview (sample side-by-side images before applying):\n"
+                f"    {prog} preview {flag_t}{flag_ws} -f {fmt} -m lossy{q_flag} -c 10"
+            )
+    if best_lossless_est and len(estimates) > 1:
+        r = recipes_by_id.get(best_lossless_est.recipe_id)
+        if r:
+            fmt = r.format.lower()
+            example_commands.append(
+                f"• In-depth estimate for best lossless option ({_format_name(fmt)} lossless):\n"
+                f"    {prog} estimate {flag_t}{flag_ws} -f {fmt} -m lossless -T {deeper_trials}{flag_th}"
+            )
+
     return EstimateSummary(
         title=f"Compression estimate · {Path(plan.root).name}",
         overview=overview,
@@ -405,6 +509,8 @@ def build_estimate_summary(
         warnings=tuple(warnings),
         plan_id=plan.plan_id,
         stopping_reason=result.stopping_reason,
+        row_tones=tuple(row_tones),
+        example_commands=tuple(example_commands),
     )
 
 
@@ -432,6 +538,25 @@ def render_estimate_summary(
             headers = ("Recipe", "Est. Saved", "Savings %", "StdDev", "Gaps")
             rows = tuple((r[0], r[4], r[5], r[6], r[7]) for r in rows)
             alignments = ["left", "right", "right", "right", "left"]
+
+        if color and summary.row_tones:
+            colored_rows = []
+            for idx, r in enumerate(rows):
+                tone = summary.row_tones[idx] if idx < len(summary.row_tones) else None
+                if tone:
+                    row_list = list(r)
+                    row_list[0] = paint(row_list[0], tone)
+                    if len(row_list) == 5:
+                        row_list[1] = paint(row_list[1], tone)
+                        row_list[2] = paint(row_list[2], tone)
+                    elif len(row_list) == 8:
+                        row_list[4] = paint(row_list[4], tone)
+                        row_list[5] = paint(row_list[5], tone)
+                    colored_rows.append(tuple(row_list))
+                else:
+                    colored_rows.append(r)
+            rows = tuple(colored_rows)
+
         table = render_table_panels(
             headers,
             rows,
@@ -442,9 +567,24 @@ def render_estimate_summary(
         for panel in table:
             lines.extend(panel.splitlines())
     for annotation in summary.annotations:
-        lines.extend(wrap_display_text(annotation, width))
+        if color and annotation.startswith("Best lossy option:"):
+            lines.extend(wrap_display_text(paint(annotation, "green"), width))
+        elif color and annotation.startswith("Best lossless option:"):
+            lines.extend(wrap_display_text(paint(annotation, "cyan"), width))
+        else:
+            lines.extend(wrap_display_text(annotation, width))
     for warning in summary.warnings:
         lines.extend(wrap_display_text(paint(f"WARNING: {warning}", "yellow"), width))
+
+    if summary.example_commands:
+        lines.append("")
+        lines.extend(wrap_display_text(paint("Next-step commands (deeper analysis on best options):", "cyan"), width))
+        for cmd_entry in summary.example_commands:
+            for cmd_line in cmd_entry.splitlines():
+                if cmd_line.strip().startswith(("mangadl", "compresser")):
+                    lines.extend(wrap_display_text(paint(cmd_line, "green"), width))
+                else:
+                    lines.extend(wrap_display_text(cmd_line, width))
 
     lines.append("")
     lines.extend(wrap_display_text(f"Plan     {summary.plan_id}", width))

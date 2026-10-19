@@ -221,7 +221,15 @@ class ReportSession:
         return report, artifacts
 
     def estimate(self, plan, result, *, population_count):
-        report = reporting.build_estimate_report(plan, result, population_count=population_count, context=self.context)
+        sort_opt = getattr(self.args, "sort", True)
+        owner_opt = getattr(self.args, "_compression_owner", "mangadl")
+        report = reporting.build_estimate_report(
+            plan,
+            result,
+            population_count=population_count,
+            context=self.context,
+            sort=sort_opt,
+        )
         artifacts = self.save(report)
         if self.args.json:
             return report, artifacts
@@ -234,7 +242,14 @@ class ReportSession:
 
             _safe_print(
                 render_estimate_summary(
-                    build_estimate_summary(plan, result, population_count=population_count),
+                    build_estimate_summary(
+                        plan,
+                        result,
+                        population_count=population_count,
+                        sort=sort_opt,
+                        owner=owner_opt,
+                        invocation_args=self.args,
+                    ),
                     report_path=artifacts.get("latest"),
                     width=shutil.get_terminal_size().columns,
                     color=reporting.stdout_color_enabled(),

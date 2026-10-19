@@ -78,6 +78,7 @@ class CompressionOptions:
     json: bool
     no_ui: bool
     verbose: int
+    sort: bool = True
 
     def legacy_namespace(self, parsed: argparse.Namespace) -> argparse.Namespace:
         """Adapt normalized values to the existing engine boundary during CLI migration."""
@@ -254,6 +255,13 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
     estimate.add_argument("-a", "--accuracy-pp", type=_positive_decimal)
     estimate.add_argument("-F", "--allow-larger", action="store_true")
     estimate.add_argument("-r", "--plan-id")
+    estimate.add_argument(
+        "-S",
+        "--sort",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sort summary table by estimated savings descending (default: on).",
+    )
     _measurement_options(estimate, scratch=True)
 
     analyze = operations.add_parser("analyze", help="Measure one exact recipe.")
@@ -523,4 +531,5 @@ def normalize_compression_arguments(namespace: argparse.Namespace) -> Compressio
         json=bool(getattr(namespace, "json", False)),
         no_ui=bool(getattr(namespace, "no_ui", False)),
         verbose=int(getattr(namespace, "verbose", 0)),
+        sort=bool(getattr(namespace, "sort", True)),
     )
