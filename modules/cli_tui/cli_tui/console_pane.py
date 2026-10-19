@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import curses
 import os
-import subprocess
 import sys
 from typing import List, Optional
 

@@ -7,9 +7,10 @@ def test_pane_manager_overlay_rendering_and_actions():
     p = argparse.ArgumentParser(prog="tool")
     app = CliTuiApp(parser=p)
     app.workspace.create_pane(title="compress inventory", pane_type=PaneType.COMMAND)
-    app.workspace.panes[0].viewport.get_visible_lines = (
-        lambda lines, **kw: ["Sample Summary Table", "Files: 100"]
-    )
+    app.workspace.panes[0].viewport.get_visible_lines = lambda lines, **kw: [
+        "Sample Summary Table",
+        "Files: 100",
+    ]
 
     # Press 'p' to open Pane Manager
     app.process_key(ord("p"))

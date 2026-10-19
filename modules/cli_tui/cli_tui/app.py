@@ -278,7 +278,6 @@ class CliTuiApp:
             " ".join(self.navigation.path) or cmd.prog or cmd.name
         )
 
-
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
         # 0a. Choice dialog routing
@@ -689,7 +688,9 @@ class CliTuiApp:
             )
 
             col1_title = f" PANES ({total_panes} Active)"
-            col2_title = f" PREVIEW: Pane {self.manager_cursor + 1} ({target_pane.title})"
+            col2_title = (
+                f" PREVIEW: Pane {self.manager_cursor + 1} ({target_pane.title})"
+            )
 
             lines.append(
                 f"│{col1_title[:left_w].ljust(left_w)}│{col2_title[:right_w].ljust(right_w)}│"
@@ -706,7 +707,9 @@ class CliTuiApp:
             right_items: List[str] = []
             status_text = f"Status: {target_pane.status_badge}"
             if target_pane.runner and hasattr(target_pane.runner, "elapsed_seconds"):
-                status_text += f"  |  Elapsed: {target_pane.runner.elapsed_seconds:.1f}s"
+                status_text += (
+                    f"  |  Elapsed: {target_pane.runner.elapsed_seconds:.1f}s"
+                )
             right_items.append(f"   {status_text}")
             right_items.append("")
 
