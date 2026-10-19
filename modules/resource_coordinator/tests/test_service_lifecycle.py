@@ -86,6 +86,29 @@ async def test_service_preflight_fails_on_broken_policy():
     assert "Preflight checks failed" in service.failure_reason
 
 
+def test_service_preflight_rejects_restart_without_coordinator_stop_ownership():
+    from resource_coordinator.config import PolicyConfig, ProcessConfig
+
+    config = CoordinatorConfig(
+        processes={"worker": ProcessConfig(name="worker", backend="fake")},
+        policies=[
+            PolicyConfig(
+                name="unsafe-restart",
+                trigger_event="lmstudio.inference_requested",
+                target_process="worker",
+                resource="gpu.inference",
+                only_if_stopped_by_coordinator=False,
+            )
+        ],
+    )
+    service = CoordinatorService(build_system(config, use_fake_processes=True))
+
+    passed, messages = service.preflight_check()
+
+    assert passed is False
+    assert any("coordinator-owned stop" in message for message in messages)
+
+
 @pytest.mark.asyncio
 async def test_service_graceful_shutdown(minimal_system):
     service = CoordinatorService(minimal_system, drain_timeout_seconds=0.5)

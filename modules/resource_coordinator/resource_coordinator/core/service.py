@@ -116,6 +116,8 @@ class CoordinatorService:
         for policy in self.system.config.policies:
             if policy.target_process and policy.target_process not in self.system.supervisors:
                 messages.append(f"ERROR: Policy '{policy.name}' targets unknown process '{policy.target_process}'.")
+            if policy.restart_process and not policy.only_if_stopped_by_coordinator:
+                messages.append(f"ERROR: Policy '{policy.name}' restart requires a coordinator-owned stop.")
         for name, cfg in self.system.config.processes.items():
             if not any(
                 p.target_process == name

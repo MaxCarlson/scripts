@@ -153,6 +153,8 @@ class CoordinatorConfig:
             if policy.target_process and policy.target_process not in processes:
                 raise ValueError(f"Unknown target process: {policy.target_process}")
             LeaseType(policy.lease_type)
+            if policy.restart_process and not policy.only_if_stopped_by_coordinator:
+                raise ValueError("Automatic restart requires a coordinator-owned stop")
         load_policies = [p for p in policies if p.trigger_event == "lmstudio.model_load_requested"]
         for load_policy in load_policies:
             if (

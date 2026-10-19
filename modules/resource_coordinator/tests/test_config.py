@@ -68,3 +68,21 @@ def test_config_rejects_zero_idle_timeout_when_restart_is_enabled():
     }
     with pytest.raises(ValueError, match="positive idle timeout"):
         CoordinatorConfig.from_dict(data)
+
+
+def test_config_rejects_restart_without_coordinator_stop_ownership():
+    data = {
+        "version": "1.0",
+        "processes": {"worker": {"backend": "fake"}},
+        "policies": [
+            {
+                "name": "restart-worker",
+                "trigger_event": "lmstudio.inference_requested",
+                "target_process": "worker",
+                "resource": "gpu.inference",
+                "only_if_stopped_by_coordinator": False,
+            }
+        ],
+    }
+    with pytest.raises(ValueError, match="coordinator-owned stop"):
+        CoordinatorConfig.from_dict(data)
