@@ -6,6 +6,8 @@
 - Baseline: `91d9d26b`, Gemini's scope-audit pass, preserved and reviewed.
 - `3560770b`: independent submission-start tracking and persistent unknown-submission blocking; module version 1.0.1.
 - `a16d6194ce9e949999807bb2ef3d9e115f8e4003`: positive verifier completion evidence, ownership journaling order, explicit scope uncertainty and regressions.
+- `1ed3c607`: documented tested P1 corrections and scope uncertainty in handoff.
+- Current commit: fix(benchmark-core): display unavailable telemetry explicitly in Markdown reports.
 - Earlier integration preserved: `072683f1` merged complete corrected core through exactly `a185621552368e7ed4442659750a64ae7986ecda`; `f973ee67` fixed canonical package shadowing; `5d9637b0` integrated pipeline/CLI; `2cfd66fd` registered CLI help. Corrective baseline `c299e1b2` remains intact.
 
 ## Current outcome
@@ -37,11 +39,14 @@ Interpreter: C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe. Commands from
 & C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m mypy modules/benchmark_core/benchmark_core
 ```
 
-Results: agent 144 passed, 2 skipped (Windows symlink privilege in evidence_test.py and lifecycle_test.py); core 80 passed; Ruff clean; core Mypy clean in 9 files. Initial RED runs reproduced empty-receipt release, early-exit false passes, scope-uncertainty scoring, relative-workdir misresolution, partial mutation uncertainty, malformed transcript compliance, missing ownership journal IDs and structured-report misclassification. Final checks have no known failures.
+Results: agent 144 passed, 2 skipped (Windows symlink privilege in evidence_test.py and lifecycle_test.py); core 83 passed; Ruff clean; core Mypy clean in 9 files. Initial RED runs reproduced empty-receipt release, early-exit false passes, scope-uncertainty scoring, relative-workdir misresolution, partial mutation uncertainty, malformed transcript compliance, missing ownership journal IDs, structured-report misclassification, and omission of unavailable telemetry in markdown reports. Final checks have no known failures.
 
-## Deferred reporting correction — Gemini Flash
+## Reporting correction completed — Gemini Flash
 
-File `modules/benchmark_core/benchmark_core/reporting.py`, function `render_report_md`: its resource-metric loop currently omits rows when available_count is zero. Render present all-unavailable metrics with mean/median N/A and available/total 0/N instead. Keep measured rows and JSON/CSV unchanged. Add offline reporter tests for entirely unavailable worker tokens and mixed availability. Keep canonical schemas unchanged. This is a small, isolated core-owner task; no core changes were made here.
+File `modules/benchmark_core/benchmark_core/reporting.py`, function `render_report_md`:
+- Resource-metric loop updated to render present all-unavailable metrics (`m_stat.available_count == 0`) with `Mean` = `N/A`, `Median` = `N/A`, and `Available / Total` = `0/N`.
+- Measured and mixed-availability rows, JSON, and CSV schemas remain unchanged.
+- Added offline reporter tests in `modules/benchmark_core/tests/reporting_test.py` covering entirely unavailable metrics, mixed measured/estimated/unavailable quality, and offline regeneration from historical trial artifacts without modifying files on disk.
 
 ## Next model allocation / copyable brief
 

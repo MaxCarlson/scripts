@@ -215,10 +215,15 @@ def render_report_md(summary: BenchmarkSummary) -> str:
         for v in sorted(variants, key=lambda x: x.variant_id):
             for mk in all_metric_keys:
                 m_stat = v.metrics.get(mk)
-                if m_stat and m_stat.available_count > 0:
-                    mean_s = f"{m_stat.mean:.1f} {m_stat.unit}" if m_stat.mean is not None else "N/A"
-                    med_s = f"{m_stat.median:.1f} {m_stat.unit}" if m_stat.median is not None else "N/A"
-                    obs_s = f"{m_stat.available_count}/{m_stat.observation_count}"
+                if m_stat is not None:
+                    if m_stat.available_count > 0:
+                        mean_s = f"{m_stat.mean:.1f} {m_stat.unit}" if m_stat.mean is not None else "N/A"
+                        med_s = f"{m_stat.median:.1f} {m_stat.unit}" if m_stat.median is not None else "N/A"
+                        obs_s = f"{m_stat.available_count}/{m_stat.observation_count}"
+                    else:
+                        mean_s = "N/A"
+                        med_s = "N/A"
+                        obs_s = f"0/{m_stat.observation_count}"
                     lines.append(f"| `{v.variant_id}` | `{mk}` | {mean_s} | {med_s} | {obs_s} |")
         lines.append("")
 

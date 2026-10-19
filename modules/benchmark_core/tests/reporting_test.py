@@ -175,3 +175,113 @@ def test_generate_reports_disk_write(tmp_path: Path, multi_variant_summary: tupl
     assert (out_dir / "summary.json").is_file()
     assert (out_dir / "summary.csv").is_file()
     assert (out_dir / "report.md").is_file()
+
+
+def test_render_report_md_displays_entirely_unavailable_metrics() -> None:
+    run_info = RunInfo(
+        run_id="run-unavailable-test",
+        created_at="2026-10-19T05:00:00Z",
+        suite_id="agent-smoke",
+        suite_version="0.1.0",
+        task_ids=["t1"],
+        variants={"worker": {"model": "test-model"}},
+        repetitions=1,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    trials = [
+        TrialResult(
+            "run-unavailable-test", "t-01", "t1", "worker", 1, TrialStatus.TIMED_OUT,
+            metrics={
+                "duration.wall_ms": MetricValue(60000.0, "ms", "timer", MetricQuality.MEASURED),
+                "agent.scope_violations": MetricValue(0, "count", "audit", MetricQuality.MEASURED),
+                "tokens.worker.input": MetricValue(None, "tokens", "api", MetricQuality.UNAVAILABLE, reason="unsupported"),
+                "tokens.worker.output": MetricValue(None, "tokens", "api", MetricQuality.UNAVAILABLE, reason="unsupported"),
+            },
+        ),
+    ]
+    summary = summarize(run_info, trials)
+    md = render_report_md(summary)
+
+    # Both measured and entirely unavailable metrics must appear in markdown report
+    assert "| `worker` | `agent.scope_violations` | 0.0 count | 0.0 count | 1/1 |" in md
+    assert "| `worker` | `tokens.worker.input` | N/A | N/A | 0/1 |" in md
+    assert "| `worker` | `tokens.worker.output` | N/A | N/A | 0/1 |" in md
+
+
+def test_render_report_md_mixed_and_estimated_quality() -> None:
+    run_info = RunInfo(
+        run_id="run-mixed-test",
+        created_at="2026-10-19T05:00:00Z",
+        suite_id="agent-smoke",
+        suite_version="0.1.0",
+        task_ids=["t1"],
+        variants={"worker": {"model": "test-model"}},
+        repetitions=3,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    trials = [
+        TrialResult(
+            "run-mixed-test", "t-01", "t1", "worker", 1, TrialStatus.PASSED,
+            metrics={"tokens.worker.input": MetricValue(100.0, "tokens", "api", MetricQuality.MEASURED)},
+        ),
+        TrialResult(
+            "run-mixed-test", "t-02", "t1", "worker", 2, TrialStatus.PASSED,
+            metrics={"tokens.worker.input": MetricValue(200.0, "tokens", "heuristic", MetricQuality.ESTIMATED)},
+        ),
+        TrialResult(
+            "run-mixed-test", "t-03", "t1", "worker", 3, TrialStatus.PASSED,
+            metrics={"tokens.worker.input": MetricValue(None, "tokens", "api", MetricQuality.UNAVAILABLE)},
+        ),
+    ]
+    summary = summarize(run_info, trials)
+    md = render_report_md(summary)
+    csv_str = render_summary_csv(summary)
+    json_str = render_summary_json(summary)
+
+    # Markdown displays available/total as 2/3 and mean/median from available samples
+    assert "| `worker` | `tokens.worker.input` | 150.0 tokens | 150.0 tokens | 2/3 |" in md
+
+    # CSV preserves empty fields for missing statistics and records available/missing counts
+    reader = list(csv.DictReader(io.StringIO(csv_str)))
+    assert reader[0]["tokens.worker.input.mean"] == "150.0"
+    assert reader[0]["tokens.worker.input.available_count"] == "2"
+    assert reader[0]["tokens.worker.input.missing_count"] == "1"
+
+    # JSON preserves full quality breakdown
+    data = json.loads(json_str)
+    metric_data = data["variants"]["worker"]["metrics"]["tokens.worker.input"]
+    assert metric_data["available_count"] == 2
+    assert metric_data["missing_count"] == 1
+    assert metric_data["measured_mean"] == 100.0
+    assert metric_data["estimated_mean"] == 200.0
+    assert metric_data["quality_counts"][MetricQuality.MEASURED] == 1
+    assert metric_data["quality_counts"][MetricQuality.ESTIMATED] == 1
+    assert metric_data["quality_counts"][MetricQuality.UNAVAILABLE] == 1
+
+
+def test_regenerate_historical_report_offline_without_modifying_files() -> None:
+    historical_dir = Path(__file__).resolve().parents[3] / "reports" / "20261019T114143Z-dfd3bbc9"
+    if not (historical_dir / "run.json").exists():
+        pytest.skip("Historical report directory not available")
+
+    # Capture mtimes of all files in historical directory
+    mtimes_before = {p: p.stat().st_mtime_ns for p in historical_dir.rglob("*") if p.is_file()}
+
+    from benchmark_core.storage import load_run
+    run_info, trials = load_run(historical_dir)
+    summary = summarize(run_info, trials)
+    reports = generate_reports(summary, write=False)
+
+    md = reports["report.md"]
+    # All unavailable metrics from historical run are now present in rendered report.md
+    assert "| `worker` | `tokens.worker.input` | N/A | N/A | 0/1 |" in md
+    assert "| `worker` | `tokens.worker.output` | N/A | N/A | 0/1 |" in md
+    assert "| `worker` | `tokens.coordinator.input` | N/A | N/A | 0/1 |" in md
+    assert "| `worker` | `tools.calls` | N/A | N/A | 0/1 |" in md
+    assert "| `worker` | `tools.failures` | N/A | N/A | 0/1 |" in md
+
+    # Ensure no files on disk were modified
+    mtimes_after = {p: p.stat().st_mtime_ns for p in historical_dir.rglob("*") if p.is_file()}
+    assert mtimes_before == mtimes_after
+
+
