@@ -240,3 +240,74 @@ def test_malformed_time_in_attempt_history_does_not_crash(tmp_path):
     assert result.termination.confirmed
     assert (tmp_path / "evidence/worker-report.txt").read_text(encoding="utf-8") == "Completed successfully"
 
+
+def test_attempt_detects_external_file_mutation_and_fails_even_if_s1_verifier_passes(tmp_path):
+    from agent_benchmark.results import trial_from_attempt
+
+    ext_path = "C:\\Users\\mcarls\\AppData\\Local\\Temp\\opencode\\test_grep_smoke.py"
+    worker = Worker()
+    worker.last_history = [
+        {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": {"created": 1}}, "parts": []},
+        {"info": {"id": "assistant-1", "sessionID": "session-1", "parentID": "user-1", "role": "assistant",
+                  "time": {"created": 2, "completed": 3}, "finish": "stop"},
+         "parts": [
+             {"type": "tool", "tool": "write", "callID": "c1",
+              "state": {"status": "completed", "input": {"filePath": ext_path, "content": "import pytest"}}},
+             {"type": "text", "text": "All tests done"},
+         ]},
+    ]
+    result = attempt(tmp_path, worker)
+    assert result.verification.status == "passed"
+    assert len(result.scope_violations) == 1
+    assert "test_grep_smoke.py" in result.scope_violations[0]
+    assert (tmp_path / "evidence/scope-audit.json").is_file()
+    checkpoints = json.loads((tmp_path / "evidence/checkpoints.json").read_text(encoding="utf-8"))
+    assert len(checkpoints["scope_violations"]) == 1
+    assert len(checkpoints["transcript_scope_violations"]) == 1
+    assert checkpoints["snapshot_scope_violations"] == []
+
+    trial = trial_from_attempt(result, run_id="run-1", trial_id="trial-1", task_id="py-grep-smoke",
+                               variant_id="model-1", repetition=1, evidence_path="evidence/trial-1")
+    assert trial.status == "failed"
+    assert trial.metrics["agent.worker_first_pass"].value == 0
+    assert trial.metrics["agent.scope_violations"].value == 1
+    assert len(trial.details["scope_violations"]) == 1
+    assert trial.details["scope_audit"] is not None
+
+
+def test_attempt_preserves_timed_out_when_both_budget_expired_and_scope_violation_occur(tmp_path):
+    from agent_benchmark.results import trial_from_attempt
+
+    class SlowOutOfScopeWorker(Worker):
+        async def observe(self, handle):
+            if not getattr(self, "aborted", False):
+                return Observation("running", "busy", False, True, True)
+            return Observation("cancelled", "idle", True, False, True)
+
+        async def cancel(self, handle):
+            self.aborted = True
+
+    ext_path = "C:\\Users\\mcarls\\AppData\\Local\\Temp\\opencode\\test_grep_smoke.py"
+    worker = SlowOutOfScopeWorker()
+    worker.last_history = [
+        {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": {"created": 1}}, "parts": []},
+        {"info": {"id": "assistant-1", "sessionID": "session-1", "parentID": "user-1", "role": "assistant",
+                  "time": {"created": 2, "completed": 3}, "finish": "stop"},
+         "parts": [
+             {"type": "tool", "tool": "write", "callID": "c1",
+              "state": {"status": "completed", "input": {"filePath": ext_path, "content": "import pytest"}}},
+         ]},
+    ]
+    result = attempt(tmp_path, worker, task_seconds=0.01)
+    assert result.task_budget_expired
+    assert result.termination.confirmed
+    assert len(result.scope_violations) == 1
+
+    trial = trial_from_attempt(result, run_id="run-1", trial_id="trial-1", task_id="py-grep-smoke",
+                               variant_id="model-1", repetition=1, evidence_path="evidence/trial-1")
+    assert trial.status == "timed_out"
+    assert trial.metrics["agent.worker_first_pass"].value == 0
+    assert trial.metrics["agent.scope_violations"].value == 1
+    assert len(trial.details["scope_violations"]) == 1
+
+

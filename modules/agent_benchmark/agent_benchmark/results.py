@@ -60,7 +60,9 @@ def trial_from_attempt(
     details = {
         "scoring_basis": "worker_first_attempt_full_success", "checkpoints": checkpoints,
         "evidence_path": evidence_path, "changed_paths": list(attempt.changed_paths),
-        "scope_violations": list(attempt.scope_violations), "task_budget_expired": attempt.task_budget_expired,
+        "scope_violations": list(attempt.scope_violations),
+        "scope_audit": attempt.scope_audit.to_dict() if attempt.scope_audit else None,
+        "task_budget_expired": attempt.task_budget_expired,
         "execution_error": attempt.execution_error,
         "verifier_status": attempt.verification.status if attempt.verification else None,
         "termination": {"confirmed": attempt.termination.confirmed,

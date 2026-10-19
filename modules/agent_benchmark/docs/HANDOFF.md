@@ -1,4 +1,4 @@
-# agent_benchmark handoff — integrated Phase 1c, live gate pending
+# agent_benchmark handoff — integrated Phase 1c, scope audit corrected, live gate pending
 
 ## Workspace / commits
 
@@ -7,13 +7,23 @@
 - f973ee67: reproduced/fixed core outer/inner package shadowing; canonical class identity preserved. benchmark-core version 0.1.1.
 - 5d9637b0: tested canonical integration, strict scoring, persistent dispatch blocking, installed CLI, packaged task. agent-benchmark version 1.0.0.
 - 2cfd66fd: associated required CLI help registration; scripts_help metadata 0.6.0.
-- Baseline corrective pass c299e1b2 preserved. Working tree clean after this handoff commit.
+- Baseline corrective pass c299e1b2 preserved.
+- Current commit: scope audit corrective pass (transcript-based mutation auditing, external path detection, protected-file restoration detection, traceable re-audit utility, and regression tests).
 
 ## Current outcome
 
-The Phase 1c software pipeline is integrated and validated offline. No worker/model ran. The user explained the prior timeout: shared OpenCode was stopped. Never start/reconfigure OpenCode or LM Studio automatically. An explicit live-run authorization/model-ID request is pending; do not infer approval from elapsed time or server health.
+The Phase 1c software pipeline is integrated and validated offline. The first live py-grep-smoke acceptance run completed at the infrastructure level (recording timed_out due to exceeding 60s budget).
 
-Once runtime is available and the user provides an exact configured LM Studio model ID plus authorization for one trial, run py-grep-smoke with the installed agent-bench CLI. Independently verify S1, inspect exactly one canonical trial and all core-generated reports. Until then, live Phase 1c acceptance and verifier/suite freeze remain pending. M1 repeated-model acceptance and M2 coordinator comparisons are not implemented.
+A scope auditing gap discovered during that run was addressed:
+- The filesystem snapshot audit authoritatively monitors observable S0/S1 workspace mutations, but misses external filesystem mutations (e.g., worker writing to `C:\Users\mcarls\AppData\Local\Temp\opencode\test_grep_smoke.py`) and mutations reverted before S1 capture.
+- Transcript auditing (`audit_transcript`) inspects raw OpenCode tool calls for mutation tools (`write`, `edit`, `patch`, `delete`, `rm`, `remove`).
+- Resolves relative paths against execution directory (`workdir` or workspace root), normalizes Windows case, and enforces directory boundary prefixes.
+- Identifies external mutations and edits to protected files (`instruction.md`, etc.).
+- Excludes read/inspection tools (`read`, `cat`, `glob`, `grep`, etc.) from mutation classification.
+- Classifies opaque commands (`bash`) or malformed tool inputs as `UnverifiableOperation` without guessing.
+- `audit_scope` combines snapshot and transcript audits into a unified `ScopeAudit` record, persisted to `scope-audit.json` and recorded in `checkpoints.json`.
+- `results.py` includes `scope_audit` in canonical `TrialResult.details` and respects strict scoring precedence (`timed_out` remains `timed_out` even when scope violations occur).
+- Non-destructive `reaudit_trial` supports offline verification of historical trial evidence without overwriting existing files. Verified against `reports/20261019T114143Z-dfd3bbc9`: correctly identifies 1 external violation (`test_grep_smoke.py`), 3 mutation events, and 3 unverifiable operations (`bash`). Historical acceptance run files in `reports/` were preserved untouched.
 
 ## Interfaces to preserve
 
@@ -55,9 +65,14 @@ From repository root:
 & C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m mypy modules/benchmark_core/benchmark_core
 ```
 
-Agent: 104 passed, 2 skipped (only Windows symlink privilege). Core: 80 passed; Ruff clean; Mypy clean in 9 files. Narrow help-registry structure: 2 passed/40 deselected. Both local wheels built, extracted in isolated module-local scratch directory, imported canonically and executed read-only bundled-task plan from unrelated cwd. Installed agent-bench --version = 1.0.0. Pre-existing invalid-distribution pip warnings were observed; no unrelated environment cleanup performed.
-
-Native read-only review found preparation failure could strand a receipt before journaling; regression failed before fix and passes now. Cleanup ownership mismatch and package namespace issues likewise reproduced/fixed. No unresolved material review finding. No shared services or GPU workloads started.
+Agent: 113 passed, 2 skipped (Windows symlink privilege). Core: 80 passed; Ruff clean; Mypy clean in 9 files.
+Scope audit regression tests verify:
+- External temporary file write/edit detection.
+- Protected workspace file mutation and restoration detection (reverted edits).
+- Compliant workspace edits and non-mutating tool calls (reads/globs).
+- Malformed/unverifiable tool invocations recorded transparently as `UnverifiableOperation`.
+- Scoring precedence preservation: `timed_out` preserved over scope violations when budget expired.
+- Read-only `reaudit_trial` accurately audits historical run `reports/20261019T114143Z-dfd3bbc9` offline.
 
 ## Next model allocation / copyable brief
 

@@ -17,7 +17,8 @@ import time
 import httpx
 
 from .bridge import OpenCodeBridge
-from .evidence import Snapshot, Task, Verification, capture, changed_paths, prepare_workspace, verify
+from .evidence import (ScopeAudit, Snapshot, Task, Verification, audit_scope,
+                       capture, changed_paths, prepare_workspace, verify)
 from .lifecycle import DispatchGuard, OwnedWorkspace, TerminationDecision, WorkerHandle, confirm_termination
 
 
@@ -36,6 +37,7 @@ class AttemptEvidence:
     execution_error: str | None
     worker_ms: float
     wall_ms: float
+    scope_audit: ScopeAudit | None = None
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -50,7 +52,7 @@ def _unresolved(handle: WorkerHandle, grace: float, reason: str) -> TerminationD
 
 
 def _patch(before: Snapshot, after: Snapshot) -> str:
-    chunks = []
+    chunks: list[str] = []
     for name in changed_paths(before, after):
         old, new = before.files.get(name, b""), after.files.get(name, b"")
         try:
@@ -211,21 +213,30 @@ async def run_attempt(
                 text = "\n".join(part.get("text", "") for part in parts if isinstance(part, dict) and part.get("type") == "text")
                 (evidence_dir / "worker-report.txt").write_text(text, encoding="utf-8")
         s1 = verification = None
-        changed = scope = ()
+        changed: tuple[str, ...] = ()
+        scope: tuple[str, ...] = ()
+        audit = None
         if decision.confirmed:
             s1 = capture(workspace.path, evidence_dir / "S1")
             changed = tuple(changed_paths(s0, s1))
-            scope = tuple(name for name in changed if name not in task.allowed_paths or name in task.forbidden_paths)
+            audit = audit_scope(task, workspace.path, s0, s1, bridge.last_history)
+            scope = audit.all_violations
             (evidence_dir / "worker.patch").write_text(_patch(s0, s1), encoding="utf-8")
-            _write_json(evidence_dir / "checkpoints.json", {"S0": {"tree_hash": s0.tree_hash},
-                        "S1": {"tree_hash": s1.tree_hash, "diff_path": "worker.patch"},
-                        "changed_paths": changed, "scope_violations": scope})
+            _write_json(evidence_dir / "checkpoints.json", {
+                "S0": {"tree_hash": s0.tree_hash},
+                "S1": {"tree_hash": s1.tree_hash, "diff_path": "worker.patch"},
+                "changed_paths": changed,
+                "snapshot_scope_violations": list(audit.snapshot_violations),
+                "transcript_scope_violations": list(audit.transcript_violations),
+                "scope_violations": list(scope),
+            })
+            _write_json(evidence_dir / "scope-audit.json", audit.to_dict())
             # Verification runs in its own owned process, after S1 has been archived.
             verification = verify(s1, task.verifier, evidence_dir / "verification", timeout_seconds=verifier_seconds)
             journal["stage"] = "verified"
             _write_json(evidence_dir / "lifecycle.json", journal)
         return AttemptEvidence(workspace, decision, s0, s1, verification, changed, scope, task_budget_expired,
-                               execution_error, worker_ms, (time.monotonic() - start) * 1000)
+                               execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit)
     finally:
         # Persistence can fail after remote submission (disk full/permissions).
         # Safety cannot depend on a successful journal write or its exception path.

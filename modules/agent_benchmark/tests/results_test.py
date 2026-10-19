@@ -64,3 +64,26 @@ def test_unavailable_tokens_are_not_zero_and_cleanup_cannot_rewrite_score(tmp_pa
     assert not cleanup_workspace(evidence.workspace, evidence.termination, attempts=1).removed
     assert trial.status == "passed"
     assert convert(evidence, tmp_path).status == "passed"
+
+
+def test_scope_audit_in_details_and_timed_out_precedence(tmp_path):
+    from agent_benchmark.evidence import MutationEvent, ScopeAudit
+    evidence = attempt(tmp_path, Worker())
+    audit = ScopeAudit(
+        snapshot_violations=(),
+        transcript_violations=("C:/temp/outside.py",),
+        all_violations=("C:/temp/outside.py",),
+        mutated_paths=("C:/temp/outside.py", "grep.py"),
+        mutation_events=(
+            MutationEvent("write", "C:/temp/outside.py", "C:/temp/outside.py", False, False, "completed", "m1", "c1"),
+        ),
+        unverifiable_operations=(),
+    )
+    with_audit = replace(evidence, scope_violations=audit.all_violations, scope_audit=audit, task_budget_expired=True)
+    trial = convert(with_audit, tmp_path)
+    assert trial.status == "timed_out"
+    assert trial.metrics["agent.scope_violations"].value == 1
+    assert trial.metrics["agent.worker_first_pass"].value == 0
+    assert trial.details["scope_violations"] == ["C:/temp/outside.py"]
+    assert trial.details["scope_audit"]["transcript_violations"] == ["C:/temp/outside.py"]
+
