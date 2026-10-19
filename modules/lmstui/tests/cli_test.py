@@ -353,3 +353,32 @@ def test_lmc_auto_model(mock_cli_server, capsys):
     assert "Multiple models loaded" in captured.err
     assert "Using default model 'llama3_8b'" in captured.err
 
+
+def test_lmc_positional_prompt(mock_cli_server, capsys):
+    # Test typing text directly after lmc without -p
+    code = main_lmc([
+        "--base-url", mock_cli_server,
+        "-m", "qwen38_23GB",
+        "-N",
+        "-S",
+        "hello", "world", "what", "is", "the", "answer?",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "The answer is 42." in captured.out
+
+
+def test_lmst_chat_positional_prompt(mock_cli_server, capsys):
+    # Test typing text directly after lmst chat without -p
+    code = main_lmst([
+        "--base-url", mock_cli_server,
+        "chat",
+        "-m", "qwen38_23GB",
+        "-N",
+        "-S",
+        "hello", "world",
+    ])
+    assert code == 0
+    captured = capsys.readouterr()
+    assert "The answer is 42." in captured.out
+

@@ -210,6 +210,8 @@ def cmd_lmst_chat(args: argparse.Namespace) -> int:
 
     # Check for prompt
     prompt = args.prompt
+    if not prompt and getattr(args, "prompt_words", None):
+        prompt = " ".join(args.prompt_words)
     if not prompt and not sys.stdin.isatty():
         prompt = sys.stdin.read().strip()
 
@@ -690,6 +692,12 @@ def build_parser_lmst() -> argparse.ArgumentParser:
         metavar="K=V",
         help="Extra JSON key=value pairs for API payload.",
     )
+    pc.add_argument(
+        "prompt_words",
+        nargs="*",
+        default=[],
+        help="Prompt text sent directly to the model (e.g. 'lmst chat hello world').",
+    )
     pc.set_defaults(func=cmd_lmst_chat)
 
     # responses
@@ -919,6 +927,12 @@ def build_parser_lmc() -> argparse.ArgumentParser:
         default=None,
         metavar="K=V",
         help="Extra JSON key=value pairs for API payload.",
+    )
+    p.add_argument(
+        "prompt_words",
+        nargs="*",
+        default=[],
+        help="Prompt text sent directly to the model (e.g. 'lmc hello world').",
     )
     return p
 

@@ -148,17 +148,21 @@ lmst chat -b http://192.168.1.50:1234 -m qwen38_23GB -p "Hello"
 
 ## Direct Shortcut: `lmc`
 
-`lmc` is a convenient direct shortcut for `lmst chat`, accepting all of the same flags:
+`lmc` is a convenient direct shortcut for `lmst chat`. You can quickly type whatever text you want sent to the LLM directly after `lmc`:
 
 ```powershell
-# Interactive chat with loaded model
+# Type directly after lmc
+lmc hello world
+lmc what is the chain rule in calculus?
+lmc write a python script to parse csv files
+
+# Flags can be mixed before or after
+lmc -S hello world
+lmc how does quicksort work? -a
+lmc -m qwen38_23GB explain decorators in python
+
+# Bare lmc (without text) starts the interactive REPL chat
 lmc
-
-# One-shot prompt
-lmc -p "Explain quicksort in Python"
-
-# Explicit model, stats, and silent startup banner
-lmc -m qwen38_23GB -p "What is recursion?" -a -S
 ```
 
 ---
