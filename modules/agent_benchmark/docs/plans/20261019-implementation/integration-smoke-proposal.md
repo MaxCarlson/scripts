@@ -1,0 +1,32 @@
+# Proposed one-run scratch / prepared-session integration smoke
+
+Status: proposal only. Requires separate explicit user authorization; no worker has run this test. This is diagnostic integration acceptance, excluded from scored benchmark comparisons.
+
+## Scope and preconditions
+
+Use the existing services only, one fresh trial workspace and one fresh session, provider lmstudio, model qwen38_23GB, local-worker, effective context 32768 if still configured, original 60-second task observation budget and 10-second termination grace. No service/model start, stop, reconfiguration, retry, repair, extra worker or other model. Stop if runtime is unavailable, effective settings do not match, another unresolved dispatch exists, or required evidence cannot be collected.
+
+Before spending the one submission, inspect whether an already-supported, read-only OpenCode/provider request trace exposes the actual model request's assembled system/user/tool instructions for attribution to this session/message. Session history or the worker repeating instructions is insufficient to prove the assembled request. Do not enable shared-service logging or promise that a trace endpoint exists. If no suitable trace is available, report the missing prerequisite and stop before dispatch; request separate approval for any changed observability mechanism. Never copy authorization headers/credentials; redact sensitive instruction content while preserving source hashes and the relevant policy excerpts.
+
+## Minimal diagnostic harness
+
+The current CLI run command produces scored canonical results and must not be used unchanged for this diagnostic. After authorization, prepare a small one-off harness around the existing run_attempt/connected_bridge path, reusing command_lock, read_pending, durable reserve/release, safely_finished and DispatchGuard semantics; test its no-inference failure paths offline before use. This is an acceptance script, not a new scheduler or benchmark mode. Use the same persistent state root as production so unknown submission still blocks later commands. Retain the reservation on possible active execution; never infer safety from an empty receipt or cancellation acknowledgement.
+
+Keep all artifacts in a separate integration-acceptance directory, outside normal reports/run discovery. Do not create benchmark_core run.json, trials.jsonl or statistical/comparison reports. Save only diagnostic acceptance evidence and the normal attempt evidence. Record purpose=integration_smoke and comparison_eligible=false. No canonical task-success claim or benchmark sample is emitted, regardless of verifier outcome. No unscored-mode CLI flag currently exists; none should be invented in a command.
+
+## One task, one prompt submission
+
+1. Copy the trusted py-grep-smoke fixture into a disposable diagnostic fixture, preserving the original task/verifier content. Give this copy an integration-only identity. Add a tiny trusted public probe script as a forbidden-to-edit root file, with a known hash; do not alter the canonical fixture or historical records. The probe reads only TMPDIR/TEMP/TMP and Python tempfile.gettempdir(), creates a small random temporary marker via tempfile, retains that marker, and writes/prints a small JSON observation to trial scratch. It fails immediately if resolved temp/marker paths are outside the trial's scratch. Its output is evidence, not an authoritative hidden-verifier receipt.
+2. Ask the worker once to implement grep.py and run the trusted probe using the documented command-local temp settings. Keep its generated tests/caches only in trial scratch. The prompt explicitly distinguishes the scratch exception from the original only-edit-grep deliverable restriction. No worker mutation of the probe, manifest, instructions, verifier or Git metadata is permitted.
+3. The existing preparation creates a unique Git root, freezes bounded S0, validates directory/worktree/project and creates/validates an empty session. Exactly one MCP opencode_fire must reuse that sessionId. Preserve job/session/message IDs and confirm there is exactly one user prompt submission; no retry.
+4. Observe and reconcile normally. Freeze bounded S1 only after fresh termination confirmation, independently verify the task on the scratch-excluded S1 copy, and audit both the task and scratch regions. Preserve complete snapshots, bounded patch, transcript, runtime/project/session provenance, trusted probe hashes and actual provider-request trace. Keep all workspace/evidence for review.
+
+## Diagnostic acceptance criteria
+
+- Project ID matches the unique local root commit; directory/worktree/session binding and receipt IDs agree; fresh terminal assistant/tool evidence proves stopped execution.
+- Actual attributed model-request trace contains the task, scratch exception, temp-setting instructions and relevant inherited/global/tool instructions. Identify any remaining shared-temp guidance explicitly. Source hash/config inspection is supporting evidence, not a substitute for the assembled request.
+- S0/S1 show only intended task and scratch mutations; original fixture/probe bytes are unchanged. Shell transcript shows actual execution of the unchanged trusted probe, and the retained marker/JSON proves its observed temp selection landed inside this trial. No self-reported check is credited without supporting artifacts. This remains trusted-fixture evidence, not adversarial OS sandboxing.
+- Scratch data is preserved but absent from hidden-verifier input; verifier result and functional outcome are reported separately from integration acceptance. Known external/protected writes fail acceptance. Opaque shell side effects stay explicitly uncertain; this diagnostic does not redefine them as compliant.
+- No scored benchmark records or comparison inputs are generated. Task timeout, infrastructure failure, evidence limit or unresolved termination is reported directly. Preserve workspace/diagnostics and persistent blocking where required; no corrective second submission.
+
+Report each criterion pass/fail/unverified, exact invocations/settings, IDs, hashes, changed paths, scope breakdown, probe/hidden-verifier results, raw termination evidence and artifact paths. Stop immediately after the diagnostic report. If required request traces or the probe evidence are missing, acceptance is incomplete; do not infer instruction/temp correctness from task success.

@@ -38,3 +38,20 @@
 - [x] Full offline pytest/Ruff and applicable core/new-helper Mypy checks; document optional legacy agent-wide Mypy diagnostics.
 - [x] Separately authorized non-inference API acceptance: two unique projects/empty sessions; mismatch rejection, unchanged S0/S1/history; 49+3 offline tests. See current HANDOFF.md for global dependencies and unverified prompt construction.
 - [ ] Separately authorized post-isolation live-worker acceptance.
+
+
+## Trial-local scratch policy
+
+- [x] Commit four accepted Phase 1d documentation updates (8bd05cdd); preserve reports.
+- [x] Inspect pinned shell/temp APIs, actual accepted permission evidence and local temp selection.
+- [x] Implement versioned trial-local scratch, independent evidence/verifier treatment and explicit provenance.
+- [x] Preserve historical strict semantics, protected Git/external-write checks, shell uncertainty and scoring precedence.
+- [x] Test Windows aliases/traversal/ADS/devices, links/junctions/hardlinks, confirmed cleanup and unresolved preservation.
+- [x] Agent/core pytest, Ruff, core/helper Mypy, historical evidence integrity and read-only CLI plan.
+- [x] User-requested final self-review, corrections and tested implementation commit 45a096d5; documentation follows.
+- [ ] Separately authorized live validation; no inference authorized at this checkpoint.
+
+- [x] Reproduce/fix raw whitespace path/workdir grants and unbounded snapshot/patch capture; preserve S0 ownership on limit failure.
+- [x] Verify all 114 historical/acceptance evidence files unchanged; full suite 218 passed/3 skips, core 83 passed, lint/applicable types clean.
+- [x] Propose separate one-run unscored integration smoke with actual assembled-request and trusted temp-probe evidence.
+- [ ] Separate authorization for the diagnostic smoke; do not dispatch now.

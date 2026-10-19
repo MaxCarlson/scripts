@@ -124,3 +124,8 @@ P1 corrections committed as 3560770b and a16d6194; full offline validation is gr
 ## Phase 1d approved follow-up
 
 The user's corrected project-isolation handoff is implemented in 8a94f580 and 15efb1dc. See [Phase 1d design, source verification, tests and pending probe](phase1d.md). Stop at offline verification; a new user authorization is required for non-inference API probes and, separately, live-worker acceptance. Scratch policy, scoring redesign and suite expansion remain outside this phase. Current status is in STATUS.md and docs/HANDOFF.md.
+
+
+## Trial-local scratch policy follow-up
+
+Authorized offline implementation follows accepted Phase 1d non-inference isolation. See [scratch-policy.md](scratch-policy.md) for the versioned cooperative policy, pinned shell/environment findings, interfaces, tests and limitations. Four accepted documentation updates were committed first as 8bd05cdd. Reviewed implementation/tests committed as 45a096d5; documentation records the corrected bounded-capture policy and proposed separately authorized integration-only smoke; no shared config change, inference, suite expansion or scoring redesign. Current status/checklist and module handoff identify the next gate.
