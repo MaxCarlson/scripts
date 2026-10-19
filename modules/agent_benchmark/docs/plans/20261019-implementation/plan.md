@@ -119,3 +119,8 @@ Ruling: user request to implement the planned CLI includes its required associat
 ## 2026-10-19 corrective checkpoint
 
 P1 corrections committed as 3560770b and a16d6194; full offline validation is green (agent 144 passed/2 Windows symlink skips, core 80 passed, Ruff/core Mypy clean). The original live trial is retained as timed_out; no new worker dispatched. The current verifier contract requires positive nonce-correlated completion evidence in addition to exit zero (smoke suite 0.1.1). Scope uncertainty cannot be credited as full first-attempt success. See docs/HANDOFF.md before fixture implementation. Gemini Flash owns routine expansion and the documented small core Markdown correction; high-risk lifecycle/attribution changes return to Sol. A new live benchmark requires separate authorization.
+
+
+## Phase 1d approved follow-up
+
+The user's corrected project-isolation handoff is implemented in 8a94f580 and 15efb1dc. See [Phase 1d design, source verification, tests and pending probe](phase1d.md). Stop at offline verification; a new user authorization is required for non-inference API probes and, separately, live-worker acceptance. Scratch policy, scoring redesign and suite expansion remain outside this phase. Current status is in STATUS.md and docs/HANDOFF.md.

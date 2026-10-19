@@ -1,6 +1,6 @@
-# agent_benchmark — 1.0.1
+# agent_benchmark — 1.1.0
 
-A thin evaluator around the existing OpenCode/MCP runtime. Phase 1c's integrated pipeline and P1 corrections are validated offline. The retained first live run was timed out under its 60-second budget; no new live run has been authorized for these corrections.
+A thin evaluator around the existing OpenCode/MCP runtime. Phase 1d adds independently committed trial Git projects and validation before inference; its integration is validated offline. The two retained pre-isolation live runs were timed_out and failed-scope respectively; neither validates the new isolation path. A non-inference API probe requires separate authorization.
 
 ```powershell
 agent-bench plan
@@ -16,6 +16,8 @@ The default persistent state is `~/.local/share/agent-benchmark`, shared across 
 
 Each invocation currently runs one smoke task, one explicit model and one repetition. `benchmark_core` alone supplies RunInfo, TrialResult, MetricValue, persistence, statistics and JSON/CSV/Markdown reporting. Outputs are `reports/<run_id>/{run.json,trials.jsonl,summary.json,summary.csv,report.md,evidence/}`. Exactly one trial is persisted per attempted repetition, including ordinary infrastructure failures and caller cancellation when storage is writable. Filesystem failures cannot guarantee persistence; uncertain execution still blocks dispatch.
 
+Every run creates a fresh independent Git repository and unique root commit without a remote or host Git configuration changes. Header-routed OpenCode preflight requires exact directory/worktree and a Git project ID equal to that root commit. An empty session is created and its persisted directory/project binding validated before its ID is passed to the single MCP inference submission. Git bookkeeping is excluded from task-content snapshots; worker .git mutations remain scope-audited. See [Phase 1d guarantees and pending probe](docs/plans/20261019-implementation/phase1d.md).
+
 The worker sees a fresh public fixture. S0 and S1 are byte-exact archives outside it; a hidden verifier runs on a disposable S1 copy. Canonical scoring is `worker_first_attempt_full_success`. Expired task budgets, execution errors, unresolved termination and disqualifying scope changes cannot become passes from verifier output. Coordinator repair never changes the frozen worker score. Token/tool counters that are not collected remain unavailable. Retries, coordinator comparisons and multi-model repetition support remain later packages.
 
 OpenCode 1.19.3 can leave `finish="tool-calls"` on a final StructuredOutput message. The adapter accepts that special case only with a matching requested JSON schema, a completed StructuredOutput tool, completed assistant timestamp, idle session and no incomplete tools. Arbitrary non-null structured data is insufficient. Normal abort/error confirmation and malformed-data handling preserve the corrective pass's fixes. See [source notes](docs/TERMINATION.md).
@@ -30,7 +32,7 @@ Install both local packages into the intended environment:
 python -m pip install -e modules/benchmark_core -e modules/agent_benchmark
 ```
 
-`agent-bench` was introduced at 1.0.0; install/refresh wrappers when first adopting that entry point. Existing editable installs pick up the 1.0.1 patch without wrapper changes. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
+`agent-bench` was introduced at 1.0.0; install/refresh wrappers when first adopting that entry point. Existing editable installs load the 1.1.0 source changes without entry-point wrapper changes; reinstall to refresh package metadata. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
 
 Validation from repository root, using the actual repo virtualenv:
 

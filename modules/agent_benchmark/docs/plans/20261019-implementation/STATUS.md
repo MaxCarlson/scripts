@@ -1,9 +1,11 @@
 # Status
 
-2026-10-19: Phase 1c P1 corrective integration complete and validated offline on agent/agent-benchmark in C:/Users/mcarls/src/scripts-agent-benchmark. Baseline 91d9d26b preserved. Corrections: 3560770b (unknown-submission safety), a16d6194 (verifier completion evidence and explicit scope compliance). Package 1.0.1; smoke suite 0.1.1.
+2026-10-19: Phase 1d project isolation implemented offline; stop at review/non-inference API verification gate. Worktree C:/Users/mcarls/src/scripts-agent-benchmark, branch agent/agent-benchmark.
 
-The retained original live run reports exactly one canonical timed_out result under its original 60-second budget, with passing hidden verification. Historical artifacts are unchanged. Read-only re-audit: 1 external violation, 3 mutation events, 3 unverifiable shell operations. No live worker was dispatched in this corrective pass; post-correction live validation requires separate user authorization.
+Commits: 8a94f580 (committed independent Git workspaces) and 15efb1dc (project/session gate, header routing, project-bound ownership/provenance and Windows Git cleanup). Package 1.1.0, isolation policy isolated-git-project-v1; task suite remains 0.1.1. User's corrected Phase 1d handoff takes precedence over supporting Gemini snippets.
 
-Validation: agent 144 passed, 2 Windows symlink skips; core 80 passed; Ruff clean; core Mypy clean (9 files). See docs/HANDOFF.md for exact commands, SHAs, receipt contract and limitations.
+Validation: agent 175 passed/2 Windows symlink skips; core 83 passed; Ruff clean; core Mypy and new Git helper Mypy clean. Optional broad agent Mypy retains 22 legacy diagnostics versus 27 in a baseline shadow-file check; not a clean agent-wide typing claim.
 
-Next checkpoint: user-directed routine fixture expansion with Gemini Flash, or separately authorized live acceptance. Core Markdown all-unavailable metric omission is documented for Gemini Flash; core source was unchanged. Keep live artifacts and workspace until user review. M1 repetitions/repeated-model evidence and M2 coordinator comparisons remain unimplemented. No service reconfiguration or automated development-agent delegation.
+Both pre-isolation live runs and all 59 retained files are unchanged. No live model dispatch, shared-service interaction/reconfiguration, scratch policy, scoring redesign or suite expansion in this phase. Global OpenCode configuration remains; logical isolation is not OS-enforced sandboxing.
+
+Next: separate authorization for header-routed /path and /project/current probes on fresh committed/control repositories, plus empty-session creation/lookup only if explicitly included. No inference permitted in that probe. Later live-worker acceptance is a separate gate. See phase1d.md and docs/HANDOFF.md for exact interfaces, validation commands, limitations and handoff.

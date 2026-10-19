@@ -23,4 +23,18 @@
 - [x] Original authorized live smoke trial recorded; no worker-first-attempt success claimed.
 - [x] P1 unknown-submission and positive-verifier-completion corrections; explicit uncertain scope scoring, full offline validation.
 - [x] Historical evidence preserved; deferred Markdown correction documented for Gemini Flash.
-- [ ] Post-correction live validation only with separate user authorization.
+- [x] Separately authorized second live acceptance retained: hidden checks passed; canonical scope failure. See HANDOFF.md.
+
+
+## Phase 1d
+
+- [x] Independently inspect pinned OpenCode 1.19.3 and installed MCP 3.0.0 routing/session behavior.
+- [x] Create unique trial root commits before S0 without host Git configuration writes or remotes.
+- [x] Exclude only owned root Git bookkeeping from source snapshots; retain Git mutation scope auditing.
+- [x] Validate directory, worktree, expected Git project ID, and persisted empty session before inference.
+- [x] Use header-only HTTP routing and supported MCP existing-session submission; no retries.
+- [x] Preserve persistent blocking, timeout precedence, frozen S1, historical evidence and canonical contracts.
+- [x] Record versioned environment/Git/session provenance; handle confirmed owned Windows Git cleanup.
+- [x] Full offline pytest/Ruff and applicable core/new-helper Mypy checks; document optional legacy agent-wide Mypy diagnostics.
+- [ ] Separately authorized non-inference API probe; no shared-service changes or worker dispatch.
+- [ ] Separately authorized post-isolation live-worker acceptance.

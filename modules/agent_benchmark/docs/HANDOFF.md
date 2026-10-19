@@ -1,20 +1,32 @@
-# agent_benchmark handoff — P1 corrective integration complete
+# agent_benchmark handoff — Phase 1d offline isolation checkpoint
 
 ## Workspace / commits
 
-- C:/Users/mcarls/src/scripts-agent-benchmark; branch `agent/agent-benchmark`. Local commits only; no push or merge to main.
-- Baseline: `91d9d26b`, Gemini's scope-audit pass, preserved and reviewed.
-- `3560770b`: independent submission-start tracking and persistent unknown-submission blocking; module version 1.0.1.
-- `a16d6194ce9e949999807bb2ef3d9e115f8e4003`: positive verifier completion evidence, ownership journaling order, explicit scope uncertainty and regressions.
-- `1ed3c607`: documented tested P1 corrections and scope uncertainty in handoff.
-- Current commit: fix(benchmark-core): display unavailable telemetry explicitly in Markdown reports.
-- Earlier integration preserved: `072683f1` merged complete corrected core through exactly `a185621552368e7ed4442659750a64ae7986ecda`; `f973ee67` fixed canonical package shadowing; `5d9637b0` integrated pipeline/CLI; `2cfd66fd` registered CLI help. Corrective baseline `c299e1b2` remains intact.
+- C:/Users/mcarls/src/scripts-agent-benchmark; branch agent/agent-benchmark. Local commits only.
+- Baseline 4b445d44: canonical Markdown missing-telemetry correction. P1 fixes 3560770b and a16d6194 preserved, along with Gemini's 91d9d26b scope audit.
+- 8a94f580: independent trial-local Git repositories and unique root commits, source snapshot filtering and protected Git mutation audit. Package 1.1.0; task/verifier suite 0.1.1 unchanged.
+- 15efb1dc72eca0a7ef2f28e261b85cb49ab6bb61: header-only routing, exact project/root-commit validation, validated empty-session creation before MCP inference, project-bound reconciliation/cleanup and provenance.
+- Complete corrected core history through a1856215 remains integrated; no benchmark_core source changes in Phase 1d.
 
-## Current outcome
+## Outcome / stop boundary
 
-Both P1 findings reproduced with failing offline regressions before fixes. Full offline validation passes. No worker was dispatched and no shared service was contacted/reconfigured during this corrective pass. A new live benchmark requires separate user authorization.
+Phase 1d is implemented and validated offline only. No live worker or live local API probe was run in this phase. No shared services or historical artifacts were changed. Stop for review and separately authorized non-inference API verification; do not start suite expansion or another model run.
 
-The original live run remains at `reports/20261019T114143Z-dfd3bbc9`: exactly one canonical TrialResult, `timed_out` under the original 60-second task budget, with passing hidden verification. This is not a model task success and is not live validation of the corrected code. Read-only re-audit confirms 1 external path violation, 3 mutation events and 3 unverifiable shell operations. Historical results/evidence were not rewritten. All 32 files under reports/ retained identical path/content digest `e844621bb215b1c9b703fc83e49ba79f4a8d4355c147ff964d21ae9aeaa850b1`. Keep reports/ untracked and retain the live workspace until user review.
+Preserved live evidence:
+- reports/20261019T114143Z-dfd3bbc9: one canonical timed_out result; hidden verifier passed. Later read-only scope re-audit detects 1 external violation; original snapshot-only count stays unchanged.
+- reports/20261019T124653Z-87d660d8: one canonical failed result for 1 external scope violation; 22 hidden checks passed; worker duration 48.641 seconds. Four mutation events and five unverifiable shell operations remain distinct. ACCEPTANCE.md and acceptance-audit.json retain details.
+- All 59 historical files retain digest 4560c4d9b3b0c3a8d0865f57d3e0d6e9a043e46054ce10507e8645d179baa3fb. Keep reports/ untracked and preserve both worker workspaces until user review. Neither run validates Phase 1d.
+
+## Phase 1d interfaces and guarantees
+
+- git_workspace.initialize_git -> GitIdentity; prepare_workspace returns it before S0. A UUID-bearing root commit ensures distinct IDs even with identical seeds and workspace basenames. Git environment/config/templates/hooks cannot redirect initialization; no remotes or host Git config writes. Real Git tests establish local root uniqueness and byte-identical task snapshots.
+- preflight(..., project_id=expected_root_commit) validates model/role, GET /path directory+worktree, and GET /project/current vcs=git, worktree and exact expected project ID. It rejects global, other projects, ancestor/relative/missing directories before session creation.
+- prepare_session creates one empty session via HTTP, verifies its persisted directory/projectID/ID and empty/idle state. The supported MCP sessionId argument binds the one subsequent opencode_fire submission to that session. Creation and inference are never retried. Failure to validate prevents inference; uncertain prompt submission still blocks later invocations.
+- Direct HTTP uses x-opencode-directory only, matching both pinned OpenCode routers. Unit tests verify headers and absence of query conflicts. Real endpoint behavior remains unprobed in this phase.
+- WorkerHandle.project_id is populated for new trials and retained in lifecycle/details. Fresh observation/cancellation rejects project rebinding. Cleanup loads/checks the recorded project; older pre-isolation evidence remains readable through its legacy path/session checks.
+- Root .git bookkeeping is pruned from task-content snapshots; nested .git-named paths remain observable. Explicit worker .git writes are known violations, not automatically compliant. Shell uncertainty/scoring is unchanged. Windows read-only Git files are writable/deletable only inside owned .git after confirmed termination; shared processes are never managed.
+- Canonical provenance: RunInfo benchmark_version/isolation_policy, runtime git/project/session, lifecycle Git identity/handle, session-preflight evidence, and TrialResult.details.project_id. Policy `isolated-git-project-v1` distinguishes this environment from prior runs. Do not pool old/new environments implicitly.
+- Global OpenCode instructions/configuration/permissions remain; project isolation is not OS sandboxing. The benchmark lock does not exclude unrelated shared-service clients.
 
 ## Interfaces and corrections to preserve
 
@@ -28,28 +40,16 @@ The original live run remains at `reports/20261019T114143Z-dfd3bbc9`: exactly on
 - Failed S1/corrected S3 canonical persistence regression still passes. Cleanup never changes scores and still requires fresh exact session/turn/tool reconciliation within a bounded deadline. No shared-process termination or general scheduler exists.
 - benchmark_core exclusively owns RunInfo, TrialResult, MetricValue, persistence, statistics and reporting. No core source changes in this pass. Tokens/tool telemetry remain unavailable when not collected.
 
-## Validation
+## Validation and known limitations
 
-Interpreter: C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe. Commands from this worktree root:
+175 agent tests passed; 2 Windows symlink-privilege skips. Core: 83 passed. Ruff clean. Configured core Mypy clean (9 files); new Git helper Mypy clean. Exact commands and RED/GREEN coverage are in docs/plans/20261019-implementation/phase1d.md.
 
-```powershell
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/agent_benchmark/tests -q -rs --basetemp=modules/agent_benchmark/.pytest_tmp_root/p1-acceptance-final
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m pytest modules/benchmark_core/tests -q -rs --basetemp=modules/benchmark_core/.pytest_tmp_root/p1-acceptance-final
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m ruff check modules/agent_benchmark/agent_benchmark modules/agent_benchmark/tests modules/agent_benchmark/__init__.py modules/benchmark_core
-& C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe -m mypy modules/benchmark_core/benchmark_core
-```
+Optional full agent Mypy reports 22 existing diagnostics (Windows fcntl stubs, dynamic core wrapper exports, legacy parser/CLI annotations); a baseline shadow-file check at 4b445d44 reports 27. Agent-wide typing is not clean. No unrelated typing refactor was included.
 
-Results: agent 144 passed, 2 skipped (Windows symlink privilege in evidence_test.py and lifecycle_test.py); core 83 passed; Ruff clean; core Mypy clean in 9 files. Initial RED runs reproduced empty-receipt release, early-exit false passes, scope-uncertainty scoring, relative-workdir misresolution, partial mutation uncertainty, malformed transcript compliance, missing ownership journal IDs, structured-report misclassification, and omission of unavailable telemetry in markdown reports. Final checks have no known failures.
+The proposed scratch policy and functional/scoring decomposition remain unimplemented by explicit Phase 1d scope. Strict scope uncertainty still prevents a full-success score. Current task/grace defaults remain 60/10 seconds.
 
-## Reporting correction completed — Gemini Flash
+## Next action / model handoff
 
-File `modules/benchmark_core/benchmark_core/reporting.py`, function `render_report_md`:
-- Resource-metric loop updated to render present all-unavailable metrics (`m_stat.available_count == 0`) with `Mean` = `N/A`, `Median` = `N/A`, and `Available / Total` = `0/N`.
-- Measured and mixed-availability rows, JSON, and CSV schemas remain unchanged.
-- Added offline reporter tests in `modules/benchmark_core/tests/reporting_test.py` covering entirely unavailable metrics, mixed measured/estimated/unavailable quality, and offline regeneration from historical trial artifacts without modifying files on disk.
+Sol Medium should retain ownership through a separately authorized non-inference API probe. See the Phase 1d plan's probe matrix: fresh control/committed directories, header-routed /path and /project/current, and explicitly authorized empty-session POST/GET validation without any inference. Runtime schema deviations return to Sol; do not weaken checks to make a probe pass. A later live-worker run needs separate authorization.
 
-## Next model allocation / copyable brief
-
-Routine fixture expansion: Gemini Flash. Bounded audit improvements: Luna High. Return to Sol Medium for lifecycle, integration, verifier architecture or attribution issues. Work sequentially; no local-agent delegation or automated model routing.
-
-Copyable next-agent instruction: Work in C:/Users/mcarls/src/scripts-agent-benchmark on agent/agent-benchmark. Confirm status/branch and read this handoff plus docs/plans/20261019-implementation/plan.md. Preserve commits 91d9d26b, 3560770b and a16d6194. Add routine Phase 2 fixtures only after the user chooses that next task; use the bundled task layout and positive verifier completion receipt contract. Do not alter shared schemas, weaken scope uncertainty/first-attempt scoring, retry a worker, repair live S1, modify reports/, or start/reconfigure services. Every live run needs separate authorization. Commit tested scoped work, update the handoff, and return to Sol for architecture/lifecycle problems.
+After that checkpoint, Gemini Flash may handle routine fixtures only when the user directs it; Luna High may handle bounded audits. No local development-agent delegation or model router. Preserve P1 safety, S1 attribution, canonical contracts and reports/. Do not implement scratch/scoring changes or suite expansion without another instruction.
