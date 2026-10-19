@@ -61,7 +61,7 @@ Workspace interfaces: DispatchGuard.allocate(root) -> OwnedWorkspace, record(dec
 - [x] Write failure-path tests first, run RED (missing module initially; review custom-transport regressions subsequently failed 2/2 before fix).
 - [x] Implement smallest lifecycle and owned-workspace helpers; run GREEN (26 passed, 1 skipped).
 - [x] Run module pytest and ruff; native read-only reviewer found custom adapter exception gap, fixed with RED/GREEN tests. Commit only owned paths.
-- [ ] Record first handoff to Flash; stop here, even if core lands meanwhile.
+- [x] Record first handoff to Flash (6-Luna-High also suitable) in docs/HANDOFF.md; stop here, even if core lands meanwhile.
 
 ## Task 1b: precise next-agent package (independent of core)
 
