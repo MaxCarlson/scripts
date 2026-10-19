@@ -7,8 +7,10 @@ integration layer must later consume these facts to emit exactly one TrialResult
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Iterable
 from dataclasses import asdict, dataclass
 import difflib
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -17,8 +19,9 @@ import time
 import httpx
 
 from .bridge import OpenCodeBridge
-from .evidence import (ScopeAudit, Snapshot, Task, Verification, audit_scope,
+from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
+from .scratch import SCOPE_POLICY, prompt_instructions, provenance, reserved_path
 from .lifecycle import DispatchGuard, OwnedWorkspace, TerminationDecision, WorkerHandle, confirm_termination
 
 
@@ -38,6 +41,7 @@ class AttemptEvidence:
     worker_ms: float
     wall_ms: float
     scope_audit: ScopeAudit | None = None
+    scope_policy: str | None = None
 
 
 def _write_json(path: Path, data: object) -> None:
@@ -47,20 +51,55 @@ def _write_json(path: Path, data: object) -> None:
     temporary.replace(path)
 
 
+def _capture_checkpoint(workspace: Path, evidence_dir: Path, journal: dict, checkpoint: str) -> Snapshot:
+    try:
+        return capture(workspace, evidence_dir / checkpoint, limits=EVIDENCE_LIMITS)
+    except EvidenceLimitExceeded as error:
+        diagnostic = {"checkpoint": checkpoint, "kind": error.kind, "path": error.path,
+                      "observed": error.observed, "limit": error.limit, "complete_snapshot": False,
+                      "limits": asdict(EVIDENCE_LIMITS)}
+        _write_json(evidence_dir / "evidence-limit.json", diagnostic)
+        journal["evidence_capture"] = diagnostic
+        if checkpoint == "S1":
+            journal["stage"] = "evidence_limited"
+        _write_json(evidence_dir / "lifecycle.json", journal)
+        raise
+
+
 def _unresolved(handle: WorkerHandle, grace: float, reason: str) -> TerminationDecision:
     return TerminationDecision(handle, False, False, grace, 0, None, (reason,))
 
 
-def _patch(before: Snapshot, after: Snapshot) -> str:
+def _patch(before: Snapshot, after: Snapshot, *, max_bytes: int = 256 * 1024,
+           scope_policy: str | None = None) -> str:
+    """A bounded convenience diff; snapshots, not this preview, are authoritative."""
+    if max_bytes < 64:
+        raise ValueError("Patch preview requires at least 64 bytes")
     chunks: list[str] = []
+    used = 0
+    notice = "[Patch preview limited; exact bytes retained in snapshots]\n"
     for name in changed_paths(before, after):
         old, new = before.files.get(name, b""), after.files.get(name, b"")
-        try:
-            left, right = old.decode("utf-8"), new.decode("utf-8")
-            chunks.extend(difflib.unified_diff(left.splitlines(keepends=True), right.splitlines(keepends=True),
-                                             fromfile=f"S0/{name}", tofile=f"S1/{name}"))
-        except UnicodeDecodeError:
-            chunks.append(f"Binary file differs: {name}; exact bytes retained in checkpoints\n")
+        summary = (f"Snapshot content: {name}; "
+                   f"S0={hashlib.sha256(old).hexdigest()} S1={hashlib.sha256(new).hexdigest()}\n")
+        # Do not duplicate scratch payloads or run quadratic text comparison on
+        # large/line-heavy worker output. Each text diff has fixed small inputs.
+        lines: Iterable[str] = [summary]
+        if not (scope_policy and reserved_path(name)) and max(len(old), len(new)) <= 16384:
+            try:
+                left, right = old.decode("utf-8"), new.decode("utf-8")
+                if len(left.splitlines()) <= 200 and len(right.splitlines()) <= 200:
+                    lines = difflib.unified_diff(left.splitlines(keepends=True), right.splitlines(keepends=True),
+                                                fromfile=f"S0/{name}", tofile=f"S1/{name}")
+            except UnicodeDecodeError:
+                pass
+        for line in lines:
+            size = len(line.encode("utf-8"))
+            if used + size + len(notice) > max_bytes:
+                chunks.append(notice)
+                return "".join(chunks)
+            chunks.append(line)
+            used += size
     return "".join(chunks)
 
 
@@ -94,19 +133,21 @@ async def run_attempt(
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
-    git_identity = prepare_workspace(task, workspace.path)
-    s0 = capture(workspace.path, evidence_dir / "S0")
+    git_identity = prepare_workspace(task, workspace.path, scope_policy=SCOPE_POLICY)
     # Worker processes belong to OpenCode's shared process tree, not local subprocess
     # supervision; owned_pids is intentionally empty.
     journal = {"stage": "not_submitted", "workspace": asdict(workspace), "task_seconds": budget,
                "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": [],
-               "git": asdict(git_identity)}
+               "git": asdict(git_identity), "scope_policy": SCOPE_POLICY, "scratch": provenance(workspace.path), "evidence_limits": asdict(EVIDENCE_LIMITS)}
     _write_json(evidence_dir / "lifecycle.json", journal)
+    s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
     try:
         configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent,
                                                project_id=git_identity.root_commit)
         prepared_session = await bridge.prepare_session(workspace.path, project_id=git_identity.root_commit)
-        configuration.update(git=asdict(git_identity), session=prepared_session)
+        configuration.update(git=asdict(git_identity), session=prepared_session,
+                             scope_policy=SCOPE_POLICY, scratch=provenance(workspace.path),
+                             evidence_limits=asdict(EVIDENCE_LIMITS))
         journal["prepared_session"] = prepared_session
         _write_json(evidence_dir / "session-preflight.json", getattr(bridge, "session_evidence", prepared_session))
         _write_json(evidence_dir / "lifecycle.json", journal)
@@ -125,7 +166,9 @@ async def run_attempt(
     journal["stage"] = "dispatching"
     _write_json(evidence_dir / "lifecycle.json", journal)
     prompt = (task.instruction + "\n\nWorkspace: " + str(workspace.path)
-              + "\nUse only the allowed paths. Do not spawn background processes or install packages. "
+              + prompt_instructions(workspace.path)
+              + f"\nEvidence capture limits (including scratch): {asdict(EVIDENCE_LIMITS)}. Keep temporary output small."
+              + "\nUse only the task-allowed paths and the designated trial scratch directory. Do not spawn background processes or install packages. "
               "For Python checks, disable bytecode writes (-B or PYTHONDONTWRITEBYTECODE=1). "
               "Return a JSON completion report with outcome, summary, changed_paths, checks, evidence and blockers. "
               "Report only checks you actually ran. Stop after your first attempt; do not request a retry.")
@@ -229,26 +272,31 @@ async def run_attempt(
         scope: tuple[str, ...] = ()
         audit = None
         if decision.confirmed:
-            s1 = capture(workspace.path, evidence_dir / "S1")
+            s1 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S1")
             changed = tuple(changed_paths(s0, s1))
-            audit = audit_scope(task, workspace.path, s0, s1, bridge.last_history)
+            audit = audit_scope(task, workspace.path, s0, s1, bridge.last_history, scope_policy=SCOPE_POLICY)
             scope = audit.all_violations
-            (evidence_dir / "worker.patch").write_text(_patch(s0, s1), encoding="utf-8")
+            (evidence_dir / "worker.patch").write_text(_patch(s0, s1, max_bytes=EVIDENCE_LIMITS.max_patch_bytes,
+                                                           scope_policy=SCOPE_POLICY), encoding="utf-8")
             _write_json(evidence_dir / "checkpoints.json", {
                 "S0": {"tree_hash": s0.tree_hash},
                 "S1": {"tree_hash": s1.tree_hash, "diff_path": "worker.patch"},
                 "changed_paths": changed,
+                "scope_policy": SCOPE_POLICY,
+                "task_changed_paths": audit.task_changed_paths,
+                "scratch_changed_paths": audit.scratch_changed_paths,
                 "snapshot_scope_violations": list(audit.snapshot_violations),
                 "transcript_scope_violations": list(audit.transcript_violations),
                 "scope_violations": list(scope),
             })
             _write_json(evidence_dir / "scope-audit.json", audit.to_dict())
             # Verification runs in its own owned process, after S1 has been archived.
-            verification = verify(s1, task.verifier, evidence_dir / "verification", timeout_seconds=verifier_seconds)
+            verification = verify(s1, task.verifier, evidence_dir / "verification", timeout_seconds=verifier_seconds,
+                                  scope_policy=SCOPE_POLICY)
             journal["stage"] = "verified"
             _write_json(evidence_dir / "lifecycle.json", journal)
         return AttemptEvidence(workspace, decision, s0, s1, verification, changed, scope, task_budget_expired,
-                               execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit)
+                               execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit, scope_policy=SCOPE_POLICY)
     finally:
         # Persistence can fail after remote submission (disk full/permissions).
         # Safety cannot depend on a successful journal write or its exception path.

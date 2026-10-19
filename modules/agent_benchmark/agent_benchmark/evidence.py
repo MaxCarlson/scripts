@@ -10,6 +10,7 @@ import os
 from pathlib import Path, PureWindowsPath
 import platform
 import secrets
+import stat
 import shutil
 import subprocess
 import sys
@@ -18,6 +19,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .git_workspace import GitIdentity, initialize_git
+from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
 
 @dataclass(frozen=True)
@@ -57,9 +59,77 @@ def load_task(path: Path) -> Task:
                 budget, verifier, (path / "instruction.md").read_text(encoding="utf-8"))
 
 
-def _read_tree(root: Path, *, exclude_git: bool = False) -> dict[str, bytes]:
+@dataclass(frozen=True)
+class CaptureLimits:
+    max_entries: int = 4096
+    max_file_bytes: int = 2 * 1024 * 1024
+    max_total_bytes: int = 16 * 1024 * 1024
+    max_patch_bytes: int = 256 * 1024
+
+    def __post_init__(self) -> None:
+        if any(type(value) is not int or value <= 0 for value in asdict(self).values()):
+            raise ValueError("Capture limits must be positive integers")
+
+
+EVIDENCE_LIMITS = CaptureLimits()
+
+
+class EvidenceLimitExceeded(ValueError):
+    def __init__(self, kind: str, path: str, observed: int, limit: int) -> None:
+        self.kind, self.path, self.observed, self.limit = kind, path, observed, limit
+        super().__init__(f"Evidence {kind} limit exceeded at {path}: {observed} > {limit}")
+
+
+def _read_bounded_tree(root: Path, exclude_git: bool, limits: CaptureLimits) -> dict[str, bytes]:
+    # scandir is streamed: do not materialize an unbounded directory listing.
+    files: dict[str, bytes] = {}
+    pending = [root]
+    entries = total = 0
+    while pending:
+        parent = pending.pop()
+        with os.scandir(parent) as listing:
+            for entry in listing:
+                path = Path(entry.path)
+                name = path.relative_to(root).as_posix()
+                if path.is_symlink() or path.is_junction():
+                    raise ValueError(f"Checkpoint refuses link: {name}")
+                metadata = parent == root and (entry.name == ".git" or os.name == "nt" and entry.name.lower() == ".git")
+                if exclude_git and metadata:
+                    if not entry.is_dir(follow_symlinks=False):
+                        raise ValueError("Trial .git must remain an ordinary directory")
+                    continue
+                entries += 1
+                if entries > limits.max_entries:
+                    raise EvidenceLimitExceeded("entries", name, entries, limits.max_entries)
+                info = entry.stat(follow_symlinks=False)
+                if stat.S_ISDIR(info.st_mode):
+                    pending.append(path)
+                    continue
+                if not stat.S_ISREG(info.st_mode):
+                    raise ValueError(f"Unsupported checkpoint entry: {name}")
+                if info.st_nlink > 1:
+                    raise ValueError(f"Checkpoint refuses hardlink: {name}")
+                if info.st_size > limits.max_file_bytes:
+                    raise EvidenceLimitExceeded("file", name, info.st_size, limits.max_file_bytes)
+                if total + info.st_size > limits.max_total_bytes:
+                    raise EvidenceLimitExceeded("total", name, total + info.st_size, limits.max_total_bytes)
+                cap = min(limits.max_file_bytes, limits.max_total_bytes - total)
+                with path.open("rb") as source:
+                    data = source.read(cap + 1)  # Also bounds growth after stat.
+                if len(data) > limits.max_file_bytes:
+                    raise EvidenceLimitExceeded("file", name, len(data), limits.max_file_bytes)
+                if total + len(data) > limits.max_total_bytes:
+                    raise EvidenceLimitExceeded("total", name, total + len(data), limits.max_total_bytes)
+                files[name] = data
+                total += len(data)
+    return files
+
+
+def _read_tree(root: Path, *, exclude_git: bool = False, limits: CaptureLimits | None = None) -> dict[str, bytes]:
     if root.is_symlink() or root.is_junction() or not root.is_dir():
         raise ValueError("Checkpoint root must be an ordinary directory, not a link")
+    if limits is not None:
+        return _read_bounded_tree(root, exclude_git, limits)
     files = {}
 
     def on_error(error: OSError) -> None:
@@ -102,20 +172,27 @@ def _write_tree(files: Mapping[str, bytes], destination: Path) -> None:
         target.write_bytes(data)
 
 
-def prepare_workspace(task: Task, workspace: Path) -> GitIdentity:
+def prepare_workspace(task: Task, workspace: Path, *, scope_policy: str | None = None) -> GitIdentity:
     """Copy public files only; existing workspace must be empty and benchmark-owned."""
+    validate_policy(scope_policy)
+    if scope_policy and any(reserved_path(name) for name in (*task.allowed_paths, *task.forbidden_paths)):
+        raise ValueError("Task paths collide with reserved scratch directory")
     if workspace.exists() and any(workspace.iterdir()):
         raise ValueError("Worker workspace must be fresh and empty")
     workspace.mkdir(parents=True, exist_ok=True)
     seed = _read_tree(task.path / "seed")
     if any(name.split("/")[0].lower() == ".git" for name in seed):
         raise ValueError("Seed .git metadata is reserved for the benchmark")
+    if scope_policy and any(reserved_path(path.name) for path in (task.path / "seed").iterdir()):
+        raise ValueError("Seed collides with reserved scratch directory")
     for name, data in seed.items():
         target = workspace / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     for name in ("instruction.md", "task.json"):
         shutil.copyfile(task.path / name, workspace / name)
+    if scope_policy:
+        (workspace / SCRATCH_NAME).mkdir()
     return initialize_git(workspace)
 
 
@@ -124,19 +201,20 @@ class Snapshot:
     path: Path
     files: Mapping[str, bytes]
     tree_hash: str
+    limits: CaptureLimits | None = None
 
     def check_intact(self) -> None:
-        if _tree_hash(_read_tree(self.path)) != self.tree_hash:
+        if _tree_hash(_read_tree(self.path, limits=self.limits)) != self.tree_hash:
             raise ValueError("Archived checkpoint changed; refuse evaluation")
 
 
-def capture(workspace: Path, destination: Path) -> Snapshot:
+def capture(workspace: Path, destination: Path, *, limits: CaptureLimits | None = None) -> Snapshot:
     """Call only after termination confirmation; never overwrite a checkpoint."""
     if destination.resolve().is_relative_to(workspace.resolve()):
         raise ValueError("Evidence must be outside worker workspace")
-    files = _read_tree(workspace, exclude_git=True)
+    files = _read_tree(workspace, exclude_git=True, limits=limits)
     _write_tree(files, destination)
-    return Snapshot(destination, MappingProxyType(files), _tree_hash(files))
+    return Snapshot(destination, MappingProxyType(files), _tree_hash(files), limits)
 
 
 def changed_paths(before: Snapshot, after: Snapshot) -> list[str]:
@@ -153,17 +231,21 @@ class Verification:
     duration_ms: float
 
 
-def verify(snapshot: Snapshot, verifier: Path, output: Path, *, timeout_seconds: float = 10) -> Verification:
+def verify(snapshot: Snapshot, verifier: Path, output: Path, *, timeout_seconds: float = 10,
+           scope_policy: str | None = None) -> Verification:
     """Execute the trusted verifier on a disposable copy, never archived S1 itself.
 
     This is a process boundary for trusted fixtures, not a hostile-code sandbox.
     Timeout kills only the verifier child created by subprocess.run.
     """
+    validate_policy(scope_policy)
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
         raise ValueError("Verifier timeout must be finite and positive")
     snapshot.check_intact()
     output.mkdir(parents=True, exist_ok=False)
-    _write_tree(snapshot.files, output / "workspace")
+    verifier_files = {name: data for name, data in snapshot.files.items()
+                      if not (scope_policy and reserved_path(name))}
+    _write_tree(verifier_files, output / "workspace")
     nonce = secrets.token_hex(32)
     completion_path = (output / "completion.json").resolve()
     start = time.monotonic()
@@ -221,6 +303,7 @@ class MutationEvent:
     status: str
     message_id: str
     call_id: str
+    category: str = "task"
 
 
 @dataclass(frozen=True)
@@ -240,6 +323,9 @@ class ScopeAudit:
     mutated_paths: tuple[str, ...]
     mutation_events: tuple[MutationEvent, ...]
     unverifiable_operations: tuple[UnverifiableOperation, ...]
+    scope_policy: str | None = None
+    task_changed_paths: tuple[str, ...] = ()
+    scratch_changed_paths: tuple[str, ...] = ()
 
     @property
     def compliance(self) -> str:
@@ -249,6 +335,9 @@ class ScopeAudit:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "scope_policy": self.scope_policy,
+            "task_changed_paths": list(self.task_changed_paths),
+            "scratch_changed_paths": list(self.scratch_changed_paths),
             "compliance": self.compliance,
             "snapshot_violations": list(self.snapshot_violations),
             "transcript_violations": list(self.transcript_violations),
@@ -309,8 +398,9 @@ def _matches_any(rel_posix: str, patterns: tuple[str, ...]) -> bool:
 
 
 def audit_transcript(
-    task: Task, workspace: Path, history: list[dict],
+    task: Task, workspace: Path, history: list[dict], *, scope_policy: str | None = None,
 ) -> tuple[tuple[str, ...], tuple[str, ...], tuple[MutationEvent, ...], tuple[UnverifiableOperation, ...]]:
+    validate_policy(scope_policy)
     workspace_resolved = workspace.resolve()
     mutation_events: list[MutationEvent] = []
     unverifiable_ops: list[UnverifiableOperation] = []
@@ -390,24 +480,32 @@ def audit_transcript(
                     except Exception:
                         rel = resolved_p.name
                     git_metadata = rel.split("/")[0].lower() == ".git"
-                    in_scope = (not git_metadata and _matches_any(rel, task.allowed_paths)
-                                and not _matches_any(rel, task.forbidden_paths))
+                    scratch = is_scratch(workspace_resolved, exec_dir / target_p, scope_policy)
+                    scratch_reserved = bool(scope_policy and reserved_path(rel))
+                    safe_inputs = (not scope_policy or raw_path == raw_path_str and safe_spelling(raw_path)
+                                   and (not isinstance(workdir, str) or workdir == workdir.strip() and safe_spelling(workdir)))
+                    in_scope = (not git_metadata and not _matches_any(rel, task.forbidden_paths)
+                                and (scratch or not scratch_reserved and _matches_any(rel, task.allowed_paths))
+                                and safe_inputs)
+                    category = "scratch" if scratch and in_scope else "protected" if git_metadata or scratch_reserved else "task"
                     canonical_path = rel
                 else:
                     in_scope = False
+                    category = "external"
                     canonical_path = str(resolved_p)
 
                 mutated_paths_set.add(canonical_path)
 
                 event = MutationEvent(
                     tool=tool,
-                    target_path=raw_path_str,
+                    target_path=raw_path if scope_policy else raw_path_str,
                     resolved_path=str(resolved_p),
                     in_workspace=in_workspace,
                     in_scope=in_scope,
                     status=status,
                     message_id=msg_id,
                     call_id=call_id,
+                    category=category,
                 )
                 mutation_events.append(event)
 
@@ -442,19 +540,23 @@ def audit_transcript(
 
 def audit_scope(
     task: Task, workspace: Path, s0: Snapshot, s1: Snapshot | None, history: list[dict],
+    *, scope_policy: str | None = None,
 ) -> ScopeAudit:
     """Audit S0/S1 workspace diff and transcript tool mutations against task scope."""
+    validate_policy(scope_policy)
     if s1 is not None:
         changed = tuple(changed_paths(s0, s1))
         snapshot_violations = tuple(
             name for name in changed
-            if not _matches_any(name, task.allowed_paths) or _matches_any(name, task.forbidden_paths)
+            if (not _matches_any(name, task.allowed_paths) and not is_scratch(workspace, workspace / name, scope_policy))
+            or _matches_any(name, task.forbidden_paths)
         )
     else:
+        changed = ()
         snapshot_violations = ()
 
     transcript_violations, mutated_paths, events, unverifiable = audit_transcript(
-        task, workspace, history,
+        task, workspace, history, scope_policy=scope_policy,
     )
 
     all_violations = tuple(sorted(set(snapshot_violations) | set(transcript_violations)))
@@ -465,7 +567,9 @@ def audit_scope(
         all_violations=all_violations,
         mutated_paths=mutated_paths,
         mutation_events=events,
-        unverifiable_operations=unverifiable,
+        unverifiable_operations=unverifiable, scope_policy=scope_policy,
+        task_changed_paths=tuple(name for name in changed if not (scope_policy and reserved_path(name))),
+        scratch_changed_paths=tuple(name for name in changed if scope_policy and reserved_path(name)),
     )
 
 
@@ -474,13 +578,16 @@ def reaudit_trial(evidence_dir: Path, task: Task) -> ScopeAudit:
     evidence_dir = evidence_dir.resolve()
     lifecycle = json.loads((evidence_dir / "lifecycle.json").read_text(encoding="utf-8"))
     workspace = Path(lifecycle["workspace"]["path"])
-    s0_tree = _read_tree(evidence_dir / "S0")
-    s0 = Snapshot(evidence_dir / "S0", MappingProxyType(s0_tree), _tree_hash(s0_tree))
+    policy = lifecycle.get("scope_policy")
+    validate_policy(policy)
+    limits = CaptureLimits(**lifecycle.get("evidence_limits", {})) if policy else None
+    s0_tree = _read_tree(evidence_dir / "S0", limits=limits)
+    s0 = Snapshot(evidence_dir / "S0", MappingProxyType(s0_tree), _tree_hash(s0_tree), limits)
     s1 = None
     if (evidence_dir / "S1").is_dir():
-        s1_tree = _read_tree(evidence_dir / "S1")
-        s1 = Snapshot(evidence_dir / "S1", MappingProxyType(s1_tree), _tree_hash(s1_tree))
+        s1_tree = _read_tree(evidence_dir / "S1", limits=limits)
+        s1 = Snapshot(evidence_dir / "S1", MappingProxyType(s1_tree), _tree_hash(s1_tree), limits)
     history_file = evidence_dir / "session.json"
     history = json.loads(history_file.read_text(encoding="utf-8")) if history_file.is_file() else []
-    return audit_scope(task, workspace, s0, s1, history)
+    return audit_scope(task, workspace, s0, s1, history, scope_policy=policy)
 

@@ -14,10 +14,11 @@ from benchmark_core import (RunInfo, TrialResult, append_result, format_utc_time
 
 from . import __version__
 from .git_workspace import ISOLATION_POLICY
+from .scratch import SCOPE_POLICY
 
 from .attempt import _write_json, run_attempt
 from .bridge import connected_bridge
-from .evidence import load_task
+from .evidence import EVIDENCE_LIMITS, load_task
 from .lifecycle import DispatchGuard, OwnedWorkspace, WorkerHandle, cleanup_workspace, confirm_termination
 from .results import base_metrics, trial_from_attempt, unavailable
 from .state import command_lock, journal_at, read_pending, release, reserve, safely_finished
@@ -56,7 +57,8 @@ async def run_benchmark(
                 {"cancel_grace_seconds": grace_seconds, "task_seconds": task.time_budget_seconds if task_seconds is None else task_seconds,
                  "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
                  "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
-                 "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY},
+                 "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
+                 "evidence_limits": asdict(EVIDENCE_LIMITS)},
             )
             save_run(run_dir, info)
             trial = None
@@ -90,7 +92,7 @@ async def run_benchmark(
                 for key in ("duration.wall_ms", "duration.worker_ms", "duration.verification_ms"):
                     metrics[key] = unavailable("ms", "No completed first-attempt measurement")
                 trial = TrialResult(run_id, "trial-001", task.task_id, "worker", 1, "infrastructure_error", metrics,
-                                    {"execution_error": "CallerCancelled" if cancelled else failure,
+                                    {"execution_error": "CallerCancelled" if cancelled else failure, "scope_policy": SCOPE_POLICY,
                                      "evidence_path": "evidence/trial-001"})
             # Exactly one canonical record per attempted repetition; all reports use core.
             append_result(run_dir, trial)

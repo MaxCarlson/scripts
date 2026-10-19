@@ -2,6 +2,7 @@
 
 import argparse
 import asyncio
+from dataclasses import asdict
 import json
 import math
 import os
@@ -12,7 +13,8 @@ from benchmark_core import load_run
 import httpx
 
 from . import __version__
-from .evidence import load_task
+from .scratch import SCOPE_POLICY, SCRATCH_NAME
+from .evidence import EVIDENCE_LIMITS, load_task
 from .runner import cleanup_trial, run_benchmark
 from .state import read_pending
 
@@ -65,7 +67,9 @@ def main(argv: list[str] | None = None) -> int:
             task = load_task(args.task)
             print(json.dumps({"task_id": task.task_id, "category": task.category, "suite_version": task.suite_version,
                               "time_budget_seconds": task.time_budget_seconds, "allowed_paths": task.allowed_paths,
-                              "forbidden_paths": task.forbidden_paths, "pending_worker": read_pending(args.state_dir)}, indent=2))
+                              "forbidden_paths": task.forbidden_paths,
+                              "scope_policy": SCOPE_POLICY, "scratch_path": SCRATCH_NAME,
+                              "evidence_limits": asdict(EVIDENCE_LIMITS), "pending_worker": read_pending(args.state_dir)}, indent=2))
         elif args.command == "status":
             value = {"pending_worker": read_pending(args.state_dir)}
             if args.run_dir:
