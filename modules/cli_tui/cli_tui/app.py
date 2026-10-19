@@ -10,7 +10,15 @@ from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .process_runner import OutputViewport, ProcessRunner
 from .schema import CliCommand, introspect_parser
-from .state import FormState, NavigationStack, TuiScreenMode
+from .state import (
+    FormState,
+    NavigationStack,
+    PaneSession,
+    PaneType,
+    PaneWorkspace,
+    TuiScreenMode,
+    copy_matching_form_values,
+)
 from .widgets import BaseWidget, create_widget_for_arg
 
 
@@ -123,16 +131,14 @@ class CliTuiApp:
         self.action_handlers = action_handlers or {}
         self.post_run_actions: List[PostRunAction] = []
 
-        self.navigation = NavigationStack()
-        self.current_form: Optional[FormState] = None
+        self.workspace = PaneWorkspace()
+        self.workspace.active_pane.title = self.title
         self.form_widgets: List[BaseWidget] = []
         self.form_cursor: int = (
             0  # 0..len(widgets)-1: widget, len: [Run], len+1: [Preview], len+2: [Back]
         )
         self.menu_cursor: int = 0
 
-        self.runner: Optional[ProcessRunner] = None
-        self.viewport = OutputViewport()
         self.is_confirming_quit: bool = False
         self.is_showing_preview: bool = False
         self.is_terminated: bool = False
@@ -140,6 +146,88 @@ class CliTuiApp:
     def add_post_run_action(self, action: PostRunAction) -> None:
         """Register a post-run action callback."""
         self.post_run_actions.append(action)
+
+    @property
+    def navigation(self) -> NavigationStack:
+        return self.workspace.active_pane.navigation
+
+    @navigation.setter
+    def navigation(self, nav: NavigationStack) -> None:
+        self.workspace.active_pane.navigation = nav
+
+    @property
+    def current_form(self) -> Optional[FormState]:
+        return self.workspace.active_pane.current_form
+
+    @current_form.setter
+    def current_form(self, form: Optional[FormState]) -> None:
+        self.workspace.active_pane.current_form = form
+
+    @property
+    def runner(self) -> Optional[ProcessRunner]:
+        return self.workspace.active_pane.runner
+
+    @runner.setter
+    def runner(self, r: Optional[ProcessRunner]) -> None:
+        self.workspace.active_pane.runner = r
+
+    @property
+    def viewport(self) -> OutputViewport:
+        return self.workspace.active_pane.viewport
+
+    @viewport.setter
+    def viewport(self, vp: OutputViewport) -> None:
+        self.workspace.active_pane.viewport = vp
+
+    def _save_current_pane_state(self) -> None:
+        pane = self.workspace.active_pane
+        pane.screen_mode = self.navigation.current_screen
+        pane.extra_data["form_widgets"] = self.form_widgets
+        pane.extra_data["form_cursor"] = self.form_cursor
+        pane.extra_data["menu_cursor"] = self.menu_cursor
+
+    def _restore_active_pane_state(self) -> None:
+        pane = self.workspace.active_pane
+        self.form_widgets = pane.extra_data.get("form_widgets", [])
+        self.form_cursor = pane.extra_data.get("form_cursor", 0)
+        self.menu_cursor = pane.extra_data.get("menu_cursor", 0)
+        if pane.current_form and not self.form_widgets:
+            self.form_widgets = [
+                create_widget_for_arg(arg, pane.current_form.get_value(arg.dest))
+                for arg in pane.current_form.command.arguments
+            ]
+
+    def cycle_pane_prev(self) -> None:
+        if len(self.workspace.panes) <= 1:
+            return
+        self._save_current_pane_state()
+        self.workspace.cycle_prev()
+        self._restore_active_pane_state()
+
+    def cycle_pane_next(self) -> None:
+        if len(self.workspace.panes) <= 1:
+            return
+        self._save_current_pane_state()
+        self.workspace.cycle_next()
+        self._restore_active_pane_state()
+
+    def switch_pane(self, index: int) -> bool:
+        if 0 <= index < len(self.workspace.panes):
+            self._save_current_pane_state()
+            self.workspace.switch_to(index)
+            self._restore_active_pane_state()
+            return True
+        return False
+
+    def _is_widget_editing(self) -> bool:
+        if (
+            self.screen_mode == TuiScreenMode.FORM
+            and self.form_widgets
+            and self.form_cursor < len(self.form_widgets)
+        ):
+            widget = self.form_widgets[self.form_cursor]
+            return bool(getattr(widget, "is_editing", False))
+        return False
 
     @property
     def screen_mode(self) -> TuiScreenMode:
@@ -162,6 +250,10 @@ class CliTuiApp:
         ]
         self.form_cursor = 0
         self.navigation.current_screen = TuiScreenMode.FORM
+        self.workspace.active_pane.title = (
+            " ".join(self.navigation.path) or cmd.prog or cmd.name
+        )
+
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
@@ -228,6 +320,16 @@ class CliTuiApp:
                     self.menu_cursor = 0
                 else:
                     self.is_confirming_quit = True
+                return True
+
+        # Global pane cycling
+        if key in (ord("["), getattr(curses, "KEY_SLEFT", -999)):
+            if not self._is_widget_editing():
+                self.cycle_pane_prev()
+                return True
+        elif key in (ord("]"), getattr(curses, "KEY_SRIGHT", -999)):
+            if not self._is_widget_editing():
+                self.cycle_pane_next()
                 return True
 
         # 5. Screen-specific dispatch
@@ -369,6 +471,41 @@ class CliTuiApp:
 
         return False
 
+    def render_tab_strip(self, width: int) -> str:
+        """Render the top tab strip showing open panes and active focus."""
+        tabs: List[str] = []
+        for i, pane in enumerate(self.workspace.panes):
+            idx = i + 1
+            badge = pane.status_badge
+            status_part = ""
+            if badge == "FINISHED":
+                status_part = " (done)"
+            elif badge == "RUNNING":
+                status_part = " (running)"
+            elif badge == "CONFIG":
+                status_part = " (editing)"
+            elif badge == "CONSOLE":
+                status_part = " (console)"
+
+            if i == self.workspace.active_index:
+                tabs.append(f"▶ [{idx}: {pane.title}{status_part}]")
+            else:
+                tabs.append(f"[{idx}: {pane.title}{status_part}]")
+
+        tabs_str = "  ".join(tabs)
+        hint = "[+ Shift+Esc]"
+
+        prefix = "┌─ "
+        suffix = "┐"
+        full_content = f"{prefix}{tabs_str}  {hint} "
+        if len(full_content) > width - 1:
+            full_content = f"{prefix}{tabs_str} "
+        if len(full_content) > width - 1:
+            avail = max(0, width - 1 - len(prefix) - 1)
+            full_content = f"{prefix}{tabs_str[:avail]} "
+
+        return full_content.ljust(width - 1, "─") + suffix
+
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
         if getattr(self, "is_showing_preview", False):
@@ -415,8 +552,11 @@ class CliTuiApp:
             return lines[:height]
 
         lines = []
-        path_str = " > ".join([self.title] + self.navigation.path)
-        header = f"┌─ {path_str} ".ljust(width - 1, "─") + "┐"
+        if len(self.workspace.panes) > 1:
+            header = self.render_tab_strip(width)
+        else:
+            path_str = " > ".join([self.title] + self.navigation.path)
+            header = f"┌─ {path_str} ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
         inner_height = max(1, height - 3)
