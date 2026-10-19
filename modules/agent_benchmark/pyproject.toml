@@ -16,7 +16,7 @@ include = ["agent_benchmark*"]
 namespaces = false
 
 [tool.pytest.ini_options]
-pythonpath = [".", "../benchmark_core", "../termdash"]
+pythonpath = [".", "../benchmark_core", "../termdash", "../interactive_reports"]
 testpaths = ["tests"]
 
 [tool.ruff]

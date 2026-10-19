@@ -22,5 +22,10 @@ namespaces = false
 [tool.setuptools.package-data]
 benchmark_core = ["py.typed"]
 
+[tool.pytest.ini_options]
+addopts = "-q --basetemp=.pytest_tmp"
+testpaths = ["tests"]
+pythonpath = [".", "../interactive_reports"]
+
 [tool.setuptools.exclude-package-data]
 benchmark_core = ["**/__pycache__/*", "**/*.pyc"]

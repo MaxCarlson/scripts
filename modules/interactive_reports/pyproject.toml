@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=65.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interactive-reports"
+version = "0.1.0"
+description = "Standalone, offline interactive HTML reporting library with tabbed leaderboards, divergence matrices, and efficiency scatterplots"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["interactive_reports*"]
+namespaces = false
+
+[tool.setuptools.package-data]
+interactive_reports = ["py.typed"]
+
+[tool.pytest.ini_options]
+addopts = "-q --basetemp=.pytest_tmp"
+testpaths = ["tests"]
+pythonpath = [".", "../benchmark_core"]

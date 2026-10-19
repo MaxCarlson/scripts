@@ -28,6 +28,10 @@ from benchmark_core.stats import (
     compute_wilson_score_interval,
     summarize,
 )
+from benchmark_core.reporting import (
+    generate_experiment_reports,
+    render_experiment_comparison_csv,
+)
 from benchmark_core.storage import (
     load_experiment,
     save_experiment,
@@ -533,3 +537,63 @@ def test_backward_compatibility_single_run_summary() -> None:
     # to_dict / from_dict roundtrip intact
     summary_dict = summary.to_dict()
     assert summary_dict["variants"]["v-single"]["confidence_interval"] is not None
+
+
+def test_render_experiment_comparison_csv() -> None:
+    config = _create_sample_config(variant_ids=["m_fast", "m_slow"])
+    run1 = _create_run("r1", "m_fast")
+    t1 = [_create_trial("r1", "task-1", "m_fast", 1, TrialStatus.PASSED, 1000.0)]
+
+    run2 = _create_run("r2", "m_slow", comparison_eligible=False, exclusion_reason="Oversized budget")
+    t2 = [_create_trial("r2", "task-1", "m_slow", 1, TrialStatus.PASSED, 2000.0)]
+
+    comp = aggregate_experiment(config, [(run1, t1), (run2, t2)])
+    csv_str = render_experiment_comparison_csv(comp)
+
+    assert "rank,variant_id,is_eligible,exclusion_reasons,strict_acceptance_rate" in csv_str
+    # m_fast is rank 1 and eligible
+    assert "1,m_fast,true,,1.0" in csv_str
+    # m_slow is reference/ineligible with exclusion reason
+    assert ",m_slow,false,Oversized budget,1.0" in csv_str
+
+
+def test_generate_experiment_reports_and_save(tmp_path: Path) -> None:
+    config = _create_sample_config(variant_ids=["m_a"])
+    run1 = _create_run("r1", "m_a")
+    t1 = [_create_trial("r1", "task-1", "m_a", 1, TrialStatus.PASSED, 1000.0)]
+
+    comp = aggregate_experiment(config, [(run1, t1)])
+
+    # Test in-memory report generation
+    reports = generate_experiment_reports(comp, trials=t1)
+    assert "comparison.json" in reports
+    assert "comparison.csv" in reports
+    assert "report.md" in reports
+    assert "index.html" in reports
+
+    # HTML report is standalone and contains m_a
+    assert "<!DOCTYPE html>" in reports["index.html"]
+    assert "m_a" in reports["index.html"]
+
+    # Test saving experiment with generate_reports=True
+    run_ref = ExperimentRunRef(
+        run_id="r1",
+        run_dir="runs/r1",
+        variant_id="m_a",
+        suite_id="agent-benchmark-suite",
+        suite_version="1.0.0",
+        scoring_basis="worker_first_attempt_full_success",
+        budget_profile="canonical-60s",
+        comparison_eligible=True,
+    )
+    exp = Experiment(config=config, run_refs=[run_ref])
+    exp_dir = tmp_path / "exp_saved"
+
+    save_experiment(exp_dir, exp, comparison=comp, trials=t1, generate_reports=True)
+
+    assert (exp_dir / "experiment.json").is_file()
+    assert (exp_dir / "run-references.json").is_file()
+    assert (exp_dir / "comparison.json").is_file()
+    assert (exp_dir / "comparison.csv").is_file()
+    assert (exp_dir / "report.md").is_file()
+    assert (exp_dir / "index.html").is_file()

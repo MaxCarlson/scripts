@@ -17,7 +17,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional, Sequence, Union
 
 from .compare import ExperimentComparison
 from .models import Experiment, RunInfo, TrialResult
@@ -238,7 +238,9 @@ def save_experiment(
     experiment_dir: Union[Path, str],
     experiment: Experiment,
     comparison: Optional[ExperimentComparison] = None,
+    trials: Sequence[TrialResult] = (),
     overwrite: bool = False,
+    generate_reports: bool = False,
 ) -> Path:
     """
     Save an Experiment manifest, run references, and optional comparison to disk.
@@ -247,6 +249,7 @@ def save_experiment(
       - experiment.json: Full experiment manifest
       - run-references.json: List of constituent run references
       - comparison.json: Experiment comparison metrics (if provided)
+      - comparison.csv, report.md, index.html (if generate_reports=True and comparison provided)
     """
     dir_path = Path(experiment_dir)
     dir_path.mkdir(parents=True, exist_ok=True)
@@ -273,6 +276,16 @@ def save_experiment(
         tmp_comp = dir_path / f"comparison.json.tmp.{os.getpid()}"
         tmp_comp.write_text(comparison.to_json(), encoding="utf-8")
         tmp_comp.replace(comp_file)
+
+        if generate_reports:
+            from .reporting import generate_experiment_reports
+
+            generate_experiment_reports(
+                comparison=comparison,
+                trials=trials,
+                output_dir=dir_path,
+                write=True,
+            )
 
     return dir_path
 

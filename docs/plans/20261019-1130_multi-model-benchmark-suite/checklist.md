@@ -29,12 +29,12 @@
 - [x] 3.5: Write terminal dashboard unit tests in `agent_benchmark/tests/dashboard_test.py`.
 
 ## Stage 4: `interactive_reports` Standalone Reusable Package & Cross-Model Analytics
-- [ ] 4.1: Implement standalone `modules/interactive_reports` package with reusable HTML builder components.
-- [ ] 4.2: Build interactive filter bar (metric focus, category, budget profile) and sortable columns.
-- [ ] 4.3: Build Task Divergence Matrix with clickable trial drill-down drawer.
-- [ ] 4.4: Build execution efficiency analytics view (time vs tokens vs correctness).
-- [ ] 4.5: Ensure strict HTML escaping, offline compatibility, and reproducible regeneration from experiment artifacts.
-- [ ] 4.6: Write unit tests in `modules/interactive_reports/tests/` and benchmark adapter tests.
+- [x] 4.1: Implement standalone `modules/interactive_reports` package with reusable HTML builder components.
+- [x] 4.2: Build interactive filter bar (metric focus, category, budget profile) and sortable columns.
+- [x] 4.3: Build Task Divergence Matrix with clickable trial drill-down drawer.
+- [x] 4.4: Build execution efficiency analytics view (time vs tokens vs correctness).
+- [x] 4.5: Ensure strict HTML escaping, offline compatibility, and reproducible regeneration from experiment artifacts.
+- [x] 4.6: Write unit tests in `modules/interactive_reports/tests/` and benchmark adapter tests.
 
 ## Stage 5: CLI Integration, End-to-End Regressions & Acceptance
 - [ ] 5.1: Wire CLI subcommands (`models list`, `experiment plan`, `experiment run`, `experiment status`, `experiment report`) in `agent_benchmark/cli.py`.

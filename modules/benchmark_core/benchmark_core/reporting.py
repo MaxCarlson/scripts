@@ -13,9 +13,13 @@ from __future__ import annotations
 import csv
 import io
 from pathlib import Path
-from typing import Any, Optional, Union
+from typing import TYPE_CHECKING, Any, Mapping, Optional, Sequence, Union
 
 from .stats import BenchmarkSummary
+
+if TYPE_CHECKING:
+    from .compare import ExperimentComparison
+    from .models import TrialResult
 
 
 def render_summary_json(summary: BenchmarkSummary) -> str:
@@ -270,6 +274,135 @@ def generate_reports(
         "summary.csv": render_summary_csv(summary),
         "report.md": render_report_md(summary),
     }
+
+    if write:
+        if output_dir is None:
+            raise ValueError("output_dir must be specified when write=True")
+        out_path = Path(output_dir)
+        out_path.mkdir(parents=True, exist_ok=True)
+        for filename, content in reports.items():
+            (out_path / filename).write_text(content, encoding="utf-8")
+
+    return reports
+
+
+def render_experiment_comparison_csv(comparison: ExperimentComparison) -> str:
+    """
+    Render tabular model/variant comparison as a deterministic wide-form CSV.
+    Eligible variants are listed first in canonical ranking order, followed by reference variants.
+    """
+    all_variants = list(comparison.eligible_variants.values()) + list(comparison.reference_variants.values())
+    if not all_variants:
+        return ""
+
+    all_metric_keys: set[str] = set()
+    for v in all_variants:
+        all_metric_keys.update(v.metrics.keys())
+    sorted_metric_keys = sorted(all_metric_keys)
+
+    headers = [
+        "rank",
+        "variant_id",
+        "is_eligible",
+        "exclusion_reasons",
+        "strict_acceptance_rate",
+        "ci_95_lower",
+        "ci_95_upper",
+        "total_trials",
+        "scored_denominator",
+        "passed",
+        "failed",
+        "timed_out",
+        "infrastructure_error",
+        "unscored",
+        "duration_all_scored_mean_ms",
+        "duration_all_scored_median_ms",
+    ]
+
+    metric_subfields = ["mean", "median", "min", "max", "stdev", "available_count", "missing_count"]
+    for m_key in sorted_metric_keys:
+        for sf in metric_subfields:
+            headers.append(f"{m_key}.{sf}")
+
+    output = io.StringIO()
+    writer = csv.writer(output, lineterminator="\n")
+    writer.writerow(headers)
+
+    def _variant_row(rank_val: Any, vm: Any) -> list[Any]:
+        ci = vm.confidence_interval_95
+        row: list[Any] = [
+            rank_val,
+            vm.variant_id,
+            "true" if vm.is_eligible else "false",
+            "; ".join(vm.exclusion_reasons),
+            vm.strict_acceptance_rate if vm.strict_acceptance_rate is not None else "",
+            ci.lower if ci else "",
+            ci.upper if ci else "",
+            vm.total_trials,
+            vm.scored_denominator,
+            vm.passed,
+            vm.failed,
+            vm.timed_out,
+            vm.infrastructure_error,
+            vm.unscored,
+        ]
+        all_dur = vm.duration.all_scored
+        row.append(all_dur.mean if (all_dur and all_dur.mean is not None) else "")
+        row.append(all_dur.median if (all_dur and all_dur.median is not None) else "")
+
+        for m_key in sorted_metric_keys:
+            m_stat = vm.metrics.get(m_key)
+            if m_stat is None:
+                row.extend([""] * len(metric_subfields))
+            else:
+                row.append(m_stat.mean if m_stat.mean is not None else "")
+                row.append(m_stat.median if m_stat.median is not None else "")
+                row.append(m_stat.min if m_stat.min is not None else "")
+                row.append(m_stat.max if m_stat.max is not None else "")
+                row.append(m_stat.stdev if m_stat.stdev is not None else "")
+                row.append(m_stat.available_count)
+                row.append(m_stat.missing_count)
+        return row
+
+    for rank, vid in enumerate(comparison.canonical_rankings, start=1):
+        if vid in comparison.eligible_variants:
+            writer.writerow(_variant_row(rank, comparison.eligible_variants[vid]))
+
+    for vid, vm in sorted(comparison.reference_variants.items()):
+        writer.writerow(_variant_row("", vm))
+
+    return output.getvalue()
+
+
+def generate_experiment_reports(
+    comparison: ExperimentComparison,
+    trials: Sequence[TrialResult] = (),
+    output_dir: Optional[Union[Path, str]] = None,
+    write: bool = False,
+    task_categories: Optional[Mapping[str, str]] = None,
+) -> dict[str, str]:
+    """
+    Generate all experiment report artifacts (comparison.json, comparison.csv, report.md, index.html).
+    """
+    from .compare import render_experiment_comparison_md
+
+    reports = {
+        "comparison.json": comparison.to_json(),
+        "comparison.csv": render_experiment_comparison_csv(comparison),
+        "report.md": render_experiment_comparison_md(comparison),
+    }
+
+    try:
+        from interactive_reports import from_experiment_comparison, generate_html_report
+
+        report_data = from_experiment_comparison(
+            comparison,
+            trials,
+            task_categories=task_categories,
+        )
+        reports["index.html"] = generate_html_report(report_data)
+    except ImportError:
+        pass
 
     if write:
         if output_dir is None:
