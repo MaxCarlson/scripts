@@ -12,6 +12,9 @@ if str(MODULE_ROOT) not in sys.path:
 
 import pytest
 
+import shutil
+import uuid
+
 from benchmark_core.models import (
     MetricQuality,
     MetricValue,
@@ -19,6 +22,14 @@ from benchmark_core.models import (
     TrialResult,
     TrialStatus,
 )
+
+
+@pytest.fixture
+def tmp_path() -> Path:
+    base = MODULE_ROOT / ".pytest_tmp_root" / f"temp-{uuid.uuid4().hex[:8]}"
+    base.mkdir(parents=True, exist_ok=True)
+    yield base
+    shutil.rmtree(base, ignore_errors=True)
 
 
 @pytest.fixture

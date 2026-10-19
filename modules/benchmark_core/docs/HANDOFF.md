@@ -6,14 +6,14 @@
 - **Worktree:** `../scripts-benchmark-core`
 - **Branch:** `agent/benchmark-core`
 - **Active Plan:** `docs/plans/20261019-0230_benchmark-core-implementation`
-- **Current Stage:** Stage 1 (Gate 1 Contract & Serialization) complete.
-- **Next Stage:** Stage 2 (Storage & Statistics).
+- **Current Stage:** Stage 2 (Storage & Statistics) complete.
+- **Next Stage:** Stage 3 (Reporting, Comparison, & CLI).
 
 ## Status Summary
 
-- Gate 1 shared contracts (`RunInfo`, `TrialResult`, `MetricValue`) implemented and verified with 41 passing contract tests.
-- Canonical fixtures committed in `tests/fixtures/canonical_run.json` and `tests/fixtures/canonical_trials.jsonl`.
-- Ready for Codex integration via `from benchmark_core.models import RunInfo, TrialResult, MetricValue`.
+- Gate 1 shared contracts (`RunInfo`, `TrialResult`, `MetricValue`) committed in `b300f35a86d695058d6d3bbcbcdba4f26a510dd6`.
+- Stage 2 storage (`storage.py`) and statistics (`stats.py`) implemented and verified with 54 passing tests.
+- Hand-calculated statistics, duration isolation (all-scored vs successful-only), and Final Amendment 2 capability rate edge cases (0.0% on 3 fails, null/excluded on 3 infra errors, mixed trials) thoroughly verified.
 
 ## Staged / Unstaged State
 

@@ -27,8 +27,30 @@ from .models import (
     trial_result_to_json,
     validate_relative_path,
 )
+from .stats import (
+    BenchmarkSummary,
+    DurationStats,
+    MetricStats,
+    TaskSummary,
+    VariantSummary,
+    compute_metric_stats,
+    summarize,
+)
+from .storage import (
+    BenchmarkStorageError,
+    CorruptedDataError,
+    DuplicateTrialError,
+    append_result,
+    append_results,
+    get_existing_trial_ids,
+    load_run,
+    load_run_info,
+    load_trials,
+    save_run,
+)
 
 __all__ = [
+    # Models
     "MetricQuality",
     "MetricValue",
     "RunInfo",
@@ -50,4 +72,23 @@ __all__ = [
     "trial_result_to_dict",
     "trial_result_to_json",
     "validate_relative_path",
+    # Storage
+    "BenchmarkStorageError",
+    "CorruptedDataError",
+    "DuplicateTrialError",
+    "append_result",
+    "append_results",
+    "get_existing_trial_ids",
+    "load_run",
+    "load_run_info",
+    "load_trials",
+    "save_run",
+    # Stats
+    "BenchmarkSummary",
+    "DurationStats",
+    "MetricStats",
+    "TaskSummary",
+    "VariantSummary",
+    "compute_metric_stats",
+    "summarize",
 ]

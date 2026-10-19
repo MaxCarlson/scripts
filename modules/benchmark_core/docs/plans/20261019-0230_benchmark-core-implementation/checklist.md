@@ -10,11 +10,11 @@
 - [x] Separate commit for Gate 1 deliverable
 
 ## Stage 2: Storage and Statistics
-- [ ] Implement `benchmark_core/storage.py` (filesystem layout, duplicate prevention, corrupted JSONL handling)
-- [ ] Implement `benchmark_core/stats.py` (descriptive statistics, all-scored vs successful duration, macro/micro rates)
-- [ ] Edge cases: 3 failures (0.0%), 3 infra errors (null/insufficient), mixed valid and infra errors
-- [ ] Tests in `tests/storage_test.py` and `tests/stats_test.py`
-- [ ] Commit Stage 2
+- [x] Implement `benchmark_core/storage.py` (filesystem layout, duplicate prevention, corrupted JSONL handling)
+- [x] Implement `benchmark_core/stats.py` (descriptive statistics, all-scored vs successful duration, macro/micro rates)
+- [x] Edge cases: 3 failures (0.0%), 3 infra errors (null/insufficient), mixed valid and infra errors
+- [x] Tests in `tests/storage_test.py` and `tests/stats_test.py` (54 total passing tests)
+- [x] Commit Stage 2
 
 ## Stage 3: Reporting, Comparison, and CLI
 - [ ] Output generators (`summary.json`, wide-form deterministic `summary.csv`, `report.md`) in `benchmark_core/reporting.py`
