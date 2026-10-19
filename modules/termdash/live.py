@@ -19,10 +19,21 @@ class LiveBlock:
     to keep ticking even while an encoder/metadata request is blocking.
     """
 
-    def __init__(self, *, stream: TextIO | None = None, enabled: bool = True, interval: float = 0.25) -> None:
+    def __init__(
+        self,
+        *,
+        stream: TextIO | None = None,
+        enabled: bool = True,
+        interval: float = 0.25,
+    ) -> None:
         self.stream = stream if stream is not None else sys.stderr
         self.enabled = enabled
-        self.interactive = enabled and self.stream.isatty() and os.environ.get("TERM") != "dumb"
+        force = os.environ.get("TERMDASH_FORCE_INTERACTIVE") == "1"
+        self.interactive = (
+            enabled
+            and (self.stream.isatty() or force)
+            and os.environ.get("TERM") != "dumb"
+        )
         self.interval = interval
         self._lock = threading.RLock()
         self._stop = threading.Event()
@@ -33,6 +44,9 @@ class LiveBlock:
 
     def _width(self) -> int:
         try:
+            cols = int(os.environ.get("COLUMNS", 0))
+            if cols > 0:
+                return cols - 1
             return max(1, os.get_terminal_size(self.stream.fileno()).columns - 1)
         except (OSError, ValueError, AttributeError):
             return 79
@@ -40,8 +54,15 @@ class LiveBlock:
     def _render(self) -> None:
         if not self._provider or not self.interactive:
             return
-        rows = [str(line).replace("\r", " ").replace("\n", " ") for line in self._provider()]
-        rows = [_truncate_cell(_strip_ansi(line) if "NO_COLOR" in os.environ else line, self._width()) for line in rows]
+        rows = [
+            str(line).replace("\r", " ").replace("\n", " ") for line in self._provider()
+        ]
+        rows = [
+            _truncate_cell(
+                _strip_ansi(line) if "NO_COLOR" in os.environ else line, self._width()
+            )
+            for line in rows
+        ]
         height = max(self._height, len(rows))
         rows += [""] * (height - len(rows))
         if self._height > 1:
@@ -59,7 +80,9 @@ class LiveBlock:
             self._provider = provider
             self._render()
             if self.interactive and self._thread is None:
-                self._thread = threading.Thread(target=self._tick, name="termdash-live", daemon=True)
+                self._thread = threading.Thread(
+                    target=self._tick, name="termdash-live", daemon=True
+                )
                 self._thread.start()
 
     def _tick(self) -> None:

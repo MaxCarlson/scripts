@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import argparse
 import curses
+import os
+import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
@@ -10,6 +12,77 @@ from .process_runner import OutputViewport, ProcessRunner
 from .schema import CliCommand, introspect_parser
 from .state import FormState, NavigationStack, TuiScreenMode
 from .widgets import BaseWidget, create_widget_for_arg
+
+
+def addstr_ansi(stdscr: Any, y: int, x: int, line: str, max_x: int) -> None:
+    """Render a line with ANSI color and style sequences onto a curses window."""
+    if y < 0 or x >= max_x or not line:
+        return
+
+    color_map = {
+        "31": 4,  # Red
+        "32": 2,  # Green
+        "33": 3,  # Yellow
+        "34": 6,  # Blue
+        "35": 5,  # Magenta
+        "36": 1,  # Cyan
+        "37": 7,  # White
+        "90": 7,  # Gray / bright black
+        "91": 4,  # Bright Red
+        "92": 2,  # Bright Green
+        "93": 3,  # Bright Yellow
+        "94": 6,  # Bright Blue
+        "95": 5,  # Bright Magenta
+        "96": 1,  # Bright Cyan
+        "97": 7,  # Bright White
+    }
+
+    pattern = re.compile(r"(\x1b\[[0-9;]*m)")
+    parts = pattern.split(line)
+
+    curr_x = x
+    curr_attr = curses.A_NORMAL
+    curr_color_pair = 0
+
+    has_colors = False
+    try:
+        has_colors = curses.has_colors()
+    except Exception:
+        pass
+
+    for part in parts:
+        if not part:
+            continue
+        if part.startswith("\x1b[") and part.endswith("m"):
+            codes = part[2:-1].split(";")
+            for code in codes:
+                if not code or code == "0":
+                    curr_attr = curses.A_NORMAL
+                    curr_color_pair = 0
+                elif code == "1":
+                    curr_attr |= curses.A_BOLD
+                elif code == "2":
+                    curr_attr |= curses.A_DIM
+                elif code in color_map and has_colors:
+                    try:
+                        curr_color_pair = curses.color_pair(color_map[code])
+                    except Exception:
+                        curr_color_pair = 0
+                elif code == "39":
+                    curr_color_pair = 0
+        else:
+            if curr_x >= max_x - 1:
+                break
+            avail = (max_x - 1) - curr_x
+            to_draw = part[:avail]
+            if not to_draw:
+                continue
+            attr = curr_attr | curr_color_pair
+            try:
+                stdscr.addstr(y, curr_x, to_draw, attr)
+            except curses.error:
+                pass
+            curr_x += len(to_draw)
 
 
 @dataclass
@@ -61,6 +134,7 @@ class CliTuiApp:
         self.runner: Optional[ProcessRunner] = None
         self.viewport = OutputViewport()
         self.is_confirming_quit: bool = False
+        self.is_showing_preview: bool = False
         self.is_terminated: bool = False
 
     def add_post_run_action(self, action: PostRunAction) -> None:
@@ -91,6 +165,13 @@ class CliTuiApp:
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
+        # 0. Preview dialog dismissal
+        if getattr(self, "is_showing_preview", False):
+            if key in (10, 13, 27, ord(" "), ord("q"), ord("Q")):
+                self.is_showing_preview = False
+                return True
+            return True
+
         # 1. Immediate unconditional quit on 'Q'
         if key == ord("Q"):
             if self.runner and self.runner.is_running:
@@ -225,6 +306,7 @@ class CliTuiApp:
                     self._start_execution()
                     return True
                 elif button_idx == 1:  # [ Preview CLI ]
+                    self.is_showing_preview = True
                     return True
                 elif button_idx == 2:  # [ Back ]
                     self.navigation.pop()
@@ -255,7 +337,11 @@ class CliTuiApp:
         elif key in (curses.KEY_NPAGE,):  # Page Down
             self.viewport.scroll_page_down(15)
             return True
-        elif key in (curses.KEY_END,):
+        elif key in (curses.KEY_HOME, ord("g")):
+            self.viewport.scroll_offset = 999999
+            self.viewport.auto_scroll = False
+            return True
+        elif key in (curses.KEY_END, ord("G")):
             self.viewport.scroll_to_end()
             return True
         elif key in (ord("c"), ord("C")):
@@ -285,7 +371,50 @@ class CliTuiApp:
 
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
-        lines: List[str] = []
+        if getattr(self, "is_showing_preview", False):
+            lines: List[str] = []
+            path_str = " > ".join([self.title] + self.navigation.path + ["Preview"])
+            header = f"┌─ {path_str} (CLI Command Preview) ".ljust(width - 1, "─") + "┐"
+            lines.append(header)
+            inner_height = max(1, height - 3)
+            cwd = os.getcwd()
+            runner_str = (
+                " ".join(self.executable) if self.executable else sys.executable
+            )
+            if self.current_form:
+                argv = self.current_form.build_argv(executable=self.executable)
+                exec_len = len(self.executable) if self.executable else 0
+                cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
+                cmd_str = " ".join(cmd_tokens)
+                full_invocation = " ".join(argv)
+            else:
+                cmd_str = ""
+                full_invocation = runner_str
+
+            content_lines = [
+                "",
+                "  Working Directory:",
+                f"    {cwd}",
+                "",
+                "  Runner:",
+                f"    {runner_str}",
+                "",
+                "  Command:",
+                f"    {cmd_str}",
+                "",
+                "  Full Invocation:",
+                f"    {full_invocation}",
+                "",
+                "  [ Press Enter, Space, or Esc to close ]",
+            ]
+            while len(content_lines) < inner_height:
+                content_lines.append("")
+            lines.extend(content_lines[:inner_height])
+            footer = "└─ [Esc/Enter] Close Preview ".ljust(width - 1, "─") + "┘"
+            lines.append(footer)
+            return lines[:height]
+
+        lines = []
         path_str = " > ".join([self.title] + self.navigation.path)
         header = f"┌─ {path_str} ".ljust(width - 1, "─") + "┐"
         lines.append(header)
@@ -328,8 +457,18 @@ class CliTuiApp:
 
             if self.current_form:
                 argv = self.current_form.build_argv(executable=self.executable)
+                exec_len = len(self.executable) if self.executable else 0
+                runner_str = (
+                    " ".join(self.executable) if self.executable else sys.executable
+                )
+                cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
+                cmd_str = " ".join(cmd_tokens)
+                cwd = os.getcwd()
+
                 content_lines.append("")
-                content_lines.append(f"  Command: {' '.join(argv)}")
+                content_lines.append(f"  Working Dir: {cwd}")
+                content_lines.append(f"  Runner:      {runner_str}")
+                content_lines.append(f"  Command:     {cmd_str}")
 
             while len(content_lines) < inner_height:
                 content_lines.append("")
@@ -337,18 +476,32 @@ class CliTuiApp:
 
         elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
-            status_text = (
-                "RUNNING"
-                if runner and runner.is_running
-                else f"FINISHED (exit code {runner.exit_code if runner else 0})"
+            if runner and runner.is_running:
+                status_text = f"RUNNING  |  Elapsed: {runner.elapsed_seconds:.1f}s"
+            elif runner and runner.exit_code == 0:
+                status_text = (
+                    f"FINISHED (Success)  |  Elapsed: {runner.elapsed_seconds:.1f}s"
+                )
+            else:
+                code = runner.exit_code if runner else -1
+                status_text = f"FAILED (exit code {code})  |  Elapsed: {runner.elapsed_seconds if runner else 0:.1f}s"
+
+            raw_lines = runner.lines if runner else []
+            visible_height = max(1, inner_height - 3)
+            visible_width = max(10, width - 4)
+            start_l, end_l, total_l = self.viewport.get_scroll_bounds(
+                raw_lines, height=visible_height, width=visible_width
             )
+            scroll_info = ""
+            if total_l > visible_height:
+                scroll_info = f"  |  Lines {start_l}-{end_l} of {total_l} (↑/↓/PgUp/PgDn to scroll)"
+
             content_lines = [
-                f"  Status: {status_text}  |  Elapsed: {runner.elapsed_seconds if runner else 0:.1f}s",
+                f"  Status: {status_text}{scroll_info}",
                 "",
             ]
-            raw_lines = runner.lines if runner else []
             visible = self.viewport.get_visible_lines(
-                raw_lines, height=inner_height - 3, width=width
+                raw_lines, height=visible_height, width=visible_width
             )
             content_lines.extend(f"  {line}" for line in visible)
             while len(content_lines) < inner_height:
@@ -368,21 +521,21 @@ class CliTuiApp:
                 for a in self.post_run_actions
                 if a.predicate is None or a.predicate(self)
             ]
+            parts = ["[q] Quit", "[Esc] Back"]
             if active_actions:
-                actions_str = "  ".join(a.label for a in active_actions)
-                footer = (
-                    f"└─ [q] Quit  [Esc] Back  {actions_str}  [Enter] Return ".ljust(
-                        width - 1, "─"
-                    )
-                    + "┘"
-                )
-            else:
-                footer = (
-                    "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Return ".ljust(
-                        width - 1, "─"
-                    )
-                    + "┘"
-                )
+                parts.extend(a.label for a in active_actions)
+            if total_l > visible_height:
+                parts.append("[↑/↓] Scroll")
+            parts.append("[Enter] Return")
+
+            full_parts = list(parts)
+            if width >= 95:
+                full_parts.insert(1, "[Q] Force Quit")
+
+            footer_str = f"└─ {'  '.join(full_parts)} ".ljust(width - 1, "─") + "┘"
+            if len(footer_str) > width:
+                footer_str = f"└─ {'  '.join(parts)} ".ljust(width - 1, "─") + "┘"
+            footer = footer_str
         else:
             footer = (
                 "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Select ".ljust(
@@ -413,16 +566,16 @@ class CliTuiApp:
             curses.init_pair(2, curses.COLOR_GREEN, -1)
             curses.init_pair(3, curses.COLOR_YELLOW, -1)
             curses.init_pair(4, curses.COLOR_RED, -1)
+            curses.init_pair(5, curses.COLOR_MAGENTA, -1)
+            curses.init_pair(6, curses.COLOR_BLUE, -1)
+            curses.init_pair(7, curses.COLOR_WHITE, -1)
 
         while not self.is_terminated:
             max_y, max_x = stdscr.getmaxyx()
             lines = self.render_virtual_screen(height=max_y, width=max_x)
             stdscr.erase()
             for y, line in enumerate(lines[:max_y]):
-                try:
-                    stdscr.addstr(y, 0, line[: max_x - 1])
-                except curses.error:
-                    pass
+                addstr_ansi(stdscr, y, 0, line, max_x)
             stdscr.refresh()
 
             try:

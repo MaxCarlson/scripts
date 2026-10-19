@@ -120,3 +120,29 @@ def test_create_widget_for_arg_factory():
     assert isinstance(w1, BooleanWidget)
     assert isinstance(w2, ChoiceWidget)
     assert isinstance(w3, TextWidget)
+
+
+def test_text_widget_empty_list_default():
+    arg = CliArgument(
+        dest="url", flags=("-u", "--url"), action_type="append", default=[]
+    )
+    # Default is empty list
+    widget = TextWidget(arg, value=[])
+    assert widget.value == ""
+    line = widget.render_line(width=60, is_focused=False)
+    # Should not display [ [] ]
+    assert "[ [] ]" not in line
+    assert "[ — ]" in line
+
+
+def test_create_widget_for_count_arg():
+    arg = CliArgument(
+        dest="verbose", flags=("-v", "--verbose"), action_type="count", default=0
+    )
+    widget = create_widget_for_arg(arg, value=0)
+    # Should not be a plain TextWidget with default "0"
+    assert not isinstance(widget, TextWidget)
+    assert widget.value == 0
+    # Right arrow increments
+    widget.handle_key(curses.KEY_RIGHT)
+    assert widget.value == 1

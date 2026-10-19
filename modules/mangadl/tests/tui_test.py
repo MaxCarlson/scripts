@@ -166,3 +166,39 @@ def test_compress_preview_view_invocation(tmp_path: Path, monkeypatch):
     assert ret == 0
     assert len(viewer_destinations) == 1
     assert viewer_destinations[0].parent == preview_out.resolve()
+
+
+def test_compress_inventory_tui_command_assembly():
+    from mangadl.cli import build_parser
+
+    app = build_tui_app()
+
+    # Navigate to compress inventory
+    compress_cmd = app.root_command.subcommands["compress"]
+    app.navigation.push("compress", TuiScreenMode.MENU)
+    inv_cmd = compress_cmd.subcommands["inventory"]
+    app.navigation.push("inventory", TuiScreenMode.FORM)
+    app._open_form_for_command(inv_cmd)
+
+    # Check widgets
+    url_widget = next(w for w in app.form_widgets if w.arg.dest == "url")
+    assert url_widget.value == ""  # Must not be "[]"
+
+    verbose_widget = next(w for w in app.form_widgets if w.arg.dest == "verbose")
+    assert verbose_widget.value == 0
+
+    # Set destination
+    app.current_form.set_value("destination", "hent1imageperpage")
+
+    argv = app.current_form.build_argv(executable=app.executable)
+    assert "0" not in argv
+    assert "[]" not in argv
+
+    # Verify that the generated command actually parses cleanly in mangadl's parser
+    parser = build_parser()
+    # Find tokens after "mangadl"
+    mangadl_idx = argv.index("mangadl")
+    cmd_tokens = argv[mangadl_idx + 1 :]
+    parsed = parser.parse_args(cmd_tokens)
+    assert parsed.destination == Path("hent1imageperpage")
+    assert parsed.verbose == 0

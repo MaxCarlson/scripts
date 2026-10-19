@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import curses
 
 from cli_tui.app import CliTuiApp
 from cli_tui.state import TuiScreenMode
@@ -74,3 +75,67 @@ def test_universal_key_Q_force_quit():
     app.process_key(ord("Q"))
     assert app.is_confirming_quit is False
     assert app.is_terminated is True
+
+
+def test_form_footer_layout():
+    parser = build_sample_parser()
+    app = CliTuiApp(parser=parser, executable=["python", "-m", "sample"])
+    app.process_key(10)  # Enter 'build' form
+    assert app.screen_mode == TuiScreenMode.FORM
+
+    screen = "\n".join(app.render_virtual_screen(height=24, width=80))
+    # Must separate working directory, runner, and tool command
+    assert "Working Dir:" in screen
+    assert "Runner:" in screen
+    assert "python -m" in screen
+    assert "Command:" in screen
+    assert "build" in screen
+
+
+def test_preview_cli_dialog():
+    parser = build_sample_parser()
+    app = CliTuiApp(parser=parser, executable=["python", "-m", "sample"])
+    app.process_key(10)  # Enter 'build' form
+
+    # Move down to [ Preview CLI ]
+    # form cursor: widget 0 (-t), widget 1 (-v), button 0 ([ Run ]), button 1 ([ Preview ])
+    for _ in range(3):
+        app.process_key(curses.KEY_DOWN)
+
+    # Press Enter on [ Preview CLI ]
+    app.process_key(10)
+    assert getattr(app, "is_showing_preview", False) is True
+
+    preview_screen = "\n".join(app.render_virtual_screen(height=24, width=80))
+    assert "CLI Command Preview" in preview_screen
+    assert "Working Directory:" in preview_screen
+    assert "Runner:" in preview_screen
+    assert "Command:" in preview_screen
+
+    # Dismiss with Esc or Enter
+    app.process_key(27)  # Esc
+    assert getattr(app, "is_showing_preview", False) is False
+
+
+def test_addstr_ansi_parsing(monkeypatch):
+    from unittest.mock import MagicMock
+    from cli_tui.app import addstr_ansi
+
+    stdscr = MagicMock()
+    # Mock curses color support
+    monkeypatch.setattr(curses, "has_colors", lambda: True)
+    monkeypatch.setattr(curses, "color_pair", lambda n: n * 100)
+
+    # 1. Plain text
+    addstr_ansi(stdscr, y=0, x=0, line="Hello World", max_x=80)
+    stdscr.addstr.assert_called_once_with(0, 0, "Hello World", curses.A_NORMAL)
+    stdscr.addstr.reset_mock()
+
+    # 2. Colored text with Cyan (code 36 -> pair 1 -> 100)
+    addstr_ansi(stdscr, y=1, x=2, line="\033[36mCyan Text\033[0m", max_x=80)
+    stdscr.addstr.assert_called_once_with(1, 2, "Cyan Text", curses.A_NORMAL | 100)
+    stdscr.addstr.reset_mock()
+
+    # 3. Bold Green text (code 1;32 -> bold + pair 2 -> 200)
+    addstr_ansi(stdscr, y=2, x=0, line="\033[1;32mBold Green\033[0m", max_x=80)
+    stdscr.addstr.assert_called_once_with(2, 0, "Bold Green", curses.A_BOLD | 200)

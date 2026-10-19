@@ -93,7 +93,13 @@ class TextWidget(BaseWidget):
     """Single-line text input field."""
 
     def __init__(self, arg: CliArgument, value: Any) -> None:
-        super().__init__(arg, str(value) if value is not None else "")
+        if isinstance(value, (list, tuple)) and not value:
+            display_val = ""
+        elif value is None or str(value) == "[]":
+            display_val = ""
+        else:
+            display_val = str(value)
+        super().__init__(arg, display_val)
         self.cursor_pos: int = len(self.value)
 
     def handle_key(self, key: int) -> bool:
@@ -148,6 +154,41 @@ class TextWidget(BaseWidget):
         return f"{focus_mark}{self.label}: {val_display}"
 
 
+class CountWidget(BaseWidget):
+    """Counter widget for count actions (e.g. -v, -vv)."""
+
+    def __init__(self, arg: CliArgument, value: Any, max_count: int = 5) -> None:
+        try:
+            int_val = int(value)
+        except (ValueError, TypeError):
+            int_val = int(arg.default or 0)
+        super().__init__(arg, int_val)
+        self.max_count = max_count
+
+    def handle_key(self, key: int) -> bool:
+        if key in (curses.KEY_RIGHT, ord("l"), ord("+")):
+            if self.value < self.max_count:
+                self.value += 1
+                return True
+        elif key in (curses.KEY_LEFT, ord("h"), ord("-")):
+            if self.value > 0:
+                self.value -= 1
+                return True
+        elif key in (ord(" "), 10, 13):
+            self.value = (self.value + 1) % (self.max_count + 1)
+            return True
+        return False
+
+    def render_line(self, width: int, is_focused: bool) -> str:
+        focus_mark = "▶ " if is_focused else "  "
+        val_str = f"◀ {self.value} ▶" if is_focused else f"< {self.value} >"
+        short_flag = next((f for f in self.arg.flags if not f.startswith("--")), None)
+        hint = ""
+        if self.value > 0 and short_flag:
+            hint = f" ({short_flag * self.value})"
+        return f"{focus_mark}{self.label}: {val_str}{hint}"
+
+
 class MultiChoiceWidget(BaseWidget):
     """Multi-selection widget for list or choices."""
 
@@ -197,6 +238,8 @@ def create_widget_for_arg(arg: CliArgument, value: Any) -> BaseWidget:
     """Factory creating appropriate widget for given CliArgument."""
     if arg.action_type in ("store_true", "store_false", "boolean_optional"):
         return BooleanWidget(arg, value)
+    elif arg.action_type == "count":
+        return CountWidget(arg, value)
     elif arg.choices is not None:
         if arg.nargs in ("+", "*") or arg.action_type == "append":
             return MultiChoiceWidget(arg, options=arg.choices, value=value)

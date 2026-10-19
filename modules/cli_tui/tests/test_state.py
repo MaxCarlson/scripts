@@ -99,3 +99,52 @@ def test_form_state_positionals_and_append():
         "-i",
         "*.png",
     ]
+
+
+def test_form_state_count_action():
+    parser = argparse.ArgumentParser(prog="mangadl")
+    parser.add_argument("-v", "--verbose", action="count", default=0)
+    cmd = introspect_parser(parser)
+    form = FormState(cmd)
+
+    # 1. Default count 0: should NOT emit -v or 0
+    assert form.get_value("verbose") == 0
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl"]
+
+    # 2. Count 1: should emit ["-v"] (and definitely NOT ["-v", "0"] or ["-v", "1"])
+    form.set_value("verbose", 1)
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl", "-v"]
+
+    # 3. Count 2: should emit ["-v", "-v"]
+    form.set_value("verbose", 2)
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl", "-v", "-v"]
+
+    # 4. Count as string "1" (from text input or form)
+    form.set_value("verbose", "1")
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl", "-v"]
+
+
+def test_form_state_append_string_and_empty_list():
+    parser = argparse.ArgumentParser(prog="mangadl")
+    parser.add_argument("-u", "--url", action="append", default=[])
+    cmd = introspect_parser(parser)
+    form = FormState(cmd)
+
+    # 1. Default empty list should emit no flags
+    assert form.get_value("url") == []
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl"]
+
+    # 2. Empty string should emit no flags
+    form.set_value("url", "")
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl"]
+
+    # 3. Non-empty string should emit flag with that string
+    form.set_value("url", "https://example.com/ch1")
+    argv = form.build_argv(executable=["mangadl"])
+    assert argv == ["mangadl", "-u", "https://example.com/ch1"]

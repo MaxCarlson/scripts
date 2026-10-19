@@ -134,19 +134,32 @@ class FormState:
                     argv.append(f"--{clean_name}")
                 elif val is False and arg.default is not False:
                     argv.append(f"--no-{clean_name}")
+            elif arg.action_type == "count":
+                try:
+                    count_val = int(val)
+                except (ValueError, TypeError):
+                    count_val = 0
+                base_default = arg.default if isinstance(arg.default, int) else 0
+                if count_val > base_default:
+                    diff = count_val - base_default
+                    argv.extend([short_flag] * diff)
             elif arg.action_type == "append":
                 if isinstance(val, (list, tuple)):
                     for item in val:
-                        argv.extend([short_flag, str(item)])
+                        if item is not None and str(item) != "":
+                            argv.extend([short_flag, str(item)])
+                elif isinstance(val, str) and val.strip():
+                    argv.extend([short_flag, val.strip()])
             elif arg.nargs in ("+", "*"):
-                items = (
-                    [val]
-                    if isinstance(val, str)
-                    else list(val) if isinstance(val, (list, tuple)) else []
-                )
+                if isinstance(val, (list, tuple)):
+                    items = [str(x) for x in val if x is not None and str(x) != ""]
+                elif isinstance(val, str) and val.strip():
+                    items = [val.strip()]
+                else:
+                    items = []
                 if items:
                     argv.append(short_flag)
-                    argv.extend(str(item) for item in items)
+                    argv.extend(items)
             else:
                 # Regular option with value
                 if val is not None and str(val) != "":

@@ -17,16 +17,27 @@ from typing import Sequence
 from termdash.progress import ProgressBar
 from termdash.live import LiveBlock
 from termdash.table import render_table
-from termdash.utils import color_text as _color_text, fmt_hms, format_bytes_decimal, format_rate_bps
+from termdash.utils import (
+    color_text as _color_text,
+    fmt_hms,
+    format_bytes_decimal,
+    format_rate_bps,
+)
 
 from .models import BatchResult, ComparisonRow, ImageResult, ScanSummary
 
 
 def color_text(text: str, color: str) -> str:
-    if sys.stdout.isatty() and "NO_COLOR" not in os.environ and os.environ.get("TERM") != "dumb":
+    force = (
+        os.environ.get("FORCE_COLOR") == "1" or os.environ.get("CLICOLOR_FORCE") == "1"
+    )
+    if (
+        (sys.stdout.isatty() or force)
+        and "NO_COLOR" not in os.environ
+        and os.environ.get("TERM") != "dumb"
+    ):
         return _color_text(text, color)
     return text
-
 
 
 def print_cache_diagnostics(report: dict, *, startup: bool = False) -> None:
@@ -38,7 +49,12 @@ def print_cache_diagnostics(report: dict, *, startup: bool = False) -> None:
                 f"last result saved {report['last_result_saved_at'] or 'none recorded'}"
             )
         return
-    reasons = ", ".join(f"{name}={count}" for name, count in sorted(report["miss_reasons"].items())) or "none"
+    reasons = (
+        ", ".join(
+            f"{name}={count}" for name, count in sorted(report["miss_reasons"].items())
+        )
+        or "none"
+    )
     print(
         f"Cache lookups this run: {report['lookup_hits']} hits, {report['lookup_misses']} misses ({reasons}). "
         "Includes AUTO candidate probes; not image counts."
@@ -83,7 +99,9 @@ class CompresserDashboard:
         self.gallery_done = Counter()
         self.samples = deque([(self.start_time, 0)])
 
-        self.batch_bar = ProgressBar("batch", self.total_images, 0, width=28, charset="block")
+        self.batch_bar = ProgressBar(
+            "batch", self.total_images, 0, width=28, charset="block"
+        )
         self.block.update(self._lines)
 
     def begin_stage(self, index: int) -> None:
@@ -152,8 +170,14 @@ class CompresserDashboard:
         rate_bytes = self.total_orig_bytes / max(0.001, now - self.stage_start)
 
         remaining = max(0, self.overall_total - self.overall_processed)
-        recent = [(stamp, done) for stamp, done in tuple(self.samples) if stamp >= now - 15]
-        recent_rate = ((self.overall_processed - recent[0][1]) / max(0.001, now - recent[0][0])) if recent else 0
+        recent = [
+            (stamp, done) for stamp, done in tuple(self.samples) if stamp >= now - 15
+        ]
+        recent_rate = (
+            ((self.overall_processed - recent[0][1]) / max(0.001, now - recent[0][0]))
+            if recent
+            else 0
+        )
         eta = fmt_hms(remaining / recent_rate) if recent_rate > 0 else "unknown"
 
         res = self.last_res
@@ -161,7 +185,9 @@ class CompresserDashboard:
             fname = res.input_path.name
             orig_sz = format_bytes_decimal(res.original_bytes)
             comp_sz = format_bytes_decimal(res.compressed_bytes)
-            sav_pct = f"-{res.savings_percent:.1f}%" if res.savings_percent > 0 else "0.0%"
+            sav_pct = (
+                f"-{res.savings_percent:.1f}%" if res.savings_percent > 0 else "0.0%"
+            )
             ssim_str = f"{res.ssim:.3f}" if res.ssim is not None else "N/A"
             file_line = (
                 f"Last completed: {color_text(fname, 'bright')} ({orig_sz}) -> {res.output_path.name} "
@@ -175,13 +201,17 @@ class CompresserDashboard:
             file_line = "Last completed: waiting for first image trial..."
 
         savings_pct = (
-            (self.current_savings / max(1, self.total_orig_bytes)) * 100.0 if self.total_orig_bytes > 0 else 0.0
+            (self.current_savings / max(1, self.total_orig_bytes)) * 100.0
+            if self.total_orig_bytes > 0
+            else 0.0
         )
 
         gallery = res.input_path.parent if res else None
         gallery_count = self.gallery_done[gallery] if gallery else 0
         gallery_total = self.gallery_totals.get(gallery, 0)
-        gallery_bar = ProgressBar("gallery", gallery_total or 1, gallery_count, width=28, charset="block")
+        gallery_bar = ProgressBar(
+            "gallery", gallery_total or 1, gallery_count, width=28, charset="block"
+        )
         gallery_bar_str = color_text(str(gallery_bar), "magenta")
 
         stage_bar_str = color_text(str(self.batch_bar), "cyan")
@@ -189,23 +219,45 @@ class CompresserDashboard:
         completed_stages = self.stage_index + int(self.processed == self.total_images)
         stage_labels = []
         for index, name in enumerate(self.stages):
-            state = "done" if index < completed_stages else "running" if index == self.stage_index else "pending"
+            state = (
+                "done"
+                if index < completed_stages
+                else "running"
+                if index == self.stage_index
+                else "pending"
+            )
             label = f"{name} ({state})"
             if self.interactive and "NO_COLOR" not in os.environ:
-                label = _color_text(label, {"done": "green", "running": "blue", "pending": "yellow"}[state])
+                label = _color_text(
+                    label,
+                    {"done": "green", "running": "blue", "pending": "yellow"}[state],
+                )
             stage_labels.append(label)
 
-        trial_bar = ProgressBar("trial", self.overall_total, self.overall_processed, width=28, charset="block")
+        trial_bar = ProgressBar(
+            "trial",
+            self.overall_total,
+            self.overall_processed,
+            width=28,
+            charset="block",
+        )
         trial_bar_str = color_text(str(trial_bar), "yellow")
 
-        overall_bar = ProgressBar("overall", len(self.stages), completed_stages, width=28, charset="block")
+        overall_bar = ProgressBar(
+            "overall", len(self.stages), completed_stages, width=28, charset="block"
+        )
         overall_bar_str = color_text(str(overall_bar), "green")
 
-        phase_title = "[PHASE 2/2: EXECUTING COMPRESSION]" if self.mode == "WRITE" else "[PHASE 2/2: COMPRESSION BENCHMARK]"
+        phase_title = (
+            "[PHASE 2/2: EXECUTING COMPRESSION]"
+            if self.mode == "WRITE"
+            else "[PHASE 2/2: COMPRESSION BENCHMARK]"
+        )
         phase_badge = color_text(phase_title, "cyan")
 
         lines = [
-            f"{phase_badge} Stages {completed_stages}/{len(self.stages)} complete: " + " | ".join(stage_labels),
+            f"{phase_badge} Stages {completed_stages}/{len(self.stages)} complete: "
+            + " | ".join(stage_labels),
             f"{color_text('Compresser', 'bright')} | Mode: {color_text('STOPPING' if self.stopping else self.mode, 'cyan')} | Strategy: {color_text(self.strategy_name, 'bright')} | Worker limit: {self.workers}",
             file_line,
             f"Stage trials: {self.processed}/{self.total_images} | Rate: {color_text(f'{rate_img:.1f} img/s', 'yellow')} ({format_rate_bps(rate_bytes)})",
@@ -216,21 +268,31 @@ class CompresserDashboard:
             f"Stage    {stage_bar_str} {self.processed}/{self.total_images}",
         ]
         if len(self.stages) > 1:
-            lines.append(f"Trial    {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials")
-            lines.append(f"Overall  {overall_bar_str} {completed_stages}/{len(self.stages)} stages complete")
+            lines.append(
+                f"Trial    {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials"
+            )
+            lines.append(
+                f"Overall  {overall_bar_str} {completed_stages}/{len(self.stages)} stages complete"
+            )
         else:
-            lines.append(f"Overall  {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials")
+            lines.append(
+                f"Overall  {trial_bar_str} {self.overall_processed}/{self.overall_total} image-strategy trials"
+            )
 
         activity = self.activity
         if activity:
             descriptions = [
                 f"{color_text(Path(item['path']).name, 'bright')} ({item['width']}x{item['height']}, "
-                f"{format_bytes_decimal(item['estimated_bytes'])}, {now-item['started']:.1f}s, "
+                f"{format_bytes_decimal(item['estimated_bytes'])}, {now - item['started']:.1f}s, "
                 f"{item.get('phase', 'starting')})"
                 for item in activity["active_images"][:2]
             ]
             eff = (
-                (100.0 * activity["active_workers"] / max(1, activity["effective_workers"]))
+                (
+                    100.0
+                    * activity["active_workers"]
+                    / max(1, activity["effective_workers"])
+                )
                 if activity["effective_workers"] > 0
                 else 0.0
             )
@@ -250,12 +312,20 @@ class CompresserDashboard:
                 f"active {color_text(str(activity['active_workers']), 'cyan')} | remaining {activity['remaining_images']}",
                 f"Limiter: {activity['limiter']} | Budget: {color_text(format_bytes_decimal(activity['memory_budget_bytes']), 'green')} | "
                 f"largest image estimate: {format_bytes_decimal(activity['largest_estimated_image_bytes'])}"
-                + (" (includes oversized/rejected images)" if activity["includes_oversized_images"] else ""),
+                + (
+                    " (includes oversized/rejected images)"
+                    if activity["includes_oversized_images"]
+                    else ""
+                ),
                 f"Reserved: {color_text(format_bytes_decimal(activity.get('reserved_bytes', 0)), 'green')} | "
                 f"Preflight rejected: {activity.get('preflight_rejected_images', 0)} | Waiting: {waiting}",
                 "Active: "
                 + (" | ".join(descriptions) or "none")
-                + (f" | +{activity['active_workers'] - 2} more" if activity["active_workers"] > 2 else ""),
+                + (
+                    f" | +{activity['active_workers'] - 2} more"
+                    if activity["active_workers"] > 2
+                    else ""
+                ),
             ]
         return lines
 
@@ -285,15 +355,26 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
     headers = ["Metric", "Value"]
     rows = [
         ["Strategy", color_text(result.strategy_name, "bright")],
-        ["Execution Mode", "Dry-Run (Analysis)" if result.dry_run else color_text("Applied (Write)", "green")],
+        [
+            "Execution Mode",
+            "Dry-Run (Analysis)"
+            if result.dry_run
+            else color_text("Applied (Write)", "green"),
+        ],
         ["Total Images", str(result.total_images)],
         ["Original Storage", format_bytes_decimal(result.original_bytes)],
         ["Compressed Storage", format_bytes_decimal(result.compressed_bytes)],
         [
             "Storage Savings",
-            color_text(f"{format_bytes_decimal(result.saved_bytes)} ({result.savings_percent:.1f}%)", "green"),
+            color_text(
+                f"{format_bytes_decimal(result.saved_bytes)} ({result.savings_percent:.1f}%)",
+                "green",
+            ),
         ],
-        ["Average SSIM", f"{result.average_ssim:.4f}" if result.average_ssim is not None else "N/A"],
+        [
+            "Average SSIM",
+            f"{result.average_ssim:.4f}" if result.average_ssim is not None else "N/A",
+        ],
         [
             "Throughput",
             f"{result.throughput_images_per_s:.1f} images/s ({format_rate_bps(result.throughput_bytes_per_s)})",
@@ -307,21 +388,43 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
             f"{result.worker_diagnostics.get('requested_workers', '?')} / "
             f"{result.worker_diagnostics.get('effective_workers', '?')} ({result.worker_diagnostics.get('limiter', 'unknown')})",
         ],
-        ["Failures / Errors", color_text(str(result.failed_count), "red" if result.failed_count > 0 else "default")],
+        [
+            "Failures / Errors",
+            color_text(
+                str(result.failed_count),
+                "red" if result.failed_count > 0 else "default",
+            ),
+        ],
     ]
 
     print("\n" + color_text("Compression Batch Summary", "cyan"))
     policy = result.worker_diagnostics.get("memory_policy")
     if policy:
-        rows.append(["Memory policy / resolved MiB", f"{policy['requested']} / {policy['resolved_mib']}"])
+        rows.append(
+            [
+                "Memory policy / resolved MiB",
+                f"{policy['requested']} / {policy['resolved_mib']}",
+            ]
+        )
         if policy.get("available_bytes_at_start") is not None:
-            rows.append(["Available RAM measured at start", format_bytes_decimal(policy["available_bytes_at_start"])])
-    print(render_table(headers=headers, rows=rows, alignments=["left", "right"], style="rule"))
+            rows.append(
+                [
+                    "Available RAM measured at start",
+                    format_bytes_decimal(policy["available_bytes_at_start"]),
+                ]
+            )
+    print(
+        render_table(
+            headers=headers, rows=rows, alignments=["left", "right"], style="rule"
+        )
+    )
     timings = result.worker_diagnostics.get("phase_seconds", {})
     if timings:
         print(
             "Phase worker-seconds (exclusive; parallel workers add): "
-            + ", ".join(f"{name}={seconds:.2f}s" for name, seconds in sorted(timings.items()))
+            + ", ".join(
+                f"{name}={seconds:.2f}s" for name, seconds in sorted(timings.items())
+            )
         )
 
     if scan and scan.format_counts:
@@ -335,44 +438,70 @@ def print_single_summary(result: BatchResult, scan: ScanSummary | None = None) -
             for fmt, cnt in sorted(scan.format_counts.items())
         ]
         print("\n" + color_text("Source Image Formats Breakdown", "cyan"))
-        print(render_table(headers=fmt_headers, rows=fmt_rows, alignments=["left", "right", "right"], style="rule"))
+        print(
+            render_table(
+                headers=fmt_headers,
+                rows=fmt_rows,
+                alignments=["left", "right", "right"],
+                style="rule",
+            )
+        )
 
 
 def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
     """Rank complete same-scope evidence; unsupported rows have no fallback winner."""
     projected_scope = any(r.estimate or r.sampling for r in rows)
-    ranking_scope = "whole_target_projection" if projected_scope else "measured_input_set"
+    ranking_scope = (
+        "whole_target_projection" if projected_scope else "measured_input_set"
+    )
 
     def savings(row: ComparisonRow) -> float | None:
         if row.failed_count or row.measured_images <= 0:
             return None
         if projected_scope:
             value = row.estimate.get("projected_total_saved_bytes")
-            if row.estimate.get("unestimated_images", 0) or row.estimate.get("unestimated_bytes", 0):
+            if row.estimate.get("unestimated_images", 0) or row.estimate.get(
+                "unestimated_bytes", 0
+            ):
                 return None
         else:
             value = row.saved_bytes
-        return value if isinstance(value, (int, float)) and math.isfinite(value) and value > 0 else None
+        return (
+            value
+            if isinstance(value, (int, float)) and math.isfinite(value) and value > 0
+            else None
+        )
 
     valid = [r for r in rows if savings(r) is not None]
     reader_friendly = {"WEBP", "JPEG", "JPG", "PNG"}
 
     def compatible(row: ComparisonRow) -> bool:
-        return bool(row.retained_formats) and set(row.retained_formats) <= reader_friendly
+        return (
+            bool(row.retained_formats) and set(row.retained_formats) <= reader_friendly
+        )
 
     practical_candidates = [
         r
         for r in valid
-        if compatible(r) and (r.mode == "lossless" or r.average_ssim is not None and r.average_ssim >= 0.98)
+        if compatible(r)
+        and (
+            r.mode == "lossless"
+            or r.average_ssim is not None
+            and r.average_ssim >= 0.98
+        )
     ]
     # A warm/mixed cache rate measures lookups, not an encoder benchmark. Drop
     # the speed term for the entire comparison if rates aren't comparable.
     use_speed = bool(practical_candidates) and all(
-        r.cache_hits == 0 and math.isfinite(r.throughput_images_per_s) and r.throughput_images_per_s > 0
+        r.cache_hits == 0
+        and math.isfinite(r.throughput_images_per_s)
+        and r.throughput_images_per_s > 0
         for r in practical_candidates
     )
 
-    def _serialize(row: ComparisonRow | None, *, uses_speed: bool = False) -> dict | None:
+    def _serialize(
+        row: ComparisonRow | None, *, uses_speed: bool = False
+    ) -> dict | None:
         if row is None:
             return None
         return {
@@ -382,7 +511,9 @@ def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
             "quality": row.quality_display,
             "saved_bytes": row.saved_bytes,
             "savings_percent": row.savings_percent,
-            "projected_total_saved_bytes": row.estimate.get("projected_total_saved_bytes"),
+            "projected_total_saved_bytes": row.estimate.get(
+                "projected_total_saved_bytes"
+            ),
             "average_ssim": row.average_ssim,
             "speed_img_per_s": row.throughput_images_per_s,
             "ranking_scope": ranking_scope,
@@ -408,15 +539,22 @@ def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
         default=None,
     )
 
-    max_rate = max((r.throughput_images_per_s for r in practical_candidates), default=1.0) or 1.0
+    max_rate = (
+        max((r.throughput_images_per_s for r in practical_candidates), default=1.0)
+        or 1.0
+    )
     max_saved = max((savings(r) for r in practical_candidates), default=1)
 
     def _practical_score(row: ComparisonRow) -> tuple[float, float, float]:
         savings_norm = savings(row) / max_saved
-        speed_norm = min(1.0, row.throughput_images_per_s / max_rate) if use_speed else 0.0
+        speed_norm = (
+            min(1.0, row.throughput_images_per_s / max_rate) if use_speed else 0.0
+        )
         fidelity = 1.0 if row.mode == "lossless" else row.average_ssim
         return (
-            (0.55 if use_speed else 0.80) * savings_norm + 0.25 * speed_norm + 0.20 * fidelity,
+            (0.55 if use_speed else 0.80) * savings_norm
+            + 0.25 * speed_norm
+            + 0.20 * fidelity,
             savings(row),
             speed_norm,
         )
@@ -428,7 +566,9 @@ def recommend_comparison_strategies(rows: Sequence[ComparisonRow]) -> dict:
         "best_lossless": _serialize(best_lossless_row),
         "practical_tradeoff": _serialize(practical_row, uses_speed=use_speed),
         "ranking_scope": ranking_scope,
-        "unavailable_reason": "No eligible positive-savings evidence" if not valid else None,
+        "unavailable_reason": "No eligible positive-savings evidence"
+        if not valid
+        else None,
         "fidelity_caveat": (
             "Recommendations separate maximum byte reduction from a practical reader-compatible "
             "speed/fidelity trade-off, using complete target projections for samples. Point-estimate rankings "
@@ -452,10 +592,24 @@ def print_comparison_matrix(
 ) -> None:
     """Compatibility facade over the shared report, with no independent winners."""
     from .report_models import ReportContext
-    from .reporting import build_comparison_report, render_console_report, stdout_color_enabled
+    from .reporting import (
+        build_comparison_report,
+        render_console_report,
+        stdout_color_enabled,
+    )
 
     report = build_comparison_report(
-        rows, context=context or ReportContext(Path(target_path or "."), settings={"workers": workers, "runner": runner})
+        rows,
+        context=context
+        or ReportContext(
+            Path(target_path or "."), settings={"workers": workers, "runner": runner}
+        ),
     )
-    print(render_console_report(report, width=shutil.get_terminal_size().columns,
-                                color=stdout_color_enabled(), verbose=verbose))
+    print(
+        render_console_report(
+            report,
+            width=shutil.get_terminal_size().columns,
+            color=stdout_color_enabled(),
+            verbose=verbose,
+        )
+    )
