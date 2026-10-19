@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+2026-10-19 active plan: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
+Location: docs/plans/20261019-0358_mangadl-cli-tui-and-preview-viewer/
+Branch: mangadl-cli-tui-20261019-0358
+Worktree: C:\Users\mcarls\src\scripts-mangadl-cli-tui
+Status: Plan created and thoroughly designed; awaiting user review and approval before Stage 1 execution.
+Scope: Reusable argparse-to-termdash TUI engine (`modules/cli_tui`), real-time streaming process execution dashboard with scrollback, universal key navigation (q with confirmation, Q immediate exit, Esc back), MangaDL integration (`mangadl tui`), and Tkinter native side-by-side image comparison viewer with Left/Right quality cycling and Up/Down image cycling.
+
 2026-10-17 current checkpoint: compresser1.4.1/MangaDL2.4.1, TermDash0.8.0.
 Workspace/report plan Tasks1-5 complete and pushed on
 `compression-ui-color-and-stats-20261017`. Final gates: 326 compresser/1 skipped,

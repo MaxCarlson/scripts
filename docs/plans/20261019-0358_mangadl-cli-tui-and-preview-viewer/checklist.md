@@ -1,0 +1,73 @@
+# Checklist: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
+
+## Stage 1: Reusable CLI TUI Engine (`modules/cli_tui`)
+- [ ] Task 1.1: Package Scaffolding & Argparse Introspection (`cli_tui.schema`)
+  - [ ] 1.1.1: Write failing test for parser introspection (`tests/test_schema.py`)
+  - [ ] 1.1.2: Verify test failure
+  - [ ] 1.1.3: Implement `cli_tui/schema.py`
+  - [ ] 1.1.4: Run tests and verify all pass
+  - [ ] 1.1.5: Commit Task 1.1
+- [ ] Task 1.2: TUI Navigation & Form State Models (`cli_tui.state`)
+  - [ ] 1.2.1: Write failing test for state navigation and argv synthesis (`tests/test_state.py`)
+  - [ ] 1.2.2: Verify test failure
+  - [ ] 1.2.3: Implement `cli_tui/state.py`
+  - [ ] 1.2.4: Run tests and verify all pass
+  - [ ] 1.2.5: Commit Task 1.2
+- [ ] Task 1.3: Form Field Widgets & Rendering (`cli_tui.widgets`)
+  - [ ] 1.3.1: Write failing test for widget key handling and value toggling (`tests/test_widgets.py`)
+  - [ ] 1.3.2: Verify test failure
+  - [ ] 1.3.3: Implement `cli_tui/widgets.py` using termdash color/border styles
+  - [ ] 1.3.4: Run tests and verify all pass
+  - [ ] 1.3.5: Commit Task 1.3
+- [ ] Task 1.4: Real-time Streaming Process Runner (`cli_tui.process_runner`)
+  - [ ] 1.4.1: Write failing test for process streaming, deque buffering, and cancellation (`tests/test_process_runner.py`)
+  - [ ] 1.4.2: Verify test failure
+  - [ ] 1.4.3: Implement `cli_tui/process_runner.py`
+  - [ ] 1.4.4: Run tests and verify all pass
+  - [ ] 1.4.5: Commit Task 1.4
+- [ ] Task 1.5: Main Application Controller & Universal Keys (`cli_tui.app`)
+  - [ ] 1.5.1: Write failing test for `q` confirmation, `Q` immediate quit, and `Esc` back (`tests/test_app.py`)
+  - [ ] 1.5.2: Verify test failure
+  - [ ] 1.5.3: Implement `cli_tui/app.py`
+  - [ ] 1.5.4: Run tests and verify all pass
+  - [ ] 1.5.5: Commit Task 1.5
+
+## Stage 2: MangaDL TUI Integration (`mangadl tui`)
+- [ ] Task 2.1: MangaDL Parser Exposure & CLI Wiring
+  - [ ] 2.1.1: Write failing test for `mangadl tui` and `mangadl --tui` (`tests/cli_test.py`)
+  - [ ] 2.1.2: Verify test failure
+  - [ ] 2.1.3: Update `cli_core.py` and `cli.py` to route to TUI launcher
+  - [ ] 2.1.4: Run tests and verify all pass
+  - [ ] 2.1.5: Commit Task 2.1
+- [ ] Task 2.2: MangaDL TUI Launcher & Menu Customization (`mangadl.tui`)
+  - [ ] 2.2.1: Write failing test for MangaDL TUI launcher and category grouping (`tests/tui_test.py`)
+  - [ ] 2.2.2: Verify test failure
+  - [ ] 2.2.3: Implement `mangadl/tui.py`
+  - [ ] 2.2.4: Run tests and verify all pass
+  - [ ] 2.2.5: Commit Task 2.2
+- [ ] Task 2.3: Live Process Execution & Action Callbacks
+  - [ ] 2.3.1: Write failing test for post-preview action trigger and command formatting
+  - [ ] 2.3.2: Verify test failure
+  - [ ] 2.3.3: Implement callbacks in `mangadl/tui.py`
+  - [ ] 2.3.4: Run tests and verify all pass
+  - [ ] 2.3.5: Commit Task 2.3
+
+## Stage 3: Side-by-Side Comparison Image Viewer
+- [ ] Task 3.1: Preview Set Scanner & Data Model (`cli_tui.preview_set`)
+  - [ ] 3.1.1: Write failing test for scanning and grouping preview variants (`tests/test_preview_set.py`)
+  - [ ] 3.1.2: Verify test failure
+  - [ ] 3.1.3: Implement `cli_tui/preview_set.py`
+  - [ ] 3.1.4: Run tests and verify all pass
+  - [ ] 3.1.5: Commit Task 3.1
+- [ ] Task 3.2: Native GUI Side-by-Side Viewer (`cli_tui.image_viewer`)
+  - [ ] 3.2.1: Write failing test for viewer state, Left/Right quality cycling, Up/Down image cycling (`tests/test_image_viewer.py`)
+  - [ ] 3.2.2: Verify test failure
+  - [ ] 3.2.3: Implement `cli_tui/image_viewer.py` with Tkinter + Pillow
+  - [ ] 3.2.4: Run tests and verify all pass
+  - [ ] 3.2.5: Commit Task 3.2
+- [ ] Task 3.3: Integration with MangaDL & Standalone CLI
+  - [ ] 3.3.1: Write failing test for `compress preview --view` and TUI viewer button
+  - [ ] 3.3.2: Verify test failure
+  - [ ] 3.3.3: Implement `--view` flag and TUI link
+  - [ ] 3.3.4: Run tests and verify all pass
+  - [ ] 3.3.5: Commit Task 3.3
