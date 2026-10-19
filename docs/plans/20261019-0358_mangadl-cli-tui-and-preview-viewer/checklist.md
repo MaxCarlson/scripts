@@ -19,12 +19,12 @@
   - [x] 1.3.3: Implement `cli_tui/widgets.py` using termdash color/border styles
   - [x] 1.3.4: Run tests and verify all pass
   - [x] 1.3.5: Commit Task 1.3
-- [ ] Task 1.4: Real-time Streaming Process Runner (`cli_tui.process_runner`)
-  - [ ] 1.4.1: Write failing test for process streaming, deque buffering, and cancellation (`tests/test_process_runner.py`)
-  - [ ] 1.4.2: Verify test failure
-  - [ ] 1.4.3: Implement `cli_tui/process_runner.py`
-  - [ ] 1.4.4: Run tests and verify all pass
-  - [ ] 1.4.5: Commit Task 1.4
+- [x] Task 1.4: Real-time Streaming Process Runner (`cli_tui.process_runner`)
+  - [x] 1.4.1: Write failing test for process streaming, deque buffering, and cancellation (`tests/test_process_runner.py`)
+  - [x] 1.4.2: Verify test failure
+  - [x] 1.4.3: Implement `cli_tui/process_runner.py`
+  - [x] 1.4.4: Run tests and verify all pass
+  - [x] 1.4.5: Commit Task 1.4
 - [ ] Task 1.5: Main Application Controller & Universal Keys (`cli_tui.app`)
   - [ ] 1.5.1: Write failing test for `q` confirmation, `Q` immediate quit, and `Esc` back (`tests/test_app.py`)
   - [ ] 1.5.2: Verify test failure
