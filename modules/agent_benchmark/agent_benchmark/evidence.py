@@ -17,6 +17,8 @@ import time
 from types import MappingProxyType
 from typing import Any, Mapping
 
+from .git_workspace import GitIdentity, initialize_git
+
 
 @dataclass(frozen=True)
 class Task:
@@ -55,17 +57,30 @@ def load_task(path: Path) -> Task:
                 budget, verifier, (path / "instruction.md").read_text(encoding="utf-8"))
 
 
-def _read_tree(root: Path) -> dict[str, bytes]:
+def _read_tree(root: Path, *, exclude_git: bool = False) -> dict[str, bytes]:
     if root.is_symlink() or root.is_junction() or not root.is_dir():
         raise ValueError("Checkpoint root must be an ordinary directory, not a link")
     files = {}
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink() or path.is_junction():
-            raise ValueError(f"Checkpoint refuses link: {path.name}")
-        if path.is_file():
-            files[path.relative_to(root).as_posix()] = path.read_bytes()
-        elif not path.is_dir():
-            raise ValueError(f"Unsupported checkpoint entry: {path.name}")
+
+    def on_error(error: OSError) -> None:
+        raise error
+
+    for current, dirs, names in os.walk(root, followlinks=False, onerror=on_error):
+        parent = Path(current)
+        for name in sorted(dirs + names):
+            path = parent / name
+            if path.is_symlink() or path.is_junction():
+                raise ValueError(f"Checkpoint refuses link: {path.name}")
+            metadata = parent == root and (name == ".git" or os.name == "nt" and name.lower() == ".git")
+            if exclude_git and metadata:
+                if not path.is_dir():
+                    raise ValueError("Trial .git must remain an ordinary directory")
+                dirs.remove(name)  # Prune only this root's internal repository, not nested names.
+                continue
+            if path.is_file():
+                files[path.relative_to(root).as_posix()] = path.read_bytes()
+            elif not path.is_dir():
+                raise ValueError(f"Unsupported checkpoint entry: {path.name}")
     return files
 
 
@@ -87,17 +102,21 @@ def _write_tree(files: Mapping[str, bytes], destination: Path) -> None:
         target.write_bytes(data)
 
 
-def prepare_workspace(task: Task, workspace: Path) -> None:
+def prepare_workspace(task: Task, workspace: Path) -> GitIdentity:
     """Copy public files only; existing workspace must be empty and benchmark-owned."""
     if workspace.exists() and any(workspace.iterdir()):
         raise ValueError("Worker workspace must be fresh and empty")
     workspace.mkdir(parents=True, exist_ok=True)
-    for name, data in _read_tree(task.path / "seed").items():
+    seed = _read_tree(task.path / "seed")
+    if any(name.split("/")[0].lower() == ".git" for name in seed):
+        raise ValueError("Seed .git metadata is reserved for the benchmark")
+    for name, data in seed.items():
         target = workspace / name
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(data)
     for name in ("instruction.md", "task.json"):
         shutil.copyfile(task.path / name, workspace / name)
+    return initialize_git(workspace)
 
 
 @dataclass(frozen=True)
@@ -115,7 +134,7 @@ def capture(workspace: Path, destination: Path) -> Snapshot:
     """Call only after termination confirmation; never overwrite a checkpoint."""
     if destination.resolve().is_relative_to(workspace.resolve()):
         raise ValueError("Evidence must be outside worker workspace")
-    files = _read_tree(workspace)
+    files = _read_tree(workspace, exclude_git=True)
     _write_tree(files, destination)
     return Snapshot(destination, MappingProxyType(files), _tree_hash(files))
 
@@ -370,7 +389,9 @@ def audit_transcript(
                         rel = _relative_to_workspace(resolved_p, workspace_resolved)
                     except Exception:
                         rel = resolved_p.name
-                    in_scope = _matches_any(rel, task.allowed_paths) and not _matches_any(rel, task.forbidden_paths)
+                    git_metadata = rel.split("/")[0].lower() == ".git"
+                    in_scope = (not git_metadata and _matches_any(rel, task.allowed_paths)
+                                and not _matches_any(rel, task.forbidden_paths))
                     canonical_path = rel
                 else:
                     in_scope = False

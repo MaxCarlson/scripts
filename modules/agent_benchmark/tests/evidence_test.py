@@ -84,7 +84,7 @@ def test_changed_protected_added_and_deleted_files_are_all_auditable(tmp_path):
 def test_worker_does_not_receive_hidden_verifier(tmp_path):
     task = load_task(TASK)
     prepare_workspace(task, tmp_path / "worker")
-    assert sorted(p.name for p in (tmp_path / "worker").iterdir()) == ["grep.py", "instruction.md", "task.json"]
+    assert sorted(p.name for p in (tmp_path / "worker").iterdir()) == [".git", "grep.py", "instruction.md", "task.json"]
 
 
 def test_symlink_entry_cannot_escape_snapshot(tmp_path):
