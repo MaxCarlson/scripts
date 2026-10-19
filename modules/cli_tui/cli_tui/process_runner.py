@@ -293,6 +293,16 @@ class ProcessRunner:
         return self._process.poll() is None
 
     @property
+    def proc(self) -> Optional[subprocess.Popen[bytes]]:
+        return self._process
+
+    @property
+    def pid(self) -> Optional[int]:
+        if self._process is not None:
+            return self._process.pid
+        return None
+
+    @property
     def thread(self) -> Optional[threading.Thread]:
         return self._thread
 

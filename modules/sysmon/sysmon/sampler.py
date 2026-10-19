@@ -155,7 +155,10 @@ class HardwareSampler:
 
         # 2. System GPU (throttled to >=1.5s interval to minimize overhead)
         now = time.monotonic()
-        if now - self._last_gpu_query >= self._gpu_min_interval or not self._cached_gpu_rows:
+        if (
+            now - self._last_gpu_query >= self._gpu_min_interval
+            or not self._cached_gpu_rows
+        ):
             self._cached_gpu_rows, _ = _gpu_info_safe()
             self._last_gpu_query = now
 

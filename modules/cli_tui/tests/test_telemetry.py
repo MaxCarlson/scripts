@@ -40,7 +40,9 @@ def test_telemetry_header_rendering_modes():
     app.telemetry_mode = TelemetryDisplayMode.FULL
     screen_full = app.render_virtual_screen(height=20, width=80)
     assert any("System: CPU 25%" in line and "RAM" in line for line in screen_full[:3])
-    assert any("Active: CPU 15%" in line and "worker" in line for line in screen_full[:3])
+    assert any(
+        "Active: CPU 15%" in line and "worker" in line for line in screen_full[:3]
+    )
 
     # 2. Compact Mode (Option C: 1 line)
     app.telemetry_mode = TelemetryDisplayMode.COMPACT
@@ -50,4 +52,51 @@ def test_telemetry_header_rendering_modes():
     # 3. Hidden Mode (0 lines)
     app.telemetry_mode = TelemetryDisplayMode.HIDDEN
     screen_hidden = app.render_virtual_screen(height=20, width=80)
-    assert not any("System: CPU" in line or "CPU: 25%" in line for line in screen_hidden[:3])
+    assert not any(
+        "System: CPU" in line or "CPU: 25%" in line for line in screen_hidden[:3]
+    )
+
+
+def test_telemetry_hotkey_cycling_and_footer():
+    app = CliTuiApp(parser=argparse.ArgumentParser(prog="sample"))
+    assert app.telemetry_mode == TelemetryDisplayMode.FULL
+    assert "[t] Telemetry: Full" in " ".join(app._get_active_hotkey_badges())
+
+    # Press 't' -> COMPACT
+    app.process_key(ord("t"))
+    assert app.telemetry_mode == TelemetryDisplayMode.COMPACT
+    assert "[t] Telemetry: Compact" in " ".join(app._get_active_hotkey_badges())
+
+    # Press 't' -> HIDDEN
+    app.process_key(ord("t"))
+    assert app.telemetry_mode == TelemetryDisplayMode.HIDDEN
+    assert "[t] Telemetry: Off" in " ".join(app._get_active_hotkey_badges())
+
+    # Press Ctrl+H (ASCII 8) -> FULL
+    app.process_key(8)
+    assert app.telemetry_mode == TelemetryDisplayMode.FULL
+    assert "[t] Telemetry: Full" in " ".join(app._get_active_hotkey_badges())
+
+
+def test_multi_pane_telemetry_pid_synchronization():
+    app = CliTuiApp(parser=argparse.ArgumentParser(prog="sample"))
+    # Create two panes
+    p1 = app.pane_workspace.create_pane("pane 1")
+    p2 = app.pane_workspace.create_pane("pane 2")
+
+    # Simulate runner on pane 1
+    class FakeRunner:
+        def is_running(self):
+            return True
+
+        class proc:
+            pid = 4321
+
+    p1.runner = FakeRunner()
+
+    app._switch_to_pane(p1.id)
+    assert app.sampler is not None
+    assert app.sampler._target_pid == 4321
+
+    app._switch_to_pane(p2.id)
+    assert app.sampler._target_pid is None

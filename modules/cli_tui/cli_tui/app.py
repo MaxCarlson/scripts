@@ -257,6 +257,70 @@ class CliTuiApp:
     def viewport(self, vp: OutputViewport) -> None:
         self.workspace.active_pane.viewport = vp
 
+    @property
+    def pane_workspace(self) -> PaneWorkspace:
+        """Alias for workspace to support multi-pane management."""
+        return self.workspace
+
+    def _get_active_runner_pid(self) -> Optional[int]:
+        """Retrieve OS PID of the currently active pane's runner, if active."""
+        runner = self.workspace.active_pane.runner
+        if runner is not None:
+            is_running = getattr(runner, "is_running", False)
+            if callable(is_running):
+                is_running = is_running()
+            if is_running:
+                if (
+                    hasattr(runner, "proc")
+                    and runner.proc is not None
+                    and hasattr(runner.proc, "pid")
+                ):
+                    return getattr(runner.proc, "pid")
+                if hasattr(runner, "pid") and runner.pid is not None:
+                    return getattr(runner.pid, "pid", runner.pid)
+                if (
+                    hasattr(runner, "_process")
+                    and runner._process is not None
+                    and hasattr(runner._process, "pid")
+                ):
+                    return getattr(runner._process, "pid")
+                if (
+                    hasattr(runner, "active_runner")
+                    and runner.active_runner is not None
+                ):
+                    sub = runner.active_runner
+                    if (
+                        hasattr(sub, "proc")
+                        and sub.proc is not None
+                        and hasattr(sub.proc, "pid")
+                    ):
+                        return getattr(sub.proc, "pid")
+                    if hasattr(sub, "pid") and sub.pid is not None:
+                        return getattr(sub.pid, "pid", sub.pid)
+                    if (
+                        hasattr(sub, "_process")
+                        and sub._process is not None
+                        and hasattr(sub._process, "pid")
+                    ):
+                        return getattr(sub._process, "pid")
+        return None
+
+    def _sync_target_pid(self) -> None:
+        """Synchronize the background hardware sampler target PID with active pane."""
+        if self.sampler is not None:
+            target_pid = self._get_active_runner_pid()
+            self.sampler.set_target_pid(target_pid)
+
+    def cycle_telemetry_mode(self) -> TelemetryDisplayMode:
+        """Cycle telemetry display mode: FULL -> COMPACT -> HIDDEN -> FULL."""
+        if self.telemetry_mode == TelemetryDisplayMode.FULL:
+            self.telemetry_mode = TelemetryDisplayMode.COMPACT
+        elif self.telemetry_mode == TelemetryDisplayMode.COMPACT:
+            self.telemetry_mode = TelemetryDisplayMode.HIDDEN
+        else:
+            self.telemetry_mode = TelemetryDisplayMode.FULL
+        return self.telemetry_mode
+
     def _save_current_pane_state(self) -> None:
         pane = self.workspace.active_pane
         pane.screen_mode = self.navigation.current_screen
@@ -274,6 +338,7 @@ class CliTuiApp:
                 create_widget_for_arg(arg, pane.current_form.get_value(arg.dest))
                 for arg in pane.current_form.command.arguments
             ]
+        self._sync_target_pid()
 
     def cycle_pane_prev(self) -> None:
         if len(self.workspace.panes) <= 1:
@@ -295,6 +360,17 @@ class CliTuiApp:
             self.workspace.switch_to(index)
             self._restore_active_pane_state()
             return True
+        return False
+
+    def _switch_to_pane(self, target: Any) -> bool:
+        """Switch to a pane by index, ID string, or pane object."""
+        if isinstance(target, int):
+            return self.switch_pane(target)
+        target_id = getattr(target, "id", target)
+        if isinstance(target_id, str):
+            for idx, p in enumerate(self.workspace.panes):
+                if p.id == target_id:
+                    return self.switch_pane(idx)
         return False
 
     def _is_widget_editing(self) -> bool:
@@ -476,6 +552,11 @@ class CliTuiApp:
                 self.is_pane_manager_open = True
                 self.manager_cursor = self.workspace.active_index
                 return True
+
+        # Telemetry mode toggle: 't' / 'T' (when not editing) or Ctrl+H (ASCII 8)
+        if key == 8 or (key in (ord("t"), ord("T")) and not self._is_widget_editing()):
+            self.cycle_telemetry_mode()
+            return True
 
         # 5. Screen-specific dispatch
         if self.screen_mode == TuiScreenMode.MENU:
@@ -666,6 +747,7 @@ class CliTuiApp:
         self.viewport.scroll_to_end()
         self.runner.start()
         self.navigation.current_screen = TuiScreenMode.RUNNING
+        self._sync_target_pid()
 
     def _handle_running_key(self, key: int) -> bool:
         if key in (curses.KEY_UP, ord("k")):
@@ -736,9 +818,16 @@ class CliTuiApp:
 
         has_multiple_panes = len(self.workspace.panes) > 1
 
+        badge_map = {
+            TelemetryDisplayMode.FULL: "[t] Telemetry: Full",
+            TelemetryDisplayMode.COMPACT: "[t] Telemetry: Compact",
+            TelemetryDisplayMode.HIDDEN: "[t] Telemetry: Off",
+        }
+        telemetry_badge = badge_map.get(self.telemetry_mode, "[t] Telemetry: Full")
+
         if self.screen_mode == TuiScreenMode.RUNNING:
             if self.runner and self.runner.is_running:
-                badges = ["[c] Cancel", "[s] Branch", "[p] Panes"]
+                badges = ["[c] Cancel", "[s] Branch", "[p] Panes", telemetry_badge]
                 if has_multiple_panes:
                     badges.append("[[]/[]] Prev/Next")
                 badges.append("[Shift+Esc] New Pane")
@@ -747,7 +836,13 @@ class CliTuiApp:
                 badges.extend(["[q] Quit", "[Q] Force Quit"])
                 return badges
             else:
-                badges = ["[q] Quit", "[Q] Force Quit", "[Esc] Back", "[p] Panes"]
+                badges = [
+                    "[q] Quit",
+                    "[Q] Force Quit",
+                    "[Esc] Back",
+                    "[p] Panes",
+                    telemetry_badge,
+                ]
                 if has_multiple_panes:
                     badges.append("[[]/[]] Prev/Next")
                 badges.extend(["[s] Branch", "[r] Re-run"])
@@ -782,6 +877,7 @@ class CliTuiApp:
                 action_badge,
                 "[Esc] Back",
                 "[p] Panes",
+                telemetry_badge,
                 "[Shift+Esc] New Pane",
             ]
             if has_multiple_panes:
@@ -795,6 +891,7 @@ class CliTuiApp:
                 "[Enter] Select",
                 "[Esc] Back",
                 "[p] Panes",
+                telemetry_badge,
                 "[Shift+Esc] New Pane",
             ]
             if has_multiple_panes:
@@ -802,7 +899,13 @@ class CliTuiApp:
             badges.extend(["[q] Quit", "[Q] Force Quit"])
             return badges
 
-        return ["[q] Quit", "[Q] Force Quit", "[Esc] Back", "[p] Panes"]
+        return [
+            "[q] Quit",
+            "[Q] Force Quit",
+            "[Esc] Back",
+            "[p] Panes",
+            telemetry_badge,
+        ]
 
     def render_tab_strip(self, width: int) -> str:
         """Render the top tab strip showing open panes and active focus."""
@@ -1080,7 +1183,11 @@ class CliTuiApp:
             p_ram_wide = f"{p_ram_gb:.2f} GB ({proc_s.memory_pct:.0f}%)"
             p_ram_std = f"{p_ram_gb:.1f}G"
             p_ram_narrow = f"{p_ram_gb:.1f}G"
-            p_gpu = f"{proc_s.gpu_load_pct:.0f}%" if proc_s.gpu_load_pct is not None else "N/A"
+            p_gpu = (
+                f"{proc_s.gpu_load_pct:.0f}%"
+                if proc_s.gpu_load_pct is not None
+                else "N/A"
+            )
             p_info = f"(pid: {proc_s.pid} {proc_s.name})"
             p_info_short = f"({proc_s.name})"
         elif proc_s and not proc_s.is_active:
@@ -1098,17 +1205,29 @@ class CliTuiApp:
 
         if self.telemetry_mode == TelemetryDisplayMode.FULL:
             if width >= 100:
-                line1_content = f" System: CPU {sys_cpu} │ RAM {sys_ram_wide} │ GPU {sys_gpu_wide} "
-                line2_content = f"  Active: CPU {p_cpu} │ RAM {p_ram_wide} │ GPU {p_gpu} {p_info} "
+                line1_content = (
+                    f" System: CPU {sys_cpu} │ RAM {sys_ram_wide} │ GPU {sys_gpu_wide} "
+                )
+                line2_content = (
+                    f"  Active: CPU {p_cpu} │ RAM {p_ram_wide} │ GPU {p_gpu} {p_info} "
+                )
             elif width >= 80:
-                line1_content = f" System: CPU {sys_cpu} │ RAM {sys_ram_std} │ GPU {sys_gpu_std} "
+                line1_content = (
+                    f" System: CPU {sys_cpu} │ RAM {sys_ram_std} │ GPU {sys_gpu_std} "
+                )
                 line2_content = f"  Active: CPU {p_cpu} │ RAM {p_ram_std} │ GPU {p_gpu} {p_info_short} "
             else:
-                line1_content = f" SYS: C {sys_cpu} M {sys_ram_narrow} G {sys_gpu_narrow} "
+                line1_content = (
+                    f" SYS: C {sys_cpu} M {sys_ram_narrow} G {sys_gpu_narrow} "
+                )
                 line2_content = f"  APP: C {p_cpu} M {p_ram_narrow} G {p_gpu} "
 
-            bar1 = ("┌─" + line1_content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "┐"
-            bar2 = ("│" + line2_content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "│"
+            bar1 = ("┌─" + line1_content)[: max(1, width - 1)].ljust(
+                max(1, width - 1), "─"
+            ) + "┐"
+            bar2 = ("│" + line2_content)[: max(1, width - 1)].ljust(
+                max(1, width - 1), "─"
+            ) + "│"
             return [bar1, bar2]
 
         elif self.telemetry_mode == TelemetryDisplayMode.COMPACT:
@@ -1117,7 +1236,9 @@ class CliTuiApp:
             else:
                 content = f" C: {sys_cpu} ({p_cpu}) │ M: {sys_ram_narrow} ({p_ram_narrow}) │ G: {sys_gpu_narrow} "
 
-            bar = ("┌─" + content)[: max(1, width - 1)].ljust(max(1, width - 1), "─") + "┐"
+            bar = ("┌─" + content)[: max(1, width - 1)].ljust(
+                max(1, width - 1), "─"
+            ) + "┐"
             return [bar]
 
         return []
@@ -1195,7 +1316,9 @@ class CliTuiApp:
             raw_lines = runner.lines if runner else []
             visible_width = max(10, width - 4)
             _, _, total_l = self.viewport.get_scroll_bounds(
-                raw_lines, height=max(1, height - len(telemetry_lines) - 6), width=visible_width
+                raw_lines,
+                height=max(1, height - len(telemetry_lines) - 6),
+                width=visible_width,
             )
             is_scrollable = total_l > max(1, height - len(telemetry_lines) - 6)
 
