@@ -4,7 +4,7 @@
 
 - Workspace: C:/Users/mcarls/src/scripts-agent-benchmark
 - Branch: agent/agent-benchmark
-- Corrective audit pass commit: b7e45f3e
+- Corrective audit pass commit: c299e1b2 (plus handoff update)
 - Prior attempt-flow/review-fixes commit: 641f618674fff82e1572d5a09ee2683bb2a1fc32
 - Independent adapter/evidence commit: 709d961d
 - Task 1b baseline: 85dca555; preceding handoff d098e519
