@@ -10,6 +10,8 @@ import os
 from pathlib import Path
 import uuid
 
+from .lifecycle import DispatchGuard
+
 
 def read_pending(state: Path) -> dict | None:
     path = state / "pending.json"
@@ -91,3 +93,17 @@ def safely_finished(evidence_dir: Path) -> bool:
         return journal.get("termination", {}).get("confirmed") is True
     except (RuntimeError, AttributeError):
         return False
+
+
+@contextmanager
+def reserved_trial(state: Path, evidence_dir: Path):
+    """One shared reservation lifecycle for scored and diagnostic execution."""
+    with command_lock(state):
+        receipt = reserve(state, evidence_dir)
+        guard = DispatchGuard()
+        try:
+            yield guard
+        finally:
+            # Receipt contents never establish that a possible submission ended.
+            if not guard.submission_started or safely_finished(evidence_dir):
+                release(state, receipt)

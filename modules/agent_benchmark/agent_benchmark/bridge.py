@@ -10,6 +10,7 @@ from collections.abc import Awaitable, Callable
 from contextlib import asynccontextmanager
 from datetime import timedelta
 import math
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -135,6 +136,7 @@ class OpenCodeBridge:
         self.http = http
         self.last_receipt: dict = {}
         self.last_history: list = []
+        self.last_session: object = None
         self.project_context: dict | None = None
         self.prepared_session: dict | None = None
         self.submission_attempted = False
@@ -165,7 +167,14 @@ class OpenCodeBridge:
         # Preserve permissions/configuration as observations, not a sandbox claim.
         return {"opencode_version": health.get("version"), "provider": provider, "model": model,
                 "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0",
-                "project": project}
+                "project": project,
+                "agent_configuration": {"name": role.get("name"), "mode": role.get("mode"),
+                                        "model": role.get("model"),
+                                        "prompt_sha256": (hashlib.sha256(role["prompt"].encode()).hexdigest()
+                                                          if isinstance(role.get("prompt"), str) else None)},
+                "tool_metadata": {"source": "/agent", "tools": role.get("tools"),
+                                  "availability": "available" if role.get("tools") is not None else "unavailable",
+                                  "limitation": "Role metadata does not establish provider-bound tool schemas"}}
 
     @staticmethod
     def _same_directory(value: object, directory: Path) -> bool:
@@ -275,6 +284,7 @@ class OpenCodeBridge:
     async def observe(self, handle: WorkerHandle) -> Observation:
         sid = quote(handle.session_id, safe="")
         session = await self._get(f"/session/{sid}", handle.workspace)
+        self.last_session = session
         if (not isinstance(session, dict) or session.get("id") != handle.session_id
                 or not self._same_directory(session.get("directory"), handle.workspace)
                 or handle.project_id and session.get("projectID") != handle.project_id):

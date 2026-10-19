@@ -21,7 +21,7 @@ from .bridge import connected_bridge
 from .evidence import EVIDENCE_LIMITS, load_task
 from .lifecycle import DispatchGuard, OwnedWorkspace, WorkerHandle, cleanup_workspace, confirm_termination
 from .results import base_metrics, trial_from_attempt, unavailable
-from .state import command_lock, journal_at, read_pending, release, reserve, safely_finished
+from .state import command_lock, journal_at, read_pending, release, reserve, reserved_trial
 
 
 async def run_benchmark(
@@ -32,78 +32,62 @@ async def run_benchmark(
 ) -> Path:
     task = load_task(task_dir)
     state, reports = state.resolve(), reports.resolve()
-    with command_lock(state):
-        if read_pending(state) is not None:
-            raise RuntimeError("Unresolved worker blocks dispatch; inspect status/cleanup")
-        run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
-        run_dir = reports / run_id
-        evidence_dir = run_dir / "evidence" / "trial-001"
-        receipt = reserve(state, evidence_dir)
-        started_attempt = False
-        safe = True
+    run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
+    run_dir = reports / run_id
+    evidence_dir = run_dir / "evidence" / "trial-001"
+    with reserved_trial(state, evidence_dir) as guard:
         cancelled = False
+        fingerprint = hashlib.sha256()
+        for path in sorted(task.path.rglob("*")):
+            if path.is_file() and "__pycache__" not in path.parts:
+                fingerprint.update(path.relative_to(task.path).as_posix().encode())
+                fingerprint.update(hashlib.sha256(path.read_bytes()).digest())
+        info = RunInfo(
+            run_id, format_utc_timestamp(), "agent-smoke", task.suite_version, [task.task_id],
+            {"worker": {"provider": provider, "model": model, "role": agent,
+                        "effective_context_length": None, "effective_reasoning": None, "warm_state": "unverified"}},
+            1, "worker_first_attempt_full_success",
+            {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine()},
+            {"cancel_grace_seconds": grace_seconds, "task_seconds": task.time_budget_seconds if task_seconds is None else task_seconds,
+             "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
+             "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
+             "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
+             "evidence_limits": asdict(EVIDENCE_LIMITS)},
+        )
+        save_run(run_dir, info)
+        trial = None
         try:
-            fingerprint = hashlib.sha256()
-            for path in sorted(task.path.rglob("*")):
-                if path.is_file() and "__pycache__" not in path.parts:
-                    fingerprint.update(path.relative_to(task.path).as_posix().encode())
-                    fingerprint.update(hashlib.sha256(path.read_bytes()).digest())
-            info = RunInfo(
-                run_id, format_utc_timestamp(), "agent-smoke", task.suite_version, [task.task_id],
-                {"worker": {"provider": provider, "model": model, "role": agent,
-                            "effective_context_length": None, "effective_reasoning": None, "warm_state": "unverified"}},
-                1, "worker_first_attempt_full_success",
-                {"python": platform.python_version(), "platform": platform.platform(), "machine": platform.machine()},
-                {"cancel_grace_seconds": grace_seconds, "task_seconds": task.time_budget_seconds if task_seconds is None else task_seconds,
-                 "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
-                 "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
-                 "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
-                 "evidence_limits": asdict(EVIDENCE_LIMITS)},
-            )
-            save_run(run_dir, info)
-            trial = None
-            try:
-                async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
-                    started_attempt, safe = True, False
-                    guard = DispatchGuard()
-                    try:
-                        evidence = await run_attempt(
-                            task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
-                            provider=provider, model=model, agent=agent, task_seconds=task_seconds,
-                            grace_seconds=grace_seconds, verifier_seconds=verifier_seconds,
-                        )
-                    finally:
-                        # Empty/malformed replies say nothing about remote submission.
-                        safe = not guard.submission_started
-                    runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
-                    info = replace(info, metadata={**info.metadata, "runtime": runtime})
-                    save_run(run_dir, info, overwrite=True)  # Update only this newly owned run.
-                    trial = trial_from_attempt(evidence, run_id=run_id, trial_id="trial-001", task_id=task.task_id,
-                                               variant_id="worker", repetition=1, evidence_path="evidence/trial-001")
-            except asyncio.CancelledError:
-                cancelled = True
-            except Exception as error:  # Top-level execution/transport boundary; never a worker pass.
-                failure = type(error).__name__
-                if trial is not None:
-                    trial = replace(trial, details={**trial.details, "transport_close_error": failure})
-            if trial is None:
-                metrics = base_metrics()
-                metrics["agent.worker_first_pass"] = unavailable("boolean", "Infrastructure prevented reliable evaluation")
-                for key in ("duration.wall_ms", "duration.worker_ms", "duration.verification_ms"):
-                    metrics[key] = unavailable("ms", "No completed first-attempt measurement")
-                trial = TrialResult(run_id, "trial-001", task.task_id, "worker", 1, "infrastructure_error", metrics,
-                                    {"execution_error": "CallerCancelled" if cancelled else failure, "scope_policy": SCOPE_POLICY,
-                                     "evidence_path": "evidence/trial-001"})
-            # Exactly one canonical record per attempted repetition; all reports use core.
-            append_result(run_dir, trial)
-            generate_reports(summarize(*load_run(run_dir)), run_dir, write=True)
-            if cancelled:
-                raise asyncio.CancelledError()
-            return run_dir
-        finally:
-            if safe or (started_attempt and safely_finished(evidence_dir)):
-                release(state, receipt)
-
+            async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
+                evidence = await run_attempt(
+                    task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
+                    provider=provider, model=model, agent=agent, task_seconds=task_seconds,
+                    grace_seconds=grace_seconds, verifier_seconds=verifier_seconds,
+                )
+                runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
+                info = replace(info, metadata={**info.metadata, "runtime": runtime})
+                save_run(run_dir, info, overwrite=True)  # Update only this newly owned run.
+                trial = trial_from_attempt(evidence, run_id=run_id, trial_id="trial-001", task_id=task.task_id,
+                                           variant_id="worker", repetition=1, evidence_path="evidence/trial-001")
+        except asyncio.CancelledError:
+            cancelled = True
+        except Exception as error:  # Top-level execution/transport boundary; never a worker pass.
+            failure = type(error).__name__
+            if trial is not None:
+                trial = replace(trial, details={**trial.details, "transport_close_error": failure})
+        if trial is None:
+            metrics = base_metrics()
+            metrics["agent.worker_first_pass"] = unavailable("boolean", "Infrastructure prevented reliable evaluation")
+            for key in ("duration.wall_ms", "duration.worker_ms", "duration.verification_ms"):
+                metrics[key] = unavailable("ms", "No completed first-attempt measurement")
+            trial = TrialResult(run_id, "trial-001", task.task_id, "worker", 1, "infrastructure_error", metrics,
+                                {"execution_error": "CallerCancelled" if cancelled else failure, "scope_policy": SCOPE_POLICY,
+                                 "evidence_path": "evidence/trial-001"})
+        # Exactly one canonical record per attempted repetition; all reports use core.
+        append_result(run_dir, trial)
+        generate_reports(summarize(*load_run(run_dir)), run_dir, write=True)
+        if cancelled:
+            raise asyncio.CancelledError()
+        return run_dir
 
 async def cleanup_trial(
     *, state: Path, run_dir: Path | None = None, execute: bool = False,

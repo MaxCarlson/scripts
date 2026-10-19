@@ -103,6 +103,17 @@ def _patch(before: Snapshot, after: Snapshot, *, max_bytes: int = 256 * 1024,
     return "".join(chunks)
 
 
+def build_prompt(task: Task, workspace: Path) -> str:
+    """Deterministic user prompt; not a claim about provider system/tool schemas."""
+    return (task.instruction + "\n\nWorkspace: " + str(workspace)
+              + prompt_instructions(workspace)
+              + f"\nEvidence capture limits (including scratch): {asdict(EVIDENCE_LIMITS)}. Keep temporary output small."
+              + "\nUse only the task-allowed paths and the designated trial scratch directory. Do not spawn background processes or install packages. "
+              "For Python checks, disable bytecode writes (-B or PYTHONDONTWRITEBYTECODE=1). "
+              "Return a JSON completion report with outcome, summary, changed_paths, checks, evidence and blockers. "
+              "Report only checks you actually ran. Stop after your first attempt; do not request a retry.")
+
+
 async def run_attempt(
     task: Task,
     bridge: OpenCodeBridge,
@@ -141,6 +152,10 @@ async def run_attempt(
                "git": asdict(git_identity), "scope_policy": SCOPE_POLICY, "scratch": provenance(workspace.path), "evidence_limits": asdict(EVIDENCE_LIMITS)}
     _write_json(evidence_dir / "lifecycle.json", journal)
     s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
+    prompt = build_prompt(task, workspace.path)
+    (evidence_dir / "submitted-prompt.txt").write_bytes(prompt.encode("utf-8"))
+    _write_json(evidence_dir / "prompt.json", {"sha256": hashlib.sha256(prompt.encode()).hexdigest(),
+                                             "scope_policy": SCOPE_POLICY, "kind": "intended_user_prompt"})
     try:
         configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent,
                                                project_id=git_identity.root_commit)
@@ -165,13 +180,7 @@ async def run_attempt(
     start = time.monotonic()
     journal["stage"] = "dispatching"
     _write_json(evidence_dir / "lifecycle.json", journal)
-    prompt = (task.instruction + "\n\nWorkspace: " + str(workspace.path)
-              + prompt_instructions(workspace.path)
-              + f"\nEvidence capture limits (including scratch): {asdict(EVIDENCE_LIMITS)}. Keep temporary output small."
-              + "\nUse only the task-allowed paths and the designated trial scratch directory. Do not spawn background processes or install packages. "
-              "For Python checks, disable bytecode writes (-B or PYTHONDONTWRITEBYTECODE=1). "
-              "Return a JSON completion report with outcome, summary, changed_paths, checks, evidence and blockers. "
-              "Report only checks you actually ran. Stop after your first attempt; do not request a retry.")
+
     decision = None
     dispatch_started = False
     try:
