@@ -6,7 +6,12 @@ from cli_tui.process_runner import OutputViewport, ProcessRunner
 
 def test_process_runner_lifecycle_and_output():
     # Run a simple python one-liner that prints lines with flush
-    script = "import sys, time\n" "for i in range(5):\n" "    print(f'Line {i}', flush=True)\n" "    time.sleep(0.01)\n"
+    script = (
+        "import sys, time\n"
+        "for i in range(5):\n"
+        "    print(f'Line {i}', flush=True)\n"
+        "    time.sleep(0.01)\n"
+    )
     runner = ProcessRunner([sys.executable, "-c", script])
     runner.start()
 

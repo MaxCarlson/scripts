@@ -3,12 +3,23 @@ from __future__ import annotations
 import argparse
 import curses
 import sys
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .process_runner import OutputViewport, ProcessRunner
 from .schema import CliCommand, introspect_parser
 from .state import FormState, NavigationStack, TuiScreenMode
 from .widgets import BaseWidget, create_widget_for_arg
+
+
+@dataclass
+class PostRunAction:
+    """Action callback offered after a process run finishes."""
+
+    key: int
+    label: str
+    callback: Callable[[CliTuiApp], None]
+    predicate: Optional[Callable[[CliTuiApp], bool]] = None
 
 
 class CliTuiApp:
@@ -31,19 +42,30 @@ class CliTuiApp:
             raise ValueError("Either parser or root_command must be provided.")
 
         self.title = title or self.root_command.prog or "CLI TUI"
-        self.executable = list(executable) if executable else [self.root_command.prog or sys.executable]
+        self.executable = (
+            list(executable)
+            if executable
+            else [self.root_command.prog or sys.executable]
+        )
         self.action_handlers = action_handlers or {}
+        self.post_run_actions: List[PostRunAction] = []
 
         self.navigation = NavigationStack()
         self.current_form: Optional[FormState] = None
         self.form_widgets: List[BaseWidget] = []
-        self.form_cursor: int = 0  # 0..len(widgets)-1: widget, len: [Run], len+1: [Preview], len+2: [Back]
+        self.form_cursor: int = (
+            0  # 0..len(widgets)-1: widget, len: [Run], len+1: [Preview], len+2: [Back]
+        )
         self.menu_cursor: int = 0
 
         self.runner: Optional[ProcessRunner] = None
         self.viewport = OutputViewport()
         self.is_confirming_quit: bool = False
         self.is_terminated: bool = False
+
+    def add_post_run_action(self, action: PostRunAction) -> None:
+        """Register a post-run action callback."""
+        self.post_run_actions.append(action)
 
     @property
     def screen_mode(self) -> TuiScreenMode:
@@ -60,7 +82,10 @@ class CliTuiApp:
     def _open_form_for_command(self, cmd: CliCommand) -> None:
         subcommands_path = self.navigation.path
         self.current_form = FormState(cmd, subcommands_path=subcommands_path)
-        self.form_widgets = [create_widget_for_arg(arg, self.current_form.get_value(arg.dest)) for arg in cmd.arguments]
+        self.form_widgets = [
+            create_widget_for_arg(arg, self.current_form.get_value(arg.dest))
+            for arg in cmd.arguments
+        ]
         self.form_cursor = 0
         self.navigation.current_screen = TuiScreenMode.FORM
 
@@ -165,7 +190,9 @@ class CliTuiApp:
             if getattr(active_widget, "is_editing", False):
                 handled = active_widget.handle_key(key)
                 if self.current_form:
-                    self.current_form.set_value(active_widget.arg.dest, active_widget.value)
+                    self.current_form.set_value(
+                        active_widget.arg.dest, active_widget.value
+                    )
                 return handled
 
         if key in (curses.KEY_UP, ord("k")):
@@ -179,14 +206,18 @@ class CliTuiApp:
                 active_widget = self.form_widgets[self.form_cursor]
                 handled = active_widget.handle_key(key)
                 if self.current_form:
-                    self.current_form.set_value(active_widget.arg.dest, active_widget.value)
+                    self.current_form.set_value(
+                        active_widget.arg.dest, active_widget.value
+                    )
                 return handled
         elif key in (10, 13, ord(" ")):
             if self.form_cursor < len(self.form_widgets):
                 active_widget = self.form_widgets[self.form_cursor]
                 handled = active_widget.handle_key(key)
                 if self.current_form:
-                    self.current_form.set_value(active_widget.arg.dest, active_widget.value)
+                    self.current_form.set_value(
+                        active_widget.arg.dest, active_widget.value
+                    )
                 return handled
             else:
                 button_idx = self.form_cursor - len(self.form_widgets)
@@ -235,6 +266,21 @@ class CliTuiApp:
             if not self.runner or not self.runner.is_running:
                 self.navigation.current_screen = TuiScreenMode.FORM
                 return True
+
+        # Check post-run action callbacks when runner is finished
+        if not self.runner or not self.runner.is_running:
+            for action in self.post_run_actions:
+                if action.predicate is None or action.predicate(self):
+                    matches = False
+                    if key == action.key:
+                        matches = True
+                    elif 0 <= action.key <= 127 and chr(action.key).isalpha():
+                        if chr(key).lower() == chr(action.key).lower():
+                            matches = True
+                    if matches:
+                        action.callback(self)
+                        return True
+
         return False
 
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
@@ -261,7 +307,11 @@ class CliTuiApp:
 
         elif self.screen_mode == TuiScreenMode.FORM:
             cmd = self.current_command
-            content_lines = ["", f"  Configure arguments for: {cmd.prog or cmd.name}", ""]
+            content_lines = [
+                "",
+                f"  Configure arguments for: {cmd.prog or cmd.name}",
+                "",
+            ]
             for idx, widget in enumerate(self.form_widgets):
                 is_focused = idx == self.form_cursor
                 content_lines.append("  " + widget.render_line(width - 4, is_focused))
@@ -292,9 +342,14 @@ class CliTuiApp:
                 if runner and runner.is_running
                 else f"FINISHED (exit code {runner.exit_code if runner else 0})"
             )
-            content_lines = [f"  Status: {status_text}  |  Elapsed: {runner.elapsed_seconds if runner else 0:.1f}s", ""]
+            content_lines = [
+                f"  Status: {status_text}  |  Elapsed: {runner.elapsed_seconds if runner else 0:.1f}s",
+                "",
+            ]
             raw_lines = runner.lines if runner else []
-            visible = self.viewport.get_visible_lines(raw_lines, height=inner_height - 3, width=width)
+            visible = self.viewport.get_visible_lines(
+                raw_lines, height=inner_height - 3, width=width
+            )
             content_lines.extend(f"  {line}" for line in visible)
             while len(content_lines) < inner_height:
                 content_lines.append("")
@@ -302,9 +357,39 @@ class CliTuiApp:
 
         # Footer
         if self.is_confirming_quit:
-            footer = "└─ Are you sure you want to exit? (y/n) ".ljust(width - 1, "─") + "┘"
+            footer = (
+                "└─ Are you sure you want to exit? (y/n) ".ljust(width - 1, "─") + "┘"
+            )
+        elif self.screen_mode == TuiScreenMode.RUNNING and (
+            not self.runner or not self.runner.is_running
+        ):
+            active_actions = [
+                a
+                for a in self.post_run_actions
+                if a.predicate is None or a.predicate(self)
+            ]
+            if active_actions:
+                actions_str = "  ".join(a.label for a in active_actions)
+                footer = (
+                    f"└─ [q] Quit  [Esc] Back  {actions_str}  [Enter] Return ".ljust(
+                        width - 1, "─"
+                    )
+                    + "┘"
+                )
+            else:
+                footer = (
+                    "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Return ".ljust(
+                        width - 1, "─"
+                    )
+                    + "┘"
+                )
         else:
-            footer = "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Select ".ljust(width - 1, "─") + "┘"
+            footer = (
+                "└─ [q] Quit  [Q] Force Quit  [Esc] Back  [Enter] Select ".ljust(
+                    width - 1, "─"
+                )
+                + "┘"
+            )
         lines.append(footer)
 
         return lines[:height]

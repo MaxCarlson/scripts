@@ -13,7 +13,12 @@ from cli_tui.widgets import (
 
 
 def test_boolean_widget_toggle():
-    arg = CliArgument(dest="sort", flags=("-S", "--sort"), action_type="boolean_optional", default=True)
+    arg = CliArgument(
+        dest="sort",
+        flags=("-S", "--sort"),
+        action_type="boolean_optional",
+        default=True,
+    )
     widget = BooleanWidget(arg, value=True)
 
     assert widget.value is True
@@ -31,7 +36,12 @@ def test_boolean_widget_toggle():
 
 
 def test_choice_widget_cycling():
-    arg = CliArgument(dest="format", flags=("-f", "--format"), choices=("webp", "jpeg", "avif"), default="webp")
+    arg = CliArgument(
+        dest="format",
+        flags=("-f", "--format"),
+        choices=("webp", "jpeg", "avif"),
+        default="webp",
+    )
     widget = ChoiceWidget(arg, value="webp")
 
     assert widget.value == "webp"
@@ -54,7 +64,9 @@ def test_choice_widget_cycling():
 
 
 def test_text_widget_editing():
-    arg = CliArgument(dest="destination", flags=("-d", "--destination"), default="B:/library")
+    arg = CliArgument(
+        dest="destination", flags=("-d", "--destination"), default="B:/library"
+    )
     widget = TextWidget(arg, value="B:/library")
 
     assert widget.value == "B:/library"
@@ -79,7 +91,9 @@ def test_text_widget_editing():
 
 
 def test_multichoice_widget_toggling():
-    arg = CliArgument(dest="quality", flags=("-q", "--quality"), choices=(85, 70, 50), default=[85])
+    arg = CliArgument(
+        dest="quality", flags=("-q", "--quality"), choices=(85, 70, 50), default=[85]
+    )
     widget = MultiChoiceWidget(arg, options=(85, 70, 50), value=[85])
 
     assert widget.value == [85]

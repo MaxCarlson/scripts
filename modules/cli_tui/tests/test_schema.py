@@ -9,12 +9,32 @@ from cli_tui.schema import CliCommand, introspect_parser
 def test_introspect_flat_parser():
     parser = argparse.ArgumentParser(prog="mytool", description="A sample CLI tool")
     parser.add_argument("source", help="Source path")
-    parser.add_argument("-d", "--destination", type=Path, default=Path("."), help="Destination directory")
+    parser.add_argument(
+        "-d",
+        "--destination",
+        type=Path,
+        default=Path("."),
+        help="Destination directory",
+    )
     parser.add_argument("-w", "--workers", type=int, default=4, help="Worker count")
-    parser.add_argument("-f", "--format", choices=("webp", "jpeg", "png"), default="webp", help="Image format")
+    parser.add_argument(
+        "-f",
+        "--format",
+        choices=("webp", "jpeg", "png"),
+        default="webp",
+        help="Image format",
+    )
     parser.add_argument("-v", "--verbose", action="store_true", help="Verbose logging")
-    parser.add_argument("-S", "--sort", action=argparse.BooleanOptionalAction, default=True, help="Sort output")
-    parser.add_argument("-q", "--quality", type=int, nargs="+", default=[85], help="Quality levels")
+    parser.add_argument(
+        "-S",
+        "--sort",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Sort output",
+    )
+    parser.add_argument(
+        "-q", "--quality", type=int, nargs="+", default=[85], help="Quality levels"
+    )
     parser.add_argument("--secret", help=argparse.SUPPRESS)
 
     cmd = introspect_parser(parser)

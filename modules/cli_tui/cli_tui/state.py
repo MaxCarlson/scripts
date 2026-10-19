@@ -88,8 +88,12 @@ class FormState:
         argv: List[str] = list(executable or [self.command.prog or "python"])
         argv.extend(self.subcommands_path)
 
-        positionals: List[CliArgument] = [a for a in self.command.arguments if a.is_positional]
-        optionals: List[CliArgument] = [a for a in self.command.arguments if not a.is_positional]
+        positionals: List[CliArgument] = [
+            a for a in self.command.arguments if a.is_positional
+        ]
+        optionals: List[CliArgument] = [
+            a for a in self.command.arguments if not a.is_positional
+        ]
 
         # 1. Add positionals in declaration order
         for arg in positionals:
@@ -107,7 +111,10 @@ class FormState:
                 continue
 
             # Pick canonical long or short flag
-            flag = next((f for f in arg.flags if f.startswith("--")), arg.flags[0] if arg.flags else None)
+            flag = next(
+                (f for f in arg.flags if f.startswith("--")),
+                arg.flags[0] if arg.flags else None,
+            )
             if not flag:
                 continue
 
@@ -132,9 +139,14 @@ class FormState:
                     for item in val:
                         argv.extend([short_flag, str(item)])
             elif arg.nargs in ("+", "*"):
-                if isinstance(val, (list, tuple)) and val:
+                items = (
+                    [val]
+                    if isinstance(val, str)
+                    else list(val) if isinstance(val, (list, tuple)) else []
+                )
+                if items:
                     argv.append(short_flag)
-                    argv.extend(str(item) for item in val)
+                    argv.extend(str(item) for item in items)
             else:
                 # Regular option with value
                 if val is not None and str(val) != "":

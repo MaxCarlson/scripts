@@ -49,3 +49,64 @@ def test_tui_navigate_to_compress_estimate():
     assert "destination" in dests
     assert "format" in dests
     assert "quality" in dests
+
+
+def test_command_assembly_for_compress_preview():
+    app = build_tui_app()
+
+    # Navigate to compress preview
+    compress_cmd = app.root_command.subcommands["compress"]
+    app.navigation.push("compress", TuiScreenMode.MENU)
+    preview_cmd = compress_cmd.subcommands["preview"]
+    app.navigation.push("preview", TuiScreenMode.FORM)
+    app._open_form_for_command(preview_cmd)
+
+    # Set destination
+    app.current_form.set_value("destination", "sample_manga")
+    app.current_form.set_value("format", "webp")
+    app.current_form.set_value("mode", "lossy")
+
+    argv = app.current_form.build_argv(executable=app.executable)
+    assert "-m" in argv
+    assert "mangadl" in argv
+    assert "compress" in argv
+    assert "preview" in argv
+    assert "-d" in argv
+    assert "sample_manga" in argv
+    assert "-f" in argv
+    assert "webp" in argv
+
+
+def test_post_run_preview_callback_action(monkeypatch):
+    app = build_tui_app()
+
+    # Navigate to compress preview
+    compress_cmd = app.root_command.subcommands["compress"]
+    app.navigation.push("compress", TuiScreenMode.MENU)
+    preview_cmd = compress_cmd.subcommands["preview"]
+    app.navigation.push("preview", TuiScreenMode.FORM)
+    app._open_form_for_command(preview_cmd)
+
+    # Transition to running mode with finished runner
+    class DummyRunner:
+        is_running = False
+        exit_code = 0
+        elapsed_seconds = 1.2
+        lines = ["Generating sample previews...", "All done!"]
+
+    app.runner = DummyRunner()
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+
+    rendered = "\n".join(app.render_virtual_screen(height=24, width=80))
+    assert "[v] View Previews" in rendered
+
+    # Test pressing 'v' triggers the callback
+    callback_called = []
+    # Replace registered callback with tracker
+    for action in app.post_run_actions:
+        if action.key == ord("v"):
+            action.callback = lambda _app: callback_called.append(True)
+
+    handled = app.process_key(ord("v"))
+    assert handled is True
+    assert callback_called == [True]

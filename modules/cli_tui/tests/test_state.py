@@ -32,7 +32,9 @@ def test_form_state_initialization_and_argv_generation():
     parser.add_argument("-d", "--destination", type=Path, required=True)
     parser.add_argument("-f", "--format", choices=("webp", "jpeg"), default="webp")
     parser.add_argument("-q", "--quality", type=int, nargs="+", default=[85, 70])
-    parser.add_argument("-S", "--sort", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "-S", "--sort", action=argparse.BooleanOptionalAction, default=True
+    )
     parser.add_argument("-v", "--verbose", action="store_true")
     parser.add_argument("-t", "--threads", type=int, default=4)
 

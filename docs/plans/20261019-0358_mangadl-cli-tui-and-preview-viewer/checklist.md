@@ -45,12 +45,12 @@
   - [x] 2.2.3: Implement `mangadl/tui.py`
   - [x] 2.2.4: Run tests and verify all pass
   - [x] 2.2.5: Commit Task 2.2
-- [ ] Task 2.3: Live Process Execution & Action Callbacks
-  - [ ] 2.3.1: Write failing test for post-preview action trigger and command formatting
-  - [ ] 2.3.2: Verify test failure
-  - [ ] 2.3.3: Implement callbacks in `mangadl/tui.py`
-  - [ ] 2.3.4: Run tests and verify all pass
-  - [ ] 2.3.5: Commit Task 2.3
+- [x] Task 2.3: Live Process Execution & Action Callbacks
+  - [x] 2.3.1: Write failing test for post-preview action trigger and command formatting
+  - [x] 2.3.2: Verify test failure
+  - [x] 2.3.3: Implement callbacks in `mangadl/tui.py`
+  - [x] 2.3.4: Run tests and verify all pass
+  - [x] 2.3.5: Commit Task 2.3
 
 ## Stage 3: Side-by-Side Comparison Image Viewer
 - [ ] Task 3.1: Preview Set Scanner & Data Model (`cli_tui.preview_set`)

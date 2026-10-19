@@ -20,7 +20,9 @@ class BaseWidget:
         if self.arg.flags:
             # e.g. "--destination (-d)"
             long_flag = next((f for f in self.arg.flags if f.startswith("--")), None)
-            short_flag = next((f for f in self.arg.flags if not f.startswith("--")), None)
+            short_flag = next(
+                (f for f in self.arg.flags if not f.startswith("--")), None
+            )
             if long_flag and short_flag:
                 return f"{long_flag} ({short_flag})"
             return long_flag or short_flag or self.arg.dest
@@ -109,12 +111,16 @@ class TextWidget(BaseWidget):
             return True
         elif key in (curses.KEY_BACKSPACE, 127, 8):  # Backspace
             if self.cursor_pos > 0:
-                self.value = self.value[: self.cursor_pos - 1] + self.value[self.cursor_pos :]
+                self.value = (
+                    self.value[: self.cursor_pos - 1] + self.value[self.cursor_pos :]
+                )
                 self.cursor_pos -= 1
             return True
         elif key in (curses.KEY_DC,):  # Delete
             if self.cursor_pos < len(self.value):
-                self.value = self.value[: self.cursor_pos] + self.value[self.cursor_pos + 1 :]
+                self.value = (
+                    self.value[: self.cursor_pos] + self.value[self.cursor_pos + 1 :]
+                )
             return True
         elif key in (curses.KEY_LEFT,):
             if self.cursor_pos > 0:
@@ -126,7 +132,9 @@ class TextWidget(BaseWidget):
             return True
         elif 32 <= key <= 126:  # Printable character
             ch = chr(key)
-            self.value = self.value[: self.cursor_pos] + ch + self.value[self.cursor_pos :]
+            self.value = (
+                self.value[: self.cursor_pos] + ch + self.value[self.cursor_pos :]
+            )
             self.cursor_pos += 1
             return True
         return False
@@ -151,11 +159,15 @@ class MultiChoiceWidget(BaseWidget):
     def handle_key(self, key: int) -> bool:
         if key in (curses.KEY_RIGHT, ord("l")):
             if self.options:
-                self.cursor_option_idx = (self.cursor_option_idx + 1) % len(self.options)
+                self.cursor_option_idx = (self.cursor_option_idx + 1) % len(
+                    self.options
+                )
             return True
         elif key in (curses.KEY_LEFT, ord("h")):
             if self.options:
-                self.cursor_option_idx = (self.cursor_option_idx - 1 + len(self.options)) % len(self.options)
+                self.cursor_option_idx = (
+                    self.cursor_option_idx - 1 + len(self.options)
+                ) % len(self.options)
             return True
         elif key in (ord(" "), 10, 13):
             if self.options:
