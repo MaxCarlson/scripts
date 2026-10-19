@@ -94,6 +94,10 @@ class EventDispatcher:
         # Sort so highest priority comes first
         self._listeners.sort(key=lambda item: item.priority, reverse=True)
 
+    def has_blocking_listeners(self, event_name: str) -> bool:
+        """Whether this lifecycle event has an explicit blocking policy/hook."""
+        return any(item.is_blocking and item.matches(event_name) for item in self._listeners)
+
     def off(self, pattern: str, callback: EventListener) -> bool:
         """Unregister a callback. Returns True if removed."""
         initial_len = len(self._listeners)

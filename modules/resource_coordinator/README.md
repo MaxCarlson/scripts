@@ -42,3 +42,7 @@ resource-coordinator recover --force --reason "Independently verified all earlie
 ```
 
 Recovery is an explicit operator override, not proof of upstream idle. Active/pending claims reject recovery. Standalone `miner pause/resume` are disabled because they cannot read the running daemon's safety state. Forceful Windows stop requires explicit `allow_force_termination: true`; external stop and restart permissions remain separate. Enabled persistence/bounded-drain settings are rejected until implemented safely. Unknown state-mutating HTTP routes return 501. Reinstall editable package metadata/dependencies for the 0.2.0 minor version before a separately authorized operational test.
+
+## Phase C safety checkpoint
+
+Current preparation version: **0.3.0**, with 151 passing offline tests. **NO-GO for a supervised live test** until the missing coordinator-owned startup/admission path and deployment prerequisites are reviewed. The template denies external adoption/control and force, uses inherited-console group mode, and requires local placeholder replacement. Persistence helpers do not provide service crash recovery. See [Phase C review](docs/PHASE_C_SAFETY_REVIEW.md) for prioritized findings and [blocked acceptance checklist](docs/SUPERVISED_LIVE_ACCEPTANCE_PLAN.md). Telemetry T1 remains on its separate branch; it has not been merged here.

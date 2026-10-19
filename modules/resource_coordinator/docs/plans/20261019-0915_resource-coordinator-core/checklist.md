@@ -52,3 +52,14 @@
 - [ ] Resolve cross-resource/process serialization and model-load policy gaps.
 - [ ] Implement durable state, startup reconciliation, lifecycle controls and durable operator audit before unattended use.
 - [ ] Verify actual Windows Krig/CUDA and LM Studio/TCP behavior under separate authorization.
+
+## Phase C safety review
+
+- [x] Inspect 9101ca7c changes and compare independent T1 dd8dd7ff with baseline e903cf2e.
+- [x] Correct bounded identity, state-loading, model/restart, stop-serialization and telemetry cleanup defects with offline regressions.
+- [x] Restrict template and replace unsupported live/recovery/rollback claims with blocked prerequisites.
+- [x] Validate 151 offline tests, Ruff check/format and Mypy; record review report and handoff.
+- [ ] Implement/review supported coordinator-owned startup/shutdown/admission path before supervised GO.
+- [ ] Verify live configuration/identity/console isolation and abort plan under separate authorization.
+- [ ] Implement transactional arbitration, durable startup reconciliation and supervisor containment before unattended use.
+- [ ] Reconcile T1 on a separate integration branch only with authorization and combined validation.

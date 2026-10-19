@@ -60,7 +60,7 @@ def test_save_atomic_and_load(tmp_path: Path):
     state_file = tmp_path / "state.json"
     state = CoordinatorState(
         inhibitions={"gpu.model": {"reason": "load_failure", "holder_id": "h1"}},
-        processes={"p1": PersistedProcess(name="p1", pid=123)},
+        processes={"p1": PersistedProcess(name="p1", pid=123, create_time=100.0)},
     )
 
     StateCodec.save_atomic(state, state_file)
@@ -73,22 +73,15 @@ def test_save_atomic_and_load(tmp_path: Path):
 
 
 def test_load_non_existent_file(tmp_path: Path):
-    """Loading a missing state file returns a clean default state."""
-    missing = tmp_path / "does_not_exist.json"
-    loaded = StateCodec.load(missing)
-    assert isinstance(loaded, CoordinatorState)
-    assert len(loaded.inhibitions) == 0
-    assert len(loaded.processes) == 0
+    with pytest.raises(FileNotFoundError):
+        StateCodec.load(tmp_path / "does_not_exist.json")
 
 
-def test_load_corrupted_file_falls_back(tmp_path: Path):
-    """Loading a corrupt state file falls back to clean default state without crashing."""
+def test_load_corrupted_file_fails_closed(tmp_path: Path):
     corrupted = tmp_path / "corrupt.json"
     corrupted.write_text("{ this is not valid json : [", encoding="utf-8")
-
-    loaded = StateCodec.load(corrupted)
-    assert isinstance(loaded, CoordinatorState)
-    assert len(loaded.inhibitions) == 0
+    with pytest.raises(ValueError):
+        StateCodec.load(corrupted)
 
 
 def test_reconcile_pid_not_running():
@@ -105,13 +98,13 @@ def test_reconcile_pid_verified_running():
     """When PID exists and create_time matches, returns VERIFIED_RUNNING."""
 
     def query(pid: int) -> float | None:
-        return 100.2 if pid == 1234 else None
+        return 100.0 if pid == 1234 else None
 
     res = reconcile_pid(
         persisted_pid=1234,
         persisted_create_time=100.0,
         query_fn=query,
-        create_time_tolerance_seconds=0.5,
+        create_time_tolerance_seconds=0.0,
     )
     assert res == ReconciliationOutcome.VERIFIED_RUNNING
 
@@ -127,7 +120,7 @@ def test_reconcile_pid_recycled_hazard():
         persisted_pid=1234,
         persisted_create_time=100.0,
         query_fn=query,
-        create_time_tolerance_seconds=0.5,
+        create_time_tolerance_seconds=0.0,
     )
     assert res == ReconciliationOutcome.PID_RECYCLED
 

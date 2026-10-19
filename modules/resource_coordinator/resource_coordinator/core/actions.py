@@ -70,13 +70,8 @@ class StopProcessAction(Action):
     async def execute(self, context: Optional[Dict[str, Any]] = None) -> ActionResult:
         start_time = time.time()
         st = await self.supervisor.status()
-        if st.state == ProcessState.STOPPED:
-            return ActionResult(
-                outcome=ActionOutcome.SKIPPED,
-                message=f"Process '{self.supervisor.name}' is already stopped",
-                duration_seconds=time.time() - start_time,
-            )
-
+        # Initial status is for reporting only. Even STOPPED must pass through
+        # the supervisor mutex: an earlier serialized start may still be awaiting.
         success = await self.supervisor.stop(timeout=self.timeout_seconds, origin="coordinator")
         if not success:
             return ActionResult(
@@ -95,8 +90,8 @@ class StopProcessAction(Action):
                 )
 
         return ActionResult(
-            outcome=ActionOutcome.SUCCESS,
-            message=f"Process '{self.supervisor.name}' stopped successfully",
+            outcome=ActionOutcome.SKIPPED if st.state == ProcessState.STOPPED else ActionOutcome.SUCCESS,
+            message=f"Process '{self.supervisor.name}' verified stopped",
             duration_seconds=time.time() - start_time,
         )
 

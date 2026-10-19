@@ -254,13 +254,12 @@ class WindowsProcessBackend:
             return False
 
     def _find_owned_process(self) -> Optional[psutil.Process]:
-        if self._owned_pid is None:
+        if self._owned_pid is None or self._owned_create_time is None:
             return None
         try:
             p = psutil.Process(self._owned_pid)
-            if self._owned_create_time is not None:
-                if abs(p.create_time() - self._owned_create_time) > 0.05:
-                    return None
+            if p.create_time() != self._owned_create_time:
+                return None
             if not self._same_executable(p):
                 return None
             return p

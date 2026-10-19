@@ -55,13 +55,9 @@ def create_controllable_upstream_app():
 
             return StreamingResponse(event_generator(), media_type="text/event-stream")
 
-        return JSONResponse(
-            {"choices": [{"message": {"content": "Done"}, "finish_reason": "stop"}]}
-        )
+        return JSONResponse({"choices": [{"message": {"content": "Done"}, "finish_reason": "stop"}]})
 
-    return Starlette(
-        routes=[Route("/v1/chat/completions", handle_chat, methods=["POST"])]
-    )
+    return Starlette(routes=[Route("/v1/chat/completions", handle_chat, methods=["POST"])])
 
 
 # ===========================================================================
@@ -88,9 +84,7 @@ async def test_external_supervisor_immediate_relaunch() -> None:
     assert info.pid == 12345
 
     # Attempt to stop with verification
-    action = StopProcessAction(
-        supervisor=supervisor, wait_until_stopped=True, timeout_seconds=0.1
-    )
+    action = StopProcessAction(supervisor=supervisor, wait_until_stopped=True, timeout_seconds=0.1)
     result = await action.execute()
     assert result.outcome == ActionOutcome.SUCCESS
 
@@ -114,9 +108,7 @@ async def test_stop_succeeds_but_process_remains_active() -> None:
     )
     supervisor = ProcessSupervisor(backend=backend, event_dispatcher=dispatcher)
 
-    action = StopProcessAction(
-        supervisor=supervisor, wait_until_stopped=True, timeout_seconds=0.05
-    )
+    action = StopProcessAction(supervisor=supervisor, wait_until_stopped=True, timeout_seconds=0.05)
     result = await action.execute()
     assert result.outcome == ActionOutcome.FAILURE
     assert not result.is_ok
@@ -142,9 +134,7 @@ async def test_miner_already_manually_stopped_not_restarted() -> None:
     assert supervisor.was_stopped_by_coordinator is False
 
     # After inference completes, restart action with only_if_stopped_by_coordinator=True is a no-op
-    restart_action = StartProcessAction(
-        supervisor=supervisor, only_if_stopped_by_coordinator=True
-    )
+    restart_action = StartProcessAction(supervisor=supervisor, only_if_stopped_by_coordinator=True)
     res_start = await restart_action.execute()
     assert res_start.outcome == ActionOutcome.SKIPPED
 
@@ -169,9 +159,7 @@ async def test_restart_requested_without_external_restart_permission() -> None:
     assert supervisor.was_stopped_by_coordinator is True
 
     # Attempt restart
-    restart_action = StartProcessAction(
-        supervisor=supervisor, only_if_stopped_by_coordinator=True
-    )
+    restart_action = StartProcessAction(supervisor=supervisor, only_if_stopped_by_coordinator=True)
     res_start = await restart_action.execute()
     assert res_start.outcome == ActionOutcome.FAILURE
 
@@ -282,9 +270,7 @@ async def test_later_successful_request_does_not_clear_prior_inhibition() -> Non
     lease_mgr = LeaseManager(default_cooldown_seconds=30.0, event_dispatcher=dispatcher)
 
     # Simulate an earlier request that terminated uncertainly
-    await lease_mgr.inhibit_restart(
-        "gpu.inference", reason="client_disconnect", holder_id="req-1"
-    )
+    await lease_mgr.inhibit_restart("gpu.inference", reason="client_disconnect", holder_id="req-1")
     assert lease_mgr.is_restart_inhibited("gpu.inference") is True
 
     # A second request arrives and completes normally
@@ -305,9 +291,7 @@ async def test_administrative_recovery_with_active_leases() -> None:
     lease_mgr = LeaseManager(default_cooldown_seconds=30.0, event_dispatcher=dispatcher)
 
     # Inhibit restart
-    await lease_mgr.inhibit_restart(
-        "gpu.inference", reason="uncertain_error", holder_id="err-1"
-    )
+    await lease_mgr.inhibit_restart("gpu.inference", reason="uncertain_error", holder_id="err-1")
 
     # Another lease is active
     async with lease_mgr.acquire("gpu.inference", holder_id="active-job"):
@@ -390,17 +374,15 @@ def test_config_supervised_template_file() -> None:
     """Validate that the shipped supervised acceptance template parses cleanly."""
     from pathlib import Path
 
-    template_path = (
-        Path(__file__).resolve().parent.parent / "config.supervised-template.yaml"
-    )
+    template_path = Path(__file__).resolve().parent.parent / "config.supervised-template.yaml"
     cfg = load_config(template_path)
     assert cfg.version == "1.0"
     assert "krig_miner" in cfg.processes
     miner = cfg.processes["krig_miner"]
     assert miner.backend == "windows"
     assert miner.allow_force_termination is False
-    assert miner.allow_external_stop is True
-    assert miner.allow_external_restart is True
+    assert miner.allow_external_stop is False
+    assert miner.allow_external_restart is False
     assert miner.adopt_external is False
     assert len(cfg.policies) == 1
     pol = cfg.policies[0]

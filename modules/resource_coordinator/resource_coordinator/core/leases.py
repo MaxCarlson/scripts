@@ -166,6 +166,10 @@ class LeaseManager:
         """Get the configured cooldown duration for a resource."""
         return self._resource_cooldowns.get(resource, self.default_cooldown_seconds)
 
+    def tracked_resources(self) -> set[str]:
+        """Snapshot of resource names with claims, cooldowns or unresolved holds."""
+        return set(self._active) | set(self._pending) | set(self._inhibitions) | set(self._cooldown_tasks)
+
     def active_count(self, resource: str) -> int:
         """Return the number of active leases on a resource."""
         return len(self._active.get(resource, []))

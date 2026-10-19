@@ -304,6 +304,10 @@ class LMStudioGateway:
                 model_name=model_name,
             )
         elif is_model_load_request(method, path):
+            if not self.dispatcher.has_blocking_listeners("lmstudio.model_load_requested"):
+                return JSONResponse(
+                    {"error": "Model loading requires an explicit blocking coordination policy"}, status_code=503
+                )
             return await self._proxy_with_coordination(
                 request=request,
                 path=path,

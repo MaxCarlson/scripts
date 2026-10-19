@@ -4,9 +4,14 @@ GPU utilization telemetry provider with pluggable detection.
 
 from __future__ import annotations
 
+import csv
+import io
 import logging
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Protocol
+
+import anyio
 
 logger = logging.getLogger(__name__)
 
@@ -38,10 +43,7 @@ class MockGpuMonitor:
         self.devices[device_id] = max(0.0, min(100.0, pct))
 
     async def get_metrics(self) -> List[GpuDeviceMetrics]:
-        return [
-            GpuDeviceMetrics(device_id=dev, utilization_pct=pct)
-            for dev, pct in self.devices.items()
-        ]
+        return [GpuDeviceMetrics(device_id=dev, utilization_pct=pct) for dev, pct in self.devices.items()]
 
     async def get_max_utilization(self) -> float:
         if not self.devices:
@@ -52,15 +54,14 @@ class MockGpuMonitor:
 class NvidiaGpuMonitor:
     """Read-only NVIDIA GPU monitor querying nvidia-smi with timeout and failure isolation."""
 
-    def __init__(
-        self, binary_name: str = "nvidia-smi", timeout_seconds: float = 2.0
-    ) -> None:
+    def __init__(self, binary_name: str = "nvidia-smi", timeout_seconds: float = 2.0) -> None:
         self.binary_name = binary_name
         self.timeout_seconds = timeout_seconds
 
     async def get_metrics(self) -> List[GpuDeviceMetrics]:
         import asyncio
 
+        proc = None
         try:
             cmd = [
                 self.binary_name,
@@ -72,24 +73,25 @@ class NvidiaGpuMonitor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            stdout, _ = await asyncio.wait_for(
-                proc.communicate(), timeout=self.timeout_seconds
-            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
             if proc.returncode != 0:
                 return []
 
             lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
             metrics: List[GpuDeviceMetrics] = []
-            for line in lines:
-                parts = [p.strip() for p in line.split(",")]
-                if len(parts) >= 5:
+            for parts in csv.reader(io.StringIO("\n".join(lines)), skipinitialspace=True):
+                if len(parts) == 6:
                     idx = parts[0]
                     dev_id = f"gpu-{idx}"
                     try:
                         util = float(parts[2])
                         mem_used = float(parts[3])
                         mem_total = float(parts[4])
-                        power = float(parts[5]) if len(parts) > 5 else 0.0
+                        power = float(parts[5])
+                        if not all(math.isfinite(v) for v in (util, mem_used, mem_total, power)):
+                            continue
+                        if not 0 <= util <= 100 or not 0 <= mem_used <= mem_total or mem_total <= 0 or power < 0:
+                            continue
                     except ValueError:
                         continue
                     metrics.append(
@@ -103,13 +105,19 @@ class NvidiaGpuMonitor:
                     )
             return metrics
         except Exception as exc:
-            logger.debug(
-                "Failed querying NVIDIA GPU telemetry via %s: %s", self.binary_name, exc
-            )
+            logger.debug("Failed querying NVIDIA GPU telemetry via %s: %s", self.binary_name, exc)
             return []
+        finally:
+            if proc is not None and proc.returncode is None:
+                with anyio.CancelScope(shield=True):
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    await proc.wait()
 
     async def get_max_utilization(self) -> float:
         metrics = await self.get_metrics()
         if not metrics:
-            return 0.0
+            raise RuntimeError("GPU telemetry is unavailable; utilization and execution state are unknown")
         return max(m.utilization_pct for m in metrics)

@@ -1,180 +1,32 @@
-# Durable State, Crash Recovery, and PID Reconciliation Design
+# Durable state helpers and crash-recovery requirements
 
-**Module:** `modules/resource_coordinator`  
-**Document version:** 1.0  
-**Status:** Architecture Specification for Phase C Integration  
-**Target Platform:** Windows 11 / RTX 5090 / Krig Miner 1.5.6  
+Status: **helpers only; service persistence/startup reconciliation is not implemented.** `config.py` still rejects enabled `state_persistence_path`, and neither `build_system` nor the gateway wires StateCodec into transitions/startup. See [Phase C safety review](PHASE_C_SAFETY_REVIEW.md).
 
----
+## Implemented and corrected
 
-## 1. Objective and Problem Statement
+- `CoordinatorState` serializes process snapshots and restart inhibitions. It does not serialize pending/active/possibly-forwarded requests, manual overrides, config/boot identity, cooldowns, or durable recovery audit.
+- `save_atomic` validates the schema, writes a sibling temporary file, flushes/fsyncs the file, then replaces the target. This resists partial writes; it does not establish write-ahead ordering, directory/rename durability on power loss, single-writer authority, or a complete recovery transaction.
+- `load` now raises on missing, unreadable, corrupt, incomplete, duplicate-key or unsupported-version state. It never silently converts lost holds into clean state. First-boot initialization must be a separate explicit decision; a missing file can also mean prior state was lost.
+- Process permissions/lifecycle values, identity timestamps, booleans and inhibition records are validated. String `"false"` cannot grant restart ownership. All hold records are validated before restore begins.
+- `restore_into_leases` restores **inhibitions only**, retaining original timestamps in restoration details. It neither restores active leases nor reconstitutes authority to start/stop a process. Caller must keep execution gated until all holds are installed; interruption or restoration failure cannot open that gate.
 
-When the Resource Coordinator process terminates—whether due to planned restarts, host reboot, software upgrades, or unexpected crashes—the physical state of the host may not match an in-memory clean slate:
-1. **Uncertain Inference in Progress:** An inference stream may have been severed when the coordinator died, leaving LM Studio actively generating tokens on the RTX 5090.
-2. **Orphaned Miner Processes:** The miner (`krig-miner.exe`) may still be running in an external console or child process group with an assigned PID.
-3. **PID Recycling Hazard:** On Windows, 32-bit Process IDs are recycled aggressively. After a reboot or process termination, an old PID may now belong to an unrelated critical Windows process (e.g., `svchost.exe`, `csrss.exe`, or `explorer.exe`). Sending termination signals based solely on a persisted PID could terminate arbitrary user or system processes.
-4. **Protective Inhibition Loss:** If restart inhibitions are kept only in memory, restarting the coordinator resets all inhibitions to empty. If no inference requests are immediately active, the coordinator would evaluate the resource as idle and restart the miner, causing a collision with an unmanaged background workload.
+## Exact process identity
 
-This document specifies the design for atomic durable state persistence, PID reconciliation against the Windows process table, and crash recovery procedures.
+`reconcile_pid` defaults to zero tolerance and rejects nonzero tolerance requests. It compares finite creation times exactly from the same representation; malformed/missing identities are UNVERIFIABLE, access denial is ACCESS_DENIED, and only confirmed absence is NOT_RUNNING. `query_fn` must never map access denial or unknown state to None. Runtime owned-process lookup also requires a known, exactly matching creation time.
 
----
+Windows [GetProcessTimes](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-getprocesstimes) provides creation time in FILETIME, expressed in 100-nanosecond units. That API does not justify a one-second matching window. Existing psutil float values round-trip through JSON; compare the same representation or reject ambiguity rather than widening the match. Future durable Windows identity should retain raw creation FILETIME plus boot/instance and executable identity, with stable process handles where possible. Exact float comparison is a candidate identity check, not proof of ownership or control authority, and does not remove PID-check-to-action races.
 
-## 2. Durable State Schema
+Never mark a resource idle simply because an old PID disappeared or was recycled. That says nothing about LM Studio execution, miner descendants or external supervisors.
 
-Durable state is stored in an atomic, versioned JSON file (e.g., `%LOCALAPPDATA%\resource_coordinator\state.json` or a custom configured path):
+## Required before unattended operation
 
-```json
-{
-  "version": "1.0",
-  "updated_at": 1729350000.123,
-  "inhibitions": {
-    "gpu.inference": {
-      "resource": "gpu.inference",
-      "reason": "indeterminate_cancellation",
-      "holder_id": "req-98234",
-      "inhibited_at": 1729349950.000,
-      "details": {
-        "model": "qwen2.5-coder-32b",
-        "error": "Client disconnected before [DONE]"
-      }
-    }
-  },
-  "processes": {
-    "krig_miner": {
-      "name": "krig_miner",
-      "pid": 48204,
-      "create_time": 1729348800.450,
-      "lifecycle_owner": "coordinator",
-      "was_stopped_by_coordinator": true,
-      "last_stopped_at": 1729349900.000,
-      "last_started_at": 1729348800.000
-    }
-  }
-}
-```
+1. Keep the gateway and all restart actions gated during startup. Acquire single-instance/writer authority. Unreadable/missing/corrupt state keeps affected resources inhibited until explicit reconciliation.
+2. Persist intent **before** forwarding inference or issuing process side effects, and persist verified results before making resources restart-eligible. Do not debounce safety-critical writes behind those effects. Disk failure vetoes forwarding/restart.
+3. Record request IDs, affected resource/conflict groups, reserved/possibly-forwarded/active/terminal/uncertain phases and upstream correlation identifiers. Convert all unresolved possibly-forwarded records into inhibitions after a crash, including requests that never reached an in-memory inhibition transition.
+4. Persist unresolved holds, manual pause overrides, process launch identity/authority/prior running state and stop/start intent/result, clean-shutdown and boot/config revision, cooldown eligibility, and an attributable recovery audit.
+5. Reconcile actual processes, descendants, supervisors and upstream execution before allowing restart. Never replay stale process IDs or a `was_stopped_by_coordinator` boolean as authority. If upstream termination cannot be established, retain inhibition or require an explicit audited operator override.
+6. Test crashes, partial writes, rename failure, stale snapshots, competing instances, clock changes and disk errors at every intent/side-effect boundary. Validate real Windows storage/process behavior under separate authorization.
 
-### 2.1 State Components
+Telemetry SQLite/WAL is a separate, lossy observational stream and must not become the safety journal. Low GPU utilization, model residency, a later successful request, connection closure, or coordinator restart cannot establish that an earlier inference stopped.
 
-1. **`inhibitions`:** Active restart inhibitions mapped by resource name (`gpu.inference`, `gpu.model`).
-   - If an inhibition exists in the durable state, it **must** be loaded into `LeaseManager._inhibitions` on startup.
-   - The coordinator **cannot** start the miner on boot if an inhibition is present.
-   - It requires explicit user recovery (`resource-coordinator recover`) or a verified clean health probe.
-2. **`processes`:** Tracked state for each configured process.
-   - `pid`: Process identifier at the time of record.
-   - `create_time`: Windows high-resolution process creation timestamp (`psutil.Process.create_time()`).
-   - `was_stopped_by_coordinator`: Preserves ownership across restarts. If the coordinator paused the miner before a crash or restart, this flag ensures it knows the miner is eligible for resumption once safety is verified.
-
----
-
-## 3. Atomic Write Architecture
-
-To prevent corruption from partial writes during sudden power loss or process termination:
-
-1. **Atomic File Replacement:**
-   - The serialized JSON state is written to a temporary sibling file: `state.json.tmp.<uuid>`.
-   - The file is flushed and synced to disk via `flush()` and `os.fsync()`.
-   - An atomic filesystem rename (`os.replace`) overwrites `state.json`. On NTFS (Windows 11), `os.replace` is an atomic directory operation.
-2. **Write Trigger Policy:**
-   - State is persisted on state transition boundaries:
-     - `resource.restart_inhibited`
-     - `resource.restart_inhibition_cleared`
-     - Process state transitions (`STOPPED`, `RUNNING`, `was_stopped_by_coordinator` change)
-   - Writes are debounced or dispatched to a background worker to ensure synchronous fast-path inference is not blocked on disk I/O.
-
----
-
-## 4. Startup Reconciliation Protocol
-
-Upon startup, the coordinator executes the following reconciliation sequence before opening the gateway port (1235) or starting any services:
-
-```mermaid
-sequenceDiagram
-    autonumber
-    participant Boot as Coordinator Boot
-    participant Disk as Durable State (state.json)
-    participant PS as Windows Process Table (psutil)
-    participant LeaseMgr as LeaseManager
-    participant Super as ProcessSupervisor
-
-    Boot->>Disk: Load state.json
-    alt File missing or corrupted
-        Disk-->>Boot: Return Clean Initial State
-    else State loaded
-        Disk-->>Boot: Persisted State (PIDs, Inhibitions)
-    end
-
-    Boot->>LeaseMgr: Restore Active Inhibitions
-    Note over LeaseMgr: Resources with stored inhibitions<br/>are immediately latched
-
-    loop For each managed process
-        Boot->>PS: Query PID from state
-        alt PID does not exist in OS
-            PS-->>Boot: PID Not Found
-            Boot->>Super: Mark STOPPED (stale PID discarded)
-        else PID exists in OS
-            Boot->>PS: Query create_time for PID
-            alt create_time != state.create_time (±1.0s)
-                PS-->>Boot: Creation Time Mismatch (Recycled PID!)
-                Note over Boot,Super: DANGER: PID recycled by Windows.<br/>Discard PID to prevent killing innocent process!
-                Boot->>Super: Mark UNMANAGED / STOPPED
-            else create_time == state.create_time
-                PS-->>Boot: Verified Same Process Instance
-                Boot->>Super: Adopt Process (EXTERNAL_RUNNING / RUNNING)
-            end
-        end
-    end
-
-    Boot->>Boot: Pre-flight Verification Complete
-    Boot->>Boot: Open HTTP Gateway Port (1235)
-```
-
-### 4.1 PID Recycling Defense Algorithm
-
-```python
-def reconcile_process_pid(persisted_pid: int, persisted_create_time: float) -> ProcessReconciliationResult:
-    if not psutil.pid_exists(persisted_pid):
-        return ProcessReconciliationResult.NOT_RUNNING
-
-    try:
-        proc = psutil.Process(persisted_pid)
-        current_create_time = proc.create_time()
-        # Windows timestamp precision tolerance: 1.0 second
-        if abs(current_create_time - persisted_create_time) > 1.0:
-            logger.warning(
-                "PID %d exists but create_time %.3f != persisted %.3f. PID was recycled! Ignoring.",
-                persisted_pid, current_create_time, persisted_create_time
-            )
-            return ProcessReconciliationResult.PID_RECYCLED
-        return ProcessReconciliationResult.VERIFIED_RUNNING
-    except (psutil.NoSuchProcess, psutil.AccessDenied):
-        return ProcessReconciliationResult.NOT_RUNNING
-```
-
----
-
-## 5. Administrative Recovery Interface
-
-If a crash or indeterminate cancellation leaves a persistent restart inhibition, the administrator or developer uses the CLI to safely inspect and recover the system:
-
-1. **Inspect State:**
-   ```powershell
-   resource-coordinator status
-   ```
-   Outputs:
-   - Resource status (`gpu.inference`, active leases: 0, pending: 0, cooldown: inactive).
-   - Inhibition details: `Inhibited since 2026-10-19 12:00:00 (indeterminate_cancellation: client disconnect)`.
-   - Process status: `krig_miner` (State: STOPPED, was_stopped_by_coordinator: True).
-
-2. **Verify Host GPU State:**
-   ```powershell
-   resource-coordinator diagnose
-   ```
-   Verifies via `nvidia-smi` that GPU memory and utilization are idle and LM Studio is not running a forgotten compute graph.
-
-3. **Execute Recovery:**
-   ```powershell
-   resource-coordinator recover --resource gpu.inference
-   ```
-   - Checks that active leases = 0 and pending leases = 0.
-   - Clears `gpu.inference` inhibition in memory and on disk.
-   - Triggers standard idle cooldown (60s) before resuming any background miner.
+The current recovery CLI is an authenticated **operator override** using `RESOURCE_COORDINATOR_RECOVERY_TOKEN`, `--force` and `--reason`. Active/pending claims reject it; it does not verify upstream idle or update a durable safety journal. Diagnostics explicitly report execution_state=unverified and restart_authorized=false. A supervised experiment may defer durable integration only if every crash/restart aborts the experiment and mining stays stopped pending independent reconciliation; do not restart the coordinator to clear a hold.
