@@ -1,4 +1,4 @@
-# agent_benchmark — 1.2.0
+# agent_benchmark — 1.3.0
 
 A thin evaluator around the existing OpenCode/MCP runtime. Phase 1d project/session checks passed authorized non-inference acceptance. Trial-local scratch policy is implemented and tested offline; no worker has exercised it live. Historical trial outcomes remain unchanged.
 
@@ -20,6 +20,8 @@ Every run creates a fresh independent Git repository and unique root commit with
 
 New runs use scope policy `trial-local-scratch-v1`: `.agent-bench-scratch/` is permitted for temporary test scripts and caches. Scratch bytes remain in bounded S0/S1 evidence, with separate task/scratch change lists; hidden verification excludes scratch. New checkpoints allow 4,096 entries, 2 MiB/file and 16 MiB total; patch previews are capped at 256 KiB and summarize scratch. A capture-limit failure preserves workspace/diagnostics and cannot produce a passing partial snapshot. Shared `Temp/opencode` writes remain outside benchmark scope, and opaque shell operations remain uncertain. OpenCode inherits its server environment, so the prompt instructs the worker to set `TMPDIR`, `TEMP` and `TMP` inside every temp-using command. This is cooperative routing, not automatic environment injection or an OS sandbox. Policy/version and requested scratch settings are recorded explicitly. Historical evidence without the policy retains strict task-only audit semantics; compare policy versions explicitly. See [scratch policy design and validation](docs/plans/20261019-implementation/scratch-policy.md).
 
+`agent-bench smoke -x -m qwen38_23GB` is a separate integration diagnostic with fixed 60/10-second budgets, the same durable dispatch guards, protected temp probe and post-dispatch user-prompt attribution. It writes only `integration-acceptance/` evidence, with no canonical benchmark records or comparisons. Provider-bound system/tool payload is explicitly unverified and optional. [Exact command, artifacts and limits](docs/plans/20261019-implementation/integration-smoke-proposal.md). Live smoke execution requires separate authorization; it has not been run.
+
 The worker sees a fresh public fixture. S0 and S1 are byte-exact archives outside it; a hidden verifier runs on a disposable S1 copy. Canonical scoring is `worker_first_attempt_full_success`. Expired task budgets, execution errors, unresolved termination and disqualifying scope changes cannot become passes from verifier output. Coordinator repair never changes the frozen worker score. Token/tool counters that are not collected remain unavailable. Retries, coordinator comparisons and multi-model repetition support remain later packages.
 
 OpenCode 1.19.3 can leave `finish="tool-calls"` on a final StructuredOutput message. The adapter accepts that special case only with a matching requested JSON schema, a completed StructuredOutput tool, completed assistant timestamp, idle session and no incomplete tools. Arbitrary non-null structured data is insufficient. Normal abort/error confirmation and malformed-data handling preserve the corrective pass's fixes. See [source notes](docs/TERMINATION.md).
@@ -34,7 +36,7 @@ Install both local packages into the intended environment:
 python -m pip install -e modules/benchmark_core -e modules/agent_benchmark
 ```
 
-`agent-bench` was introduced at 1.0.0; install/refresh wrappers when first adopting that entry point. Existing editable installs load the 1.2.0 source changes without entry-point wrapper changes; reinstall to refresh package metadata. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
+`agent-bench` was introduced at 1.0.0; install/refresh wrappers when first adopting that entry point. Existing editable installs load the 1.3.0 source changes without entry-point wrapper changes; reinstall to refresh package metadata. The bridge must already be cached/installed as `opencode-mcp@3.0.0`; npx is offline and auto-serve is disabled. Existing OpenCode auth environment variables are reused without logging secrets.
 
 Validation from repository root, using the actual repo virtualenv:
 

@@ -55,3 +55,14 @@
 - [x] Verify all 114 historical/acceptance evidence files unchanged; full suite 218 passed/3 skips, core 83 passed, lint/applicable types clean.
 - [x] Propose separate one-run unscored integration smoke with actual assembled-request and trusted temp-probe evidence.
 - [ ] Separate authorization for the diagnostic smoke; do not dispatch now.
+
+
+## Revised diagnostic entry point (Gemini REVISE)
+
+- [x] Replace impossible pre-turn provider tracing with preflight versus post-dispatch attribution.
+- [x] Separate intended configuration, submitted user prompt and optional/unverified provider payload outcomes.
+- [x] Implement actual smoke CLI and trusted temp probe, fixed 60/10 budgets, no scored outputs.
+- [x] Share reservation/guard/release with scored runner; reuse cancellation/reconciliation/cleanup.
+- [x] Offline ordering, missing tracing, identity/prompt, failed/ambiguous submission, restart, timeout, cancellation, write failure and cleanup tests.
+- [x] Full agent/core checks, applicable typing, historical integrity; commit code 6e319c8a and documentation.
+- [ ] Separate authorization for exactly one Qwen diagnostic; do not execute now.

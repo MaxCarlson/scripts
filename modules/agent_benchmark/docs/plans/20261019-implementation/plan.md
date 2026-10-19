@@ -129,3 +129,8 @@ The user's corrected project-isolation handoff is implemented in 8a94f580 and 15
 ## Trial-local scratch policy follow-up
 
 Authorized offline implementation follows accepted Phase 1d non-inference isolation. See [scratch-policy.md](scratch-policy.md) for the versioned cooperative policy, pinned shell/environment findings, interfaces, tests and limitations. Four accepted documentation updates were committed first as 8bd05cdd. Reviewed implementation/tests committed as 45a096d5; documentation records the corrected bounded-capture policy and proposed separately authorized integration-only smoke; no shared config change, inference, suite expansion or scoring redesign. Current status/checklist and module handoff identify the next gate.
+
+
+## Diagnostic proposal revised after Gemini REVISE
+
+Implementation 6e319c8a adds smoke CLI and protected temp probe, shared state.reserved_trial, intended prompt byte/hash persistence and post-dispatch attribution. Complete provider-bound payload tracing is optional/unverified and never a pre-turn prerequisite. See integration-smoke-proposal.md for the exact command and artifacts. Diagnostics emit no canonical run/trial/comparison data. Validation is offline; stop for a separate one-run Qwen authorization. Source 1.3.0, scope/verifier versions unchanged.

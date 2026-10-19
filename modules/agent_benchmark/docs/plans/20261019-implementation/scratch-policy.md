@@ -86,3 +86,7 @@ Final commands (same existing Python as above):
 ```
 
 Results: 218 agent passed/3 symlink-privilege skips in 38.96 seconds; 83 core passed; Ruff/core/helper Mypy clean. The additional 11 self-review regressions pass (including a fresh run after type-only annotations); combined policy/review suite 43 passed/1 skip. Optional broad agent Mypy freshly reports the same 22 legacy diagnostics in 5 files (14 files checked); no new diagnostics in bounded capture/patch code. The new path/resource failures were reproduced RED before correction. No production trial or scored comparison was run.
+
+## Diagnostic follow-up correction
+
+Gemini identified that the original linked smoke proposal required an unconfirmed complete provider trace and attempted to inspect per-turn evidence before that turn existed. The revised proposal/implemented smoke entry point removes that prerequisite. Intended configuration is checked before submission; saved user prompt/session attribution is checked afterward. Complete provider payload is optional/unverified; unavailable tracing does not block a diagnostic. Shared production reservation/cancellation/release logic is reused. Implementation/tests 6e319c8a; source 1.3.0; no change to scratch/verifier policy or historical records. Current validation/command/remaining live gate are in the revised integration-smoke-proposal.md and HANDOFF.md.
