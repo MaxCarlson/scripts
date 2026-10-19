@@ -229,6 +229,23 @@ class CliTuiApp:
             return bool(getattr(widget, "is_editing", False))
         return False
 
+    def branch_to_new_command_pane(self) -> PaneSession:
+        """Branch from current pane into a new command pane with argument inheritance."""
+        self._save_current_pane_state()
+        source_form = self.current_form
+        new_pane = self.workspace.create_pane(
+            title=self.title,
+            pane_type=PaneType.COMMAND,
+            screen_mode=TuiScreenMode.MENU,
+        )
+        new_pane.navigation.current_screen = TuiScreenMode.MENU
+        if source_form:
+            new_pane.extra_data["parent_form"] = source_form
+        self.form_widgets = []
+        self.form_cursor = 0
+        self.menu_cursor = 0
+        return new_pane
+
     @property
     def screen_mode(self) -> TuiScreenMode:
         return self.navigation.current_screen
@@ -244,6 +261,9 @@ class CliTuiApp:
     def _open_form_for_command(self, cmd: CliCommand) -> None:
         subcommands_path = self.navigation.path
         self.current_form = FormState(cmd, subcommands_path=subcommands_path)
+        parent_form = self.workspace.active_pane.extra_data.get("parent_form")
+        if parent_form:
+            copy_matching_form_values(parent_form, self.current_form)
         self.form_widgets = [
             create_widget_for_arg(arg, self.current_form.get_value(arg.dest))
             for arg in cmd.arguments
@@ -312,7 +332,12 @@ class CliTuiApp:
                 return True
             elif self.screen_mode == TuiScreenMode.RUNNING:
                 if not self.runner or not self.runner.is_running:
-                    self.navigation.current_screen = TuiScreenMode.FORM
+                    if len(self.workspace.panes) > 1:
+                        self.cycle_pane_prev()
+                        return True
+                    else:
+                        # In single pane mode, keep finished view intact
+                        return True
                 return True
             elif self.screen_mode == TuiScreenMode.MENU:
                 if self.navigation.path:
@@ -320,6 +345,12 @@ class CliTuiApp:
                     self.menu_cursor = 0
                 else:
                     self.is_confirming_quit = True
+                return True
+
+        # Global branching shortcut (Ctrl+T or extended Shift+Esc)
+        if key in (20, 353):
+            if not self._is_widget_editing():
+                self.branch_to_new_command_pane()
                 return True
 
         # Global pane cycling
@@ -450,6 +481,14 @@ class CliTuiApp:
             if self.runner and self.runner.is_running:
                 self.runner.terminate()
                 return True
+        elif key in (ord("s"), ord("S")):
+            self.branch_to_new_command_pane()
+            return True
+        elif key in (ord("r"), ord("R")):
+            if not self.runner or not self.runner.is_running:
+                if self.current_form:
+                    self._start_execution()
+                    return True
         elif key in (10, 13):
             if not self.runner or not self.runner.is_running:
                 self.navigation.current_screen = TuiScreenMode.FORM
@@ -661,7 +700,7 @@ class CliTuiApp:
                 for a in self.post_run_actions
                 if a.predicate is None or a.predicate(self)
             ]
-            parts = ["[q] Quit", "[Esc] Back"]
+            parts = ["[q] Quit", "[Esc] Back", "[s] Branch", "[r] Re-run"]
             if active_actions:
                 parts.extend(a.label for a in active_actions)
             if total_l > visible_height:
