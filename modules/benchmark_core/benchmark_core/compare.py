@@ -7,8 +7,7 @@ and provides explicit warnings when scoring bases, suite versions, or units mism
 
 from __future__ import annotations
 
-import copy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 import json
 from typing import Any, Optional
 
@@ -169,15 +168,25 @@ def compare_runs(
     # Match variants
     variant_comps: dict[str, VariantComparison] = {}
     for vid, cand_var in candidate.variants.items():
+        base_var: Optional[VariantSummary] = None
         if vid in baseline.variants:
             base_var = baseline.variants[vid]
-            variant_comps[vid] = compare_variants(base_var, cand_var)
         elif len(baseline.variants) == 1:
             # Single variant baseline comparison
             base_var = next(iter(baseline.variants.values()))
-            variant_comps[vid] = compare_variants(base_var, cand_var)
         else:
             warnings.append(f"Notice: Candidate variant '{vid}' has no direct matching baseline variant.")
+
+        if base_var:
+            # Check unit mismatches on shared metrics
+            for mk, b_m in base_var.metrics.items():
+                c_m = cand_var.metrics.get(mk)
+                if c_m and b_m.unit != c_m.unit:
+                    warnings.append(
+                        f"WARNING: Unit mismatch for metric '{mk}' on variant '{vid}': "
+                        f"baseline uses '{b_m.unit}', candidate uses '{c_m.unit}'."
+                    )
+            variant_comps[vid] = compare_variants(base_var, cand_var)
 
     return RunComparison(
         baseline_run_id=baseline.run_info.run_id,
@@ -210,15 +219,26 @@ def render_comparison_md(comparison: RunComparison) -> str:
     lines.append("|---|---|---|---|---|---|---|")
 
     def _fmt_delta(dv: DeltaValue, is_rate: bool = False, unit: str = "") -> tuple[str, str]:
-        if dv.baseline is None or dv.candidate is None:
+        if dv.baseline is None and dv.candidate is None:
             return "N/A", "N/A"
+
         if is_rate:
-            vals = f"{dv.baseline * 100:.1f}% -> {dv.candidate * 100:.1f}%"
-            diff = f"{dv.absolute_change * 100:+.1f}%" if dv.absolute_change is not None else "N/A"
+            b_s = f"{dv.baseline * 100:.1f}%" if dv.baseline is not None else "N/A"
+            c_s = f"{dv.candidate * 100:.1f}%" if dv.candidate is not None else "N/A"
         else:
-            vals = f"{dv.baseline:.1f} -> {dv.candidate:.1f} {unit}".strip()
+            b_s = f"{dv.baseline:.1f} {unit}".strip() if dv.baseline is not None else "N/A"
+            c_s = f"{dv.candidate:.1f} {unit}".strip() if dv.candidate is not None else "N/A"
+
+        vals = f"{b_s} -> {c_s}"
+
+        if dv.absolute_change is None:
+            diff = "N/A"
+        elif is_rate:
+            diff = f"{dv.absolute_change * 100:+.1f}%"
+        else:
             pct_s = f" ({dv.percentage_change:+.1f}%)" if dv.percentage_change is not None else ""
-            diff = f"{dv.absolute_change:+.1f} {unit}{pct_s}".strip() if dv.absolute_change is not None else "N/A"
+            diff = f"{dv.absolute_change:+.1f} {unit}{pct_s}".strip()
+
         return vals, diff
 
     for vid, vc in sorted(comparison.variant_comparisons.items()):
@@ -229,4 +249,25 @@ def render_comparison_md(comparison: RunComparison) -> str:
         lines.append(f"| `{vid}` | {micro_vals} | {micro_diff} | {macro_vals} | {macro_diff} | {dur_vals} | {dur_diff} |")
 
     lines.append("")
+
+    # Resource & Metric Differences (if custom metrics exist)
+    all_custom_metric_keys: set[str] = set()
+    for vc in comparison.variant_comparisons.values():
+        for mk in vc.metrics.keys():
+            if mk != "duration.wall_ms":
+                all_custom_metric_keys.add(mk)
+
+    if all_custom_metric_keys:
+        lines.append("## Resource & Metric Differences")
+        lines.append("")
+        lines.append("| Variant | Metric | Mean (Base -> Cand) | Delta (%) |")
+        lines.append("|---|---|---|---|")
+        for vid, vc in sorted(comparison.variant_comparisons.items()):
+            for mk in sorted(all_custom_metric_keys):
+                if mk in vc.metrics:
+                    m_delta = vc.metrics[mk]
+                    m_vals, m_diff = _fmt_delta(m_delta, is_rate=False)
+                    lines.append(f"| `{vid}` | `{mk}` | {m_vals} | {m_diff} |")
+        lines.append("")
+
     return "\n".join(lines)

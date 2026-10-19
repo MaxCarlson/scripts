@@ -10,9 +10,6 @@ Validates Gate 1 requirements:
 - Canonical fixtures loading and round-trip serialization
 """
 
-from datetime import datetime, timezone
-import json
-import math
 from pathlib import Path
 import pytest
 
@@ -24,11 +21,9 @@ from benchmark_core.models import (
     TrialStatus,
     VALID_QUALITIES,
     VALID_STATUSES,
-    format_utc_timestamp,
     is_safe_relative_path,
     metric_value_from_dict,
     metric_value_to_dict,
-    parse_utc_timestamp,
     run_info_from_dict,
     run_info_to_dict,
     trial_result_from_dict,

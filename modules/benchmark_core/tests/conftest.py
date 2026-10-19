@@ -3,19 +3,19 @@ Pytest configuration and shared fixtures for benchmark_core tests.
 """
 
 from pathlib import Path
+import shutil
 import sys
+from typing import Iterator
+import uuid
+
+import pytest
 
 # Ensure benchmark_core is importable without requiring editable install
 MODULE_ROOT = Path(__file__).resolve().parent.parent
 if str(MODULE_ROOT) not in sys.path:
     sys.path.insert(0, str(MODULE_ROOT))
 
-import pytest
-
-import shutil
-import uuid
-
-from benchmark_core.models import (
+from benchmark_core.models import (  # noqa: E402
     MetricQuality,
     MetricValue,
     RunInfo,
@@ -25,7 +25,7 @@ from benchmark_core.models import (
 
 
 @pytest.fixture
-def tmp_path() -> Path:
+def tmp_path() -> Iterator[Path]:
     base = MODULE_ROOT / ".pytest_tmp_root" / f"temp-{uuid.uuid4().hex[:8]}"
     base.mkdir(parents=True, exist_ok=True)
     yield base

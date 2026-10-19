@@ -11,8 +11,6 @@ Validates:
 - All-scored vs successful-only duration isolation
 """
 
-import math
-import statistics
 import pytest
 
 from benchmark_core.models import (
@@ -23,7 +21,6 @@ from benchmark_core.models import (
     TrialStatus,
 )
 from benchmark_core.stats import (
-    BenchmarkSummary,
     compute_metric_stats,
     summarize,
 )

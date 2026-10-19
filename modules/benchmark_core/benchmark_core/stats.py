@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import copy
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 import json
 import statistics
 from typing import Any, Optional
@@ -354,15 +353,16 @@ def _compute_duration_stats(trials: list[TrialResult]) -> DurationStats:
 def _summarize_task(task_id: str, trials: list[TrialResult]) -> TaskSummary:
     """Summarize trials for a single task."""
     total_trials = len(trials)
-    status_counts = {s: 0 for s in sorted(TrialStatus)}
+    status_counts: dict[str, int] = {s.value: 0 for s in TrialStatus}
     for t in trials:
-        status_counts[t.status] = status_counts.get(t.status, 0) + 1
+        status_key = str(t.status)
+        status_counts[status_key] = status_counts.get(status_key, 0) + 1
 
-    passed = status_counts[TrialStatus.PASSED]
-    failed = status_counts[TrialStatus.FAILED]
-    timed_out = status_counts[TrialStatus.TIMED_OUT]
-    infrastructure_error = status_counts[TrialStatus.INFRASTRUCTURE_ERROR]
-    unscored = status_counts[TrialStatus.UNSCORED]
+    passed = status_counts[TrialStatus.PASSED.value]
+    failed = status_counts[TrialStatus.FAILED.value]
+    timed_out = status_counts[TrialStatus.TIMED_OUT.value]
+    infrastructure_error = status_counts[TrialStatus.INFRASTRUCTURE_ERROR.value]
+    unscored = status_counts[TrialStatus.UNSCORED.value]
 
     eligible_count = passed + failed + timed_out
     success_rate: Optional[float] = (
@@ -421,7 +421,14 @@ def summarize(
 
     variant_summaries: dict[str, VariantSummary] = {}
 
-    for vid, v_config in run_info.variants.items():
+    # Include all declared variants plus any undeclared variants found in trials
+    all_variant_ids = list(run_info.variants.keys())
+    for vid in sorted(trials_by_variant.keys()):
+        if vid not in run_info.variants:
+            all_variant_ids.append(vid)
+
+    for vid in all_variant_ids:
+        v_config = run_info.variants.get(vid, {"undeclared": True})
         v_trials = trials_by_variant.get(vid, [])
 
         # Group variant trials by task_id
@@ -442,9 +449,10 @@ def summarize(
         insufficiently_sampled: list[str] = []
 
         total_trials = len(v_trials)
-        v_status_counts = {s: 0 for s in sorted(TrialStatus)}
+        v_status_counts: dict[str, int] = {s.value: 0 for s in TrialStatus}
         for t in v_trials:
-            v_status_counts[t.status] = v_status_counts.get(t.status, 0) + 1
+            status_key = str(t.status)
+            v_status_counts[status_key] = v_status_counts.get(status_key, 0) + 1
 
         for tid in declared_tasks:
             t_trials = trials_by_task[tid]
@@ -459,11 +467,11 @@ def summarize(
                 assert ts.success_rate is not None
                 macro_rates.append(ts.success_rate)
 
-        v_passed = v_status_counts[TrialStatus.PASSED]
-        v_failed = v_status_counts[TrialStatus.FAILED]
-        v_timed_out = v_status_counts[TrialStatus.TIMED_OUT]
-        v_infra = v_status_counts[TrialStatus.INFRASTRUCTURE_ERROR]
-        v_unscored = v_status_counts[TrialStatus.UNSCORED]
+        v_passed = v_status_counts[TrialStatus.PASSED.value]
+        v_failed = v_status_counts[TrialStatus.FAILED.value]
+        v_timed_out = v_status_counts[TrialStatus.TIMED_OUT.value]
+        v_infra = v_status_counts[TrialStatus.INFRASTRUCTURE_ERROR.value]
+        v_unscored = v_status_counts[TrialStatus.UNSCORED.value]
         v_eligible = v_passed + v_failed + v_timed_out
 
         micro_success_rate = (

@@ -197,6 +197,9 @@ def import_hyperfine(
             raise ValueError("output_dir must be specified when write=True")
         out_p = Path(output_dir)
         save_run(out_p, run_info, overwrite=True)
-        append_results(out_p, trials, allow_duplicate=True)
+        target_trials = out_p / "trials.jsonl"
+        if target_trials.exists():
+            target_trials.unlink()
+        append_results(out_p, trials, allow_duplicate=False)
 
     return run_info, trials

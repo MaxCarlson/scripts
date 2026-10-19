@@ -12,12 +12,10 @@ from __future__ import annotations
 
 import csv
 import io
-import json
 from pathlib import Path
 from typing import Any, Optional, Union
 
-from .models import format_utc_timestamp
-from .stats import BenchmarkSummary, MetricStats, VariantSummary
+from .stats import BenchmarkSummary
 
 
 def render_summary_json(summary: BenchmarkSummary) -> str:

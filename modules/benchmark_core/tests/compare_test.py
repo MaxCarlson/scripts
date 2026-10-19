@@ -2,11 +2,8 @@
 Tests for benchmark_core run and variant comparisons.
 """
 
-import pytest
-
 from benchmark_core.compare import (
     compare_runs,
-    compare_variants,
     compute_delta,
     render_comparison_md,
 )
@@ -90,3 +87,45 @@ def test_compare_runs_matching_and_scoring_basis_mismatch() -> None:
     md = render_comparison_md(comp)
     assert "# Benchmark Comparison: `run-b` vs `run-a`" in md
     assert "CRITICAL: Scoring basis mismatch" in md
+
+
+def test_compare_runs_unit_mismatch_warning() -> None:
+    run_a = RunInfo(
+        run_id="run-u1",
+        created_at="2026-10-19T02:00:00Z",
+        suite_id="eval-suite",
+        suite_version="1.0",
+        task_ids=["t1"],
+        variants={"var-1": {}},
+        repetitions=1,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    run_b = RunInfo(
+        run_id="run-u2",
+        created_at="2026-10-19T02:00:00Z",
+        suite_id="eval-suite",
+        suite_version="1.0",
+        task_ids=["t1"],
+        variants={"var-1": {}},
+        repetitions=1,
+        scoring_basis="worker_first_attempt_full_success",
+    )
+    trials_a = [
+        TrialResult(
+            "run-u1", "t1", "t1", "var-1", 1, TrialStatus.PASSED,
+            metrics={"mem": MetricValue(512.0, "MB", "os", "measured")},
+        ),
+    ]
+    trials_b = [
+        TrialResult(
+            "run-u2", "t2", "t1", "var-1", 1, TrialStatus.PASSED,
+            metrics={"mem": MetricValue(536870912.0, "bytes", "os", "measured")},
+        ),
+    ]
+    s_a = summarize(run_a, trials_a)
+    s_b = summarize(run_b, trials_b)
+    comp = compare_runs(s_a, s_b)
+
+    assert any("Unit mismatch for metric 'mem'" in w for w in comp.warnings)
+    md = render_comparison_md(comp)
+    assert "WARNING: Unit mismatch for metric 'mem'" in md

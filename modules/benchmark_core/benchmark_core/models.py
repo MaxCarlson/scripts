@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from enum import StrEnum
 import json
 import math
-from pathlib import PurePath, PurePosixPath, PureWindowsPath
+from pathlib import PurePosixPath, PureWindowsPath
 from typing import Any, Optional, Union
 
 
@@ -129,7 +129,7 @@ def validate_relative_path(path_str: str) -> str:
 def _assert_json_compatible(obj: Any, context: str) -> None:
     """Ensure an object is JSON serializable."""
     try:
-        json.dumps(obj)
+        json.dumps(obj, allow_nan=False)
     except (TypeError, ValueError, OverflowError) as exc:
         raise ValueError(f"{context} must be JSON-serializable: {exc}") from exc
 

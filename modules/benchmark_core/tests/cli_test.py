@@ -15,18 +15,21 @@ from benchmark_core.models import RunInfo, TrialResult, TrialStatus
 from benchmark_core.storage import append_result, save_run
 
 
+import argparse
+
+
 def test_cli_flags_have_short_and_long_forms() -> None:
     parser = build_parser()
     # Check that each subparser action has both short and long options
-    for subparser_action in parser._subparsers._actions:
-        if hasattr(subparser_action, "choices") and subparser_action.choices:
-            for sub_name, sub_p in subparser_action.choices.items():
-                for action in sub_p._actions:
-                    if action.option_strings:
-                        shorts = [opt for opt in action.option_strings if opt.startswith("-") and not opt.startswith("--")]
-                        longs = [opt for opt in action.option_strings if opt.startswith("--")]
-                        assert len(shorts) >= 1, f"Missing short flag for {action.option_strings} in '{sub_name}'"
-                        assert len(longs) >= 1, f"Missing long flag for {action.option_strings} in '{sub_name}'"
+    subparsers_action = next((a for a in parser._actions if isinstance(a, argparse._SubParsersAction)), None)
+    assert subparsers_action is not None
+    for sub_name, sub_p in subparsers_action.choices.items():
+        for action in sub_p._actions:
+            if action.option_strings:
+                shorts = [opt for opt in action.option_strings if opt.startswith("-") and not opt.startswith("--")]
+                longs = [opt for opt in action.option_strings if opt.startswith("--")]
+                assert len(shorts) >= 1, f"Missing short flag for {action.option_strings} in '{sub_name}'"
+                assert len(longs) >= 1, f"Missing long flag for {action.option_strings} in '{sub_name}'"
 
 
 def test_cli_report_read_only_by_default(tmp_path: Path, sample_run_info: RunInfo, sample_trial_result: TrialResult, capsys: pytest.CaptureFixture[str]) -> None:
