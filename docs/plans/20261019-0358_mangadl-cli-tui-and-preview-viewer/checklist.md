@@ -39,12 +39,12 @@
   - [x] 2.1.3: Update `cli_core.py` and `cli.py` to route to TUI launcher
   - [x] 2.1.4: Run tests and verify all pass
   - [x] 2.1.5: Commit Task 2.1
-- [ ] Task 2.2: MangaDL TUI Launcher & Menu Customization (`mangadl.tui`)
-  - [ ] 2.2.1: Write failing test for MangaDL TUI launcher and category grouping (`tests/tui_test.py`)
-  - [ ] 2.2.2: Verify test failure
-  - [ ] 2.2.3: Implement `mangadl/tui.py`
-  - [ ] 2.2.4: Run tests and verify all pass
-  - [ ] 2.2.5: Commit Task 2.2
+- [x] Task 2.2: MangaDL TUI Launcher & Menu Customization (`mangadl.tui`)
+  - [x] 2.2.1: Write failing test for MangaDL TUI launcher and category grouping (`tests/tui_test.py`)
+  - [x] 2.2.2: Verify test failure
+  - [x] 2.2.3: Implement `mangadl/tui.py`
+  - [x] 2.2.4: Run tests and verify all pass
+  - [x] 2.2.5: Commit Task 2.2
 - [ ] Task 2.3: Live Process Execution & Action Callbacks
   - [ ] 2.3.1: Write failing test for post-preview action trigger and command formatting
   - [ ] 2.3.2: Verify test failure

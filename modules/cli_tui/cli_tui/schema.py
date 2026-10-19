@@ -57,20 +57,15 @@ def introspect_parser(
                 # Some actions share choices under aliases; deduplicate by object identity
                 if any(sub_name == existing_name for existing_name in subcommands):
                     continue
-                sub_help = (
-                    getattr(action._choices_actions[len(subcommands)], "help", None)
-                    if hasattr(action, "_choices_actions")
-                    else None
-                )
-                # Check choices actions mapping for accurate help text
+                sub_help = getattr(sub_parser, "description", None)
                 for choice_action in getattr(action, "_choices_actions", []):
                     if getattr(choice_action, "dest", None) == sub_name:
-                        sub_help = choice_action.help
+                        sub_help = choice_action.help or sub_help
                         break
                 subcommands[sub_name] = introspect_parser(
                     sub_parser,
                     name=sub_name,
-                    help_text=sub_help or getattr(sub_parser, "description", None),
+                    help_text=sub_help,
                 )
             continue
 
@@ -78,7 +73,9 @@ def introspect_parser(
         is_positional = len(flags) == 0
 
         action_type = "store"
-        if isinstance(action, getattr(argparse, "BooleanOptionalAction", type("dummy", (), {}))):
+        if isinstance(
+            action, getattr(argparse, "BooleanOptionalAction", type("dummy", (), {}))
+        ):
             action_type = "boolean_optional"
         elif isinstance(action, argparse._StoreTrueAction):
             action_type = "store_true"
