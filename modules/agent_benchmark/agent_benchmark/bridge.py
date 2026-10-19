@@ -111,15 +111,20 @@ class OpenCodeBridge:
     async def dispatch(self, workspace: Path, prompt: str, *, provider: str, model: str, agent: str) -> WorkerHandle:
         if not provider or not model or not agent:
             raise ValueError("Explicit provider, model and role are required")
+        self.last_history = []
         self.last_receipt = {"directory": str(workspace), "status": "unknown"}
         try:
             receipt = await self.call_tool("opencode_fire", {
                 "directory": str(workspace), "prompt": prompt, "providerID": provider,
                 "modelID": model, "agent": agent, "title": "agent-benchmark first attempt",
             })
-            self.last_receipt = receipt
+            self.last_receipt = receipt if isinstance(receipt, dict) else self.last_receipt
         except Exception as error:
+            if isinstance(error, SubmissionUncertain):
+                self.last_receipt = error.receipt
             raise SubmissionUncertain(self.last_receipt) from error
+        if not isinstance(receipt, dict):
+            raise SubmissionUncertain(self.last_receipt)
         if not all(isinstance(receipt.get(k), str) and receipt[k] for k in ("jobId", "sessionId", "messageId")):
             raise SubmissionUncertain(receipt)
         # Unknown status with known handles is observed, never re-submitted.
@@ -185,7 +190,7 @@ async def connected_bridge(*, base_url: str = "http://127.0.0.1:4096", request_s
                     result = await session.call_tool(name, args, read_timeout_seconds=timedelta(seconds=request_seconds))
                     data = result.structuredContent
                     if result.isError or not isinstance(data, dict) or data.get("isError"):
-                        raise RuntimeError(f"Bridge call failed: {name}")
+                        raise SubmissionUncertain(data if isinstance(data, dict) else {})
                     return data
 
                 yield OpenCodeBridge(call_tool, http)

@@ -53,6 +53,8 @@ def load_task(path: Path) -> Task:
 
 
 def _read_tree(root: Path) -> dict[str, bytes]:
+    if root.is_symlink() or root.is_junction() or not root.is_dir():
+        raise ValueError("Checkpoint root must be an ordinary directory, not a link")
     files = {}
     for path in sorted(root.rglob("*")):
         if path.is_symlink() or path.is_junction():

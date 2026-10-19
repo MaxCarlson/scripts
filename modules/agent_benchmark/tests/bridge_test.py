@@ -123,3 +123,63 @@ def test_abort_refuses_newer_turn_before_calling_session_wide_cancel():
                 await OpenCodeBridge(no_tool, http).cancel(HANDLE)
 
     asyncio.run(run())
+
+
+def test_new_submission_does_not_reuse_previous_transcript(tmp_path):
+    async def uncertain(name, args):
+        raise RuntimeError("lost submit response")
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            bridge = OpenCodeBridge(uncertain, http)
+            bridge.last_history = messages()
+            from agent_benchmark.bridge import SubmissionUncertain
+            with pytest.raises(SubmissionUncertain):
+                await bridge.dispatch(tmp_path, "next", provider="lmstudio", model="test", agent="local-worker")
+            assert bridge.last_history == []
+
+    asyncio.run(run())
+
+
+def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path):
+    def remote(request):
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": ["lmstudio"]})
+        return httpx.Response(200, json=[{"name": "local-worker", "permission": [{"permission": "task", "action": "deny"}]}])
+
+    async def unused(name, args):
+        pytest.fail("Preflight must not dispatch or configure anything")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            facts = await bridge.preflight(tmp_path, provider="lmstudio", model="model-a", agent="local-worker")
+            assert facts["model"] == "model-a" and facts["opencode_version"] == "1.19.3"
+            with pytest.raises(ValueError):
+                await bridge.preflight(tmp_path, provider="lmstudio", model="missing", agent="local-worker")
+            with pytest.raises(ValueError):
+                await bridge.preflight(tmp_path, provider="cloud", model="model-a", agent="local-worker")
+            with pytest.raises(ValueError):
+                await bridge.preflight(tmp_path, provider="lmstudio", model="model-a", agent="unknown")
+
+    asyncio.run(run())
+
+
+def test_bridge_error_retains_any_durable_identifiers(tmp_path):
+    from agent_benchmark.bridge import SubmissionUncertain
+    receipt = {"status": "unknown", "jobId": "durable-job", "sessionId": "known-session", "messageId": "known-turn"}
+
+    async def failed(name, args):
+        raise SubmissionUncertain(receipt)
+
+    async def run():
+        async with httpx.AsyncClient() as http:
+            bridge = OpenCodeBridge(failed, http)
+            with pytest.raises(SubmissionUncertain) as error:
+                await bridge.dispatch(tmp_path, "work", provider="lmstudio", model="model-a", agent="local-worker")
+            assert error.value.receipt["jobId"] == "durable-job"
+            assert bridge.last_receipt["messageId"] == "known-turn"
+
+    asyncio.run(run())
