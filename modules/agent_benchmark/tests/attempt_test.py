@@ -11,7 +11,7 @@ from agent_benchmark.bridge import SubmissionUncertain
 from agent_benchmark.evidence import capture, load_task, verify
 from agent_benchmark.lifecycle import DispatchGuard, Observation, WorkerHandle
 
-TASK = Path(__file__).resolve().parents[1] / "tasks/py-grep-smoke"
+TASK = Path(__file__).resolve().parents[1] / "agent_benchmark/tasks/py-grep-smoke"
 GOOD = "def grep(pattern, lines, ignore_case=False):\n    return [s for s in lines if (pattern.lower() in s.lower() if ignore_case else pattern in s)]\n"
 
 
@@ -223,7 +223,8 @@ def test_observation_loop_halts_after_exceeding_max_consecutive_errors(tmp_path)
             return {"status": "cancelled"}
 
     worker = PersistentlyBrokenWorker()
-    result = attempt(tmp_path, worker, task_seconds=10)
+    with pytest.warns(RuntimeWarning, match="Unresolved worker"):
+        result = attempt(tmp_path, worker, task_seconds=10)
     assert result.execution_error == "ConnectError"
 
 

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-benchmark"
-version = "0.3.0"
+version = "1.0.0"
 description = "Independent evaluation of coding workers through the existing OpenCode bridge"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["mcp>=1.30,<2", "httpx>=0.28,<1"]
+dependencies = ["benchmark-core>=0.1.1,<0.2", "mcp>=1.30,<2", "httpx>=0.28,<1"]
 
 [tool.setuptools.packages.find]
 where = ["."]
@@ -21,3 +21,12 @@ testpaths = ["tests"]
 
 [tool.ruff]
 line-length = 120
+
+[project.scripts]
+agent-bench = "agent_benchmark.cli:main"
+
+[tool.setuptools.package-data]
+agent_benchmark = ["tasks/**/*"]
+
+[tool.setuptools.exclude-package-data]
+agent_benchmark = ["**/__pycache__/*", "**/*.pyc"]

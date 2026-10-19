@@ -63,16 +63,22 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
                for m in history):
             return unknown
         users = [m for m in history if isinstance(m.get("info"), dict) and m["info"].get("role") == "user"]
-        if not users or users[-1]["info"]["id"] != handle.message_id:
+        if len(users) != 1 or users[-1]["info"]["id"] != handle.message_id:
             return unknown
         assistants = [m for m in history if isinstance(m.get("info"), dict)
                       and m["info"].get("role") == "assistant"
                       and m["info"].get("parentID") == handle.message_id]
         if not assistants:
             return unknown
+        if len(assistants) > 1:
+            for message in assistants:
+                stamp = message["info"].get("time")
+                created = stamp.get("created") if isinstance(stamp, dict) else None
+                if not isinstance(created, (int, float)) or isinstance(created, bool) or not math.isfinite(created):
+                    return unknown  # Cannot choose a final step from ambiguous ordering.
         final = assistants[-1]["info"] if isinstance(assistants[-1].get("info"), dict) else {}
         error = final.get("error") if isinstance(final.get("error"), dict) else {}
-        has_authoritative_error = bool(error)
+        has_authoritative_error = isinstance(error.get("name"), str) and bool(error["name"])
         time_info = final.get("time") if isinstance(final.get("time"), dict) else {}
         completed = time_info.get("completed")
         has_completed_time = (
@@ -81,11 +87,22 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
             and math.isfinite(completed)
         )
         finish_reason = final.get("finish")
-        has_valid_structured = final.get("structured") is not None
-
+        # OpenCode 1.19.3 prompt.ts sets structured after processing StructuredOutput
+        # and immediately exits its loop, sometimes preserving finish="tool-calls".
+        # Require that exact completed tool + requested format, not arbitrary data.
+        user_format = users[-1]["info"].get("format")
+        final_parts = assistants[-1].get("parts")
+        has_terminal_structured = (
+            final.get("structured") is not None
+            and isinstance(user_format, dict) and user_format.get("type") == "json_schema"
+            and isinstance(final_parts, list)
+            and any(isinstance(part, dict) and part.get("type") == "tool" and part.get("tool") == "StructuredOutput"
+                    and isinstance(part.get("state"), dict) and part["state"].get("status") == "completed"
+                    for part in final_parts)
+        )
         normal_finished = has_completed_time and (
-            has_valid_structured
-            or (finish_reason is not None and finish_reason not in ("tool-calls", "unknown"))
+            finish_reason in ("stop", "length", "content-filter")
+            or (finish_reason == "tool-calls" and has_terminal_structured)
         )
         finished = normal_finished or has_authoritative_error
         tools_running = False

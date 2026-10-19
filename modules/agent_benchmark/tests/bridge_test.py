@@ -40,6 +40,8 @@ def test_incomplete_tool_and_tool_call_step_are_not_termination():
     data[1]["info"]["finish"] = "tool-calls"
     assert not parse_observation(HANDLE, {}, data).confirms_termination
     data[1]["info"]["structured"] = {"outcome": "completed"}
+    data[0]["info"]["format"] = {"type": "json_schema"}
+    data[1]["parts"].append({"type": "tool", "tool": "StructuredOutput", "state": {"status": "completed"}})
     assert parse_observation(HANDLE, {}, data).confirms_termination
 
 
@@ -330,3 +332,26 @@ def test_connected_bridge_tool_error_preserves_content_and_masks_password(monkey
 
     asyncio.run(run())
 
+
+
+def test_nonnull_structured_on_unproven_tool_step_is_not_cleanup_evidence():
+    data = messages()
+    data[1]["info"].update(finish="tool-calls", structured={"answer": "looks done"})
+    assert not parse_observation(HANDLE, {}, data).confirms_termination
+
+
+def test_structured_output_terminal_step_requires_matched_format_and_completed_tool():
+    data = messages()
+    data[0]["info"]["format"] = {"type": "json_schema", "schema": {"type": "object"}}
+    data[1]["info"].update(finish="tool-calls", structured={"answer": "done"})
+    data[1]["parts"].append({"type": "tool", "tool": "StructuredOutput", "state": {"status": "running"}})
+    assert not parse_observation(HANDLE, {}, data).confirms_termination
+    data[1]["parts"][-1]["state"]["status"] = "completed"
+    assert parse_observation(HANDLE, {}, data).confirms_termination
+
+
+def test_multiple_assistants_with_missing_ordering_cannot_confirm_old_terminal_step():
+    data = messages()
+    data.append({"info": {"id": "assistant-2", "sessionID": "session-1", "parentID": "user-1",
+                          "role": "assistant", "time": None}, "parts": []})
+    assert not parse_observation(HANDLE, {}, data).confirms_termination

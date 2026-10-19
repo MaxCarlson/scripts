@@ -7,7 +7,7 @@ import sys
 import pytest
 
 MODULE_ROOT = Path(__file__).resolve().parents[1]
-TASK_DIR = MODULE_ROOT / "tasks" / "py-grep-smoke"
+TASK_DIR = MODULE_ROOT / "agent_benchmark" / "tasks" / "py-grep-smoke"
 MANIFEST_PATH = TASK_DIR / "task.json"
 INSTRUCTION_PATH = TASK_DIR / "instruction.md"
 SEED_PATH = TASK_DIR / "seed" / "grep.py"

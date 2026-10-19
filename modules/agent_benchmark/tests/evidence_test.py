@@ -6,7 +6,7 @@ import pytest
 
 from agent_benchmark.evidence import capture, changed_paths, load_task, prepare_workspace, verify
 
-TASK = Path(__file__).resolve().parents[1] / "tasks" / "py-grep-smoke"
+TASK = Path(__file__).resolve().parents[1] / "agent_benchmark" / "tasks" / "py-grep-smoke"
 GOOD = "def grep(pattern, lines, ignore_case=False):\n    return [s for s in lines if (pattern.lower() in s.lower() if ignore_case else pattern in s)]\n"
 
 
