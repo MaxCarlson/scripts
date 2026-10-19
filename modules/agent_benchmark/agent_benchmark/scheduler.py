@@ -368,7 +368,15 @@ class ExperimentScheduler:
         # Final comparison
         final_comparison = aggregate_experiment(config, self.completed_runs)
         final_exp = Experiment(config=config, run_refs=self.run_refs)
-        save_experiment(experiment_dir, final_exp, comparison=final_comparison, overwrite=True)
+        all_trials = [t for _, t in self.executed_trials]
+        save_experiment(
+            experiment_dir,
+            final_exp,
+            comparison=final_comparison,
+            trials=all_trials,
+            overwrite=True,
+            generate_reports=True,
+        )
 
         if self.on_experiment_complete:
             self.on_experiment_complete(final_comparison)

@@ -37,8 +37,8 @@
 - [x] 4.6: Write unit tests in `modules/interactive_reports/tests/` and benchmark adapter tests.
 
 ## Stage 5: CLI Integration, End-to-End Regressions & Acceptance
-- [ ] 5.1: Wire CLI subcommands (`models list`, `experiment plan`, `experiment run`, `experiment status`, `experiment report`) in `agent_benchmark/cli.py`.
-- [ ] 5.2: Write end-to-end multi-model experiment integration test.
-- [ ] 5.3: Run complete offline regression suites across `benchmark_core`, `agent_benchmark`, and `termdash`.
-- [ ] 5.4: Run Ruff formatting/lint and Mypy static type checking.
-- [ ] 5.5: Update documentation and prepare Sol Medium handoff.
+- [x] 5.1: Wire CLI subcommands (`models list`, `experiment plan`, `experiment run`, `experiment status`, `experiment report`) in `agent_benchmark/cli.py`.
+- [x] 5.2: Write end-to-end multi-model experiment integration test.
+- [x] 5.3: Run complete offline regression suites across `benchmark_core`, `agent_benchmark`, and `termdash`.
+- [x] 5.4: Run Ruff formatting/lint and Mypy static type checking.
+- [x] 5.5: Update documentation and prepare Sol Medium handoff.

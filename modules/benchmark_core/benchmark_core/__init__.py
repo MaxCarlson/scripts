@@ -59,7 +59,9 @@ from .models import (
     validate_relative_path,
 )
 from .reporting import (
+    generate_experiment_reports,
     generate_reports,
+    render_experiment_comparison_csv,
     render_report_md,
     render_summary_csv,
     render_summary_json,
@@ -156,7 +158,9 @@ __all__ = [
     "summarize",
     "summarize_task",
     # Reporting
+    "generate_experiment_reports",
     "generate_reports",
+    "render_experiment_comparison_csv",
     "render_report_md",
     "render_summary_csv",
     "render_summary_json",
