@@ -242,6 +242,8 @@ class LMStudioAPI:
         }
         if max_tokens is not None and max_tokens > 0:
             payload["max_tokens"] = max_tokens
+        if stream:
+            payload["stream_options"] = {"include_usage": True}
         if extra:
             payload.update(extra)
 

@@ -275,6 +275,8 @@ def cmd_lmst_chat(args: argparse.Namespace) -> int:
                 f.write(final_text)
 
         if stats:
+            if not final_text.endswith("\n") and not args.newline:
+                _eprint("")
             _print_stats(last_usage, t1 - t0)
         return 0
 
@@ -506,6 +508,9 @@ def cmd_lmstui_models_info(args: argparse.Namespace) -> int:
 def cmd_lmstui_run(args: argparse.Namespace) -> int:
     cfg = load_config(getattr(args, "base_url", None), getattr(args, "timeout_seconds", None))
     api = LMStudioAPI(cfg)
+    model = args.model
+    if not model:
+        model, _, _ = api.resolve_model()
     messages: List[Dict[str, str]] = []
     if args.system:
         messages.append({"role": "system", "content": args.system})
@@ -513,7 +518,7 @@ def cmd_lmstui_run(args: argparse.Namespace) -> int:
 
     if args.stream:
         lines = api.chat_rest(
-            model=args.model,
+            model=model,
             messages=messages,
             temperature=args.temperature,
             max_tokens=args.max_tokens,
@@ -528,7 +533,7 @@ def cmd_lmstui_run(args: argparse.Namespace) -> int:
         return 0
 
     resp = api.chat_rest(
-        model=args.model,
+        model=model,
         messages=messages,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
@@ -541,8 +546,11 @@ def cmd_lmstui_run(args: argparse.Namespace) -> int:
 def cmd_lmstui_chat(args: argparse.Namespace) -> int:
     cfg = load_config(getattr(args, "base_url", None), getattr(args, "timeout_seconds", None))
     api = LMStudioAPI(cfg)
+    model = args.model
+    if not model:
+        model, _, _ = api.resolve_model()
     state = ReplState(
-        model=args.model,
+        model=model,
         system=args.system,
         temperature=args.temperature,
         max_tokens=args.max_tokens,
@@ -764,7 +772,7 @@ def build_parser_lmstui() -> argparse.ArgumentParser:
 
     sp_run = sub.add_parser("run", help="One-shot chat request")
     _add_lmstui_common_flags(sp_run, is_subparser=True)
-    sp_run.add_argument("-m", "--model", required=True, help="Model id")
+    sp_run.add_argument("-m", "--model", default=None, help="Model id (auto-selects loaded model if omitted)")
     sp_run.add_argument("-p", "--prompt", required=True, help="User prompt")
     sp_run.add_argument("-s", "--system", default=None, help="System prompt")
     sp_run.add_argument("-T", "--temperature", default=0.7, type=float, help="Temperature")
@@ -774,7 +782,7 @@ def build_parser_lmstui() -> argparse.ArgumentParser:
 
     sp_chat = sub.add_parser("chat", help="Interactive chat REPL")
     _add_lmstui_common_flags(sp_chat, is_subparser=True)
-    sp_chat.add_argument("-m", "--model", required=True, help="Model id")
+    sp_chat.add_argument("-m", "--model", default=None, help="Model id (auto-selects loaded model if omitted)")
     sp_chat.add_argument("-s", "--system", default=None, help="System prompt")
     sp_chat.add_argument("-T", "--temperature", default=0.7, type=float, help="Temperature")
     sp_chat.add_argument("-n", "--max-tokens", default=-1, type=int, help="Max tokens (-1 = unlimited)")
