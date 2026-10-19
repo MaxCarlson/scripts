@@ -41,3 +41,17 @@
 - [x] Author `PHASE_D_INTEGRATION_HANDOFF.md`
 - [x] Run full test suite, Ruff check, Ruff format (120 cols), and Mypy
 - [x] Commit Phase D changes and halt for Sol Medium review
+
+
+## Final review corrections and remaining gates
+
+- [x] Review actual assembly, not only synthetic component scenarios.
+- [x] Correct startup/readiness, terminal cooldown restart, pending drain and stale admission.
+- [x] Authenticate/attribute abort; reject terminal recovery; preserve uncertainty holds.
+- [x] Add actual factory/lifespan/CLI-path offline regression cases.
+- [x] Correct persistence, watchdog, abort and deadline claims in operating docs.
+- [ ] Independently verify every supervised acceptance prerequisite.
+- [ ] Obtain separate user authorization before any live operation.
+- [ ] Implement/review durable write-ahead startup reconciliation and physical-resource transactions before unattended operation.
+
+The original scenario checklist denotes offline scenario coverage, not real crash recovery or exhaustive cancellation validation. Scenario 15 is same-memory hold rejection. Managed model mutation is now always disabled. Full shutdown is not strictly bounded by the drain budget.

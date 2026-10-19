@@ -68,22 +68,11 @@ class OperationClassifier:
 
         # 2. Inference endpoints
         if m == "POST":
-            if (
-                norm_path in KNOWN_INFERENCE_PATHS
-                or norm_path.endswith("/chat/completions")
-                or norm_path.endswith("/completions")
-                or norm_path.endswith("/embeddings")
-                or norm_path.endswith("/messages")
-            ):
+            if norm_path in KNOWN_INFERENCE_PATHS:
                 return OperationKind.INFERENCE
 
             # 3. Model load/unload endpoints
-            if (
-                norm_path in KNOWN_MODEL_MUTATION_PATHS
-                or norm_path.endswith("/models/load")
-                or norm_path.endswith("/model/load")
-                or norm_path.endswith("/model/unload")
-            ):
+            if norm_path in KNOWN_MODEL_MUTATION_PATHS:
                 return OperationKind.MODEL_MUTATION
 
             # Any other POST is an unsupported mutating endpoint
@@ -98,8 +87,10 @@ class OperationClassifier:
             if (
                 norm_path in KNOWN_METADATA_PATHS
                 or norm_path == "/"
-                or norm_path.startswith("/v1/models/")
-                or norm_path.startswith("/api/v0/models/")
+                or any(
+                    norm_path.startswith(prefix) and "/" not in norm_path[len(prefix) :]
+                    for prefix in ("/v1/models/", "/api/v0/models/")
+                )
             ):
                 return OperationKind.METADATA_READ
             return OperationKind.UNKNOWN_READ
@@ -132,8 +123,10 @@ class AdmissionController:
         self,
         service: Optional[CoordinatorService] = None,
         event_dispatcher: Optional[EventDispatcher] = None,
+        standalone: bool = False,
     ) -> None:
         self.service = service
+        self.standalone = standalone
         self.dispatcher = event_dispatcher or EventDispatcher()
 
     def set_service(self, service: CoordinatorService) -> None:
@@ -151,6 +144,9 @@ class AdmissionController:
         if kind == OperationKind.INTERNAL_COORDINATOR:
             return AdmissionDecision(allowed=True, operation_kind=kind)
 
+        # A bare proxy must explicitly opt out of managed coordination.
+        if self.service is None and not self.standalone:
+            return AdmissionDecision(False, 503, "coordinator_not_ready", "No managed service is bound", kind)
         # Check service readiness
         if self.service is not None:
             if not self.service.is_ready:
@@ -171,7 +167,11 @@ class AdmissionController:
                 )
 
         # Route evaluation
-        if kind == OperationKind.METADATA_READ or kind == OperationKind.UNKNOWN_READ:
+        if kind == OperationKind.UNKNOWN_READ:
+            return AdmissionDecision(
+                False, 501, "unsupported_endpoint", "Unrecognized read route is not verified harmless", kind
+            )
+        if kind == OperationKind.METADATA_READ:
             return AdmissionDecision(allowed=True, operation_kind=kind)
 
         elif kind == OperationKind.INFERENCE:
@@ -185,6 +185,14 @@ class AdmissionController:
             )
 
         elif kind == OperationKind.MODEL_MUTATION:
+            if self.service is not None:
+                return AdmissionDecision(
+                    False,
+                    503,
+                    "uncoordinated_model_mutation",
+                    "Managed model mutation is disabled pending transactional arbitration",
+                    kind,
+                )
             if not self.dispatcher.has_blocking_listeners("lmstudio.model_load_requested"):
                 return AdmissionDecision(
                     allowed=False,

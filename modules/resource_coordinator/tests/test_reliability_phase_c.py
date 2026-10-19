@@ -88,8 +88,9 @@ async def test_external_supervisor_immediate_relaunch() -> None:
     result = await action.execute()
     assert result.outcome == ActionOutcome.SUCCESS
 
-    # Give supervisor's background relaunch task time to trigger
-    await asyncio.sleep(0.03)
+    # Await the simulated relaunch itself; wall-clock sleeps race Windows scheduling.
+    assert backend._relaunch_task is not None
+    await asyncio.wait_for(backend._relaunch_task, timeout=1)
 
     # Because external supervisor automatically relaunched, the process is running again with new PID!
     current_info = await supervisor.status()

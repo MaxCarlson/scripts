@@ -91,6 +91,8 @@ class PolicyEngine:
 
     async def _on_resource_idle(self, event: Event) -> None:
         """Trigger after_release_actions when a resource becomes idle."""
+        if self.lease_mgr.restarts_blocked:
+            return
         resource = event.data.get("resource")
         if not resource:
             return

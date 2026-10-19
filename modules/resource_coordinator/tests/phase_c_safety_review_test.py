@@ -130,7 +130,9 @@ async def test_missing_gpu_measurement_is_not_zero_utilization(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_unconfigured_model_load_cannot_reach_upstream():
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
 
     def forbidden(req):
         pytest.fail("unconfigured model mutation reached upstream")

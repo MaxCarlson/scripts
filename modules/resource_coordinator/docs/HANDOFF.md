@@ -1,12 +1,9 @@
-# Resource Coordinator Module Handoff
+# Resource Coordinator current handoff
 
-- Current workstream: Phase C safety review on `resource-coordinator-phase-c-prep` in `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-c-prep`.
-- Reviewed source: 9101ca7c; baseline: e903cf2e. Corrections are the commit containing this handoff; final message supplies its hash.
-- Decision: **NO-GO** for supervised live testing as currently implemented. No live operation, merge or push is authorized by this result.
-- Validation: 151 offline tests passed; Ruff check/format clean (30 files at 120 columns), Mypy clean (14 files), whitespace clean. Package 0.3.0.
-- Full findings, changed behavior, verification and prerequisites: [Phase C safety review](PHASE_C_SAFETY_REVIEW.md) and [preparation handoff](PHASE_C_PREPARATION_HANDOFF.md).
-- Fixed: exact identity, strict fail-closed state helpers, model-policy/all-resource restart guards, stop/start serialization gap, telemetry subprocess cleanup/unknown state, restrictive template, inaccurate/dangerous preparation instructions.
-- Before supervised GO: implement/review the same-process lifecycle/admission harness; verify exact live config/identities and shared console; enforce single-domain/client scope, preloaded Qwen and no watchdog; review abort plan and obtain separate authorization.
-- Before unattended operation: real cross-resource transaction, durable write-ahead safety state/startup gate/reconciliation, supervisor containment, durable recovery audit and Windows/TCP validation.
-- Telemetry T1 is preserved separately on `resource-coordinator-20261019-0915` at dd8dd7ff. Integration assessment is in the report; no reconciliation was executed. Retain both workstreams and all Phase B guards.
-- Next action: user reviews NO-GO checkpoint; authorize missing lifecycle or architecture implementation. Stop here.
+Current workstream: **Phase D final safety review**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`. Reviewed Gemini input `e9b8c9f5` against `3744c4c2`; correction hash is reported in the final response.
+
+Review outcome: **CONDITIONAL GO**, operational NO-GO until independent prerequisites and separate user authorization. Unattended NO-GO. No live operation, merge or push was performed or authorized by this outcome.
+
+See [Phase D handoff](PHASE_D_INTEGRATION_HANDOFF.md), [full findings](PHASE_D_SAFETY_REVIEW.md), [acceptance gates](SUPERVISED_LIVE_ACCEPTANCE_PLAN.md) and [abort/crash protocol](EMERGENCY_ABORT_PROCEDURE.md). Package 0.4.0. Keep T1 dd8dd7ff separate; combined integration is unverified.
+
+Next action: review the checkpoint and collect independently verifiable environment evidence before requesting separate live authorization. Durable recovery and general physical-resource arbitration remain blockers for unattended operation.

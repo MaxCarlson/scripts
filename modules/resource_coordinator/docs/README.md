@@ -15,6 +15,10 @@
 7. **`adapters/lmstudio/gateway.py`**: Transparent asynchronous HTTP reverse proxy intercepting OpenAI-compatible and native LM Studio API endpoints, tracking streaming and non-streaming inference requests, and coordinating leases.
 8. **`adapters/miners/adapter.py`**: Application adapter for cryptocurrency miners (such as Krig/Kryptex PearlMiner) managing pause ownership and manual overrides.
 
+## Current checkpoint
+
+[Phase D final safety review](PHASE_D_SAFETY_REVIEW.md): conditional supervised recommendation only; no live execution authorization.
+
 ## Documentation Index
 
 - [HANDOFF.md](HANDOFF.md): Immediate state, branch info, active plans, risks, and next steps.

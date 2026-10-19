@@ -96,6 +96,7 @@ def test_cli_cmd_abort_mock(monkeypatch, capsys):
     import httpx
     from resource_coordinator.cli import cmd_abort
 
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
     mock_resp = MagicMock()
     mock_resp.status_code = 200
     mock_resp.json.return_value = {

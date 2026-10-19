@@ -66,7 +66,9 @@ async def test_release_callback_can_acquire_another_resource():
 
 @pytest.mark.asyncio
 async def test_success_does_not_clear_earlier_uncertainty():
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
     await gateway.lease_mgr.inhibit_restart("gpu.inference", "A may still run", "A")
     gateway._http_client = httpx.AsyncClient(
         base_url="http://upstream",
@@ -106,7 +108,9 @@ def test_nonterminal_json_does_not_prove_completion(body):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["hook", "send", "read"])
 async def test_cancelled_gateway_request_cleans_claim_and_inhibits_if_forwarded(phase):
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
     entered = asyncio.Event()
 
     async def block(*args, **kwargs):
@@ -142,7 +146,9 @@ async def test_cancelled_gateway_request_cleans_claim_and_inhibits_if_forwarded(
 
 @pytest.mark.asyncio
 async def test_recovery_disabled_without_explicit_auth_configuration():
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
     await gateway.lease_mgr.inhibit_restart("gpu.inference", "unknown", "A")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=gateway.create_app()), base_url="http://gateway"
@@ -217,7 +223,7 @@ def test_invalid_config_is_rejected(data):
     ],
 )
 async def test_recovery_requires_attributed_override(payload, status):
-    gateway = LMStudioGateway(recovery_token="test-token")
+    gateway = LMStudioGateway(standalone=True, recovery_token="test-token")
     await gateway.lease_mgr.inhibit_restart("gpu.inference", "unknown", "A")
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=gateway.create_app()), base_url="http://gateway"
@@ -233,7 +239,7 @@ async def test_recovery_requires_attributed_override(payload, status):
 
 @pytest.mark.asyncio
 async def test_operator_cannot_override_active_or_pending_requests():
-    gateway = LMStudioGateway(recovery_token="test-token")
+    gateway = LMStudioGateway(standalone=True, recovery_token="test-token")
     await gateway.lease_mgr.inhibit_restart("gpu.inference", "unknown", "A")
     async with gateway.lease_mgr.reserve("gpu.inference") as reservation:
         async with httpx.AsyncClient(
@@ -254,7 +260,9 @@ async def test_operator_cannot_override_active_or_pending_requests():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("phase", ["start", "body", "upstream_error"])
 async def test_stream_send_failure_or_upstream_error_never_restarts(phase):
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
     closed = False
 
     class Stream(httpx.AsyncByteStream):
@@ -408,7 +416,7 @@ def test_complete_native_or_compatible_sse_split_across_chunks(payload):
 
 @pytest.mark.asyncio
 async def test_recovery_rejects_activity_on_other_gpu_resource():
-    gateway = LMStudioGateway(recovery_token="test-token")
+    gateway = LMStudioGateway(standalone=True, recovery_token="test-token")
     await gateway.lease_mgr.inhibit_restart("gpu.inference", "unknown", "A")
     async with gateway.lease_mgr.acquire("gpu.model_loading"):
         async with httpx.AsyncClient(
@@ -535,7 +543,9 @@ async def test_external_restart_permission_survives_loss_of_backend_owner():
 async def test_mutating_routes_cannot_bypass_coordination(path):
     from resource_coordinator.core.events import VetoOperation
 
-    gateway = LMStudioGateway()
+    gateway = LMStudioGateway(
+        standalone=True,
+    )
 
     async def veto(event):
         raise VetoOperation("offline veto")

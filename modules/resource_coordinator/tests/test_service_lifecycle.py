@@ -84,12 +84,12 @@ async def test_service_drain_with_active_leases(minimal_system):
         # Drain timeout (0.2s) will expire while lease is held
         await stop_task
 
-    assert service.state == ServiceState.STOPPED
+    assert service.state == ServiceState.RECONCILIATION_REQUIRED
     # Because lease was still active when drain timed out, restart MUST be inhibited!
     assert minimal_system.lease_mgr.is_restart_inhibited("gpu.inference") is True
     inh = minimal_system.lease_mgr.get_inhibition("gpu.inference")
     assert inh is not None
-    assert "shutdown_with_active_requests" in inh.reason
+    assert "shutdown:" in inh.reason
 
 
 @pytest.mark.asyncio

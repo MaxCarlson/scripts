@@ -5,7 +5,7 @@ General-purpose event-driven resource coordination framework, process supervisor
 and LM Studio proxy gateway.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from resource_coordinator.core.events import Event, EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import Lease, LeaseManager, LeaseType

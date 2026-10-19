@@ -55,16 +55,19 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Use in-memory fake miner backend instead of real process.",
     )
     serve_parser.add_argument(
+        "-m",
         "--start-miner",
         action="store_true",
         help="Start miner during service startup if configured.",
     )
     serve_parser.add_argument(
+        "-s",
         "--stop-miner-on-shutdown",
         action="store_true",
         help="Stop miner during service shutdown if configured.",
     )
     serve_parser.add_argument(
+        "-t",
         "--drain-timeout",
         type=float,
         default=30.0,
@@ -475,10 +478,20 @@ def cmd_preflight(args: argparse.Namespace) -> int:
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
+    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
+        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
+    )
+    if not token:
+        print("Abort requires RESOURCE_COORDINATOR_OPERATOR_TOKEN (or the configured recovery token).", file=sys.stderr)
+        return 1
     url = f"{args.url.rstrip('/')}/_coordinator/abort"
     try:
         with httpx.Client(timeout=5.0) as client:
-            resp = client.post(url, json={"reason": args.reason})
+            resp = client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json={"reason": args.reason, "operator": getpass.getuser()},
+            )
             if resp.status_code == 200:
                 data = resp.json()
                 if args.json:

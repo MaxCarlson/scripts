@@ -5,7 +5,8 @@
 #
 # BLOCKED TEMPLATE: not an executable acceptance plan. Replace placeholders locally; no environment expansion occurs.
 # Same-console process-group mode is selected; external adoption and force are denied.
-# A reviewed coordinator-owned startup path is still required; do not use standalone miner commands.
+# Use only the reviewed managed service after acceptance gates and separate live authorization.
+# Never use standalone miner commands or external adoption.
 
 version: "1.0"
 

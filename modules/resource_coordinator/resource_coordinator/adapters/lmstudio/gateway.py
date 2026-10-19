@@ -161,6 +161,7 @@ class LMStudioGateway:
         bounded_drain_seconds: Optional[float] = None,
         recovery_token: Optional[str] = None,
         admission_controller: Optional[AdmissionController] = None,
+        standalone: bool = False,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
@@ -169,12 +170,17 @@ class LMStudioGateway:
         self.bounded_drain_seconds = bounded_drain_seconds
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
-        self.admission_controller = admission_controller or AdmissionController(event_dispatcher=self.dispatcher)
+        self.admission_controller = admission_controller or AdmissionController(
+            event_dispatcher=self.dispatcher, standalone=standalone
+        )
         if bounded_drain_seconds:
             raise ValueError("Bounded drain is disabled until cancellation-safe upstream draining is verified")
 
     def set_service(self, service: Any) -> None:
         """Bind a coordinator service to gate admission on service readiness."""
+        bound = self.admission_controller.service
+        if bound is not None and bound is not service:
+            raise RuntimeError("Cannot replace the service bound to a gateway")
         self.admission_controller.set_service(service)
 
     def get_http_client(self) -> httpx.AsyncClient:
@@ -197,15 +203,23 @@ class LMStudioGateway:
             self.set_service(service)
         from contextlib import asynccontextmanager
 
+        bound_service = self.admission_controller.service
+
         @asynccontextmanager
         async def lifespan(app: Starlette):
-            if service is not None and hasattr(service, "start") and service.state.value == "created":
-                await service.start()
-            yield
-            if service is not None and hasattr(service, "stop") and service.state.value != "stopped":
-                await service.stop()
-            else:
-                await self.close()
+            try:
+                if bound_service is not None:
+                    if not await bound_service.start():
+                        raise RuntimeError("Coordinator service startup failed closed")
+                elif not self.admission_controller.standalone:
+                    raise RuntimeError("A managed service is required")
+                yield
+            finally:
+                with anyio.CancelScope(shield=True):
+                    if bound_service is not None:
+                        await bound_service.stop()
+                    else:
+                        await self.close()
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
@@ -224,7 +238,7 @@ class LMStudioGateway:
             {
                 "status": "online",
                 "service_state": svc.state.value if svc else "standalone",
-                "is_ready": svc.is_ready if svc else True,
+                "is_ready": svc.is_ready if svc else self.admission_controller.standalone,
                 "upstream_url": self.upstream_url,
                 "gpu_inference": {
                     "active_count": self.lease_mgr.active_count("gpu.inference"),
@@ -242,14 +256,22 @@ class LMStudioGateway:
         svc = self.admission_controller.service
         if not svc:
             return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
-        reason = "operator_abort_endpoint"
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        if not token:
+            return JSONResponse({"error": "Abort API disabled: configure an operator token"}, status_code=503)
+        supplied = request.headers.get("authorization", "")
+        if not secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
         try:
             body = await request.json()
-            if isinstance(body, dict) and body.get("reason"):
-                reason = str(body["reason"])
-        except Exception:
-            pass
-        res = await svc.emergency_abort(reason=reason)
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Attributed abort JSON is required"}, status_code=400)
+        if not isinstance(body, dict) or any(
+            not isinstance(body.get(k), str) or not body[k].strip() or len(body[k]) > 1024
+            for k in ("reason", "operator")
+        ):
+            return JSONResponse({"error": "Nonempty bounded reason and operator are required"}, status_code=400)
+        res = await svc.emergency_abort(reason=f"{body['operator']}: {body['reason']}")
         return JSONResponse(res)
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
@@ -271,6 +293,11 @@ class LMStudioGateway:
         reason = payload.get("reason")
         if not isinstance(operator, str) or not operator.strip() or not isinstance(reason, str) or not reason.strip():
             return JSONResponse({"error": "Operator and reason are required"}, status_code=400)
+        service = self.admission_controller.service
+        if service is not None and not service.is_ready:
+            return JSONResponse(
+                {"error": "Terminal or unready service requires independent reconciliation"}, status_code=409
+            )
         resource = request.query_params.get("resource", "gpu.inference")
         try:
             cleared = await self.lease_mgr.clear_inhibition(
@@ -310,8 +337,16 @@ class LMStudioGateway:
                 status_code=decision.status_code,
             )
 
-        # Read body
+        if decision.operation_kind == OperationKind.INTERNAL_COORDINATOR:
+            return JSONResponse({"error": "Unknown coordinator route or method"}, status_code=404)
+        # Body acquisition can suspend past abort/shutdown. Never reuse its old admission decision.
         body = await request.body()
+        decision = self.admission_controller.evaluate(method, path)
+        if not decision.allowed:
+            return JSONResponse(
+                {"error": {"type": decision.error_type, "message": decision.error_message}},
+                status_code=decision.status_code,
+            )
         model_name = ""
         if body:
             try:
@@ -400,8 +435,17 @@ class LMStudioGateway:
                         await reservation_cm.__aexit__(None, None, None)
 
         try:
+            if not self.admission_controller.evaluate(request.method, path).allowed:
+                raise VetoOperation("Admission closed before blocking actions")
             await self.dispatcher.emit_blocking(event_name, event_data, origin="lmstudio_gateway")
             await reservation.activate(timeout=self.timeout_seconds)
+            if not self.admission_controller.evaluate(request.method, path).allowed:
+                raise VetoOperation("Admission closed before forwarding")
+            service = self.admission_controller.service
+            if service is not None:
+                await service.verify_before_forward()
+            if not self.admission_controller.evaluate(request.method, path).allowed:
+                raise VetoOperation("Admission closed before forwarding")
             client = self.get_http_client()
             upstream_req = self._build_upstream_request(client, request, path, body, request_id)
             forwarded = True  # send may have reached upstream even if it raises/cancels

@@ -54,6 +54,7 @@ def mock_gateway():
     lease_mgr = LeaseManager(default_cooldown_seconds=0.1, event_dispatcher=dispatcher)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -197,6 +198,7 @@ async def test_gateway_concurrent_requests_share_stop():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -264,6 +266,7 @@ async def test_gateway_model_load_and_mining_resumption():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,

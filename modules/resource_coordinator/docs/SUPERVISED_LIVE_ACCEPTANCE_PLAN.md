@@ -1,123 +1,27 @@
-# Supervised Live Acceptance — Preparation & Safety Gates
+# First supervised acceptance test � review gates
 
-**Document Status:** Stage 4 / Pre-Live Readiness Checklist  
-**Current Decision:** **NO-GO for live operation** pending Codex Sol Medium final authorization.  
-**Reference Design:** [Phase D Integration Design](PHASE_D_INTEGRATION_DESIGN.md)  
-**Emergency Procedures:** [Emergency Abort Procedure](EMERGENCY_ABORT_PROCEDURE.md)
+**Review outcome: CONDITIONAL GO. Operational state: NO-GO until all gates below have evidence and the user separately authorizes execution.** Codex's recommendation is not execution authorization. No live work was done during this review.
 
----
+Scope: one normal, sequential non-streaming `/v1/chat/completions` request, preloaded idle Qwen, no tools, one GPU/client and one coordinator-owned miner. Interruptions, native APIs, streams, recovery, crash continuation and model operations are outside this first test.
 
-## 1. Readiness Status Summary
+## Required independently verifiable evidence
 
-Phase D has completed the implementation and offline validation of all required coordinator-owned service lifecycle, centralized request admission, and emergency abort mechanisms. 186 offline tests pass cleanly.
+1. Pin the reviewed branch/commit and private config. Retain `new_console=false`, external stop/restart/adoption=false, force=false. Exact executable, working directory, arguments, device and policy mapping must be reviewed; placeholders are not usable configuration. Use the real CLI/factory/lifespan and default managed gateway, never standalone mode. Config preflight passing proves configuration checks, not upstream idle or watchdog absence.
+2. Record installed LM Studio/Krig versions and exact launch context. Establish dedicated coordinator-owned group in the same console, expected CTRL_BREAK behavior and no unrelated group members. The stop path must positively verify exact original identity and known descendants absent before forwarding; failure vetoes the request and aborts the experiment. No force fallback or external adoption. Initial `--start-miner` is explicit authority only after this test itself is authorized.
+3. Exclude all competing clients, services, scheduled tasks, wrappers, watchdogs, miners and independent coordinators/launchers. Absence of a Windows service alone is insufficient. **Traffic sent directly to LM Studio port 1234 bypasses protection.** Isolate both ports and ensure only the designated client uses the coordinator. No model-loading hooks or independent process actions.
+4. Independently verify the designated Qwen is preloaded and execution idle, with no queued/unknown requests. Measure actual VRAM and compute headroom for resident Qwen plus mining on this GPU; no assumed model-size estimate is acceptance evidence. Loading/unloading is separate operator work, outside review authority.
+5. Configure the private operator token in service and operator terminal; review authenticated abort and out-of-band exact-identity intervention. Maintain a present operator and independent observations. Abort endpoint existence is not upstream cancellation or physical shutdown proof.
+6. Review the strict crash-abort protocol: any crash, stall, timeout, uncertain result or unexpected restart ends the experiment. No automatic relaunch, inhibition clearing, process restart or recovery to continue. Keep launchers disabled until all possibly active execution is independently reconciled. Agree how the operator will achieve that if the gateway is unresponsive.
+7. Review offline evidence and obtain **separate explicit user authorization** specifying this one experiment, launch flags, endpoint/model, stop conditions and operator intervention authority. No gate has been certified from live host inspection in this review.
 
-| Safety Gate | Offline Implementation Status | Live Acceptance Requirement | Status |
-| :--- | :--- | :--- | :--- |
-| **Gate 1: Service Lifecycle** | `CoordinatorService` state machine (`CREATED` -> `INITIALIZING` -> `PREFLIGHT` -> `READY` -> `DRAINING` -> `STOPPED` / `FAILED` / `RECONCILIATION_REQUIRED`) implemented and tested. | Verified offline in 16 integration scenarios. | **READY (OFFLINE)** |
-| **Gate 2: Centralized Admission** | `AdmissionController` and `OperationClassifier` fail closed (503 on unready/draining, 501 on unknown mutating, 503 on uncoordinated model load). | Verified offline; blocks all premature or unauthorized traffic. | **READY (OFFLINE)** |
-| **Gate 3: Process Ownership** | `ProcessSupervisor` with exact PID, creation time, and executable matching. Standalone mutation disabled. | Coordinator-owned launch (`--start-miner`, `--stop-miner-on-shutdown`). | **READY (OFFLINE)** |
-| **Gate 4: Emergency Abort** | HTTP `POST /_coordinator/abort` and CLI `resource-coordinator abort`. Imposes permanent restart inhibition without blind kills. | Verified in Scenario 16 and unit tests. | **READY (OFFLINE)** |
-| **Gate 5: Private Config & Env** | Placeholder template sanitized. Real paths, wallet args, and local process settings required. | Operator must create and review `config.private.yaml` locally. | **PENDING OPERATOR** |
-| **Gate 6: Client & Model Isolation**| Admission controller rejects external mutating calls. | Operator must isolate port 1234/1235 traffic and preload Qwen model out-of-band. | **PENDING OPERATOR** |
-| **Gate 7: Sol Medium Authorization**| Full offline evidence documented in `PHASE_D_INTEGRATION_HANDOFF.md`. | Explicit authorization by Codex Sol Medium required. | **PENDING SOL REVIEW** |
+## Sequence to include in a separately authorized runbook
 
----
+- Start the single managed service with explicit initial miner launch and shutdown-stop flags; record READY only after positive coordinator-owned RUNNING verification.
+- Submit exactly one small non-streaming chat request through port 1235. Observe pending claim and verified miner absence before upstream forwarding. Require HTTP 200 and normal completion; errors/uncertainty abort.
+- Observe the configured full cooldown with no early restart. Verify the subsequent miner identity is coordinator-owned and no inference remains active.
+- Gracefully shut down after the request. Verify miner absence, gateway termination and no delayed relaunch. A stopped service alone is insufficient evidence.
+- Review logs/observations; any discrepancy fails acceptance and returns NO-GO. No second request or interruption experiment is implied.
 
-## 2. Mandatory Pre-Flight Operational Conditions
+Read [abort/crash procedure](EMERGENCY_ABORT_PROCEDURE.md) before authorization. Shutdown drain has a deadline, but synchronous Windows calls can delay total shutdown; never treat elapsed timeout as proof of termination.
 
-Before any live test can be scheduled, the human operator must verify the following physical and environment prerequisites:
-
-### 1. Workload Isolation
-- Ensure no automated benchmark scripts, OpenCode background workers, or scheduled tasks are sending traffic to port 1234 or port 1235.
-- Ensure LM Studio is bound exclusively to `127.0.0.1:1234` (local loopback only).
-- Confirm that no third-party mining watchdogs (e.g., Kryptex auto-relauncher, external cron, or scheduled tasks) are active on the host.
-
-### 2. Model Residency
-- Manually launch LM Studio out-of-band.
-- Preload the designated Qwen model into VRAM.
-- Confirm the model is resident and idle. Verify VRAM usage in `nvidia-smi` (~24–28 GB resident for Qwen 38B, leaving sufficient headroom for the miner's DAG allocation or idle baseline).
-- **Note:** An idle loaded model does NOT prevent mining under coordinator policy.
-
-### 3. Private Configuration File
-- Create `config.private.yaml` using exact Windows paths:
-  ```yaml
-  version: "1.0"
-  service:
-    listen_host: "127.0.0.1"
-    listen_port: 1235
-    upstream_url: "http://127.0.0.1:1234"
-  processes:
-    krig:
-      name: "krig"
-      backend: "windows"
-      executable: "C:\\path\\to\\krig-miner.exe"
-      arguments:
-        - "--coin"
-        - "pearl"
-        - "--url"
-        - "stratum+ssl://your-pool.org:8048"
-        - "--user"
-        - "your_wallet/Worker1"
-      working_directory: "C:\\path\\to"
-      new_console: false
-      allow_external_stop: false
-      allow_external_restart: false
-      adopt_external: false
-      allow_force_termination: false
-  policies:
-    - name: "prioritize-local-inference"
-      trigger_event: "lmstudio.inference_requested"
-      target_process: "krig"
-      resource: "gpu.inference"
-      cooldown_seconds: 30.0
-      stop_process: true
-      restart_process: true
-      only_if_stopped_by_coordinator: true
-  ```
-- Run preflight validation:
-  ```powershell
-  python -m resource_coordinator.cli preflight --config config.private.yaml
-  ```
-- Preflight MUST output `PASSED`.
-
----
-
-## 3. Step-by-Step Supervised Test Procedure (Once Authorized)
-
-When explicitly authorized by Codex Sol Medium, the supervised test will proceed through the following strict sequence with the operator monitoring telemetry throughout:
-
-```text
-Step 1: Start Coordinator Service (with --start-miner)
-  │   - Coordinator validates preflight and reaches READY
-  │   - Krig miner launches under coordinator ownership (recorded PID/create-time)
-  │
-Step 2: Submit Single Synchronous Non-Streaming Inference
-  │   - POST /v1/chat/completions (model: qwen38, stream: false)
-  │   - Verify claim registered, miner stopped, stop verified before forward
-  │   - Request returns HTTP 200 with completed choices
-  │
-Step 3: Observe Post-Inference Idle Cooldown
-  │   - Resource enters 30-second cooldown
-  │   - Verify Krig remains STOPPED during the full cooldown window
-  │   - When cooldown expires, verify Krig automatically restarts under coordinator ownership
-  │
-Step 4: Graceful Coordinator Shutdown
-  │   - Send SIGINT (Ctrl+C) to coordinator console
-  │   - Coordinator drains active leases, stops Krig safely, reaches STOPPED
-  │
-Step 5: Post-Test Forensic Review
-      - Review journal logs, audit events, and GPU power/VRAM trace
-```
-
----
-
-## 4. Abort Criteria
-
-The operator must trigger an **Emergency Abort** immediately if any of the following occur:
-1. `nvidia-smi` shows simultaneous mining and inference GPU compute saturation (>95% power draw with unexpected VRAM thrashing).
-2. Miner fails to stop within the 10.0-second configured timeout.
-3. Upstream LM Studio returns an unexpected error or hangs without completing.
-4. Krig relaunches unexpectedly before the 30-second cooldown has expired.
-5. Coordinator process crashes or throws an unhandled exception.
-
-*See [Emergency Abort Procedure](EMERGENCY_ABORT_PROCEDURE.md) for execution instructions.*
+Unattended operation remains NO-GO pending write-ahead safety persistence/startup reconciliation, cross-resource transactions, single-instance authority/containment and reviewed real Windows/TCP/crash evidence. See [the full review](PHASE_D_SAFETY_REVIEW.md).

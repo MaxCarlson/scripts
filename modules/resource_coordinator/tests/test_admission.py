@@ -24,7 +24,6 @@ def test_operation_classifier_inference_endpoints():
         "/api/v0/completions",
         "/api/v0/embeddings",
         "/api/v1/chat",
-        "/custom/prefix/chat/completions",
     ]:
         assert OperationClassifier.classify("POST", path) == OperationKind.INFERENCE
         # GET on inference path is not an inference request
@@ -63,7 +62,7 @@ def test_operation_classifier_unsupported_mutating():
 
 def test_admission_controller_no_service():
     dispatcher = EventDispatcher()
-    controller = AdmissionController(event_dispatcher=dispatcher)
+    controller = AdmissionController(event_dispatcher=dispatcher, standalone=True)
 
     # Inference allowed with correct parameters
     dec = controller.evaluate("POST", "/v1/chat/completions")
@@ -125,7 +124,7 @@ def test_admission_controller_service_draining():
 
 def test_admission_controller_model_load_without_blocking_policy():
     dispatcher = EventDispatcher()
-    controller = AdmissionController(event_dispatcher=dispatcher)
+    controller = AdmissionController(event_dispatcher=dispatcher, standalone=True)
 
     # No blocking listener registered for model load
     dec = controller.evaluate("POST", "/api/v0/model/load")

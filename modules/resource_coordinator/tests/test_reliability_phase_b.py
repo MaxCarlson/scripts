@@ -92,6 +92,7 @@ async def test_atomic_registration_cancels_cooldown_before_hooks():
     assert lease_mgr.pending_count("gpu.inference") == 0
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -164,6 +165,7 @@ async def test_concurrent_inference_during_miner_shutdown():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -224,6 +226,7 @@ async def test_miner_initially_stopped_skips_stop_and_avoids_unwanted_restart():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -285,6 +288,7 @@ async def test_stream_without_done_marker_inhibits_restart():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -361,6 +365,7 @@ async def test_stream_confirmed_done_allows_restart():
     policy_engine.register_policy(policy)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -401,6 +406,7 @@ async def test_upstream_error_inhibits_restart():
     dispatcher = EventDispatcher()
     lease_mgr = LeaseManager(default_cooldown_seconds=0.05, event_dispatcher=dispatcher)
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -436,6 +442,7 @@ async def test_recovery_endpoint_via_gateway():
     assert lease_mgr.is_restart_inhibited("gpu.inference") is True
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
@@ -575,6 +582,7 @@ async def test_action_veto_unwinds_reservation():
     dispatcher.on("lmstudio.inference_requested", veto_hook, is_blocking=True)
 
     gateway = LMStudioGateway(
+        standalone=True,
         upstream_url="http://mock-lmstudio",
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,

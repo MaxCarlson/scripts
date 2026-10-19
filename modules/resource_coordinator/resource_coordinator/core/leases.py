@@ -157,6 +157,7 @@ class LeaseManager:
         self._inhibitions: Dict[str, RestartInhibition] = {}
         self._lock = asyncio.Lock()
         self._condition = asyncio.Condition(self._lock)
+        self.restarts_blocked = False
 
     def set_resource_cooldown(self, resource: str, cooldown_seconds: float) -> None:
         """Set a specific cooldown duration for a named resource."""
@@ -165,6 +166,22 @@ class LeaseManager:
     def get_resource_cooldown(self, resource: str) -> float:
         """Get the configured cooldown duration for a resource."""
         return self._resource_cooldowns.get(resource, self.default_cooldown_seconds)
+
+    def block_restarts(self, reason: str, holder_id: str = "service") -> list[asyncio.Task]:
+        """Latch lifecycle restart denial and holds before any callback can suspend.
+
+        Event-loop confined, like the count accessors. This gate cannot be cleared
+        by operator inhibition recovery; a terminal service needs reconciliation.
+        """
+        self.restarts_blocked = True
+        tasks = list(self._cooldown_tasks.values())
+        resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+        for resource in resources:
+            self._cancel_cooldown_locked(resource)
+            if resource not in self._inhibitions:
+                self._inhibitions[resource] = RestartInhibition(resource, reason, holder_id)
+        logger.warning("Lifecycle restart gate latched: %s", reason)
+        return tasks
 
     def tracked_resources(self) -> set[str]:
         """Snapshot of resource names with claims, cooldowns or unresolved holds."""
@@ -282,6 +299,8 @@ class LeaseManager:
         """Start the idle cooldown timer if eligible (must hold self._lock)."""
         self._cancel_cooldown_locked(resource)
 
+        if self.restarts_blocked:
+            return
         if self.is_restart_inhibited(resource):
             inhibition = self._inhibitions[resource]
             logger.warning(

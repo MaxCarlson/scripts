@@ -626,10 +626,10 @@ async def test_scenario_14_attempted_model_management_bypass_fails_closed():
     assert resp_unload.status_code == 503
     assert resp_unload.json()["error"]["code"] == "uncoordinated_model_mutation"
 
-    # OpenAI-compatible model load attempt
+    # Unrecognized OpenAI-shaped model load attempt
     resp_oai_load = await client.post("/v1/models/load", json={"model": "qwen38"})
-    assert resp_oai_load.status_code == 503
-    assert resp_oai_load.json()["error"]["code"] == "uncoordinated_model_mutation"
+    assert resp_oai_load.status_code == 501
+    assert resp_oai_load.json()["error"]["code"] == "unsupported_endpoint"
 
 
 # ============================================================================
@@ -638,7 +638,7 @@ async def test_scenario_14_attempted_model_management_bypass_fails_closed():
 @pytest.mark.asyncio
 async def test_scenario_15_coordinator_restart_with_unresolved_safety_state():
     system, gateway, _ = make_test_system()
-    # Simulate prior crash leaving unresolved restart inhibition on gpu.inference
+    # Same-memory unresolved hold only: this does not simulate crash persistence.
     await system.lease_mgr.inhibit_restart(
         "gpu.inference",
         reason="Unresolved previous session interruption",
@@ -647,12 +647,12 @@ async def test_scenario_15_coordinator_restart_with_unresolved_safety_state():
     service = CoordinatorService(system=system)
 
     passed, msgs = service.preflight_check()
-    # Preflight should flag the notice
+    # An unresolved in-memory hold is a startup failure, not crash reconciliation.
     assert any("Unresolved previous session interruption" in m for m in msgs)
 
     # Start service
     await service.start()
-    assert service.is_ready is True
+    assert service.is_ready is False
 
     # Mining restart remains inhibited
     assert system.lease_mgr.is_restart_inhibited("gpu.inference") is True
@@ -674,8 +674,13 @@ async def test_scenario_16_emergency_abort_stops_admission_preserves_holds():
     # Set active inhibition
     await system.lease_mgr.inhibit_restart("gpu.inference", reason="Manual hold", holder_id="admin")
 
-    # Operator triggers emergency abort via HTTP
-    resp_abort = await client.post("/_coordinator/abort", json={"reason": "Operator observed thermal anomaly"})
+    # Operator abort requires a credential and attributable reason.
+    gateway.recovery_token = "test-token"
+    resp_abort = await client.post(
+        "/_coordinator/abort",
+        headers={"Authorization": "Bearer test-token"},
+        json={"reason": "Operator observed thermal anomaly", "operator": "test"},
+    )
     assert resp_abort.status_code == 200
     assert resp_abort.json()["status"] == "aborted"
     assert resp_abort.json()["service_state"] == "reconciliation_required"
