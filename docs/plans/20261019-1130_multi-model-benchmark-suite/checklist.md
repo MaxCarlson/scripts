@@ -22,11 +22,11 @@
 - [x] 2.5: Write offline unit tests with mock LM Studio API responses in `agent_benchmark/tests/models_lifecycle_test.py` and `agent_benchmark/tests/scheduler_test.py`.
 
 ## Stage 3: `termdash` Bounded Live Terminal Dashboard & Quiet Mode
-- [ ] 3.1: Implement `ExperimentDashboard` consuming `termdash.LiveBlock` and `termdash.table`.
-- [ ] 3.2: Bounded terminal display (max 10-12 rows) showing progress, per-model rollup, and active trial details.
-- [ ] 3.3: Implement graceful non-interactive/pipe plain-text fallback.
-- [ ] 3.4: Implement `-Q`/`--quiet` mode suppressing live block updates while retaining milestone summaries.
-- [ ] 3.5: Write terminal dashboard unit tests in `agent_benchmark/tests/dashboard_test.py`.
+- [x] 3.1: Implement `ExperimentDashboard` consuming `termdash.LiveBlock` and `termdash.Table` in `agent_benchmark/dashboard.py`.
+- [x] 3.2: Bounded terminal display (strictly <= 10-12 rows) showing progress, per-model rollup, and active trial details.
+- [x] 3.3: Implement graceful non-interactive/pipe plain-text fallback.
+- [x] 3.4: Implement `-Q`/`--quiet` mode suppressing live block updates while retaining milestone summaries.
+- [x] 3.5: Write terminal dashboard unit tests in `agent_benchmark/tests/dashboard_test.py`.
 
 ## Stage 4: `interactive_reports` Standalone Reusable Package & Cross-Model Analytics
 - [ ] 4.1: Implement standalone `modules/interactive_reports` package with reusable HTML builder components.

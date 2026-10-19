@@ -5,7 +5,7 @@ from pathlib import Path
 import sys
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
-for module_name in ("benchmark_core", "agent_benchmark"):
+for module_name in ("benchmark_core", "agent_benchmark", "termdash"):
     module_dir = str(REPO_ROOT / "modules" / module_name)
     if module_dir not in sys.path:
         sys.path.insert(0, module_dir)
