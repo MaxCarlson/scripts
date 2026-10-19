@@ -8,4 +8,4 @@
 - [x] Preserve uncertain-operation inhibition and coordinator-owned restart rules.
 - [x] Run offline tests, Ruff, Mypy, and Git whitespace checks; record environment-specific limitations.
 - [x] Update docs, handoff, and checklist with Sol Medium safety-review boundary.
-- [ ] Commit bounded implementation and stop for Sol Medium review.
+- [x] Commit bounded implementation and stop for Sol Medium review (`eff159c40f0929ce85f9ca9584e35753e60170c3`).

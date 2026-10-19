@@ -6,7 +6,9 @@ Offline implementation adds explicit known model-load handling on the existing `
 
 **Sol Medium review required before any live test:** this enables managed model-load routes that Phase D previously rejected, changes exclusive/shared arbitration ordering, and serializes idle restart actions with request reservation. Offline validation does not establish host readiness or authorize process/model control. The preflight below remains NO-GO; no live test, process control, inference, or shared configuration change occurred.
 
-Validation: the module suite passed with 10 test cases requiring pytest temporary-directory access and one subprocess test excluded. Those temporary-directory cases fail in this Windows sandbox because pytest receives `WinError 3/5` on the module's configured temp root; `test_command_action` cannot launch its subprocess here. Ruff lint passes. Ruff format check reports existing module-wide formatting drift. Mypy reports only missing `types-psutil` stubs in existing files. The reviewed result must include the exact commit SHA when committed.
+Implementation commit: `eff159c40f0929ce85f9ca9584e35753e60170c3`.
+
+Validation: the module suite passed with 10 test cases requiring pytest temporary-directory access and one subprocess test excluded. Those temporary-directory cases fail in this Windows sandbox because pytest receives `WinError 3/5` on the module's configured temp root; `test_command_action` cannot launch its subprocess here. Ruff lint passes. Ruff format check reports existing module-wide formatting drift. Mypy reports only missing `types-psutil` stubs in existing files.
 
 ## Historical Phase D supervised-test preflight
 
