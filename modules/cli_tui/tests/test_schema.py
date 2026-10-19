@@ -2,9 +2,8 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
-import pytest
 
-from cli_tui.schema import CliArgument, CliCommand, introspect_parser
+from cli_tui.schema import CliCommand, introspect_parser
 
 
 def test_introspect_flat_parser():

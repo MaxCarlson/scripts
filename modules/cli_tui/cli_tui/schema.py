@@ -2,8 +2,7 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass, field
-from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 
 @dataclass(frozen=True, slots=True)
@@ -58,7 +57,11 @@ def introspect_parser(
                 # Some actions share choices under aliases; deduplicate by object identity
                 if any(sub_name == existing_name for existing_name in subcommands):
                     continue
-                sub_help = getattr(action._choices_actions[len(subcommands)], "help", None) if hasattr(action, "_choices_actions") else None
+                sub_help = (
+                    getattr(action._choices_actions[len(subcommands)], "help", None)
+                    if hasattr(action, "_choices_actions")
+                    else None
+                )
                 # Check choices actions mapping for accurate help text
                 for choice_action in getattr(action, "_choices_actions", []):
                     if getattr(choice_action, "dest", None) == sub_name:

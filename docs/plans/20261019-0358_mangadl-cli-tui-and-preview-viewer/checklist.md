@@ -7,12 +7,12 @@
   - [x] 1.1.3: Implement `cli_tui/schema.py`
   - [x] 1.1.4: Run tests and verify all pass
   - [x] 1.1.5: Commit Task 1.1
-- [ ] Task 1.2: TUI Navigation & Form State Models (`cli_tui.state`)
-  - [ ] 1.2.1: Write failing test for state navigation and argv synthesis (`tests/test_state.py`)
-  - [ ] 1.2.2: Verify test failure
-  - [ ] 1.2.3: Implement `cli_tui/state.py`
-  - [ ] 1.2.4: Run tests and verify all pass
-  - [ ] 1.2.5: Commit Task 1.2
+- [x] Task 1.2: TUI Navigation & Form State Models (`cli_tui.state`)
+  - [x] 1.2.1: Write failing test for state navigation and argv synthesis (`tests/test_state.py`)
+  - [x] 1.2.2: Verify test failure
+  - [x] 1.2.3: Implement `cli_tui/state.py`
+  - [x] 1.2.4: Run tests and verify all pass
+  - [x] 1.2.5: Commit Task 1.2
 - [ ] Task 1.3: Form Field Widgets & Rendering (`cli_tui.widgets`)
   - [ ] 1.3.1: Write failing test for widget key handling and value toggling (`tests/test_widgets.py`)
   - [ ] 1.3.2: Verify test failure
