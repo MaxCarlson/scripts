@@ -8,6 +8,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
+from .console_pane import ConsolePaneRunner
 from .process_runner import OutputViewport, ProcessRunner
 from .schema import CliCommand, introspect_parser
 from .state import (
@@ -141,6 +142,7 @@ class CliTuiApp:
 
         self.is_pane_manager_open: bool = False
         self.manager_cursor: int = 0
+        self.is_showing_new_pane_choice: bool = False
         self.is_confirming_quit: bool = False
         self.is_showing_preview: bool = False
         self.is_terminated: bool = False
@@ -279,16 +281,34 @@ class CliTuiApp:
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
-        # 0a. Pane Manager active key routing
+        # 0a. Choice dialog routing
+        if getattr(self, "is_showing_new_pane_choice", False):
+            return self._handle_choice_dialog_key(key)
+
+        # 0b. Pane Manager active key routing
         if getattr(self, "is_pane_manager_open", False):
             return self._handle_pane_manager_key(key)
 
-        # 0b. Preview dialog dismissal
+        # 0c. Preview dialog dismissal
         if getattr(self, "is_showing_preview", False):
             if key in (10, 13, 27, ord(" "), ord("q"), ord("Q")):
                 self.is_showing_preview = False
                 return True
             return True
+
+        # 0d. Console pane active key routing
+        if self.workspace.active_pane.pane_type == PaneType.CONSOLE:
+            if key == 27:  # Esc opens pane manager
+                self.is_pane_manager_open = True
+                self.manager_cursor = self.workspace.active_index
+                return True
+            if key in (20, 353):  # Ctrl+T or Shift+Esc
+                self.branch_to_new_command_pane()
+                return True
+            runner = self.workspace.active_pane.runner
+            if runner and hasattr(runner, "handle_key"):
+                return runner.handle_key(key)
+            return False
 
         # 1. Immediate unconditional quit on 'Q'
         if key == ord("Q"):
@@ -415,6 +435,9 @@ class CliTuiApp:
             if 0 <= self.manager_cursor < len(self.workspace.panes):
                 self.workspace.panes[self.manager_cursor].viewport.scroll_page_down(15)
             return True
+        elif key in (ord("n"), ord("N")):
+            self.is_showing_new_pane_choice = True
+            return True
         elif key == ord("d"):
             if len(self.workspace.panes) > 1:
                 self.workspace.delete_pane(self.manager_cursor)
@@ -427,6 +450,32 @@ class CliTuiApp:
             self.manager_cursor = 0
             self._restore_active_pane_state()
             self.is_pane_manager_open = False
+            return True
+        return False
+
+    def _handle_choice_dialog_key(self, key: int) -> bool:
+        """Handle user choice between Command Menu and Shell Console."""
+        if key in (ord("1"), ord("m"), ord("M")):
+            self.is_showing_new_pane_choice = False
+            self.is_pane_manager_open = False
+            self.branch_to_new_command_pane()
+            return True
+        elif key in (ord("2"), ord("c"), ord("C")):
+            self.is_showing_new_pane_choice = False
+            self.is_pane_manager_open = False
+            self._save_current_pane_state()
+            new_pane = self.workspace.create_pane(
+                title="Shell Console",
+                pane_type=PaneType.CONSOLE,
+                screen_mode=TuiScreenMode.RUNNING,
+            )
+            console_runner = ConsolePaneRunner(cwd=os.getcwd())
+            new_pane.runner = console_runner
+            new_pane.extra_data["console_runner"] = console_runner
+            self._restore_active_pane_state()
+            return True
+        elif key in (27, ord("q"), ord("Q")):
+            self.is_showing_new_pane_choice = False
             return True
         return False
 
@@ -691,8 +740,69 @@ class CliTuiApp:
 
         return lines[:height]
 
+    def render_new_pane_choice_dialog(
+        self, *, height: int = 24, width: int = 80
+    ) -> List[str]:
+        """Render modal dialog prompting choice between Command Menu and Console."""
+        lines: List[str] = []
+        header = f"┌─ {self.title} Pane Manager ".ljust(width - 1, "─") + "┐"
+        lines.append(header)
+        inner_height = max(1, height - 3)
+        content_lines = [
+            "",
+            "  Create New Workspace Pane:",
+            "",
+            "    [1] New Command (Menu)",
+            "    [2] Interactive Shell Console",
+            "",
+            "  [ Press 1 or 2 to choose, or Esc to cancel ]",
+        ]
+        while len(content_lines) < inner_height:
+            content_lines.append("")
+        lines.extend(content_lines[:inner_height])
+        footer = "└─ [1/2] Choose  [Esc] Cancel ".ljust(width - 1, "─") + "┘"
+        lines.append(footer)
+        return lines[:height]
+
+    def render_console_pane(self, *, height: int = 24, width: int = 80) -> List[str]:
+        """Render interactive shell console inside the pane viewport."""
+        pane = self.workspace.active_pane
+        runner = pane.runner
+        lines: List[str] = []
+        if len(self.workspace.panes) > 1:
+            header = self.render_tab_strip(width)
+        else:
+            header = f"┌─ {self.title} > Shell Console ".ljust(width - 1, "─") + "┐"
+        lines.append(header)
+
+        inner_height = max(1, height - 3)
+        raw_lines = runner.lines if runner else []
+        visible = pane.viewport.get_visible_lines(
+            raw_lines, height=max(1, inner_height - 2), width=max(10, width - 4)
+        )
+        content_lines = [""]
+        content_lines.extend(f"  {line}" for line in visible)
+        while len(content_lines) < inner_height - 1:
+            content_lines.append("")
+        cwd = getattr(runner, "cwd", os.getcwd()) if runner else os.getcwd()
+        inp = getattr(runner, "input_buffer", "") if runner else ""
+        content_lines.append(f"  [{cwd}]> {inp}█")
+        lines.extend(content_lines[:inner_height])
+
+        footer = (
+            "└─ [Enter] Execute  [p] Pane Manager  [Shift+Esc] New Pane ".ljust(
+                width - 1, "─"
+            )
+            + "┘"
+        )
+        lines.append(footer)
+        return lines[:height]
+
     def render_virtual_screen(self, *, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
+        if getattr(self, "is_showing_new_pane_choice", False):
+            return self.render_new_pane_choice_dialog(height=height, width=width)
+
         if getattr(self, "is_pane_manager_open", False):
             return self.render_pane_manager(height=height, width=width)
 
