@@ -306,11 +306,17 @@ class CliTuiApp:
                 return True
             runner = self.workspace.active_pane.runner
             if runner and hasattr(runner, "handle_key"):
-                return runner.handle_key(key)
+                handled = runner.handle_key(key)
+                if getattr(runner, "is_terminated", False):
+                    self.workspace.delete_pane(self.workspace.active_index)
+                    self._restore_active_pane_state()
+                    return True
+                return handled
             return False
 
         # 1. Immediate unconditional quit on 'Q'
         if key == ord("Q"):
+            self.workspace.terminate_all()
             if self.runner and self.runner.is_running:
                 self.runner.terminate()
             self.is_terminated = True
@@ -320,6 +326,7 @@ class CliTuiApp:
         # 2. Quit confirmation dialog handling
         if self.is_confirming_quit:
             if key in (ord("y"), ord("Y")):
+                self.workspace.terminate_all()
                 if self.runner and self.runner.is_running:
                     self.runner.terminate()
                 self.is_terminated = True
@@ -391,6 +398,7 @@ class CliTuiApp:
         # Pane manager toggle
         if key in (ord("p"), ord("P")):
             if not self._is_widget_editing():
+                self._save_current_pane_state()
                 self.is_pane_manager_open = True
                 self.manager_cursor = self.workspace.active_index
                 return True
@@ -468,6 +476,7 @@ class CliTuiApp:
                 pane_type=PaneType.CONSOLE,
                 screen_mode=TuiScreenMode.RUNNING,
             )
+            new_pane.navigation.current_screen = TuiScreenMode.RUNNING
             console_runner = ConsolePaneRunner(cwd=os.getcwd())
             new_pane.runner = console_runner
             new_pane.extra_data["console_runner"] = console_runner
@@ -713,12 +722,54 @@ class CliTuiApp:
             right_items.append(f"   {status_text}")
             right_items.append("")
 
-            raw_lines = target_pane.runner.lines if target_pane.runner else []
-            visible = target_pane.viewport.get_visible_lines(
-                raw_lines, height=max(1, inner_height - 3), width=max(10, right_w - 4)
+            target_mode = (
+                target_pane.navigation.current_screen
+                if target_pane.navigation
+                else target_pane.screen_mode
             )
-            for vline in visible:
-                right_items.append(f"   {vline}")
+            if target_pane.runner:
+                raw_lines = target_pane.runner.lines
+                visible = target_pane.viewport.get_visible_lines(
+                    raw_lines,
+                    height=max(1, inner_height - 3),
+                    width=max(10, right_w - 4),
+                )
+                for vline in visible:
+                    right_items.append(f"   {vline}")
+            elif target_mode == TuiScreenMode.FORM and target_pane.current_form:
+                form = target_pane.current_form
+                right_items.append(f"   Command: {form.command.name}")
+                right_items.append("   Arguments:")
+                for arg in form.command.arguments:
+                    val = form.get_value(arg.dest)
+                    right_items.append(f"     --{arg.dest}: {val}")
+            elif target_mode == TuiScreenMode.MENU:
+                cmd = self.root_command
+                for crumb in target_pane.navigation.path:
+                    if crumb in cmd.subcommands:
+                        cmd = cmd.subcommands[crumb]
+                if cmd.subcommands:
+                    right_items.append(f"   Menu: {target_pane.title}")
+                    right_items.append("   Subcommands:")
+                    for sub_name, sub_cmd in cmd.subcommands.items():
+                        desc = (
+                            f" - {sub_cmd.description}" if sub_cmd.description else ""
+                        )
+                        right_items.append(f"     • {sub_name}{desc}")
+                else:
+                    visible = target_pane.viewport.get_visible_lines(
+                        [],
+                        height=max(1, inner_height - 3),
+                        width=max(10, right_w - 4),
+                    )
+                    for vline in visible:
+                        right_items.append(f"   {vline}")
+            else:
+                visible = target_pane.viewport.get_visible_lines(
+                    [], height=max(1, inner_height - 3), width=max(10, right_w - 4)
+                )
+                for vline in visible:
+                    right_items.append(f"   {vline}")
 
             content_rows = max(1, inner_height - 3)
             for r in range(content_rows):
@@ -730,12 +781,19 @@ class CliTuiApp:
 
             lines.append(f"└{'─' * left_w}┴{'─' * right_w}┘")
 
-        footer = (
-            "└─ [Enter] Switch  [n] New Pane  [d] Delete  [D] Delete All  [Esc] Close ".ljust(
-                width - 1, "─"
-            )
-            + "┘"
+        footer_text = (
+            "└─ [Enter] Switch  [n] New Pane  [d] Delete  [D] Delete All  [Esc] Close "
         )
+        if width < 74:
+            footer_text = (
+                "└─ [Enter] Switch  [n] New  [d] Del  [D] Del All  [Esc] Close "
+            )
+        if len(footer_text) > width - 1:
+            footer_text = "└─ [Enter] Switch  [d] Del  [Esc] Close "
+        if len(footer_text) > width - 1:
+            avail = max(0, width - 1 - len("└─ ") - 1)
+            footer_text = f"└─ {footer_text[3 : 3 + avail]} "
+        footer = footer_text.ljust(width - 1, "─") + "┘"
         if len(lines) < height:
             lines.append(footer)
         else:
@@ -808,6 +866,9 @@ class CliTuiApp:
 
         if getattr(self, "is_pane_manager_open", False):
             return self.render_pane_manager(height=height, width=width)
+
+        if self.workspace.active_pane.pane_type == PaneType.CONSOLE:
+            return self.render_console_pane(height=height, width=width)
 
         if getattr(self, "is_showing_preview", False):
             lines: List[str] = []
@@ -993,9 +1054,12 @@ class CliTuiApp:
         try:
             return curses.wrapper(self._curses_loop)
         except KeyboardInterrupt:
+            self.workspace.terminate_all()
             if self.runner and self.runner.is_running:
                 self.runner.terminate()
             return 0
+        finally:
+            self.workspace.terminate_all()
 
     def _curses_loop(self, stdscr: Any) -> int:
         curses.curs_set(0)
@@ -1026,6 +1090,7 @@ class CliTuiApp:
             except curses.error:
                 pass
 
+        self.workspace.terminate_all()
         if self.runner and self.runner.is_running:
             self.runner.terminate()
         return 0

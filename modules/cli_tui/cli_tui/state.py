@@ -192,19 +192,25 @@ class PaneSession:
     created_at: float = field(default_factory=time.time)
     extra_data: Dict[str, Any] = field(default_factory=dict)
 
+    def __post_init__(self) -> None:
+        self.navigation.current_screen = self.screen_mode
+
     @property
     def status_badge(self) -> str:
         if self.pane_type == PaneType.CONSOLE:
             return "CONSOLE"
-        if self.screen_mode == TuiScreenMode.RUNNING:
+        curr_screen = (
+            self.navigation.current_screen if self.navigation else self.screen_mode
+        )
+        if curr_screen == TuiScreenMode.RUNNING:
             if self.runner and getattr(self.runner, "is_running", False):
                 return "RUNNING"
             if self.runner and getattr(self.runner, "exit_code", None) is not None:
                 return "FINISHED" if self.runner.exit_code == 0 else "ERROR"
             return "RUNNING"
-        if self.screen_mode == TuiScreenMode.FORM:
+        if curr_screen == TuiScreenMode.FORM:
             return "CONFIG"
-        if self.screen_mode == TuiScreenMode.MENU:
+        if curr_screen == TuiScreenMode.MENU:
             return "MENU"
         return "IDLE"
 
@@ -279,6 +285,11 @@ class PaneWorkspace:
                 target.runner.stop()
             elif hasattr(target.runner, "terminate"):
                 target.runner.terminate()
+            if hasattr(target.runner, "wait"):
+                try:
+                    target.runner.wait(timeout=1.0)
+                except Exception:
+                    pass
 
         self.panes.pop(index)
         if self.active_index >= len(self.panes):
@@ -287,16 +298,25 @@ class PaneWorkspace:
             self.active_index -= 1
         return True
 
-    def delete_all(self) -> PaneSession:
+    def terminate_all(self) -> None:
+        """Terminate all running background processes across all panes."""
         for pane in self.panes:
             if pane.runner:
                 if hasattr(pane.runner, "stop"):
                     pane.runner.stop()
                 elif hasattr(pane.runner, "terminate"):
                     pane.runner.terminate()
+                if hasattr(pane.runner, "wait"):
+                    try:
+                        pane.runner.wait(timeout=1.0)
+                    except Exception:
+                        pass
+
+    def delete_all(self, default_title: str = "Main") -> PaneSession:
+        self.terminate_all()
         fresh = PaneSession(
             id=uuid.uuid4().hex[:8],
-            title="Main",
+            title=default_title,
             pane_type=PaneType.COMMAND,
             screen_mode=TuiScreenMode.MENU,
         )

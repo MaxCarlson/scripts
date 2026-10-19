@@ -38,18 +38,44 @@ class ConsolePaneRunner:
         return output
 
     def execute_line(self, line: str) -> None:
+        if self.active_runner:
+            self.history_lines.extend(self.active_runner.lines)
+            self.history_lines.append("")
+            self.active_runner = None
+
         cmd_str = line.strip()
         self.history_lines.append(f"[{self.cwd}]> {line}")
 
         if not cmd_str:
             return
 
-        # Built-in cd handling
-        if cmd_str.lower().startswith("cd ") or cmd_str.lower() == "cd":
-            target = cmd_str[2:].strip()
+        # Built-in cd and drive switching handling
+        lower = cmd_str.lower()
+        is_drive = len(cmd_str) == 2 and cmd_str[1] == ":" and sys.platform == "win32"
+        if (
+            lower.startswith("cd ")
+            or lower == "cd"
+            or lower.startswith("cd.")
+            or is_drive
+        ):
+            if is_drive:
+                target = cmd_str
+            elif lower.startswith("cd."):
+                target = cmd_str[2:].strip()
+            else:
+                target = cmd_str[2:].strip()
+
+            target = target.strip("\"'")
             if not target:
                 target = os.path.expanduser("~")
-            new_dir = os.path.abspath(os.path.join(self.cwd, target))
+            elif target.lower().startswith("/d "):
+                target = target[3:].strip().strip("\"'")
+
+            if len(target) == 2 and target[1] == ":" and sys.platform == "win32":
+                new_dir = f"{target.upper()}\\"
+            else:
+                new_dir = os.path.abspath(os.path.join(self.cwd, target))
+
             if os.path.isdir(new_dir):
                 self.cwd = new_dir
                 self.history_lines.append(f"Directory changed to: {self.cwd}")
@@ -83,11 +109,13 @@ class ConsolePaneRunner:
 
     def stop(self) -> None:
         if self.active_runner and self.active_runner.is_running:
-            self.active_runner.stop()
+            self.active_runner.terminate()
+            self.active_runner.wait(timeout=1.0)
 
     def terminate(self) -> None:
         if self.active_runner and self.active_runner.is_running:
             self.active_runner.terminate()
+            self.active_runner.wait(timeout=1.0)
 
     def handle_key(self, key: int) -> bool:
         """Handle keystroke for interactive console input."""

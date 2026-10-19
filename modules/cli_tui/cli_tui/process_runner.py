@@ -293,6 +293,10 @@ class ProcessRunner:
         return self._process.poll() is None
 
     @property
+    def thread(self) -> Optional[threading.Thread]:
+        return self._thread
+
+    @property
     def exit_code(self) -> Optional[int]:
         if self._process is not None and self._exit_code is None:
             self._exit_code = self._process.poll()
