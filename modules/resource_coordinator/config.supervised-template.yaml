@@ -1,0 +1,57 @@
+# Resource Coordinator — Supervised Acceptance Test Configuration Template
+# Platform: Windows 11 / RTX 5090
+# Target Miner: Krig v1.5.6 (PearlHash)
+# Target Gateway: LM Studio proxy at 127.0.0.1:1235 -> LM Studio upstream 127.0.0.1:1234
+#
+# BLOCKED TEMPLATE: not an executable acceptance plan. Replace placeholders locally; no environment expansion occurs.
+# Same-console process-group mode is selected; external adoption and force are denied.
+# Use only the reviewed managed service after acceptance gates and separate live authorization.
+# Never use standalone miner commands or external adoption.
+
+version: "1.0"
+
+service:
+  listen_host: "127.0.0.1"
+  listen_port: 1235
+  upstream_url: "http://127.0.0.1:1234"
+
+resources:
+  gpu.inference:
+    type: "shared"
+    cooldown_seconds: 30.0
+
+processes:
+  krig_miner:
+    backend: "windows"
+    executable: "C:\\REPLACE_WITH_REVIEWED_TEST_DIRECTORY\\krig-miner.exe"
+    working_directory: "C:\\REPLACE_WITH_REVIEWED_TEST_DIRECTORY"
+    arguments:
+      - "--coin"
+      - "pearl"
+      - "--url"
+      - "stratum+ssl://prl.kryptex.network:8048"
+      - "--user"
+      - "REPLACE_WITH_AUTHORIZED_WALLET/REPLACE_WITH_TEST_WORKER"
+      - "--devices"
+      - "0"
+      - "--no-tui"
+      - "--gpu-no-reset-oc"
+    stop_timeout_seconds: 10.0
+    restart_cooldown_seconds: 30.0
+    new_console: false
+    allow_external_stop: false
+    allow_external_restart: false
+    adopt_external: false
+    allow_force_termination: false
+
+policies:
+  - name: "pause_krig_for_inference"
+    trigger_event: "lmstudio.inference_requested"
+    target_process: "krig_miner"
+    stop_process: true
+    stop_timeout_seconds: 10.0
+    resource: "gpu.inference"
+    lease_type: "shared"
+    cooldown_seconds: 30.0
+    restart_process: true
+    only_if_stopped_by_coordinator: true
