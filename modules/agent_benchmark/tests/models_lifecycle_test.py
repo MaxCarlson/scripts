@@ -5,8 +5,10 @@ Unit tests for LM Studio model discovery, loaded model detection, and safe trans
 from __future__ import annotations
 
 import json
+import subprocess
 import pytest
 
+from agent_benchmark import models_lifecycle
 from agent_benchmark.models_lifecycle import (
     ModelDiscoveryError,
     ModelTransitionError,
@@ -57,6 +59,22 @@ SAMPLE_LMS_PS_LOADED = json.dumps([
 ])
 
 SAMPLE_LMS_PS_EMPTY = "[]"
+
+
+@pytest.mark.asyncio
+async def test_default_command_runner_executes_windows_cli_in_worker_thread(monkeypatch) -> None:
+    calls = []
+
+    def fake_run(command, *, capture_output, text, check):
+        calls.append((command, capture_output, text, check))
+        return subprocess.CompletedProcess(command, 7, stdout="out", stderr="err")
+
+    monkeypatch.setattr(models_lifecycle.subprocess, "run", fake_run)
+
+    result = await models_lifecycle._default_cmd_runner(["lms", "ps", "--json"])
+
+    assert result == (7, "out", "err")
+    assert calls == [(["lms", "ps", "--json"], True, True, False)]
 
 
 @pytest.mark.asyncio

@@ -18,6 +18,7 @@ Make LM Studio discovery, planning, lifecycle loading, OpenCode selection, and r
 
 - Implementation and focused offline verification are complete on this branch.
 - Direct evidence confirms LM Studio model keys are the runtime IDs and the OpenCode display `name` is descriptive only.
-- The six affected test modules plus the new identity tests passed (81 tests); the added distinct-quantization regression passed in a follow-up run (10 identity tests total). Ruff and `git diff --check` passed.
+- The seven affected test modules passed (92 tests). Ruff and `git diff --check` passed.
+- Read-only plan execution found `asyncio.create_subprocess_exec` was denied for `lms` on this Windows environment; switching the default CLI runner to `asyncio.to_thread(subprocess.run, ...)` restored full quantization/variant discovery. The four-model plan then reported GPT-OSS `runnable` and Muse, Ornith, and Devstral `registration_required`, with Q4_K_M/MXFP4 metadata.
 - No live inference, model load/unload, or shared configuration change was performed. Live OpenCode project-config discovery remains to be confirmed during the user's next authorized benchmark run.
 - Next: commit/push, then merge into `main` under the user's standing authorization.
