@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from .bridge import ModelConfigurationError, OpenCodeBridge
+from .identity import ModelIdentity, ModelIdentityError, discover_lmstudio_identity
 from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
 from .scratch import SCOPE_POLICY, prompt_instructions, provenance, reserved_path
@@ -204,6 +205,7 @@ async def run_attempt(
     grace_seconds: float = 10,
     poll_seconds: float = 0.1,
     verifier_seconds: float = 10,
+    model_identity: ModelIdentity | None = None,
 ) -> AttemptEvidence:
     """Dispatch once and freeze S1 only after fresh termination confirmation.
 
@@ -217,15 +219,25 @@ async def run_attempt(
                         ("poll_seconds", poll_seconds), ("verifier_seconds", verifier_seconds)):
         if not math.isfinite(value) or value <= 0:
             raise ValueError(f"{name} must be finite and positive")
+    if provider == "lmstudio" and model_identity is None:
+        model_identity = await discover_lmstudio_identity(model)
+    if model_identity is not None and (model_identity.provider != provider or model_identity.runtime_model_id != model):
+        raise ModelIdentityError(
+            f"Resolved model identity does not match requested runtime model '{provider}/{model}'"
+        )
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
-    git_identity = prepare_workspace(task, workspace.path, scope_policy=SCOPE_POLICY)
+    git_identity = prepare_workspace(
+        task, workspace.path, scope_policy=SCOPE_POLICY, model_identity=model_identity
+    )
     # Worker processes belong to OpenCode's shared process tree, not local subprocess
     # supervision; owned_pids is intentionally empty.
     journal = {"stage": "not_submitted", "workspace": asdict(workspace), "task_seconds": budget,
                "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": [],
-               "git": asdict(git_identity), "scope_policy": SCOPE_POLICY, "scratch": provenance(workspace.path), "evidence_limits": asdict(EVIDENCE_LIMITS)}
+               "git": asdict(git_identity), "scope_policy": SCOPE_POLICY, "scratch": provenance(workspace.path),
+               "evidence_limits": asdict(EVIDENCE_LIMITS),
+               "model_identity": model_identity.to_dict() if model_identity else None}
     _write_json(evidence_dir / "lifecycle.json", journal)
     s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
     prompt = build_prompt(task, workspace.path)
@@ -235,6 +247,8 @@ async def run_attempt(
     try:
         configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent,
                                                project_id=git_identity.root_commit)
+        if model_identity is not None:
+            configuration["model_identity"] = model_identity.to_dict()
         prepared_session = await bridge.prepare_session(workspace.path, project_id=git_identity.root_commit)
         configuration.update(git=asdict(git_identity), session=prepared_session,
                              scope_policy=SCOPE_POLICY, scratch=provenance(workspace.path),

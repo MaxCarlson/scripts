@@ -27,7 +27,7 @@ from benchmark_core import (
 
 
 @pytest.mark.asyncio
-async def test_scheduler_rejects_unconfigured_local_model_before_trial_allocation(
+async def test_scheduler_rejects_missing_lmstudio_identity_before_trial_allocation(
     tmp_path: Path,
     monkeypatch,
 ) -> None:
@@ -45,13 +45,11 @@ async def test_scheduler_rejects_unconfigured_local_model_before_trial_allocatio
         budget_profile="canonical-60s",
     )
     plan = expand_experiment_plan(config)
-    checked_models: list[tuple[str, str]] = []
     transition_commands: list[list[str]] = []
 
     class FakeBridge:
-        async def validate_models(self, models):
-            checked_models.extend(models)
-            raise ValueError("model is not configured in OpenCode")
+        async def validate_provider(self, provider):
+            pytest.fail("Provider preflight must not run for a model absent from LM Studio")
 
     @asynccontextmanager
     async def fake_connected_bridge(**kwargs):
@@ -71,11 +69,10 @@ async def test_scheduler_rejects_unconfigured_local_model_before_trial_allocatio
         lms_runner=lms_runner,
     )
 
-    with pytest.raises(ValueError, match="not configured in OpenCode"):
+    with pytest.raises(ValueError, match="no exact LM Studio model key matched"):
         await scheduler.run()
 
-    assert checked_models == [("lmstudio", "qwen38-27b-q6k")]
-    assert transition_commands == []
+    assert transition_commands == [["lms", "ls", "--json"]]
     assert not (tmp_path / "reports" / config.experiment_id).exists()
 
 
@@ -317,12 +314,17 @@ async def test_scheduler_unauthorized_model_transition_halts_safely(
 
     # Empty loaded models
     async def mock_lms_runner_empty(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd[1:2] == ["ls"]:
+            return 0, json.dumps([{"modelKey": "qwen38-27b-q4km", "displayName": "Qwen Q4",
+                                   "type": "llm", "quantization": {"name": "Q4_K_M"}},
+                                  {"modelKey": "qwen38-27b-q6k", "displayName": "Qwen Q6",
+                                   "type": "llm", "quantization": {"name": "Q6_K"}}]), ""
         return 0, "[]", ""
 
     from agent_benchmark import scheduler as scheduler_module
 
     class FakeBridge:
-        async def validate_models(self, models):
+        async def validate_provider(self, provider):
             return None
 
     @asynccontextmanager

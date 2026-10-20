@@ -15,6 +15,7 @@ from .git_workspace import ISOLATION_POLICY
 from .attempt import _write_json, run_attempt
 from .bridge import OpenCodeBridge, connected_bridge
 from .evidence import load_task
+from .identity import ModelIdentity, discover_lmstudio_identity
 from .lifecycle import WorkerHandle
 from .scratch import SCOPE_POLICY, SCRATCH_NAME
 from .state import journal_at, reserved_trial
@@ -190,6 +191,7 @@ async def run_diagnostic(
     agent: str = "local-worker",
     base_url: str = "http://127.0.0.1:4096",
     request_seconds: float = 10,
+    model_identity: ModelIdentity | None = None,
     connector=connected_bridge,
 ) -> Path:
     """Exactly one possible submission; provider payload is optional/unverified."""
@@ -200,6 +202,12 @@ async def run_diagnostic(
     directory = output / identifier
     evidence_dir = directory / "evidence/trial-001"
     with reserved_trial(state, evidence_dir) as guard:
+        if provider == "lmstudio" and model_identity is None:
+            model_identity = await discover_lmstudio_identity(model)
+        if model_identity is not None and (
+            model_identity.provider != provider or model_identity.runtime_model_id != model
+        ):
+            raise ValueError("Resolved model identity does not match the requested provider and runtime model ID")
         directory.mkdir(parents=True, exist_ok=False)
         report: dict[str, Any] = {
             "purpose": "integration_smoke",
@@ -212,6 +220,7 @@ async def run_diagnostic(
             "task_seconds": TASK_SECONDS,
             "grace_seconds": GRACE_SECONDS,
             "model": model,
+            "model_identity": model_identity.to_dict() if model_identity else None,
             "provider": provider,
             "agent": agent,
             "termination_confirmed": False,
@@ -238,6 +247,7 @@ async def run_diagnostic(
                     provider=provider,
                     model=model,
                     agent=agent,
+                    model_identity=model_identity,
                     task_seconds=TASK_SECONDS,
                     grace_seconds=GRACE_SECONDS,
                 )

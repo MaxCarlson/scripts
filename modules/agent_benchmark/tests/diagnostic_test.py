@@ -13,6 +13,7 @@ from agent_benchmark.state import read_pending
 from agent_benchmark.lifecycle import WorkerHandle
 from agent_benchmark.runner import cleanup_trial
 from agent_benchmark.scratch import SCRATCH_NAME
+from agent_benchmark.identity import ModelIdentity
 from attempt_test import Worker
 
 
@@ -99,7 +100,8 @@ def run(tmp_path, worker=None):
         yield worker
 
     directory = asyncio.run(
-        run_diagnostic(output=tmp_path / "acceptance", state=worker.state, model="offline", connector=connector)
+        run_diagnostic(output=tmp_path / "acceptance", state=worker.state, model="test-model", connector=connector,
+                       model_identity=ModelIdentity("test-model", "lmstudio", "test-model", "test-model", "Test Model", "Q4_K_M"))
     )
     return directory, json.loads((directory / "acceptance.json").read_text()), worker
 
@@ -109,7 +111,7 @@ def test_diagnostic_is_unscored_optional_payload_absent_and_single_dispatch(tmp_
     assert worker.calls == ["preflight", "session", "dispatch"]
     assert report["purpose"] == "integration_smoke" and report["comparison_eligible"] is False
     assert report["checks"]["intended_configuration"]["status"] == "passed"
-    assert report["checks"]["submitted_user_prompt"]["status"] == "passed"
+    assert report["checks"]["submitted_user_prompt"]["status"] == "passed", report["checks"]["submitted_user_prompt"]
     assert report["checks"]["provider_payload"]["status"] == "unverified"
     assert report["checks"]["scratch_probe_artifacts"]["status"] == "passed"
     assert report["checks"]["scratch_probe_execution"]["status"] == "passed"
@@ -292,11 +294,13 @@ def test_real_adapter_preflight_precedes_dispatch_and_attributes_user_message(tm
     if failure == "receipt":
         with pytest.warns(RuntimeWarning, match="Unresolved"):
             directory = asyncio.run(
-                run_diagnostic(output=tmp_path / "acceptance", state=state, model="model-a", connector=connector)
+                run_diagnostic(output=tmp_path / "acceptance", state=state, model="model-a", connector=connector,
+                               model_identity=ModelIdentity("model-a", "lmstudio", "model-a", "model-a", "Model A", "Q4_K_M"))
             )
     else:
         directory = asyncio.run(
-            run_diagnostic(output=tmp_path / "acceptance", state=state, model="model-a", connector=connector)
+            run_diagnostic(output=tmp_path / "acceptance", state=state, model="model-a", connector=connector,
+                           model_identity=ModelIdentity("model-a", "lmstudio", "model-a", "model-a", "Model A", "Q4_K_M"))
         )
     report = json.loads((directory / "acceptance.json").read_text())
     if failure:

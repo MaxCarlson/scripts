@@ -68,9 +68,10 @@ def _check_configured_models(providers: dict, requests: list[tuple[str, str]]) -
             )
         if model not in configured_models:
             raise ModelConfigurationError(
-                f"LM Studio model key '{model}' is not configured as an OpenCode model ID under provider '{provider}'. "
-                f"Configured OpenCode model IDs: {', '.join(model_ids) or '(none)'}. "
-                f"Add the requested model to OpenCode's LM Studio provider configuration before running the benchmark."
+                f"OpenCode did not load the exact model ID '{model}' from the isolated trial project config under "
+                f"provider '{provider}'. Effective model IDs: {', '.join(model_ids) or '(none)'}. "
+                "The benchmark registers the exact LM Studio key per trial; check project-config discovery and "
+                "provider/model overrides if this continues."
             )
 
 
@@ -195,6 +196,29 @@ class OpenCodeBridge:
         if not isinstance(health, dict) or not isinstance(providers, dict):
             raise RuntimeError("Malformed runtime/model preflight response")
         _check_configured_models(providers, requests)
+
+    async def validate_provider(self, provider: str = "lmstudio") -> set[str]:
+        """Validate provider connectivity without requiring project model registration yet."""
+        health = await self._get("/global/health", Path.cwd())
+        providers = await self._get("/provider", Path.cwd())
+        if not isinstance(health, dict) or not isinstance(providers, dict):
+            raise RuntimeError("Malformed runtime/model preflight response")
+        connected = providers.get("connected", [])
+        all_providers = providers.get("all", [])
+        if not isinstance(connected, list) or not isinstance(all_providers, list):
+            raise RuntimeError("Malformed OpenCode provider model inventory")
+        entry = next((item for item in all_providers if isinstance(item, dict) and item.get("id") == provider), None)
+        if entry is None:
+            configured = sorted(str(item.get("id")) for item in all_providers if isinstance(item, dict) and item.get("id"))
+            raise ModelConfigurationError(
+                f"OpenCode provider '{provider}' is not configured. Configured providers: {', '.join(configured) or '(none)'}."
+            )
+        models = entry.get("models", {})
+        if not isinstance(models, dict) or any(not isinstance(key, str) for key in models):
+            raise RuntimeError(f"Malformed OpenCode model inventory for provider '{provider}'")
+        if provider not in connected:
+            raise ModelConfigurationError(f"OpenCode provider '{provider}' is not connected.")
+        return set(models)
 
     async def preflight(self, directory: Path, *, provider: str, model: str, agent: str, project_id: str) -> dict:
         """Read-only model/role and exact trial-project validation; no prompt submission."""

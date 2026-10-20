@@ -11,6 +11,7 @@ from benchmark_core import load_run
 
 from attempt_test import TASK, Worker
 from agent_benchmark.runner import run_benchmark, cleanup_trial
+from agent_benchmark.identity import ModelIdentity
 from agent_benchmark.state import command_lock, read_pending
 
 
@@ -22,7 +23,9 @@ async def worker_connection(**kwargs):
 def run(tmp_path, connection=worker_connection):
     return asyncio.run(run_benchmark(TASK, reports=tmp_path / "reports", state=tmp_path / "state",
                                     model="test-model", connector=connection, task_seconds=.1,
-                                    grace_seconds=.03, request_seconds=.1))
+                                    grace_seconds=.03, request_seconds=.1,
+                                    model_identity=ModelIdentity("test-model", "lmstudio", "test-model",
+                                                                 "test-model", "Test Model", "Q4_K_M")))
 
 
 def test_full_offline_pipeline_persists_one_canonical_result_and_core_reports(tmp_path):
@@ -114,7 +117,9 @@ def test_failure_before_dispatch_does_not_leave_unrecoverable_pending_receipt(tm
     shutil.copytree(TASK, task)
     shutil.rmtree(task / "seed")
     run_dir = asyncio.run(run_benchmark(task, reports=tmp_path / "reports", state=tmp_path / "state",
-                                        model="test-model", connector=worker_connection))
+                                        model="test-model", connector=worker_connection,
+                                        model_identity=ModelIdentity("test-model", "lmstudio", "test-model",
+                                                                     "test-model", "Test Model", "Q4_K_M")))
     assert load_run(run_dir)[1][0].status == "infrastructure_error"
     assert read_pending(tmp_path / "state") is None
 
@@ -264,7 +269,9 @@ def test_real_adapter_project_gate_and_canonical_provenance_offline(tmp_path, fa
         async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(service)) as http:
             yield OpenCodeBridge(submit, http)
     run_dir = asyncio.run(run_benchmark(TASK, reports=tmp_path / "reports", state=tmp_path / "state",
-                                        model="model-a", connector=connection, task_seconds=2))
+                                        model="model-a", connector=connection, task_seconds=2,
+                                        model_identity=ModelIdentity("model-a", "lmstudio", "model-a",
+                                                                     "model-a", "Model A", "Q4_K_M")))
     info, trials = load_run(run_dir)
     assert len(trials) == 1
     assert read_pending(tmp_path / "state") is None

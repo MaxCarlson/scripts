@@ -115,16 +115,29 @@ def test_experiment_run_requires_execute(capsys):
     assert "experiment run requires explicit -x/--execute authorization" in captured.err
 
 
-def test_experiment_plan_output(capsys):
-    ret = main(["experiment", "plan", "-m", "model-a", "-m", "model-b", "-r", "2"])
+def test_experiment_plan_output(capsys, monkeypatch):
+    from agent_benchmark import cli
+    from agent_benchmark.models_lifecycle import DownloadedModelInfo
+
+    async def local_models():
+        return [DownloadedModelInfo("meta/muse-glimmer", "Muse Glimmer", "muse", 100, "Q4_K_M", 4096,
+                                    "gguf", "meta/muse-glimmer")]
+
+    async def effective_ids(*args, **kwargs):
+        return set(), True
+
+    monkeypatch.setattr(cli, "list_downloaded_models", local_models)
+    monkeypatch.setattr(cli, "get_effective_lmstudio_model_ids", effective_ids)
+    ret = main(["experiment", "plan", "-m", "meta/muse-glimmer", "-m", "qwen38_23GB", "-r", "2"])
     assert ret == 0
     captured = capsys.readouterr()
     plan_data = json.loads(captured.out)
-    assert plan_data["model_keys"] == ["model-a", "model-b"]
+    assert plan_data["model_keys"] == ["meta/muse-glimmer", "qwen38_23GB"]
     assert plan_data["repetitions"] == 2
     # At least 1 task (py-grep-smoke) * 2 models * 2 repetitions = 4 planned trials
     assert plan_data["total_trials"] >= 4
     assert len(plan_data["planned_trials"]) == plan_data["total_trials"]
+    assert [row["status"] for row in plan_data["model_readiness"]] == ["registration_required", "unavailable"]
 
 
 def test_experiment_status_and_report(tmp_path, capsys):

@@ -10,7 +10,7 @@ agent-bench cleanup -r reports/RUN_ID       # preview
 agent-bench cleanup -r reports/RUN_ID -x    # fresh reconciliation, then owned cleanup
 ```
 
-`run` requires `-x/--execute`; plan, status and cleanup preview do not write or call models. Services must already be running. No command starts or reconfigures shared OpenCode/LM Studio services. Explicit configured LM Studio models only; no cloud fallback.
+`run` requires `-x/--execute`; plan, status and cleanup preview do not call models. Services must already be running. No command starts or reconfigures shared OpenCode/LM Studio services. LM Studio models resolve by exact downloaded `modelKey`; when OpenCode lacks that exact ID, a registration is generated only in the isolated trial project config. Model display names and similar quantizations are never used as aliases. Planning reports provider readiness and distinguishes unknown, unavailable, runnable, and registration-required models. No cloud fallback.
 
 The default persistent state is `~/.local/share/agent-benchmark`, shared across output locations. Use the same `-s/--state-dir` across invocations; an unresolved job blocks later runs even if they use another report directory. An OS-held command lock serializes run/cleanup, while the unresolved receipt survives process exit. Never delete the receipt to bypass uncertain execution. `cleanup -x` requests supported cancellation when needed, then requires fresh matching session/turn/tool evidence. It preserves resources and blocking if termination cannot be confirmed. Cleanup failures never rescore trials.
 
