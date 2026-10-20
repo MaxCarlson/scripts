@@ -28,6 +28,12 @@ from .state import command_lock, journal_at, read_pending, release, reserve, res
 
 
 BUDGET_PROFILES: dict[str, dict[str, Any]] = {
+    "canonical-120s": {
+        "task_seconds": 120.0,
+        "grace_seconds": 15.0,
+        "comparison_eligible": True,
+        "description": "Canonical 120-second observation budget for cross-model multi-turn trials",
+    },
     "canonical-60s": {
         "task_seconds": 60.0,
         "grace_seconds": 10.0,
@@ -58,14 +64,14 @@ BUDGET_PROFILES: dict[str, dict[str, Any]] = {
 async def run_benchmark(
     task_dir: Path, *, reports: Path, state: Path, model: str, provider: str = "lmstudio",
     agent: str = "local-worker", base_url: str = "http://127.0.0.1:4096", task_seconds: float | None = None,
-    budget_profile: str = "canonical-60s",
+    budget_profile: str = "canonical-120s",
     grace_seconds: float = 10, request_seconds: float = 10, verifier_seconds: float = 10,
     model_identity: ModelIdentity | None = None,
     connector=connected_bridge,
 ) -> Path:
     resolved_provider, resolved_model = resolve_model_provider_and_key(model, default_provider=provider)
     task = load_task(task_dir)
-    profile_cfg = BUDGET_PROFILES.get(budget_profile, BUDGET_PROFILES["canonical-60s"])
+    profile_cfg = BUDGET_PROFILES.get(budget_profile, BUDGET_PROFILES["canonical-120s"])
     if task_seconds is None:
         effective_task_seconds = profile_cfg["task_seconds"]
         effective_grace_seconds = profile_cfg["grace_seconds"]

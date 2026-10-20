@@ -62,6 +62,14 @@ def test_aborted_assistant_still_needs_idle_and_finished_tools():
     assert not parse_observation(HANDLE, {"session-1": "busy"}, data).confirms_termination
 
 
+def test_provider_error_name_and_message_are_preserved_as_diagnostic():
+    data = messages()
+    data[1]["info"]["error"] = {"name": "ProviderError", "data": {"message": "context window exceeded"}}
+    observation = parse_observation(HANDLE, {}, data)
+    assert observation.job_status == "failed"
+    assert observation.diagnostic == "ProviderError: context window exceeded"
+
+
 @pytest.mark.parametrize("statuses,history", [(None, messages()), ({}, None), ([], messages()), ({}, [{"info": {}}])])
 def test_malformed_raw_evidence_fails_closed(statuses, history):
     assert not parse_observation(HANDLE, statuses, history).confirms_termination

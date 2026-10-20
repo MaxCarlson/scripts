@@ -1,4 +1,4 @@
-# agent_benchmark — 1.3.0
+# agent_benchmark — 1.9.0
 
 A thin evaluator around the existing OpenCode/MCP runtime. Phase 1d project/session checks passed authorized non-inference acceptance. Trial-local scratch policy is implemented and tested offline; no worker has exercised it live. Historical trial outcomes remain unchanged.
 
@@ -12,9 +12,16 @@ agent-bench cleanup -r reports/RUN_ID -x    # fresh reconciliation, then owned c
 
 `run` requires `-x/--execute`; plan, status and cleanup preview do not call models. Services must already be running. No command starts or reconfigures shared OpenCode/LM Studio services. LM Studio models resolve by exact downloaded `modelKey`; when OpenCode lacks that exact ID, a registration is generated only in the isolated trial project config. Model display names and similar quantizations are never used as aliases. Planning reports provider readiness and distinguishes unknown, unavailable, runnable, and registration-required models. No cloud fallback.
 
+Multi-model experiments default to a shared 16,384-token LM Studio context cap (`-c/--context-length`) and strict `canonical-120s` worker budget (`-b/--budget-profile`). Before a benchmark-initiated load, the scheduler runs LM Studio's read-only estimate, checks available GPU and host memory with reserves, then loads at the requested context and verifies the reported loaded context. A preloaded model is reused only when its reported context matches. Use `canonical-60s` to reproduce older runs; timeout outcomes remain strict and receive no completion grace. Example:
+
+```powershell
+agent-bench experiment plan -m lms/openai/gpt-oss-20b -m lms/meta/muse-glimmer -c 16384 -b canonical-120s
+agent-bench experiment run -x -m lms/openai/gpt-oss-20b -m lms/meta/muse-glimmer -c 16384 -b canonical-120s
+```
+
 The default persistent state is `~/.local/share/agent-benchmark`, shared across output locations. Use the same `-s/--state-dir` across invocations; an unresolved job blocks later runs even if they use another report directory. An OS-held command lock serializes run/cleanup, while the unresolved receipt survives process exit. Never delete the receipt to bypass uncertain execution. `cleanup -x` requests supported cancellation when needed, then requires fresh matching session/turn/tool evidence. It preserves resources and blocking if termination cannot be confirmed. Cleanup failures never rescore trials.
 
-Each invocation currently runs one smoke task, one explicit model and one repetition. `benchmark_core` alone supplies RunInfo, TrialResult, MetricValue, persistence, statistics and JSON/CSV/Markdown reporting. Outputs are `reports/<run_id>/{run.json,trials.jsonl,summary.json,summary.csv,report.md,evidence/}`. Exactly one trial is persisted per attempted repetition, including ordinary infrastructure failures and caller cancellation when storage is writable. Filesystem failures cannot guarantee persistence; uncertain execution still blocks dispatch.
+The single-model `run` command evaluates one explicit model; multi-model `experiment plan/run` accepts repeated `-m` model IDs and repetitions. `benchmark_core` supplies RunInfo, TrialResult, MetricValue, persistence, statistics and JSON/CSV/Markdown reporting. Single-run outputs are `reports/<run_id>/{run.json,trials.jsonl,summary.json,summary.csv,report.md,evidence/}`. Exactly one trial is persisted per attempted repetition, including ordinary infrastructure failures and caller cancellation when storage is writable. Filesystem failures cannot guarantee persistence; uncertain execution still blocks dispatch.
 
 Every run creates a fresh independent Git repository and unique root commit without a remote or host Git configuration changes. Header-routed OpenCode preflight requires exact directory/worktree and a Git project ID equal to that root commit. An empty session is created and its persisted directory/project binding validated before its ID is passed to the single MCP inference submission. Git bookkeeping is excluded from task-content snapshots; worker .git mutations remain scope-audited. See [Phase 1d guarantees and pending probe](docs/plans/20261019-implementation/phase1d.md).
 

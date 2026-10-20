@@ -169,7 +169,16 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
         status = ("cancelled" if error.get("name") == "MessageAbortedError" else "failed") if has_authoritative_error else (
             "completed" if finished else "running"
         )
-        return Observation(status, state, finished, tools_running, True)
+        diagnostic = ""
+        if has_authoritative_error:
+            error_name = str(error.get("name", "UnknownWorkerError"))[:200]
+            error_message = error.get("data", {}).get("message") if isinstance(error.get("data"), dict) else None
+            if not isinstance(error_message, str):
+                error_message = error.get("message")
+            diagnostic = error_name if not isinstance(error_message, str) or not error_message else (
+                f"{error_name}: {error_message[:2000]}"
+            )
+        return Observation(status, state, finished, tools_running, True, diagnostic)
     except (KeyError, TypeError, AttributeError, ValueError):
         return unknown
 

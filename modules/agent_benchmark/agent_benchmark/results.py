@@ -142,6 +142,8 @@ def trial_from_attempt(
         "verifier_status": attempt.verification.status if attempt.verification else None,
         "turn_completion": ("completed" if (observation and observation.job_status == "completed" and not attempt.task_budget_expired)
                             else ("aborted_at_budget" if attempt.task_budget_expired else "unconfirmed")),
+        "worker_job_status": observation.job_status if observation else None,
+        "worker_diagnostic": observation.diagnostic[:2000] if observation and observation.diagnostic else None,
         "termination": {"confirmed": attempt.termination.confirmed,
                         "grace_seconds": attempt.termination.grace_seconds,
                         "diagnostics": list(attempt.termination.diagnostics)},

@@ -269,6 +269,8 @@ def test_budget_profiles():
     assert BUDGET_PROFILES["canonical-60s"]["task_seconds"] == 60.0
     assert BUDGET_PROFILES["canonical-60s"]["grace_seconds"] == 10.0
     assert BUDGET_PROFILES["canonical-60s"]["comparison_eligible"] is True
+    assert BUDGET_PROFILES["canonical-120s"]["task_seconds"] == 120.0
+    assert BUDGET_PROFILES["canonical-120s"]["comparison_eligible"] is True
 
     for p in ("extended-90s", "extended-120s", "extended-180s"):
         assert p in BUDGET_PROFILES

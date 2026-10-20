@@ -34,6 +34,7 @@ from .evidence import EVIDENCE_LIMITS, load_task
 from .identity import get_effective_lmstudio_model_ids, model_readiness
 from .logging_setup import close_run_logging, configure_run_logging
 from .models_lifecycle import (
+    DEFAULT_BENCHMARK_CONTEXT_LENGTH,
     get_loaded_models,
     list_codex_models,
     list_downloaded_models,
@@ -52,6 +53,16 @@ def positive(value: str) -> float:
     result = float(value)
     if not math.isfinite(result) or result <= 0:
         raise argparse.ArgumentTypeError("Timeouts/budgets must be finite and positive")
+    return result
+
+
+def positive_int(value: str) -> int:
+    try:
+        result = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("Context length must be a positive integer") from error
+    if result <= 0:
+        raise argparse.ArgumentTypeError("Context length must be a positive integer")
     return result
 
 
@@ -118,10 +129,11 @@ def parser() -> argparse.ArgumentParser:
                 default=Path(__file__).parent / "tasks/py-grep-smoke",
             )
             action.add_argument(
+                "-B",
                 "--budget-profile",
                 choices=tuple(BUDGET_PROFILES.keys()),
-                default="canonical-60s",
-                help="Reproducible budget profile (default: canonical-60s)",
+                default="canonical-120s",
+                help="Reproducible budget profile (default: canonical-120s)",
             )
         if name in ("status", "cleanup"):
             action.add_argument("-r", "--run-dir", type=Path)
@@ -212,10 +224,13 @@ def parser() -> argparse.ArgumentParser:
         help="Repetitions per task/model (default: 1)",
     )
     exp_plan.add_argument(
+        "-b",
         "--budget-profile",
         choices=tuple(BUDGET_PROFILES.keys()),
-        default="canonical-60s",
+        default="canonical-120s",
     )
+    exp_plan.add_argument("-c", "--context-length", type=positive_int, default=DEFAULT_BENCHMARK_CONTEXT_LENGTH,
+                          help="Shared LM Studio context cap for all local models (default: 16384)")
     exp_plan.add_argument("-u", "--base-url", default="http://127.0.0.1:4096")
     exp_plan.add_argument("--random-seed", type=int, default=None)
     exp_plan.add_argument(
@@ -258,10 +273,13 @@ def parser() -> argparse.ArgumentParser:
         help="Repetitions per task/model (default: 1)",
     )
     exp_run.add_argument(
+        "-b",
         "--budget-profile",
         choices=tuple(BUDGET_PROFILES.keys()),
-        default="canonical-60s",
+        default="canonical-120s",
     )
+    exp_run.add_argument("-c", "--context-length", type=positive_int, default=DEFAULT_BENCHMARK_CONTEXT_LENGTH,
+                         help="Shared LM Studio context cap for all local models (default: 16384)")
     exp_run.add_argument(
         "-o",
         "--output-dir",
@@ -450,6 +468,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             scoring_basis="worker_first_attempt_full_success",
             budget_profile=args.budget_profile,
             random_seed=args.random_seed,
+            metadata={"requested_context_length": args.context_length},
         )
         plan = expand_experiment_plan(config, randomize_tasks=False)
         async def _readiness():
@@ -468,8 +487,20 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             for key in models:
                 provider, model_id = resolve_model_provider_and_key(key)
                 if provider == "lmstudio":
-                    rows.append(model_readiness(model_id, inventory, configured_ids,
-                                                provider_connected=connected))
+                    row = model_readiness(model_id, inventory, configured_ids, provider_connected=connected)
+                    row["requested_context_length"] = args.context_length
+                    identity = row.get("identity") or {}
+                    maximum = identity.get("max_context_length", 0)
+                    if identity and maximum and args.context_length > maximum:
+                        row["status"] = "context_too_large"
+                        row["reason"] = (f"Requested context {args.context_length} exceeds model maximum "
+                                          f"{maximum}; reduce -c before running.")
+                    elif identity and not maximum:
+                        row["status"] = "context_limit_unknown"
+                        row["reason"] = "LM Studio did not report this model's maximum context; run readiness is unknown."
+                    if identity:
+                        row["resource_preflight"] = "checked_before_load_at_run_time"
+                    rows.append(row)
                 else:
                     rows.append({"requested_id": key, "status": "not_checked",
                                  "reason": f"Provider '{provider}' uses its own CLI/runtime readiness checks.",
@@ -509,6 +540,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             scoring_basis="worker_first_attempt_full_success",
             budget_profile=args.budget_profile,
             random_seed=args.random_seed,
+            metadata={"requested_context_length": args.context_length},
         )
 
         plan = expand_experiment_plan(config, randomize_tasks=False)
@@ -518,8 +550,8 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
         exp_dir.mkdir(parents=True, exist_ok=True)
         log_handler = configure_run_logging(exp_dir / "benchmark.log")
         logger.info(
-            "Experiment starting id=%s models=%s tasks=%s repetitions=%s budget_profile=%s",
-            exp_id, models, sorted(task_map), args.repetitions, args.budget_profile,
+            "Experiment starting id=%s models=%s tasks=%s repetitions=%s budget_profile=%s context_length=%s",
+            exp_id, models, sorted(task_map), args.repetitions, args.budget_profile, args.context_length,
             extra={"event_type": "EXPERIMENT_START"},
         )
 

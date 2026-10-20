@@ -120,7 +120,7 @@ def test_experiment_plan_output(capsys, monkeypatch):
     from agent_benchmark.models_lifecycle import DownloadedModelInfo
 
     async def local_models():
-        return [DownloadedModelInfo("meta/muse-glimmer", "Muse Glimmer", "muse", 100, "Q4_K_M", 4096,
+        return [DownloadedModelInfo("meta/muse-glimmer", "Muse Glimmer", "muse", 100, "Q4_K_M", 32768,
                                     "gguf", "meta/muse-glimmer")]
 
     async def effective_ids(*args, **kwargs):
@@ -136,8 +136,29 @@ def test_experiment_plan_output(capsys, monkeypatch):
     assert plan_data["repetitions"] == 2
     # At least 1 task (py-grep-smoke) * 2 models * 2 repetitions = 4 planned trials
     assert plan_data["total_trials"] >= 4
+    assert plan_data["config"]["budget_profile"] == "canonical-120s"
+    assert plan_data["config"]["metadata"]["requested_context_length"] == 16384
     assert len(plan_data["planned_trials"]) == plan_data["total_trials"]
     assert [row["status"] for row in plan_data["model_readiness"]] == ["registration_required", "unavailable"]
+
+
+def test_experiment_plan_accepts_budget_and_context_short_flags(capsys, monkeypatch):
+    from agent_benchmark import cli
+    from agent_benchmark.models_lifecycle import DownloadedModelInfo
+
+    async def local_models():
+        return [DownloadedModelInfo("local-model", "Local", "arch", 100, "Q4", 32768, "gguf", "model")]
+
+    async def effective_ids(*args, **kwargs):
+        return {"local-model"}, True
+
+    monkeypatch.setattr(cli, "list_downloaded_models", local_models)
+    monkeypatch.setattr(cli, "get_effective_lmstudio_model_ids", effective_ids)
+    assert main(["experiment", "plan", "-m", "local-model", "-b", "canonical-60s", "-c", "8192"]) == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["config"]["budget_profile"] == "canonical-60s"
+    assert data["config"]["metadata"]["requested_context_length"] == 8192
+    assert data["model_readiness"][0]["requested_context_length"] == 8192
 
 
 def test_experiment_status_and_report(tmp_path, capsys):
@@ -185,12 +206,18 @@ def test_experiment_status_and_report(tmp_path, capsys):
 
 def test_experiment_run_e2e(tmp_path, monkeypatch, capsys):
     from agent_benchmark.scheduler import ExperimentScheduler
+    from agent_benchmark import models_lifecycle
+    from agent_benchmark.telemetry import ResourceSnapshot
     from benchmark_core import MetricQuality, MetricValue, TrialResult, TrialStatus
 
     reports_dir = tmp_path / "reports"
     state_dir = tmp_path / "state"
 
     loaded_state = ["qwen-model-1"]
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
 
     async def mock_lms_runner(cmd: list[str]) -> tuple[int, str, str]:
         if cmd[:2] == ["lms", "ps"]:
@@ -199,7 +226,7 @@ def test_experiment_run_e2e(tmp_path, monkeypatch, capsys):
                     "identifier": k,
                     "modelKey": k,
                     "status": "idle",
-                    "contextLength": 32768,
+                    "contextLength": 16384,
                     "sizeBytes": 10000000,
                     "maxContextLength": 32768,
                 }
@@ -211,6 +238,8 @@ def test_experiment_run_e2e(tmp_path, monkeypatch, capsys):
             return 0, "unloaded", ""
         elif cmd[:2] == ["lms", "load"]:
             target = cmd[2]
+            if "--estimate-only" in cmd:
+                return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
             loaded_state.append(target)
             return 0, f"loaded {target}", ""
         return 0, "", ""

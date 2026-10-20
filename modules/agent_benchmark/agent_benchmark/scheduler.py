@@ -47,6 +47,7 @@ from .git_workspace import ISOLATION_POLICY
 from .identity import ModelIdentity, resolve_lmstudio_identity
 from .models_lifecycle import (
     CommandRunner,
+    DEFAULT_BENCHMARK_CONTEXT_LENGTH,
     list_downloaded_models,
     resolve_model_provider_and_key,
     transition_model,
@@ -252,10 +253,11 @@ class ExperimentScheduler:
     async def _run_locked(self) -> ExperimentComparison:
         """Run the plan with command_lock held by run()."""
         config = self.plan.config
-        profile_cfg = BUDGET_PROFILES.get(config.budget_profile, BUDGET_PROFILES["canonical-60s"])
+        profile_cfg = BUDGET_PROFILES.get(config.budget_profile, BUDGET_PROFILES["canonical-120s"])
         task_seconds = float(profile_cfg["task_seconds"])
         grace_seconds = float(profile_cfg["grace_seconds"])
         verifier_seconds = 10.0
+        context_length = int(config.metadata.get("requested_context_length", DEFAULT_BENCHMARK_CONTEXT_LENGTH))
 
         await self._preflight_local_models()
 
@@ -274,13 +276,15 @@ class ExperimentScheduler:
             )
 
             # 1. Ensure target model is loaded in LM Studio (only for lmstudio provider)
+            loaded_model = None
             if resolved_provider == "lmstudio":
                 logger.info("Model transition requested model=%s runtime_key=%s", model_key, resolved_model,
                             extra={"event_type": "MODEL_TRANSITION_REQUEST"})
-                await transition_model(
+                loaded_model = await transition_model(
                     resolved_model,
                     allow_transitions=self.allow_model_transitions,
                     lms_path=self.lms_path,
+                    context_length=context_length,
                     expected_model_size_bytes=(
                         self.model_identities[model_key].size_bytes
                         if model_key in self.model_identities else None
@@ -311,7 +315,8 @@ class ExperimentScheduler:
                 suite_id=config.suite_id,
                 suite_version=config.suite_version,
                 task_ids=list(self.plan.task_ids),
-                variants={model_key: {"provider": resolved_provider, "model": resolved_model}},
+                variants={model_key: {"provider": resolved_provider, "model": resolved_model,
+                                      "effective_context_length": loaded_model.context_length if loaded_model else None}},
                 repetitions=config.repetitions,
                 scoring_basis=config.scoring_basis,
                 environment={
@@ -321,6 +326,8 @@ class ExperimentScheduler:
                 },
                 metadata={
                     "budget_profile": config.budget_profile,
+                    "requested_context_length": context_length,
+                    "effective_context_length": loaded_model.context_length if loaded_model else None,
                     "comparison_eligible": profile_cfg.get("comparison_eligible", True),
                     "suite_fingerprint": fingerprint.hexdigest(),
                     "random_seed": config.random_seed,
@@ -372,7 +379,8 @@ class ExperimentScheduler:
                 self.executed_trials.append((planned_trial, result))
                 logger.info(
                     "Trial completed model=%s task=%s repetition=%s status=%s duration_wall_ms=%s "
-                    "verifier_status=%s scope_compliance=%s budget_pass=%s execution_error=%s",
+                    "verifier_status=%s scope_compliance=%s budget_pass=%s execution_error=%s "
+                    "worker_job_status=%s worker_diagnostic=%s",
                     planned_trial.model_key, planned_trial.task_id, planned_trial.repetition,
                     result.status.value if hasattr(result.status, "value") else result.status,
                     result.metrics.get("duration.wall_ms").value
@@ -383,6 +391,8 @@ class ExperimentScheduler:
                     result.metrics.get("agent.budget_pass").value
                     if result.metrics.get("agent.budget_pass") else None,
                     result.details.get("execution_error"),
+                    result.details.get("worker_job_status"),
+                    result.details.get("worker_diagnostic"),
                     extra={"event_type": "TRIAL_COMPLETE"},
                 )
 
@@ -485,6 +495,22 @@ class ExperimentScheduler:
             for provider, model in [resolve_model_provider_and_key(model_key, default_provider=self.provider)]
             if provider == "lmstudio"
         }
+        requested_context = int(self.plan.config.metadata.get(
+            "requested_context_length", DEFAULT_BENCHMARK_CONTEXT_LENGTH
+        ))
+        if requested_context <= 0:
+            raise ValueError("requested_context_length must be positive")
+        for identity in self.model_identities.values():
+            if not identity.max_context_length:
+                raise ValueError(
+                    f"LM Studio did not report a maximum context for '{identity.runtime_model_id}'; "
+                    "cannot validate the requested benchmark context."
+                )
+            if requested_context > identity.max_context_length:
+                raise ValueError(
+                    f"Requested context {requested_context} exceeds maximum {identity.max_context_length} "
+                    f"for '{identity.runtime_model_id}'."
+                )
 
         validation_error: Exception | None = None
         async with connected_bridge(base_url=self.base_url) as bridge:
