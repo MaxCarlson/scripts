@@ -36,7 +36,7 @@ Prevent LM Studio benchmark loads from silently using a model's very large nativ
 
 ## Status
 
-Implementation and offline verification complete on `agent/benchmark-live-stats` (pending commit/push/fast-forward to `main`). The installed `lms load --help` confirms `--context-length` and `--estimate-only`; a read-only estimate for Devstral at 16,384 printed 16.54 GiB GPU and total estimates, then exited nonzero with a sandbox `EPERM` while reading the current directory. The implementation treats nonzero estimate exit as a hard block. No inference or LM Studio load/unload has been performed.
+Implementation and offline verification complete on `agent/benchmark-live-stats`, commit `6997a480`, merged into local `main` by merge commit `f824e371`. The installed `lms load --help` confirms `--context-length` and `--estimate-only`; a read-only estimate for Devstral at 16,384 printed 16.54 GiB GPU and total estimates, then exited nonzero with a sandbox `EPERM` while reading the current directory. The implementation treats nonzero estimate exit as a hard block. No inference or LM Studio load/unload has been performed.
 
 ## Delivered
 
