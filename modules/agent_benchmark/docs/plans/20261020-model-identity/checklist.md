@@ -8,4 +8,4 @@
 - [x] Use a Windows-compatible threaded synchronous subprocess runner for LM Studio CLI discovery and lifecycle commands.
 - [x] Add/verify regression coverage for all touched paths and run static checks.
 - [x] Update package docs and handoff with behavior, limits, and example model commands.
-- [ ] Commit and push the change; merge into `main` per user instruction.
+- [x] Commit and push the change; merge into `main` per user instruction.
