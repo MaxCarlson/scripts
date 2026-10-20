@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .git_workspace import GitIdentity, initialize_git
+from .identity import ModelIdentity, write_project_model_registration
 from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
 
@@ -172,7 +173,9 @@ def _write_tree(files: Mapping[str, bytes], destination: Path) -> None:
         target.write_bytes(data)
 
 
-def prepare_workspace(task: Task, workspace: Path, *, scope_policy: str | None = None) -> GitIdentity:
+def prepare_workspace(
+    task: Task, workspace: Path, *, scope_policy: str | None = None, model_identity: ModelIdentity | None = None
+) -> GitIdentity:
     """Copy public files only; existing workspace must be empty and benchmark-owned."""
     validate_policy(scope_policy)
     if scope_policy and any(reserved_path(name) for name in (*task.allowed_paths, *task.forbidden_paths)):
@@ -193,6 +196,8 @@ def prepare_workspace(task: Task, workspace: Path, *, scope_policy: str | None =
         shutil.copyfile(task.path / name, workspace / name)
     if scope_policy:
         (workspace / SCRATCH_NAME).mkdir()
+    if model_identity is not None:
+        write_project_model_registration(workspace, model_identity)
     return initialize_git(workspace)
 
 

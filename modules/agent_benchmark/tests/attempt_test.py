@@ -10,6 +10,7 @@ from agent_benchmark.attempt import run_attempt
 from agent_benchmark.bridge import SubmissionUncertain
 from agent_benchmark.evidence import capture, load_task, verify
 from agent_benchmark.lifecycle import DispatchGuard, Observation, WorkerHandle
+from agent_benchmark.identity import ModelIdentity
 
 TASK = Path(__file__).resolve().parents[1] / "agent_benchmark/tasks/py-grep-smoke"
 GOOD = "def grep(pattern, lines, ignore_case=False):\n    return [s for s in lines if (pattern.lower() in s.lower() if ignore_case else pattern in s)]\n"
@@ -36,6 +37,8 @@ class Worker:
 
     async def dispatch(self, workspace, prompt, **kwargs):
         assert not (workspace / "verifier").exists()
+        project_config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
+        assert "test-model" in project_config["provider"]["lmstudio"]["models"]
         if self.uncertain:
             self.last_receipt = {"status": "unknown", "jobId": "partial-job"}
             raise SubmissionUncertain(self.last_receipt)
@@ -55,10 +58,14 @@ class Worker:
 
 
 def attempt(tmp_path, worker, guard=None, **kwargs):
+    identity = kwargs.pop("model_identity", ModelIdentity(
+        requested_id="test-model", provider="lmstudio", runtime_model_id="test-model", lms_model_key="test-model",
+        display_name="Test Model", quantization="Q4_K_M",
+    ))
     return asyncio.run(run_attempt(
         load_task(TASK), worker, guard or DispatchGuard(), workspace_root=tmp_path / "workers",
         evidence_dir=tmp_path / "evidence", provider="lmstudio", model="test-model", agent="local-worker",
-        grace_seconds=0.03, poll_seconds=0.001, **kwargs,
+        grace_seconds=0.03, poll_seconds=0.001, model_identity=identity, **kwargs,
     ))
 
 

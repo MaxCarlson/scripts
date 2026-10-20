@@ -43,8 +43,10 @@ from .attempt import run_attempt, run_cli_attempt
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
 from .git_workspace import ISOLATION_POLICY
+from .identity import ModelIdentity, resolve_lmstudio_identity
 from .models_lifecycle import (
     CommandRunner,
+    list_downloaded_models,
     resolve_model_provider_and_key,
     transition_model,
 )
@@ -223,6 +225,7 @@ class ExperimentScheduler:
         self.executed_trials: list[tuple[PlannedTrial, TrialResult]] = []
         self.completed_runs: list[tuple[RunInfo, list[TrialResult]]] = []
         self.run_refs: list[ExperimentRunRef] = []
+        self.model_identities: dict[str, ModelIdentity] = {}
 
     async def run(self) -> ExperimentComparison:
         """
@@ -300,6 +303,8 @@ class ExperimentScheduler:
                     "isolation_policy": ISOLATION_POLICY,
                     "scope_policy": SCOPE_POLICY,
                     "evidence_limits": EVIDENCE_LIMITS.to_dict() if hasattr(EVIDENCE_LIMITS, "to_dict") else {},
+                    "model_identity": self.model_identities[model_key].to_dict()
+                    if model_key in self.model_identities else None,
                 },
             )
             save_run(run_dir, run_info, overwrite=True)
@@ -393,7 +398,7 @@ class ExperimentScheduler:
         return final_comparison
 
     async def _preflight_local_models(self) -> None:
-        """Reject unavailable OpenCode model IDs before creating run artifacts or loading models."""
+        """Resolve exact local identities and verify provider readiness before any load or trial allocation."""
         if self.trial_executor is not None:
             return
         requests = []
@@ -404,10 +409,18 @@ class ExperimentScheduler:
         if not requests:
             return
 
+        inventory = await list_downloaded_models(lms_path=self.lms_path, runner=self.lms_runner)
+        self.model_identities = {
+            model_key: resolve_lmstudio_identity(model, inventory)
+            for model_key in self.plan.model_keys
+            for provider, model in [resolve_model_provider_and_key(model_key, default_provider=self.provider)]
+            if provider == "lmstudio"
+        }
+
         validation_error: Exception | None = None
         async with connected_bridge(base_url=self.base_url) as bridge:
             try:
-                await bridge.validate_models(requests)
+                await bridge.validate_provider("lmstudio")
             except Exception as error:
                 # Raise only after the adapter context exits normally, avoiding TaskGroup-wrapped diagnostics.
                 validation_error = error
@@ -457,6 +470,7 @@ class ExperimentScheduler:
                             provider=resolved_provider,
                             model=resolved_model,
                             agent=self.agent,
+                            model_identity=self.model_identities.get(trial.model_key),
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,

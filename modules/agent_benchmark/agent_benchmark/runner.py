@@ -20,6 +20,7 @@ from .scratch import SCOPE_POLICY
 from .attempt import _write_json, run_attempt, run_cli_attempt
 from .bridge import connected_bridge
 from .evidence import EVIDENCE_LIMITS, load_task
+from .identity import ModelIdentity, discover_lmstudio_identity
 from .lifecycle import DispatchGuard, OwnedWorkspace, WorkerHandle, cleanup_workspace, confirm_termination
 from .models_lifecycle import resolve_model_provider_and_key
 from .results import base_metrics, trial_from_attempt, unavailable
@@ -59,6 +60,7 @@ async def run_benchmark(
     agent: str = "local-worker", base_url: str = "http://127.0.0.1:4096", task_seconds: float | None = None,
     budget_profile: str = "canonical-60s",
     grace_seconds: float = 10, request_seconds: float = 10, verifier_seconds: float = 10,
+    model_identity: ModelIdentity | None = None,
     connector=connected_bridge,
 ) -> Path:
     resolved_provider, resolved_model = resolve_model_provider_and_key(model, default_provider=provider)
@@ -80,6 +82,12 @@ async def run_benchmark(
     run_dir = reports / run_id
     evidence_dir = run_dir / "evidence" / "trial-001"
     with reserved_trial(state, evidence_dir) as guard:
+        if resolved_provider == "lmstudio" and model_identity is None:
+            model_identity = await discover_lmstudio_identity(resolved_model)
+        if model_identity is not None and (
+            model_identity.provider != resolved_provider or model_identity.runtime_model_id != resolved_model
+        ):
+            raise ValueError("Resolved model identity does not match the requested provider and runtime model ID")
         cancelled = False
         fingerprint = hashlib.sha256()
         for path in sorted(task.path.rglob("*")):
@@ -97,7 +105,8 @@ async def run_benchmark(
              "request_seconds": request_seconds, "verifier_seconds": verifier_seconds,
              "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
              "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
-             "evidence_limits": asdict(EVIDENCE_LIMITS)},
+             "evidence_limits": asdict(EVIDENCE_LIMITS),
+             "model_identity": model_identity.to_dict() if model_identity else None},
         )
         save_run(run_dir, info)
         trial = None
@@ -114,6 +123,7 @@ async def run_benchmark(
                         task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
                         provider=resolved_provider, model=resolved_model, agent=agent, task_seconds=effective_task_seconds,
                         grace_seconds=effective_grace_seconds, verifier_seconds=verifier_seconds,
+                        model_identity=model_identity,
                     )
             runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
             info = replace(info, metadata={**info.metadata, "runtime": runtime})

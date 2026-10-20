@@ -30,11 +30,13 @@ from . import __version__
 from .dashboard import ExperimentDashboard
 from .diagnostic import run_diagnostic
 from .evidence import EVIDENCE_LIMITS, load_task
+from .identity import get_effective_lmstudio_model_ids, model_readiness
 from .models_lifecycle import (
     get_loaded_models,
     list_codex_models,
     list_downloaded_models,
     list_gemini_models,
+    resolve_model_provider_and_key,
 )
 from .runner import BUDGET_PROFILES, cleanup_trial, run_benchmark
 from .scheduler import ExperimentScheduler, expand_experiment_plan
@@ -210,6 +212,7 @@ def parser() -> argparse.ArgumentParser:
         choices=tuple(BUDGET_PROFILES.keys()),
         default="canonical-60s",
     )
+    exp_plan.add_argument("-u", "--base-url", default="http://127.0.0.1:4096")
     exp_plan.add_argument("--random-seed", type=int, default=None)
     exp_plan.add_argument(
         "-s",
@@ -445,7 +448,33 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             random_seed=args.random_seed,
         )
         plan = expand_experiment_plan(config, randomize_tasks=False)
-        print(json.dumps(plan.to_dict(), indent=2))
+        async def _readiness():
+            try:
+                inventory = await list_downloaded_models()
+            except Exception:
+                return [
+                    {"requested_id": key, "status": "unknown",
+                     "reason": "LM Studio inventory could not be read; plan is expanded but run readiness is unverified.",
+                     "identity": None}
+                    for key in models
+                ]
+            provider_state = await get_effective_lmstudio_model_ids(args.base_url, directory=Path.cwd())
+            configured_ids, connected = provider_state if provider_state is not None else (None, None)
+            rows = []
+            for key in models:
+                provider, model_id = resolve_model_provider_and_key(key)
+                if provider == "lmstudio":
+                    rows.append(model_readiness(model_id, inventory, configured_ids,
+                                                provider_connected=connected))
+                else:
+                    rows.append({"requested_id": key, "status": "not_checked",
+                                 "reason": f"Provider '{provider}' uses its own CLI/runtime readiness checks.",
+                                 "identity": {"provider": provider, "runtime_model_id": model_id}})
+            return rows
+
+        payload = plan.to_dict()
+        payload["model_readiness"] = asyncio.run(_readiness())
+        print(json.dumps(payload, indent=2))
         return 0
 
     elif cmd == "run":
@@ -620,12 +649,13 @@ def main(argv: list[str] | None = None) -> int:
                 )
             print(json.dumps(value, indent=2))
         elif args.command == "smoke":
+            smoke_provider, smoke_model = resolve_model_provider_and_key(args.model, default_provider=args.provider)
             directory = asyncio.run(
                 run_diagnostic(
                     output=args.output_dir,
                     state=args.state_dir,
-                    model=args.model,
-                    provider=args.provider,
+                    model=smoke_model,
+                    provider=smoke_provider,
                     agent=args.agent,
                     base_url=args.base_url,
                     request_seconds=args.request_timeout,

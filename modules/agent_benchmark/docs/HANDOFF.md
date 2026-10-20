@@ -1,5 +1,21 @@
 # agent_benchmark handoff — live dashboard telemetry and preflight diagnostics
 
+## Current work — exact LM Studio model identity resolution (2026-10-20)
+
+Worktree `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`, based on `main` at `300d04f7` plus the dashboard follow-up. Package version is 1.7.0.
+
+- LM Studio `modelKey` is the authoritative identity for both `lms load` and OpenCode selection. Model discovery, planning, scheduler preflight, single-run/diagnostic flows, and experiment metadata carry that exact key plus quantization and available variant metadata.
+- OpenCode `models.<id>.name` is only a display label. The old `qwen38_17GB`/`qwen38_23GB` entries are not mapped to similarly named LM Studio models and fail exact resolution unless an explicit exact LM Studio key exists.
+- If an exact downloaded key is absent from the effective OpenCode catalog, the benchmark adds it to `provider.lmstudio.models` in that trial's isolated project `opencode.json`. It preserves the rest of existing JSON config and credentials. Existing JSONC is preserved and causes a clear safe failure. Shared configuration is never modified.
+- `experiment plan` includes per-model readiness (`runnable`, `registration_required`, `unavailable`, `ambiguous`, `unknown`, or `not_checked`). `experiment run` resolves all local models and validates provider connectivity before report artifacts, model transitions, or trial allocation. It still uses the existing explicit transition authorization.
+- No inference, shared config change, or model load/unload was performed. Six affected test modules plus identity tests passed (81 tests); a final distinct-quantization regression also passed (10 identity tests total). Ruff and `git diff --check` passed. Live OpenCode project-config discovery remains to be confirmed during the next authorized benchmark run. Relevant plan: `docs/plans/20261020-model-identity/`.
+
+### Model identity work checklist
+
+Exact identifier flow and isolated registration are implemented and offline verified. Remaining before handoff: commit/push, then merge to `main` as authorized by the user.
+
+---
+
 ## Current work — 2026-10-19 (dashboard follow-up)
 
 Worktree `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`, based on current `main` at `300d04f7`. The benchmark project is already merged into `main`; follow-up work stays on this feature branch. Existing untracked `reports/` data is preserved.

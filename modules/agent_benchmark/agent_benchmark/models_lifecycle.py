@@ -49,6 +49,8 @@ class DownloadedModelInfo:
     path: str
     trained_for_tool_use: bool = False
     model_type: str = "llm"
+    selected_variant: str | None = None
+    variants: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -62,6 +64,8 @@ class DownloadedModelInfo:
             "path": self.path,
             "trained_for_tool_use": self.trained_for_tool_use,
             "model_type": self.model_type,
+            "selected_variant": self.selected_variant,
+            "variants": list(self.variants),
         }
 
     @classmethod
@@ -79,6 +83,10 @@ class DownloadedModelInfo:
             path=str(data.get("path", "")),
             trained_for_tool_use=bool(data.get("trainedForToolUse", False)),
             model_type=str(data.get("type", "llm")),
+            selected_variant=data.get("selectedVariant") if isinstance(data.get("selectedVariant"), str) else None,
+            variants=tuple(value for value in data.get("variants", []) if isinstance(value, str))
+            if isinstance(data.get("variants", []), list)
+            else (),
         )
 
 
