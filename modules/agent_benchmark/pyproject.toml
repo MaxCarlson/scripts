@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-benchmark"
-version = "1.7.1"
+version = "1.8.0"
 description = "Independent evaluation of coding workers through the existing OpenCode bridge"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["benchmark-core>=0.1.1,<0.2", "mcp>=1.30,<2", "httpx>=0.28,<1", "psutil>=5.9", "termdash>=0.9.0"]
+dependencies = ["benchmark-core>=0.1.1,<0.2", "script-logging>=0.1.0,<0.2", "mcp>=1.30,<2", "httpx>=0.28,<1", "psutil>=5.9", "termdash>=0.9.0"]
 
 [tool.setuptools.packages.find]
 where = ["."]

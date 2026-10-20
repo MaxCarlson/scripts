@@ -19,6 +19,8 @@ from typing import Any, Optional
 
 import httpx
 
+from .telemetry import collect_resource_snapshot
+
 logger = logging.getLogger(__name__)
 
 CommandRunner = Callable[[list[str]], Awaitable[tuple[int, str, str]]]
@@ -129,13 +131,27 @@ class LoadedModelInfo:
 
 async def _default_cmd_runner(cmd: list[str]) -> tuple[int, str, str]:
     """Run the local CLI in a worker thread for reliable Windows process creation."""
-    result = await asyncio.to_thread(
-        subprocess.run,
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    operation = cmd[1].lower() if len(cmd) > 1 else ""
+    timeout = {"ls": 20.0, "ps": 15.0, "unload": 45.0, "load": 180.0}.get(operation, 20.0)
+    try:
+        result = await asyncio.to_thread(
+            subprocess.run,
+            cmd,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as error:
+        stdout = error.stdout or ""
+        stderr = error.stderr or ""
+        if isinstance(stdout, bytes):
+            stdout = stdout.decode("utf-8", "replace")
+        if isinstance(stderr, bytes):
+            stderr = stderr.decode("utf-8", "replace")
+        return -1, stdout, f"{stderr}\nLM Studio command timed out after {timeout:.0f}s".strip()
     return result.returncode, result.stdout or "", result.stderr or ""
 
 
@@ -245,6 +261,8 @@ async def transition_model(
     unload_timeout: float = 30.0,
     load_timeout: float = 120.0,
     poll_interval: float = 0.25,
+    max_ram_pct: float = 90.0,
+    expected_model_size_bytes: int | None = None,
     runner: Optional[CommandRunner] = None,
 ) -> LoadedModelInfo:
     """
@@ -255,7 +273,9 @@ async def transition_model(
     2. If target is not loaded and allow_transitions=False, raises ModelTransitionNotAuthorizedError.
     3. If allow_transitions=True:
        - Unloads existing models via `lms unload -a`.
-       - Polls until memory is released within unload_timeout.
+       - Polls until LM Studio reports no loaded models within unload_timeout.
+       - Refuses to load when measured host RAM headroom is below the requested model's
+         downloaded size plus 25% overhead, or RAM utilization reaches max_ram_pct.
        - Loads target model via `lms load <key> -y`.
        - Verifies target model is active and idle within load_timeout.
        - Halts immediately on any command or service failure without blind retries.
@@ -264,23 +284,58 @@ async def transition_model(
 
     if not target_model_key or not target_model_key.strip():
         raise ValueError("target_model_key must be a non-empty string")
+    if not 0 < max_ram_pct <= 100:
+        raise ValueError("max_ram_pct must be greater than 0 and at most 100")
+    if expected_model_size_bytes is not None and expected_model_size_bytes < 0:
+        raise ValueError("expected_model_size_bytes must not be negative")
 
     loaded_list = await get_loaded_models(lms_path=lms_path, runner=runner)
-    for m in loaded_list:
-        if m.model_key == target_model_key or m.identifier == target_model_key:
-            return m
+    target_loaded = next(
+        (m for m in loaded_list if m.model_key == target_model_key or m.identifier == target_model_key),
+        None,
+    )
+    if target_loaded is not None and len(loaded_list) == 1:
+        if str(target_loaded.status or "").strip().lower() not in {"idle", "loaded", "ready"}:
+            raise ModelTransitionError(
+                f"Refusing to dispatch model '{target_model_key}' while LM Studio reports status "
+                f"'{target_loaded.status}'. Wait for it to become idle and retry."
+            )
+        logger.info("Model already loaded; no transition needed target=%s", target_model_key,
+                    extra={"event_type": "MODEL_READY"})
+        return target_loaded
 
     # Model is not loaded. Check authorization.
     if not allow_transitions:
         current_id = loaded_list[0].identifier if loaded_list else "none"
         raise ModelTransitionNotAuthorizedError(
-            f"Target model '{target_model_key}' is not loaded (current loaded: '{current_id}'). "
+            f"Target model '{target_model_key}' is not the sole loaded model (current loaded: '{current_id}', "
+            f"loaded count: {len(loaded_list)}). "
             "Model transitions are not authorized. Set allow_transitions=True or pass --allow-model-transitions."
         )
 
     # Authorized transition: unload current if any
     if loaded_list:
+        active_or_unknown = [
+            model for model in loaded_list
+            if str(model.status or "").strip().lower() not in {"idle", "loaded", "ready"}
+        ]
+        if active_or_unknown:
+            details = ", ".join(f"{model.model_key} ({model.status})" for model in active_or_unknown)
+            logger.error(
+                "Model transition refused because LM Studio reports active or unknown model state: %s",
+                details,
+                extra={"event_type": "MODEL_UNLOAD_BLOCKED"},
+            )
+            raise ModelTransitionError(
+                "Refusing to unload LM Studio model(s) with active or unknown status: "
+                f"{details}. Wait for them to become idle and retry."
+            )
+        logger.info("Unloading LM Studio model set target=%s loaded=%s", target_model_key,
+                    [model.model_key for model in loaded_list], extra={"event_type": "MODEL_UNLOAD_START"})
         code, stdout, stderr = await cmd_exec([lms_path, "unload", "-a"])
+        logger.info("LM Studio unload finished target=%s exit_code=%s stdout=%s stderr=%s",
+                    target_model_key, code, stdout[-1000:], stderr[-1000:],
+                    extra={"event_type": "MODEL_UNLOAD_RESULT"})
         if code != 0:
             raise ModelTransitionError(
                 f"Failed to unload active model(s) (exit code {code}): {stderr or stdout}"
@@ -291,6 +346,14 @@ async def transition_model(
         while True:
             remaining = await get_loaded_models(lms_path=lms_path, runner=runner)
             if not remaining:
+                snapshot = collect_resource_snapshot()
+                logger.info(
+                    "Post-unload resource check target=%s loaded_models=0 ram_pct=%s ram_available_bytes=%s "
+                    "gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s",
+                    target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
+                    snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes,
+                    extra={"event_type": "MODEL_UNLOAD_VERIFIED"},
+                )
                 break
             if asyncio.get_running_loop().time() - start_unload > unload_timeout:
                 raise ModelTransitionError(
@@ -298,8 +361,53 @@ async def transition_model(
                 )
             await asyncio.sleep(poll_interval)
 
+    snapshot = collect_resource_snapshot()
+    required_headroom = (
+        int(expected_model_size_bytes * 1.25)
+        if expected_model_size_bytes is not None and expected_model_size_bytes > 0
+        else None
+    )
+    insufficient_headroom = (
+        required_headroom is not None
+        and snapshot.ram_available_bytes is not None
+        and snapshot.ram_available_bytes < required_headroom
+    )
+    unknown_headroom = required_headroom is not None and snapshot.ram_available_bytes is None
+    at_ram_limit = snapshot.ram_pct is not None and snapshot.ram_pct >= max_ram_pct
+    if insufficient_headroom or unknown_headroom or at_ram_limit:
+        logger.error(
+            "Model load blocked by RAM safety guard target=%s ram_pct=%s available_bytes=%s "
+            "expected_model_bytes=%s required_headroom_bytes=%s limit_pct=%.1f",
+            target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes, expected_model_size_bytes,
+            required_headroom, max_ram_pct,
+            extra={"event_type": "MODEL_LOAD_BLOCKED"},
+        )
+        if insufficient_headroom:
+            reason = (
+                f"available RAM is {snapshot.ram_available_bytes} bytes; "
+                f"at least {required_headroom} bytes is required for the model and 25% load headroom"
+            )
+        elif unknown_headroom:
+            reason = "available RAM could not be measured for the expected model size"
+        else:
+            reason = (
+                f"host RAM utilization is {snapshot.ram_pct:.1f}% with "
+                f"{snapshot.ram_available_bytes} bytes available (safety limit {max_ram_pct:.0f}%)"
+            )
+        raise ModelTransitionError(
+            f"Refusing to load model '{target_model_key}': {reason}."
+        )
+
     # Load target model
+    logger.info(
+        "Loading LM Studio model target=%s ram_pct=%s ram_available_bytes=%s",
+        target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
+        extra={"event_type": "MODEL_LOAD_START"},
+    )
     code, stdout, stderr = await cmd_exec([lms_path, "load", target_model_key, "-y"])
+    logger.info("LM Studio load finished target=%s exit_code=%s stdout=%s stderr=%s",
+                target_model_key, code, stdout[-1000:], stderr[-1000:],
+                extra={"event_type": "MODEL_LOAD_RESULT"})
     if code != 0:
         raise ModelTransitionError(
             f"Failed to load model '{target_model_key}' (exit code {code}): {stderr or stdout}"
@@ -410,7 +518,7 @@ def resolve_model_provider_and_key(
     """
     Resolve a user-supplied model string into (provider, canonical_model_key).
 
-    Supports explicit prefixes (`gemini/...`, `codex/...`, `lmstudio/...`) and
+    Supports explicit prefixes (`gemini/...`, `codex/...`, `lms/...`, legacy `lmstudio/...`) and
     friendly shorthand names (`gemini-3.8-flash`, `gemini-4-Argon`, `ChatGpt-6.1-sol`,
     `6-Astra`, `5.6-Terra`, etc.).
     """
@@ -425,9 +533,18 @@ def resolve_model_provider_and_key(
         if p_low in ("gemini", "agy"):
             explicit_provider = "gemini"
             cleaned = rest.strip()
-        elif p_low in ("codex", "chatgpt", "openai"):
+        elif p_low in ("codex", "chatgpt"):
             explicit_provider = "codex"
             cleaned = rest.strip()
+        elif p_low == "openai":
+            # Historical Codex aliases used openai/<gpt-model>; LM Studio also
+            # serves OpenAI-published local models such as openai/gpt-oss-20b.
+            if rest.lower().startswith(("gpt-6", "gpt-5.6")):
+                explicit_provider = "codex"
+                cleaned = rest.strip()
+            else:
+                explicit_provider = "lmstudio"
+                cleaned = f"openai/{rest.strip()}"
         elif p_low in ("lmstudio", "lms", "local"):
             explicit_provider = "lmstudio"
             cleaned = rest.strip()
@@ -608,7 +725,7 @@ async def list_all_available_models(
                     AvailableModelInfo(
                         provider="lmstudio",
                         model_key=m.model_key,
-                        canonical_id=f"lmstudio/{m.model_key}",
+                    canonical_id=f"lms/{m.model_key}",
                         display_name=m.display_name,
                         status=st,
                         architecture=m.architecture,

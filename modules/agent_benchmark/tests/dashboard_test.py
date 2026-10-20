@@ -102,7 +102,7 @@ def test_dashboard_shows_live_ram_gpu_and_vram_statistics(sample_plan) -> None:
     assert "VRAM 20.0/24.0 GiB 83%" in plain_stats
     assert len(plain_stats) <= 80
     assert len(lines) <= 12
-    assert sampler.start_count == 0
+    assert sampler.start_count == 1
     dashboard.close()
     assert sampler.stop_count == 1
 
@@ -176,6 +176,29 @@ def test_dashboard_quiet_mode_milestone_logging(sample_plan) -> None:
     assert "\033[A" not in output
     assert "\033[2K" not in output
 
+    dashboard.close()
+
+
+def test_dashboard_does_not_mark_failed_model_as_successful(sample_plan) -> None:
+    _, plan = sample_plan
+    buf = io.StringIO()
+    dashboard = ExperimentDashboard(plan, quiet=True, stream=buf)
+    trial = plan.planned_trials[0]
+    result = TrialResult(
+        run_id=trial.run_id,
+        trial_id="trial-001",
+        task_id=trial.task_id,
+        variant_id=trial.model_key,
+        repetition=trial.repetition,
+        status=TrialStatus.FAILED,
+    )
+
+    dashboard.on_trial_complete(trial, result)
+    dashboard.on_model_complete(trial.model_key, None, [result])
+
+    assert dashboard.models[trial.model_key].status == "FAILED"
+    assert "[MODEL RESULT] model-alpha" in buf.getvalue()
+    assert "[MODEL COMPLETE] model-alpha" not in buf.getvalue()
     dashboard.close()
 
 

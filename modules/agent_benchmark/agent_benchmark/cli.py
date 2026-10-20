@@ -8,6 +8,7 @@ from dataclasses import asdict
 from datetime import datetime, timezone
 import inspect
 import json
+import logging
 import math
 import os
 from pathlib import Path
@@ -31,6 +32,7 @@ from .dashboard import ExperimentDashboard
 from .diagnostic import run_diagnostic
 from .evidence import EVIDENCE_LIMITS, load_task
 from .identity import get_effective_lmstudio_model_ids, model_readiness
+from .logging_setup import close_run_logging, configure_run_logging
 from .models_lifecycle import (
     get_loaded_models,
     list_codex_models,
@@ -42,6 +44,8 @@ from .runner import BUDGET_PROFILES, cleanup_trial, run_benchmark
 from .scheduler import ExperimentScheduler, expand_experiment_plan
 from .scratch import SCOPE_POLICY, SCRATCH_NAME
 from .state import read_pending
+
+logger = logging.getLogger(__name__)
 
 
 def positive(value: str) -> float:
@@ -510,27 +514,43 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
         plan = expand_experiment_plan(config, randomize_tasks=False)
         reports_base = Path(args.output_dir)
         reports_base.mkdir(parents=True, exist_ok=True)
-
-        dashboard = ExperimentDashboard(plan=plan, quiet=args.quiet)
-        scheduler = ExperimentScheduler(
-            plan=plan,
-            task_dirs=task_map,
-            reports_dir=reports_base,
-            state_dir=args.state_dir,
-            allow_model_transitions=args.allow_model_transitions,
-            base_url=args.base_url,
-            on_trial_start=dashboard.on_trial_start,
-            on_trial_complete=dashboard.on_trial_complete,
-            on_model_start=dashboard.on_model_start,
-            on_model_complete=dashboard.on_model_complete,
-            on_experiment_complete=dashboard.on_experiment_complete,
+        exp_dir = reports_base / exp_id
+        exp_dir.mkdir(parents=True, exist_ok=True)
+        log_handler = configure_run_logging(exp_dir / "benchmark.log")
+        logger.info(
+            "Experiment starting id=%s models=%s tasks=%s repetitions=%s budget_profile=%s",
+            exp_id, models, sorted(task_map), args.repetitions, args.budget_profile,
+            extra={"event_type": "EXPERIMENT_START"},
         )
 
-        with dashboard:
-            asyncio.run(scheduler.run())
+        try:
+            dashboard = ExperimentDashboard(plan=plan, quiet=args.quiet)
+            scheduler = ExperimentScheduler(
+                plan=plan,
+                task_dirs=task_map,
+                reports_dir=reports_base,
+                state_dir=args.state_dir,
+                allow_model_transitions=args.allow_model_transitions,
+                base_url=args.base_url,
+                on_trial_start=dashboard.on_trial_start,
+                on_trial_complete=dashboard.on_trial_complete,
+                on_model_start=dashboard.on_model_start,
+                on_model_complete=dashboard.on_model_complete,
+                on_experiment_complete=dashboard.on_experiment_complete,
+            )
 
-        exp_dir = reports_base / exp_id
+            with dashboard:
+                asyncio.run(scheduler.run())
+        except BaseException:
+            logger.exception("Experiment command failed id=%s", exp_id,
+                             extra={"event_type": "EXPERIMENT_COMMAND_ERROR"})
+            print(f"Diagnostic log: {exp_dir / 'benchmark.log'}", file=sys.stderr)
+            raise
+        finally:
+            close_run_logging(log_handler)
+
         print(f"\nExperiment complete: {exp_dir}")
+        print(f"Diagnostic log: {exp_dir / 'benchmark.log'}")
 
         all_trials = [t for _, t in scheduler.executed_trials]
         all_passed = bool(

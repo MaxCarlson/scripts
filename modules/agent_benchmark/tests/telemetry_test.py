@@ -52,7 +52,8 @@ def test_resource_snapshot_reads_host_ram_and_gpu_metrics(monkeypatch) -> None:
     monkeypatch.setattr(
         telemetry.psutil,
         "virtual_memory",
-        lambda: SimpleNamespace(used=16 * 1024**3, total=32 * 1024**3, percent=50.0),
+        lambda: SimpleNamespace(used=16 * 1024**3, total=32 * 1024**3, percent=50.0,
+                                available=16 * 1024**3),
     )
     monkeypatch.setattr(
         telemetry,
@@ -65,6 +66,7 @@ def test_resource_snapshot_reads_host_ram_and_gpu_metrics(monkeypatch) -> None:
     assert snapshot.ram_used_bytes == 16 * 1024**3
     assert snapshot.ram_total_bytes == 32 * 1024**3
     assert snapshot.ram_pct == 50.0
+    assert snapshot.ram_available_bytes == 16 * 1024**3
     assert snapshot.gpu_utilization_pct == 81.0
     assert snapshot.gpu_memory_utilization_pct == 37.0
 
@@ -89,3 +91,19 @@ def test_resource_sampler_publishes_snapshot_and_stops(monkeypatch) -> None:
         sampler.stop()
 
     assert thread is not None and not thread.is_alive()
+
+
+def test_resource_sampler_calls_sample_observer(monkeypatch) -> None:
+    sampled = threading.Event()
+    expected = telemetry.ResourceSnapshot(ram_pct=77.0)
+    received = []
+    monkeypatch.setattr(telemetry, "collect_resource_snapshot", lambda: expected)
+
+    sampler = telemetry.ResourceSampler(interval=0.2, on_sample=lambda item: (received.append(item), sampled.set()))
+    sampler.start()
+    try:
+        assert sampled.wait(2.0)
+    finally:
+        sampler.stop()
+
+    assert received == [expected]

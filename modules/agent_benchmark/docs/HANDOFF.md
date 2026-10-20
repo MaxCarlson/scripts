@@ -1,5 +1,18 @@
 # agent_benchmark handoff — live dashboard telemetry and preflight diagnostics
 
+## Current work — run diagnostics and lifecycle safety (2026-10-20)
+
+Feature worktree: `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`. Package version is 1.8.0. The project is already integrated in `main`; this follow-up remains on the feature branch until its commit is pushed and fast-forwarded into `main` as the user requested.
+
+- Forensic review of `EXP_20261020_010915` confirmed GPT-OSS generated invalid Python (`grep.py`, line 16), Muse passed the hidden verifier but had uncertain scope compliance and was correctly marked unscored, and Ornith reached its 60-second worker budget. The report has no fourth Devstral run or transition diagnostics. Neither the `_readerthread` theory nor the native Devstral exit cause is established by these artifacts.
+- Reused `script_logging` for UTF-8 experiment logs under `<experiment>/benchmark.log`. Logs include transition phases/results, run start/abort, trial status plus verifier/scope/budget indicators, exceptions, partial-report writes, and one-second RAM/GPU/VRAM samples. LM Studio CLI and `nvidia-smi` text pipes use UTF-8 with replacement; lifecycle CLI calls have operation-specific timeouts.
+- Model transitions and trials now share the OS-backed command lock for the full multi-model run. Transitions refuse to act on active/unknown LM Studio model statuses and reject target readiness when multiple models remain loaded. Before a load, the scheduler requires RAM headroom of 125% of LM Studio's discovered model file size and also blocks at 90% host RAM use. This is a conservative estimate, not a guarantee of VRAM/driver reclamation; `lms ps` cannot identify every external client using an idle model.
+- If a later transition fails, completed runs are saved with a partial comparison/report. Live dashboard completion is red for any model with non-pass results, and reports unscored counts instead of showing a misleading green completion mark. `openai/gpt-oss-20b` resolves as LM Studio; legacy `lmstudio/`, short `lms/`, and bare local IDs remain accepted. Internal OpenCode provider ID remains `lmstudio`.
+- Fixed the CLI-worker exception path so a live child is killed and awaited before termination can be confirmed; unresolved termination stays guarded.
+- Validation: `pytest tests -p no:cacheprovider --tb=short -q` from `modules/agent_benchmark`: 295 passed, 3 skipped. `pytest tests -p no:cacheprovider --tb=short -q` from `modules/benchmark_core`: passed with one skip. Ruff and `git diff --check` passed. No inference, LM Studio load/unload, or shared OpenCode config changes were performed. Full test details and remaining uncertainty are in `docs/plans/20261020-run-diagnostics/STATUS.md`.
+
+Next: review the scoped diff, commit and push `agent/benchmark-live-stats`, then fast-forward the already-clean main checkout and verify the merged source/tests. Do not claim historical root causes beyond the persisted evidence; do not start a live benchmark without separate authorization.
+
 ## Current work — exact LM Studio model identity resolution (2026-10-20)
 
 Worktree `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`, based on `main` at `300d04f7` plus the dashboard follow-up. Package version is 1.7.1.

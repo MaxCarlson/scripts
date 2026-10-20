@@ -4,7 +4,7 @@ The receipt survives process exit; the OS lock does not. No PID probing,
 process supervision, stale-time heuristics, or automatic unresolved-job override.
 """
 
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 import json
 import os
 from pathlib import Path
@@ -96,9 +96,9 @@ def safely_finished(evidence_dir: Path) -> bool:
 
 
 @contextmanager
-def reserved_trial(state: Path, evidence_dir: Path):
+def reserved_trial(state: Path, evidence_dir: Path, *, lock_held: bool = False):
     """One shared reservation lifecycle for scored and diagnostic execution."""
-    with command_lock(state):
+    with (nullcontext() if lock_held else command_lock(state)):
         receipt = reserve(state, evidence_dir)
         guard = DispatchGuard()
         try:
