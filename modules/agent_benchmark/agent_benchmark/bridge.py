@@ -176,8 +176,18 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
             if not isinstance(error_message, str):
                 error_message = error.get("message")
             diagnostic = error_name if not isinstance(error_message, str) or not error_message else (
-                f"{error_name}: {error_message[:2000]}"
+                f"{error_name}: {error_message[:1000]}"
             )
+            error_data = error.get("data") if isinstance(error.get("data"), dict) else {}
+            for key in ("statusCode", "isRetryable", "responseBody"):
+                value = error_data.get(key)
+                if value is not None and isinstance(value, (str, int, bool)):
+                    diagnostic += f"; {key}={str(value)[:1000]}"
+            diagnostic = diagnostic[:3000]
+        elif finish_reason == "length":
+            diagnostic = "Provider finish reason: length (generation limit reached; context overflow not established)."
+        elif finish_reason == "content-filter":
+            diagnostic = "Provider finish reason: content-filter (output was filtered)."
         return Observation(status, state, finished, tools_running, True, diagnostic)
     except (KeyError, TypeError, AttributeError, ValueError):
         return unknown

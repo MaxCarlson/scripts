@@ -202,6 +202,32 @@ def test_dashboard_does_not_mark_failed_model_as_successful(sample_plan) -> None
     dashboard.close()
 
 
+@pytest.mark.parametrize("quiet", [True, False])
+def test_dashboard_explains_scope_failure_and_preserves_code_success(sample_plan, quiet):
+    _, plan = sample_plan
+    buf = io.StringIO()
+    dashboard = ExperimentDashboard(plan, quiet=quiet, stream=buf)
+    trial = plan.planned_trials[0]
+    result = TrialResult(trial.run_id, "trial-001", trial.task_id, trial.model_key, 1, "failed", {
+        "agent.functional_pass": MetricValue(1, "boolean", "verifier", "derived"),
+        "agent.budget_pass": MetricValue(1, "boolean", "budget", "derived"),
+    }, {"verifier_status": "passed", "scope_audit": {"compliance": "violated"},
+        "scope_violations": ["__pycache__/grep.cpython-312.pyc"],
+        "termination": {"confirmed": True}, "evidence_path": "evidence/trial-001"})
+    dashboard.on_trial_complete(trial, result)
+    dashboard.on_model_complete(trial.model_key, None, [result])
+    output = _strip_ansi(buf.getvalue())
+    assert "code PASS | scope FAIL | budget PASS" in output
+    assert "__pycache__/grep.cpython-312.pyc" in output
+    assert "Code checks: 1/1 passed" in output
+    assert "Evidence:" in output
+    assert len(dashboard._render_live_lines()) <= 12
+    comparison = ExperimentComparison(plan.experiment_id, plan.config, {}, {}, [], [], [])
+    dashboard.on_experiment_complete(comparison)
+    assert "FUNCTIONAL CODE CHECKS" in buf.getvalue()
+    assert "model-alpha: 1/1 passed; 0 unavailable" in buf.getvalue()
+
+
 def test_dashboard_final_experiment_complete_leaderboard(sample_plan) -> None:
     config, plan = sample_plan
     buf = io.StringIO()

@@ -47,6 +47,7 @@ class AttemptEvidence:
     scope_policy: str | None = None
     session_tokens: dict[str, Any] | None = None
     tool_telemetry: dict[str, Any] | None = None
+    execution_diagnostic: str | None = None
 
 
 def extract_telemetry(session: Any, history: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -269,6 +270,7 @@ async def run_attempt(
     handle = None
     task_budget_expired = False
     execution_error = None
+    execution_diagnostic = None
     start = time.monotonic()
     journal["stage"] = "dispatching"
     _write_json(evidence_dir / "lifecycle.json", journal)
@@ -318,6 +320,7 @@ async def run_attempt(
                 execution_error = "TimeoutError"
         except Exception as error:  # Execution/transport boundary, not a model-failure verdict.
             execution_error = type(error).__name__
+            execution_diagnostic = f"{type(error).__name__}: {error}"[:2000]
         receipt = bridge.last_receipt
         _write_json(evidence_dir / "dispatch.json", receipt)
         handle = handle or WorkerHandle(receipt.get("jobId", "unconfirmed"), receipt.get("sessionId", ""),
@@ -339,6 +342,7 @@ async def run_attempt(
         worker_ms = (time.monotonic() - start) * 1000
         journal.update(stage="terminated" if decision.confirmed else "termination_unresolved", handle=asdict(handle),
                        termination=asdict(decision), task_budget_expired=task_budget_expired, execution_error=execution_error)
+        journal["execution_diagnostic"] = execution_diagnostic
         _write_json(evidence_dir / "lifecycle.json", journal)
         guard.record(decision)
         _write_json(evidence_dir / "session.json", bridge.last_history)
@@ -407,6 +411,7 @@ async def run_attempt(
             execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit, scope_policy=SCOPE_POLICY,
             session_tokens=session_tokens if session_tokens else None,
             tool_telemetry=tool_telemetry if tool_telemetry else None,
+            execution_diagnostic=execution_diagnostic,
         )
     finally:
         # Persistence can fail after remote submission (disk full/permissions).
