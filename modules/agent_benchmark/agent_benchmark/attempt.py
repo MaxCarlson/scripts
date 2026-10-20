@@ -226,6 +226,9 @@ def build_prompt(task: Task, workspace: Path, *, file_tools: bool | None = None)
     """Deterministic user prompt; not a claim about provider system/tool schemas."""
     if file_tools is True or (file_tools is None and task.opencode_tool_profile == FILE_PROFILE):
         return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + FILE_PROMPT
+                + "\ncompletion reports belong in your final response or StructuredOutput. "
+                "Do not create status or completion files. For edit tools, newString is literal replacement text; "
+                "leading `+` characters are literal source, not diff markers."
                 + "\nTool profile: file-tools-v1. Return your completion report; do not claim to have run checks.")
     return (task.instruction + "\n\nWorkspace: " + str(workspace)
               + prompt_instructions(workspace)
@@ -233,6 +236,8 @@ def build_prompt(task: Task, workspace: Path, *, file_tools: bool | None = None)
               + "\nUse only the task-allowed paths and the designated trial scratch directory. Do not spawn background processes or install packages. "
               "For Python checks, disable bytecode writes (-B or PYTHONDONTWRITEBYTECODE=1). "
               "Return a JSON completion report with outcome, summary, changed_paths, checks, evidence and blockers. "
+              "completion reports belong in your final response or StructuredOutput. Do not create status or completion files. "
+              "For edit tools, newString is literal replacement text; leading `+` characters are literal source, not diff markers. "
               "Report only checks you actually ran. Stop after your first attempt; do not request a retry.")
 
 
@@ -458,7 +463,8 @@ async def run_attempt(
         if decision.confirmed:
             s1 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S1")
             changed = tuple(changed_paths(s0, s1))
-            audit = audit_scope(task, workspace.path, s0, s1, bridge.last_history, scope_policy=SCOPE_POLICY)
+            audit = audit_scope(task, workspace.path, s0, s1, bridge.last_history, scope_policy=SCOPE_POLICY,
+                                opencode_version=configuration.get("opencode_version"))
             scope = audit.all_violations
             (evidence_dir / "worker.patch").write_text(_patch(s0, s1, max_bytes=EVIDENCE_LIMITS.max_patch_bytes,
                                                            scope_policy=SCOPE_POLICY), encoding="utf-8")

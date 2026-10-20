@@ -291,6 +291,10 @@ def render_experiment_comparison_csv(comparison: ExperimentComparison) -> str:
     Render tabular model/variant comparison as a deterministic wide-form CSV.
     Eligible variants are listed first in canonical ranking order, followed by reference variants.
     """
+    # Import only when nested condition groups need runtime deserialization;
+    # summary-only reporting callers do not need this comparison dependency.
+    from .compare import ExperimentComparison
+
     all_variants = list(comparison.eligible_variants.values()) + list(comparison.reference_variants.values())
     groups = {key: ExperimentComparison.from_dict(value) for key, value in comparison.condition_groups.items()}
     for group in groups.values():

@@ -114,3 +114,11 @@ OpenCode configuration is untouched. This is not an OS sandbox. `sandboxed-shell
 unavailable pending the real worker/verifier boundary described in
 [the shell-boundary decision](docs/plans/20261020-final-hardening/shell-boundary.md).
 See [pending live acceptance](docs/plans/20261020-final-hardening/live-acceptance.md).
+
+### Forensic fixes (1.14.0)
+
+Prompt instructions now keep completion reports in the final response or StructuredOutput and clarify
+that edit-tool replacement text is literal source. OpenCode 1.19.3's exact edit `File ... not found`
+error is recorded as a proven pre-mutation failure; other failed mutations remain uncertain. Runtime
+comparison identity fingerprints only the ordered permissions after the benchmark role's default-deny
+reset, so overridden inherited grants do not split equivalent runs.

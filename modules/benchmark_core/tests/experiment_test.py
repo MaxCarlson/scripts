@@ -687,3 +687,19 @@ def test_declared_condition_differences_never_share_rankings(dimension):
     assert not result.canonical_rankings
     assert len(result.condition_groups) == 1
     assert next(iter(result.condition_groups.values()))["canonical_rankings"] == ["model-a"]
+
+
+def test_condition_groups_render_to_csv_markdown_and_html():
+    config = _create_sample_config()
+    canonical = _create_run("same", "model-a")
+    alternate = _create_run("alternate", "model-b")
+    alternate.metadata["comparison_contract"]["context_length"] = 8192
+    comparison = aggregate_experiment(config, [
+        (canonical, [_create_trial(canonical.run_id, "task-1", "model-a", 1, TrialStatus.PASSED)]),
+        (alternate, [_create_trial(alternate.run_id, "task-1", "model-b", 1, TrialStatus.PASSED)]),
+    ])
+    assert comparison.condition_groups
+    reports = generate_experiment_reports(comparison)
+    assert "condition_group" in reports["comparison.csv"]
+    assert "Separate comparison conditions" in reports["report.md"]
+    assert "Separate comparison conditions" in reports["index.html"]

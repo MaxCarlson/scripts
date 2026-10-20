@@ -1,3 +1,13 @@
+# Current forensic report fix — EXP_20261020_061135
+
+Worktree `.worktrees/benchmark-exp-061135`, branch `agent/benchmark-exp-061135`, based on latest pushed
+`origin/main` at `cb82930c`. See `plans/20261020-exp-061135-forensics/STATUS.md` for incident
+evidence, implementation decisions and exact validation. Report generation, runtime condition
+fingerprints, versioned OpenCode edit-failure auditing and prompt instructions are fixed offline.
+Agent Benchmark 1.14.0 and benchmark-core 0.1.3. Historical trial artifacts remain unchanged;
+existing reports were regenerated from a temporary copy without inference. No model call or shared
+configuration change occurred. Independent review and local-main integration remain pending.
+
 # Current final-hardening delivery — 2026-10-20
 
 Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`; baseline 52d4a0f9.

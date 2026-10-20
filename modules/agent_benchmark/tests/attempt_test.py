@@ -450,3 +450,18 @@ def test_unavailable_sandbox_refuses_before_allocation_or_dispatch(tmp_path, cli
             asyncio.run(run_attempt(task, Worker(), DispatchGuard(), agent="local-worker", **args))
     assert not (tmp_path / "workers").exists()
     assert not (tmp_path / "evidence").exists()
+
+
+def test_smoke_prompt_disallows_completion_files_and_diff_markers(tmp_path):
+    from dataclasses import replace
+    from agent_benchmark.attempt import build_prompt
+    from agent_benchmark.evidence import prepare_workspace
+    from agent_benchmark.scratch import SCOPE_POLICY
+    task = load_task(TASK)
+    for index, current in enumerate((task, replace(task, opencode_tool_profile="shell-v1"))):
+        workspace = tmp_path / f"workspace-{index}"
+        prepare_workspace(current, workspace, scope_policy=SCOPE_POLICY)
+        prompt = build_prompt(current, workspace)
+        assert "completion reports belong in your final response" in prompt
+        assert "Do not create status or completion files" in prompt
+        assert "leading `+` characters are literal source" in prompt

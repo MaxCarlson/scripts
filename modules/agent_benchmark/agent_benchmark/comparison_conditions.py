@@ -43,8 +43,16 @@ def runtime_conditions(evidence_dir):
                     for key in ("permission", "pattern", "action"))
                     or rule["action"] not in {"allow", "deny", "ask"} for rule in permissions)):
             return None
+        # Rules are ordered. The benchmark role's exact default-deny rule resets
+        # inherited/global grants; only the ordered suffix can affect this role.
+        # Preserve suffix order so meaningful overrides remain part of identity.
+        reset = {"permission": "*", "pattern": "*", "action": "deny"}
+        reset_indexes = [index for index, rule in enumerate(permissions) if rule == reset]
+        if not reset_indexes:
+            return None
+        effective_permissions = permissions[reset_indexes[-1] + 1:]
         return {"kind": "opencode", "version": evidence.get("opencode_version"), "bridge_version": evidence.get("bridge_version"),
                 "agent": evidence.get("agent"), "prompt_sha256": role.get("prompt_sha256"),
-                "permissions_sha256": hashlib.sha256(json.dumps(evidence.get("permissions"), sort_keys=True).encode()).hexdigest()}
+                "permissions_sha256": hashlib.sha256(json.dumps(effective_permissions, sort_keys=True).encode()).hexdigest()}
     except (OSError, ValueError, TypeError):
         return None

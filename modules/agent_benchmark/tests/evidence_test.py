@@ -348,3 +348,30 @@ def test_invalid_completion_receipts_do_not_authorize_pass(tmp_path, payload):
         encoding="utf-8",
     )
     assert verify(capture(worker, tmp_path / "S1"), verifier, tmp_path / "verification").status == "infrastructure_error"
+
+
+@pytest.mark.parametrize(("version", "error", "uncertain"), [
+    ("1.19.3", "File /C:/missing/grep.py not found", False),
+    ("1.19.3", "Permission denied: /C:/missing/grep.py", True),
+    ("1.19.2", "File /C:/missing/grep.py not found", True),
+])
+def test_failed_edit_is_exempt_only_for_versioned_proven_pre_mutation_error(tmp_path, version, error, uncertain):
+    from agent_benchmark.scratch import SCOPE_POLICY
+
+    task = load_task(TASK)
+    worker = tmp_path / "worker"
+    prepare_workspace(task, worker)
+    s0 = capture(worker, tmp_path / "S0")
+    s1 = capture(worker, tmp_path / "S1")
+    history = [{"info": {"id": "m1"}, "parts": [{"type": "tool", "tool": "edit", "callID": "edit-1",
+        "state": {"status": "error", "error": error,
+                  "input": {"filePath": "/C:/missing/grep.py", "oldString": "old", "newString": "new"}}}]}]
+    audit = audit_scope(task, worker, s0, s1, history, scope_policy=SCOPE_POLICY, opencode_version=version)
+    assert bool(audit.unverifiable_operations) is uncertain
+    if uncertain:
+        assert audit.compliance == "uncertain"
+    else:
+        assert audit.compliance == "compliant"
+        assert audit.mutated_paths == ()
+        assert audit.mutation_events[0].safety_outcome == "failed_before_mutation"
+        assert audit.to_dict()["mutation_events"][0]["safety_outcome"] == "failed_before_mutation"
