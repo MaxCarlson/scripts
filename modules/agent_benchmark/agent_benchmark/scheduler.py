@@ -16,6 +16,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import hashlib
 import json
+import logging
 from pathlib import Path
 import platform
 import random
@@ -53,7 +54,9 @@ from .models_lifecycle import (
 from .results import base_metrics, trial_from_attempt, unavailable
 from .runner import BUDGET_PROFILES
 from .scratch import SCOPE_POLICY
-from .state import reserved_trial
+from .state import command_lock, reserved_trial
+
+logger = logging.getLogger(__name__)
 
 TrialCallback = Callable[["PlannedTrial", Optional[TrialResult]], None]
 ModelCallback = Callable[[str, Optional[RunInfo], list[TrialResult]], None]
@@ -229,11 +232,25 @@ class ExperimentScheduler:
 
     async def run(self) -> ExperimentComparison:
         """
-        Execute all planned trials sequentially.
+        Execute all planned trials while holding the host-wide model command lock.
 
-        Returns:
-            The final ExperimentComparison object.
+        The lock covers preflight, model transitions, dispatch, and completion so
+        another benchmark invocation cannot unload a model during this run.
         """
+        with command_lock(self.state_dir):
+            try:
+                return await self._run_locked()
+            except BaseException:
+                logger.exception(
+                    "Experiment aborted; preserving completed runs experiment_id=%s",
+                    self.plan.experiment_id,
+                    extra={"event_type": "EXPERIMENT_ABORTED"},
+                )
+                self._persist_partial_results()
+                raise
+
+    async def _run_locked(self) -> ExperimentComparison:
+        """Run the plan with command_lock held by run()."""
         config = self.plan.config
         profile_cfg = BUDGET_PROFILES.get(config.budget_profile, BUDGET_PROFILES["canonical-60s"])
         task_seconds = float(profile_cfg["task_seconds"])
@@ -247,6 +264,8 @@ class ExperimentScheduler:
 
         # Iterate model by model
         for model_key in self.plan.model_keys:
+            logger.info("Model batch starting model=%s", model_key,
+                        extra={"event_type": "MODEL_BATCH_START"})
             if self.on_model_start:
                 self.on_model_start(model_key)
 
@@ -256,10 +275,16 @@ class ExperimentScheduler:
 
             # 1. Ensure target model is loaded in LM Studio (only for lmstudio provider)
             if resolved_provider == "lmstudio":
+                logger.info("Model transition requested model=%s runtime_key=%s", model_key, resolved_model,
+                            extra={"event_type": "MODEL_TRANSITION_REQUEST"})
                 await transition_model(
                     resolved_model,
                     allow_transitions=self.allow_model_transitions,
                     lms_path=self.lms_path,
+                    expected_model_size_bytes=(
+                        self.model_identities[model_key].size_bytes
+                        if model_key in self.model_identities else None
+                    ),
                     runner=self.lms_runner,
                 )
 
@@ -345,6 +370,21 @@ class ExperimentScheduler:
                 append_result(run_dir, result)
                 run_trial_results.append(result)
                 self.executed_trials.append((planned_trial, result))
+                logger.info(
+                    "Trial completed model=%s task=%s repetition=%s status=%s duration_wall_ms=%s "
+                    "verifier_status=%s scope_compliance=%s budget_pass=%s execution_error=%s",
+                    planned_trial.model_key, planned_trial.task_id, planned_trial.repetition,
+                    result.status.value if hasattr(result.status, "value") else result.status,
+                    result.metrics.get("duration.wall_ms").value
+                    if result.metrics.get("duration.wall_ms") else None,
+                    result.details.get("verifier_status"),
+                    result.metrics.get("agent.scope_compliance").value
+                    if result.metrics.get("agent.scope_compliance") else None,
+                    result.metrics.get("agent.budget_pass").value
+                    if result.metrics.get("agent.budget_pass") else None,
+                    result.details.get("execution_error"),
+                    extra={"event_type": "TRIAL_COMPLETE"},
+                )
 
                 if self.on_trial_complete:
                     self.on_trial_complete(planned_trial, result)
@@ -397,6 +437,35 @@ class ExperimentScheduler:
 
         return final_comparison
 
+    def _persist_partial_results(self) -> None:
+        """Write a usable partial experiment report after an aborted later stage."""
+        if not self.completed_runs:
+            return
+        try:
+            config = self.plan.config
+            experiment_dir = self.reports_dir / config.experiment_id
+            comparison = aggregate_experiment(config, self.completed_runs)
+            manifest = Experiment(config=config, run_refs=self.run_refs)
+            save_experiment(
+                experiment_dir,
+                manifest,
+                comparison=comparison,
+                trials=[result for _, result in self.executed_trials],
+                overwrite=True,
+                generate_reports=True,
+            )
+            logger.info(
+                "Partial experiment reports saved experiment_id=%s completed_models=%s path=%s",
+                config.experiment_id, len(self.completed_runs), experiment_dir,
+                extra={"event_type": "PARTIAL_REPORT_SAVED"},
+            )
+        except Exception:
+            logger.exception(
+                "Failed to save partial experiment report experiment_id=%s",
+                self.plan.experiment_id,
+                extra={"event_type": "PARTIAL_REPORT_ERROR"},
+            )
+
     async def _preflight_local_models(self) -> None:
         """Resolve exact local identities and verify provider readiness before any load or trial allocation."""
         if self.trial_executor is not None:
@@ -441,7 +510,7 @@ class ExperimentScheduler:
         resolved_provider, resolved_model = resolve_model_provider_and_key(
             trial.model_key, default_provider=self.provider
         )
-        with reserved_trial(self.state_dir, evidence_dir) as guard:
+        with reserved_trial(self.state_dir, evidence_dir, lock_held=True) as guard:
             trial_res: Optional[TrialResult] = None
             cancelled = False
             failure = "UnknownError"
@@ -487,6 +556,11 @@ class ExperimentScheduler:
             except asyncio.CancelledError:
                 cancelled = True
             except Exception as exc:
+                logger.exception(
+                    "Trial execution raised model=%s task=%s repetition=%s",
+                    trial.model_key, trial.task_id, trial.repetition,
+                    extra={"event_type": "TRIAL_EXCEPTION"},
+                )
                 failure = type(exc).__name__
                 if isinstance(exc, ModelConfigurationError):
                     failure_message = str(exc)

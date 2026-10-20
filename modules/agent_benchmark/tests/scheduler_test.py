@@ -297,6 +297,50 @@ async def test_scheduler_sequential_execution_and_aggregation(
 
 
 @pytest.mark.asyncio
+async def test_scheduler_saves_partial_reports_after_later_model_transition_fails(
+    tmp_path: Path,
+    sample_experiment_config: ExperimentConfig,
+    monkeypatch,
+) -> None:
+    from agent_benchmark import scheduler as scheduler_module
+
+    async def fake_transition(model_key: str, **kwargs):
+        if model_key == "qwen38-27b-q6k":
+            raise RuntimeError("simulated model load failure")
+
+    async def fake_trial_executor(trial, *args):
+        return TrialResult(
+            run_id=trial.run_id,
+            trial_id=f"trial-{trial.trial_index + 1:03d}",
+            task_id=trial.task_id,
+            variant_id=trial.model_key,
+            repetition=trial.repetition,
+            status=TrialStatus.PASSED,
+            metrics={"duration.wall_ms": MetricValue(100.0, "ms", "timer", MetricQuality.MEASURED)},
+        )
+
+    monkeypatch.setattr(scheduler_module, "transition_model", fake_transition)
+    task_dir = Path(__file__).resolve().parents[1] / "agent_benchmark" / "tasks" / "py-grep-smoke"
+    scheduler = ExperimentScheduler(
+        expand_experiment_plan(sample_experiment_config),
+        task_dirs={"py-grep-smoke": task_dir},
+        reports_dir=tmp_path / "reports",
+        state_dir=tmp_path / "state",
+        allow_model_transitions=True,
+        trial_executor=fake_trial_executor,
+    )
+
+    with pytest.raises(RuntimeError, match="simulated model load failure"):
+        await scheduler.run()
+
+    experiment_dir = tmp_path / "reports" / sample_experiment_config.experiment_id
+    assert (experiment_dir / "comparison.json").is_file()
+    assert (experiment_dir / "report.md").is_file()
+    manifest = json.loads((experiment_dir / "experiment.json").read_text(encoding="utf-8"))
+    assert [item["variant_id"] for item in manifest["run_refs"]] == ["qwen38-27b-q4km"]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_unauthorized_model_transition_halts_safely(
     tmp_path: Path,
     sample_experiment_config: ExperimentConfig,

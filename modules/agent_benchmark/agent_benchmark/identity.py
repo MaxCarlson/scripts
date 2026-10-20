@@ -29,6 +29,7 @@ class ModelIdentity:
     selected_variant: str | None = None
     available_variants: tuple[str, ...] = ()
     max_context_length: int = 0
+    size_bytes: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -41,6 +42,7 @@ class ModelIdentity:
             "selected_variant": self.selected_variant,
             "available_variants": list(self.available_variants),
             "max_context_length": self.max_context_length,
+            "size_bytes": self.size_bytes,
             "resolution": "exact_model_key",
         }
 
@@ -74,6 +76,7 @@ def resolve_lmstudio_identity(requested_id: str, inventory: list[DownloadedModel
         selected_variant=item.selected_variant,
         available_variants=item.variants,
         max_context_length=item.max_context_length,
+        size_bytes=item.size_bytes,
     )
 
 

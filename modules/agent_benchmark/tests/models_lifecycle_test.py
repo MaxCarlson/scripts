@@ -9,6 +9,7 @@ import subprocess
 import pytest
 
 from agent_benchmark import models_lifecycle
+from agent_benchmark.telemetry import ResourceSnapshot
 from agent_benchmark.models_lifecycle import (
     ModelDiscoveryError,
     ModelTransitionError,
@@ -65,8 +66,8 @@ SAMPLE_LMS_PS_EMPTY = "[]"
 async def test_default_command_runner_executes_windows_cli_in_worker_thread(monkeypatch) -> None:
     calls = []
 
-    def fake_run(command, *, capture_output, text, check):
-        calls.append((command, capture_output, text, check))
+    def fake_run(command, *, capture_output, text, check, encoding, errors, timeout):
+        calls.append((command, capture_output, text, check, encoding, errors, timeout))
         return subprocess.CompletedProcess(command, 7, stdout="out", stderr="err")
 
     monkeypatch.setattr(models_lifecycle.subprocess, "run", fake_run)
@@ -74,7 +75,7 @@ async def test_default_command_runner_executes_windows_cli_in_worker_thread(monk
     result = await models_lifecycle._default_cmd_runner(["lms", "ps", "--json"])
 
     assert result == (7, "out", "err")
-    assert calls == [(["lms", "ps", "--json"], True, True, False)]
+    assert calls == [(["lms", "ps", "--json"], True, True, False, "utf-8", "replace", 15.0)]
 
 
 @pytest.mark.asyncio
@@ -164,6 +165,34 @@ async def test_transition_model_unauthorized_rejection() -> None:
 
     with pytest.raises(ModelTransitionNotAuthorizedError, match="not authorized"):
         await transition_model("qwen38-27b-q6k", allow_transitions=False, runner=mock_runner)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_rejects_target_loaded_alongside_other_model_without_transition() -> None:
+    first = json.loads(SAMPLE_LMS_PS_LOADED)[0]
+    other = dict(first, identifier="other", modelKey="other", displayName="Other")
+    two_loaded = json.dumps([first, other])
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        assert cmd == ["lms", "ps", "--json"]
+        return 0, two_loaded, ""
+
+    with pytest.raises(ModelTransitionNotAuthorizedError, match="sole loaded model"):
+        await transition_model("qwen38-27b-q4km", allow_transitions=False, runner=mock_runner)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_does_not_unload_busy_lmstudio_model() -> None:
+    busy = json.loads(SAMPLE_LMS_PS_LOADED)[0]
+    busy["status"] = "processing"
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, json.dumps([busy]), ""
+        pytest.fail(f"Busy model must not be unloaded: {cmd}")
+
+    with pytest.raises(ModelTransitionError, match="active or unknown status"):
+        await transition_model("qwen38-27b-q6k", allow_transitions=True, runner=mock_runner)
 
 
 @pytest.mark.asyncio
@@ -264,7 +293,49 @@ def test_resolve_model_provider_and_key() -> None:
 
     # Local LM Studio models
     assert resolve_model_provider_and_key("qwen38-27b-q4km") == ("lmstudio", "qwen38-27b-q4km")
+    assert resolve_model_provider_and_key("openai/gpt-oss-20b") == ("lmstudio", "openai/gpt-oss-20b")
+    assert resolve_model_provider_and_key("lms/meta/muse-glimmer") == ("lmstudio", "meta/muse-glimmer")
+    assert resolve_model_provider_and_key("lmstudio/mistralai/devstral-small-2-2512") == (
+        "lmstudio", "mistralai/devstral-small-2-2512"
+    )
     assert resolve_model_provider_and_key("lmstudio/qwen38-27b-q6k") == ("lmstudio", "qwen38-27b-q6k")
+
+
+@pytest.mark.asyncio
+async def test_transition_model_stops_before_load_at_ram_safety_limit(monkeypatch) -> None:
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, "[]", ""
+        pytest.fail(f"No load should be attempted at high RAM usage: {cmd}")
+
+    monkeypatch.setattr(
+        "agent_benchmark.models_lifecycle.collect_resource_snapshot",
+        lambda: ResourceSnapshot(ram_pct=91.0),
+    )
+
+    with pytest.raises(ModelTransitionError, match="RAM utilization is 91.0%.*safety limit 90%"):
+        await transition_model("new-model", allow_transitions=True, runner=mock_runner)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_requires_estimated_model_headroom(monkeypatch) -> None:
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, "[]", ""
+        pytest.fail(f"Insufficient headroom must block load: {cmd}")
+
+    monkeypatch.setattr(
+        "agent_benchmark.models_lifecycle.collect_resource_snapshot",
+        lambda: ResourceSnapshot(ram_pct=75.0, ram_available_bytes=10 * 1024**3),
+    )
+
+    with pytest.raises(ModelTransitionError, match="at least 13421772800 bytes is required"):
+        await transition_model(
+            "large-model",
+            allow_transitions=True,
+            expected_model_size_bytes=10 * 1024**3,
+            runner=mock_runner,
+        )
 
 
 @pytest.mark.asyncio

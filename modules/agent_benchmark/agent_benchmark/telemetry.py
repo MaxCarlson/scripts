@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+import logging
 import math
 import shutil
 import subprocess
 import threading
+from typing import Callable
 
 import psutil
 from termdash.utils import color_text
 
 MIB = 1024**2
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +23,7 @@ class ResourceSnapshot:
     ram_used_bytes: int | None = None
     ram_total_bytes: int | None = None
     ram_pct: float | None = None
+    ram_available_bytes: int | None = None
     gpu_name: str | None = None
     gpu_utilization_pct: float | None = None
     gpu_memory_utilization_pct: float | None = None
@@ -68,6 +72,8 @@ def _read_gpu() -> ResourceSnapshot:
             ],
             capture_output=True,
             text=True,
+            encoding="utf-8",
+            errors="replace",
             timeout=1.5,
             check=False,
         )
@@ -86,14 +92,16 @@ def collect_resource_snapshot() -> ResourceSnapshot:
     """Read machine RAM and the first available NVIDIA GPU."""
     try:
         memory = psutil.virtual_memory()
-        ram = (int(memory.used), int(memory.total), float(memory.percent))
+        ram = (int(memory.used), int(memory.total), float(memory.percent),
+               int(memory.available) if getattr(memory, "available", None) is not None else None)
     except (OSError, RuntimeError):
-        ram = (None, None, None)
+        ram = (None, None, None, None)
     gpu = _read_gpu()
     return ResourceSnapshot(
         ram_used_bytes=ram[0],
         ram_total_bytes=ram[1],
         ram_pct=ram[2],
+        ram_available_bytes=ram[3],
         gpu_name=gpu.gpu_name,
         gpu_utilization_pct=gpu.gpu_utilization_pct,
         gpu_memory_utilization_pct=gpu.gpu_memory_utilization_pct,
@@ -141,8 +149,13 @@ def format_resource_line(snapshot: ResourceSnapshot) -> str:
 class ResourceSampler:
     """Keep the latest hardware snapshot fresh on a daemon thread."""
 
-    def __init__(self, interval: float = 1.0) -> None:
+    def __init__(
+        self,
+        interval: float = 1.0,
+        on_sample: Callable[[ResourceSnapshot], None] | None = None,
+    ) -> None:
         self.interval = max(0.2, interval)
+        self.on_sample = on_sample
         self._snapshot = ResourceSnapshot()
         self._lock = threading.Lock()
         self._stop = threading.Event()
@@ -170,4 +183,9 @@ class ResourceSampler:
             snapshot = collect_resource_snapshot()
             with self._lock:
                 self._snapshot = snapshot
+            if self.on_sample is not None:
+                try:
+                    self.on_sample(snapshot)
+                except Exception:
+                    logger.exception("Could not persist resource sample", extra={"event_type": "RESOURCE_LOG_ERROR"})
             self._stop.wait(self.interval)

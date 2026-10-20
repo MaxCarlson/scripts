@@ -9,6 +9,9 @@ and a quiet mode (-Q/--quiet) for scripts and batch pipelines.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from dataclasses import asdict
+import json
+import logging
 import shutil
 import sys
 import time
@@ -24,6 +27,8 @@ from termdash.utils import color_text
 
 from .scheduler import ExperimentPlan, ExperimentScheduler, PlannedTrial
 from .telemetry import ResourceSampler, format_resource_line
+
+logger = logging.getLogger(__name__)
 
 
 def _terminal_width() -> int:
@@ -84,7 +89,7 @@ class ExperimentDashboard:
         self.quiet = quiet
         self.stream = stream or sys.stdout
         self.max_visible_models = max_visible_models
-        self.resource_sampler = resource_sampler or ResourceSampler()
+        self.resource_sampler = resource_sampler or ResourceSampler(on_sample=self._log_resource_sample)
 
         self.start_time = time.monotonic()
         self.active_trial: Optional[PlannedTrial] = None
@@ -107,15 +112,20 @@ class ExperimentDashboard:
             interval=0.2,
         )
 
+        # Resource history belongs to the experiment, not to terminal redraws.
+        self.resource_sampler.start()
         if not self.quiet:
-            if self.live_block.interactive:
-                self.resource_sampler.start()
             self.live_block.update(self._render_live_lines)
         else:
             self._log_quiet(
                 f"[EXPERIMENT START] {plan.experiment_id} | Suite: {plan.config.suite_id} v{plan.config.suite_version} "
                 f"| Models: {len(plan.model_keys)} | Total Trials: {plan.total_trials}"
             )
+
+    @staticmethod
+    def _log_resource_sample(snapshot: Any) -> None:
+        logger.info("Resource sample %s", json.dumps(asdict(snapshot), sort_keys=True),
+                    extra={"event_type": "RESOURCE_SAMPLE"})
 
     def attach(self, scheduler: ExperimentScheduler) -> None:
         """Attach dashboard event handlers to an ExperimentScheduler instance."""
@@ -296,16 +306,19 @@ class ExperimentDashboard:
     ) -> None:
         ms = self.models.get(model_key)
         if ms:
-            ms.status = "COMPLETED"
+            successful = bool(trials) and all(str(trial.status) == "passed" for trial in trials)
+            ms.status = "COMPLETED" if successful else "FAILED"
             strict_pct = f"{ms.strict_pass_rate * 100:.1f}%" if ms.strict_pass_rate is not None else "N/A"
             msg = (
-                f"[MODEL COMPLETE] {model_key} | Passed: {ms.passed}/{ms.scored_denominator} "
-                f"(Strict: {strict_pct}) | Timeouts: {ms.timed_out} | Infra Errors: {ms.infra_errors}"
+                f"[MODEL {'COMPLETE' if successful else 'RESULT'}] {model_key} | Passed: {ms.passed}/{ms.scored_denominator} "
+                f"(Strict: {strict_pct}) | Timeouts: {ms.timed_out} | Infra Errors: {ms.infra_errors} "
+                f"| Unscored: {sum(str(trial.status) == 'unscored' for trial in trials)}"
             )
             if self.quiet:
                 self._log_quiet(msg)
             else:
-                self.live_block.log(f"✔ {color_text(msg, 'green')}")
+                badge = "✔" if successful else "!"
+                self.live_block.log(f"{badge} {color_text(msg, 'green' if successful else 'red')}")
 
     def on_experiment_complete(self, comparison: ExperimentComparison) -> None:
         """

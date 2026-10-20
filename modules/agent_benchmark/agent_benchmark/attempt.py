@@ -543,7 +543,20 @@ async def run_cli_attempt(
                         terminated_cleanly = False
     except TimeoutError:
         task_budget_expired = True
-        terminated_cleanly = True
+        execution_error = "CLIObservationTimeout"
+        if proc is None:
+            # The built-in path has not created a child yet. Injected runners
+            # own their process lifecycle, so a timeout from one is unresolved.
+            terminated_cleanly = cli_runner is None
+        elif proc.returncode is not None:
+            terminated_cleanly = True
+        else:
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+                terminated_cleanly = proc.returncode is not None
+            except Exception:
+                terminated_cleanly = False
     except asyncio.CancelledError:
         if proc is not None and proc.returncode is None:
             try:
@@ -558,7 +571,19 @@ async def run_cli_attempt(
         raise
     except Exception as exc:
         execution_error = type(exc).__name__
-        terminated_cleanly = True
+        if proc is None:
+            # No child was created by this function, so there is no worker to
+            # prove terminated. A custom runner owns its own child lifecycle.
+            terminated_cleanly = cli_runner is None
+        elif proc.returncode is not None:
+            terminated_cleanly = True
+        else:
+            try:
+                proc.kill()
+                await asyncio.wait_for(proc.wait(), timeout=grace_seconds)
+                terminated_cleanly = proc.returncode is not None
+            except Exception:
+                terminated_cleanly = False
 
     worker_ms = (time.monotonic() - start) * 1000
     decision = TerminationDecision(

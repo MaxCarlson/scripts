@@ -166,7 +166,7 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
             bridge = OpenCodeBridge(unused, http)
             facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="local-worker")
             assert facts["model"] == "model-a" and facts["opencode_version"] == "1.19.3"
-            with pytest.raises(ValueError, match="Configured OpenCode model IDs: model-a"):
+            with pytest.raises(ValueError, match="Effective model IDs: model-a"):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="missing", agent="local-worker")
             connected.clear()
             with pytest.raises(ValueError, match="OpenCode provider 'lmstudio' is not connected"):
