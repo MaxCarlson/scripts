@@ -200,3 +200,16 @@ def test_offline_portability():
 
     assert remote_script == [], f"Found remote script dependencies: {remote_script}"
     assert remote_link == [], f"Found remote stylesheet dependencies: {remote_link}"
+
+
+def test_zero_denominator_has_no_html_winner_and_retains_diagnostics():
+    report = ReportData(experiment_id="unscored", variants=[VariantReportRow(
+        variant_id="unscored-model", is_eligible=True, rank=None, total_trials=1,
+        unscored=1, scored_denominator=0, strict_acceptance_rate=None,
+        duration_mean_ms=13000,
+    )])
+    html_output = generate_html_report(report)
+    assert "Unranked Diagnostics" in html_output
+    assert "0 ranked, 1 unranked" in html_output
+    assert "No variants with a defined strict rate." in html_output
+    assert "13000.0 ms" in html_output

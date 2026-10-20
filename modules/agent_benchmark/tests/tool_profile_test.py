@@ -143,3 +143,15 @@ def test_ordered_external_rules_cannot_widen_verified_exception():
     with pytest.raises(ValueError):
         validate_file_agent({**identity, "permission": rules + [{"permission": "external_directory", "pattern": "*", "action": "allow"}]},
                             trusted_output_directory=Path("C:/output"))
+
+
+def test_sandbox_manifest_is_not_silently_downgraded(tmp_path):
+    import shutil
+    copy = tmp_path / "task"
+    shutil.copytree(TASK, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = copy / "task.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["opencode_tool_profile"] = "sandboxed-shell-v1"
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    with pytest.raises(ValueError, match="sandboxed-shell-v1"):
+        load_task(copy)

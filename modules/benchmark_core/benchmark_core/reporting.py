@@ -292,12 +292,19 @@ def render_experiment_comparison_csv(comparison: ExperimentComparison) -> str:
     Eligible variants are listed first in canonical ranking order, followed by reference variants.
     """
     all_variants = list(comparison.eligible_variants.values()) + list(comparison.reference_variants.values())
-    if not all_variants:
+    groups = {key: ExperimentComparison.from_dict(value) for key, value in comparison.condition_groups.items()}
+    for group in groups.values():
+        all_variants.extend(group.eligible_variants.values())
+        all_variants.extend(group.reference_variants.values())
+    if not all_variants and not comparison.incompatible_runs:
         return ""
 
     all_metric_keys: set[str] = set()
     for v in all_variants:
         all_metric_keys.update(v.metrics.keys())
+    for run in comparison.incompatible_runs:
+        for trial in run.get("trials", []):
+            all_metric_keys.update(trial.get("metrics", {}))
     sorted_metric_keys = sorted(all_metric_keys)
 
     headers = [
@@ -326,9 +333,10 @@ def render_experiment_comparison_csv(comparison: ExperimentComparison) -> str:
 
     output = io.StringIO()
     writer = csv.writer(output, lineterminator="\n")
+    headers.extend(["condition_group", "run_ids"])
     writer.writerow(headers)
 
-    def _variant_row(rank_val: Any, vm: Any) -> list[Any]:
+    def _variant_row(rank_val: Any, vm: Any, group_key: str = "primary") -> list[Any]:
         ci = vm.confidence_interval_95
         row: list[Any] = [
             rank_val,
@@ -362,15 +370,35 @@ def render_experiment_comparison_csv(comparison: ExperimentComparison) -> str:
                 row.append(m_stat.stdev if m_stat.stdev is not None else "")
                 row.append(m_stat.available_count)
                 row.append(m_stat.missing_count)
+        row.extend([group_key, "; ".join(vm.constituent_run_ids)])
         return row
 
     for rank, vid in enumerate(comparison.canonical_rankings, start=1):
         if vid in comparison.eligible_variants:
             writer.writerow(_variant_row(rank, comparison.eligible_variants[vid]))
 
+    for vid, vm in sorted(comparison.unranked_variants.items()):
+        writer.writerow(_variant_row("", vm))
     for vid, vm in sorted(comparison.reference_variants.items()):
         writer.writerow(_variant_row("", vm))
 
+    for key, group in sorted(groups.items()):
+        for rank, vid in enumerate(group.canonical_rankings, start=1):
+            writer.writerow(_variant_row(rank, group.eligible_variants[vid], key))
+        for vid, vm in sorted({**group.unranked_variants, **group.reference_variants}.items()):
+            writer.writerow(_variant_row("", vm, key))
+    for run in comparison.incompatible_runs:
+        if run.get("condition_key") in groups:
+            continue  # Already emitted as its own explicitly labeled comparison group.
+        for trial in run.get("trials", []):
+            raw = {"rank": "", "variant_id": trial["variant_id"], "is_eligible": "false",
+                   "exclusion_reasons": "; ".join(run["reasons"]), "total_trials": 1,
+                   "condition_group": "unknown:" + run["run_id"], "run_ids": run["run_id"]}
+            for name, value in trial.get("metrics", {}).items():
+                raw[name + ".mean"] = value.get("value") if value.get("value") is not None else ""
+                raw[name + ".available_count"] = int(value.get("value") is not None)
+                raw[name + ".missing_count"] = int(value.get("value") is None)
+            writer.writerow([raw.get(header, "") for header in headers])
     return output.getvalue()
 
 

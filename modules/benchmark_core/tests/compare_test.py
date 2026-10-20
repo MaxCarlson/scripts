@@ -126,6 +126,9 @@ def test_compare_runs_matching_scoring_basis_computes_deltas() -> None:
                     metrics={"duration.wall_ms": MetricValue(800.0, "ms", "timer", "measured")}),
     ]
 
+    from experiment_test import _conditions
+    run_a.metadata["comparison_contract"] = _conditions(["t1"])
+    run_b.metadata["comparison_contract"] = _conditions(["t1"])
     summary_a = summarize(run_a, trials_a)
     summary_b = summarize(run_b, trials_b)
     comp = compare_runs(summary_a, summary_b)

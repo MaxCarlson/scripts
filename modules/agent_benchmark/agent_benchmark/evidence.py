@@ -19,7 +19,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .git_workspace import GitIdentity, initialize_git
-from .tool_profile import FILE_PROFILE, configure_file_agent
+from .tool_profile import FILE_PROFILE, configure_file_agent, validate_execution_profile
 from .identity import ModelIdentity, write_project_model_registration
 from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
@@ -59,8 +59,7 @@ def load_task(path: Path) -> Task:
     if not math.isfinite(budget) or budget <= 0 or set(allowed) & set(forbidden):
         raise ValueError("Invalid task budget or overlapping allowed/forbidden paths")
     profile = manifest.get("opencode_tool_profile", "shell-v1")
-    if profile not in ("shell-v1", FILE_PROFILE):
-        raise ValueError(f"Unknown task OpenCode tool profile: {profile}")
+    validate_execution_profile(profile)
     return Task(path, manifest["task_id"], manifest["suite_version"], manifest["category"], allowed, forbidden,
                 budget, verifier, (path / "instruction.md").read_text(encoding="utf-8"), profile)
 
@@ -183,6 +182,7 @@ def prepare_workspace(
 ) -> GitIdentity:
     """Copy public files only; existing workspace must be empty and benchmark-owned."""
     validate_policy(scope_policy)
+    validate_execution_profile(task.opencode_tool_profile)
     if scope_policy and any(reserved_path(name) for name in (*task.allowed_paths, *task.forbidden_paths)):
         raise ValueError("Task paths collide with reserved scratch directory")
     if workspace.exists() and any(workspace.iterdir()):

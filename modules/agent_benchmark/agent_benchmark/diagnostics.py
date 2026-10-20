@@ -35,6 +35,11 @@ def describe_trial(result: TrialResult) -> list[str]:
     termination = "CONFIRMED" if terminated is True else "UNCONFIRMED" if terminated is False else "UNKNOWN"
     lines = [f"Checks: code {code} | scope {scope} | budget {_metric_label(result, 'agent.budget_pass')} "
              f"| termination {termination}"]
+    if details.get("evidence_diagnostic"):
+        lines.append("Evidence error: " + _plain(details["evidence_diagnostic"]))
+    if details.get("judgments"):
+        lines.append(f"Scope checks: artifacts {_metric_label(result, 'agent.artifact_compliance')} | "
+                     f"execution {_metric_label(result, 'agent.execution_compliance')}")
     if violations:
         paths = ", ".join(_plain(path, 160) for path in violations[:3])
         if len(violations) > 3:

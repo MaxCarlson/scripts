@@ -39,6 +39,8 @@ from benchmark_core import (
     summarize,
 )
 
+from benchmark_core.conditions import contract_error
+from .comparison_conditions import build_conditions, runtime_conditions
 from . import __version__
 from .attempt import run_attempt, run_cli_attempt
 from .telemetry import ResourceLimitExceeded, RuntimeMemoryGuard
@@ -274,6 +276,8 @@ class ExperimentScheduler:
         verifier_seconds = 10.0
         context_length = int(config.metadata.get("requested_context_length", DEFAULT_BENCHMARK_CONTEXT_LENGTH))
 
+        for task_dir in self.task_dirs.values():
+            load_task(task_dir)  # Refuse unsupported execution profiles before any model transition.
         await self._preflight_local_models()
 
         experiment_dir = self.reports_dir / config.experiment_id
@@ -396,6 +400,20 @@ class ExperimentScheduler:
                         grace_seconds,
                         verifier_seconds,
                     )
+
+                runtime = ({"kind": "injected", "version": "test-executor"} if self.trial_executor is not None else runtime_conditions(evidence_dir))
+                conditions = build_conditions(self.task_dirs,
+                    loaded_model.context_length if loaded_model else (context_length if self.trial_executor else None),
+                    config.budget_profile, {"task_seconds": task_seconds, "grace_seconds": grace_seconds,
+                                            "verifier_seconds": verifier_seconds}, runtime, provider=resolved_provider)
+                previous = run_info.metadata.get("comparison_contract")
+                if previous is not None and previous != conditions:
+                    run_info.metadata["comparison_contract_error"] = "Runtime conditions changed within this model batch"
+                run_info.metadata["comparison_contract"] = (None if run_info.metadata.get("comparison_contract_error") else conditions)
+                if "comparison_contract" not in config.metadata and contract_error(conditions) is None:
+                    config.metadata["comparison_contract"] = conditions
+                run_info.metadata["agent_runtime"] = runtime
+                save_run(run_dir, run_info, overwrite=True)
 
                 append_result(run_dir, result)
                 run_trial_results.append(result)

@@ -130,3 +130,57 @@ def test_missing_scope_audit_cannot_be_scored_full_success(tmp_path):
     trial = convert(replace(attempt(tmp_path, Worker()), scope_audit=None), tmp_path)
     assert trial.status == "unscored"
     assert trial.metrics["agent.scope_compliance"].value is None
+
+
+def test_artifact_and_execution_judgments_preserve_opaque_shell_uncertainty(tmp_path):
+    from agent_benchmark.evidence import UnverifiableOperation
+    evidence = attempt(tmp_path, Worker())
+    opaque = replace(evidence.scope_audit, unverifiable_operations=(
+        UnverifiableOperation("bash", "opaque", "m1", "c1", {}),))
+    trial = convert(replace(evidence, scope_audit=opaque), tmp_path)
+    assert trial.status == "unscored"
+    assert trial.details["judgments"] == {"functional": "passed", "artifact": "passed",
+        "execution": "unknown", "budget": "passed", "termination": "passed"}
+    assert trial.metrics["agent.artifact_compliance"].value == 1
+    assert trial.metrics["agent.execution_compliance"].value is None
+    assert trial.metrics["agent.scope_compliance"].value is None
+
+
+def test_artifact_violation_and_execution_violation_are_distinct(tmp_path):
+    evidence = attempt(tmp_path, Worker(extra=True))
+    trial = convert(evidence, tmp_path)
+    assert trial.details["judgments"]["artifact"] == "failed"
+    assert trial.metrics["agent.scope_compliance"].value == 0
+
+
+def test_cli_artifact_without_execution_history_remains_unscored(tmp_path, monkeypatch):
+    import asyncio
+    from agent_benchmark.attempt import run_cli_attempt
+    from agent_benchmark.evidence import load_task
+    from agent_benchmark.lifecycle import DispatchGuard
+
+    monkeypatch.setattr("agent_benchmark.attempt.shutil.which", lambda name: "codex.exe")
+
+    async def runner(command, workspace):
+        (workspace / "grep.py").write_text(GOOD, encoding="utf-8")
+        return 0, "complete", ""
+
+    evidence = asyncio.run(run_cli_attempt(load_task(TASK), DispatchGuard(), workspace_root=tmp_path / "workers",
+        evidence_dir=tmp_path / "cli-evidence", provider="codex", model="test-model", cli_runner=runner))
+    trial = convert(evidence, tmp_path)
+    assert trial.status == "unscored"
+    assert trial.details["judgments"]["functional"] == "passed"
+    assert trial.details["judgments"]["artifact"] == "passed"
+    assert trial.details["judgments"]["execution"] == "unknown"
+
+
+def test_inconsistent_scope_sets_cannot_produce_strict_pass(tmp_path):
+    evidence = attempt(tmp_path, Worker())
+    malformed = replace(evidence.scope_audit, all_violations=("forbidden.txt",),
+                        snapshot_violations=(), transcript_violations=())
+    trial = convert(replace(evidence, scope_audit=malformed, scope_violations=("forbidden.txt",)), tmp_path)
+    assert trial.status == "infrastructure_error"
+    assert trial.details["judgments"]["artifact"] == "unknown"
+    assert trial.details["judgments"]["execution"] == "unknown"
+    assert trial.metrics["agent.scope_compliance"].value is None
+    assert "disagree" in trial.details["evidence_diagnostic"]

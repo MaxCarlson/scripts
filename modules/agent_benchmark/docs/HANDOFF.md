@@ -1,3 +1,23 @@
+# Current final-hardening delivery — 2026-10-20
+
+Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`; baseline 52d4a0f9.
+Stage 1 committed as 21061733. Agent 1.13.0, core 0.1.2, reports 0.1.1 changes follow in this delivery.
+See [current status](plans/20261020-final-hardening/STATUS.md) and
+[checklist](plans/20261020-final-hardening/checklist.md) for current authority and validation.
+
+File-profile trust, separate judgments/timing, explicit comparison conditions and unranked diagnostics
+are implemented offline. The independent reviewer reproduced all five 1.11.0 incident verdicts using
+the current scorer and saved evidence; 34 read input files were rehashed unchanged. No inference,
+model load/unload, shared configuration change or historical artifact migration occurred.
+
+Shell-capable strict execution remains unavailable: the Docker Linux engine was absent, and no real
+worker/verifier containment was demonstrated. Requests fail closed before allocation/model transitions.
+Keep existing shell profiles lower assurance. Memory admission is unchanged. Next action after delivery:
+separately authorized [single-model live acceptance](plans/20261020-final-hardening/live-acceptance.md).
+Do not treat an offline strict-pass regression or read-only role inspection as a live model pass.
+
+---
+
 ## Current work: final hardening
 
 Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`.

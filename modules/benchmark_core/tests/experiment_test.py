@@ -43,6 +43,15 @@ from benchmark_core.storage import (
 # =============================================================================
 
 
+def _conditions(tasks=None, budget="canonical-60s"):
+    task_ids = tasks or ["task-1", "task-2"]
+    return {"schema": "comparison-conditions-v1", "tasks": {t: {"task_sha256": "a" * 64, "verifier_sha256": "b" * 64} for t in task_ids},
+            "execution_profiles": {t: "file-tools-v1" for t in task_ids}, "scope_policy": "test-scope-v1",
+            "isolation_policy": "test-isolation-v1", "context_length": 16384,
+            "budget": {"profile": budget, "task_seconds": 60, "grace_seconds": 10, "verifier_seconds": 10},
+            "environment": {"python": "test", "platform": "test", "machine": "test", "harness_version": "test", "runtime": {"kind": "mock", "version": "1"}}}
+
+
 def _create_sample_config(
     experiment_id: str = "exp-20261019-01",
     suite_id: str = "agent-benchmark-suite",
@@ -64,7 +73,7 @@ def _create_sample_config(
         scoring_basis=scoring_basis,
         budget_profile=budget_profile,
         random_seed=42,
-        metadata={"coordinator": "gemini"},
+        metadata={"coordinator": "gemini", "comparison_contract": _conditions(task_ids, budget_profile)},
     )
 
 
@@ -83,6 +92,7 @@ def _create_run(
     meta: dict[str, object] = {
         "budget_profile": budget_profile,
         "comparison_eligible": comparison_eligible,
+        "comparison_contract": _conditions(task_ids, budget_profile),
     }
     if exclusion_reason:
         meta["exclusion_reason"] = exclusion_reason
@@ -335,8 +345,10 @@ def test_production_comparison_eligibility_enforcement() -> None:
     assert "experimental-model" in comp.reference_variants
     assert "Custom prompt tuning applied" in comp.reference_variants["experimental-model"].exclusion_reasons
 
-    assert "mismatched-budget-model" in comp.reference_variants
-    assert any("Budget profile mismatch" in r for r in comp.reference_variants["mismatched-budget-model"].exclusion_reasons)
+    assert "mismatched-budget-model" not in comp.reference_variants
+    assert len(comp.condition_groups) == 1
+    separate = next(iter(comp.condition_groups.values()))
+    assert "mismatched-budget-model" in separate["eligible_variants"]
 
 
 def test_variant_demotion_if_any_constituent_run_ineligible() -> None:
@@ -597,3 +609,81 @@ def test_generate_experiment_reports_and_save(tmp_path: Path) -> None:
     assert (exp_dir / "comparison.csv").is_file()
     assert (exp_dir / "report.md").is_file()
     assert (exp_dir / "index.html").is_file()
+
+
+def test_zero_scored_variant_is_unranked_and_retained_in_exports():
+    config = _create_sample_config()
+    run = _create_run("unscored-run", "model-a")
+    trial = _create_trial(run.run_id, "task-1", "model-a", 1, TrialStatus.UNSCORED)
+    comparison = aggregate_experiment(config, [(run, [trial])])
+    assert comparison.canonical_rankings == []
+    assert comparison.unranked_variants["model-a"].unscored == 1
+    assert "model-a" in comparison.to_dict()["unranked_variants"]
+    assert "Unranked Diagnostics" in render_experiment_comparison_md(comparison)
+    import csv
+    import io
+    rows = list(csv.DictReader(io.StringIO(render_experiment_comparison_csv(comparison))))
+    assert len(rows) == 1 and rows[0]["rank"] == ""
+
+
+def test_missing_conditions_are_diagnostic_not_assumed_equivalent():
+    from dataclasses import replace
+    config = _create_sample_config()
+    run = _create_run("historical", "model-a")
+    run = replace(run, metadata={"budget_profile": "canonical-60s"})
+    result = aggregate_experiment(config, [(run, [_create_trial(run.run_id, "task-1", "model-a", 1, TrialStatus.PASSED)])])
+    assert not result.canonical_rankings
+    assert result.incompatible_runs[0]["trials"][0]["status"] == "passed"
+
+
+def test_different_contexts_are_separate_comparisons():
+    config = _create_sample_config()
+    run = _create_run("different-context", "model-a")
+    run.metadata["comparison_contract"]["context_length"] = 8192
+    result = aggregate_experiment(config, [(run, [_create_trial(run.run_id, "task-1", "model-a", 1, TrialStatus.PASSED)])])
+    assert not result.canonical_rankings
+    assert len(result.condition_groups) == 1
+    group = next(iter(result.condition_groups.values()))
+    assert group["canonical_rankings"] == ["model-a"]
+
+
+@pytest.mark.parametrize("field,value", [
+    ("scope_policy", 123), ("isolation_policy", True), ("context_length", False),
+    ("execution_profiles", {"task-1": 77, "task-2": "file-tools-v1"}),
+    ("environment", {"runtime": "unknown"}),
+])
+def test_malformed_comparison_conditions_never_establish_equivalence(field, value):
+    from benchmark_core.conditions import contract_error, contract_key
+    conditions = _conditions()
+    conditions[field] = value
+    assert contract_error(conditions)
+    assert contract_key(conditions) is None
+
+
+@pytest.mark.parametrize("value", [-1, 0, True, "120", float("inf")])
+def test_malformed_task_budget_is_not_comparable(value):
+    from benchmark_core.conditions import contract_error
+    conditions = _conditions()
+    conditions["budget"]["task_seconds"] = value
+    assert contract_error(conditions)
+
+
+@pytest.mark.parametrize("dimension", ["task", "verifier", "profile", "scope", "budget", "environment"])
+def test_declared_condition_differences_never_share_rankings(dimension):
+    config = _create_sample_config()
+    run = _create_run("changed", "model-a")
+    condition = run.metadata["comparison_contract"]
+    if dimension in ("task", "verifier"):
+        condition["tasks"]["task-1"][dimension + "_sha256"] = "f" * 64
+    elif dimension == "profile":
+        condition["execution_profiles"]["task-1"] = "shell-v1"
+    elif dimension == "scope":
+        condition["scope_policy"] = "different-policy-v1"
+    elif dimension == "budget":
+        condition["budget"]["task_seconds"] = 121
+    else:
+        condition["environment"]["runtime"]["version"] = "different-runtime"
+    result = aggregate_experiment(config, [(run, [_create_trial(run.run_id, "task-1", "model-a", 1, TrialStatus.PASSED)])])
+    assert not result.canonical_rankings
+    assert len(result.condition_groups) == 1
+    assert next(iter(result.condition_groups.values()))["canonical_rankings"] == ["model-a"]

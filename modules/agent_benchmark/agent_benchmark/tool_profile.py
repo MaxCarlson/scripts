@@ -131,3 +131,10 @@ def validate_file_agent(role: dict, *, trusted_output_directory: Path | None = N
                              for r in rules[broad[-1] + 1:]) if broad else True
         if not matches or matches[-1] != "allow" or narrow_denials:
             raise ValueError(f"benchmark-files cannot use required {tool} tools")
+
+
+def validate_execution_profile(profile: str) -> None:
+    if profile == "sandboxed-shell-v1":
+        raise ValueError("sandboxed-shell-v1 is unavailable: worker AND verifier containment has not been demonstrated. No host-shell fallback is permitted.")
+    if profile not in {"shell-v1", FILE_PROFILE}:
+        raise ValueError(f"Unknown task OpenCode tool profile: {profile}")
