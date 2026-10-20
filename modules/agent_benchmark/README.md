@@ -1,4 +1,8 @@
-# agent_benchmark — 1.9.1
+# agent_benchmark — 1.10.0
+
+Trial output shows code correctness, scope compliance, budget compliance, and confirmed termination separately, followed by specific violations, verifier/provider errors, uncertainty reasons, and an evidence path. Final output also counts functional code passes with an explicit measured denominator and unavailable count. Strict scoring remains the combined contract; correct code with a scope violation is reported as a functional pass and a strict failure. The same diagnostics are written to `benchmark.log`; trial JSON retains bounded verifier diagnostics.
+
+Worker instructions recommend `python -B` for optional Python checks and keeping all temporary tests/caches in `.agent-bench-scratch`. Simple tasks can use read/edit tools and leave testing to the hidden verifier. Arbitrary shell execution may leave scope uncertain; these instructions are cooperative and do not enforce a shell sandbox or change shared OpenCode settings.
 
 A thin evaluator around the existing OpenCode/MCP runtime. Phase 1d project/session checks passed authorized non-inference acceptance. Trial-local scratch policy is implemented and tested offline; no worker has exercised it live. Historical trial outcomes remain unchanged.
 

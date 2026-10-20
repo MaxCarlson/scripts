@@ -70,6 +70,24 @@ def test_provider_error_name_and_message_are_preserved_as_diagnostic():
     assert observation.diagnostic == "ProviderError: context window exceeded"
 
 
+def test_provider_http_rejection_and_generation_limit_are_distinguishable():
+    data = messages()
+    data[1]["info"]["error"] = {"name": "APIError", "data": {
+        "message": "Request rejected", "statusCode": 400, "responseBody": "context window exceeded",
+        "headers": {"Authorization": "secret-should-not-be-copied"},
+    }}
+    observation = parse_observation(HANDLE, {}, data)
+    assert "statusCode=400" in observation.diagnostic
+    assert "context window exceeded" in observation.diagnostic
+    assert "secret" not in observation.diagnostic
+    data = messages()
+    data[1]["info"]["finish"] = "length"
+    observation = parse_observation(HANDLE, {}, data)
+    assert observation.job_status == "completed"
+    assert "generation limit reached" in observation.diagnostic
+    assert "context overflow not established" in observation.diagnostic
+
+
 @pytest.mark.parametrize("statuses,history", [(None, messages()), ({}, None), ([], messages()), ({}, [{"info": {}}])])
 def test_malformed_raw_evidence_fails_closed(statuses, history):
     assert not parse_observation(HANDLE, statuses, history).confirms_termination

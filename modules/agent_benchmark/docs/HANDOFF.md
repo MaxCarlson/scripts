@@ -1,5 +1,9 @@
 # agent_benchmark handoff — live dashboard telemetry and preflight diagnostics
 
+## Current work — actionable trial results (1.10.0)
+
+Branch `agent/benchmark-live-stats` in the existing benchmark-live-stats worktree. See `docs/plans/20261020-actionable-trial-results/STATUS.md`. Per-trial terminal/log diagnostics and final functional counts now distinguish correct code, scope, budget, and infrastructure outcomes. Provider/verifier error details, transport exception messages, and pretrial model-load abort records are persisted. Worker instructions cover `python -B` and optional tests inside scratch. Strict scoring and historical evidence remain unchanged. Offline verification: 311 passed, 3 skipped; final transport-message checks 28 passed; Ruff and diff checks passed. No inference, model state changes, or imported benchmark tasks were performed.
+
 ## Current work — run diagnostics and lifecycle safety (2026-10-20)
 
 Feature worktree: `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`. Package version is 1.9.0. The project is already integrated in `main`; this follow-up remains on the feature branch until its commit is pushed and fast-forwarded into `main` as the user requested.

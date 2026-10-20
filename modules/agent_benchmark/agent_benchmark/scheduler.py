@@ -43,6 +43,7 @@ from . import __version__
 from .attempt import run_attempt, run_cli_attempt
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
+from .diagnostics import describe_trial
 from .git_workspace import ISOLATION_POLICY
 from .identity import ModelIdentity, resolve_lmstudio_identity
 from .models_lifecycle import (
@@ -230,6 +231,8 @@ class ExperimentScheduler:
         self.completed_runs: list[tuple[RunInfo, list[TrialResult]]] = []
         self.run_refs: list[ExperimentRunRef] = []
         self.model_identities: dict[str, ModelIdentity] = {}
+        self.current_stage = "preflight"
+        self.current_model: str | None = None
 
     async def run(self) -> ExperimentComparison:
         """
@@ -241,13 +244,24 @@ class ExperimentScheduler:
         with command_lock(self.state_dir):
             try:
                 return await self._run_locked()
-            except BaseException:
+            except BaseException as error:
                 logger.exception(
                     "Experiment aborted; preserving completed runs experiment_id=%s",
                     self.plan.experiment_id,
                     extra={"event_type": "EXPERIMENT_ABORTED"},
                 )
                 self._persist_partial_results()
+                experiment_dir = self.reports_dir / self.plan.experiment_id
+                if experiment_dir.is_dir():
+                    try:
+                        failure = {"experiment_id": self.plan.experiment_id, "stage": self.current_stage,
+                                   "model": self.current_model, "error_type": type(error).__name__,
+                                   "message": str(error), "diagnostic_log": "benchmark.log"}
+                        (experiment_dir / "experiment-failure.json").write_text(
+                            json.dumps(failure, indent=2, ensure_ascii=True) + "\n", encoding="utf-8"
+                        )
+                    except OSError:
+                        logger.exception("Could not persist experiment failure diagnostics")
                 raise
 
     async def _run_locked(self) -> ExperimentComparison:
@@ -266,6 +280,8 @@ class ExperimentScheduler:
 
         # Iterate model by model
         for model_key in self.plan.model_keys:
+            self.current_model = model_key
+            self.current_stage = "model_transition"
             logger.info("Model batch starting model=%s", model_key,
                         extra={"event_type": "MODEL_BATCH_START"})
             if self.on_model_start:
@@ -342,6 +358,7 @@ class ExperimentScheduler:
             save_run(run_dir, run_info, overwrite=True)
 
             # 2. Execute trials for this model sequentially
+            self.current_stage = "trial_execution"
             run_trial_results: list[TrialResult] = []
             for planned_trial in model_trials:
                 if self.on_trial_start:
@@ -398,8 +415,13 @@ class ExperimentScheduler:
 
                 if self.on_trial_complete:
                     self.on_trial_complete(planned_trial, result)
+                for diagnostic in describe_trial(result):
+                    logger.info("Trial diagnostic model=%s task=%s repetition=%s detail=%s",
+                                planned_trial.model_key, planned_trial.task_id, planned_trial.repetition, diagnostic,
+                                extra={"event_type": "TRIAL_DIAGNOSTIC"})
 
             # Generate single run reports
+            self.current_stage = "report_generation"
             run_summary = summarize(run_info, run_trial_results)
             generate_reports(run_summary, run_dir, write=True)
 

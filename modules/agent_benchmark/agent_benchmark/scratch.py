@@ -92,5 +92,9 @@ def prompt_instructions(workspace: Path) -> str:
         "$env:TMP = $env:TEMP; $env:TMPDIR = $env:TEMP; then run the program. "
         "For other shells use their command-local environment syntax with the same absolute path. "
         "Settings do not persist between tool commands. Prefer explicit scratch paths when APIs allow them. "
+        "For Python checks use python -B (or python3 -B) to prevent __pycache__ and .pyc writes beside task files. "
+        "Do not create test files outside scratch. The harness runs the hidden verifier after you finish; "
+        "worker-run tests are optional. Prefer read/edit tools for simple tasks: arbitrary shell execution "
+        "cannot be fully scope-audited and may leave strict compliance uncertain even when tests pass. "
         "These are worker instructions; the shared server environment has not been changed."
     )

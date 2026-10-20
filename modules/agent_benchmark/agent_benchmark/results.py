@@ -139,11 +139,17 @@ def trial_from_attempt(
         "scratch_changed_paths": list(attempt.scope_audit.scratch_changed_paths) if attempt.scope_audit else None,
         "task_budget_expired": attempt.task_budget_expired,
         "execution_error": attempt.execution_error,
+        "execution_diagnostic": attempt.execution_diagnostic,
         "verifier_status": attempt.verification.status if attempt.verification else None,
+        "verifier_returncode": attempt.verification.returncode if attempt.verification else None,
+        "verifier_diagnostic": (
+            (attempt.verification.stderr or attempt.verification.stdout)[-2000:]
+            if attempt.verification and attempt.verification.status != "passed" else None
+        ),
         "turn_completion": ("completed" if (observation and observation.job_status == "completed" and not attempt.task_budget_expired)
                             else ("aborted_at_budget" if attempt.task_budget_expired else "unconfirmed")),
         "worker_job_status": observation.job_status if observation else None,
-        "worker_diagnostic": observation.diagnostic[:2000] if observation and observation.diagnostic else None,
+        "worker_diagnostic": observation.diagnostic[:3000] if observation and observation.diagnostic else None,
         "termination": {"confirmed": attempt.termination.confirmed,
                         "grace_seconds": attempt.termination.grace_seconds,
                         "diagnostics": list(attempt.termination.diagnostics)},

@@ -14,6 +14,7 @@ import json
 import logging
 import shutil
 import sys
+import textwrap
 import time
 from typing import Any, Optional, TextIO
 
@@ -26,6 +27,7 @@ from termdash import LiveBlock, Table, render_horizontal_bar
 from termdash.utils import color_text
 
 from .scheduler import ExperimentPlan, ExperimentScheduler, PlannedTrial
+from .diagnostics import describe_trial
 from .telemetry import ResourceSampler, format_resource_line
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,7 @@ class ExperimentDashboard:
         self.active_trial: Optional[PlannedTrial] = None
         self.active_trial_start: Optional[float] = None
         self.completed_trials_count = 0
+        self.trial_results: dict[str, list[TrialResult]] = {}
 
         # Initialize per-model progress
         self.models: dict[str, ModelProgressState] = {}
@@ -254,6 +257,7 @@ class ExperimentDashboard:
 
         ms = self.models.get(trial.model_key)
         if result:
+            self.trial_results.setdefault(trial.model_key, []).append(result)
             status_val = result.status.value if hasattr(result.status, "value") else str(result.status)
             status_name = status_val.upper()
         else:
@@ -298,6 +302,14 @@ class ExperimentDashboard:
                 f"{trial.task_id} r{trial.repetition} -> {badge} ({dur_s:.1f}s)"
             )
 
+        if result:
+            for detail in describe_trial(result):
+                for line in textwrap.wrap(detail, width=max(40, _terminal_width() - 4)):
+                    if self.quiet:
+                        self._log_quiet(f"    {line}")
+                    else:
+                        self.live_block.log(f"    {line}")
+
     def on_model_complete(
         self,
         model_key: str,
@@ -314,6 +326,10 @@ class ExperimentDashboard:
                 f"(Strict: {strict_pct}) | Timeouts: {ms.timed_out} | Infra Errors: {ms.infra_errors} "
                 f"| Unscored: {sum(str(trial.status) == 'unscored' for trial in trials)}"
             )
+            functional = [t.metrics["agent.functional_pass"].value for t in trials
+                          if "agent.functional_pass" in t.metrics and t.metrics["agent.functional_pass"].value is not None]
+            msg += (f" | Code checks: {sum(value == 1 for value in functional)}/{len(functional)} passed"
+                    f"; {len(trials) - len(functional)} unavailable")
             if self.quiet:
                 self._log_quiet(msg)
             else:
@@ -411,6 +427,17 @@ class ExperimentDashboard:
                 ref_table.add_row(vid, reasons, rate_str, denom_str, other_str)
 
             lines.append(ref_table.render(max_width=terminal_width))
+
+        if self.trial_results:
+            lines.extend(["", "FUNCTIONAL CODE CHECKS (scope and time results reported separately):"])
+            for model, results in self.trial_results.items():
+                known = [t.metrics["agent.functional_pass"].value for t in results
+                         if "agent.functional_pass" in t.metrics and t.metrics["agent.functional_pass"].value is not None]
+                passed = sum(value == 1 for value in known)
+                lines.extend(textwrap.wrap(
+                    f"{model}: {passed}/{len(known)} passed; {len(results) - len(known)} unavailable",
+                    width=max(40, terminal_width - 2), initial_indent="  ", subsequent_indent="    ",
+                ))
 
         lines.append(divider)
         lines.append("")
