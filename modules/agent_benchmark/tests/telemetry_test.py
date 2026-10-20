@@ -28,6 +28,26 @@ def test_nvidia_smi_row_parser_keeps_unavailable_metrics_unavailable() -> None:
     assert snapshot.gpu_memory_total_bytes is None
 
 
+def test_utilization_percentages_use_requested_color_bands() -> None:
+    cases = [
+        (49.9, "32", "49%"),
+        (50.0, "33", "50%"),
+        (69.9, "33", "69%"),
+        (70.0, "38;5;208", "70%"),
+        (84.9, "38;5;208", "84%"),
+        (85.0, "31", "85%"),
+        (100.0, "31", "100%"),
+    ]
+
+    for value, color, visible in cases:
+        line = telemetry.format_resource_line(telemetry.ResourceSnapshot(gpu_utilization_pct=value))
+        assert f"\033[{color}m{visible}\033[0m" in line
+
+    unavailable = telemetry.format_resource_line(telemetry.ResourceSnapshot())
+    assert "GPU --" in unavailable
+    assert "\033[" not in unavailable
+
+
 def test_resource_snapshot_reads_host_ram_and_gpu_metrics(monkeypatch) -> None:
     monkeypatch.setattr(
         telemetry.psutil,

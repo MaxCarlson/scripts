@@ -15,6 +15,10 @@ def test_color_text_handles_unknown():
     assert colored.endswith(td_utils.ANSI_RESET)
 
 
+def test_color_text_supports_orange():
+    assert td_utils.color_text("70%", "orange") == "\033[38;5;208m70%\033[0m"
+
+
 def test_wrap_text_respects_width():
     wrapped = td_utils.wrap_text("a bb ccc dddd eeee", 4)
     assert all(len(line) <= 4 for line in wrapped)

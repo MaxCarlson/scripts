@@ -9,6 +9,7 @@ and a quiet mode (-Q/--quiet) for scripts and batch pipelines.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import shutil
 import sys
 import time
 from typing import Any, Optional, TextIO
@@ -23,6 +24,11 @@ from termdash.utils import color_text
 
 from .scheduler import ExperimentPlan, ExperimentScheduler, PlannedTrial
 from .telemetry import ResourceSampler, format_resource_line
+
+
+def _terminal_width() -> int:
+    """Return a practical width for tables and section rules."""
+    return max(40, shutil.get_terminal_size(fallback=(100, 24)).columns)
 
 
 @dataclass
@@ -199,8 +205,7 @@ class ExperimentDashboard:
             remaining = len(self.plan.model_keys) - self.max_visible_models
             table.add_row(f"+{remaining} more models...", "-", "-", "-", "-", "-")
 
-        # Render table lines (bounded max_width=100)
-        table_output = table.render(max_width=100)
+        table_output = table.render(max_width=_terminal_width())
         for t_line in table_output.splitlines():
             lines.append(t_line)
 
@@ -309,11 +314,14 @@ class ExperimentDashboard:
         self.close()
 
         total_elapsed = time.monotonic() - self.start_time
+        terminal_width = _terminal_width()
+        divider = "=" * terminal_width
+        title = "BENCHMARK EXPERIMENT RESULTS SUMMARY"
         lines: list[str] = [
             "",
-            "==================================================================================",
-            "                       BENCHMARK EXPERIMENT RESULTS SUMMARY",
-            "==================================================================================",
+            divider,
+            title.center(terminal_width),
+            divider,
             f"Experiment ID: {comparison.experiment_id}",
             f"Suite ID:      {comparison.config.suite_id} (v{comparison.config.suite_version})",
             f"Budget:        {comparison.config.budget_profile}",
@@ -324,9 +332,31 @@ class ExperimentDashboard:
 
         if not comparison.eligible_variants:
             lines.append("  (No comparison-eligible models evaluated)")
+        elif terminal_width < 110:
+            for rank, vid in enumerate(comparison.canonical_rankings, start=1):
+                vm = comparison.eligible_variants[vid]
+                rate_str = f"{vm.strict_acceptance_rate * 100:.1f}%" if vm.strict_acceptance_rate is not None else "N/A"
+                if vm.confidence_interval_95:
+                    ci = vm.confidence_interval_95
+                    rate_str += f" [{ci.lower * 100:.1f}% - {ci.upper * 100:.1f}%]"
+                denom_str = f"{vm.scored_denominator} ({vm.passed}/{vm.failed}/{vm.timed_out})"
+                other_str = f"{vm.infrastructure_error}/{vm.unscored}"
+                dur_str = (
+                    f"{vm.duration.all_scored.mean / 1000.0:.1f}s"
+                    if vm.duration.all_scored and vm.duration.all_scored.mean is not None
+                    else "N/A"
+                )
+                lines.extend(
+                    [
+                        f"{rank}. {vid}",
+                        f"   Pass rate (95% CI): {rate_str}",
+                        f"   Scored (P/F/T): {denom_str} | Other (I/U): {other_str}",
+                        f"   Mean duration: {dur_str}",
+                    ]
+                )
         else:
             lead_table = Table(
-                headers=["Rank", "Model", "Strict Pass Rate (95% CI)", "Scored Denom", "Timeouts", "Errors", "Mean Dur"],
+                headers=["Rank", "Model", "Pass Rate (95% CI)", "Scored (P/F/T)", "Other (I/U)", "Mean Dur"],
                 style="dash",
                 border=True,
                 padding=1,
@@ -340,23 +370,22 @@ class ExperimentDashboard:
                 else:
                     ci_str = ""
                 full_rate = f"{rate_str}{ci_str}"
-                denom_str = f"{vm.scored_denominator} ({vm.passed}P/{vm.failed}F)"
-                timeouts_str = str(vm.timed_out)
-                errors_str = str(vm.infrastructure_error)
+                denom_str = f"{vm.scored_denominator} ({vm.passed}/{vm.failed}/{vm.timed_out})"
+                other_str = f"{vm.infrastructure_error}/{vm.unscored}"
                 dur_str = (
                     f"{vm.duration.all_scored.mean / 1000.0:.1f}s"
                     if vm.duration.all_scored and vm.duration.all_scored.mean is not None
                     else "N/A"
                 )
-                lead_table.add_row(str(rank), vid, full_rate, denom_str, timeouts_str, errors_str, dur_str)
+                lead_table.add_row(str(rank), vid, full_rate, denom_str, other_str, dur_str)
 
-            lines.append(lead_table.render(max_width=110))
+            lines.append(lead_table.render(max_width=terminal_width))
 
         if comparison.reference_variants:
             lines.append("")
             lines.append("REFERENCE & COMPARISON-INELIGIBLE MODELS:")
             ref_table = Table(
-                headers=["Model", "Exclusion Reason", "Strict Pass", "Scored Denom", "Errors"],
+                headers=["Model", "Exclusion Reason", "Pass", "Scored (P/F/T)", "Other (I/U)"],
                 style="dash",
                 border=True,
                 padding=1,
@@ -364,12 +393,13 @@ class ExperimentDashboard:
             for vid, vm in sorted(comparison.reference_variants.items()):
                 reasons = "; ".join(vm.exclusion_reasons) if vm.exclusion_reasons else "Ineligible"
                 rate_str = f"{vm.strict_acceptance_rate * 100:.1f}%" if vm.strict_acceptance_rate is not None else "N/A"
-                denom_str = f"{vm.scored_denominator} ({vm.passed}P/{vm.failed}F/{vm.timed_out}T)"
-                ref_table.add_row(vid, reasons, rate_str, denom_str, str(vm.infrastructure_error))
+                denom_str = f"{vm.scored_denominator} ({vm.passed}/{vm.failed}/{vm.timed_out})"
+                other_str = f"{vm.infrastructure_error}/{vm.unscored}"
+                ref_table.add_row(vid, reasons, rate_str, denom_str, other_str)
 
-            lines.append(ref_table.render(max_width=110))
+            lines.append(ref_table.render(max_width=terminal_width))
 
-        lines.append("==================================================================================")
+        lines.append(divider)
         lines.append("")
 
         output_text = "\n".join(lines)

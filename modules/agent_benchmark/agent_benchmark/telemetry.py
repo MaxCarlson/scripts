@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import csv
 from dataclasses import dataclass
+import math
 import shutil
 import subprocess
 import threading
 
 import psutil
+from termdash.utils import color_text
 
 MIB = 1024**2
 
@@ -106,20 +108,32 @@ def _format_gibibytes(used: int | None, total: int | None, percent: float | None
     used_gib = used / 1024**3
     total_gib = total / 1024**3
     used_pct = percent if percent is not None else used / total * 100
-    return f"{used_gib:.1f}/{total_gib:.1f} GiB ({used_pct:.0f}%)"
+    return f"{used_gib:.1f}/{total_gib:.1f} GiB {_format_percent(used_pct)}"
 
 
 def _format_percent(value: float | None) -> str:
-    return f"{value:.0f}%" if value is not None else "--"
+    if value is None or not math.isfinite(value):
+        return "--"
+    if value < 0:
+        color = None
+    elif value < 50:
+        color = "green"
+    elif value < 70:
+        color = "yellow"
+    elif value < 85:
+        color = "orange"
+    else:
+        color = "red"
+    return color_text(f"{int(value)}%", color)
 
 
 def format_resource_line(snapshot: ResourceSnapshot) -> str:
-    """Render one compact line, distinguishing GPU activity from VRAM occupancy."""
+    """Render compact, color-banded utilization while distinguishing GPU activity from VRAM."""
     return (
-        "RESOURCES | RAM "
+        "RES | RAM "
         f"{_format_gibibytes(snapshot.ram_used_bytes, snapshot.ram_total_bytes, snapshot.ram_pct)}"
         f" | GPU {_format_percent(snapshot.gpu_utilization_pct)}"
-        f" | GPU MEM {_format_percent(snapshot.gpu_memory_utilization_pct)}"
+        f" | GPU-MEM {_format_percent(snapshot.gpu_memory_utilization_pct)}"
         f" | VRAM {_format_gibibytes(snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes)}"
     )
 

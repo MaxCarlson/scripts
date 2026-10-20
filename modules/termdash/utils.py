@@ -23,6 +23,7 @@ ANSI_CODES = {
     "white": "37",
     "gray": "90",
     "bright": "97",
+    "orange": "38;5;208",
 }
 
 

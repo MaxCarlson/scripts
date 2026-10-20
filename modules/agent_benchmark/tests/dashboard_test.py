@@ -5,8 +5,10 @@ Unit tests for the bounded live terminal dashboard and quiet mode adapter.
 from __future__ import annotations
 
 import io
+import os
 import pytest
 
+import agent_benchmark.dashboard as dashboard_module
 from agent_benchmark.dashboard import ExperimentDashboard
 from agent_benchmark.scheduler import ExperimentPlan, expand_experiment_plan
 from benchmark_core import (
@@ -20,6 +22,7 @@ from benchmark_core import (
     TrialResult,
     TrialStatus,
 )
+from termdash.table import _strip_ansi
 
 
 @pytest.fixture
@@ -92,10 +95,12 @@ def test_dashboard_shows_live_ram_gpu_and_vram_statistics(sample_plan) -> None:
     stats_lines = [line for line in lines if "RAM" in line and "VRAM" in line]
 
     assert len(stats_lines) == 1
-    assert "RAM 16.0/32.0 GiB (50%)" in stats_lines[0]
-    assert "GPU 81%" in stats_lines[0]
-    assert "GPU MEM 37%" in stats_lines[0]
-    assert "VRAM 20.0/24.0 GiB (83%)" in stats_lines[0]
+    plain_stats = _strip_ansi(stats_lines[0])
+    assert "RAM 16.0/32.0 GiB 50%" in plain_stats
+    assert "GPU 81%" in plain_stats
+    assert "GPU-MEM 37%" in plain_stats
+    assert "VRAM 20.0/24.0 GiB 83%" in plain_stats
+    assert len(plain_stats) <= 80
     assert len(lines) <= 12
     assert sampler.start_count == 0
     dashboard.close()
@@ -217,3 +222,46 @@ def test_dashboard_final_experiment_complete_leaderboard(sample_plan) -> None:
     assert "CANONICAL LEADERBOARD (Comparison-Eligible Models Only)" in output
     assert "model-alpha" in output
     assert "100.0% [55.0% - 100.0%]" in output
+
+
+def test_final_summary_shows_every_outcome_and_fits_terminal_width(sample_plan, monkeypatch) -> None:
+    config, plan = sample_plan
+    monkeypatch.setattr(dashboard_module.shutil, "get_terminal_size", lambda fallback: os.terminal_size((80, 24)))
+    buf = io.StringIO()
+    dashboard = ExperimentDashboard(plan, quiet=False, stream=buf)
+    vm = AggregatedVariantMetrics(
+        variant_id="lmstudio/openai/gpt-oss-20b",
+        is_eligible=True,
+        exclusion_reasons=[],
+        total_trials=5,
+        passed=2,
+        failed=1,
+        timed_out=1,
+        infrastructure_error=1,
+        unscored=0,
+        scored_denominator=4,
+        strict_acceptance_rate=0.5,
+        confidence_interval_95=None,
+        task_summaries={},
+        metrics={},
+        duration=DurationStats(None, None),
+        constituent_run_ids=["run-1"],
+    )
+    comparison = ExperimentComparison(
+        experiment_id=config.experiment_id,
+        config=config,
+        eligible_variants={vm.variant_id: vm},
+        reference_variants={},
+        incompatible_runs=[],
+        canonical_rankings=[vm.variant_id],
+        warnings=[],
+    )
+
+    dashboard.on_experiment_complete(comparison)
+    lines = buf.getvalue().splitlines()
+
+    assert "Scored (P/F/T)" in buf.getvalue()
+    assert "Other (I/U)" in buf.getvalue()
+    assert "4 (2/1/1)" in buf.getvalue()
+    assert "1/0" in buf.getvalue()
+    assert max(map(len, lines)) <= 80
