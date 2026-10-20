@@ -31,3 +31,5 @@ Use concise `lms/` or bare LM Studio model identifiers, preserve existing `lmstu
 ## Status
 
 Implementation complete on `agent/benchmark-live-stats`; offline verification passed. `agent_benchmark` tests: 295 passed, 3 skipped. `benchmark_core` tests: passed (one skip). Ruff and `git diff --check` passed. No live inference, OpenCode configuration change, or LM Studio load/unload was performed. Remaining uncertainty: exact cause of the historical Devstral process disappearance and whether any `_readerthread` exception caused trial outcomes. Host-wide model ownership beyond benchmark processes cannot be inferred from `lms ps`; the new status guard catches active/unknown states but idle models may still be used by external clients.
+
+Integration: implementation commit `b384b057` was pushed to `agent/benchmark-live-stats` and merged into local `main`. The merged main checkout passed the same agent test suite. Main retains unrelated uncommitted `resource_coordinator` edits and was not pushed.
