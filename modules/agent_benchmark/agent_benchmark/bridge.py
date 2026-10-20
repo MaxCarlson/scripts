@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .tool_profile import FILE_AGENT, validate_file_agent
+from .tool_profile import FILE_AGENT, runtime_output_evidence, validate_file_agent
 from .lifecycle import Observation, WorkerHandle
 
 ToolCaller = Callable[[str, dict], Awaitable[dict]]
@@ -258,7 +258,9 @@ class OpenCodeBridge:
             raise ModelConfigurationError(f"Requested bounded local role '{agent}' is unavailable in this trial project")
         if agent == FILE_AGENT:
             try:
-                validate_file_agent(role)
+                output_trust = runtime_output_evidence(await self._get("/path", directory), health.get("version"), str(self.http.base_url))
+                output_directory = Path(output_trust["directory"]) if output_trust else None
+                validate_file_agent(role, trusted_output_directory=output_directory)
             except ValueError as error:
                 raise ModelConfigurationError(f"OpenCode file-tools-v1 preflight failed: {error}") from error
         project = await self._validate_project(directory, project_id)
@@ -266,6 +268,7 @@ class OpenCodeBridge:
         # Preserve permissions/configuration as observations, not a sandbox claim.
         return {"opencode_version": health.get("version"), "provider": provider, "model": model,
                 "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0",
+                "tool_output_trust": output_trust if agent == FILE_AGENT else None,
                 "project": project,
                 "agent_configuration": {"name": role.get("name"), "mode": role.get("mode"),
                                         "model": role.get("model"),

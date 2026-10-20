@@ -398,7 +398,7 @@ def test_multiple_assistants_with_missing_ordering_cannot_confirm_old_terminal_s
 @pytest.mark.parametrize("rules", [[], [{"permission": "*", "pattern": "*", "action": "allow"}]])
 def test_file_role_readiness_failure_is_actionable_before_session_creation(tmp_path, rules):
     from agent_benchmark.bridge import ModelConfigurationError
-    from agent_benchmark.tool_profile import FILE_AGENT
+    from agent_benchmark.tool_profile import FILE_AGENT, FILE_PROMPT
 
     requests = []
 
@@ -409,8 +409,10 @@ def test_file_role_readiness_failure_is_actionable_before_session_creation(tmp_p
         if request.url.path == "/provider":
             return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
                                              "connected": ["lmstudio"]})
+        if request.url.path == "/path":
+            return httpx.Response(200, json={})
         if request.url.path == "/agent":
-            return httpx.Response(200, json=[{"name": FILE_AGENT, "permission": rules}])
+            return httpx.Response(200, json=[{"name": FILE_AGENT, "mode": "primary", "prompt": FILE_PROMPT, "permission": rules}])
         pytest.fail("Invalid effective profile must fail before project/session operations")
 
     async def unused(*args):

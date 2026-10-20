@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 import pytest
+from agent_benchmark.tool_profile import FILE_PROMPT
 from agent_benchmark.diagnostic import run_diagnostic, attribute_user_prompt, probe_command
 from agent_benchmark.state import read_pending
 from agent_benchmark.lifecycle import WorkerHandle
@@ -275,8 +276,8 @@ def test_real_adapter_preflight_precedes_dispatch_and_attributes_user_message(tm
             "tools": {"shell": True},
             "prompt": "global role",
         }
-        from agent_benchmark.tool_profile import FILE_AGENT
-        file_role = {**role, "name": FILE_AGENT, "permission": [
+        from agent_benchmark.tool_profile import FILE_AGENT, FILE_PROMPT
+        file_role = {**role, "name": FILE_AGENT, "mode": "primary", "prompt": FILE_PROMPT, "permission": [
             {"permission": "*", "pattern": "*", "action": "deny"},
             {"permission": "read", "pattern": "*", "action": "allow"},
             {"permission": "edit", "pattern": "*", "action": "allow"}]}
@@ -319,7 +320,7 @@ def test_real_adapter_preflight_precedes_dispatch_and_attributes_user_message(tm
     assert len(submitted) == 1 and report["termination_confirmed"]
     runtime = json.loads((directory / "evidence/trial-001/runtime.json").read_text())
     assert runtime["tool_metadata"]["availability"] == "available"
-    assert runtime["agent_configuration"]["prompt_sha256"] == hashlib.sha256(b"global role").hexdigest()
+    assert runtime["agent_configuration"]["prompt_sha256"] == hashlib.sha256(FILE_PROMPT.encode()).hexdigest()
     assert read_pending(state) is None
 
 

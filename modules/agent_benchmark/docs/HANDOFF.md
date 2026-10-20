@@ -1,3 +1,11 @@
+## Current work: final hardening
+
+Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`.
+Active plan: `docs/plans/20261020-final-hardening/STATUS.md`. Stage 1 profile hardening is
+verified (69 focused checks); stages 2/3 are in progress. Live acceptance remains unauthorized.
+Preserve the 1.12.0 smoke contract and historical evidence. Docker engine is unavailable;
+no sandbox enforcement or assurance is enabled. Memory admission remains unchanged.
+
 ## Current checkpoint: auditable smoke task 1.12.0
 
 Branch `agent/benchmark-live-stats`, worktree `.worktrees/benchmark-live-stats`.
