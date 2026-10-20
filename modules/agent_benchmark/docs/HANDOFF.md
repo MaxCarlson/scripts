@@ -11,7 +11,7 @@ Feature worktree: `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchm
 - Fixed the CLI-worker exception path so a live child is killed and awaited before termination can be confirmed; unresolved termination stays guarded.
 - Validation: `pytest tests -p no:cacheprovider --tb=short -q` from `modules/agent_benchmark`: 295 passed, 3 skipped. `pytest tests -p no:cacheprovider --tb=short -q` from `modules/benchmark_core`: passed with one skip. Ruff and `git diff --check` passed. No inference, LM Studio load/unload, or shared OpenCode config changes were performed. Full test details and remaining uncertainty are in `docs/plans/20261020-run-diagnostics/STATUS.md`.
 
-Next: review the scoped diff, commit and push `agent/benchmark-live-stats`, then fast-forward the already-clean main checkout and verify the merged source/tests. Do not claim historical root causes beyond the persisted evidence; do not start a live benchmark without separate authorization.
+Integration complete: implementation commit `b384b057` is pushed on `agent/benchmark-live-stats` and merged into local `main`; the merged main suite passed the same 295/3 agent test result. Local `main` still contains unrelated uncommitted `resource_coordinator` edits and is ahead of `origin/main`; those edits were preserved and main was not pushed. Do not claim historical root causes beyond the persisted evidence; do not start a live benchmark without separate authorization.
 
 ## Current work — exact LM Studio model identity resolution (2026-10-20)
 
