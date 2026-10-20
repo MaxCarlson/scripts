@@ -78,3 +78,5 @@ policies:
 ```
 
 Model unload and unknown mutating routes remain rejected. Clients must use the coordinator gateway to receive this protection; requests sent directly to LM Studio bypass the coordinator and cannot be observed. No process is started at coordinator startup unless an operator explicitly supplies `--start-process NAME`. Generic lifecycle flags are available as `--fake-process`, `--start-process NAME`, and `--stop-process-on-shutdown NAME`; the legacy miner flags remain supported.
+
+An opt-in Windows test uses a disposable process and the real coordinator HTTP listener with mocked upstream responses. A separate opt-in live test is gated on a preloaded model and explicit authorization; it has not been run. See [Windows LM Studio HTTP integration](docs/WINDOWS_LMSTUDIO_HTTP_INTEGRATION.md) for commands, evidence, and the live request/cleanup procedure.
