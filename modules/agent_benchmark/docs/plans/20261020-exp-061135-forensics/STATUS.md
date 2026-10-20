@@ -68,5 +68,6 @@ user authorization after checks.
 
 ## Current status
 
-Implementation and offline verification are complete. The branch is based on latest pushed `main`;
-feature commit/push and fast-forward integration into local `main` remain to be done.
+Implementation and offline verification are complete. Commit `fc4374f3938a529de3e55ab7e8723f5d41cb30cc`
+is pushed to `origin/agent/benchmark-exp-061135` and local `main` was fast-forwarded to it. Remote
+`origin/main` remains at `cb82930c`; no remote-main merge or push was performed.

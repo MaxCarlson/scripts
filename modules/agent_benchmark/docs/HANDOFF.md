@@ -6,7 +6,9 @@ evidence, implementation decisions and exact validation. Report generation, runt
 fingerprints, versioned OpenCode edit-failure auditing and prompt instructions are fixed offline.
 Agent Benchmark 1.14.0 and benchmark-core 0.1.3. Historical trial artifacts remain unchanged;
 existing reports were regenerated from a temporary copy without inference. No model call or shared
-configuration change occurred. Independent review and local-main integration remain pending.
+configuration change occurred. The fixes were independently reviewed, committed as `fc4374f3`, pushed
+to `origin/agent/benchmark-exp-061135`, and fast-forwarded into local `main` at the same SHA. Remote
+`origin/main` remains at `cb82930c`; no remote-main merge or push was performed.
 
 # Current final-hardening delivery — 2026-10-20
 
