@@ -138,9 +138,13 @@ async def test_get_loaded_models_error_handling() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transition_model_already_loaded_no_op() -> None:
+async def test_transition_model_already_loaded_no_op(monkeypatch) -> None:
     """If target model is already loaded, transition_model returns immediately without unload."""
     unloaded_called = False
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
 
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
         nonlocal unloaded_called
@@ -150,9 +154,111 @@ async def test_transition_model_already_loaded_no_op() -> None:
             return 0, SAMPLE_LMS_PS_LOADED, ""
         return 0, "", ""
 
-    res = await transition_model("qwen38-27b-q4km", allow_transitions=False, runner=mock_runner)
+    res = await transition_model("qwen38-27b-q4km", allow_transitions=False, context_length=32768, runner=mock_runner)
     assert res.identifier == "qwen38_23GB"
     assert not unloaded_called
+
+
+@pytest.mark.asyncio
+async def test_transition_model_rejects_preloaded_context_mismatch_without_authorization() -> None:
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, SAMPLE_LMS_PS_LOADED, ""
+        pytest.fail(f"Context mismatch must not load or unload without authorization: {cmd}")
+
+    with pytest.raises(ModelTransitionNotAuthorizedError, match="context.*32768.*16384"):
+        await transition_model(
+            "qwen38-27b-q4km", allow_transitions=False, context_length=16384, runner=mock_runner
+        )
+
+
+@pytest.mark.asyncio
+async def test_transition_model_blocks_preloaded_model_at_high_ram(monkeypatch) -> None:
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(ram_pct=95.0))
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, SAMPLE_LMS_PS_LOADED, ""
+        pytest.fail(f"High RAM must prevent dispatch or transition: {cmd}")
+
+    with pytest.raises(ModelTransitionError, match="preloaded model.*95.0%"):
+        await transition_model("qwen38-27b-q4km", allow_transitions=False, context_length=32768, runner=mock_runner)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_estimates_and_loads_at_requested_context(monkeypatch) -> None:
+    ps_state = "initial"
+    commands_run: list[list[str]] = []
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        nonlocal ps_state
+        commands_run.append(cmd)
+        if cmd == ["lms", "ps", "--json"]:
+            if ps_state == "initial":
+                return 0, SAMPLE_LMS_PS_LOADED, ""
+            if ps_state == "unloaded":
+                return 0, SAMPLE_LMS_PS_EMPTY, ""
+            item = json.loads(SAMPLE_LMS_PS_LOADED)[0]
+            item["modelKey"] = "qwen38-27b-q6k"
+            item["contextLength"] = 16384
+            return 0, json.dumps([item]), ""
+        if cmd == ["lms", "unload", "-a"]:
+            ps_state = "unloaded"
+            return 0, "Unloaded all models", ""
+        if cmd == ["lms", "load", "qwen38-27b-q6k", "--estimate-only", "--context-length", "16384"]:
+            return 0, "Estimated GPU Memory: 18.0 GiB\nEstimated Total Memory: 22.0 GiB", ""
+        if cmd == ["lms", "load", "qwen38-27b-q6k", "--context-length", "16384", "-y"]:
+            ps_state = "loaded"
+            return 0, "Loaded", ""
+        pytest.fail(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
+    result = await transition_model(
+        "qwen38-27b-q6k", allow_transitions=True, expected_model_size_bytes=16 * 1024**3,
+        context_length=16384, runner=mock_runner, unload_timeout=5, load_timeout=5, poll_interval=0.01,
+    )
+    assert result.context_length == 16384
+    assert ["lms", "load", "qwen38-27b-q6k", "--estimate-only", "--context-length", "16384"] in commands_run
+    assert ["lms", "load", "qwen38-27b-q6k", "--context-length", "16384", "-y"] in commands_run
+
+
+def test_parse_lms_memory_estimate():
+    from agent_benchmark.models_lifecycle import parse_lms_memory_estimate
+
+    assert parse_lms_memory_estimate(
+        "Estimated GPU Memory: 21.48 GiB\nEstimated Total Memory: 25.00 GB"
+    ) == pytest.approx((21.48 * 1024**3, 25.00 * 10**9))
+
+
+def test_parse_lms_memory_estimate_rejects_incomplete_output():
+    from agent_benchmark.models_lifecycle import parse_lms_memory_estimate
+
+    with pytest.raises(ModelTransitionError, match="Could not parse"):
+        parse_lms_memory_estimate("Model can be loaded")
+
+
+@pytest.mark.asyncio
+async def test_transition_model_blocks_estimate_that_exceeds_gpu_headroom(monkeypatch) -> None:
+    calls = []
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        calls.append(cmd)
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, SAMPLE_LMS_PS_EMPTY, ""
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 31 GiB\nEstimated Total Memory: 35 GiB", ""
+        pytest.fail(f"Unsafe estimate must block actual load: {cmd}")
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=35, ram_available_bytes=40 * 1024**3,
+        gpu_memory_used_bytes=0, gpu_memory_total_bytes=32 * 1024**3,
+    ))
+    with pytest.raises(ModelTransitionError, match="estimates 31.0 GiB GPU memory"):
+        await transition_model("large-model", allow_transitions=True, context_length=16384, runner=mock_runner)
+    assert not any("-y" in command for command in calls)
 
 
 @pytest.mark.asyncio
@@ -196,10 +302,14 @@ async def test_transition_model_does_not_unload_busy_lmstudio_model() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transition_model_authorized_success_flow() -> None:
+async def test_transition_model_authorized_success_flow(monkeypatch) -> None:
     """Authorized transition: unloads current, waits for empty ps, loads target, waits for target ps."""
     ps_state = "initial"  # "initial" -> "unloaded" -> "loaded"
     commands_run: list[list[str]] = []
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
 
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
         nonlocal ps_state
@@ -215,14 +325,16 @@ async def test_transition_model_authorized_success_flow() -> None:
                     "modelKey": "qwen38-27b-q6k",
                     "displayName": "Qwen3.8 27B Q6",
                     "status": "idle",
-                    "contextLength": 32768,
+                    "contextLength": 16384,
                     "sizeBytes": 22430999776,
                     "maxContextLength": 262144,
                 }]), ""
         elif cmd == ["lms", "unload", "-a"]:
             ps_state = "unloaded"
             return 0, "Unloaded all models", ""
-        elif cmd == ["lms", "load", "qwen38-27b-q6k", "-y"]:
+        elif "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
+        elif cmd == ["lms", "load", "qwen38-27b-q6k", "--context-length", "16384", "-y"]:
             ps_state = "loaded"
             return 0, "Loaded qwen38-27b-q6k", ""
         return 0, "", ""
@@ -234,16 +346,18 @@ async def test_transition_model_authorized_success_flow() -> None:
         unload_timeout=5.0,
         load_timeout=5.0,
         poll_interval=0.01,
+        expected_model_size_bytes=16 * 1024**3,
+        context_length=16384,
     )
 
     assert res.identifier == "qwen38_q6_id"
     assert res.model_key == "qwen38-27b-q6k"
     assert ["lms", "unload", "-a"] in commands_run
-    assert ["lms", "load", "qwen38-27b-q6k", "-y"] in commands_run
+    assert ["lms", "load", "qwen38-27b-q6k", "--context-length", "16384", "-y"] in commands_run
 
 
 @pytest.mark.asyncio
-async def test_transition_model_load_failure_no_blind_retry() -> None:
+async def test_transition_model_load_failure_no_blind_retry(monkeypatch) -> None:
     """When lms load fails, halt immediately and raise ModelTransitionError."""
     ps_state = "initial"
 
@@ -256,9 +370,16 @@ async def test_transition_model_load_failure_no_blind_retry() -> None:
         elif cmd == ["lms", "unload", "-a"]:
             ps_state = "unloaded"
             return 0, "Unloaded", ""
-        elif cmd == ["lms", "load", "faulty-model", "-y"]:
+        elif "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
+        elif cmd == ["lms", "load", "faulty-model", "--context-length", "16384", "-y"]:
             return 1, "", "CUDA Out of Memory (OOM) error"
         return 0, "", ""
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
 
     with pytest.raises(ModelTransitionError, match="Failed to load model.*CUDA Out of Memory"):
         await transition_model(
@@ -268,6 +389,7 @@ async def test_transition_model_load_failure_no_blind_retry() -> None:
             unload_timeout=5.0,
             load_timeout=5.0,
             poll_interval=0.01,
+            expected_model_size_bytes=16 * 1024**3,
         )
 
 

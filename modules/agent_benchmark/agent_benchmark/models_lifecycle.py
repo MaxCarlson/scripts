@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import json
 import logging
 from pathlib import Path
+import re
 import shutil
 import subprocess
 from typing import Any, Optional
@@ -24,6 +25,10 @@ from .telemetry import collect_resource_snapshot
 logger = logging.getLogger(__name__)
 
 CommandRunner = Callable[[list[str]], Awaitable[tuple[int, str, str]]]
+DEFAULT_BENCHMARK_CONTEXT_LENGTH = 16384
+GIB = 1024**3
+GPU_MEMORY_RESERVE_BYTES = 2 * GIB
+TOTAL_MEMORY_RESERVE_BYTES = 4 * GIB
 
 
 class ModelDiscoveryError(RuntimeError):
@@ -36,6 +41,55 @@ class ModelTransitionError(RuntimeError):
 
 class ModelTransitionNotAuthorizedError(RuntimeError):
     """Raised when a model transition is required but not explicitly authorized."""
+
+
+def _parse_memory_value(value: str, unit: str) -> int:
+    amount = float(value)
+    multiplier = {"B": 1, "KB": 1000, "MB": 1000**2, "GB": 1000**3,
+                  "KIB": 1024, "MIB": 1024**2, "GIB": 1024**3}.get(unit.upper())
+    if multiplier is None:
+        raise ValueError(f"Unsupported LM Studio memory unit: {unit}")
+    return int(amount * multiplier)
+
+
+def parse_lms_memory_estimate(output: str) -> tuple[int, int]:
+    """Return (GPU bytes, total bytes) from `lms load --estimate-only` output."""
+    pattern = re.compile(
+        r"Estimated\s+(GPU|Total)\s+Memory\s*:\s*([0-9]+(?:\.[0-9]+)?)\s*"
+        r"(B|KB|MB|GB|KiB|MiB|GiB)\b",
+        re.IGNORECASE,
+    )
+    estimates: dict[str, int] = {}
+    for line in output.splitlines():
+        match = pattern.search(line)
+        if match:
+            estimates[match.group(1).lower()] = _parse_memory_value(match.group(2), match.group(3))
+    if "gpu" not in estimates or "total" not in estimates:
+        raise ModelTransitionError(
+            "Could not parse both GPU and total memory estimates from `lms load --estimate-only`; "
+            "no model load was attempted. Check the installed LM Studio CLI output format."
+        )
+    return estimates["gpu"], estimates["total"]
+
+
+def _verify_memory_estimate(gpu_bytes: int, total_bytes: int, snapshot) -> None:
+    """Fail closed unless estimated allocations fit measured headroom with reserves."""
+    if snapshot.gpu_memory_used_bytes is None or snapshot.gpu_memory_total_bytes is None:
+        raise ModelTransitionError("Cannot verify free GPU memory for the LM Studio estimate; refusing model load.")
+    gpu_available = snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes
+    if gpu_bytes > max(0, gpu_available - GPU_MEMORY_RESERVE_BYTES):
+        raise ModelTransitionError(
+            f"LM Studio estimates {gpu_bytes / GIB:.1f} GiB GPU memory, but only "
+            f"{gpu_available / GIB:.1f} GiB is free (including a {GPU_MEMORY_RESERVE_BYTES / GIB:.0f} GiB reserve)."
+        )
+    if snapshot.ram_available_bytes is None:
+        raise ModelTransitionError("Cannot verify available host RAM for the LM Studio estimate; refusing model load.")
+    total_available = snapshot.ram_available_bytes + gpu_available
+    if total_bytes > max(0, total_available - TOTAL_MEMORY_RESERVE_BYTES):
+        raise ModelTransitionError(
+            f"LM Studio estimates {total_bytes / GIB:.1f} GiB total memory, but measured combined headroom is "
+            f"{total_available / GIB:.1f} GiB (including a {TOTAL_MEMORY_RESERVE_BYTES / GIB:.0f} GiB reserve)."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -263,6 +317,7 @@ async def transition_model(
     poll_interval: float = 0.25,
     max_ram_pct: float = 90.0,
     expected_model_size_bytes: int | None = None,
+    context_length: int = DEFAULT_BENCHMARK_CONTEXT_LENGTH,
     runner: Optional[CommandRunner] = None,
 ) -> LoadedModelInfo:
     """
@@ -276,8 +331,8 @@ async def transition_model(
        - Polls until LM Studio reports no loaded models within unload_timeout.
        - Refuses to load when measured host RAM headroom is below the requested model's
          downloaded size plus 25% overhead, or RAM utilization reaches max_ram_pct.
-       - Loads target model via `lms load <key> -y`.
-       - Verifies target model is active and idle within load_timeout.
+       - Estimates memory and loads via `lms load <key> --context-length <n> -y`.
+       - Verifies target model is active, idle, and at the requested context.
        - Halts immediately on any command or service failure without blind retries.
     """
     cmd_exec = runner or _default_cmd_runner
@@ -286,6 +341,8 @@ async def transition_model(
         raise ValueError("target_model_key must be a non-empty string")
     if not 0 < max_ram_pct <= 100:
         raise ValueError("max_ram_pct must be greater than 0 and at most 100")
+    if isinstance(context_length, bool) or context_length <= 0:
+        raise ValueError("context_length must be a positive integer")
     if expected_model_size_bytes is not None and expected_model_size_bytes < 0:
         raise ValueError("expected_model_size_bytes must not be negative")
 
@@ -294,19 +351,44 @@ async def transition_model(
         (m for m in loaded_list if m.model_key == target_model_key or m.identifier == target_model_key),
         None,
     )
+    if target_loaded and target_loaded.max_context_length and context_length > target_loaded.max_context_length:
+        raise ModelTransitionError(
+            f"Requested context {context_length} exceeds LM Studio's reported maximum "
+            f"{target_loaded.max_context_length} for '{target_model_key}'."
+        )
+    context_matches = target_loaded is not None and target_loaded.context_length == context_length
     if target_loaded is not None and len(loaded_list) == 1:
         if str(target_loaded.status or "").strip().lower() not in {"idle", "loaded", "ready"}:
             raise ModelTransitionError(
                 f"Refusing to dispatch model '{target_model_key}' while LM Studio reports status "
                 f"'{target_loaded.status}'. Wait for it to become idle and retry."
             )
-        logger.info("Model already loaded; no transition needed target=%s", target_model_key,
-                    extra={"event_type": "MODEL_READY"})
-        return target_loaded
+        if context_matches:
+            snapshot = collect_resource_snapshot()
+            if snapshot.ram_pct is not None and snapshot.ram_pct >= max_ram_pct:
+                raise ModelTransitionError(
+                    f"Refusing to dispatch preloaded model '{target_model_key}': host RAM utilization is "
+                    f"{snapshot.ram_pct:.1f}% (safety limit {max_ram_pct:.0f}%)."
+                )
+            if (snapshot.gpu_memory_used_bytes is not None and snapshot.gpu_memory_total_bytes is not None
+                    and snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes < GPU_MEMORY_RESERVE_BYTES):
+                raise ModelTransitionError(
+                    f"Refusing to dispatch preloaded model '{target_model_key}': less than "
+                    f"{GPU_MEMORY_RESERVE_BYTES / GIB:.0f} GiB GPU memory remains free."
+                )
+            logger.info("Model already loaded at requested context; no transition needed target=%s context=%s",
+                        target_model_key, context_length, extra={"event_type": "MODEL_READY"})
+            return target_loaded
 
     # Model is not loaded. Check authorization.
     if not allow_transitions:
         current_id = loaded_list[0].identifier if loaded_list else "none"
+        if target_loaded is not None and len(loaded_list) == 1:
+            raise ModelTransitionNotAuthorizedError(
+                f"Model '{target_model_key}' is loaded with context {target_loaded.context_length}, but this "
+                f"experiment requests {context_length}. Authorize a model transition to reload it at the "
+                "requested context, or choose the loaded context explicitly."
+            )
         raise ModelTransitionNotAuthorizedError(
             f"Target model '{target_model_key}' is not the sole loaded model (current loaded: '{current_id}', "
             f"loaded count: {len(loaded_list)}). "
@@ -398,13 +480,30 @@ async def transition_model(
             f"Refusing to load model '{target_model_key}': {reason}."
         )
 
+    estimate_cmd = [lms_path, "load", target_model_key, "--estimate-only", "--context-length", str(context_length)]
+    estimate_code, estimate_stdout, estimate_stderr = await cmd_exec(estimate_cmd)
+    logger.info(
+        "LM Studio memory estimate target=%s context=%s exit_code=%s stdout=%s stderr=%s",
+        target_model_key, context_length, estimate_code, estimate_stdout[-1000:], estimate_stderr[-1000:],
+        extra={"event_type": "MODEL_LOAD_ESTIMATE"},
+    )
+    if estimate_code != 0:
+        raise ModelTransitionError(
+            f"LM Studio memory estimate failed for '{target_model_key}' (exit code {estimate_code}): "
+            f"{estimate_stderr or estimate_stdout}. No model load was attempted."
+        )
+    estimated_gpu_bytes, estimated_total_bytes = parse_lms_memory_estimate(estimate_stdout)
+    _verify_memory_estimate(estimated_gpu_bytes, estimated_total_bytes, snapshot)
+
     # Load target model
     logger.info(
         "Loading LM Studio model target=%s ram_pct=%s ram_available_bytes=%s",
         target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
         extra={"event_type": "MODEL_LOAD_START"},
     )
-    code, stdout, stderr = await cmd_exec([lms_path, "load", target_model_key, "-y"])
+    code, stdout, stderr = await cmd_exec(
+        [lms_path, "load", target_model_key, "--context-length", str(context_length), "-y"]
+    )
     logger.info("LM Studio load finished target=%s exit_code=%s stdout=%s stderr=%s",
                 target_model_key, code, stdout[-1000:], stderr[-1000:],
                 extra={"event_type": "MODEL_LOAD_RESULT"})
@@ -419,6 +518,15 @@ async def transition_model(
         current_loaded = await get_loaded_models(lms_path=lms_path, runner=runner)
         for m in current_loaded:
             if m.model_key == target_model_key or m.identifier == target_model_key:
+                if m.context_length != context_length:
+                    raise ModelTransitionError(
+                        f"LM Studio loaded '{target_model_key}' at context {m.context_length}, "
+                        f"but {context_length} was requested; refusing worker dispatch."
+                    )
+                if str(m.status or "").strip().lower() not in {"idle", "loaded", "ready"}:
+                    raise ModelTransitionError(
+                        f"LM Studio model '{target_model_key}' loaded but status is '{m.status}', not idle."
+                    )
                 return m
         if asyncio.get_running_loop().time() - start_load > load_timeout:
             raise ModelTransitionError(

@@ -156,6 +156,7 @@ def test_expand_experiment_plan_randomization_preserves_model_grouping() -> None
 async def test_scheduler_sequential_execution_and_aggregation(
     tmp_path: Path,
     sample_experiment_config: ExperimentConfig,
+    monkeypatch,
 ) -> None:
     """
     Test end-to-end scheduler execution with mock model manager and mock trial executor.
@@ -165,6 +166,13 @@ async def test_scheduler_sequential_execution_and_aggregation(
     - Incremental and final persistence of experiment artifacts.
     - Canonical rankings and Wilson intervals computed.
     """
+    from agent_benchmark import models_lifecycle
+    from agent_benchmark.telemetry import ResourceSnapshot
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=40, ram_available_bytes=32 * 1024**3,
+        gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3,
+    ))
     task_dir = Path(__file__).resolve().parents[1] / "agent_benchmark" / "tasks" / "py-grep-smoke"
     reports_dir = tmp_path / "reports"
     state_dir = tmp_path / "state"
@@ -190,7 +198,7 @@ async def test_scheduler_sequential_execution_and_aggregation(
                     "identifier": current_loaded_key,
                     "modelKey": current_loaded_key,
                     "status": "idle",
-                    "contextLength": 32768,
+                    "contextLength": 16384,
                     "sizeBytes": 16000000000,
                     "maxContextLength": 262144,
                 }]), ""
@@ -199,6 +207,8 @@ async def test_scheduler_sequential_execution_and_aggregation(
             current_loaded_key = ""
             return 0, "Unloaded", ""
         elif len(cmd) >= 3 and cmd[:2] == ["lms", "load"]:
+            if "--estimate-only" in cmd:
+                return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
             current_loaded_key = cmd[2]
             return 0, f"Loaded {current_loaded_key}", ""
         return 0, "", ""
@@ -360,9 +370,11 @@ async def test_scheduler_unauthorized_model_transition_halts_safely(
     async def mock_lms_runner_empty(cmd: list[str]) -> tuple[int, str, str]:
         if cmd[1:2] == ["ls"]:
             return 0, json.dumps([{"modelKey": "qwen38-27b-q4km", "displayName": "Qwen Q4",
-                                   "type": "llm", "quantization": {"name": "Q4_K_M"}},
+                                       "type": "llm", "quantization": {"name": "Q4_K_M"},
+                                       "maxContextLength": 262144},
                                   {"modelKey": "qwen38-27b-q6k", "displayName": "Qwen Q6",
-                                   "type": "llm", "quantization": {"name": "Q6_K"}}]), ""
+                                       "type": "llm", "quantization": {"name": "Q6_K"},
+                                       "maxContextLength": 262144}]), ""
         return 0, "[]", ""
 
     from agent_benchmark import scheduler as scheduler_module
