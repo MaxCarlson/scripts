@@ -275,7 +275,12 @@ def test_real_adapter_preflight_precedes_dispatch_and_attributes_user_message(tm
             "tools": {"shell": True},
             "prompt": "global role",
         }
-        override[("GET", "/agent")] = [role]
+        from agent_benchmark.tool_profile import FILE_AGENT
+        file_role = {**role, "name": FILE_AGENT, "permission": [
+            {"permission": "*", "pattern": "*", "action": "deny"},
+            {"permission": "read", "pattern": "*", "action": "allow"},
+            {"permission": "edit", "pattern": "*", "action": "allow"}]}
+        override[("GET", "/agent")] = [role, file_role]
         return remote(workspace, override, project_id=root)(request)
 
     async def fire(name, args):

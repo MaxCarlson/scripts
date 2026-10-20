@@ -202,7 +202,7 @@ def test_mocked_pipeline_records_policy_scratch_paths_and_preserves_scoring(tmp_
             return await super().dispatch(workspace, prompt, **kwargs)
 
     worker = ScratchWorker()
-    result = attempt(tmp_path, worker)
+    result = attempt(tmp_path, worker, task=replace(load_task(TASK), opencode_tool_profile="shell-v1"))
     assert result.verification.status == "passed" and result.scope_violations == ()
     assert SCRATCH_NAME in worker.prompt and "TMPDIR" in worker.prompt and "every" in worker.prompt
     journal = json.loads((tmp_path / "evidence/lifecycle.json").read_text())

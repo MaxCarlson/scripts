@@ -21,6 +21,7 @@ from typing import Any
 import httpx
 
 from .bridge import ModelConfigurationError, OpenCodeBridge
+from .tool_profile import FILE_AGENT, FILE_PROFILE, FILE_PROMPT
 from .identity import ModelIdentity, ModelIdentityError, discover_lmstudio_identity
 from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
@@ -181,8 +182,11 @@ def _patch(before: Snapshot, after: Snapshot, *, max_bytes: int = 256 * 1024,
     return "".join(chunks)
 
 
-def build_prompt(task: Task, workspace: Path) -> str:
+def build_prompt(task: Task, workspace: Path, *, file_tools: bool | None = None) -> str:
     """Deterministic user prompt; not a claim about provider system/tool schemas."""
+    if file_tools is True or (file_tools is None and task.opencode_tool_profile == FILE_PROFILE):
+        return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + FILE_PROMPT
+                + "\nTool profile: file-tools-v1. Return your completion report; do not claim to have run checks.")
     return (task.instruction + "\n\nWorkspace: " + str(workspace)
               + prompt_instructions(workspace)
               + f"\nEvidence capture limits (including scratch): {asdict(EVIDENCE_LIMITS)}. Keep temporary output small."
@@ -246,6 +250,10 @@ async def run_attempt(
         raise ModelIdentityError(
             f"Resolved model identity does not match requested runtime model '{provider}/{model}'"
         )
+    if provider == "lmstudio" and task.opencode_tool_profile == FILE_PROFILE:
+        if agent != "local-worker":
+            raise ValueError("The file-tools task profile requires the default worker role")
+        agent = FILE_AGENT
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
@@ -256,7 +264,8 @@ async def run_attempt(
     # supervision; owned_pids is intentionally empty.
     journal = {"stage": "not_submitted", "workspace": asdict(workspace), "task_seconds": budget,
                "grace_seconds": grace_seconds, "verifier_seconds": verifier_seconds, "owned_pids": [],
-               "git": asdict(git_identity), "scope_policy": SCOPE_POLICY, "scratch": provenance(workspace.path),
+               "git": asdict(git_identity), "scope_policy": SCOPE_POLICY,
+               "opencode_tool_profile": task.opencode_tool_profile, "scratch": provenance(workspace.path),
                "evidence_limits": asdict(EVIDENCE_LIMITS),
                "model_identity": model_identity.to_dict() if model_identity else None}
     _write_json(evidence_dir / "lifecycle.json", journal)
@@ -268,6 +277,7 @@ async def run_attempt(
     try:
         configuration = await bridge.preflight(workspace.path, provider=provider, model=model, agent=agent,
                                                project_id=git_identity.root_commit)
+        configuration["opencode_tool_profile"] = task.opencode_tool_profile
         if model_identity is not None:
             configuration["model_identity"] = model_identity.to_dict()
         prepared_session = await bridge.prepare_session(workspace.path, project_id=git_identity.root_commit)
@@ -483,7 +493,7 @@ async def run_cli_attempt(
     }
     _write_json(evidence_dir / "lifecycle.json", journal)
     s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
-    prompt = build_prompt(task, workspace.path)
+    prompt = build_prompt(task, workspace.path, file_tools=False)
     (evidence_dir / "submitted-prompt.txt").write_bytes(prompt.encode("utf-8"))
     _write_json(
         evidence_dir / "prompt.json",

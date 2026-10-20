@@ -63,7 +63,7 @@ def attempt(tmp_path, worker, guard=None, **kwargs):
         display_name="Test Model", quantization="Q4_K_M",
     ))
     return asyncio.run(run_attempt(
-        load_task(TASK), worker, guard or DispatchGuard(), workspace_root=tmp_path / "workers",
+        kwargs.pop("task", load_task(TASK)), worker, guard or DispatchGuard(), workspace_root=tmp_path / "workers",
         evidence_dir=tmp_path / "evidence", provider="lmstudio", model="test-model", agent="local-worker",
         grace_seconds=0.03, poll_seconds=0.001, model_identity=identity, **kwargs,
     ))
@@ -402,3 +402,23 @@ def test_memory_stop_does_not_clear_guard_when_remote_termination_is_unconfirmed
     assert result.verification is None
     with pytest.raises(RuntimeError):
         guard.allocate(tmp_path / "another-workspace")
+
+
+def test_file_profile_dispatch_is_auditable_and_can_earn_strict_pass(tmp_path):
+    from agent_benchmark.results import trial_from_attempt
+    from agent_benchmark.tool_profile import FILE_AGENT
+
+    class FileWorker(Worker):
+        async def dispatch(self, workspace, prompt, **kwargs):
+            assert kwargs["agent"] == FILE_AGENT
+            assert "Do not run tests" in prompt and "TMPDIR" not in prompt
+            config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
+            assert config["agent"][FILE_AGENT]["permission"]["*"] == "deny"
+            return await super().dispatch(workspace, prompt, **kwargs)
+
+    evidence = attempt(tmp_path, FileWorker())
+    result = trial_from_attempt(evidence, run_id="run-test", trial_id="trial-001", task_id="py-grep-smoke",
+                                variant_id="test-model", repetition=1, evidence_path="evidence/trial-001")
+    assert result.status == "passed"
+    assert result.metrics["agent.scope_compliance"].value == 1
+    assert result.metrics["agent.functional_pass"].value == 1

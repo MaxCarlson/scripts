@@ -20,7 +20,11 @@ def remote(workspace, overrides=None, requests=None, *, project_id=PROJECT):
         payloads = {
             ("GET", "/global/health"): {"version": "1.19.3"},
             ("GET", "/provider"): {"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": ["lmstudio"]},
-            ("GET", "/agent"): [{"name": "local-worker", "permission": []}],
+            ("GET", "/agent"): [{"name": "local-worker", "permission": []},
+                {"name": "benchmark-files", "permission": [
+                    {"permission": "*", "pattern": "*", "action": "deny"},
+                    {"permission": "read", "pattern": "*", "action": "allow"},
+                    {"permission": "edit", "pattern": "*", "action": "allow"}]}],
             ("GET", "/path"): {"directory": str(workspace), "worktree": str(workspace)},
             ("GET", "/project/current"): {"id": project_id, "worktree": str(workspace), "vcs": "git"},
             ("POST", "/session"): {"id": "session-1", "directory": str(workspace), "projectID": project_id},

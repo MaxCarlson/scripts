@@ -1,3 +1,15 @@
+## Current checkpoint: auditable smoke task 1.12.0
+
+Branch `agent/benchmark-live-stats`, worktree `.worktrees/benchmark-live-stats`.
+See `docs/plans/20261020-auditable-smoke/STATUS.md` for the five-model forensic analysis,
+root cause, architectural decision, changes and checks. Four frozen implementations pass;
+Devstral's first edit already passes. Default shell access conflicts with strict scope proof.
+The smoke task now selects an isolated file-tool role; legacy shell scoring is preserved.
+Offline validation complete: 327 passed/3 skipped in the full suite; final bridge/profile checks
+55 passed. Ruff/diff checks clean. Ready for feature commit/push and local-main integration under
+standing authorization. Next action after merge: a user-run smoke trial to validate live acceptance;
+no guaranteed model pass is claimed. No live inference or shared configuration changes.
+
 ## Current checkpoint: runtime memory safety 1.11.0
 
 Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`.

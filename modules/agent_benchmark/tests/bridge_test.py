@@ -393,3 +393,34 @@ def test_multiple_assistants_with_missing_ordering_cannot_confirm_old_terminal_s
     data.append({"info": {"id": "assistant-2", "sessionID": "session-1", "parentID": "user-1",
                           "role": "assistant", "time": None}, "parts": []})
     assert not parse_observation(HANDLE, {}, data).confirms_termination
+
+
+@pytest.mark.parametrize("rules", [[], [{"permission": "*", "pattern": "*", "action": "allow"}]])
+def test_file_role_readiness_failure_is_actionable_before_session_creation(tmp_path, rules):
+    from agent_benchmark.bridge import ModelConfigurationError
+    from agent_benchmark.tool_profile import FILE_AGENT
+
+    requests = []
+
+    def remote_profile(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": FILE_AGENT, "permission": rules}])
+        pytest.fail("Invalid effective profile must fail before project/session operations")
+
+    async def unused(*args):
+        pytest.fail("Invalid profile must never submit inference")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://offline", transport=httpx.MockTransport(remote_profile)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            with pytest.raises(ModelConfigurationError, match="file-tools-v1"):
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent=FILE_AGENT)
+
+    asyncio.run(run())
+    assert not any(method == "POST" for method, _ in requests)
