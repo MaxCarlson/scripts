@@ -1,6 +1,6 @@
 {
   "task_id": "py-grep-smoke",
-  "suite_version": "0.1.1",
+  "suite_version": "0.2.0",
   "category": "smoke",
   "allowed_paths": [
     "grep.py"
@@ -10,5 +10,6 @@
     "task.json"
   ],
   "time_budget_seconds": 60,
-  "verifier": "verifier/check.py"
+  "verifier": "verifier/check.py",
+  "opencode_tool_profile": "file-tools-v1"
 }

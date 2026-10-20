@@ -344,6 +344,11 @@ class ExperimentScheduler:
                 metadata={
                     "budget_profile": config.budget_profile,
                     "requested_context_length": context_length,
+                    "task_tool_profiles": {
+                        tid: (load_task(self.task_dirs[tid]).opencode_tool_profile
+                              if resolved_provider == "lmstudio" else "cli-shell-v1")
+                        for tid in self.plan.task_ids
+                    },
                     "effective_context_length": loaded_model.context_length if loaded_model else None,
                     "comparison_eligible": profile_cfg.get("comparison_eligible", True),
                     "suite_fingerprint": fingerprint.hexdigest(),

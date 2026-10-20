@@ -75,3 +75,18 @@ inference (names, PIDs and RSS only), plus a sample at the safety limit. Shared 
 force-killed. After an authorized unload, the next model waits up to the existing unload deadline
 for an empty model inventory and measured RAM/VRAM headroom; an empty inventory alone does not
 prove that enough memory has been released. Memory estimates remain mandatory before loading.
+
+
+### Auditable smoke-task tools
+
+`py-grep-smoke` now declares `opencode_tool_profile: "file-tools-v1"` (task suite 0.2.0).
+For LM Studio/OpenCode runs the harness registers a trial-local `benchmark-files` role with
+file inspection/editing tools and no shell, delegation, skills or web tools. The worker implements
+the deliverable and finishes; the harness runs the hidden verifier. This avoids turning optional
+worker-run shell checks into unprovable strict scope compliance or spending the budget debugging
+Windows test-script output. It does not guarantee a model's implementation will pass.
+
+Effective tool permissions are checked before submission and retained with trial evidence.
+Other trusted task manifests default to `shell-v1`; unknown profiles fail validation. Codex/agy
+CLI workers retain their separate existing behavior. Historical scores, scope uncertainty, timeouts,
+and memory guardrails are unchanged. Compare runs with matching task/tool profile provenance.

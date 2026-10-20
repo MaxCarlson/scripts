@@ -19,6 +19,7 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .git_workspace import GitIdentity, initialize_git
+from .tool_profile import FILE_PROFILE, configure_file_agent
 from .identity import ModelIdentity, write_project_model_registration
 from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
@@ -34,6 +35,7 @@ class Task:
     time_budget_seconds: float
     verifier: Path
     instruction: str
+    opencode_tool_profile: str = "shell-v1"
 
 
 def _relative(value: str) -> str:
@@ -56,8 +58,11 @@ def load_task(path: Path) -> Task:
     budget = float(manifest["time_budget_seconds"])
     if not math.isfinite(budget) or budget <= 0 or set(allowed) & set(forbidden):
         raise ValueError("Invalid task budget or overlapping allowed/forbidden paths")
+    profile = manifest.get("opencode_tool_profile", "shell-v1")
+    if profile not in ("shell-v1", FILE_PROFILE):
+        raise ValueError(f"Unknown task OpenCode tool profile: {profile}")
     return Task(path, manifest["task_id"], manifest["suite_version"], manifest["category"], allowed, forbidden,
-                budget, verifier, (path / "instruction.md").read_text(encoding="utf-8"))
+                budget, verifier, (path / "instruction.md").read_text(encoding="utf-8"), profile)
 
 
 @dataclass(frozen=True)
@@ -198,6 +203,8 @@ def prepare_workspace(
         (workspace / SCRATCH_NAME).mkdir()
     if model_identity is not None:
         write_project_model_registration(workspace, model_identity)
+        if task.opencode_tool_profile == FILE_PROFILE:
+            configure_file_agent(workspace)
     return initialize_git(workspace)
 
 

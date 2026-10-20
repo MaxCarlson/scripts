@@ -18,6 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
+from .tool_profile import FILE_AGENT, validate_file_agent
 from .lifecycle import Observation, WorkerHandle
 
 ToolCaller = Callable[[str, dict], Awaitable[dict]]
@@ -253,8 +254,13 @@ class OpenCodeBridge:
         if not isinstance(agents, list):
             raise RuntimeError("Malformed runtime/model/role preflight response")
         role = next((a for a in agents if a.get("name") == agent), None)
-        if role is None or agent not in ("local-worker", "local-reviewer"):
-            raise ValueError("Requested bounded local role is unavailable")
+        if role is None or agent not in ("local-worker", "local-reviewer", FILE_AGENT):
+            raise ModelConfigurationError(f"Requested bounded local role '{agent}' is unavailable in this trial project")
+        if agent == FILE_AGENT:
+            try:
+                validate_file_agent(role)
+            except ValueError as error:
+                raise ModelConfigurationError(f"OpenCode file-tools-v1 preflight failed: {error}") from error
         project = await self._validate_project(directory, project_id)
         self.project_context = project
         # Preserve permissions/configuration as observations, not a sandbox claim.

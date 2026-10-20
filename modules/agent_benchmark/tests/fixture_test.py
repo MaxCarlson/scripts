@@ -44,7 +44,7 @@ def test_manifest_structure_and_relative_paths():
     assert required_fields.issubset(data.keys()), f"Missing fields: {required_fields - set(data.keys())}"
 
     assert data["task_id"] == "py-grep-smoke"
-    assert data["suite_version"] == "0.1.1"
+    assert data["suite_version"] == "0.2.0"
     assert data["category"] == "smoke"
     assert data["time_budget_seconds"] == 60
     assert data["allowed_paths"] == ["grep.py"]
