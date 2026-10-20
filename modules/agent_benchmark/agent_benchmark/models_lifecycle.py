@@ -492,7 +492,11 @@ async def transition_model(
             f"LM Studio memory estimate failed for '{target_model_key}' (exit code {estimate_code}): "
             f"{estimate_stderr or estimate_stdout}. No model load was attempted."
         )
-    estimated_gpu_bytes, estimated_total_bytes = parse_lms_memory_estimate(estimate_stdout)
+    # LMS uses stderr for successful human-readable output on some installations.
+    # Keep the exit-code check above: diagnostic text from a failed estimate is not approval to load.
+    estimated_gpu_bytes, estimated_total_bytes = parse_lms_memory_estimate(
+        estimate_stdout + "\n" + estimate_stderr
+    )
     _verify_memory_estimate(estimated_gpu_bytes, estimated_total_bytes, snapshot)
 
     # Load target model

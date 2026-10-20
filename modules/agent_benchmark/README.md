@@ -1,4 +1,4 @@
-# agent_benchmark — 1.9.0
+# agent_benchmark — 1.9.1
 
 A thin evaluator around the existing OpenCode/MCP runtime. Phase 1d project/session checks passed authorized non-inference acceptance. Trial-local scratch policy is implemented and tested offline; no worker has exercised it live. Historical trial outcomes remain unchanged.
 
