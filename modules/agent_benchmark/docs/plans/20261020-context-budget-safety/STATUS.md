@@ -36,6 +36,8 @@ Prevent LM Studio benchmark loads from silently using a model's very large nativ
 
 ## Status
 
+Follow-up: `EXP_20261020_025442` confirmed successful LMS estimates are emitted on stderr with empty stdout. Parse both captured streams after checking exit code zero; a mocked transition now reproduces the actual stderr-only output. Package patch version 1.9.1. Lifecycle and CLI regressions: 32 passed; Ruff and diff checks passed. No inference or model load/unload was used to verify this fix.
+
 Implementation and offline verification complete on `agent/benchmark-live-stats`, commit `6997a480`, merged into local `main` by merge commit `f824e371`. The installed `lms load --help` confirms `--context-length` and `--estimate-only`; a read-only estimate for Devstral at 16,384 printed 16.54 GiB GPU and total estimates, then exited nonzero with a sandbox `EPERM` while reading the current directory. The implementation treats nonzero estimate exit as a hard block. No inference or LM Studio load/unload has been performed.
 
 ## Delivered

@@ -206,7 +206,8 @@ async def test_transition_model_estimates_and_loads_at_requested_context(monkeyp
             ps_state = "unloaded"
             return 0, "Unloaded all models", ""
         if cmd == ["lms", "load", "qwen38-27b-q6k", "--estimate-only", "--context-length", "16384"]:
-            return 0, "Estimated GPU Memory: 18.0 GiB\nEstimated Total Memory: 22.0 GiB", ""
+            # The installed LMS CLI writes successful human-readable estimates to stderr.
+            return 0, "", "Estimated GPU Memory: 18.0 GiB\nEstimated Total Memory: 22.0 GiB"
         if cmd == ["lms", "load", "qwen38-27b-q6k", "--context-length", "16384", "-y"]:
             ps_state = "loaded"
             return 0, "Loaded", ""
