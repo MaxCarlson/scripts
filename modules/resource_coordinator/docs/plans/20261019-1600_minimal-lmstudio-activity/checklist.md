@@ -21,3 +21,6 @@
 - [x] Add coordinator-owned process state/identity to status output and use configured shutdown stop timeout.
 - [x] Validate the README YAML and CLI commands offline; run module regressions, Ruff, and Mypy.
 - [x] Commit the MVP usability corrections. Do not modify shared OpenCode config or run inference.
+- [x] After separate user authorization, run exactly one preloaded-Qwen live request through the disposable-process harness; verify response, stop/restart, mock failure cleanup, and final PID cleanup.
+- [x] Preserve the live acceptance log outside Git and update the harness to assert `READY` and report timing/event evidence.
+- [ ] Commit the live acceptance assertion, logging, and evidence documentation. No push/merge or additional live operation in this acceptance step.

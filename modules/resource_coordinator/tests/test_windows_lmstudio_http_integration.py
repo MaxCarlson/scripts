@@ -402,6 +402,7 @@ async def _run_gateway_case(tmp_path: Path, case: str) -> None:
     client: httpx.AsyncClient | None = None
     response: httpx.Response | None = None
     cooldown_elapsed_seconds: float | None = None
+    request_elapsed_seconds: float | None = None
 
     try:
         server_task = asyncio.create_task(server.serve(sockets=[host_socket]))
@@ -430,7 +431,9 @@ async def _run_gateway_case(tmp_path: Path, case: str) -> None:
         initial_info = await supervisor.status()
         identities.append(_verify_identity(initial_info, executable, helper_script, process_name, tmp_path))
         assert backend._console_group_pid == initial_info.pid
+        request_started = time.monotonic()
         response = await client.post("/v1/chat/completions", json=request_body, headers=request_headers)
+        request_elapsed_seconds = time.monotonic() - request_started
         assert response.status_code == status_code
 
         if status_code == 200:
@@ -438,7 +441,11 @@ async def _run_gateway_case(tmp_path: Path, case: str) -> None:
             choices = payload.get("choices")
             assert isinstance(choices, list) and choices
             assert isinstance(choices[0], dict) and choices[0].get("finish_reason")
-            if not live:
+            if live:
+                message = choices[0].get("message")
+                assert isinstance(message, dict)
+                assert message.get("content", "").strip() == "READY"
+            else:
                 assert choices[0]["message"]["content"] == "mock-only"
 
             if case == "mock-success":
@@ -545,11 +552,13 @@ async def _run_gateway_case(tmp_path: Path, case: str) -> None:
                 "case": case,
                 "model": model_id,
                 "mocked_upstream": not live,
+                "gateway_endpoint": f"http://127.0.0.1:{listen_port}/v1/chat/completions",
                 "gateway_status": response.status_code if response else None,
                 "process_launches": list(unique_identities.values()),
+                "request_elapsed_seconds": request_elapsed_seconds,
                 "cooldown_elapsed_seconds": cooldown_elapsed_seconds,
                 "final_process_state": "stopped",
-                "event_order": [event["event"] for event in events],
+                "events": events,
                 "response_body_logged": False,
             },
             indent=2,

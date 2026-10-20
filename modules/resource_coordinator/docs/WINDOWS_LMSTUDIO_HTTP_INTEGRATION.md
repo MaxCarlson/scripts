@@ -3,7 +3,7 @@
 This opt-in test exercises the coordinator's actual ASGI gateway over a real
 loopback TCP listener while the coordinator owns a uniquely named disposable
 `cscript.exe` process. Mock cases never contact LM Studio. The live case is
-separately gated, and was not run for this milestone.
+separately gated and was run once with explicit authorization on 2026-10-19.
 
 ## Mock-backed validation
 
@@ -93,6 +93,35 @@ This milestone does not operate Krig, any unrelated process, model load/unload,
 or shared configuration. Direct LM Studio clients can bypass the gateway; the
 live procedure therefore requires other clients to remain idle for the single
 request window.
+
+## Recorded live acceptance — 2026-10-19
+
+One request to `qwen38-27b-q4km` passed through the coordinator at
+`http://127.0.0.1:61911/v1/chat/completions`. The final preflight reported the
+model loaded, zero established connections to/from port 1234, and no existing
+`cscript.exe`. The gateway returned HTTP 200 and the harness asserted the
+assistant content was exactly `READY` after trimming whitespace. Request time
+including admission and stop was 17.469 seconds; confirmed inference completion
+started the cooldown, and restart occurred 5.019 seconds later.
+
+The coordinator-owned helper was `C:\Windows\System32\cscript.exe` running
+the unique `rc_http_disposable_f3382f1fc7da474aa7f57a27f4a4e7f7.vbs` from the
+pytest temporary directory. Initial PID 58772 (created at 1792464423.9689825)
+was stopped before forwarding. PID 29616 (created at 1792464446.6783664) was
+the cooldown restart and was stopped during normal coordinator cleanup. Both
+identities were gone afterward; no `cscript.exe` remained and the test-only
+directory was removed. Qwen remained loaded. No shared OpenCode configuration,
+other process, or model state was changed.
+
+The mock upstream 500 failure path also passed: restart inhibition remained
+active and cleanup left the disposable process stopped. Resource snapshots were
+31,576 MiB used / 612 MiB free at preflight and 31,755 MiB used / 433 MiB free
+afterward on the RTX 5090. A post-request sample briefly showed 100% GPU
+utilization before returning to 1–2%; it was taken just after confirmed
+completion and is not an inference-peak measurement. The response body and any
+credentials were not logged. The full run record is retained locally at
+`modules/resource_coordinator/.pytest_tmp_root/qwen-live-acceptance-20261019.log`
+(Git-ignored).
 
 LM Studio references: [authentication](https://lmstudio.ai/docs/developer/core/authentication),
 [OpenAI-compatible chat completions](https://lmstudio.ai/docs/developer/openai-compat),
