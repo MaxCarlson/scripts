@@ -80,6 +80,14 @@ Qwen/Muse/Ornith UNSCORED, Devstral TIMEOUT. All 34 read inputs rehashed unchang
 audited file-only mocked execution can earn strict PASSED; opaque/CLI execution cannot. No real
 sandbox or live worker acceptance is claimed.
 
-Next: commit/push reviewed feature changes and merge local main, preserving unrelated untracked
-`docs/plans/common_feature_refactoring.md`. Do not push main's unrelated local commits. Then obtain
-separate authorization for live-acceptance.md; no multi-model inference yet.
+## Delivery
+
+Feature commits 21061733 and bb3d68df were pushed to origin/agent/benchmark-live-stats. Initial local
+main integration is 5b17f0a8. Post-merge imports and installed agent_benchmark --version resolve to
+main's agent 1.13.0 and core 0.1.2; interactive_reports also resolves to main. The only main checkout
+change is the preserved unrelated untracked docs/plans/common_feature_refactoring.md. Main was not
+pushed because it contains unrelated local commits. This final delivery ledger follows as a small
+documentation commit on the same feature branch and is merged into main as well.
+
+Next: separate authorization for live-acceptance.md; no multi-model inference yet. Stage 3 remains
+unavailable pending actual worker/verifier containment, with no strict sandbox claim.

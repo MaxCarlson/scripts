@@ -12,6 +12,6 @@
 - [x] Document real worker/verifier shell boundary; reject unavailable profile before model operations.
 - [x] Retain existing conservative memory admission without speculative replacement.
 - [x] Independent review and raw-evidence verdict recomputation (34 inputs unchanged).
-- [ ] Record final offline suite/lint/browser results and commit/push/merge delivery.
+- [x] Record final offline suite/lint/browser results and commit/push/merge delivery.
 - [ ] Separately authorize and inspect one-model, one-submission live acceptance.
 - [ ] Demonstrate real worker AND verifier shell containment before enabling sandboxed-shell-v1.
