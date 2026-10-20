@@ -14,6 +14,7 @@ import json
 import logging
 from pathlib import Path
 import shutil
+import subprocess
 from typing import Any, Optional
 
 import httpx
@@ -127,14 +128,15 @@ class LoadedModelInfo:
 
 
 async def _default_cmd_runner(cmd: list[str]) -> tuple[int, str, str]:
-    """Execute an external command asynchronously."""
-    proc = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
+    """Run the local CLI in a worker thread for reliable Windows process creation."""
+    result = await asyncio.to_thread(
+        subprocess.run,
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
     )
-    stdout_b, stderr_b = await proc.communicate()
-    return proc.returncode or 0, stdout_b.decode(errors="replace"), stderr_b.decode(errors="replace")
+    return result.returncode, result.stdout or "", result.stderr or ""
 
 
 async def list_downloaded_models(
