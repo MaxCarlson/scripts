@@ -59,3 +59,19 @@ Validation from repository root, using the actual repo virtualenv:
 ```
 
 [Plan/model allocation](docs/plans/20261019-implementation/plan.md) · [Current handoff](docs/HANDOFF.md)
+
+
+### Runtime memory safety
+
+Local experiment workers are monitored during dispatch and observation. At 85% host RAM usage or
+less than 4 GiB available RAM, the benchmark requests cancellation, reconciles worker termination,
+preserves trial evidence and partial reports, and stops the experiment before another trial/model.
+The diagnostic code is `ResourceLimitExceeded`, an infrastructure result rather than a model-quality
+failure. Unconfirmed termination still blocks future dispatch. This is a sampled safety stop, not an
+OS memory cap or a guarantee against an abrupt native allocation.
+
+`benchmark.log` records RAM and the largest resident processes every five seconds during local
+inference (names, PIDs and RSS only), plus a sample at the safety limit. Shared services are never
+force-killed. After an authorized unload, the next model waits up to the existing unload deadline
+for an empty model inventory and measured RAM/VRAM headroom; an empty inventory alone does not
+prove that enough memory has been released. Memory estimates remain mandatory before loading.

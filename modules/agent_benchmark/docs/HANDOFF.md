@@ -1,3 +1,12 @@
+## Current checkpoint: runtime memory safety 1.11.0
+
+Worktree `.worktrees/benchmark-live-stats`, branch `agent/benchmark-live-stats`.
+See `docs/plans/20261020-runtime-memory-safety/STATUS.md` for confirmed incident timeline,
+changes and verification. The RAM surge preceded the next-model transition; allocation ownership
+remains unconfirmed. Runtime RAM cancellation and process attribution are implemented and
+validated: full offline agent suite 321 passed, 3 skipped; Ruff and diff checks clean. Integrate
+this checkpoint into local main before user trials. Historical evidence and strict scoring stay intact.
+
 # agent_benchmark handoff — live dashboard telemetry and preflight diagnostics
 
 ## Current work — actionable trial results (1.10.0)

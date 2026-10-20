@@ -31,6 +31,56 @@ class ResourceSnapshot:
     gpu_memory_total_bytes: int | None = None
 
 
+class ResourceLimitExceeded(RuntimeError):
+    """A host memory limit was exceeded; stop this experiment after worker reconciliation."""
+
+
+def process_memory_snapshot(limit: int = 8) -> list[dict[str, int | str]]:
+    """Attribute resident memory without collecting command lines or credentials."""
+    processes = []
+    for process in psutil.process_iter(["pid", "name", "memory_info"], ad_value=None):
+        try:
+            info = process.info
+            memory = info.get("memory_info")
+            if memory is not None:
+                processes.append({"pid": info["pid"], "name": info.get("name") or "unknown",
+                                  "rss_bytes": int(memory.rss)})
+        except (psutil.Error, OSError):
+            continue
+    return sorted(processes, key=lambda item: item["rss_bytes"], reverse=True)[:limit]
+
+
+class RuntimeMemoryGuard:
+    """Cheap RAM checks during local inference, with periodic process attribution."""
+
+    def __init__(self, max_ram_pct: float = 85.0, min_available_bytes: int = 4 * 1024**3):
+        self.max_ram_pct = max_ram_pct
+        self.min_available_bytes = min_available_bytes
+        self._next_process_sample = 0.0
+
+    def __call__(self) -> None:
+        import time
+
+        try:
+            memory = psutil.virtual_memory()
+        except (OSError, RuntimeError) as error:
+            raise ResourceLimitExceeded(f"Cannot measure host RAM during local inference: {error}") from error
+        exceeded = memory.percent >= self.max_ram_pct or memory.available < self.min_available_bytes
+        now = time.monotonic()
+        if exceeded or now >= self._next_process_sample:
+            self._next_process_sample = now + 5.0
+            logger.info("Runtime RAM percent=%.1f available_bytes=%s top_processes=%s",
+                        memory.percent, memory.available, process_memory_snapshot(),
+                        extra={"event_type": "RUNTIME_MEMORY"})
+        if exceeded:
+            message = (f"Host RAM safety stop: {memory.percent:.1f}% used, "
+                       f"{memory.available / 1024**3:.1f} GiB available "
+                       f"(limits: <{self.max_ram_pct:.0f}% used, >={self.min_available_bytes / 1024**3:g} GiB available). "
+                       "Cancelling the benchmark worker; no further model loads will be attempted.")
+            logger.error(message, extra={"event_type": "RUNTIME_MEMORY_LIMIT"})
+            raise ResourceLimitExceeded(message)
+
+
 def _number(value: str) -> float | None:
     value = value.strip()
     if not value or value.upper() in {"N/A", "NA", "[N/A]"}:

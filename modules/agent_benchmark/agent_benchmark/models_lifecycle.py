@@ -346,6 +346,12 @@ async def transition_model(
     if expected_model_size_bytes is not None and expected_model_size_bytes < 0:
         raise ValueError("expected_model_size_bytes must not be negative")
 
+    required_headroom = (
+        int(expected_model_size_bytes * 1.25)
+        if expected_model_size_bytes is not None and expected_model_size_bytes > 0
+        else None
+    )
+
     loaded_list = await get_loaded_models(lms_path=lms_path, runner=runner)
     target_loaded = next(
         (m for m in loaded_list if m.model_key == target_model_key or m.identifier == target_model_key),
@@ -429,26 +435,32 @@ async def transition_model(
             remaining = await get_loaded_models(lms_path=lms_path, runner=runner)
             if not remaining:
                 snapshot = collect_resource_snapshot()
+                ram_ready = snapshot.ram_pct is not None and snapshot.ram_pct < max_ram_pct
+                headroom_ready = (required_headroom is None or (
+                    snapshot.ram_available_bytes is not None
+                    and snapshot.ram_available_bytes >= required_headroom
+                ))
+                gpu_ready = (snapshot.gpu_memory_used_bytes is None or snapshot.gpu_memory_total_bytes is None
+                             or snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes
+                             >= GPU_MEMORY_RESERVE_BYTES)
+                memory_ready = ram_ready and headroom_ready and gpu_ready
                 logger.info(
                     "Post-unload resource check target=%s loaded_models=0 ram_pct=%s ram_available_bytes=%s "
                     "gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s",
                     target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
                     snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes,
-                    extra={"event_type": "MODEL_UNLOAD_VERIFIED"},
+                    extra={"event_type": "MODEL_UNLOAD_VERIFIED" if memory_ready else "MODEL_MEMORY_RELEASE_WAIT"},
                 )
-                break
+                if memory_ready:
+                    break
             if asyncio.get_running_loop().time() - start_unload > unload_timeout:
                 raise ModelTransitionError(
-                    f"Timed out waiting for VRAM/memory release after unload ({unload_timeout}s)."
+                    f"Timed out waiting for loaded-model inventory and measured RAM/VRAM headroom "
+                    f"after unload ({unload_timeout}s). No next model load was attempted."
                 )
             await asyncio.sleep(poll_interval)
 
     snapshot = collect_resource_snapshot()
-    required_headroom = (
-        int(expected_model_size_bytes * 1.25)
-        if expected_model_size_bytes is not None and expected_model_size_bytes > 0
-        else None
-    )
     insufficient_headroom = (
         required_headroom is not None
         and snapshot.ram_available_bytes is not None

@@ -7,7 +7,7 @@ integration layer must later consume these facts to emit exactly one TrialResult
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import asdict, dataclass
 import difflib
 import hashlib
@@ -192,6 +192,25 @@ def build_prompt(task: Task, workspace: Path) -> str:
               "Report only checks you actually ran. Stop after your first attempt; do not request a retry.")
 
 
+async def _monitored_call(operation: Awaitable, resource_check: Callable[[], None] | None):
+    """Check host safety while dispatch/observation is pending, including slow HTTP calls."""
+    if resource_check is None:
+        return await operation
+    pending = asyncio.ensure_future(operation)
+    try:
+        while True:
+            resource_check()
+            done, _ = await asyncio.wait({pending}, timeout=0.5)
+            if done:
+                resource_check()
+                return await pending
+    finally:
+        if not pending.done():
+            pending.cancel()
+        # Retrieve exceptions and finish cancellation before remote termination reconciliation.
+        await asyncio.gather(pending, return_exceptions=True)
+
+
 async def run_attempt(
     task: Task,
     bridge: OpenCodeBridge,
@@ -207,6 +226,7 @@ async def run_attempt(
     poll_seconds: float = 0.1,
     verifier_seconds: float = 10,
     model_identity: ModelIdentity | None = None,
+    resource_check: Callable[[], None] | None = None,
 ) -> AttemptEvidence:
     """Dispatch once and freeze S1 only after fresh termination confirmation.
 
@@ -283,7 +303,9 @@ async def run_attempt(
             async with observation_budget:
                 dispatch_started = True
                 guard.submission_started = True
-                handle = await bridge.dispatch(workspace.path, prompt, provider=provider, model=model, agent=agent)
+                handle = await _monitored_call(
+                    bridge.dispatch(workspace.path, prompt, provider=provider, model=model, agent=agent), resource_check
+                )
                 journal.update(stage="observing", handle=asdict(handle))
                 # Persist recovery ownership before writing secondary receipt evidence.
                 _write_json(evidence_dir / "lifecycle.json", journal)
@@ -292,7 +314,7 @@ async def run_attempt(
                 max_consecutive_errors = 3
                 while True:
                     try:
-                        observation = await bridge.observe(handle)
+                        observation = await _monitored_call(bridge.observe(handle), resource_check)
                         consecutive_errors = 0
                     except httpx.HTTPError:
                         consecutive_errors += 1
