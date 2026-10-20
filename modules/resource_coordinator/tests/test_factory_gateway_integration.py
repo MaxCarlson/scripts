@@ -331,6 +331,31 @@ async def test_factory_lifespan_inference_cooldown_model_load_and_second_request
 
 
 @pytest.mark.asyncio
+async def test_status_reports_managed_process_state_before_and_after_inference(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    clock = ControlledClock()
+    app, service, client, backend, _ = await make_factory_app(tmp_path, monkeypatch, clock)
+
+    async with app.router.lifespan_context(app):
+        before = (await client.get("/_coordinator/status")).json()
+        assert before["processes"][backend.name]["state"] == "running"
+        assert before["processes"][backend.name]["pid"] == 987654
+        assert before["processes"][backend.name]["is_coordinator_owned"] is True
+
+        inference = await client.post("/v1/chat/completions", json={"model": "fake-model", "messages": []})
+        assert inference.status_code == 200
+        after = (await client.get("/_coordinator/status")).json()
+        process = after["processes"][backend.name]
+        assert process["state"] == "stopped"
+        assert process["was_stopped_by_coordinator"] is True
+        assert after["gpu_inference"]["is_cooling_down"] is True
+        assert after["gpu_inference"]["active_count"] == 0
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_factory_does_not_restart_initially_stopped_process(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

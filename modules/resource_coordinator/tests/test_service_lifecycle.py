@@ -61,6 +61,49 @@ async def test_service_can_explicitly_start_generic_configured_process():
 
 
 @pytest.mark.asyncio
+async def test_shutdown_uses_configured_process_stop_timeout():
+    from resource_coordinator.core.processes import ProcessLifecycleOwner
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {
+                "worker": {"backend": "fake", "stop_timeout_seconds": 13.5},
+            },
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "worker",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    backend = system.supervisors["worker"].backend
+    backend.running = True
+    backend.lifecycle_owner = ProcessLifecycleOwner.COORDINATOR
+    backend.is_coordinator_owned = True
+    observed_timeouts: list[float] = []
+    original_stop = backend.stop
+
+    async def record_stop(timeout: float = 10.0) -> bool:
+        observed_timeouts.append(timeout)
+        return await original_stop(timeout)
+
+    backend.stop = record_stop  # type: ignore[method-assign]
+    service = CoordinatorService(system, stop_process_on_shutdown="worker")
+    assert await service.start() is True
+
+    await service.stop()
+
+    assert observed_timeouts == [13.5]
+    assert service.state == ServiceState.STOPPED
+
+
+@pytest.mark.asyncio
 async def test_service_preflight_fails_on_broken_policy():
     config = CoordinatorConfig.from_dict(
         {

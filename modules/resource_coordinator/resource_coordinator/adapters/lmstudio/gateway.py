@@ -234,12 +234,21 @@ class LMStudioGateway:
         """Expose internal coordinator health, lease metrics, and restart inhibition state."""
         inhibition = self.lease_mgr.get_inhibition("gpu.inference")
         svc = self.admission_controller.service
+        processes = {}
+        if svc is not None:
+            for name, supervisor in svc.system.supervisors.items():
+                info = await supervisor.status()
+                processes[name] = {
+                    **info.to_dict(),
+                    "was_stopped_by_coordinator": supervisor.was_stopped_by_coordinator,
+                }
         return JSONResponse(
             {
                 "status": "online",
                 "service_state": svc.state.value if svc else "standalone",
                 "is_ready": svc.is_ready if svc else self.admission_controller.standalone,
                 "upstream_url": self.upstream_url,
+                "processes": processes,
                 "gpu_inference": {
                     "active_count": self.lease_mgr.active_count("gpu.inference"),
                     "pending_count": self.lease_mgr.pending_count("gpu.inference"),

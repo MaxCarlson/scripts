@@ -1,82 +1,218 @@
-# Resource Coordinator
+# Resource Coordinator MVP
 
-A general-purpose, event-driven local resource coordination framework, process supervisor, and transparent proxy gateway.
+The Resource Coordinator is a loopback reverse proxy for LM Studio that pauses
+one coordinator-owned Windows process while protected model work is active. It
+restarts that process after the configured idle cooldown. Use it with a process
+that supports the configured Windows console stop mechanism; keep force
+termination and external process control disabled.
 
-## Overview
+## Configure one process
 
-`resource_coordinator` provides deterministic arbitration for competing system resources (CPU, GPU, memory, external processes). It allows high-priority workloads (such as local LLM inference or interactive applications) to automatically suspend background workloads (such as cryptocurrency miners or heavy batch jobs), track active resource claims across concurrent requests, observe idle cooldowns, and safely resume background workloads once resource pressure subsides.
-
-The module is generic and extensible, treating local LLM inference and cryptocurrency mining as modular adapters rather than core assumptions.
-
-## Core Concepts
-
-- **Triggers**: Events that signal incoming work or state transitions (HTTP inference requests, telemetry thresholds, timers, custom events).
-- **Conditions**: Predicates evaluating whether actions should execute (process running, lease held, metric thresholds, composite logical expressions).
-- **Actions**: Discrete operations with verified outcomes (process stop/start, lease acquire/release, callbacks).
-- **Events & Callbacks**: Namespaced event dispatch separating non-blocking observational listeners from blocking lifecycle hooks.
-- **Resource Leases**: Reference-counted claims on named resources (exclusive or shared), supporting atomic reservation and configurable idle cooldowns.
-
-## CLI Usage
-
-```powershell
-# Run the coordination gateway service
-resource-coordinator serve --listen 127.0.0.1:1235 --upstream http://127.0.0.1:1234
-
-# Check active leases, managed processes, and coordinator status
-resource-coordinator status
-
-# View or validate policy configuration
-resource-coordinator config show
-```
-
-The alias `gpu-coordinator` is also provided for backward compatibility.
-
-## Phase B review checkpoint
-
-Version 0.2.0 has passed 99 offline tests. Actual Windows/Krig/LM Studio integration remains unverified. See [review findings and readiness](docs/PHASE_B_REVIEW.md) before selecting a supervised experiment or unattended deployment.
-
-Recovery is disabled unless the service has `RESOURCE_COORDINATOR_RECOVERY_TOKEN`; the operator CLI needs the same environment token:
-
-```powershell
-resource-coordinator recover --force --reason "Independently verified all earlier upstream execution has stopped"
-```
-
-Recovery is an explicit operator override, not proof of upstream idle. Active/pending claims reject recovery. Standalone `miner pause/resume` are disabled because they cannot read the running daemon's safety state. Forceful Windows stop requires explicit `allow_force_termination: true`; external stop and restart permissions remain separate. Enabled persistence/bounded-drain settings are rejected until implemented safely. Unknown state-mutating HTTP routes return 501. Reinstall editable package metadata/dependencies for the 0.2.0 minor version before a separately authorized operational test.
-
-## Phase C safety checkpoint
-
-Current preparation version: **0.3.0**, with 151 passing offline tests. **NO-GO for a supervised live test** until the missing coordinator-owned startup/admission path and deployment prerequisites are reviewed. The template denies external adoption/control and force, uses inherited-console group mode, and requires local placeholder replacement. Persistence helpers do not provide service crash recovery. See [Phase C review](docs/PHASE_C_SAFETY_REVIEW.md) for prioritized findings and [blocked acceptance checklist](docs/SUPERVISED_LIVE_ACCEPTANCE_PLAN.md). Telemetry T1 remains on its separate branch; it has not been merged here.
-# Single-process LM Studio activity automation
-
-The gateway can coordinate one configured process with inference and explicit model-load requests. Both operations use the shared `gpu.inference` arbitration resource: inference takes a shared lease, while model loading takes an exclusive lease. A pending model load blocks later inference admission until the load is admitted, and both paths use the same idle timeout. The existing process supervisor records whether it stopped a running process; a process already stopped when the request arrives is not automatically restarted.
-
-Use the existing YAML configuration. Configure an inference stop policy and, when managed model loading is desired, a matching model-load policy. Their target process and cooldown must match:
+Create `config.local.yaml` in this directory. Git ignores that machine-local
+file. Replace the executable, arguments, and working directory with the exact
+values for the process you intend the coordinator to launch and own.
+For `config validate`, `preflight`, and `serve`, always pass
+`-c .\config.local.yaml`: the built-in legacy default includes a Krig process
+definition.
 
 ```yaml
+version: "1.0"
+
+service:
+  listen_host: "127.0.0.1"
+  listen_port: 1235
+  upstream_url: "http://127.0.0.1:1234"
+
 processes:
   background_worker:
     backend: windows
     executable: 'C:\Tools\worker.exe'
     arguments: []
     working_directory: 'C:\Tools'
+    stop_timeout_seconds: 10
+    new_console: false
+    adopt_external: false
     allow_external_stop: false
     allow_external_restart: false
     allow_force_termination: false
+
 policies:
-  - name: stop-for-inference
+  - name: pause-for-inference
     trigger_event: lmstudio.inference_requested
     target_process: background_worker
     resource: gpu.inference
     lease_type: shared
+    stop_process: true
+    restart_process: true
+    only_if_stopped_by_coordinator: true
+    stop_timeout_seconds: 10
     cooldown_seconds: 300
-  - name: stop-for-model-load
+
+  - name: pause-for-model-load
     trigger_event: lmstudio.model_load_requested
     target_process: background_worker
     resource: gpu.inference
     lease_type: exclusive
+    stop_process: true
+    restart_process: true
+    only_if_stopped_by_coordinator: true
+    stop_timeout_seconds: 10
     cooldown_seconds: 300
 ```
 
-Model unload and unknown mutating routes remain rejected. Clients must use the coordinator gateway to receive this protection; requests sent directly to LM Studio bypass the coordinator and cannot be observed. No process is started at coordinator startup unless an operator explicitly supplies `--start-process NAME`. Generic lifecycle flags are available as `--fake-process`, `--start-process NAME`, and `--stop-process-on-shutdown NAME`; the legacy miner flags remain supported.
+The two policies must target the same process and use the same positive
+`cooldown_seconds`; that value is the authoritative idle timeout. The process
+`stop_timeout_seconds` sets the stop attempt during normal service shutdown;
+each policy's `stop_timeout_seconds` sets its stop-before-request attempt. Both
+are attempt/verification timeouts, not guaranteed total shutdown bounds. The
+legacy process field `restart_cooldown_seconds` is parsed but unused; omit it.
 
-An opt-in Windows test uses a disposable process and the real coordinator HTTP listener with mocked upstream responses. A separate opt-in live test is gated on a preloaded model and explicit authorization; it has not been run. See [Windows LM Studio HTTP integration](docs/WINDOWS_LMSTUDIO_HTTP_INTEGRATION.md) for commands, evidence, and the live request/cleanup procedure.
+`new_console: false` gives the Windows backend a process group for graceful
+Ctrl+Break delivery. The target must handle that signal and exit with its child
+processes. If verification fails, the request is not forwarded. Force
+termination remains disabled in this example. `adopt_external` and the
+external stop/restart permissions remain false so the coordinator does not
+claim an already-running process by executable name.
+
+## Validate and run
+
+From PowerShell, using the repository's Python environment:
+
+```powershell
+Set-Location "C:\Users\mcarls\src\scripts\modules\resource_coordinator"
+python -m resource_coordinator.cli config validate -c .\config.local.yaml
+python -m resource_coordinator.cli preflight -c .\config.local.yaml
+python -m resource_coordinator.cli serve -c .\config.local.yaml --start-process background_worker --stop-process-on-shutdown background_worker
+```
+
+`--start-process` makes the coordinator the process owner. The explicit
+`--stop-process-on-shutdown` option stops that owned target on normal service
+shutdown. It is not automatic process adoption. Leave the serve terminal open;
+after requests finish, press **Ctrl+C once** and wait for Uvicorn/service
+shutdown. Verify the recorded target PID has exited. The configured drain
+timeout does not impose a strict bound on Windows/API shutdown. A crash or
+forced exit does not trigger automatic reconciliation or restart.
+
+## Route an LM Studio client through the gateway
+
+The request path must be:
+
+```text
+OpenCode or API client -> http://127.0.0.1:1235/v1 -> LM Studio at :1234
+```
+
+For the installed OpenCode 1.19.3 config at
+`%USERPROFILE%\.config\opencode\opencode.json`, change only
+`provider.lmstudio.options.baseURL` from
+`http://127.0.0.1:1234/v1` to `http://127.0.0.1:1235/v1`. Keep the existing
+provider, model IDs, aliases, context settings, and credentials. The current
+shared config was inspected read-only and was not modified. OpenCode documents
+`options.baseURL` as the endpoint for an OpenAI-compatible provider.
+
+```json
+"options": {
+  "baseURL": "http://127.0.0.1:1235/v1"
+}
+```
+
+There is a model-key mismatch to resolve before using the current OpenCode
+selection: its configured model keys are `qwen38_17GB` and `qwen38_23GB`, while
+LM Studio currently lists the model as `qwen38-27b-q4km`. In OpenCode, the key
+under `provider.lmstudio.models` is the model ID used in the `provider/model`
+selection. Therefore changing the URL alone routes traffic through the
+coordinator but may still send an ID LM Studio does not list. Do not rename the
+existing entries silently. A minimal explicit OpenCode adjustment is to retain
+both existing entries, add a `qwen38-27b-q4km` model entry with the same desired
+display/context settings, and select `lmstudio/qwen38-27b-q4km` for the
+coordinated session. The shared OpenCode file remains unchanged; make that
+configuration edit only after reviewing it. See the [OpenCode model
+configuration docs](https://opencode.ai/docs/models/) for the model-key rule.
+
+For review, the scoped changes are:
+
+```diff
+- "model": "lmstudio/qwen38_23GB",
++ "model": "lmstudio/qwen38-27b-q4km",
+- "baseURL": "http://127.0.0.1:1234/v1"
++ "baseURL": "http://127.0.0.1:1235/v1"
+  "models": {
+    "qwen38_17GB": { ... keep existing ... },
+    "qwen38_23GB": { ... keep existing ... },
++   "qwen38-27b-q4km": { "name": "Local worker: qwen38-27b-q4km" }
+  }
+```
+
+Other OpenAI-compatible clients need the same base-URL change. Requests sent
+directly to LM Studio on port 1234 bypass coordination and cannot be observed.
+The coordinator does not rewrite client configuration or intercept traffic.
+
+## Send one test request
+
+This PowerShell example sends a real inference request to the selected local
+model through the coordinator. Choose a model ID that LM Studio already
+reports as loaded; this command does not load or unload models. The latest
+read-only check found Qwen `qwen38-27b-q4km` not loaded, so do not run this
+example until that precondition is true.
+
+```powershell
+$body = @{
+  model = "qwen38-27b-q4km"
+  messages = @(@{ role = "user"; content = "Reply with exactly READY." })
+  temperature = 0
+  max_tokens = 16
+  stream = $false
+} | ConvertTo-Json -Depth 6
+
+Invoke-RestMethod `
+  -Uri "http://127.0.0.1:1235/v1/chat/completions" `
+  -Method Post `
+  -ContentType "application/json" `
+  -Body $body
+```
+
+The same chat-completions route is used by OpenCode. If LM Studio API
+authentication is enabled, configure the client with a bearer token; do not
+put tokens in this file or shell history.
+
+## Observe and stop
+
+In another PowerShell window:
+
+```powershell
+python -m resource_coordinator.cli status --url http://127.0.0.1:1235
+```
+
+Status reports service readiness, active and pending inference requests,
+cooldown state and remaining time, restart inhibition, and each managed
+process's state, PID, executable, lifecycle owner, and whether the coordinator
+stopped it. A stopped target is eligible for restart only when the coordinator
+owns the stop and no active, pending, or uncertain operation inhibits restart.
+
+Before normal shutdown, wait for `Active inferences: 0`, `Pending requests: 0`,
+and `Restart inhibited: False`, then press Ctrl+C once in the serve terminal.
+Because status becomes unavailable after shutdown, note the managed PID first
+and independently confirm that exact PID has exited. Do not terminate a
+process by image name.
+
+## Routes and limits
+
+- Protected inference routes include `/v1/chat/completions`, `/v1/completions`,
+  `/v1/embeddings`, `/v1/responses`, `/v1/messages`, the corresponding supported
+  `/api/v0` chat/completion/embedding routes, and `/api/v1/chat`.
+- Supported explicit model-load routes are `POST /api/v0/model/load` and
+  `POST /api/v1/models/load`; they use an exclusive `gpu.inference` reservation
+  and require the matching policy above.
+- Model unload and unknown state-mutating routes are rejected. Inference is
+  protected before forwarding even if LM Studio internally loads a model just
+  in time.
+- Direct LM Studio GUI operations, `lms load`, and other direct clients bypass
+  this gateway. Loaded-but-idle models do not block the process restart.
+- An uncertain upstream result retains restart inhibition. The coordinator
+  cannot prove that a timed-out model operation stopped, and its stop/drain
+  timeouts are not strict wall-clock shutdown guarantees.
+- The initial operating example manages one coordinator-owned process. It does
+  not provide unattended crash recovery or manage Krig automatically.
+
+For disposable-process and mock-backed Windows HTTP validation, see
+[the integration test procedure](docs/WINDOWS_LMSTUDIO_HTTP_INTEGRATION.md).
+The real LM Studio test remains opt-in and requires separate authorization.

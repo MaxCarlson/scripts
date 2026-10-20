@@ -17,3 +17,7 @@
 - [x] Run complete resource-coordinator suite with disposable Windows tests enabled and real-LM-Studio test disabled (245 passed, 1 live test skipped).
 - [x] Run Ruff check/format and Mypy; record existing missing-`types-psutil` stub limitation.
 - [ ] Commit, push, and merge the tested offline harness and procedure; stop before real inference for separate authorization.
+- [x] Document one-process configuration, CLI lifecycle, OpenCode endpoint routing, request, status, shutdown, and limitations.
+- [x] Add coordinator-owned process state/identity to status output and use configured shutdown stop timeout.
+- [x] Validate the README YAML and CLI commands offline; run module regressions, Ruff, and Mypy.
+- [x] Commit the MVP usability corrections. Do not modify shared OpenCode config or run inference.

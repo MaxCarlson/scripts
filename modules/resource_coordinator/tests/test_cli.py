@@ -124,3 +124,45 @@ def test_cli_cmd_abort_mock(monkeypatch, capsys):
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert data["status"] == "aborted"
+
+
+def test_cli_status_displays_managed_process_state(monkeypatch, capsys):
+    from unittest.mock import MagicMock
+    import httpx
+    from resource_coordinator.cli import cmd_status
+
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "status": "online",
+        "service_state": "ready",
+        "is_ready": True,
+        "upstream_url": "http://127.0.0.1:1234",
+        "gpu_inference": {
+            "active_count": 0,
+            "pending_count": 0,
+            "is_cooling_down": True,
+            "cooldown_remaining": 17.2,
+            "is_restart_inhibited": False,
+        },
+        "processes": {
+            "background_worker": {
+                "state": "stopped",
+                "pid": None,
+                "lifecycle_owner": "unmanaged",
+                "is_coordinator_owned": False,
+                "was_stopped_by_coordinator": True,
+            }
+        },
+    }
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.get.return_value = mock_response
+    monkeypatch.setattr(httpx, "Client", lambda **kwargs: mock_client)
+
+    args = parse_args(["status", "--url", "http://127.0.0.1:1235"])
+    assert cmd_status(args) == 0
+    output = capsys.readouterr().out
+    assert "Process background_worker: stopped" in output
+    assert "stopped by coordinator: True" in output
+    assert "Cooldown remaining: 17.2s" in output

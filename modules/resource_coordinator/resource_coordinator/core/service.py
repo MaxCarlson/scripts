@@ -257,7 +257,12 @@ class CoordinatorService:
                         if not info.is_coordinator_owned:
                             uncertain = True
                         else:
-                            stopped = await asyncio.wait_for(supervisor.stop(timeout=5.0), timeout=7.0)
+                            stop_timeout = self.system.config.processes[
+                                self.stop_process_on_shutdown
+                            ].stop_timeout_seconds
+                            stopped = await asyncio.wait_for(
+                                supervisor.stop(timeout=stop_timeout), timeout=stop_timeout + 2.0
+                            )
                             uncertain = uncertain or not stopped
                             uncertain = uncertain or (await supervisor.status()).state != ProcessState.STOPPED
                 await asyncio.wait_for(self.system.gateway.close(), timeout=2.0)

@@ -4,5 +4,6 @@ __pycache__/
 .pytest_tmp_root/
 *.egg-info/
 config.supervised.private.yaml
+config.local.yaml
 dist/
 build/

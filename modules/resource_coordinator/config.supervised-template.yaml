@@ -37,7 +37,6 @@ processes:
       - "--no-tui"
       - "--gpu-no-reset-oc"
     stop_timeout_seconds: 10.0
-    restart_cooldown_seconds: 30.0
     new_console: false
     allow_external_stop: false
     allow_external_restart: false

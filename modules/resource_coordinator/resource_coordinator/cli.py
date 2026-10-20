@@ -254,6 +254,17 @@ def cmd_status(args: argparse.Namespace) -> int:
                         inh = gpu_data["inhibition"]
                         print(f"  Reason:           {inh.get('reason')}")
                         print(f"  Holder ID:        {inh.get('holder_id')}")
+                    processes = data.get("processes", {})
+                    if processes:
+                        for name, process in processes.items():
+                            print(
+                                f"Process {name}: {process.get('state')} "
+                                f"(PID: {process.get('pid')}, owner: {process.get('lifecycle_owner')}, "
+                                f"coordinator-owned: {process.get('is_coordinator_owned')}, "
+                                f"stopped by coordinator: {process.get('was_stopped_by_coordinator')})"
+                            )
+                    else:
+                        print("Managed processes:  None")
                 return 0
             else:
                 print(
