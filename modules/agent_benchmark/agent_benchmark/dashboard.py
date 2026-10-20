@@ -22,6 +22,7 @@ from termdash import LiveBlock, Table, render_horizontal_bar
 from termdash.utils import color_text
 
 from .scheduler import ExperimentPlan, ExperimentScheduler, PlannedTrial
+from .telemetry import ResourceSampler, format_resource_line
 
 
 @dataclass
@@ -71,11 +72,13 @@ class ExperimentDashboard:
         quiet: bool = False,
         stream: Optional[TextIO] = None,
         max_visible_models: int = 5,
+        resource_sampler: ResourceSampler | None = None,
     ) -> None:
         self.plan = plan
         self.quiet = quiet
         self.stream = stream or sys.stdout
         self.max_visible_models = max_visible_models
+        self.resource_sampler = resource_sampler or ResourceSampler()
 
         self.start_time = time.monotonic()
         self.active_trial: Optional[PlannedTrial] = None
@@ -99,6 +102,8 @@ class ExperimentDashboard:
         )
 
         if not self.quiet:
+            if self.live_block.interactive:
+                self.resource_sampler.start()
             self.live_block.update(self._render_live_lines)
         else:
             self._log_quiet(
@@ -123,6 +128,7 @@ class ExperimentDashboard:
     def close(self) -> None:
         """Safely close live block and restore terminal state."""
         self.live_block.close()
+        self.resource_sampler.stop()
 
     def _log_quiet(self, message: str) -> None:
         print(message, file=self.stream, flush=True)
@@ -143,6 +149,7 @@ class ExperimentDashboard:
             f"[EXP {self.plan.experiment_id}]  {bar} {self.completed_trials_count}/{total} ({pct:4.1f}%)  "
             f"Elapsed: {elapsed:.1f}s",
         ]
+        lines.append(format_resource_line(self.resource_sampler.snapshot()))
 
         # Line 2: Active Trial Status
         if self.active_trial:

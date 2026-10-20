@@ -15,6 +15,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 import hashlib
+import json
 from pathlib import Path
 import platform
 import random
@@ -39,7 +40,7 @@ from benchmark_core import (
 
 from . import __version__
 from .attempt import run_attempt, run_cli_attempt
-from .bridge import connected_bridge
+from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
 from .git_workspace import ISOLATION_POLICY
 from .models_lifecycle import (
@@ -236,6 +237,8 @@ class ExperimentScheduler:
         grace_seconds = float(profile_cfg["grace_seconds"])
         verifier_seconds = 10.0
 
+        await self._preflight_local_models()
+
         experiment_dir = self.reports_dir / config.experiment_id
         experiment_dir.mkdir(parents=True, exist_ok=True)
 
@@ -389,6 +392,28 @@ class ExperimentScheduler:
 
         return final_comparison
 
+    async def _preflight_local_models(self) -> None:
+        """Reject unavailable OpenCode model IDs before creating run artifacts or loading models."""
+        if self.trial_executor is not None:
+            return
+        requests = []
+        for model_key in self.plan.model_keys:
+            provider, model = resolve_model_provider_and_key(model_key, default_provider=self.provider)
+            if provider == "lmstudio":
+                requests.append((provider, model))
+        if not requests:
+            return
+
+        validation_error: Exception | None = None
+        async with connected_bridge(base_url=self.base_url) as bridge:
+            try:
+                await bridge.validate_models(requests)
+            except Exception as error:
+                # Raise only after the adapter context exits normally, avoiding TaskGroup-wrapped diagnostics.
+                validation_error = error
+        if validation_error is not None:
+            raise validation_error
+
     async def _execute_real_trial(
         self,
         trial: PlannedTrial,
@@ -407,6 +432,7 @@ class ExperimentScheduler:
             trial_res: Optional[TrialResult] = None
             cancelled = False
             failure = "UnknownError"
+            failure_message: str | None = None
             try:
                 if resolved_provider in ("gemini", "codex"):
                     evidence = await run_cli_attempt(
@@ -448,6 +474,16 @@ class ExperimentScheduler:
                 cancelled = True
             except Exception as exc:
                 failure = type(exc).__name__
+                if isinstance(exc, ModelConfigurationError):
+                    failure_message = str(exc)
+                journal_path = evidence_dir / "lifecycle.json"
+                if failure_message is None and journal_path.is_file():
+                    try:
+                        journal = json.loads(journal_path.read_text(encoding="utf-8"))
+                        if journal.get("stage") == "preflight_failed":
+                            failure_message = journal.get("diagnostic_message")
+                    except (OSError, json.JSONDecodeError):
+                        pass
 
             if trial_res is None:
                 metrics = base_metrics()
@@ -464,6 +500,7 @@ class ExperimentScheduler:
                     metrics=metrics,
                     details={
                         "execution_error": "CallerCancelled" if cancelled else failure,
+                        **({"execution_error_message": failure_message} if failure_message else {}),
                         "evidence_path": f"evidence/trial-{trial.trial_index + 1:03d}",
                     },
                 )

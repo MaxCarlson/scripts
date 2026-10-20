@@ -1,4 +1,17 @@
-# agent_benchmark handoff — post-smoke analysis and scoring redesign ready
+# agent_benchmark handoff — live dashboard telemetry and preflight diagnostics
+
+## Current work — 2026-10-19
+
+Worktree `C:/Users/mcarls/src/scripts-agent-benchmark/.worktrees/benchmark-live-stats`; branch `agent/benchmark-live-stats`, based on current `main` at `2eac7936`. The benchmark project is already merged into `main` (starting merge commit `91d04f5d`); follow-up work stays on this feature branch. Existing untracked `reports/` data is preserved.
+
+- Added a one-line resource display to the bounded live dashboard: system RAM used/total/percent, GPU compute utilization, GPU memory-controller utilization, and VRAM used/total/percent. Sampling runs in a daemon thread at roughly one-second intervals only for an interactive dashboard; quiet and redirected runs do not start it. Missing GPU counters render as `--` and do not stop a benchmark.
+- GPU counters use `nvidia-smi`; RAM uses `psutil`. Package metadata and `__version__` are aligned at 1.5.0.
+- Added a read-only OpenCode model preflight before report/run directories, model transitions, or trial allocation. A downloaded LM Studio key that is absent from the connected OpenCode provider now fails once with the configured OpenCode IDs and a configuration action, rather than emitting one infrastructure-error trial per repetition. No config is changed automatically.
+- Race-time model configuration errors are also preserved as bounded preflight diagnostics in lifecycle evidence and trial details.
+
+Validation: `pytest tests --tb=short -q` — 273 passed, 3 skipped; `ruff check agent_benchmark tests` — clean; `git diff --check` — clean. A read-only host sample rendered `RAM 59.2/61.6 GiB (96%) | GPU 16% | GPU MEM 28% | VRAM 29.8/31.8 GiB (94%)`. No benchmark inference or terminal screenshot acceptance was run. A future real run with `qwen38-27b-q6k` still requires that exact model ID to be configured and connected in OpenCode.
+
+## Previous status — post-smoke analysis and scoring redesign ready
 
 ## Current scoring redesign revision — 2026-10-19
 

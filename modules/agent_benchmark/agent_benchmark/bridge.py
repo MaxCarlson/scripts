@@ -31,6 +31,49 @@ class SubmissionUncertain(RuntimeError):
         self.receipt = receipt
 
 
+class ModelConfigurationError(ValueError):
+    """A requested local model is not available through OpenCode's configured provider."""
+
+
+def _check_configured_models(providers: dict, requests: list[tuple[str, str]]) -> None:
+    connected = providers.get("connected", [])
+    all_providers = providers.get("all", [])
+    if not isinstance(connected, list) or not isinstance(all_providers, list):
+        raise RuntimeError("Malformed OpenCode provider model inventory")
+    provider_ids = sorted(
+        str(item["id"])
+        for item in all_providers
+        if isinstance(item, dict) and isinstance(item.get("id"), str)
+    )
+    for provider, model in requests:
+        if provider != "lmstudio":
+            raise ValueError("This initial slice supports only explicit lmstudio models")
+        configured = next(
+            (item for item in all_providers if isinstance(item, dict) and item.get("id") == provider),
+            None,
+        )
+        configured_models = configured.get("models", {}) if configured else {}
+        if not isinstance(configured_models, dict):
+            raise RuntimeError(f"Malformed OpenCode model inventory for provider '{provider}'")
+        model_ids = sorted(model_id for model_id in configured_models if isinstance(model_id, str))
+        if configured is None:
+            raise ModelConfigurationError(
+                f"OpenCode provider '{provider}' is not configured. Configured providers: "
+                f"{', '.join(provider_ids) or '(none)'}."
+            )
+        if provider not in connected:
+            raise ModelConfigurationError(
+                f"OpenCode provider '{provider}' is not connected. Requested model '{model}'. "
+                f"Configured OpenCode model IDs: {', '.join(model_ids) or '(none)'}."
+            )
+        if model not in configured_models:
+            raise ModelConfigurationError(
+                f"LM Studio model key '{model}' is not configured as an OpenCode model ID under provider '{provider}'. "
+                f"Configured OpenCode model IDs: {', '.join(model_ids) or '(none)'}. "
+                f"Add the requested model to OpenCode's LM Studio provider configuration before running the benchmark."
+            )
+
+
 def _ordered(history: list) -> list:
     def _sort_key(m: object) -> tuple[float, str]:
         if not isinstance(m, dict):
@@ -143,6 +186,16 @@ class OpenCodeBridge:
         self.session_creation_attempted = False
         self.session_evidence: dict = {}
 
+    async def validate_models(self, requests: list[tuple[str, str]]) -> None:
+        """Validate local model IDs once before allocating trial workspaces."""
+        if not requests:
+            return
+        health = await self._get("/global/health", Path.cwd())
+        providers = await self._get("/provider", Path.cwd())
+        if not isinstance(health, dict) or not isinstance(providers, dict):
+            raise RuntimeError("Malformed runtime/model preflight response")
+        _check_configured_models(providers, requests)
+
     async def preflight(self, directory: Path, *, provider: str, model: str, agent: str, project_id: str) -> dict:
         """Read-only model/role and exact trial-project validation; no prompt submission."""
         if self.submission_attempted or self.session_creation_attempted or self.prepared_session is not None:
@@ -150,15 +203,12 @@ class OpenCodeBridge:
         self.project_context = None
         health = await self._get("/global/health", directory)
         providers = await self._get("/provider", directory)
-        agents = await self._get("/agent", directory)
-        if not isinstance(health, dict) or not isinstance(providers, dict) or not isinstance(agents, list):
+        if not isinstance(health, dict) or not isinstance(providers, dict):
             raise RuntimeError("Malformed runtime/model/role preflight response")
-        if provider != "lmstudio":
-            raise ValueError("This initial slice supports only explicit lmstudio models")
-        configured = next((p for p in providers.get("all", []) if p.get("id") == provider), None)
-        if (not configured or model not in configured.get("models", {})
-                or provider not in providers.get("connected", [])):
-            raise ValueError("Requested local model/provider is not configured and connected")
+        _check_configured_models(providers, [(provider, model)])
+        agents = await self._get("/agent", directory)
+        if not isinstance(agents, list):
+            raise RuntimeError("Malformed runtime/model/role preflight response")
         role = next((a for a in agents if a.get("name") == agent), None)
         if role is None or agent not in ("local-worker", "local-reviewer"):
             raise ValueError("Requested bounded local role is unavailable")

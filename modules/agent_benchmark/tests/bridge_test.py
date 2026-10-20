@@ -147,11 +147,13 @@ def test_new_submission_does_not_reuse_previous_transcript(tmp_path):
 
 
 def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path):
+    connected = ["lmstudio"]
+
     def remote(request):
         if request.url.path == "/global/health":
             return httpx.Response(200, json={"version": "1.19.3"})
         if request.url.path == "/provider":
-            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": ["lmstudio"]})
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": connected})
         if request.url.path in ("/path", "/project/current"):
             return project_remote(tmp_path)(request)
         return httpx.Response(200, json=[{"name": "local-worker", "permission": [{"permission": "task", "action": "deny"}]}])
@@ -164,8 +166,12 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
             bridge = OpenCodeBridge(unused, http)
             facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="local-worker")
             assert facts["model"] == "model-a" and facts["opencode_version"] == "1.19.3"
-            with pytest.raises(ValueError):
+            with pytest.raises(ValueError, match="Configured OpenCode model IDs: model-a"):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="missing", agent="local-worker")
+            connected.clear()
+            with pytest.raises(ValueError, match="OpenCode provider 'lmstudio' is not connected"):
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="local-worker")
+            connected.append("lmstudio")
             with pytest.raises(ValueError):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="cloud", model="model-a", agent="local-worker")
             with pytest.raises(ValueError):

@@ -20,7 +20,7 @@ from typing import Any
 
 import httpx
 
-from .bridge import OpenCodeBridge
+from .bridge import ModelConfigurationError, OpenCodeBridge
 from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
 from .scratch import SCOPE_POLICY, prompt_instructions, provenance, reserved_path
@@ -244,6 +244,8 @@ async def run_attempt(
         _write_json(evidence_dir / "lifecycle.json", journal)
     except Exception as error:
         journal.update(stage="preflight_failed", diagnostic=type(error).__name__)
+        if isinstance(error, ModelConfigurationError):
+            journal["diagnostic_message"] = str(error)
         session_evidence = getattr(bridge, "session_evidence", {})
         if session_evidence:
             _write_json(evidence_dir / "session-preflight.json", session_evidence)

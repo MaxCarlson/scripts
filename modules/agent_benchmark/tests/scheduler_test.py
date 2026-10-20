@@ -5,6 +5,7 @@ Unit tests for multi-model experiment planning and sequential execution schedule
 from __future__ import annotations
 
 import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 import pytest
 
@@ -23,6 +24,59 @@ from benchmark_core import (
     TrialResult,
     TrialStatus,
 )
+
+
+@pytest.mark.asyncio
+async def test_scheduler_rejects_unconfigured_local_model_before_trial_allocation(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    from agent_benchmark import scheduler as scheduler_module
+
+    config = ExperimentConfig(
+        experiment_id="exp-preflight-01",
+        created_at="2026-10-19T10:00:00Z",
+        suite_id="agent-smoke",
+        suite_version="0.1.1",
+        task_ids=["py-grep-smoke"],
+        variant_ids=["qwen38-27b-q6k"],
+        repetitions=2,
+        scoring_basis="worker_first_attempt_full_success",
+        budget_profile="canonical-60s",
+    )
+    plan = expand_experiment_plan(config)
+    checked_models: list[tuple[str, str]] = []
+    transition_commands: list[list[str]] = []
+
+    class FakeBridge:
+        async def validate_models(self, models):
+            checked_models.extend(models)
+            raise ValueError("model is not configured in OpenCode")
+
+    @asynccontextmanager
+    async def fake_connected_bridge(**kwargs):
+        yield FakeBridge()
+
+    async def lms_runner(command: list[str]) -> tuple[int, str, str]:
+        transition_commands.append(command)
+        return 0, "[]", ""
+
+    monkeypatch.setattr(scheduler_module, "connected_bridge", fake_connected_bridge)
+    scheduler = ExperimentScheduler(
+        plan,
+        task_dirs={"py-grep-smoke": Path(__file__).resolve().parents[1] / "agent_benchmark" / "tasks" / "py-grep-smoke"},
+        reports_dir=tmp_path / "reports",
+        state_dir=tmp_path / "state",
+        allow_model_transitions=True,
+        lms_runner=lms_runner,
+    )
+
+    with pytest.raises(ValueError, match="not configured in OpenCode"):
+        await scheduler.run()
+
+    assert checked_models == [("lmstudio", "qwen38-27b-q6k")]
+    assert transition_commands == []
+    assert not (tmp_path / "reports" / config.experiment_id).exists()
 
 
 @pytest.fixture
@@ -249,6 +303,7 @@ async def test_scheduler_sequential_execution_and_aggregation(
 async def test_scheduler_unauthorized_model_transition_halts_safely(
     tmp_path: Path,
     sample_experiment_config: ExperimentConfig,
+    monkeypatch,
 ) -> None:
     """
     If target model is not loaded and allow_model_transitions=False,
@@ -263,6 +318,18 @@ async def test_scheduler_unauthorized_model_transition_halts_safely(
     # Empty loaded models
     async def mock_lms_runner_empty(cmd: list[str]) -> tuple[int, str, str]:
         return 0, "[]", ""
+
+    from agent_benchmark import scheduler as scheduler_module
+
+    class FakeBridge:
+        async def validate_models(self, models):
+            return None
+
+    @asynccontextmanager
+    async def fake_connected_bridge(**kwargs):
+        yield FakeBridge()
+
+    monkeypatch.setattr(scheduler_module, "connected_bridge", fake_connected_bridge)
 
     scheduler = ExperimentScheduler(
         plan,

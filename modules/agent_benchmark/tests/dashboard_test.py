@@ -59,6 +59,49 @@ def test_dashboard_live_lines_bounded_height(sample_plan) -> None:
     dashboard.close()
 
 
+def test_dashboard_shows_live_ram_gpu_and_vram_statistics(sample_plan) -> None:
+    _, plan = sample_plan
+
+    class Snapshot:
+        ram_used_bytes = 16 * 1024**3
+        ram_total_bytes = 32 * 1024**3
+        ram_pct = 50.0
+        gpu_name = "NVIDIA GeForce RTX 5090"
+        gpu_utilization_pct = 81.0
+        gpu_memory_utilization_pct = 37.0
+        gpu_memory_used_bytes = 20 * 1024**3
+        gpu_memory_total_bytes = 24 * 1024**3
+
+    class Sampler:
+        start_count = 0
+        stop_count = 0
+
+        def snapshot(self):
+            return Snapshot()
+
+        def start(self):
+            self.start_count += 1
+
+        def stop(self):
+            self.stop_count += 1
+
+    sampler = Sampler()
+    dashboard = ExperimentDashboard(plan, quiet=False, stream=io.StringIO(), resource_sampler=sampler)
+
+    lines = dashboard._render_live_lines()
+    stats_lines = [line for line in lines if "RAM" in line and "VRAM" in line]
+
+    assert len(stats_lines) == 1
+    assert "RAM 16.0/32.0 GiB (50%)" in stats_lines[0]
+    assert "GPU 81%" in stats_lines[0]
+    assert "GPU MEM 37%" in stats_lines[0]
+    assert "VRAM 20.0/24.0 GiB (83%)" in stats_lines[0]
+    assert len(lines) <= 12
+    assert sampler.start_count == 0
+    dashboard.close()
+    assert sampler.stop_count == 1
+
+
 def test_dashboard_max_visible_models_truncation() -> None:
     """When evaluating many models, table must truncate with '+N more' to maintain bounds."""
     config = ExperimentConfig(
