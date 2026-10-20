@@ -90,3 +90,27 @@ Effective tool permissions are checked before submission and retained with trial
 Other trusted task manifests default to `shell-v1`; unknown profiles fail validation. Codex/agy
 CLI workers retain their separate existing behavior. Historical scores, scope uncertainty, timeouts,
 and memory guardrails are unchanged. Compare runs with matching task/tool profile provenance.
+
+### Explicit judgments and comparison conditions (1.13.0)
+
+Trial details expose functional correctness, final-artifact compliance, execution compliance, budget
+compliance and confirmed termination as passed/failed/unknown judgments. `agent.scope_compliance`
+remains their compatible combined scope metric. A correct CLI artifact without trusted execution
+history remains functionally successful and canonically unscored. Missing or inconsistent evidence
+cannot produce a strict pass. First/last edit and completion timings are available only from correlated
+runtime timestamps; first edit is not first correct edit.
+
+Numerical rankings omit zero-scored variants. Reports retain their functional observations, durations,
+trial counts and uncertainty reasons as unranked diagnostics. Explicit comparison conditions cover
+trusted task/verifier digests, tool profile, scope/isolation policy, effective context, actual budgets,
+host/runtime identity and effective role/permissions. Different known conditions get separate groups;
+missing historical conditions remain diagnostic and do not establish equivalence. Historical artifacts
+are not migrated or rewritten. Model identity remains separate from agent-runtime identity.
+
+File-role preflight validates ordered effective permissions, exact role/prompt identity and only the
+installed runtime's verified tool-output exception. Trust currently supports OpenCode 1.19.3 with an
+inspectable local listener process; unsupported versions/layouts fail closed with a diagnostic. Shared
+OpenCode configuration is untouched. This is not an OS sandbox. `sandboxed-shell-v1` is explicitly
+unavailable pending the real worker/verifier boundary described in
+[the shell-boundary decision](docs/plans/20261020-final-hardening/shell-boundary.md).
+See [pending live acceptance](docs/plans/20261020-final-hardening/live-acceptance.md).

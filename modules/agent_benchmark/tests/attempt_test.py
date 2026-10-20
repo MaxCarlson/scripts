@@ -422,3 +422,31 @@ def test_file_profile_dispatch_is_auditable_and_can_earn_strict_pass(tmp_path):
     assert result.status == "passed"
     assert result.metrics["agent.scope_compliance"].value == 1
     assert result.metrics["agent.functional_pass"].value == 1
+
+
+def test_edit_timings_are_correlated_not_correctness_timing():
+    from agent_benchmark.attempt import extract_timings
+
+    history = [{"info": {"role": "user", "id": "u", "sessionID": "s", "time": {"created": 1000}}, "parts": []},
+        {"info": {"role": "assistant", "parentID": "u", "sessionID": "s", "time": {"created": 1100, "completed": 1500}, "finish": "stop"},
+         "parts": [{"type": "tool", "tool": "edit", "state": {"status": "completed", "time": {"end": 1200}}},
+                   {"type": "tool", "tool": "write", "state": {"status": "completed", "time": {"end": 1400}}}]}]
+    assert extract_timings(history) == {"first_edit_ms": 200, "last_edit_ms": 400, "completion_ms": 500}
+    history[1]["info"]["parentID"] = "different"
+    assert extract_timings(history) == {}
+
+
+@pytest.mark.parametrize("cli", [False, True])
+def test_unavailable_sandbox_refuses_before_allocation_or_dispatch(tmp_path, cli):
+    from dataclasses import replace
+    from agent_benchmark.attempt import run_cli_attempt
+    task = replace(load_task(TASK), opencode_tool_profile="sandboxed-shell-v1")
+    args = dict(workspace_root=tmp_path / "workers", evidence_dir=tmp_path / "evidence",
+                provider="codex" if cli else "lmstudio", model="test-model")
+    with pytest.raises(ValueError, match="sandboxed-shell-v1"):
+        if cli:
+            asyncio.run(run_cli_attempt(task, DispatchGuard(), **args))
+        else:
+            asyncio.run(run_attempt(task, Worker(), DispatchGuard(), agent="local-worker", **args))
+    assert not (tmp_path / "workers").exists()
+    assert not (tmp_path / "evidence").exists()

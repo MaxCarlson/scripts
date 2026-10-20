@@ -64,14 +64,53 @@ def base_metrics(session_tokens: dict | None = None, tool_telemetry: dict | None
     return metrics
 
 
+def _audit_consistent(attempt: AttemptEvidence) -> bool:
+    audit = attempt.scope_audit
+    if audit is None:
+        return True  # Absence remains unknown, not an internally inconsistent record.
+    fields = (audit.snapshot_violations, audit.transcript_violations, audit.all_violations)
+    if any(not isinstance(paths, (tuple, list)) or any(not isinstance(p, str) or not p for p in paths) for paths in fields):
+        return False
+    return set(audit.all_violations) == set(audit.snapshot_violations) | set(audit.transcript_violations)
+
+
+def attempt_judgments(attempt: AttemptEvidence) -> dict[str, str]:
+    """Separate observed artifacts from execution assurance; unknown never means safe."""
+    reliable = attempt.termination.confirmed and not attempt.execution_error
+    audit = attempt.scope_audit
+    artifact = execution = "unknown"
+    if not _audit_consistent(attempt):
+        return {"functional": "unknown", "artifact": "unknown", "execution": "unknown", "budget": "unknown",
+                "termination": "passed" if attempt.termination.confirmed else "unknown"}
+    if audit is not None:
+        if audit.snapshot_violations:
+            artifact = "failed"
+        elif attempt.s1 is not None and attempt.termination.confirmed:
+            artifact = "passed"
+        if audit.transcript_violations:
+            execution = "failed"
+        elif not audit.unverifiable_operations and attempt.termination.confirmed:
+            execution = "passed"
+    if attempt.scope_violations and (audit is None or not audit.all_violations):
+        artifact = "failed"  # Legacy/unattributed known violation cannot disappear.
+    functional = (attempt.verification.status if reliable and attempt.verification
+                  and attempt.verification.status in {"passed", "failed"} else "unknown")
+    return {"functional": functional, "artifact": artifact, "execution": execution,
+            "budget": ("failed" if attempt.task_budget_expired else "passed") if reliable else "unknown",
+            "termination": "passed" if attempt.termination.confirmed else "unknown"}
+
+
 def trial_from_attempt(
     attempt: AttemptEvidence, *, run_id: str, trial_id: str, task_id: str,
     variant_id: str, repetition: int, evidence_path: str,
 ) -> TrialResult:
     """Score S1 once. Never inspect the live workspace or any subsequent S2/S3."""
     evidence_path = validate_relative_path(evidence_path)
+    judgments = attempt_judgments(attempt)
+    scope_state = ("failed" if "failed" in (judgments["artifact"], judgments["execution"]) else
+                   "passed" if judgments["artifact"] == judgments["execution"] == "passed" else "unknown")
     observation = attempt.termination.last_observation
-    if (not attempt.termination.confirmed or attempt.execution_error or attempt.s1 is None
+    if (not _audit_consistent(attempt) or not attempt.termination.confirmed or attempt.execution_error or attempt.s1 is None
             or attempt.verification is None):
         status = "infrastructure_error"
     elif attempt.task_budget_expired:
@@ -80,10 +119,9 @@ def trial_from_attempt(
         status = "infrastructure_error"
     elif attempt.verification.status == "infrastructure_error":
         status = "infrastructure_error"
-    elif attempt.scope_violations:
+    elif scope_state == "failed":
         status = "failed"
-    elif (attempt.verification.status == "passed"
-          and (attempt.scope_audit is None or attempt.scope_audit.compliance == "uncertain")):
+    elif attempt.verification.status == "passed" and scope_state != "passed":
         status = "unscored"
     else:
         status = attempt.verification.status
@@ -116,12 +154,16 @@ def trial_from_attempt(
                                    if attempt.s1 is not None and attempt.termination.confirmed
                                    else unavailable("count", "No reliable S1 scope audit")),
     })
-    if attempt.scope_violations and attempt.termination.confirmed:
-        metrics["agent.scope_compliance"] = MetricValue(0, "boolean", "independent_scope_audit", "derived")
-    elif attempt.scope_audit and attempt.scope_audit.compliance == "compliant" and attempt.termination.confirmed:
-        metrics["agent.scope_compliance"] = MetricValue(1, "boolean", "independent_scope_audit", "derived")
-    else:
-        metrics["agent.scope_compliance"] = unavailable("boolean", "Scope could not be fully verified")
+    for key, state in (("scope_compliance", scope_state), ("artifact_compliance", judgments["artifact"]),
+                       ("execution_compliance", judgments["execution"])):
+        metrics[f"agent.{key}"] = (MetricValue(int(state == "passed"), "boolean", "independent_scope_audit", "derived")
+                                  if state != "unknown" else unavailable("boolean", "Scope evidence is incomplete"))
+    for key, value in (attempt.timings or {}).items():
+        metrics[f"agent.{key}"] = MetricValue(value, "ms", "correlated_session_timestamps", "measured")
+    for key in ("first_edit_ms", "last_edit_ms", "completion_ms"):
+        metrics.setdefault(f"agent.{key}", unavailable("ms", "No reliable correlated timestamp"))
+    for dimension, metric_name in (("functional", "agent.functional_pass"), ("budget", "agent.budget_pass")):
+        judgments[dimension] = {1: "passed", 0: "failed"}.get(metrics[metric_name].value, "unknown")
     checkpoints = {"S0": {"tree_hash": attempt.s0.tree_hash}}
     if attempt.s1:
         checkpoints["S1"] = {"tree_hash": attempt.s1.tree_hash, "diff_path": f"{evidence_path}/worker.patch"}
@@ -131,6 +173,8 @@ def trial_from_attempt(
             unverifiable_cats[op.category] = unverifiable_cats.get(op.category, 0) + 1
     details = {
         "scoring_basis": "worker_first_attempt_full_success", "checkpoints": checkpoints,
+        "judgments": judgments,
+        "evidence_diagnostic": None if _audit_consistent(attempt) else "Scope audit component sets disagree; result is unreliable",
         "evidence_path": evidence_path, "changed_paths": list(attempt.changed_paths),
         "scope_violations": list(attempt.scope_violations),
         "scope_audit": attempt.scope_audit.to_dict() if attempt.scope_audit else None,

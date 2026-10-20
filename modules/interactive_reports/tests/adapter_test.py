@@ -137,6 +137,16 @@ def test_from_experiment_comparison():
         (run_ref, trials_ref),
     ]
 
+    def conditions(budget):
+        return {"schema": "comparison-conditions-v1",
+            "tasks": {t: {"task_sha256": "a" * 64, "verifier_sha256": "b" * 64} for t in config.task_ids},
+            "execution_profiles": {t: "file-tools-v1" for t in config.task_ids},
+            "scope_policy": "scope-v1", "isolation_policy": "isolation-v1", "context_length": 16384,
+            "budget": {"profile": budget, "task_seconds": 60, "grace_seconds": 10, "verifier_seconds": 10},
+            "environment": {"python": "test", "platform": "test", "machine": "test", "harness_version": "test", "runtime": {"kind": "mock", "version": "1"}}}
+    config.metadata["comparison_contract"] = conditions(config.budget_profile)
+    for run, _ in runs:
+        run.metadata["comparison_contract"] = conditions(run.metadata["budget_profile"])
     comparison = aggregate_experiment(config, runs)
 
     all_trials = trials_winner + trials_loser + trials_ref
@@ -148,7 +158,7 @@ def test_from_experiment_comparison():
 
     assert report_data.experiment_id == "EXP_TEST_ADAPTER"
     assert report_data.suite_id == "agent_suite"
-    assert len(report_data.variants) == 3
+    assert len(report_data.variants) == 2
 
     # Check that m_winner is rank 1
     v_winner = report_data.variants[0]
@@ -168,12 +178,9 @@ def test_from_experiment_comparison():
     assert v_loser.failed == 1
     assert v_loser.timed_out == 1
 
-    # Check that m_ref is marked reference / ineligible
-    v_ref = report_data.variants[2]
-    assert v_ref.variant_id == "m_ref"
-    assert v_ref.is_eligible is False
-    assert v_ref.rank is None
-    assert len(v_ref.exclusion_reasons) > 0
+    # A different budget remains in its own condition group, never mixed into the main table.
+    group = next(iter(report_data.metadata["condition_groups"].values()))
+    assert "m_ref" in group["reference_variants"]
 
     # Check divergence matrix
     assert len(report_data.divergence_matrix) == 2
@@ -185,3 +192,26 @@ def test_from_experiment_comparison():
     # Check trials lookup map
     assert "tw_1" in report_data.trials
     assert report_data.trials["tw_1"].verifier_output == "Tests passed for t_add"
+
+
+def test_real_agent_scope_metrics_and_judgments_survive_adapter():
+    trial = _make_benchmark_trial("t1", "r1", "model-a", "task-1", TrialStatus.UNSCORED)
+    trial.metrics["agent.scope_compliance"] = MetricValue(None, "boolean", "audit", "unavailable", "uncertain")
+    trial.details.update({"judgments": {"functional": "passed", "artifact": "passed", "execution": "unknown"},
+                          "scope_audit": {"unverifiable_operations": [{"tool": "bash"}, {"tool": "bash"}]}})
+    detail = convert_trial_to_detail(trial)
+    assert detail.scope_compliance is None
+    assert detail.uncertain_operations is True
+    assert detail.metadata["benchmark_details"]["judgments"]["execution"] == "unknown"
+
+
+def test_repeated_trial_ids_do_not_overwrite_inspector_evidence():
+    from types import SimpleNamespace
+    comparison = SimpleNamespace(config=None, experiment_id="duplicate-ids")
+    trials = [_make_benchmark_trial("trial-001", "run-a", "model-a", "task", TrialStatus.PASSED),
+              _make_benchmark_trial("trial-001", "run-b", "model-b", "task", TrialStatus.FAILED)]
+    report = from_experiment_comparison(comparison, trials)
+    assert len(report.trials) == 2
+    assert {detail.variant_id for detail in report.trials.values()} == {"model-a", "model-b"}
+    assert all(detail.metadata["source_trial_id"] == "trial-001" for detail in report.trials.values())
+    assert {point.trial_id for point in report.efficiency_points} == set(report.trials)

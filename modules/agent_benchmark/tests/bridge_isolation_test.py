@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from agent_benchmark.bridge import OpenCodeBridge
+from agent_benchmark.tool_profile import FILE_PROMPT
 
 PROJECT = "a" * 40
 
@@ -21,7 +22,7 @@ def remote(workspace, overrides=None, requests=None, *, project_id=PROJECT):
             ("GET", "/global/health"): {"version": "1.19.3"},
             ("GET", "/provider"): {"all": [{"id": "lmstudio", "models": {"model-a": {}}}], "connected": ["lmstudio"]},
             ("GET", "/agent"): [{"name": "local-worker", "permission": []},
-                {"name": "benchmark-files", "permission": [
+                {"name": "benchmark-files", "mode": "primary", "prompt": FILE_PROMPT, "permission": [
                     {"permission": "*", "pattern": "*", "action": "deny"},
                     {"permission": "read", "pattern": "*", "action": "allow"},
                     {"permission": "edit", "pattern": "*", "action": "allow"}]}],

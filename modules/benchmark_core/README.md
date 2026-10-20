@@ -17,3 +17,13 @@
 ```python
 from benchmark_core import RunInfo, TrialResult, MetricValue
 ```
+
+## Comparison conditions (0.1.2)
+
+`comparison-conditions-v1` metadata explicitly establishes task/verifier identity, execution profiles,
+scope/isolation policy, context, budget and environment/runtime identity. Missing or malformed conditions
+suppress numerical run deltas and canonical experiment rankings. Known incompatible conditions form
+separate comparison groups; raw observations remain available. Eligible variants with zero scored
+trials stay unranked diagnostics, preserving denominators and functional metrics. JSON, CSV, Markdown,
+terminal and optional HTML outputs retain these distinctions. Historical records remain readable and
+are never rewritten to invent missing comparison metadata.

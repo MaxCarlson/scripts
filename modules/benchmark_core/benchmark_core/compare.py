@@ -8,10 +8,11 @@ and provides explicit warnings when scoring bases, suite versions, or units mism
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 import json
 from typing import Any, Optional, Sequence
 
+from .conditions import contract_error, contract_key
 from .models import ExperimentConfig, MetricValue, RunInfo, TrialResult, TrialStatus
 from .stats import (
     BenchmarkSummary,
@@ -196,6 +197,13 @@ def compare_runs(
             f"vs v{candidate.run_info.suite_version} (candidate)."
         )
 
+    baseline_contract = baseline.run_info.metadata.get("comparison_contract")
+    candidate_contract = candidate.run_info.metadata.get("comparison_contract")
+    condition_mismatch = (contract_error(baseline_contract) is not None
+                          or contract_error(candidate_contract) is not None
+                          or baseline_contract != candidate_contract)
+    if condition_mismatch:
+        warnings.append("CRITICAL: Comparison conditions differ or are not established; numerical deltas suppressed.")
     # Match variants
     variant_comps: dict[str, VariantComparison] = {}
     for vid, cand_var in candidate.variants.items():
@@ -220,9 +228,15 @@ def compare_runs(
             variant_comps[vid] = compare_variants(
                 base_var,
                 cand_var,
-                suppress_success_deltas=scoring_basis_mismatch,
+                suppress_success_deltas=scoring_basis_mismatch or condition_mismatch,
             )
 
+    if condition_mismatch:
+        for key, value in list(variant_comps.items()):
+            variant_comps[key] = replace(value,
+                duration_all_scored_mean=DeltaValue(value.duration_all_scored_mean.baseline, value.duration_all_scored_mean.candidate, None, None),
+                duration_successful_mean=DeltaValue(value.duration_successful_mean.baseline, value.duration_successful_mean.candidate, None, None),
+                metrics={name: DeltaValue(delta.baseline, delta.candidate, None, None) for name, delta in value.metrics.items()})
     return RunComparison(
         baseline_run_id=baseline.run_info.run_id,
         candidate_run_id=candidate.run_info.run_id,
@@ -374,6 +388,20 @@ def check_run_compatibility(
             f"No overlapping tasks: run tasks {sorted(run_info.task_ids)} do not intersect experiment tasks {sorted(config.task_ids)}"
         )
 
+    expected_contract = config.metadata.get("comparison_contract")
+    actual_contract = run_info.metadata.get("comparison_contract")
+    errors = [error for error in (contract_error(expected_contract), contract_error(actual_contract)) if error]
+    if errors:
+        rejections.extend(sorted(set(errors)))
+    elif expected_contract != actual_contract:
+        differing = sorted(key for key in set(expected_contract) | set(actual_contract)
+                           if expected_contract.get(key) != actual_contract.get(key))
+        rejections.append("Comparison conditions mismatch: " + ", ".join(differing))
+    if isinstance(actual_contract, dict) and not contract_error(actual_contract):
+        if set(actual_contract["tasks"]) != set(run_info.task_ids):
+            rejections.append("Run task set does not match its comparison contract")
+        if actual_contract["budget"]["profile"] != run_info.metadata.get("budget_profile"):
+            rejections.append("Run budget does not match its comparison contract")
     is_compatible = len(rejections) == 0
 
     run_meta = run_info.metadata or {}
@@ -421,6 +449,7 @@ class AggregatedVariantMetrics:
     metrics: dict[str, MetricStats]
     duration: DurationStats
     constituent_run_ids: list[str]
+    diagnostic_reasons: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -442,6 +471,7 @@ class AggregatedVariantMetrics:
             "metrics": {k: v.to_dict() for k, v in sorted(self.metrics.items())},
             "duration": self.duration.to_dict(),
             "constituent_run_ids": list(self.constituent_run_ids),
+            "diagnostic_reasons": list(self.diagnostic_reasons),
         }
 
     @classmethod
@@ -467,6 +497,7 @@ class AggregatedVariantMetrics:
             metrics={k: MetricStats.from_dict(v) for k, v in data.get("metrics", {}).items()},
             duration=DurationStats.from_dict(data["duration"]),
             constituent_run_ids=data.get("constituent_run_ids", []),
+            diagnostic_reasons=data.get("diagnostic_reasons", []),
         )
 
 
@@ -481,6 +512,12 @@ class ExperimentComparison:
     incompatible_runs: list[dict[str, Any]]
     canonical_rankings: list[str]  # Only eligible variants, sorted by strict acceptance descending
     warnings: list[str]
+    condition_groups: dict[str, dict[str, Any]] = field(default_factory=dict)
+
+    @property
+    def unranked_variants(self) -> dict[str, AggregatedVariantMetrics]:
+        return {k: v for k, v in self.eligible_variants.items()
+                if v.scored_denominator == 0 or v.strict_acceptance_rate is None}
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -490,6 +527,8 @@ class ExperimentComparison:
             "reference_variants": {k: v.to_dict() for k, v in sorted(self.reference_variants.items())},
             "incompatible_runs": copy.deepcopy(self.incompatible_runs),
             "canonical_rankings": list(self.canonical_rankings),
+            "unranked_variants": {k: v.to_dict() for k, v in sorted(self.unranked_variants.items())},
+            "condition_groups": copy.deepcopy(self.condition_groups),
             "warnings": list(self.warnings),
         }
 
@@ -510,8 +549,11 @@ class ExperimentComparison:
                 for k, v in data.get("reference_variants", {}).items()
             },
             incompatible_runs=data.get("incompatible_runs", []),
-            canonical_rankings=data.get("canonical_rankings", []),
+            canonical_rankings=[k for k in data.get("canonical_rankings", [])
+                                if data.get("eligible_variants", {}).get(k, {}).get("scored_denominator", 0) > 0
+                                and data["eligible_variants"][k].get("strict_acceptance_rate") is not None],
             warnings=data.get("warnings", []),
+            condition_groups=data.get("condition_groups", {}),
         )
 
     @classmethod
@@ -522,6 +564,7 @@ class ExperimentComparison:
 def aggregate_experiment(
     config: ExperimentConfig,
     runs: Sequence[tuple[RunInfo, Sequence[TrialResult]]],
+    *, _separate_conditions: bool = True,
 ) -> ExperimentComparison:
     """
     Aggregate multiple benchmark runs into an ExperimentComparison.
@@ -550,7 +593,9 @@ def aggregate_experiment(
         check = check_run_compatibility(run_info, config)
         if not check.is_compatible:
             incompatible_runs.append(
-                {"run_id": run_info.run_id, "reasons": check.rejection_reasons}
+                {"run_id": run_info.run_id, "reasons": check.rejection_reasons,
+                 "run_info": run_info.to_dict(), "trials": [t.to_dict() for t in trials],
+                 "condition_key": contract_key(run_info.metadata.get("comparison_contract"))}
             )
             warnings.append(
                 f"Incompatible run '{run_info.run_id}' rejected: {'; '.join(check.rejection_reasons)}"
@@ -638,6 +683,10 @@ def aggregate_experiment(
             metrics=metric_stats,
             duration=duration,
             constituent_run_ids=run_ids,
+            diagnostic_reasons=sorted({str(reason)[:500] for trial in trials for reason in (
+                trial.details.get("execution_diagnostic"), trial.details.get("execution_error"),
+                "Execution scope unknown" if (trial.details.get("scope_audit") or {}).get("compliance") == "uncertain" else None,
+            ) if reason}),
         )
 
     eligible_variants: dict[str, AggregatedVariantMetrics] = {}
@@ -660,8 +709,27 @@ def aggregate_experiment(
         )
         return (rate, -dur_mean)
 
-    sorted_eligible = sorted(eligible_variants.items(), key=_rank_key, reverse=True)
+    sorted_eligible = sorted(((k, v) for k, v in eligible_variants.items()
+                              if v.scored_denominator > 0 and v.strict_acceptance_rate is not None),
+                             key=_rank_key, reverse=True)
     canonical_rankings = [vid for vid, _ in sorted_eligible]
+
+    condition_groups = {}
+    if _separate_conditions:
+        groups: dict[str, list] = {}
+        expected_key = contract_key(config.metadata.get("comparison_contract"))
+        for run, trials in runs:
+            key = contract_key(run.metadata.get("comparison_contract"))
+            if key and key != expected_key:
+                groups.setdefault(key, []).append((run, trials))
+        for key, group_runs in groups.items():
+            first = group_runs[0][0]
+            contract = first.metadata["comparison_contract"]
+            group_config = replace(config, suite_id=first.suite_id, suite_version=first.suite_version,
+                scoring_basis=first.scoring_basis, task_ids=list(first.task_ids),
+                budget_profile=contract["budget"]["profile"],
+                metadata={**config.metadata, "comparison_contract": contract})
+            condition_groups[key] = aggregate_experiment(group_config, group_runs, _separate_conditions=False).to_dict()
 
     return ExperimentComparison(
         experiment_id=config.experiment_id,
@@ -670,7 +738,7 @@ def aggregate_experiment(
         reference_variants=reference_variants,
         incompatible_runs=incompatible_runs,
         canonical_rankings=canonical_rankings,
-        warnings=warnings,
+        warnings=warnings, condition_groups=condition_groups,
     )
 
 
@@ -695,8 +763,8 @@ def render_experiment_comparison_md(comparison: ExperimentComparison) -> str:
 
     lines.append("## Canonical Model Leaderboard (Eligible Only)")
     lines.append("")
-    if not comparison.eligible_variants:
-        lines.append("*No comparison-eligible variants recorded.*")
+    if not comparison.canonical_rankings:
+        lines.append("*No variants with a defined strict rate to rank.*")
         lines.append("")
     else:
         lines.append(
@@ -723,6 +791,18 @@ def render_experiment_comparison_md(comparison: ExperimentComparison) -> str:
             )
         lines.append("")
 
+    if comparison.unranked_variants:
+        lines.extend(["## Unranked Diagnostics", "", "No numerical rank: strict scored denominator is zero.", "",
+                      "| Variant | Trials | Infra / Unscored | Functional rate (available) | Observed mean ms | Reasons |",
+                      "|---|---|---|---|---|---|"])
+        for vid, vm in sorted(comparison.unranked_variants.items()):
+            functional = vm.metrics.get("agent.functional_pass")
+            duration = vm.metrics.get("duration.wall_ms")
+            function_text = f"{functional.mean:.1%} ({functional.available_count})" if functional and functional.mean is not None else "unknown"
+            duration_text = f"{duration.mean:.1f}" if duration and duration.mean is not None else "unknown"
+            lines.append(f"| `{vid}` | {vm.total_trials} | {vm.infrastructure_error} / {vm.unscored} | {function_text} | {duration_text} | {'; '.join(vm.diagnostic_reasons)} |")
+        lines.append("")
+
     if comparison.reference_variants:
         lines.append("## Reference & Comparison-Ineligible Variants")
         lines.append("")
@@ -736,5 +816,18 @@ def render_experiment_comparison_md(comparison: ExperimentComparison) -> str:
             denom_str = f"{vm.scored_denominator} ({vm.passed} / {vm.failed} / {vm.timed_out})"
             lines.append(f"| `{vid}` | {reasons} | {rate_str} | {denom_str} | {vm.infrastructure_error} |")
         lines.append("")
+
+    if comparison.incompatible_runs:
+        lines.extend(["## Incompatible / Unknown-condition Diagnostics", ""])
+        for item in comparison.incompatible_runs:
+            lines.append(f"- `{item['run_id']}`: {'; '.join(item['reasons'])}")
+            for trial in item.get("trials", []):
+                functional = trial.get("metrics", {}).get("agent.functional_pass", {}).get("value")
+                duration = trial.get("metrics", {}).get("duration.wall_ms", {}).get("value")
+                lines.append(f"  - `{trial['variant_id']}` / `{trial['trial_id']}`: {trial['status']}; functional={functional}; observed ms={duration}")
+        lines.append("")
+    for key, group in sorted(comparison.condition_groups.items()):
+        lines.extend([f"## Separate comparison conditions `{key[:12]}`", "",
+                      render_experiment_comparison_md(ExperimentComparison.from_dict(group)), ""])
 
     return "\n".join(lines)

@@ -396,3 +396,19 @@ def test_full_canonical_scratch_run_persists_policy_and_separate_paths(tmp_path)
     assert (
         reaudit_trial(directory / "evidence/trial-001", load_task(TASK)).to_dict() == trials[0].details["scope_audit"]
     )
+
+
+def test_git_ignored_bytecode_remains_authoritative_scope_violation(tmp_path):
+    task = load_task(TASK)
+    workspace = tmp_path / "worker"
+    prepare_workspace(task, workspace, scope_policy=SCOPE_POLICY)
+    (workspace / ".gitignore").write_text("__pycache__/\n", encoding="utf-8")
+    s0 = capture(workspace, tmp_path / "S0")
+    bytecode = "__pycache__/grep.cpython-312.pyc"
+    (workspace / "__pycache__").mkdir()
+    (workspace / bytecode).write_bytes(b"prohibited cache")
+    s1 = capture(workspace, tmp_path / "S1")
+    audit = audit_scope(task, workspace, s0, s1, history("grep.py"), scope_policy=SCOPE_POLICY)
+    assert bytecode in s1.files
+    assert bytecode in audit.snapshot_violations
+    assert audit.compliance == "violated"

@@ -52,8 +52,16 @@ def generate_html_report(
     )
 
     # Calculate summary metrics
-    total_models = len(report.variants)
-    eligible_variants = [v for v in report.variants if v.is_eligible]
+    model_ids = {v.variant_id for v in report.variants} | {t.variant_id for t in report.trials.values()}
+    for group in report.metadata.get("condition_groups", {}).values():
+        model_ids.update(group.get("eligible_variants", {}))
+        model_ids.update(group.get("reference_variants", {}))
+    for run in report.metadata.get("incompatible_runs", []):
+        model_ids.update(t["variant_id"] for t in run.get("trials", []))
+    total_models = len(model_ids)
+    eligible_variants = [v for v in report.variants if v.is_eligible and v.scored_denominator > 0
+                         and v.strict_acceptance_rate is not None]
+    unranked_variants = [v for v in report.variants if v.is_eligible and v not in eligible_variants]
     reference_variants = [v for v in report.variants if not v.is_eligible]
 
     top_winner = eligible_variants[0] if eligible_variants else None
@@ -65,6 +73,10 @@ def generate_html_report(
     )
 
     total_trials = sum(v.total_trials for v in report.variants)
+    for group in report.metadata.get("condition_groups", {}).values():
+        total_trials += sum(v["total_trials"] for v in {**group.get("eligible_variants", {}), **group.get("reference_variants", {})}.values())
+    total_trials += sum(len(run.get("trials", [])) for run in report.metadata.get("incompatible_runs", [])
+                        if run.get("condition_key") not in report.metadata.get("condition_groups", {}))
     total_scored_denom = sum(v.scored_denominator for v in report.variants)
 
     # Top throughput
@@ -608,12 +620,12 @@ def generate_html_report(
       <div class="kpi-card">
         <div class="kpi-label">Models Benchmarked</div>
         <div class="kpi-val">{total_models}</div>
-        <div class="kpi-sub">{len(eligible_variants)} eligible, {len(reference_variants)} reference</div>
+        <div class="kpi-sub">{len(eligible_variants)} ranked, {len(unranked_variants)} unranked, {len(reference_variants)} reference</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Scored Trials Denominator</div>
         <div class="kpi-val">{total_scored_denom}</div>
-        <div class="kpi-sub">{total_trials} total scheduled trials</div>
+        <div class="kpi-sub">{total_trials} recorded trials</div>
       </div>
       <div class="kpi-card">
         <div class="kpi-label">Peak Generation Speed</div>
@@ -649,13 +661,15 @@ def generate_html_report(
           </tr>
         </thead>
         <tbody>
-          {"".join(_render_canonical_rows(eligible_variants))}
+          {"".join(_render_canonical_rows(eligible_variants)) if eligible_variants else '<tr><td colspan="8">No variants with a defined strict rate.</td></tr>'}
         </tbody>
       </table>
     </div>
 
     <!-- Reference / Ineligible Variants Table -->
+    {_render_unranked_section(unranked_variants)}
     {_render_reference_section(reference_variants)}
+    {_render_condition_sections(report.metadata)}
   </div>
 
   <!-- Tab 2: Task Divergence Matrix -->
@@ -925,9 +939,24 @@ def generate_html_report(
 
       const sKv = document.getElementById('drawer-scope-kv');
       sKv.innerHTML = `
-        <div class="kv-key">Scope Compliance:</div><div class="kv-val">${{trial.scope_compliance === true ? '✅ PASS' : (trial.scope_compliance === false ? '❌ VIOLATION' : 'N/A')}}</div>
-        <div class="kv-key">Uncertain Operations:</div><div class="kv-val">${{trial.uncertain_operations === true ? '⚠️ DETECTED' : 'None'}}</div>
+        <div class="kv-key">Scope Compliance:</div><div class="kv-val">${{trial.scope_compliance === true ? '✅ PASS' : (trial.scope_compliance === false ? '❌ VIOLATION' : 'UNKNOWN')}}</div>
+        <div class="kv-key">Uncertain Operations:</div><div class="kv-val">${{trial.uncertain_operations === true ? '⚠️ DETECTED' : (trial.uncertain_operations === false ? 'None detected' : 'UNKNOWN')}}</div>
       `;
+
+      const judgments = trial.metadata?.benchmark_details?.judgments || {{}};
+      for (const name of ['functional', 'artifact', 'execution', 'budget', 'termination']) {{
+        const key = document.createElement('div'); key.className = 'kv-key'; key.textContent = name + ':';
+        const value = document.createElement('div'); value.className = 'kv-val';
+        value.textContent = ['passed', 'failed', 'unknown'].includes(judgments[name]) ? judgments[name].toUpperCase() : 'UNKNOWN';
+        sKv.append(key, value);
+      }}
+      for (const name of ['first_edit_ms', 'last_edit_ms', 'completion_ms']) {{
+        const key = document.createElement('div'); key.className = 'kv-key'; key.textContent = name + ':';
+        const value = document.createElement('div'); value.className = 'kv-val';
+        const stamp = trial.metrics?.['agent.' + name];
+        value.textContent = Number.isFinite(stamp) ? stamp.toFixed(1) + ' ms' : 'UNKNOWN';
+        sKv.append(key, value);
+      }}
 
       document.getElementById('drawer-diff').textContent = trial.diff || '(No diff recorded)';
 
@@ -1163,3 +1192,58 @@ def _render_explorer_rows(trials: Any) -> str:
           <td><button class="pill" onclick="openTrialInspector('{html.escape(t.trial_id)}')">Inspect</button></td>
         </tr>""")
     return "\n".join(rows)
+
+
+def _render_unranked_section(variants: list[VariantReportRow]) -> str:
+    if not variants:
+        return ""
+    rows = []
+    for variant in variants:
+        functional = variant.metrics.get("agent.functional_pass", {})
+        rate = functional.get("mean") if isinstance(functional, dict) else None
+        count = functional.get("available_count", 0) if isinstance(functional, dict) else 0
+        code = f"{rate:.1%} ({count} measured)" if rate is not None else "UNKNOWN"
+        duration = f"{variant.duration_mean_ms:.1f} ms" if variant.duration_mean_ms is not None else "UNKNOWN"
+        reasons = "; ".join(variant.configuration.get("diagnostic_reasons", [])) or "No strict scored denominator"
+        rows.append(f"<tr><td>{html.escape(variant.variant_id)}</td><td>{variant.total_trials}</td>"
+                    f"<td>{variant.infrastructure_error} / {variant.unscored}</td><td>{code}</td><td>{duration}</td>"
+                    f"<td>{html.escape(reasons)}</td></tr>")
+    return ('<section style="margin-top:32px"><h3>Unranked Diagnostics</h3>'
+            '<p>No numerical rank: strict scored denominator is zero. Functional results are independent.</p>'
+            '<div class="table-container"><table><thead><tr><th>Variant</th><th>Trials</th><th>Infra / Unscored</th>'
+            '<th>Functional rate</th><th>Observed duration</th><th>Reasons</th></tr></thead><tbody>'
+            + ''.join(rows) + '</tbody></table></div></section>')
+
+
+def _render_condition_sections(metadata: dict) -> str:
+    sections = []
+    if metadata.get("comparison_contract"):
+        sections.append('<details style="margin-top:32px"><summary>Primary comparison conditions</summary><pre>'
+                        + html.escape(json.dumps(metadata["comparison_contract"], indent=2)) + '</pre></details>')
+    for key, group in sorted(metadata.get("condition_groups", {}).items()):
+        rows = []
+        rankings = group.get("canonical_rankings", [])
+        for vid, variant in sorted({**group.get("eligible_variants", {}), **group.get("reference_variants", {})}.items()):
+            rank = str(rankings.index(vid) + 1) if vid in rankings else "Unranked"
+            rate = variant.get("strict_acceptance_rate")
+            rate_text = f"{rate:.1%}" if rate is not None else "UNKNOWN"
+            rows.append(f"<tr><td>{rank}</td><td>{html.escape(vid)}</td><td>{rate_text}</td>"
+                        f"<td>{variant['total_trials']}</td></tr>")
+        conditions = group.get("config", {}).get("metadata", {}).get("comparison_contract")
+        sections.append(f'<section style="margin-top:32px"><h3>Separate comparison conditions {html.escape(key[:12])}</h3>'
+                        '<p>Ranks apply only within this condition group.</p>'
+                        f'<details><summary>Recorded conditions</summary><pre>{html.escape(json.dumps(conditions, indent=2))}</pre></details>'
+                        '<div class="table-container"><table><thead><tr><th>Group rank</th><th>Variant</th><th>Strict rate</th>'
+                        '<th>Trials</th></tr></thead><tbody>' + ''.join(rows) + '</tbody></table></div></section>')
+    if metadata.get("incompatible_runs"):
+        rows = []
+        for run in metadata["incompatible_runs"]:
+            for trial in run.get("trials", []):
+                functional = trial.get("metrics", {}).get("agent.functional_pass", {}).get("value")
+                duration = trial.get("metrics", {}).get("duration.wall_ms", {}).get("value")
+                text = f"{trial['variant_id']} / {trial['trial_id']}: {trial['status']}; functional={functional}; observed ms={duration}"
+                rows.append('<li>' + html.escape(text) + '</li>')
+            rows.append('<li>' + html.escape(run['run_id'] + ': ' + '; '.join(run['reasons'])) + '</li>')
+        sections.append('<section style="margin-top:32px"><h3>Incompatible / Unknown-condition Diagnostics</h3><ul>'
+                        + ''.join(rows) + '</ul></section>')
+    return ''.join(sections)

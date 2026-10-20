@@ -7,6 +7,7 @@ into self-contained ReportData instances without hard static dependencies.
 
 from __future__ import annotations
 
+from collections import Counter
 from typing import Any, Callable, Mapping, Optional, Sequence
 
 from .charts import build_efficiency_points
@@ -78,11 +79,16 @@ def convert_trial_to_detail(
         share = round(rea_tok / out_tok, 4)
 
     # Scope & Uncertain Ops
-    scope_val = _get_metric_val(metrics_raw.get("audit.scope_compliance") or metrics_raw.get("scope_compliance"))
+    scope_val = _get_metric_val(metrics_raw.get("agent.scope_compliance") or metrics_raw.get("audit.scope_compliance") or metrics_raw.get("scope_compliance"))
     scope_comp = (scope_val == 1.0) if scope_val is not None else None
 
     unc_val = _get_metric_val(metrics_raw.get("audit.uncertain_operations") or metrics_raw.get("uncertain_operations"))
-    unc_ops = (unc_val == 1.0) if unc_val is not None else None
+    unc_ops = (unc_val > 0) if unc_val is not None else None
+    audit = details_raw.get("scope_audit") if isinstance(details_raw, dict) else None
+    if isinstance(audit, dict) and isinstance(audit.get("unverifiable_operations"), list):
+        unc_ops = bool(audit["unverifiable_operations"])
+    metadata_raw = {**metadata_raw, "benchmark_details": dict(details_raw)}
+    error_message = error_message or details_raw.get("execution_diagnostic") or details_raw.get("worker_diagnostic")
 
     # Verifier & Diff Evidence
     verifier_out = artifacts_raw.get("verifier_output") or metadata_raw.get("verifier_output")
@@ -144,8 +150,20 @@ def from_experiment_comparison(
     # Convert trials
     detail_map: dict[str, TrialDetail] = {}
     trial_details: list[TrialDetail] = []
-    for t in trials:
-        td = convert_trial_to_detail(t, evidence_resolver=evidence_resolver)
+    # Trial IDs are only unique within a run. Qualify collisions in the report,
+    # retaining their original identity without rewriting canonical records.
+    source_ids = [str(getattr(t, "trial_id", "") or (t.get("trial_id", "") if isinstance(t, dict) else "")) for t in trials]
+    duplicates = {key for key, count in Counter(source_ids).items() if count > 1}
+    reserved_ids = set(source_ids)
+    for index, t in enumerate(trials):
+        td = convert_trial_to_detail(t, evidence_resolver=None if source_ids[index] in duplicates else evidence_resolver)
+        if td.trial_id in duplicates:
+            run_id = str(getattr(t, "run_id", "") or (t.get("run_id", "") if isinstance(t, dict) else ""))
+            td.metadata.update(source_trial_id=td.trial_id, source_run_id=run_id)
+            qualified = f"{run_id}/{td.trial_id}"
+            while qualified in detail_map or qualified in reserved_ids:
+                qualified += f"/{index}"
+            td.trial_id = qualified
         detail_map[td.trial_id] = td
         trial_details.append(td)
 
@@ -193,6 +211,8 @@ def from_experiment_comparison(
             is_eligible=is_eligible,
             rank=rank,
             exclusion_reasons=list(getattr(vm, "exclusion_reasons", [])),
+            metrics={key: stat.to_dict() if hasattr(stat, "to_dict") else stat for key, stat in vm_metrics.items()},
+            configuration={"diagnostic_reasons": list(getattr(vm, "diagnostic_reasons", []))},
             total_trials=int(getattr(vm, "total_trials", len(v_trials))),
             passed=int(getattr(vm, "passed", 0)),
             failed=int(getattr(vm, "failed", 0)),
@@ -203,7 +223,7 @@ def from_experiment_comparison(
             strict_acceptance_rate=strict_rate,
             ci_lower=ci_lower,
             ci_upper=ci_upper,
-            duration_mean_ms=dur_mean,
+            duration_mean_ms=dur_mean if dur_mean is not None else getattr(vm_metrics.get("duration.wall_ms"), "mean", None),
             duration_median_ms=dur_med,
             throughput_tok_per_s=tp_mean,
             tokens_per_successful_task=tok_task,
@@ -235,6 +255,8 @@ def from_experiment_comparison(
     points = build_efficiency_points(trial_details)
 
     warnings = list(getattr(comparison, "warnings", []))
+    if duplicates and evidence_resolver is not None:
+        warnings.append("Duplicate trial IDs qualified by run; ambiguous legacy evidence lookups were skipped.")
 
     return ReportData(
         experiment_id=exp_id,
@@ -249,4 +271,7 @@ def from_experiment_comparison(
         efficiency_points=points,
         trials=detail_map,
         warnings=warnings,
+        metadata={"comparison_contract": getattr(cfg, "metadata", {}).get("comparison_contract") if cfg else None,
+                  "condition_groups": getattr(comparison, "condition_groups", {}),
+                  "incompatible_runs": getattr(comparison, "incompatible_runs", [])},
     )

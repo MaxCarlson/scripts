@@ -359,8 +359,8 @@ class ExperimentDashboard:
             "CANONICAL LEADERBOARD (Comparison-Eligible Models Only):",
         ]
 
-        if not comparison.eligible_variants:
-            lines.append("  (No comparison-eligible models evaluated)")
+        if not comparison.canonical_rankings:
+            lines.append("  (No models with a defined strict rate to rank)")
         elif terminal_width < 110:
             for rank, vid in enumerate(comparison.canonical_rankings, start=1):
                 vm = comparison.eligible_variants[vid]
@@ -409,6 +409,35 @@ class ExperimentDashboard:
                 lead_table.add_row(str(rank), vid, full_rate, denom_str, other_str, dur_str)
 
             lines.append(lead_table.render(max_width=terminal_width))
+
+        for key, group in sorted(comparison.condition_groups.items()):
+            conditions = group.get("config", {}).get("metadata", {}).get("comparison_contract", {})
+            lines.extend(["", f"SEPARATE COMPARISON CONDITIONS {key[:12]}:",
+                          f"  Context: {conditions.get('context_length', 'UNKNOWN')}; "
+                          f"budget: {conditions.get('budget', {}).get('profile', 'UNKNOWN')}"])
+            ranks = group.get("canonical_rankings", [])
+            for vid, vm in sorted({**group.get("eligible_variants", {}), **group.get("reference_variants", {})}.items()):
+                label = f"group rank {ranks.index(vid) + 1}" if vid in ranks else "unranked"
+                code = vm.get("metrics", {}).get("agent.functional_pass", {})
+                functional = f"{code['mean']:.1%} ({code['available_count']} measured)" if code.get("mean") is not None else "UNKNOWN"
+                lines.append(f"  {vid}: {label}; trials {vm['total_trials']}; functional {functional}")
+        if comparison.incompatible_runs:
+            lines.extend(["", "INCOMPATIBLE / UNKNOWN-CONDITION DIAGNOSTICS:"])
+            for run in comparison.incompatible_runs:
+                lines.append(f"  {run['run_id']}: {'; '.join(run['reasons'])}")
+                for trial in run.get("trials", []):
+                    code = trial.get("metrics", {}).get("agent.functional_pass", {}).get("value")
+                    lines.append(f"    {trial['variant_id']}: {trial['status']}; code "
+                                 + {1: "PASS", 0: "FAIL"}.get(code, "UNKNOWN"))
+
+        if comparison.unranked_variants:
+            lines.extend(["", "UNRANKED DIAGNOSTICS (no strict scored denominator):"])
+            for vid, vm in sorted(comparison.unranked_variants.items()):
+                observed = vm.metrics.get("duration.wall_ms")
+                duration_text = f"{observed.mean / 1000:.1f}s" if observed and observed.mean is not None else "unknown"
+                lines.append(f"  {vid}: trials {vm.total_trials}; infra {vm.infrastructure_error}; "
+                             f"unscored {vm.unscored}; observed mean {duration_text}")
+                lines.extend(f"    {reason}" for reason in vm.diagnostic_reasons)
 
         if comparison.reference_variants:
             lines.append("")

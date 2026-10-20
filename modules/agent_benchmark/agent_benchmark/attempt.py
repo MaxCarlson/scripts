@@ -21,12 +21,12 @@ from typing import Any
 import httpx
 
 from .bridge import ModelConfigurationError, OpenCodeBridge
-from .tool_profile import FILE_AGENT, FILE_PROFILE, FILE_PROMPT
+from .tool_profile import FILE_AGENT, FILE_PROFILE, FILE_PROMPT, validate_execution_profile
 from .identity import ModelIdentity, ModelIdentityError, discover_lmstudio_identity
 from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
 from .scratch import SCOPE_POLICY, prompt_instructions, provenance, reserved_path
-from .lifecycle import DispatchGuard, OwnedWorkspace, TerminationDecision, WorkerHandle, confirm_termination
+from .lifecycle import DispatchGuard, Observation, OwnedWorkspace, TerminationDecision, WorkerHandle, confirm_termination
 
 
 @dataclass(frozen=True)
@@ -49,6 +49,46 @@ class AttemptEvidence:
     session_tokens: dict[str, Any] | None = None
     tool_telemetry: dict[str, Any] | None = None
     execution_diagnostic: str | None = None
+    timings: dict[str, float] | None = None
+
+
+def extract_timings(history: object) -> dict[str, float]:
+    def mapping(value):
+        return value if isinstance(value, dict) else {}
+    def stamp(value):
+        return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+    if not isinstance(history, list):
+        return {}
+    users = [mapping(m).get("info") for m in history if mapping(mapping(m).get("info")).get("role") == "user"]
+    if len(users) != 1:
+        return {}
+    user = users[0]
+    start = mapping(user.get("time")).get("created")
+    if not stamp(start) or not all(isinstance(user.get(k), str) and user[k] for k in ("id", "sessionID")):
+        return {}
+    edits, assistants = [], []
+    for message in history:
+        message = mapping(message)
+        info = mapping(message.get("info"))
+        if info.get("role") != "assistant" or info.get("parentID") != user["id"] or info.get("sessionID") != user["sessionID"]:
+            continue
+        assistants.append(info)
+        parts = message.get("parts")
+        for part in parts if isinstance(parts, list) else []:
+            part = mapping(part)
+            state = mapping(part.get("state"))
+            value = mapping(state.get("time")).get("end")
+            if (part.get("type") == "tool" and part.get("tool") in {"edit", "write", "patch"}
+                    and state.get("status") == "completed" and stamp(value) and value >= start):
+                edits.append(value - start)
+    result = {"first_edit_ms": min(edits), "last_edit_ms": max(edits)} if edits else {}
+    if assistants:
+        final = max(assistants, key=lambda info: mapping(info.get("time")).get("created", -1)
+                    if stamp(mapping(info.get("time")).get("created")) else -1)
+        value = mapping(final.get("time")).get("completed")
+        if final.get("finish") == "stop" and not final.get("error") and stamp(value) and value >= start:
+            result["completion_ms"] = value - start
+    return result
 
 
 def extract_telemetry(session: Any, history: Any) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -239,6 +279,7 @@ async def run_attempt(
     is a separate explicit operation; this function always retains the workspace.
     Preflight errors occur before dispatch and propagate with diagnostic evidence.
     """
+    validate_execution_profile(task.opencode_tool_profile)
     budget = task.time_budget_seconds if task_seconds is None else task_seconds
     for name, value in (("task_seconds", budget), ("grace_seconds", grace_seconds),
                         ("poll_seconds", poll_seconds), ("verifier_seconds", verifier_seconds)):
@@ -443,7 +484,7 @@ async def run_attempt(
             execution_error, worker_ms, (time.monotonic() - start) * 1000, scope_audit=audit, scope_policy=SCOPE_POLICY,
             session_tokens=session_tokens if session_tokens else None,
             tool_telemetry=tool_telemetry if tool_telemetry else None,
-            execution_diagnostic=execution_diagnostic,
+            execution_diagnostic=execution_diagnostic, timings=extract_timings(bridge.last_history),
         )
     finally:
         # Persistence can fail after remote submission (disk full/permissions).
@@ -470,6 +511,7 @@ async def run_cli_attempt(
     cli_runner: Any = None,
 ) -> AttemptEvidence:
     """Execute a benchmark trial directly via local CLI agent (`agy` for gemini, `codex` for codex)."""
+    validate_execution_profile(task.opencode_tool_profile)
     budget = task.time_budget_seconds if task_seconds is None else task_seconds
     for name, value in (("task_seconds", budget), ("grace_seconds", grace_seconds), ("verifier_seconds", verifier_seconds)):
         if not math.isfinite(value) or value <= 0:
@@ -628,9 +670,13 @@ async def run_cli_attempt(
         confirmed=terminated_cleanly,
         cancellation_requested=task_budget_expired,
         grace_seconds=grace_seconds,
-        polls=1,
-        final_job_state="completed" if not task_budget_expired else "cancelled",
-        reasons=() if terminated_cleanly else ("CLI subprocess did not terminate within grace period",),
+        elapsed_seconds=worker_ms / 1000.0,
+        last_observation=Observation(
+            "cancelled" if task_budget_expired else "failed" if execution_error else "completed",
+            "idle" if terminated_cleanly else "unknown", terminated_cleanly, not terminated_cleanly,
+            terminated_cleanly, "CLI child exit observed; no execution transcript or containment proof",
+        ),
+        diagnostics=() if terminated_cleanly else ("CLI subprocess did not terminate within grace period",),
     )
     journal.update(
         stage="terminated" if decision.confirmed else "termination_unresolved",
