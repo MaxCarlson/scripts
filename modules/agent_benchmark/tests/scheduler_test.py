@@ -405,3 +405,47 @@ async def test_scheduler_unauthorized_model_transition_halts_safely(
 
     with pytest.raises(ModelTransitionNotAuthorizedError, match="not authorized"):
         await scheduler.run()
+
+
+@pytest.mark.asyncio
+async def test_runtime_memory_stop_saves_current_trial_and_prevents_any_further_dispatch(
+    tmp_path, sample_experiment_config, monkeypatch,
+):
+    from agent_benchmark import scheduler as scheduler_module
+    from agent_benchmark.telemetry import ResourceLimitExceeded
+
+    transitions = []
+    trials = []
+
+    async def transition(model_key, **kwargs):
+        transitions.append(model_key)
+
+    async def execute(trial, *args):
+        trials.append(trial)
+        return TrialResult(
+            run_id=trial.run_id, trial_id="trial-001", task_id=trial.task_id,
+            variant_id=trial.model_key, repetition=trial.repetition,
+            status=TrialStatus.INFRASTRUCTURE_ERROR,
+            metrics={}, details={"execution_error": "ResourceLimitExceeded",
+                                 "execution_diagnostic": "Host RAM safety stop: 87.5% used"},
+        )
+
+    monkeypatch.setattr(scheduler_module, "transition_model", transition)
+    task_dir = Path(__file__).resolve().parents[1] / "agent_benchmark/tasks/py-grep-smoke"
+    scheduler = ExperimentScheduler(
+        expand_experiment_plan(sample_experiment_config), task_dirs={"py-grep-smoke": task_dir},
+        reports_dir=tmp_path / "reports", state_dir=tmp_path / "state",
+        allow_model_transitions=True, trial_executor=execute,
+    )
+    with pytest.raises(ResourceLimitExceeded, match="87.5%"):
+        await scheduler.run()
+    assert len(trials) == 1
+    assert transitions == ["qwen38-27b-q4km"]
+    assert len(scheduler.completed_runs[0][1]) == 1
+    exp_dir = tmp_path / "reports" / sample_experiment_config.experiment_id
+    assert (exp_dir / "index.html").is_file()
+    manifest = json.loads((exp_dir / "experiment.json").read_text())
+    assert len(manifest["run_refs"]) == 1
+    failure = json.loads((exp_dir / "experiment-failure.json").read_text())
+    assert failure["error_type"] == "ResourceLimitExceeded"
+    assert failure["stage"] == "trial_execution"

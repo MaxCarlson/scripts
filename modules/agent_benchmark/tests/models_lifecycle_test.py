@@ -497,3 +497,62 @@ async def test_list_gemini_and_codex_models(tmp_path) -> None:
     assert cdx_models[0].model_key == "gpt-6.1-sol"
     assert cdx_models[1].model_key == "gpt-6-astra"
 
+
+
+@pytest.mark.asyncio
+async def test_unload_waits_for_measured_headroom_after_inventory_is_empty(monkeypatch):
+    state = "loaded"
+    samples = 0
+    commands = []
+
+    def snapshot():
+        nonlocal samples
+        samples += 1
+        return ResourceSnapshot(ram_pct=76 if samples == 1 else 40,
+                                ram_available_bytes=(15 if samples == 1 else 40) * 1024**3,
+                                gpu_memory_used_bytes=4 * 1024**3, gpu_memory_total_bytes=32 * 1024**3)
+
+    async def runner(cmd):
+        nonlocal state
+        commands.append(cmd)
+        if "ps" in cmd:
+            if state == "loaded":
+                return 0, SAMPLE_LMS_PS_LOADED, ""
+            if state == "empty":
+                return 0, "[]", ""
+            return 0, json.dumps([{"identifier": "new", "modelKey": "new", "status": "idle", "contextLength": 16384}]), ""
+        if "unload" in cmd:
+            state = "empty"
+            return 0, "", ""
+        assert samples >= 2, "No estimate or load before RAM has recovered"
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
+        state = "new"
+        return 0, "", ""
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", snapshot)
+    await transition_model("new", allow_transitions=True, runner=runner,
+                           expected_model_size_bytes=22 * 1024**3, poll_interval=0.001)
+    assert sum("ps" in cmd for cmd in commands) >= 4
+
+
+@pytest.mark.asyncio
+async def test_unload_does_not_load_next_model_when_memory_never_recovers(monkeypatch):
+    from agent_benchmark.models_lifecycle import ModelTransitionError
+
+    state = "loaded"
+    commands = []
+
+    async def runner(cmd):
+        nonlocal state
+        commands.append(cmd)
+        if "unload" in cmd:
+            state = "empty"
+        return 0, SAMPLE_LMS_PS_LOADED if state == "loaded" else "[]", ""
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=95, ram_available_bytes=2 * 1024**3))
+    with pytest.raises(ModelTransitionError, match="No next model load"):
+        await transition_model("new", allow_transitions=True, runner=runner,
+                               unload_timeout=0.005, poll_interval=0.001)
+    assert not any("load" in cmd for cmd in commands)

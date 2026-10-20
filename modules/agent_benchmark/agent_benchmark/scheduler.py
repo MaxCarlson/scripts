@@ -41,6 +41,7 @@ from benchmark_core import (
 
 from . import __version__
 from .attempt import run_attempt, run_cli_attempt
+from .telemetry import ResourceLimitExceeded, RuntimeMemoryGuard
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
 from .diagnostics import describe_trial
@@ -420,6 +421,21 @@ class ExperimentScheduler:
                                 planned_trial.model_key, planned_trial.task_id, planned_trial.repetition, diagnostic,
                                 extra={"event_type": "TRIAL_DIAGNOSTIC"})
 
+                if result.details.get("execution_error") == "ResourceLimitExceeded":
+                    self.completed_runs.append((run_info, run_trial_results))
+                    self.run_refs.append(ExperimentRunRef(
+                        run_id=run_id, run_dir=str(run_dir.relative_to(self.reports_dir).as_posix()),
+                        variant_id=model_key, suite_id=config.suite_id, suite_version=config.suite_version,
+                        scoring_basis=config.scoring_basis, budget_profile=config.budget_profile,
+                        comparison_eligible=profile_cfg.get("comparison_eligible", True),
+                        exclusion_reasons=[] if profile_cfg.get("comparison_eligible", True) else [
+                            f"Non-canonical budget profile '{config.budget_profile}'"
+                        ],
+                    ))
+                    raise ResourceLimitExceeded(
+                        result.details.get("execution_diagnostic") or "Host memory limit exceeded; experiment halted."
+                    )
+
             # Generate single run reports
             self.current_stage = "report_generation"
             run_summary = summarize(run_info, run_trial_results)
@@ -588,6 +604,7 @@ class ExperimentScheduler:
                             model=resolved_model,
                             agent=self.agent,
                             model_identity=self.model_identities.get(trial.model_key),
+                            resource_check=RuntimeMemoryGuard(),
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,

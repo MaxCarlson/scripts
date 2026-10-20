@@ -107,3 +107,49 @@ def test_resource_sampler_calls_sample_observer(monkeypatch) -> None:
         sampler.stop()
 
     assert received == [expected]
+
+
+def test_runtime_memory_guard_stops_before_host_exhaustion(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+        percent=87.5, available=7 * 1024**3))
+    monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [{"pid": 42, "name": "llama-server", "rss_bytes": 30}])
+    with pytest.raises(telemetry.ResourceLimitExceeded, match="87.5%"):
+        telemetry.RuntimeMemoryGuard()()
+
+
+def test_runtime_memory_guard_logs_process_attribution_without_stopping_healthy_host(monkeypatch, caplog):
+    import logging
+
+    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+        percent=55.0, available=28 * 1024**3))
+    monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [{"pid": 42, "name": "llama-server", "rss_bytes": 30}])
+    monkeypatch.setattr(logging.getLogger("agent_benchmark"), "propagate", True)
+    with caplog.at_level(logging.INFO):
+        telemetry.RuntimeMemoryGuard()()
+    assert "llama-server" in caplog.text
+
+
+def test_runtime_memory_guard_checks_available_ram_even_below_percentage_limit(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+        percent=70.0, available=3 * 1024**3))
+    monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [])
+    with pytest.raises(telemetry.ResourceLimitExceeded):
+        telemetry.RuntimeMemoryGuard()()
+
+
+def test_process_memory_snapshot_sorts_and_omits_unavailable_process_memory(monkeypatch):
+    requested = []
+
+    def process_iter(fields, **kwargs):
+        requested.extend(fields)
+        return [SimpleNamespace(info={"pid": 1, "name": "small", "memory_info": SimpleNamespace(rss=10)}),
+                SimpleNamespace(info={"pid": 2, "name": "large", "memory_info": SimpleNamespace(rss=100)}),
+                SimpleNamespace(info={"pid": 3, "name": "unavailable", "memory_info": None})]
+
+    monkeypatch.setattr(telemetry.psutil, "process_iter", process_iter)
+    assert telemetry.process_memory_snapshot(1) == [{"pid": 2, "name": "large", "rss_bytes": 100}]
+    assert requested == ["pid", "name", "memory_info"]

@@ -327,3 +327,78 @@ def test_attempt_preserves_timed_out_when_both_budget_expired_and_scope_violatio
     assert len(trial.details["scope_violations"]) == 1
 
 
+
+
+def test_memory_stop_cancels_worker_and_preserves_infrastructure_evidence(tmp_path):
+    from agent_benchmark.telemetry import ResourceLimitExceeded
+
+    class ActiveWorker(Worker):
+        cancelled = False
+
+        async def observe(self, handle):
+            if not self.cancelled:
+                return Observation("running", "busy", False, False, True)
+            return await super().observe(handle)
+
+        async def cancel(self, handle):
+            self.cancelled = True
+            return await super().cancel(handle)
+
+    worker = ActiveWorker()
+
+    def check():
+        if worker.last_receipt:
+            raise ResourceLimitExceeded("Host RAM safety stop: 87% used")
+
+    result = attempt(tmp_path, worker, resource_check=check)
+    assert worker.cancelled
+    assert result.execution_error == "ResourceLimitExceeded"
+    assert "87%" in result.execution_diagnostic
+    assert result.termination.confirmed
+    assert not result.task_budget_expired
+    assert result.s1 is not None
+
+
+@pytest.mark.asyncio
+async def test_memory_monitor_checks_while_remote_call_is_pending():
+    from agent_benchmark.attempt import _monitored_call
+    from agent_benchmark.telemetry import ResourceLimitExceeded
+
+    calls = 0
+    cancelled = asyncio.Event()
+
+    def check():
+        nonlocal calls
+        calls += 1
+        if calls > 1:
+            raise ResourceLimitExceeded("memory limit")
+
+    async def slow_observation():
+        try:
+            await asyncio.sleep(10)
+        finally:
+            cancelled.set()
+
+    with pytest.raises(ResourceLimitExceeded):
+        await _monitored_call(slow_observation(), check)
+    assert cancelled.is_set()
+
+
+def test_memory_stop_does_not_clear_guard_when_remote_termination_is_unconfirmed(tmp_path):
+    from agent_benchmark.telemetry import ResourceLimitExceeded
+
+    worker = Worker(unresolved=True)
+    guard = DispatchGuard()
+
+    def check():
+        if worker.last_receipt:
+            raise ResourceLimitExceeded("memory limit")
+
+    with pytest.warns(RuntimeWarning, match="Unresolved worker"):
+        result = attempt(tmp_path, worker, guard, resource_check=check)
+    assert result.execution_error == "ResourceLimitExceeded"
+    assert not result.termination.confirmed
+    assert result.s1 is None
+    assert result.verification is None
+    with pytest.raises(RuntimeError):
+        guard.allocate(tmp_path / "another-workspace")
