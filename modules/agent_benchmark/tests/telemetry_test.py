@@ -116,7 +116,7 @@ def test_runtime_memory_guard_stops_before_host_exhaustion(monkeypatch):
         percent=87.5, available=7 * 1024**3))
     monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [{"pid": 42, "name": "llama-server", "rss_bytes": 30}])
     with pytest.raises(telemetry.ResourceLimitExceeded, match="87.5%"):
-        telemetry.RuntimeMemoryGuard()()
+        telemetry.RuntimeMemoryGuard(max_ram_pct=85.0)()
 
 
 def test_runtime_memory_guard_logs_process_attribution_without_stopping_healthy_host(monkeypatch, caplog):

@@ -1,12 +1,15 @@
 """Single-task serial pipeline using only benchmark_core models/storage/reports."""
 
 import asyncio
+from contextlib import nullcontext
 from dataclasses import asdict, replace
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 from pathlib import Path
 import platform
+import time
 from typing import Any
 import uuid
 
@@ -18,10 +21,17 @@ from .git_workspace import ISOLATION_POLICY
 from .scratch import SCOPE_POLICY
 
 from .attempt import _write_json, run_attempt, run_cli_attempt
-from .bridge import connected_bridge
+from .bridge import OpenCodeBridge, connected_bridge
 from .evidence import EVIDENCE_LIMITS, load_task
 from .identity import ModelIdentity, discover_lmstudio_identity
-from .lifecycle import DispatchGuard, OwnedWorkspace, WorkerHandle, cleanup_workspace, confirm_termination
+from .lifecycle import (
+    DispatchGuard,
+    OwnedWorkspace,
+    TerminationDecision,
+    WorkerHandle,
+    cleanup_workspace,
+    confirm_termination,
+)
 from .models_lifecycle import resolve_model_provider_and_key
 from .results import base_metrics, trial_from_attempt, unavailable
 from .state import command_lock, journal_at, read_pending, release, reserve, reserved_trial
@@ -61,6 +71,217 @@ BUDGET_PROFILES: dict[str, dict[str, Any]] = {
 }
 
 
+async def reconcile_pending(
+    *,
+    state: Path,
+    base_url: str = "http://127.0.0.1:4096",
+    request_seconds: float = 10,
+    connector=connected_bridge,
+    lock_held: bool = False,
+) -> None:
+    """Safely finish an earlier uncertain dispatch before any new work starts.
+
+    This removes only the token-owned pending receipt. Trial evidence and its
+    workspace remain available for later inspection.
+    """
+    state = state.resolve()
+    with (nullcontext() if lock_held else command_lock(state)):
+        pending = read_pending(state)
+        if pending is None:
+            return
+
+        evidence_dir = Path(pending["evidence_dir"]).resolve()
+        try:
+            journal = journal_at(evidence_dir)
+            workspace_data = journal.get("workspace")
+            if not isinstance(workspace_data, dict):
+                raise RuntimeError("lifecycle journal has no owned workspace")
+            workspace_root = Path(workspace_data["root"]).resolve()
+            workspace_path = Path(workspace_data["path"]).resolve()
+            allocation_id = workspace_data["allocation_id"]
+            expected_root = (state / "workspaces").resolve()
+            if (not isinstance(allocation_id, str) or not allocation_id.startswith("trial-")
+                    or workspace_root != expected_root or workspace_path != workspace_root / allocation_id):
+                raise RuntimeError("lifecycle workspace is not an exact benchmark-owned allocation")
+            termination = journal.get("termination")
+            if journal.get("stage") in ("not_submitted", "preflight_failed") or (
+                isinstance(termination, dict) and termination.get("confirmed") is True
+            ):
+                release(state, pending)
+                return
+
+            runtime_path = evidence_dir / "runtime.json"
+            runtime = json.loads(runtime_path.read_text(encoding="utf-8"))
+            runtime_provider = runtime.get("provider") if isinstance(runtime, dict) else None
+            if not isinstance(runtime_provider, str) or not runtime_provider:
+                raise RuntimeError("pending worker provider identity is missing or invalid")
+            if runtime_provider in ("gemini", "agy", "codex", "openai", "chatgpt"):
+                raise RuntimeError(
+                    "pending direct CLI worker has no durable process-start identity; refusing to signal a PID "
+                    "that may have been reused"
+                )
+
+            git_identity = journal.get("git")
+            project_id = git_identity.get("root_commit") if isinstance(git_identity, dict) else None
+            raw_handle = journal.get("handle")
+            raw_handle = raw_handle if isinstance(raw_handle, dict) else {}
+            if (not isinstance(project_id, str) or len(project_id) != 40
+                    or any(char not in "0123456789abcdef" for char in project_id)):
+                raise RuntimeError("trial Git project identity is missing or invalid")
+
+            stored_workspace = raw_handle.get("workspace")
+            if stored_workspace and Path(stored_workspace).resolve() != workspace_path:
+                raise RuntimeError("worker handle workspace does not match the owned trial workspace")
+            stored_project = raw_handle.get("project_id")
+            if stored_project and stored_project != project_id:
+                raise RuntimeError("worker handle project does not match the trial Git identity")
+
+            prepared = journal.get("prepared_session")
+            prepared = prepared if isinstance(prepared, dict) else {}
+            session_id = prepared.get("id") or raw_handle.get("session_id")
+            session_directory = prepared.get("directory") or stored_workspace
+            prepared_project = prepared.get("projectID") or stored_project or project_id
+            if (not isinstance(session_id, str) or not session_id
+                    or not isinstance(session_directory, str)
+                    or Path(session_directory).resolve() != workspace_path
+                    or prepared_project != project_id):
+                raise RuntimeError("exact prepared OpenCode session binding is missing")
+
+            prompt_path = evidence_dir / "submitted-prompt.txt"
+            prompt = prompt_path.read_text(encoding="utf-8")
+            grace_seconds = journal.get("grace_seconds", 10.0)
+            if (not isinstance(grace_seconds, (int, float)) or isinstance(grace_seconds, bool)
+                    or not math.isfinite(grace_seconds) or grace_seconds <= 0):
+                raise RuntimeError("recorded worker confirmation grace period is invalid")
+
+            async with connector(base_url=base_url, request_seconds=request_seconds) as bridge:
+                job_id = raw_handle.get("job_id")
+                message_id = raw_handle.get("message_id")
+                handle_session = raw_handle.get("session_id")
+                handle = None
+                if (isinstance(job_id, str) and job_id and job_id != "unconfirmed"
+                        and isinstance(message_id, str) and message_id
+                        and handle_session == session_id):
+                    handle = WorkerHandle(job_id, session_id, message_id, workspace_path, project_id)
+                    try:
+                        decision = await confirm_termination(
+                            bridge, handle, grace_seconds=float(grace_seconds), cancel_first=True
+                        )
+                    except Exception:
+                        decision = None
+                    if decision is not None and decision.confirmed:
+                        recovery_method = "correlated_job_termination"
+                        observation_data = asdict(decision.last_observation) if decision.last_observation else None
+                        cancellation_requested = decision.cancellation_requested
+                    else:
+                        # The MCP job receipt can be lost while OpenCode still owns
+                        # the exact benchmark-created session. Abort that session
+                        # only after bridge validation of its directory/project.
+                        await bridge.abort_session(
+                            session_id=session_id, workspace=workspace_path, project_id=project_id
+                        )
+                        _, observation_data = await _confirm_recovered_session(
+                            bridge, session_id=session_id, workspace=workspace_path,
+                            project_id=project_id, prompt=prompt, handle=handle,
+                            grace_seconds=float(grace_seconds),
+                        )
+                        recovery_method = "session_abort_after_job_reconciliation"
+                        cancellation_requested = True
+                else:
+                    await bridge.abort_session(
+                        session_id=session_id, workspace=workspace_path, project_id=project_id
+                    )
+                    _, observation_data = await _confirm_recovered_session(
+                        bridge, session_id=session_id, workspace=workspace_path,
+                        project_id=project_id, prompt=prompt, handle=None,
+                        grace_seconds=float(grace_seconds),
+                    )
+                    recovery_method = "prepared_session_abort"
+                    cancellation_requested = True
+
+            journal["stage"] = "terminated"
+            if not isinstance(termination, dict):
+                termination = {}
+            termination.update(
+                confirmed=True,
+                cancellation_requested=cancellation_requested,
+                diagnostics=["Prior dispatch safely reconciled before new benchmark work"],
+            )
+            journal["termination"] = termination
+            recovery = {
+                "confirmed": True,
+                "method": recovery_method,
+                "session_id": session_id,
+                "project_id": project_id,
+                "workspace": str(workspace_path),
+                "observation": observation_data,
+                "completed_at": format_utc_timestamp(),
+            }
+            _write_json(evidence_dir / "recovery.json", recovery)
+            _write_json(evidence_dir / "lifecycle.json", journal)
+            release(state, pending)
+        except Exception as error:
+            if isinstance(error, RuntimeError) and str(error).startswith("Cannot safely start"):
+                raise
+            raise RuntimeError(
+                "Cannot safely start a new benchmark run because the previous worker could not be "
+                f"confirmed finished ({type(error).__name__}: {error}). The pending receipt, evidence, "
+                f"and workspace are preserved at {evidence_dir}. No new model transition or dispatch was attempted."
+            ) from error
+
+
+async def _confirm_recovered_session(
+    bridge: OpenCodeBridge,
+    *,
+    session_id: str,
+    workspace: Path,
+    project_id: str,
+    prompt: str,
+    handle: WorkerHandle | None,
+    grace_seconds: float,
+) -> tuple[TerminationDecision, dict[str, Any]]:
+    deadline = time.monotonic() + grace_seconds
+    empty_idle_observations = 0
+    last_observation = None
+    while True:
+        no_submission = False
+        if handle is None:
+            observation, recovered_handle, attributable, no_submission = await bridge.observe_pending_session(
+                session_id=session_id, workspace=workspace, project_id=project_id, prompt=prompt
+            )
+            if not attributable:
+                raise RuntimeError(observation.diagnostic or "prepared session could not be attributed safely")
+            if recovered_handle is not None:
+                handle = recovered_handle
+        else:
+            observation = await bridge.observe(handle)
+        last_observation = observation
+        if no_submission and observation.session_state == "idle":
+            empty_idle_observations += 1
+        else:
+            empty_idle_observations = 0
+        if observation.confirms_termination:
+            record = asdict(observation)
+            return TerminationDecision(
+                handle or WorkerHandle("no-submission", session_id, "", workspace, project_id),
+                True, True, grace_seconds, grace_seconds - max(0.0, deadline - time.monotonic()),
+                observation, ("OpenCode session abort followed by correlated terminal observation",),
+            ), record
+
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            if empty_idle_observations >= 3:
+                record = asdict(last_observation)
+                return TerminationDecision(
+                    WorkerHandle("no-submission", session_id, "", workspace, project_id),
+                    True, True, grace_seconds, grace_seconds,
+                    last_observation, ("Prepared session remained empty and idle through the full confirmation grace",),
+                ), record
+            detail = last_observation.diagnostic if last_observation else "No fresh session observation"
+            raise RuntimeError(f"session abort did not reach confirmed idle termination: {detail}")
+        await asyncio.sleep(min(0.25, remaining))
+
+
 async def run_benchmark(
     task_dir: Path, *, reports: Path, state: Path, model: str, provider: str = "lmstudio",
     agent: str = "local-worker", base_url: str = "http://127.0.0.1:4096", task_seconds: float | None = None,
@@ -84,6 +305,9 @@ async def run_benchmark(
         effective_profile = "custom" if task_seconds != 60.0 else budget_profile
 
     state, reports = state.resolve(), reports.resolve()
+    await reconcile_pending(
+        state=state, base_url=base_url, request_seconds=request_seconds, connector=connector
+    )
     run_id = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     run_dir = reports / run_id
     evidence_dir = run_dir / "evidence" / "trial-001"

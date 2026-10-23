@@ -63,12 +63,18 @@ Validation from repository root, using the actual repo virtualenv:
 
 ### Runtime memory safety
 
-Local experiment workers are monitored during dispatch and observation. At 85% host RAM usage or
-less than 4 GiB available RAM, the benchmark requests cancellation, reconciles worker termination,
-preserves trial evidence and partial reports, and stops the experiment before another trial/model.
+Local experiment workers are monitored during dispatch and observation. The default runtime
+percentage limit is off; set `agent-bench experiment run --max-ram-percent 90` to stop at 90% host
+RAM usage. Less than 4 GiB available RAM always triggers cancellation, worker reconciliation,
+preserved trial evidence and partial reports, and stops the experiment before another trial/model.
 The diagnostic code is `ResourceLimitExceeded`, an infrastructure result rather than a model-quality
 failure. Unconfirmed termination still blocks future dispatch. This is a sampled safety stop, not an
 OS memory cap or a guarantee against an abrupt native allocation.
+
+Before `run`, `experiment run`, or `smoke` dispatches, it reconciles any pending receipt. It confirms
+the exact prior job, or aborts the bound OpenCode session and waits for fresh terminal evidence. A
+receipt is cleared only after that confirmation; the old evidence and workspace are preserved. If
+OpenCode cannot confirm termination, the new run stops before model transitions or dispatch.
 
 `benchmark.log` records RAM and the largest resident processes every five seconds during local
 inference (names, PIDs and RSS only), plus a sample at the safety limit. Shared services are never

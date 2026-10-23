@@ -194,6 +194,46 @@ def parse_observation(handle: WorkerHandle, statuses: object, history: object) -
         return unknown
 
 
+def _session_status(statuses: object, session_id: str) -> str | None:
+    if not isinstance(statuses, dict):
+        return None
+    raw = statuses.get(session_id, "idle")
+    if isinstance(raw, str):
+        return raw
+    if isinstance(raw, dict):
+        state = raw.get("type", raw.get("state"))
+        return state if isinstance(state, str) else None
+    return None
+
+
+def _matching_user_message_id(history: object, session_id: str, prompt: str) -> str | None:
+    if not isinstance(history, list):
+        return None
+    users = [
+        message for message in history
+        if isinstance(message, dict)
+        and isinstance(message.get("info"), dict)
+        and message["info"].get("role") == "user"
+    ]
+    if len(users) != 1:
+        return None
+    message = users[0]
+    info, parts = message["info"], message.get("parts")
+    message_id = info.get("id")
+    if (not isinstance(message_id, str) or not message_id or info.get("sessionID") != session_id
+            or not isinstance(parts, list) or not parts):
+        return None
+    observed_parts = []
+    for part in parts:
+        if (not isinstance(part, dict) or part.get("type") != "text"
+                or not isinstance(part.get("text"), str) or part.get("synthetic") is True
+                or part.get("sessionID", session_id) != session_id
+                or part.get("messageID", message_id) != message_id):
+            return None
+        observed_parts.append(part["text"])
+    return message_id if "".join(observed_parts) == prompt else None
+
+
 class OpenCodeBridge:
     def __init__(self, call_tool: ToolCaller, http: httpx.AsyncClient):
         self.call_tool = call_tool
@@ -396,6 +436,59 @@ class OpenCodeBridge:
         statuses = await self._get("/session/status", handle.workspace)
         self.last_history = history if isinstance(history, list) else []
         return parse_observation(handle, statuses, history)
+
+    async def observe_pending_session(
+        self, *, session_id: str, workspace: Path, project_id: str, prompt: str
+    ) -> tuple[Observation, WorkerHandle | None, bool, bool]:
+        """Read a prepared session after a lost dispatch receipt.
+
+        The boolean reports whether the session binding and possible user turn
+        are sufficiently attributable for an exact session abort.
+        """
+        session = self._validate_session(
+            await self._get(f"/session/{quote(session_id, safe='')}", workspace),
+            workspace,
+            project_id,
+            session_id,
+        )
+        history = await self._get(f"/session/{quote(session_id, safe='')}/message", workspace)
+        statuses = await self._get("/session/status", workspace)
+        self.last_session = session
+        self.last_history = history if isinstance(history, list) else []
+        if not isinstance(history, list) or not isinstance(statuses, dict):
+            return Observation("unknown", None, False, True, False, "Malformed fresh session recovery evidence"), None, False, False
+
+        state = _session_status(statuses, session_id)
+        if not history:
+            idle = state == "idle"
+            return (
+                Observation("not_submitted" if idle else "unknown", state, False, not idle, False,
+                            "Prepared session has no stored user turn" if idle else "Empty session is not confirmed idle"),
+                None,
+                True,
+                True,
+            )
+
+        message_id = _matching_user_message_id(history, session_id, prompt)
+        if message_id is None:
+            return Observation("unknown", state, False, True, False,
+                               "Stored session history does not uniquely match the benchmark prompt"), None, False, False
+        handle = WorkerHandle("session-recovery", session_id, message_id, workspace, project_id)
+        return parse_observation(handle, statuses, history), handle, True, False
+
+    async def abort_session(self, *, session_id: str, workspace: Path, project_id: str) -> bool:
+        """Abort only a session whose persisted directory and project still match."""
+        session = await self._get(f"/session/{quote(session_id, safe='')}", workspace)
+        self._validate_session(session, workspace, project_id, session_id)
+        response = await self.http.post(
+            f"/session/{quote(session_id, safe='')}/abort",
+            headers={"x-opencode-directory": str(workspace.resolve())},
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, bool):
+            raise RuntimeError("OpenCode session-abort response was not a boolean")
+        return result
 
     async def cancel(self, handle: WorkerHandle) -> object:
         if not handle.session_id or not handle.message_id or not handle.job_id:

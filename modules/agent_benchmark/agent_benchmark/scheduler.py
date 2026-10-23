@@ -57,7 +57,7 @@ from .models_lifecycle import (
     transition_model,
 )
 from .results import base_metrics, trial_from_attempt, unavailable
-from .runner import BUDGET_PROFILES
+from .runner import BUDGET_PROFILES, reconcile_pending
 from .scratch import SCOPE_POLICY
 from .state import command_lock, reserved_trial
 
@@ -198,6 +198,7 @@ class ExperimentScheduler:
         reports_dir: Path,
         state_dir: Path,
         allow_model_transitions: bool = False,
+        max_ram_percent: float = 100.0,
         base_url: str = "http://127.0.0.1:4096",
         provider: str = "lmstudio",
         agent: str = "local-worker",
@@ -215,6 +216,7 @@ class ExperimentScheduler:
         self.reports_dir = Path(reports_dir).resolve()
         self.state_dir = Path(state_dir).resolve()
         self.allow_model_transitions = allow_model_transitions
+        self.max_ram_percent = max_ram_percent
         self.base_url = base_url
         self.provider = provider
         self.agent = agent
@@ -245,6 +247,9 @@ class ExperimentScheduler:
         another benchmark invocation cannot unload a model during this run.
         """
         with command_lock(self.state_dir):
+            await reconcile_pending(
+                state=self.state_dir, base_url=self.base_url, lock_held=True
+            )
             try:
                 return await self._run_locked()
             except BaseException as error:
@@ -627,7 +632,7 @@ class ExperimentScheduler:
                             model=resolved_model,
                             agent=self.agent,
                             model_identity=self.model_identities.get(trial.model_key),
-                            resource_check=RuntimeMemoryGuard(),
+                            resource_check=RuntimeMemoryGuard(max_ram_pct=self.max_ram_percent),
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,

@@ -1,7 +1,7 @@
 """Small durable benchmark receipt and OS-held exclusive command lock.
 
-The receipt survives process exit; the OS lock does not. No PID probing,
-process supervision, stale-time heuristics, or automatic unresolved-job override.
+The receipt survives process exit; the OS lock does not. Execution commands
+reconcile a pending receipt before dispatch and never override unresolved work.
 """
 
 from contextlib import contextmanager, nullcontext

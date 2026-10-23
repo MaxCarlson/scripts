@@ -66,6 +66,16 @@ def positive_int(value: str) -> int:
     return result
 
 
+def ram_percent(value: str) -> float:
+    try:
+        result = float(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("RAM percentage must be a number from 0 (exclusive) to 100") from error
+    if not math.isfinite(result) or not 0 < result <= 100:
+        raise argparse.ArgumentTypeError("RAM percentage must be greater than 0 and at most 100")
+    return result
+
+
 def _resolve_tasks(task_args: list[Path] | None) -> dict[str, Path]:
     """Resolve task paths or names into a dictionary of {task_id: Path}."""
     builtin_tasks_dir = Path(__file__).parent / "tasks"
@@ -280,6 +290,13 @@ def parser() -> argparse.ArgumentParser:
     )
     exp_run.add_argument("-c", "--context-length", type=positive_int, default=DEFAULT_BENCHMARK_CONTEXT_LENGTH,
                          help="Shared LM Studio context cap for all local models (default: 16384)")
+    exp_run.add_argument(
+        "-M",
+        "--max-ram-percent",
+        type=ram_percent,
+        default=100.0,
+        help="Stop local inference at this host RAM use percentage; 100 disables this limit (default: 100)",
+    )
     exp_run.add_argument(
         "-o",
         "--output-dir",
@@ -540,7 +557,8 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             scoring_basis="worker_first_attempt_full_success",
             budget_profile=args.budget_profile,
             random_seed=args.random_seed,
-            metadata={"requested_context_length": args.context_length},
+            metadata={"requested_context_length": args.context_length,
+                      "runtime_max_ram_percent": args.max_ram_percent},
         )
 
         plan = expand_experiment_plan(config, randomize_tasks=False)
@@ -550,8 +568,10 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
         exp_dir.mkdir(parents=True, exist_ok=True)
         log_handler = configure_run_logging(exp_dir / "benchmark.log")
         logger.info(
-            "Experiment starting id=%s models=%s tasks=%s repetitions=%s budget_profile=%s context_length=%s",
+            "Experiment starting id=%s models=%s tasks=%s repetitions=%s budget_profile=%s context_length=%s "
+            "runtime_max_ram_percent=%s",
             exp_id, models, sorted(task_map), args.repetitions, args.budget_profile, args.context_length,
+            args.max_ram_percent,
             extra={"event_type": "EXPERIMENT_START"},
         )
 
@@ -563,6 +583,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
                 reports_dir=reports_base,
                 state_dir=args.state_dir,
                 allow_model_transitions=args.allow_model_transitions,
+                max_ram_percent=args.max_ram_percent,
                 base_url=args.base_url,
                 on_trial_start=dashboard.on_trial_start,
                 on_trial_complete=dashboard.on_trial_complete,

@@ -18,6 +18,7 @@ from .evidence import load_task
 from .identity import ModelIdentity, discover_lmstudio_identity
 from .lifecycle import WorkerHandle
 from .scratch import SCOPE_POLICY, SCRATCH_NAME
+from .runner import reconcile_pending
 from .state import journal_at, reserved_trial
 
 TASK_SECONDS = 60
@@ -198,6 +199,9 @@ async def run_diagnostic(
     if agent != "local-worker":
         raise ValueError("Diagnostic smoke requires local-worker")
     state, output = state.resolve(), output.resolve()
+    await reconcile_pending(
+        state=state, base_url=base_url, request_seconds=request_seconds, connector=connector
+    )
     identifier = datetime.now(timezone.utc).strftime("smoke-%Y%m%dT%H%M%SZ-") + uuid.uuid4().hex[:8]
     directory = output / identifier
     evidence_dir = directory / "evidence/trial-001"

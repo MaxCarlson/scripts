@@ -1,3 +1,29 @@
+# Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
+
+Worktree `C:/Users/mcarls/src/scripts-agent-benchmark`, branch `agent/benchmark-resume-20261023`,
+baseline `a0ff1778ef1737f1c23d8f1cbd7ef57d4973af75`. Agent Benchmark is now 1.16.0. The multi-model
+`experiment run` command accepts `-M/--max-ram-percent`, default 100 (percentage stop off); the
+independent 4 GiB available-RAM stop remains active. The effective setting is logged and stored in
+experiment metadata. Execution commands reconcile pending receipts before model transitions and
+dispatch; confirmed receipts are released while evidence/workspaces remain preserved. They abort the
+exact prepared OpenCode session when needed and require fresh terminal evidence. There is no prompt
+or force-clear flag; inconclusive recovery stops safely. Offline tests were not run.
+
+Pending direct CLI worker receipts (Codex/Gemini) are explicitly refused with a process-identity
+diagnostic: current journals do not persist process creation identity or complete process-tree ownership,
+so startup recovery must not signal their recorded PID. This limitation does not affect the current
+OpenCode receipt, which has an exact prepared session binding.
+
+The user run `EXP_20261023_222943` loaded Ornith at context 16,384 after unloading Qwen, then stopped
+at 85.6% RAM with 8.9 GiB available under the former default. Ornith is still loaded and idle. The
+shared pending receipt remains `termination_unresolved`; `dispatch.json` is empty and the lifecycle
+handle has only an `unconfirmed` job placeholder, with no correlated handle session/message IDs
+(a prepared-session ID is recorded separately). The next execution command validates that binding,
+aborts that exact OpenCode session, and requires fresh empty/idle or matching-turn terminal evidence
+before releasing the receipt. If that evidence is unavailable, it leaves the receipt and workspace
+intact and exits before model operations. The installed OpenCode 1.19.3 `/doc` endpoint advertises
+`POST /session/:id/abort`; no abort request or live inference was performed in this work.
+
 # Current forensic report fix — EXP_20261020_061135
 
 Worktree `.worktrees/benchmark-exp-061135`, branch `agent/benchmark-exp-061135`, based on latest pushed
