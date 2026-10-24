@@ -17,6 +17,10 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
+The latest active Runmux Web UI phase plan is:
+
+- `20261024-1530_runmux-historical-runs-backend/`: Phase 6C historical run discovery, filtering, keyset pagination, and lifecycle events backend. Read its `00_implementation-plan.md`, `01_existing_capabilities_matrix.md`, `STATUS.md`, and `HANDOFF.md` for architecture, contracts, and verification evidence.
+
 The completed Runmux Web UI Phase 5C historical telemetry plan is:
 
 - `20261024-runmux-historical-telemetry/`: Phase 5C historical telemetry architecture, empirical benchmarks, and implementation plan. Read its `00_implementation-plan.md`, `01_architecture_specification.md`, `02_alternatives_analysis.md`, `03_resource_budget_and_benchmarks.md`, `04_api_proposal.md`, `05_implementation_plan.md`, `06_approval_decisions.md`, `STATUS.md`, and `HANDOFF.md` for full implementation, verification results, and architecture details.

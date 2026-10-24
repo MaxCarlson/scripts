@@ -145,7 +145,8 @@ Record answers in this master as decisions, linking the relevant code/tests and 
 | 3 | Complete and merged (`54502666b5724596ee3d21c1e694b8522d5a5151`) | `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`; `plans/20261024-runmux-web-explorer-workspace/` | Windows Node suite and native headless Chromium validation pass; see status report | Full argv/cwd remain withheld; focused Python web tests are unverified due documented Windows startup hang |
 | 4 | Not assigned | — | — | Depend on mutation security and log model |
 | 5 | 5B backend merged in baseline `9f01984d`; 5A/5C not assigned | `src/runmux/web.py` telemetry routes | 5B backend integrated | Metrics UI and history remain unassigned |
-| 6 | Not assigned | — | — | Many items are optional or undecided |
+| 6C backend | Implemented on `codex/runmux-historical-runs-backend-20261024`; not merged | `plans/20261024-1530_runmux-historical-runs-backend/` | Focused adapter/storage tests and 10,000-record synthetic benchmark; HTTP TestClient blocked by Windows sandbox loopback socket-pair initialization | Backend only; UI remains a separate assignment; registry state markers are not a durable event log |
+| Other Phase 6 slices | Not assigned | — | — | Many items remain optional or undecided |
 
 ## 9. Reference material
 

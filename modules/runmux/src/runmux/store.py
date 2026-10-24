@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import hashlib
+import json
 import sqlite3
 from collections.abc import Iterable
 from datetime import datetime, timedelta, timezone
@@ -9,10 +13,18 @@ from pathlib import Path
 from typing import Any
 
 from runmux.constants import DEFAULT_LEASE_TIMEOUT_SECONDS, STATUS_FINISHED, TERMINAL_STATUSES
-from runmux.models import AttachmentSummary, RunRecord, utc_now_iso
+from runmux.models import (
+    AttachmentSummary,
+    RunLineageNode,
+    RunLineageSummary,
+    RunPage,
+    RunRecord,
+    utc_now_iso,
+)
 from runmux.platform_paths import ensure_state_tree, get_state_dir
 
 SCHEMA_VERSION = 3
+MAX_QUERY_VM_STEPS = 5_000_000
 
 
 class RegistryError(RuntimeError):
@@ -132,6 +144,16 @@ class RunStore:
         if "lifetime_interact_count" not in columns:
             connection.execute("ALTER TABLE runs ADD COLUMN lifetime_interact_count INTEGER NOT NULL DEFAULT 0")
         connection.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_runs_numeric_id ON runs(numeric_id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_created_at_id ON runs(created_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_status_created_at ON runs(status, created_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_started_at_id ON runs(started_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_ended_at_id ON runs(ended_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_name_created_at ON runs(name, created_at, id)")
+        connection.execute(
+            "CREATE INDEX IF NOT EXISTS idx_runs_name_nocase_created_at ON runs(name COLLATE NOCASE, created_at, id)"
+        )
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_restart_of ON runs(restart_of, created_at, id)")
+        connection.execute("CREATE INDEX IF NOT EXISTS idx_runs_duplicate_of ON runs(duplicate_of, created_at, id)")
         connection.execute("CREATE INDEX IF NOT EXISTS idx_attachment_sessions_run_id ON attachment_sessions(run_id)")
 
     def create_run(
@@ -422,6 +444,265 @@ class RunStore:
             ).fetchall()
         return [RunRecord.from_row(row) for row in rows]
 
+    def query_runs(
+        self,
+        *,
+        cursor: str | None = None,
+        limit: int = 50,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
+        status: str | list[str] | None = None,
+        state: str | None = None,
+        name: str | None = None,
+        name_exact: bool = False,
+        since: str | float | int | None = None,
+        until: str | float | int | None = None,
+        time_field: str = "created_at",
+        exit_code: int | None = None,
+        failed_only: bool = False,
+        lost_only: bool = False,
+        restart_of: str | None = None,
+        duplicate_of: str | None = None,
+        has_restarts: bool = False,
+        include_total: bool = False,
+    ) -> RunPage:
+        """Query a bounded page of runs using SQL filters and keyset pagination."""
+
+        if not 1 <= limit <= 200:
+            raise ValueError("limit must be between 1 and 200.")
+        sort_columns = {
+            "created_at": "COALESCE(created_at, '')",
+            "started_at": "COALESCE(started_at, '')",
+            "ended_at": "COALESCE(ended_at, '')",
+            "name": "COALESCE(name, '')",
+            "numeric_id": "COALESCE(numeric_id, -1)",
+        }
+        if sort_by not in sort_columns:
+            raise ValueError("sort_by must be one of: created_at, started_at, ended_at, name, numeric_id.")
+        direction = sort_dir.casefold()
+        if direction not in {"asc", "desc"}:
+            raise ValueError("sort_dir must be 'asc' or 'desc'.")
+        if time_field not in {"created_at", "started_at", "ended_at"}:
+            raise ValueError("time_field must be created_at, started_at, or ended_at.")
+        if state is not None and state not in {"active", "terminal"}:
+            raise ValueError("state must be 'active' or 'terminal'.")
+        if failed_only and lost_only:
+            raise ValueError("failed_only and lost_only cannot both be true.")
+
+        statuses = _normalize_status_filter(status)
+        since_value = _normalize_query_timestamp(since)
+        until_value = _normalize_query_timestamp(until)
+        if since_value is not None and until_value is not None and since_value > until_value:
+            raise ValueError("since must be less than or equal to until.")
+        normalized_filters = {
+            "status": statuses,
+            "state": state,
+            "name": name,
+            "name_exact": bool(name_exact),
+            "since": since_value,
+            "until": until_value,
+            "time_field": time_field,
+            "exit_code": exit_code,
+            "failed_only": bool(failed_only),
+            "lost_only": bool(lost_only),
+            "restart_of": restart_of,
+            "duplicate_of": duplicate_of,
+            "has_restarts": bool(has_restarts),
+        }
+        filter_hash = hashlib.sha256(
+            json.dumps(normalized_filters, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()[:16]
+
+        where: list[str] = []
+        params: list[Any] = []
+        if statuses:
+            where.append(f"status IN ({','.join('?' for _ in statuses)})")
+            params.extend(statuses)
+        if state == "active":
+            where.append("status IN ('pending', 'running', 'paused')")
+        elif state == "terminal":
+            where.append("status IN ('finished', 'failed', 'killed', 'lost')")
+        if name is not None:
+            if name_exact:
+                where.append("name = ? COLLATE NOCASE")
+                params.append(name)
+            else:
+                where.append("name LIKE ? ESCAPE '\\' COLLATE NOCASE")
+                params.append(f"%{escape_like(name)}%")
+        if since_value is not None:
+            where.append(f"{time_field} IS NOT NULL AND {time_field} >= ?")
+            params.append(since_value)
+        if until_value is not None:
+            where.append(f"{time_field} IS NOT NULL AND {time_field} <= ?")
+            params.append(until_value)
+        if exit_code is not None:
+            where.append("exit_code = ?")
+            params.append(exit_code)
+        if failed_only:
+            where.append("(status = 'failed' OR (status = 'finished' AND exit_code IS NOT NULL AND exit_code != 0))")
+        if lost_only:
+            where.append("status = 'lost'")
+        if restart_of is not None:
+            where.append("restart_of = ?")
+            params.append(restart_of)
+        if duplicate_of is not None:
+            where.append("duplicate_of = ?")
+            params.append(duplicate_of)
+        if has_restarts:
+            where.append("EXISTS (SELECT 1 FROM runs AS child WHERE child.restart_of = runs.id)")
+
+        sort_expr = sort_columns[sort_by]
+        order = direction.upper()
+        cursor_data: dict[str, Any] | None = None
+        if cursor is not None:
+            cursor_data = _decode_run_cursor(cursor)
+            if cursor_data.get("sort_by") != sort_by or cursor_data.get("sort_dir") != direction:
+                raise ValueError("cursor sort does not match this query.")
+            if cursor_data.get("filters") != filter_hash:
+                raise ValueError("cursor filters do not match this query.")
+            last_value = cursor_data.get("value")
+            last_id = cursor_data.get("id")
+            if not isinstance(last_id, str) or not isinstance(last_value, (str, int, float)):
+                raise ValueError("cursor is invalid.")
+
+        with self.connect() as connection:
+            connection.set_progress_handler(lambda: 1, MAX_QUERY_VM_STEPS)
+            if cursor_data is None:
+                snapshot = connection.execute(
+                    "SELECT created_at, id FROM runs ORDER BY created_at DESC, id DESC LIMIT 1"
+                ).fetchone()
+                snapshot_created_at = str(snapshot["created_at"]) if snapshot is not None else None
+                snapshot_id = str(snapshot["id"]) if snapshot is not None else None
+            else:
+                snapshot_created_at = cursor_data.get("snapshot_created_at")
+                snapshot_id = cursor_data.get("snapshot_id")
+                if snapshot_created_at is not None and not isinstance(snapshot_id, str):
+                    raise ValueError("cursor is invalid.")
+
+            query_where = list(where)
+            query_params = list(params)
+            if snapshot_created_at is not None:
+                query_where.append("(created_at < ? OR (created_at = ? AND id <= ?))")
+                query_params.extend((snapshot_created_at, snapshot_created_at, snapshot_id))
+            if cursor_data is not None:
+                comparator = ">" if direction == "asc" else "<"
+                query_where.append(f"({sort_expr}, id) {comparator} (?, ?)")
+                query_params.extend((last_value, last_id))
+            where_sql = f"WHERE {' AND '.join(query_where)}" if query_where else ""
+            rows = connection.execute(
+                f"SELECT * FROM runs {where_sql} ORDER BY {sort_expr} {order}, id {order} LIMIT ?",
+                (*query_params, limit + 1),
+            ).fetchall()
+            total_count = None
+            if include_total:
+                count_where = list(where)
+                count_params = list(params)
+                if snapshot_created_at is not None:
+                    count_where.append("(created_at < ? OR (created_at = ? AND id <= ?))")
+                    count_params.extend((snapshot_created_at, snapshot_created_at, snapshot_id))
+                count_sql = f"WHERE {' AND '.join(count_where)}" if count_where else ""
+                total_count = int(
+                    connection.execute(f"SELECT COUNT(*) FROM runs {count_sql}", count_params).fetchone()[0]
+                )
+
+        has_more = len(rows) > limit
+        page_rows = rows[:limit]
+        records = [RunRecord.from_row(row) for row in page_rows]
+        next_cursor = None
+        if has_more and page_rows:
+            last = page_rows[-1]
+            value = last[sort_by]
+            if value is None:
+                value = -1 if sort_by == "numeric_id" else ""
+            next_cursor = _encode_run_cursor(
+                {
+                    "v": 1,
+                    "sort_by": sort_by,
+                    "sort_dir": direction,
+                    "value": value,
+                    "id": str(last["id"]),
+                    "snapshot_created_at": snapshot_created_at,
+                    "snapshot_id": snapshot_id,
+                    "filters": filter_hash,
+                }
+            )
+        return RunPage(
+            items=records,
+            next_cursor=next_cursor,
+            has_more=has_more,
+            page_size=len(records),
+            total_count=total_count,
+        )
+
+    def get_run_lineage(self, run_id: str, *, max_nodes: int = 200) -> RunLineageSummary:
+        """Return explicit restart/duplicate ancestors and descendants for a run."""
+
+        if not 1 <= max_nodes <= 1000:
+            raise ValueError("max_nodes must be between 1 and 1000.")
+        record = self.get_run(run_id)
+        ancestors: list[RunLineageNode] = []
+        ancestor_ids = {record.id}
+        pending_ancestors = [(record.restart_of, "restart"), (record.duplicate_of, "duplicate")]
+        truncated = False
+        while pending_ancestors:
+            parent_id, relation = pending_ancestors.pop(0)
+            if not parent_id or parent_id in ancestor_ids:
+                continue
+            if len(ancestors) >= max_nodes:
+                truncated = True
+                break
+            try:
+                parent = self.get_run(parent_id)
+            except RunNotFoundError:
+                continue
+            ancestor_ids.add(parent.id)
+            ancestors.append(_lineage_node(parent, f"parent_{relation}"))
+            pending_ancestors.extend(((parent.restart_of, "restart"), (parent.duplicate_of, "duplicate")))
+        descendants: list[RunLineageNode] = []
+        pending = [(record.id, 0)]
+        descendant_seen = {record.id}
+        while pending and len(descendants) < max_nodes:
+            parent_id, depth = pending.pop(0)
+            with self.connect() as connection:
+                connection.set_progress_handler(lambda: 1, MAX_QUERY_VM_STEPS)
+                rows = connection.execute(
+                    "SELECT * FROM runs WHERE restart_of = ? OR duplicate_of = ? "
+                    "ORDER BY created_at ASC, id ASC LIMIT ?",
+                    (parent_id, parent_id, max_nodes - len(descendants) + 1),
+                ).fetchall()
+            for row in rows:
+                child = RunRecord.from_row(row)
+                if child.id in descendant_seen:
+                    continue
+                descendant_seen.add(child.id)
+                relation = "restart" if child.restart_of == parent_id else "duplicate"
+                descendants.append(_lineage_node(child, f"child_{relation}"))
+                pending.append((child.id, depth + 1))
+                if len(descendants) >= max_nodes:
+                    break
+        if pending:
+            truncated = True
+        with self.connect() as connection:
+            connection.set_progress_handler(lambda: 1, MAX_QUERY_VM_STEPS)
+            totals = connection.execute(
+                "SELECT (SELECT COUNT(*) FROM runs WHERE restart_of = ?) AS restarts, "
+                "(SELECT COUNT(*) FROM runs WHERE duplicate_of = ?) AS duplicates",
+                (record.id, record.id),
+            ).fetchone()
+
+        return RunLineageSummary(
+            run_id=record.id,
+            root_run_id=next(
+                (node.id for node in reversed(ancestors) if node.relationship == "parent_restart"),
+                ancestors[-1].id if ancestors else record.id,
+            ),
+            ancestors=ancestors,
+            descendants=descendants,
+            total_restarts=int(totals["restarts"] or 0),
+            total_duplicates=int(totals["duplicates"] or 0),
+            truncated=truncated,
+        )
+
     def remove_run(self, run_id_or_prefix: str) -> RunRecord:
         """Remove a terminal run from the registry and return the removed record."""
 
@@ -529,4 +810,75 @@ class RunStore:
 def escape_like(value: str) -> str:
     """Escape LIKE wildcard characters for prefix matching."""
 
-    return value.replace("%", "\\%").replace("_", "\\_")
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _normalize_status_filter(status: str | list[str] | None) -> list[str]:
+    if status is None:
+        return []
+    values = status if isinstance(status, list) else status.split(",")
+    allowed = {"pending", "running", "paused", "finished", "failed", "killed", "lost"}
+    normalized = list(dict.fromkeys(value.strip().casefold() for value in values if value.strip()))
+    invalid = sorted(set(normalized) - allowed)
+    if invalid:
+        raise ValueError(f"Unsupported status value(s): {', '.join(invalid)}.")
+    return normalized
+
+
+def _normalize_query_timestamp(value: str | float | int | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        timestamp = str(value).strip()
+        try:
+            epoch = float(value)
+        except (TypeError, ValueError):
+            epoch = None
+        if epoch is not None:
+            parsed = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        else:
+            if timestamp.endswith("Z"):
+                timestamp = f"{timestamp[:-1]}+00:00"
+            parsed = datetime.fromisoformat(timestamp)
+            if parsed.tzinfo is None:
+                raise ValueError("Timestamp must include a timezone.")
+            parsed = parsed.astimezone(timezone.utc)
+    except (OverflowError, OSError, TypeError) as error:
+        raise ValueError(f"Invalid timestamp: {value!r}.") from error
+    except ValueError as error:
+        if "timezone" in str(error):
+            raise
+        raise ValueError(f"Invalid timestamp: {value!r}.") from error
+    # Registry timestamps are persisted at second precision; use that exact format
+    # so indexed lexical range comparisons remain aligned with stored values.
+    return parsed.isoformat(timespec="seconds")
+
+
+def _encode_run_cursor(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_run_cursor(cursor: str) -> dict[str, Any]:
+    if not cursor or len(cursor) > 4096:
+        raise ValueError("cursor is invalid.")
+    try:
+        raw = base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+        payload = json.loads(raw.decode("utf-8"))
+    except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
+        raise ValueError("cursor is invalid.") from error
+    if not isinstance(payload, dict) or payload.get("v") != 1:
+        raise ValueError("cursor version is unsupported or invalid.")
+    return payload
+
+
+def _lineage_node(record: RunRecord, relationship: str) -> RunLineageNode:
+    return RunLineageNode(
+        id=record.id,
+        numeric_id=record.numeric_id,
+        name=record.name,
+        status=record.status,
+        created_at=record.created_at,
+        relationship=relationship,
+        exit_code=record.exit_code,
+    )

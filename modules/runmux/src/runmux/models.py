@@ -135,3 +135,53 @@ class AttachmentSummary:
         """Return total view and interact attachments over the run lifetime."""
 
         return self.lifetime_viewers + self.lifetime_interactors
+
+
+@dataclass(frozen=True)
+class LifecycleEvent:
+    """A discrete lifecycle event or authoritative state transition for a managed run."""
+
+    event_type: str
+    timestamp: str
+    provenance: str  # "registry_record" | "telemetry_store"
+    event_id: int | None = None
+    epoch: float | None = None
+    reason: str | None = None
+    details: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class RunLineageNode:
+    """A single node in a run's restart or duplicate ancestry tree."""
+
+    id: str
+    numeric_id: int | None
+    name: str | None
+    status: str
+    created_at: str
+    relationship: str  # "self" | "parent_restart" | "parent_duplicate" | "child_restart" | "child_duplicate"
+    exit_code: int | None = None
+
+
+@dataclass(frozen=True)
+class RunLineageSummary:
+    """Lineage relationship graph for a managed run."""
+
+    run_id: str
+    root_run_id: str
+    ancestors: list[RunLineageNode]
+    descendants: list[RunLineageNode]
+    total_restarts: int
+    total_duplicates: int
+    truncated: bool = False
+
+
+@dataclass(frozen=True)
+class RunPage:
+    """A paginated envelope of run records."""
+
+    items: list[RunRecord]
+    next_cursor: str | None
+    has_more: bool
+    page_size: int
+    total_count: int | None = None
