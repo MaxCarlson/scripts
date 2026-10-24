@@ -27,7 +27,7 @@ from runmux.constants import (
 from runmux.history import history_path_for_state_dir, mark_saved_command_run, record_run_started, save_record_command
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
-from runmux.stats import verify_run_process
+from runmux.stats import verify_run_process, verify_supervisor_process
 from runmux.store import RunStore
 
 
@@ -287,11 +287,16 @@ def kill_run(store: RunStore, *, run_id: str, force: bool) -> RunRecord:
         raise RunnerError(f"Run '{record.id}' has no process ID to kill.")
 
     proc, unavailable_reason = verify_run_process(psutil, record)
-    if unavailable_reason in ("pid reused by another process", "process exited") or not psutil.pid_exists(record.pid):
+    if unavailable_reason in ("process exited", "pid reused by another process") or not psutil.pid_exists(record.pid):
         cleanup_supervisor_process(record)
         return store.update_run(record.id, status=STATUS_KILLED)
     elif unavailable_reason == "permission denied":
         raise RunnerError(f"Permission denied accessing PID {record.pid} for run '{record.id}'.")
+    elif proc is None or unavailable_reason is not None:
+        raise RunnerError(
+            f"Cannot verify process identity for run '{record.id}' PID {record.pid}: "
+            f"{unavailable_reason or 'unknown process identity'}. Termination aborted."
+        )
 
     try:
         terminate_pid(record.pid, force=force)
@@ -362,6 +367,12 @@ def cleanup_supervisor_process(record: RunRecord) -> None:
 
     if record.supervisor_pid is None:
         return
+    proc, reason = verify_supervisor_process(psutil, record)
+    if proc is None:
+        # Either the process already exited or its identity cannot be confirmed
+        # to belong to the Runmux supervisor for this run. Never terminate!
+        return
+
     with suppress(OSError, RunnerError):
         terminate_pid(record.supervisor_pid, force=True)
 

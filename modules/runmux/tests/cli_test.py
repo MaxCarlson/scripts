@@ -7,9 +7,10 @@ import json
 import sys
 import threading
 import time
-import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 import runmux.runner as runner
 from runmux.cli import (
@@ -17,13 +18,13 @@ from runmux.cli import (
     browse_history_fzf,
     build_parser,
     format_history_entry,
-    handle_tui,
-    handle_load,
     handle_history,
+    handle_load,
     handle_ls,
     handle_remove,
     handle_run,
     handle_save,
+    handle_tui,
     launch_history_entry,
     print_command_stats,
     render_history_browser,
@@ -405,9 +406,7 @@ def test_history_browser_filters_can_be_combined_without_renumbering(tmp_path: P
 
 
 def test_handle_history_filters_without_renumbering_and_hides_metadata(capsys, tmp_path: Path) -> None:
-    args = build_parser().parse_args(
-        ["--state-dir", str(tmp_path), "history", "--starts-with", "ytaedl", "--plain"]
-    )
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "history", "--starts-with", "ytaedl", "--plain"])
     entries = [
         {"history_id": 0, "command_line": "python newest.py"},
         {"history_id": 4, "command_line": "ytaedl run", "started_at": "2026-01-01", "status": "finished"},
@@ -421,9 +420,7 @@ def test_handle_history_filters_without_renumbering_and_hides_metadata(capsys, t
 
 
 def test_handle_run_replays_history_argv_and_original_path(tmp_path: Path) -> None:
-    args = build_parser().parse_args(
-        ["--state-dir", str(tmp_path / "state"), "run", "-H", "-i", "3", "-P", "-D"]
-    )
+    args = build_parser().parse_args(["--state-dir", str(tmp_path / "state"), "run", "-H", "-i", "3", "-P", "-D"])
     entry = {
         "history_id": 3,
         "argv": ["python", "task.py"],
@@ -1076,7 +1073,10 @@ def test_remove_finished_cleans_leftover_supervisor_process(tmp_path: Path) -> N
     )
     store.update_run(record.id, status="finished", supervisor_pid=4321)
 
-    with patch("runmux.runner.terminate_pid") as terminate_pid:
+    with (
+        patch("runmux.runner.verify_supervisor_process", return_value=(Mock(), None)),
+        patch("runmux.runner.terminate_pid") as terminate_pid,
+    ):
         removed = remove_finished_runs(store)
 
     assert [record.numeric_id for record in removed] == [0]

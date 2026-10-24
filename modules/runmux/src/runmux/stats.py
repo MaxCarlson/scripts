@@ -132,6 +132,76 @@ def verify_run_process(psutil_module: Any, record: RunRecord) -> tuple[Any | Non
     return root, None
 
 
+def verify_supervisor_process(psutil_module: Any, record: RunRecord) -> tuple[Any | None, str | None]:
+    """Verify supervisor status and PID identity to prevent false attribution and PID reuse."""
+
+    if record.supervisor_pid is None:
+        return None, "no supervisor pid assigned"
+
+    if not hasattr(psutil_module, "Process"):
+        return None, None
+
+    no_such_error = getattr(psutil_module, "NoSuchProcess", psutil_module.Error)
+    access_error = getattr(psutil_module, "AccessDenied", psutil_module.Error)
+    zombie_error = getattr(psutil_module, "ZombieProcess", psutil_module.Error)
+
+    try:
+        proc = psutil_module.Process(record.supervisor_pid)
+        if hasattr(proc, "is_running") and not proc.is_running():
+            return None, "process exited"
+    except no_such_error:
+        return None, "process exited"
+    except access_error:
+        return None, "permission denied"
+    except zombie_error:
+        return None, "zombie process"
+    except (psutil_module.Error, OSError, ValueError):
+        return None, "process unavailable"
+
+    identity_verified = False
+
+    # PID reuse protection: compare process create_time with run record timestamps
+    ref_iso = record.created_at or record.started_at
+    if hasattr(proc, "create_time") and ref_iso:
+        try:
+            ref_dt = parse_iso_datetime(ref_iso)
+            if ref_dt is not None:
+                ref_epoch = ref_dt.timestamp()
+                proc_create = float(proc.create_time())
+                # If process was created noticeably after run started, PID has been recycled
+                if proc_create > ref_epoch + PID_CREATION_TOLERANCE_SECONDS:
+                    return None, "pid reused by another process"
+                # If process was created noticeably before run started, PID belongs to older process
+                if proc_create < ref_epoch - PID_CREATION_TOLERANCE_SECONDS:
+                    return None, "pid reused by another process"
+                if record.ended_at:
+                    ended_dt = parse_iso_datetime(record.ended_at)
+                    if ended_dt and proc_create > ended_dt.timestamp():
+                        return None, "pid reused by another process"
+                identity_verified = True
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    # Command line check: verify process command line matches supervisor for this run
+    if hasattr(proc, "cmdline"):
+        try:
+            cmd = proc.cmdline()
+            if cmd:
+                cmd_str = " ".join(cmd)
+                if "runmux.supervisor" not in cmd_str or record.id not in cmd_str:
+                    return None, "pid reused by another process"
+                identity_verified = True
+        except (access_error, no_such_error):
+            return None, "permission denied"
+        except (psutil_module.Error, OSError, ValueError):
+            pass
+
+    if not identity_verified:
+        return None, "supervisor identity unconfirmed"
+
+    return proc, None
+
+
 class TelemetrySampler:
     """Non-blocking, thread-safe monotonic resource telemetry sampler for Runmux."""
 
@@ -341,10 +411,7 @@ class TelemetrySampler:
                     self._snapshots.pop(saved_id, None)
 
         gpu_usage = self._get_gpu_usage()
-        stats = [
-            self.sample_run(record, psutil_module=psutil_module, gpu_usage=gpu_usage)
-            for record in records
-        ]
+        stats = [self.sample_run(record, psutil_module=psutil_module, gpu_usage=gpu_usage) for record in records]
 
         # Host telemetry
         host_cpu = None
@@ -428,10 +495,7 @@ def show_stats(
             screen = "\x1b[H\x1b[2J" + format_stats_table(
                 stats,
                 width=shutil.get_terminal_size(fallback=(140, 30)).columns,
-                title=(
-                    f"runmux stats - {time.strftime('%Y-%m-%d %H:%M:%S')} - "
-                    "q quit, Ctrl-Q quit now, Ctrl-C exit"
-                ),
+                title=(f"runmux stats - {time.strftime('%Y-%m-%d %H:%M:%S')} - q quit, Ctrl-Q quit now, Ctrl-C exit"),
                 color=sys.stdout.isatty(),
             ).replace("\n", "\r\n")
             sys.stdout.write(screen)
@@ -661,7 +725,7 @@ def format_stats_table(
     rows.append(format_stats_summary(stats, color=color))
     rows.append("")
     header = format_stats_header(color=color)
-    separator = f"{'-' * 4} {'-' * 8} {'-' * 7} {'-' * 10} " f"{'-' * 31} {'-' * 14} {'-' * 7} {'-' * 20}"
+    separator = f"{'-' * 4} {'-' * 8} {'-' * 7} {'-' * 10} {'-' * 31} {'-' * 14} {'-' * 7} {'-' * 20}"
     rows.append(header)
     rows.append(colorize(separator, "2", enabled=color))
     command_width = max(12, width - 88)
@@ -685,9 +749,7 @@ def format_stats_table(
         gpu = colorize(f"{gpu_plain:<14}", "32" if gpu_plain != "--" else "90", enabled=color)
         procs_threads = colorize(f"{item.process_count}/{item.thread_count:<7}", "90", enabled=color)
         command = colorize(detail, "97", enabled=color)
-        rows.append(
-            f"{item.record.numeric_id:<4} {status} {cpu} {rss} {disk} {gpu} {procs_threads} {command}"
-        )
+        rows.append(f"{item.record.numeric_id:<4} {status} {cpu} {rss} {disk} {gpu} {procs_threads} {command}")
     if not stats:
         rows.append(colorize("No active runmux-managed processes.", "33", enabled=color))
     return "\n".join(rows) + "\n"
@@ -702,14 +764,10 @@ def format_stats_summary(stats: list[ProcessStats], *, color: bool) -> str:
     total_disk_write = sum(item.write_bytes_per_second or 0.0 for item in stats)
     first = stats[0] if stats else None
     net_read = (
-        first.host_net_read_bytes_per_second
-        if first and first.host_net_read_bytes_per_second is not None
-        else 0.0
+        first.host_net_read_bytes_per_second if first and first.host_net_read_bytes_per_second is not None else 0.0
     )
     net_write = (
-        first.host_net_write_bytes_per_second
-        if first and first.host_net_write_bytes_per_second is not None
-        else 0.0
+        first.host_net_write_bytes_per_second if first and first.host_net_write_bytes_per_second is not None else 0.0
     )
     parts = [
         colorize(f"runs {len(stats)}", "1;37", enabled=color),

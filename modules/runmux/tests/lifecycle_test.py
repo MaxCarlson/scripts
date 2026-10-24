@@ -22,7 +22,7 @@ from runmux.lifecycle import (
     RunNotFoundError,
 )
 from runmux.models import RunRecord
-from runmux.runner import RunnerError, kill_run
+from runmux.runner import RunnerError, cleanup_supervisor_process, kill_run
 from runmux.store import RunStore
 
 
@@ -157,24 +157,34 @@ def test_stop_run_falls_back_to_os_termination_when_supervisor_ipc_fails(
 
     terminated_pids: list[tuple[int, bool]] = []
     pid_alive = True
+    supervisor_alive = True
 
     def mock_request_json(*args: Any, **kwargs: Any):
         raise IpcError("Supervisor connection refused")
 
     def mock_terminate_pid(pid: int, *, force: bool):
-        nonlocal pid_alive
+        nonlocal pid_alive, supervisor_alive
         terminated_pids.append((pid, force))
-        pid_alive = False
+        if pid == 8888:
+            pid_alive = False
+        elif pid == 12346:
+            supervisor_alive = False
 
     def mock_verify_run_process(psutil_mod: Any, record: RunRecord):
         if pid_alive:
             return SimpleNamespace(is_running=lambda: True), None
         return None, "process exited"
 
+    def mock_verify_supervisor_process(psutil_mod: Any, record: RunRecord):
+        if supervisor_alive:
+            return SimpleNamespace(is_running=lambda: True), None
+        return None, "process exited"
+
     monkeypatch.setattr("runmux.runner.request_json", mock_request_json)
     monkeypatch.setattr("runmux.runner.terminate_pid", mock_terminate_pid)
     monkeypatch.setattr("runmux.runner.verify_run_process", mock_verify_run_process)
-    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid_alive)
+    monkeypatch.setattr("runmux.runner.verify_supervisor_process", mock_verify_supervisor_process)
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: (pid_alive if pid == 8888 else supervisor_alive))
 
     manager = LifecycleManager(tmp_path)
     result = manager.stop_run(run_id, force=False)
@@ -607,3 +617,151 @@ def test_kill_run_supervisor_ipc_timeout_returns_active_run_and_reports_terminat
     assert result.status == "terminating"
     assert "shutdown is in progress" in result.message
     assert result.run.status == "running"
+
+
+def test_kill_run_fails_safely_on_inconclusive_process_identity(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Fallback termination must abort whenever verify_run_process returns an inconclusive identity."""
+    from runmux.ipc import IpcError
+
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_record(store, tmp_path, run_id=run_id, status="running", pid=8888, port=9999)
+
+    monkeypatch.setattr("runmux.runner.request_json", lambda *a, **kw: (_ for _ in ()).throw(IpcError("dead")))
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+
+    terminated_pids: list[int] = []
+    monkeypatch.setattr("runmux.runner.terminate_pid", lambda pid, force: terminated_pids.append(pid))
+
+    inconclusive_reasons = ["process unavailable", "zombie process", "process identity unconfirmed"]
+    for reason in inconclusive_reasons:
+        monkeypatch.setattr("runmux.runner.verify_run_process", lambda psutil_mod, rec, r=reason: (None, r))
+        with pytest.raises(RunnerError) as exc_info:
+            kill_run(store, run_id=run_id, force=True)
+        assert "Cannot verify process identity" in str(exc_info.value)
+        assert reason in str(exc_info.value)
+        # Inconclusive identity must NOT authorize termination
+        assert 8888 not in terminated_pids
+        assert store.get_run(run_id).status == "running"
+
+    # Also test proc is None with unavailable_reason=None
+    monkeypatch.setattr("runmux.runner.verify_run_process", lambda psutil_mod, rec: (None, None))
+    with pytest.raises(RunnerError) as exc_info:
+        kill_run(store, run_id=run_id, force=True)
+    assert "Cannot verify process identity" in str(exc_info.value)
+    assert 8888 not in terminated_pids
+    assert store.get_run(run_id).status == "running"
+
+
+def test_cleanup_supervisor_process_protects_reused_pid(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """cleanup_supervisor_process must NOT terminate a process if supervisor identity cannot be confirmed."""
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    record = create_test_record(store, tmp_path, run_id=run_id, status="running", supervisor_pid=5555)
+
+    terminated_pids: list[int] = []
+    monkeypatch.setattr("runmux.runner.terminate_pid", lambda pid, force: terminated_pids.append(pid))
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: True)
+
+    # 1. PID reused by another process
+    monkeypatch.setattr(
+        "runmux.runner.verify_supervisor_process", lambda psutil_mod, rec: (None, "pid reused by another process")
+    )
+    cleanup_supervisor_process(record)
+    assert 5555 not in terminated_pids
+
+    # 2. Permission denied
+    monkeypatch.setattr("runmux.runner.verify_supervisor_process", lambda psutil_mod, rec: (None, "permission denied"))
+    cleanup_supervisor_process(record)
+    assert 5555 not in terminated_pids
+
+    # 3. Identity unconfirmed
+    monkeypatch.setattr(
+        "runmux.runner.verify_supervisor_process", lambda psutil_mod, rec: (None, "supervisor identity unconfirmed")
+    )
+    cleanup_supervisor_process(record)
+    assert 5555 not in terminated_pids
+
+    # 4. Verified supervisor -> authorized to terminate
+    monkeypatch.setattr(
+        "runmux.runner.verify_supervisor_process",
+        lambda psutil_mod, rec: (SimpleNamespace(is_running=lambda: True), None),
+    )
+    cleanup_supervisor_process(record)
+    assert 5555 in terminated_pids
+
+
+def test_verify_supervisor_process_detects_reuse_and_matches_cmdline(
+    tmp_path: Path,
+) -> None:
+    """verify_supervisor_process validates create_time bounds and supervisor cmdline."""
+    from runmux.stats import parse_iso_datetime, verify_supervisor_process
+
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    record = create_test_record(store, tmp_path, run_id=run_id, status="running", supervisor_pid=6666)
+
+    ref_dt = parse_iso_datetime(record.created_at)
+    assert ref_dt is not None
+    ref_epoch = ref_dt.timestamp()
+
+    class MockPsutilSupervisor:
+        def __init__(self, create_time_val: float, cmdline_val: list[str] | None = None, is_running_val: bool = True):
+            self._create_time = create_time_val
+            self._cmdline = cmdline_val
+            self._is_running = is_running_val
+
+        def is_running(self) -> bool:
+            return self._is_running
+
+        def create_time(self) -> float:
+            return self._create_time
+
+        def cmdline(self) -> list[str]:
+            if self._cmdline is not None:
+                return self._cmdline
+            return [sys.executable, "-m", "runmux.supervisor", "--run-id", run_id]
+
+    class PsutilHarness:
+        Error = Exception
+
+        def __init__(self, proc: Any):
+            self._proc = proc
+
+        def Process(self, pid: int) -> Any:
+            return self._proc
+
+    # 1. Verified supervisor (creation within 5s and cmdline matching)
+    valid_proc = MockPsutilSupervisor(create_time_val=ref_epoch + 1.0)
+    proc, reason = verify_supervisor_process(PsutilHarness(valid_proc), record)
+    assert proc is not None
+    assert reason is None
+
+    # 2. Recycled PID (created 20s after run start)
+    late_proc = MockPsutilSupervisor(create_time_val=ref_epoch + 20.0)
+    proc, reason = verify_supervisor_process(PsutilHarness(late_proc), record)
+    assert proc is None
+    assert reason == "pid reused by another process"
+
+    # 3. Older pre-existing PID (created 20s before run start)
+    early_proc = MockPsutilSupervisor(create_time_val=ref_epoch - 20.0)
+    proc, reason = verify_supervisor_process(PsutilHarness(early_proc), record)
+    assert proc is None
+    assert reason == "pid reused by another process"
+
+    # 4. Command line mismatch (PID belongs to another application or different run)
+    mismatched_cmd = MockPsutilSupervisor(
+        create_time_val=ref_epoch + 1.0,
+        cmdline_val=["python", "-m", "runmux.supervisor", "--run-id", "20261024-999999-other1"],
+    )
+    proc, reason = verify_supervisor_process(PsutilHarness(mismatched_cmd), record)
+    assert proc is None
+    assert reason == "pid reused by another process"
+
+    # 5. Non-runmux command line
+    unrelated_cmd = MockPsutilSupervisor(create_time_val=ref_epoch + 1.0, cmdline_val=["notepad.exe"])
+    proc, reason = verify_supervisor_process(PsutilHarness(unrelated_cmd), record)
+    assert proc is None
+    assert reason == "pid reused by another process"

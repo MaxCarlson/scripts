@@ -39,3 +39,9 @@
   - [x] Confirm zero frontend files modified.
   - [x] Verify all test suites pass on Windows.
   - [x] Commit and push updated feature branch to `origin/codex/runmux-lifecycle-backend-20261024`.
+- [x] Stage 8: Process-Identity Safety Review
+  - [x] Protect against supervisor PID reuse in `runner.cleanup_supervisor_process()` via `verify_supervisor_process()`.
+  - [x] Ensure fallback child-PID termination in `runner.kill_run()` fails safely on inconclusive identities.
+  - [x] Add focused synthetic regression tests for supervisor PID reuse and inconclusive child-PID termination.
+  - [x] Verify CLI/TUI backward compatibility.
+  - [x] Merge Phase 4A into `main` using an isolated integration worktree.
