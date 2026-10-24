@@ -193,3 +193,137 @@ def test_confirm_quit_accepts_y(monkeypatch) -> None:
     monkeypatch.setattr("runmux.stats.sys.stdin", fake_input)
 
     assert confirm_quit() is True
+
+
+def test_network_delta_placed_in_host_not_process(monkeypatch) -> None:
+    record = make_record()
+    processes = [FakeProcess(pid=123, threads=1, cpu=5.0, rss=100, read_bytes=100, write_bytes=100)]
+    monkeypatch.setattr("runmux.stats.get_process_tree", lambda psutil, pid: processes)
+
+    stats = build_process_stats(
+        FakePsutil,
+        record,
+        previous_io=(50, 50),
+        interval_seconds=1.0,
+        system_net_delta=(1000.0, 2000.0),
+    )
+
+    # Truth in attribution: process net stats must NOT claim host network traffic
+    assert stats.net_read_bytes_per_second is None
+    assert stats.net_write_bytes_per_second is None
+    assert stats.host_net_read_bytes_per_second == 1000.0
+    assert stats.host_net_write_bytes_per_second == 2000.0
+
+
+def test_verify_run_process_detects_terminal_and_missing() -> None:
+    from runmux.stats import verify_run_process
+
+    finished_record = make_record()
+    object.__setattr__(finished_record, "status", "finished")
+
+    root, reason = verify_run_process(FakePsutil, finished_record)
+    assert root is None
+    assert reason == "run is finished"
+
+    class MockPsutil:
+        class NoSuchProcess(Exception):
+            pass
+
+        Error = Exception
+
+        def Process(self, pid):
+            raise self.NoSuchProcess("No such process")
+
+    active_record = make_record()
+    root, reason = verify_run_process(MockPsutil(), active_record)
+    assert root is None
+    assert reason == "process exited"
+
+
+def test_verify_run_process_detects_pid_reuse() -> None:
+    from runmux.stats import verify_run_process
+
+    class MockReusedProcess:
+        def is_running(self):
+            return True
+
+        def create_time(self):
+            # Created at 2026-06-11T01:00:00 (1 hour after run start 00:00:00)
+            return 1781139600.0
+
+    class MockPsutil:
+        Error = Exception
+
+        def Process(self, pid):
+            return MockReusedProcess()
+
+    record = make_record()
+    root, reason = verify_run_process(MockPsutil(), record)
+    assert root is None
+    assert reason == "pid reused by another process"
+
+
+def test_telemetry_sampler_monotonic_deltas() -> None:
+    from runmux.stats import TelemetrySampler
+
+    simulated_time = 1000.0
+
+    class FakeTreeProcess:
+        def __init__(self, pid, user_time, read_b):
+            self.pid = pid
+            self.user_time = user_time
+            self.read_b = read_b
+
+        def is_running(self):
+            return True
+
+        def num_threads(self):
+            return 2
+
+        def cpu_times(self):
+            return SimpleNamespace(user=self.user_time, system=0.0)
+
+        def memory_info(self):
+            return SimpleNamespace(rss=4096)
+
+        def io_counters(self):
+            return SimpleNamespace(read_bytes=self.read_b, write_bytes=500)
+
+        def create_time(self):
+            return 1781136000.0
+
+    class MockPsutil:
+        Error = Exception
+
+        def __init__(self, user_time=1.0, read_b=1000):
+            self.user_time = user_time
+            self.read_b = read_b
+
+        def Process(self, pid):
+            return FakeTreeProcess(pid, self.user_time, self.read_b)
+
+        def cpu_count(self, logical=True):
+            return 2
+
+    sampler = TelemetrySampler(clock=lambda: simulated_time)
+    record = make_record()
+
+    # First sample: baseline established, rates are None (no sleeping!)
+    mock1 = MockPsutil(user_time=1.0, read_b=1000)
+    first = sampler.sample_run(record, psutil_module=mock1)
+    assert first.process_count == 1
+    assert first.rss_bytes == 4096
+    assert first.cpu_percent is None
+    assert first.read_bytes_per_second is None
+    assert first.cpu_count == 2
+
+    # Second sample: 2.0 seconds elapsed, 1.0s more CPU time, 2000 bytes read
+    simulated_time = 1002.0
+    mock2 = MockPsutil(user_time=2.0, read_b=3000)
+    second = sampler.sample_run(record, psutil_module=mock2)
+    # (2.0 - 1.0) / 2.0 = 50% CPU raw; normalized = 25% on 2 cores
+    assert second.cpu_percent == 50.0
+    assert second.cpu_percent_normalized == 25.0
+    # (3000 - 1000) / 2.0 = 1000 B/s
+    assert second.read_bytes_per_second == 1000.0
+    assert second.sample_interval_seconds == 2.0
