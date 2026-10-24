@@ -3,35 +3,35 @@
 **Date:** 2026-10-24  
 **Branch:** `codex/runmux-historical-telemetry-20261024`  
 **Base:** `origin/main` (commit `6fa307f3bd84761f6fe21f3700dceb9889fe090b`)  
-**Current Stage:** Architecture & Planning Complete (Awaiting User Retention Decisions)  
-**Approval State:** User explicitly requested research, architecture, benchmarks, and implementation planning only; no production collection implemented until approved.
+**Current Stage:** Architecture Proposal Finalized (Awaiting Final User Approvals)  
+**Approval State:** User accepted direction in principle; requested 7 specific corrections and rebenchmarks; awaiting final decision approvals before Stage 1 implementation.
 
 ---
 
-### Completed Verification & Research Evidence
-1. **Repository & Isolation Integrity:**
-   - Dedicated worktree `.worktrees/runmux-historical-telemetry` on branch `codex/runmux-historical-telemetry-20261024`.
-   - Baseline verification: All 22 tests in `tests/telemetry_test.py` and `tests/stats_test.py` pass cleanly.
-   - Zero modifications to production source code or public API.
-   - Zero frontend asset modifications (avoiding collisions with Phase 5A+).
-2. **Quantitative Benchmarks (Windows 11 Native):**
-   - Empirical benchmark script executed in `modules/runmux/benchmarks/benchmark_telemetry_history.py`.
-   - Windows `psutil` sampling overhead measured: Win32 core metrics take 0.006 ms; thread and child discovery toolhelp snapshots take ~34 ms. Child-PID cache (5s TTL) reduces sampling CPU cost by > 80%.
-   - In-memory representations measured: Slotted dataclass consumes 128.2 B/sample; tuple consumes 136.2 B/sample; dict consumes 304.2 B/sample.
-   - SQLite WAL storage measured: Batch inserts exceed 700,000 rows/second; disk footprint is ~52 B/row; range query latency is 0.6 ms for 1h (360 rows) and 1.3 ms for 24h (8,640 rows).
-   - Downsampling throughput measured: 86,400 raw points downsampled to 300 points in 1.51 ms (> 57,000,000 points/s).
-3. **Design Deliverables Completed:**
-   - `00_implementation-plan.md`: Roadmap summary and document map.
-   - `01_architecture_specification.md`: Hybrid architecture, child-PID caching, schema, WAL settings.
-   - `02_alternatives_analysis.md`: In-memory vs flat SQLite vs hybrid evaluation.
-   - `03_resource_budget_and_benchmarks.md`: Quantitative models for 10, 100, 1,000 processes.
-   - `04_api_proposal.md`: Bounded authenticated REST query endpoints.
-   - `05_implementation_plan.md`: Five testable implementation stages.
-   - `06_approval_decisions.md`: Six explicit decision questions for user approval.
-   - `checklist.md`: Feature and research tracking checklist.
+### Completed Verification & Correction Evidence
+1. **Windows Sampling Overhead Recalculated:**
+   - Proved mathematically and empirically that 5.0s sampling with 5.0s TTL yields a **0.0% hit rate** (33.3 ms / process).
+   - Proved that decoupling cache TTL to **30.0 seconds** achieves an **85.7% hit rate** (6 hits per miss), reducing average sampling latency to **4.76 ms / process** (1.9% CPU for 20 active runs).
+2. **Rebenchmarked SQLite with Full Schema & Realistic Run IDs:**
+   - Evaluated genuine 22-char Run IDs (`YYYYMMDD-HHMMSS-xxxxxx`), full 5-table schema, and indexes.
+   - Measured actual on-disk row footprint: **140.7 bytes / row**.
+   - Verified WAL truncation: `PRAGMA wal_checkpoint(TRUNCATE)` executes in $< 4.2\text{ ms}$ and truncates WAL to 0 bytes.
+   - Verified 1-hour range query latency: **0.98 ms** for 720 rows.
+   - Verified deletion pruning: 25,000 rows pruned in $25.5\text{ ms}$; `PRAGMA incremental_vacuum` reclaims pages in $0.18\text{ ms}$.
+3. **Storage Budget & Enforceable Limits Defined:**
+   - Reconciled steady-state storage: 395.1 KB / run for 7 full days of history.
+   - Defined 15-minute maintenance cycle enforcing 50 MB hard cap via WAL truncation, incremental vacuum, and emergency rollup pruning.
+4. **State-Directory-Local Path Resolution:**
+   - Anchored database to `ensure_state_tree(state_dir or get_state_dir()) / "telemetry.sqlite3"`, honoring `RUNMUX_HOME` and `--state-dir`.
+5. **API Contract Examples Corrected:**
+   - Updated with genuine 22-character Run IDs, ISO 8601 UTC timestamps, and `sample_interval_seconds` monotonic measurements.
+6. **Memory Capacity Reconciled:**
+   - Reconciled across all documents: 720 samples (1 hour at 5.0s interval) $\times$ 128.2 bytes = **92.3 KB / active run**.
+7. **In-Memory vs. SQLite Coordination Reevaluated:**
+   - Formulated Write-Through Tiered Hybrid to eliminate dual-source boundary-merging complexity while preserving sub-millisecond UI query response.
 
 ---
 
 ### Next Action
-- Present the Phase 5C architecture report to the user.
-- Await user approval on retention policy, database separation, and background collection lifecycle before beginning Stage 1 implementation.
+- Present the finalized Phase 5C architecture report to the user.
+- Await final user approval on the 4 decisions in `06_approval_decisions.md` before implementing Stage 1.

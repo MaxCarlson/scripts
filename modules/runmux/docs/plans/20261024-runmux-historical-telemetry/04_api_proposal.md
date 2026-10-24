@@ -12,8 +12,8 @@ This document specifies the authenticated REST API endpoints for querying histor
 ### Security & Invariants
 1. **Authentication:** Inherits existing `modules/web_ui_tools/` session authentication. Unauthenticated requests receive HTTP 401.
 2. **Origin & CSRF:** Read-only `GET` endpoints enforce same-origin verification.
-3. **Bounded Responses:** To protect the browser DOM from canvas/SVG memory exhaustion, queries are hard-capped to a maximum of **1,000 data points** (default target: **300 points**). Server-side downsampling is applied when the underlying sample count exceeds the requested point budget.
-4. **No Secret Disclosure:** Responses contain strictly resource metrics and timestamps. No command line arguments, environment variables, working directories, or process secrets are returned.
+3. **Bounded Responses:** Queries default to returning $\le 300$ data points and are hard-capped to a maximum of **1,000 points**. Server-side downsampling is applied when the raw sample count exceeds the budget.
+4. **No Secret Disclosure:** Responses contain strictly resource metrics and timing metadata. No command line arguments, environment variables, working directories, or process secrets are returned.
 
 ---
 
@@ -30,14 +30,15 @@ Retrieves historical resource time-series for a single managed process tree.
 | `since` | ISO 8601 string or float epoch | No | `now - 1h` | Start boundary of the requested time window. |
 | `until` | ISO 8601 string or float epoch | No | `now` | End boundary of the requested time window. |
 | `max_points` | integer (10–1000) | No | `300` | Target number of downsampled points to return. |
-| `fields` | comma-separated string | No | `all` | Subset of metric fields (e.g. `cpu,rss,io`). |
+| `fields` | comma-separated string | No | `all` | Optional field filter (e.g. `cpu,rss,io`). |
+| `include_lineage` | boolean | No | `false` | When true, traverses `restart_of` parents with explicit gap markers. |
 | `include_events` | boolean | No | `true` | Include discrete lifecycle events (`pause`, `resume`, `exit`). |
 
 #### Response Schema (JSON) — HTTP 200 OK
 
 ```json
 {
-  "run_id": "0192a54e-6e82-7f39-8580-0a273b0629dc",
+  "run_id": "20261024-080000-f3a1b2",
   "numeric_id": 3,
   "status": "running",
   "provenance": {
@@ -53,13 +54,14 @@ Retrieves historical resource time-series for a single managed process tree.
       "duration_seconds": 3600.0
     },
     "resolution": "downsampled_bucketed_min_avg_max",
-    "raw_sample_count": 1800,
+    "raw_sample_count": 720,
     "returned_points": 300
   },
   "series": [
     {
       "timestamp": "2026-10-24T08:00:00.000000Z",
       "epoch": 1729782000.0,
+      "sample_interval_seconds": 5.002134,
       "cpu_percent": 12.5,
       "cpu_percent_normalized": 1.56,
       "cpu_percent_min": 10.2,
@@ -69,18 +71,23 @@ Retrieves historical resource time-series for a single managed process tree.
       "read_bytes_per_second": 51200.0,
       "write_bytes_per_second": 12800.0,
       "process_count": 2,
-      "thread_count": 14,
+      "thread_count": 16,
       "gpu_memory_bytes": null
     },
     {
       "timestamp": "2026-10-24T08:15:30.000000Z",
       "epoch": 1729782930.0,
+      "sample_interval_seconds": 15.004218,
       "is_gap": true,
       "gap_reason": "process paused",
       "cpu_percent": null,
+      "cpu_percent_normalized": null,
       "rss_bytes": null,
       "read_bytes_per_second": null,
-      "write_bytes_per_second": null
+      "write_bytes_per_second": null,
+      "process_count": 2,
+      "thread_count": 16,
+      "gpu_memory_bytes": null
     }
   ],
   "events": [
@@ -103,7 +110,7 @@ Retrieves historical resource time-series for a single managed process tree.
 #### Status Codes & Error Handling
 - `200 OK`: Telemetry history returned successfully.
 - `400 Bad Request`: Invalid parameter formats (e.g. `since > until`, `max_points > 1000`).
-- `401 Unauthorized`: Session not logged in.
+- `401 Unauthorized`: Session not authenticated.
 - `404 Not Found`: Run ID does not exist in registry.
 - `503 Service Unavailable`: Telemetry database is locked or disabled.
 
@@ -137,6 +144,7 @@ Retrieves system-wide host telemetry (CPU, RAM, network, GPU device summaries).
     {
       "timestamp": "2026-10-24T08:00:00.000000Z",
       "epoch": 1729782000.0,
+      "sample_interval_seconds": 5.001842,
       "cpu_percent": 18.2,
       "memory_used_bytes": 17179869184,
       "memory_available_bytes": 17179869184,
@@ -150,12 +158,13 @@ Retrieves system-wide host telemetry (CPU, RAM, network, GPU device summaries).
 
 ---
 
-## 4. Lineage & Run Restart Queries
+## 4. Lineage Traversal & Restart Boundaries
 
 When a process is restarted (`POST /api/runs/{run_id}/restart`), Runmux creates a **new immutable Run ID** with `restart_of = old_run_id`.
 
-To support viewing trends across restarts without falsifying run boundaries:
-- The endpoint supports an optional query parameter `include_lineage=true`.
-- When set, the server traverses `restart_of` parents and children.
-- Each lineage segment is tagged with its distinct `run_id`, separated by an explicit `event: "restart"` marker in the timeline.
-- Chart curves break at the restart gap, preventing misleading interpolation between the old and new processes.
+- **Default Behavior:** Queries strictly return data for the requested `run_id`.
+- **Lineage Traversal (`include_lineage=true`):**
+  - The server recursively resolves `restart_of` parent records.
+  - Telemetry series points are tagged with their respective `run_id`.
+  - An explicit event `{ "event": "restart", "old_run_id": "20261024-073000-a1b2c3", "new_run_id": "20261024-080000-f3a1b2" }` marks the transition.
+  - The series injects an explicit `is_gap: true` point between the old process termination and the new process start, ensuring frontend charts render a visible line break rather than an inaccurate diagonal slope.

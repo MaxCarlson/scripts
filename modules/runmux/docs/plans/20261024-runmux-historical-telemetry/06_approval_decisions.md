@@ -5,72 +5,66 @@
 
 ---
 
-## 1. Overview
+## 1. Overview & Accepted Baseline Decisions
 
-Before beginning implementation of Phase 5C, explicit user approval is required on six architectural and operational decisions.
-
----
-
-## 2. Decision Items for User Approval
-
-### Decision 1: Background Collection Lifecycle Policy
-
-| Option | Description | Pros | Cons | Recommendation |
-| :--- | :--- | :--- | :--- | :--- |
-| **Option A: On-Demand Only** | Samples only while a browser tab is actively viewing a run. | Zero background overhead when browser is closed. | Empty history on initial open; cannot diagnose what happened before an issue was opened. | Not recommended |
-| **Option B: Web-Server-Scoped (Recommended)** | An in-process background worker runs inside `runmux web`, sampling active runs. | Immediate historical charts on tab selection; clean shutdown with web server; no daemon needed. | Telemetry only recorded while `runmux web` is running. | **Recommended** |
-| **Option C: Supervisor-Driven** | Every per-run supervisor process samples its own child. | Continuous history even without web server running. | Multiplies sampling timers by $N$ processes; SQLite write contention; bloats supervisor footprint. | Not recommended |
-| **Option D: Standalone Daemon Service** | A dedicated background OS service (`runmuxd`) samples continuously. | 24/7 background telemetry independent of web server. | Violates Runmux zero-daemon principle; requires service installation, autostart, and maintenance. | Not recommended |
-
-> [!IMPORTANT]
-> **Proposed Policy:** Adopt **Option B** as the default. Telemetry collection is active whenever `runmux web` is running. Users can opt out using the flag `runmux web --no-telemetry-history`.
+The following architectural foundations have been **accepted in principle**:
+- **Collection Lifecycle:** Web-server-scoped background sampling (active strictly while `runmux web` is running).
+- **Storage Architecture:** Hybrid recent-memory buffering with a separate SQLite-backed historical database.
+- **Cadence Default:** Uniform 5.0-second background sampling interval across all active runs; no focused-view burst initially.
+- **Retention Schedule:** Multi-tier rollups: 1 hour raw, 24 hours 1-minute rollup, 7 days 5-minute rollup.
+- **Path Resolution:** Separate `telemetry.sqlite3` database resolved within the active Runmux state directory (honoring `RUNMUX_HOME` and `--state-dir`).
+- **Isolation & Provenance:** Strict host-level versus process-tree metric isolation; explicit lineage traversal on restarts.
 
 ---
 
-### Decision 2: Multi-Tier Retention Window & Storage Limits
+## 2. Refined Decision Items for Final Approval
 
-The proposal recommends a 3-tier retention model to keep disk usage strictly bounded while preserving long-term visibility:
-1. **Raw samples (2–5s cadence):** Retained for **1 hour**.
-2. **1-Minute rollups (avg, min, max):** Retained for **24 hours**.
-3. **5-Minute rollups (avg, min, max):** Retained for **7 days**.
-4. **Hard Database Cap:** Maximum database file size defaults to **50 MB**. If the database approaches 50 MB, the pruner aggressively drops the oldest 5-minute rollups.
+### Decision 1: Child-PID Discovery Cache TTL on Windows
 
-*Do you approve this 1-hour / 24-hour / 7-day retention schedule and 50 MB cap, or should the default retention period or disk cap be adjusted?*
+On native Windows, tree traversal (`children()`) and thread enumeration take **33.3 ms**, whereas reading direct counters takes **0.007 ms**.
+With a 5.0-second sampling cadence:
+- **Option A (30-second TTL - Recommended):** 6 hits per miss $\rightarrow$ **85.7% cache hit rate**. Average sampling latency: **4.76 ms / process**. Total CPU cost for 20 active processes is **~1.9% of one core**. If a child terminates prematurely, a `NoSuchProcess` exception during counter inspection triggers an immediate cache refresh on the next tick.
+- **Option B (15-second TTL):** 3 hits per miss $\rightarrow$ **75.0% cache hit rate**. Average sampling latency: **8.33 ms / process**. Total CPU cost for 20 active processes is **~3.3% of one core**.
+- **Option C (No caching / 5s TTL):** **0.0% cache hit rate** (100% full tree refreshes). Average sampling latency: **33.3 ms / process**. Total CPU cost for 20 active processes is **~13.3% of one core**.
 
----
-
-### Decision 3: High-Resolution Sampling Cadence & Focused View Burst
-
-- **Background Cadence:** **5.0 seconds** for all active runs (measured CPU cost on Windows: ~0.7% for 5 runs, ~2.8% for 20 runs).
-- **Focused View Burst (Optional):** When a user selects a specific run tab in the web UI, the browser can send an active tab heartbeat, allowing the sampler to boost sampling for that *single* process to **1.0 or 2.0 seconds** for higher-resolution real-time charting.
-
-*Should we enable the focused-view burst mode (1–2s for the active tab only), or keep a uniform 5.0-second cadence across all runs?*
+*Do you approve adopting a **30-second child-PID cache TTL** as the default on Windows?*
 
 ---
 
-### Decision 4: Separate Database File (`telemetry.sqlite3`)
+### Decision 2: Query Routing Simplification (Write-Through Hybrid vs. Pure SQLite-First)
 
-The proposal places historical telemetry in a dedicated database file `%LOCALAPPDATA%\runmux\telemetry.sqlite3` rather than adding tables to `registry.sqlite3`.
-- **Reasoning:**
-  1. Preserves `ReadOnlyRunmux`'s strict read-only guarantee over `registry.sqlite3`.
-  2. Eliminates any possibility of telemetry writes causing lock contention with process lifecycle operations (`runmux run`, `kill`, `restart`).
-  3. Enables disposable lifecycle: if `telemetry.sqlite3` is corrupted or deleted, the process manager and CLI continue functioning flawlessly.
+- **Option A (Write-Through Tiered Hybrid - Recommended):**
+  - Worker flushes samples to SQLite in 5-second batches AND keeps 720 points (1 hour) in an in-memory ring buffer (`92.3 KB/run`).
+  - Queries for $\le 1\text{ hour}$ read directly from memory in $< 0.05\text{ ms}$.
+  - Queries for $> 1\text{ hour}$ read directly from SQLite rollups in $< 1.2\text{ ms}$.
+  - **Zero complex boundary stitching or deduplication:** The query router picks exactly one source based on the requested time range.
+- **Option B (Pure SQLite-First):**
+  - Eliminates the in-memory ring buffer entirely.
+  - All queries read directly from SQLite (`0.98 ms` for 1 hour).
+  - Slightly simpler code (~100 fewer LOC), but incurs continuous SQLite read queries and page-cache checks during high-frequency browser dashboard polling.
 
-*Do you approve creating a separate `telemetry.sqlite3` database file for metric history?*
-
----
-
-### Decision 5: Host Telemetry Isolation
-
-Host-level telemetry (`host_cpu_percent`, `host_memory_*`, `host_net_*`) will be stored in a dedicated table (`host_telemetry_raw`) and queried via `GET /api/telemetry/history`. It will **never** be copied or projected onto individual process rows.
-
-*Do you approve this strict isolation of host-wide metrics from process-specific metrics?*
+*Do you approve the **Write-Through Tiered Hybrid** (Option A) to provide microsecond live chart response without boundary-merging complexity?*
 
 ---
 
-### Decision 6: Lineage Handling on Restarts
+### Decision 3: Storage Budget & 15-Minute Maintenance Schedule
 
-When a run is restarted via `POST /api/runs/{run_id}/restart`, a new Run ID is created.
-The proposed API defaults to querying strictly the requested `run_id`. If `include_lineage=true` is passed, the API returns the chained series but includes an explicit `event: "restart"` marker, and frontend charts will render a visible curve break across the gap.
+- **Hard Budget Limit:** **50 MB** total disk space (`telemetry.sqlite3` + `telemetry.sqlite3-wal`).
+- **Maintenance Cadence:** Every **15 minutes**:
+  1. Generate 1-minute and 5-minute rollups.
+  2. Prune raw samples $> 1\text{h}$, 1m rollups $> 24\text{h}$, 5m rollups $> 7\text{d}$.
+  3. Execute `PRAGMA wal_checkpoint(TRUNCATE)` to reset the WAL log to 0 bytes.
+  4. Execute `PRAGMA incremental_vacuum(500)` if freelist pages exceed 500 pages (> 2 MB).
+  5. If total file size exceeds 45 MB (90% threshold), prune oldest 5-minute rollups to guarantee the 50 MB budget is never violated.
 
-*Do you approve keeping Run IDs strictly partitioned by default, requiring an explicit `include_lineage=true` flag to view parent runs?*
+*Do you approve this 15-minute maintenance schedule and 50 MB enforceable budget safeguard?*
+
+---
+
+### Decision 4: Lineage Traversal Default Behavior
+
+When a run is restarted via `POST /api/runs/{run_id}/restart`, Runmux generates a new Run ID with `restart_of = old_run_id`.
+- By default, `GET /api/runs/{run_id}/telemetry/history` queries strictly the specified `run_id`.
+- When `include_lineage=true` is passed, the endpoint recursively resolves parent runs, returning them with an explicit `event: "restart"` marker and an `is_gap: true` point between process lifetimes.
+
+*Do you approve keeping `include_lineage=false` as the default, requiring explicit opt-in to view parent runs?*

@@ -7,106 +7,77 @@
 
 ## 1. Executive Summary
 
-This document evaluates three architectural patterns for Runmux historical telemetry:
-1. **Architecture A: Pure In-Memory (Bounded Ring Buffers)**
-2. **Architecture B: Pure Persistent (Flat SQLite Time-Series)**
-3. **Architecture C: Hybrid (In-Memory Buffer + Tiered Persistent SQLite)**
-
-Each candidate is evaluated against empirical benchmarks conducted on Windows 11 with Python 3.12, considering Runmux's operational goals: zero daemon requirement, non-blocking web server, minimal resource footprint, and reliable process diagnostics across restarts.
+This document evaluates the architectural tradeoffs for Runmux historical telemetry, specifically analyzing whether in-memory buffering provides sufficient value over a simpler SQLite-first implementation, and detailing the operational differences among four candidates:
+1. **Architecture 1: Pure In-Memory (Bounded Ring Buffers)**
+2. **Architecture 2: Pure SQLite-First (Direct Disk Persistence & Query)**
+3. **Architecture 3: Dual-Source Merging Hybrid (Complex Boundary Stitching)**
+4. **Architecture 4: Write-Through Tiered Hybrid (Recommended Refinement)**
 
 ---
 
-## 2. Architecture Comparison Matrix
+## 2. In-Memory vs. SQLite-First Architectural Reevaluation
 
-| Evaluation Dimension | Architecture A: Pure In-Memory | Architecture B: Pure Persistent (SQLite) | Architecture C: Hybrid (Recommended) |
+The central question raised in Phase 5C design finalization is:
+> *Does the extra coordination complexity of an in-memory buffer provide sufficient value when SQLite WAL range queries take only ~0.98 ms?*
+
+### The Case for Pure SQLite-First
+- **Benchmark Evidence:** In our full-schema Windows 11 benchmarks, querying 720 raw rows (1 hour of history for one run) from SQLite in WAL mode took only **0.983 ms**. Generating a 24-hour rollup query took **4.34 ms**.
+- **Implementation Simplicity:** A pure SQLite-first design eliminates all in-memory buffer classes, active run tracking in RAM, and memory-to-disk synchronization logic. Telemetry collection simply writes to SQLite every 5 seconds, and API routes query SQLite directly.
+- **Uniformity:** Every query—whether for the last 5 minutes or the last 5 days—executes the exact same SQL code path.
+
+### The Problem with Pure SQLite-First under Web UI Polling
+While SQLite query latency is $< 1\text{ ms}$, a pure SQLite-first model exhibits three distinct drawbacks in a live browser dashboard environment:
+1. **Concurrent Read/Write Lock Contention:**
+   - In `runmux web`, multiple browser tabs (or multiple open browser windows) may poll `/api/runs/{run_id}/telemetry` and `/api/runs/{run_id}/telemetry/history` at 1–2 second intervals.
+   - At the same time, the background worker executes write transactions every 5 seconds.
+   - While SQLite WAL mode supports concurrent readers and one writer, high-frequency read queries against the table currently undergoing `INSERT` or `DELETE` transactions increase SQLite mutex contention, especially during 15-minute maintenance WAL checkpoints and vacuum operations.
+2. **Disk I/O and SSD Churn on Constrained Devices:**
+   - Every single browser dashboard poll triggers SQLite page cache checks and filesystem reads.
+3. **Lost Zero-Cost Cache for Live View:**
+   - The live telemetry backend already maintains instantaneous snapshots in memory. Extending that to hold recent points (`maxlen=720`) costs only **92 KB RAM per active run** and provides microsecond-level query responses ($< 0.05\text{ ms}$).
+
+### Reconciling Complexity: Dual-Source Merging vs. Write-Through Tiering
+
+| Hybrid Model | Description | Coordination Complexity | Risk of Bugs / Drift |
 | :--- | :--- | :--- | :--- |
-| **Sampling Efficiency** | Highest (in-memory appends, zero I/O) | High (asynchronous WAL writes, but periodic disk flushes) | High (memory appends + batched WAL flushes every 5s) |
-| **Memory Footprint (50 runs, 24h)** | **High (541 MB at 1s, 108 MB at 5s)** | **Very Low (< 10 MB total RAM)** | **Low (5.75 MB RAM for 30m high-res ring buffer)** |
-| **Memory Footprint (1000 runs, 7d)** | **Unviable (> 75 GB RAM)** | **Very Low (< 20 MB total RAM)** | **Low (< 15 MB RAM, only active runs buffered)** |
-| **Disk Write Volume (per day)** | **Zero (0 bytes/day)** | Moderate to High (45–180 MB/day uncompressed) | Low (8.9–18 MB/day with multi-tier downsampling) |
-| **Disk Endurance / SSD Wear** | Zero wear | Negligible in WAL mode with batch transactions | Negligible in WAL mode with batch transactions |
-| **Query Performance (< 1h)** | Instant (< 0.05 ms, pointer slicing) | Fast (0.5–1.0 ms via SQLite B-tree index) | Instant (< 0.05 ms from ring buffer) |
-| **Query Performance (> 24h)** | N/A (memory constraints force short retention) | Moderate (5–15 ms for 8,640 raw row scan) | Fast (0.5–1.2 ms from 1m/5m pre-aggregated rollups) |
-| **Restart Behavior** | **Total data loss on `runmux web` exit or reboot** | **Full persistence across restarts and reboots** | **Full persistence; instant warm cache on startup** |
-| **Historical Diagnosis Value** | Poor (cannot inspect past crashed runs after reboot) | High (full autopsy capabilities) | Highest (instant recent view + complete long-term autopsy) |
-| **Implementation Complexity** | Lowest (~250 LOC) | Medium (~500 LOC) | Moderate (~750 LOC) |
-| **Maintenance / Migration Risk** | Zero (no schema or disk files) | Low-Medium (requires SQLite migrations & vacuum) | Low-Medium (isolated in `telemetry.sqlite3`, disposable) |
+| **Complex Dual-Source Merging** | Memory buffer holds raw points. Disk holds older points. A single query spanning the memory/disk boundary must read both, deduplicate overlapping timestamps, and stitch the array in Python. | **High (~750 LOC):** Requires timestamp alignment, deduplication, lock coordination, and out-of-order handling. | **High:** Edge cases when flushing is in flight or samples cross boundary. |
+| **Write-Through Tiering (Recommended)** | Memory buffer holds **1 full hour** (720 points). Disk *also* receives all points immediately via 5s batch inserts. Queries $\le 1\text{h}$ read purely from memory. Queries $> 1\text{h}$ read purely from SQLite 1m/5m rollups. **Zero boundary stitching.** | **Low (~400 LOC):** Memory ring buffer is an autonomous fast-path. SQLite is the durable historical archive. Complete separation of query paths. | **Zero:** Query router picks exactly ONE source based on requested time range. |
 
 ---
 
-## 3. Deep-Dive Evaluation of Alternatives
+## 3. Comprehensive Architecture Comparison Matrix
 
-### 3.1. Architecture A: Pure In-Memory (Bounded Ring Buffers)
-
-#### Description
-Stores samples in Python circular buffers (`collections.deque(maxlen=K)`) attached to the in-process `TelemetrySampler`. When a buffer reaches capacity, older samples are silently discarded. No files are created on disk.
-
-#### Strengths
-- **Simplicity:** Trivial implementation using standard Python library data structures. No schema migrations, SQLite locks, or file cleanup routines.
-- **Zero Disk Writes:** Zero storage overhead, zero SSD write amplification, and zero disk I/O latency.
-- **Microsecond Query Latency:** Querying a 30-minute window involves simple list slicing in RAM (< 0.05 ms).
-
-#### Fatal Flaws & Disqualifying Tradeoffs
-1. **Memory Explosion under Real Workloads:**
-   - As measured in our benchmarks, Python dataclass slots consume **128 bytes/sample**.
-   - For a single run sampled at 1 second:
-     - 1 hour = 3,600 samples = **460 KB**.
-     - 24 hours = 86,400 samples = **10.8 MB**.
-     - 7 days = 604,800 samples = **75.6 MB**.
-   - With 50 concurrent active runs over 24 hours, memory reaches **540 MB**. With 100 runs over 7 days, memory exceeds **7.5 GB**!
-2. **Ephemeral Survivability (Zero Restart Resilience):**
-   - Whenever the `runmux web` server is stopped, restarted, or the machine reboots, **all metric history vanishes**.
-   - If a long-running compile or training job crashes overnight and the user restarts the web UI in the morning to inspect what happened, all historical telemetry is gone.
-3. **Loss of Finished Run Context:**
-   - Retaining buffers for completed or removed runs indefinitely leads to memory leaks. Evicting them too early destroys diagnostic utility.
+| Evaluation Dimension | 1. Pure In-Memory | 2. Pure SQLite-First | 3. Dual-Source Hybrid | 4. Write-Through Tiered Hybrid (Recommended) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Sampling Overhead** | Lowest (RAM only) | Low (5s batch insert) | Low (5s batch insert) | **Low (RAM append + 5s batch insert)** |
+| **Active Tab Query Latency** | `< 0.05 ms` | `0.98 ms` | `< 0.05 ms` (if in RAM) | **`< 0.05 ms` (direct RAM fast-path)** |
+| **Historical Query Latency (> 24h)** | N/A (data lost) | `5–15 ms` (raw scan) | `1.2 ms` (rollups) | **`1.2 ms` (pre-aggregated rollups)** |
+| **Coordination Complexity** | None | None | **High (stitching/dedup)** | **Very Low (clean time-based routing)** |
+| **RAM Footprint (20 active runs)** | 2.3 MB (30m) | < 2 MB | 1.85 MB (1h) | **1.85 MB (720 points @ 92.3 KB/run)** |
+| **RAM Footprint (100 active runs)** | 11.5 MB (30m) | < 3 MB | 9.23 MB (1h) | **9.23 MB (720 points @ 92.3 KB/run)** |
+| **7-Day Database Size (20 runs)** | 0 MB (no disk) | 54.0 MB (flat raw) | 7.8 MB (tiered rollups) | **7.8 MB (tiered rollups)** |
+| **Restart Behavior** | **Total data loss** | **Full persistence** | **Full persistence** | **Full persistence + immediate warm cache** |
+| **Lines of Code (Estimated)** | ~250 LOC | ~320 LOC | ~750 LOC | **~420 LOC** |
 
 ---
 
-### 3.2. Architecture B: Pure Persistent (Flat SQLite Time-Series)
+## 4. Deep-Dive Alternatives Analysis
 
-#### Description
-Every sampled metric point is inserted directly into a local SQLite database (`telemetry.sqlite3`). Queries read directly from SQLite with index scans over `(run_id, timestamp)`.
+### 4.1. Architecture 1: Pure In-Memory
+- **Pros:** Zero disk footprint, zero SQLite locking, simplest implementation.
+- **Cons:** Memory usage grows linearly with retention; total loss of history on web server exit or system reboot. Cannot inspect why a process failed overnight after the web server is restarted. Disqualified due to lack of durability.
 
-#### Strengths
-- **Full Survivability:** Metric history survives web server restarts, supervisor restarts, and machine reboots.
-- **Minimal RAM Footprint:** RAM consumption remains bounded (< 10 MB) regardless of run count or retention duration.
-- **Flexible SQL Analytics:** Enables arbitrary SQL filtering, group-by aggregations, and standard database tooling.
+### 4.2. Architecture 2: Pure SQLite-First
+- **Pros:** Completely eliminates in-memory buffer data structures. SQLite WAL handles queries in $\approx 1\text{ ms}$.
+- **Cons:** Every active dashboard tab polling at 1s generates continuous SQLite reads and page cache pressure. During 15-minute maintenance checkpoints (WAL truncation and incremental vacuum), concurrent dashboard reads can experience transient latency spikes.
 
-#### Weaknesses & Bottlenecks
-1. **Unbounded Storage Growth without Downsampling:**
-   - In a flat schema, 50 active processes sampled at 2 seconds generate $2,160,000 \text{ rows/day}$.
-   - At ~52 bytes/row, this accumulates **112 MB/day**, or **~780 MB/week**.
-   - Over time, without sophisticated maintenance, database file fragmentation and page churn degrade performance.
-2. **Query Latency on Wide Time Ranges:**
-   - Querying a 7-day range for an active process requires scanning 302,400 raw rows from disk, which incurs noticeable disk reads (10–50 ms) and requires heavy CPU downsampling on the web server.
-3. **Disk I/O Churn on Constrained Hardware:**
-   - Continuous unbuffered inserts (even in WAL mode) generate constant SQLite journal writes and checkpoint operations.
-
----
-
-### 3.3. Architecture C: Hybrid In-Memory + Tiered SQLite (Recommended)
-
-#### Description
-Combines the microsecond responsiveness of in-memory ring buffers with the longevity and durability of multi-resolution SQLite rollups.
-
-1. **Short-Term High-Resolution Cache (In-Memory):**
-   - High-resolution samples (e.g. 2s cadence) are kept in per-run circular buffers (`maxlen=900`, 30 minutes).
-   - Serves the overwhelming majority of web UI chart queries (live monitoring of active runs) directly from memory with zero database queries.
-2. **Batched Asynchronous Persistence (SQLite):**
-   - A background thread flushes memory samples into `telemetry.sqlite3` in batched transactions every 5 seconds.
-   - Raw data in SQLite is retained for only **1 hour**.
-3. **Multi-Resolution Rollup Tables:**
-   - A lightweight background task aggregates raw data into 1-minute buckets (`telemetry_rollup_1m`) for 24-hour retention, and 5-minute buckets (`telemetry_rollup_5m`) for 7-day retention.
-   - Storage footprint is reduced by **> 98%** compared to flat persistence (~273 KB per run for 7 days).
-4. **Isolated Database Boundary:**
-   - Telemetry uses its own database (`telemetry.sqlite3`), strictly preserving `ReadOnlyRunmux` safety on `registry.sqlite3`.
-
----
-
-## 4. Architectural Decision Justification
-
-### Why Hybrid C Wins:
-1. **Optimal User Experience:** Opening a process tab in the Web UI immediately displays high-resolution 30-minute graphs in < 1 ms from RAM, with zero SQLite query overhead.
-2. **Robust Root Cause Analysis:** If a process crashes or the system restarts, historical trends over the preceding 24 hours or 7 days remain fully accessible in SQLite.
-3. **Predictable, Bounded Disk Usage:** With automated rolling retention and downsampling, a busy system with 50 runs consumes less than **25 MB** total disk space for an entire week of history.
-4. **Safety & Stability:** Isolate writes to `telemetry.sqlite3` so that registry operations (`runmux run`, `kill`, `restart`) are completely immune to telemetry disk locking or corruption.
+### 4.3. Architecture 4: Write-Through Tiered Hybrid (Recommended Solution)
+- **Design:**
+  1. **Sampling:** Worker collects metrics every 5.0s.
+  2. **Memory Buffer:** Appends sample to `collections.deque(maxlen=720)` (1 hour at 5s). Takes $< 0.001\text{ ms}$.
+  3. **Batch Writer:** Appends sample to an in-memory batch list. Every 5.0s (or 50 samples), flushes the batch to SQLite via `executemany` within a single transaction.
+  4. **Query Routing:**
+     - If query is for $\le 1\text{ hour}$ and run is active: Read directly from `TelemetryRingBuffer` in RAM. Query completes in $< 0.05\text{ ms}$ with zero database access.
+     - If query is for $> 1\text{ hour}$ or run is finished: Query SQLite `telemetry_rollup_1m` or `telemetry_rollup_5m`. Query completes in $< 1.2\text{ ms}$.
+     - **No boundary stitching or deduplication is ever required**, because the 1-hour in-memory buffer cleanly covers all short-range live view requests, and SQLite rollups handle all long-range views.
+- **Verdict:** Captures 100% of the performance benefits of in-memory buffering without the fragile dual-source merging complexity.
