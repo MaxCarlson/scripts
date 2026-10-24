@@ -53,18 +53,18 @@
   - [x] 2.4.5: Commit Task 2.4
 
 ## Stage 3: Launcher Execution Engine & Diagnostic Argv-Echo
-- [ ] Task 3.1: Launcher Execution Engine (`script_logging.launcher`)
-  - [ ] 3.1.1: Write failing tests for launcher execution and recursion guard (`test_launcher.py`)
-  - [ ] 3.1.2: Run test to verify it fails
-  - [ ] 3.1.3: Implement `launcher.py`
-  - [ ] 3.1.4: Run test to verify it passes
-  - [ ] 3.1.5: Commit Task 3.1
-- [ ] Task 3.2: Diagnostic Argv-Echo Harness & Windows Argv Fidelity
-  - [ ] 3.2.1: Write diagnostic echo target (`argv_echo_target.py`) and test cases (`test_argv_fidelity.py`)
-  - [ ] 3.2.2: Run test to verify baseline
-  - [ ] 3.2.3: Implement Windows `.cmd` wrapper testing and batch edge-case handling
-  - [ ] 3.2.4: Run test to verify all argv fidelity tests pass
-  - [ ] 3.2.5: Commit Task 3.2
+- [x] Task 3.1: Launcher Execution Engine (`script_logging.launcher`)
+  - [x] 3.1.1: Write failing tests for launcher execution and recursion guard (`test_launcher.py`)
+  - [x] 3.1.2: Run test to verify it fails
+  - [x] 3.1.3: Implement `launcher.py`
+  - [x] 3.1.4: Run test to verify it passes
+  - [x] 3.1.5: Commit Task 3.1
+- [x] Task 3.2: Diagnostic Argv-Echo Harness & Windows Argv Fidelity
+  - [x] 3.2.1: Write diagnostic echo target (`argv_echo_target.py`) and test cases (`test_argv_fidelity.py`)
+  - [x] 3.2.2: Run test to verify baseline
+  - [x] 3.2.3: Implement Windows `.cmd` wrapper testing and batch edge-case handling
+  - [x] 3.2.4: Run test to verify all argv fidelity tests pass
+  - [x] 3.2.5: Commit Task 3.2
 
 ## Stage 4: Manifest Generator, Unified Wrappers, Migration & Rollback
 - [ ] Task 4.1: Repository Inventory Scanner and Manifest Generator (`scripts_setup.launcher_generator`)
