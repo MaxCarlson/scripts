@@ -12,4 +12,5 @@
 - Final review: self-review (no subagent dispatch authorized); no Critical or Important findings.
 - Packaging follow-up: moved `cli_tui` and Windows `windows-curses` into the `tui` extra; `runmux tui` now prints the repository-local installation commands when imports are unavailable.
 - Packaging checks: 5 focused CLI/Web tests passed; base CLI import and parsed dependency-boundary checks passed; Ruff and `git diff --check` passed.
-- Next: review and push this packaging follow-up; do not merge until explicitly requested.
+- Packaging follow-up commit `4644d5f8b7158b64216f7f0e02b504cd5520f981` is pushed to the review branch.
+- Next: user reviews the branch; do not merge until explicitly requested.
