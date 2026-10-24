@@ -3,7 +3,7 @@
 **Plan:** `docs/plans/20261024-0925_shared-launchers-and-invocation-history/`
 **Branch:** `shared-launchers-20261024-0925`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925`
-**Current Stage:** Stage 3 complete (Ready for Stage 4: Manifest Generator, Unified Wrappers, Migration & Rollback)
+**Current Stage:** Stage 4 Preparation & Checkpoint Complete (Awaiting user approval before applying wrapper migration)
 
 ## Operational Ledger
 - **2026-10-24**: Isolated git worktree created at `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925` on branch `shared-launchers-20261024-0925`.
@@ -24,6 +24,11 @@
   - Task 3.1: Implemented centralized launcher engine `script_logging.launcher` with CLI options (`--manifest`, `--command`, `--wrapper`, `--origin`, `--`), self-reference recursion guards, proxy detection, actionable missing target errors, fail-open SQLite persistence, and genuine child process exit code return. All 14 tests in `test_launcher.py` pass. Commit `b9013c7a`.
   - Task 3.2: Implemented diagnostic echo harness `argv_echo_target.py` and comprehensive cross-platform argument fidelity suite `test_argv_fidelity.py` (30 tests) verifying spaces, empty arguments (`""`), quotes, metacharacters, unicode (`日本語`, `🚀`), backslashes, flags, dashes, exit codes, stdio streaming, and CMD/pwsh Windows batch wrapper edge cases. Documented batch escaping nuances in `CONTRACT.md`.
   - Total 76 tests passing cleanly in `modules/script_logging`.
+- **2026-10-24**: Stage 4 Preparation & Dry-Run Report completed:
+  - Implemented `scripts_setup/launcher_generator.py`: repository inventory scanner (`scan_repository_programs`), collision analyzer (`detect_collisions`), wrapper recognizer (`is_managed_wrapper`), template generators, atomic manifest writer (`scripts_manifest.json`), backup/migration/rollback engine, and CLI.
+  - Implemented unit tests: `tests/test_launcher_generator.py` and `tests/test_migration.py`. Total 83 tests passing across repository test suite.
+  - Executed live repository dry-run: scanned 168 repo-owned commands, 257 existing wrappers in `bin/` (247 legacy managed, 10 unmanaged custom symlinks preserved, 79 obsolete third-party wrappers, 0 collisions detected).
+  - Production `bin/` wrappers remain 100% untouched.
 
 ## Next Action
-Execute Stage 4: Manifest Generator, Unified Wrappers, Migration & Rollback (`04_stage4-manifest-generator-and-migration.md`).
+Present the full Dry-Run Migration Report, collision analysis, and proposed changes to the user and wait for explicit approval before modifying production wrappers in Stage 4.

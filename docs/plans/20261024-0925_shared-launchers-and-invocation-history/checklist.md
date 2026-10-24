@@ -67,25 +67,25 @@
   - [x] 3.2.5: Commit Task 3.2
 
 ## Stage 4: Manifest Generator, Unified Wrappers, Migration & Rollback
-- [ ] Task 4.1: Repository Inventory Scanner and Manifest Generator (`scripts_setup.launcher_generator`)
-  - [ ] 4.1.1: Write failing test for inventory scanning and collision detection (`test_launcher_generator.py`)
-  - [ ] 4.1.2: Run test to verify it fails
-  - [ ] 4.1.3: Implement repository scanner and manifest generation
-  - [ ] 4.1.4: Run test to verify it passes
-  - [ ] 4.1.5: Commit Task 4.1
-- [ ] Task 4.2: Wrapper Template Generation and Recognition
-  - [ ] 4.2.1: Write failing test for wrapper templates and signature detection
-  - [ ] 4.2.2: Run test to verify it fails
-  - [ ] 4.2.3: Implement wrapper generation with managed signature in `launcher_generator.py`
-  - [ ] 4.2.4: Run test to verify it passes
-  - [ ] 4.2.5: Commit Task 4.2
-- [ ] Task 4.3: Migration, Backup, Rollback, and Dry-Run Tooling
-  - [ ] 4.3.1: Write failing test for migration, backup, and rollback (`test_migration.py`)
-  - [ ] 4.3.2: Run test to verify it fails
-  - [ ] 4.3.3: Implement migration and rollback functions + CLI entry point
-  - [ ] 4.3.4: Run test to verify it passes
-  - [ ] 4.3.5: Commit Task 4.3
-- [ ] Task 4.4: Integration into Existing Setup Scripts
+- [x] Task 4.1: Repository Inventory Scanner and Manifest Generator (`scripts_setup.launcher_generator`)
+  - [x] 4.1.1: Write failing test for inventory scanning and collision detection (`test_launcher_generator.py`)
+  - [x] 4.1.2: Run test to verify it fails
+  - [x] 4.1.3: Implement repository scanner and manifest generation
+  - [x] 4.1.4: Run test to verify it passes
+  - [x] 4.1.5: Commit Task 4.1
+- [x] Task 4.2: Wrapper Template Generation and Recognition
+  - [x] 4.2.1: Write failing test for wrapper templates and signature detection
+  - [x] 4.2.2: Run test to verify it fails
+  - [x] 4.2.3: Implement wrapper generation with managed signature in `launcher_generator.py`
+  - [x] 4.2.4: Run test to verify it passes
+  - [x] 4.2.5: Commit Task 4.2
+- [x] Task 4.3: Migration, Backup, Rollback, and Dry-Run Tooling
+  - [x] 4.3.1: Write failing test for migration, backup, and rollback (`test_migration.py`)
+  - [x] 4.3.2: Run test to verify it fails
+  - [x] 4.3.3: Implement migration and rollback functions + CLI entry point
+  - [x] 4.3.4: Run test to verify it passes
+  - [x] 4.3.5: Commit Task 4.3
+- [ ] Task 4.4: Integration into Existing Setup Scripts (Awaiting user approval checkpoint)
   - [ ] 4.4.1: Write test verifying setup script delegation (`test_setup_integration.py`)
   - [ ] 4.4.2: Run test to verify baseline
   - [ ] 4.4.3: Refactor `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`

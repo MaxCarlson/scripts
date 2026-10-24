@@ -3,11 +3,10 @@ from __future__ import annotations
 
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Union
+from typing import Any, Optional, Union
 
 from .formatting import EventFormatter, StoreHandler, text_file_handler
 from .invocation_store import InvocationStore, resolve_invocation_db_path
-from .launcher import launch_target
 from .models import (
     AliasStatistics,
     CommandPattern,
@@ -84,6 +83,13 @@ def get_command_statistics(
     """Fetch execution statistics for a specific command pattern fingerprint."""
     reader = open_invocation_reader(path)
     return reader.get_command_statistics(pattern_id)
+
+
+def launch_target(*args: Any, **kwargs: Any) -> int:
+    """Execute target program via unified launcher engine."""
+    from .launcher import launch_target as _lt
+
+    return _lt(*args, **kwargs)
 
 
 __all__ = [
