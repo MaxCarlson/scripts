@@ -119,7 +119,7 @@
               <p class="muted">Choose a run to inspect its status and follow output.</p>
               <button id="new-process-empty-workspace" class="primary-button" type="button">+ New Process</button>
             </div>
-            <div id="run-inspector" class="run-inspector" hidden>
+            <div id="run-inspector" class="run-inspector mode-inline" hidden>
               <div class="inspector-head">
                 <div class="run-symbol" aria-hidden="true">⌁</div>
                 <div class="run-title">
@@ -128,7 +128,94 @@
                   <div id="selected-command" class="command-label">—</div>
                   <div id="selected-identity" class="run-identity">RUN —</div>
                 </div>
-                <span id="selected-status" class="status-badge">—</span>
+                <div id="inline-telemetry" class="inline-telemetry" aria-label="Process live telemetry">
+                  <div class="inline-stat" id="stat-inline-cpu" title="Process-tree CPU utilization">
+                    <span class="stat-tag">CPU</span>
+                    <span class="stat-value" id="val-inline-cpu">—</span>
+                  </div>
+                  <div class="inline-stat" id="stat-inline-rss" title="Process-tree resident memory (RSS)">
+                    <span class="stat-tag">RAM</span>
+                    <span class="stat-value" id="val-inline-rss">—</span>
+                  </div>
+                  <div class="inline-stat" id="stat-inline-procs" title="Living processes and threads in tree">
+                    <span class="stat-tag">TREE</span>
+                    <span class="stat-value" id="val-inline-procs">—</span>
+                  </div>
+                </div>
+                <div class="inspector-head-actions">
+                  <div class="overview-mode-selector" role="group" aria-label="Process overview density mode">
+                    <button id="mode-btn-a" class="mode-btn" type="button" data-mode="minimal" title="Mode A: Minimal — Maximum log space (Alt+M to cycle)" aria-pressed="false">A</button>
+                    <button id="mode-btn-b" class="mode-btn active" type="button" data-mode="inline" title="Mode B: Inline — Compact indicators" aria-pressed="true">B</button>
+                    <button id="mode-btn-c" class="mode-btn" type="button" data-mode="dashboard" title="Mode C: Dashboard — Detailed resource cards" aria-pressed="false">C</button>
+                    <button id="mode-btn-d" class="mode-btn" type="button" data-mode="expanded" title="Mode D: Expanded — Full system &amp; device diagnostics" aria-pressed="false">D</button>
+                    <button id="mode-cycle-btn" class="icon-button small-button mode-cycle-btn" type="button" aria-label="Cycle overview mode" title="Cycle overview mode (Alt+M)">⟳</button>
+                  </div>
+                  <span id="selected-status" class="status-badge">—</span>
+                </div>
+              </div>
+              <div id="telemetry-panel" class="telemetry-panel" hidden>
+                <div id="telemetry-status-banner" class="telemetry-status-banner" role="status" hidden></div>
+                <div class="telemetry-section" id="process-telemetry-section">
+                  <div class="telemetry-section-header">
+                    <span class="scope-tag process-scope">PROCESS TREE</span>
+                    <span class="telemetry-interval-note" id="telemetry-sample-note">Current live snapshot</span>
+                  </div>
+                  <div class="telemetry-grid">
+                    <div class="telemetry-card" id="card-cpu">
+                      <div class="card-label">PROCESS CPU</div>
+                      <div class="card-value" id="card-cpu-val">—</div>
+                      <div class="card-subtext" id="card-cpu-sub">Process tree</div>
+                    </div>
+                    <div class="telemetry-card" id="card-rss">
+                      <div class="card-label">RESIDENT RAM</div>
+                      <div class="card-value" id="card-rss-val">—</div>
+                      <div class="card-subtext" id="card-rss-sub">Physical memory</div>
+                    </div>
+                    <div class="telemetry-card" id="card-tree">
+                      <div class="card-label">PROCESS TREE</div>
+                      <div class="card-value" id="card-tree-val">—</div>
+                      <div class="card-subtext" id="card-tree-sub">Root + children</div>
+                    </div>
+                    <div class="telemetry-card" id="card-io">
+                      <div class="card-label">DISK I/O RATE</div>
+                      <div class="card-value" id="card-io-val">—</div>
+                      <div class="card-subtext" id="card-io-sub">Read / write throughput</div>
+                    </div>
+                    <div class="telemetry-card" id="card-gpu-proc">
+                      <div class="card-label">PROCESS GPU RAM</div>
+                      <div class="card-value" id="card-gpu-proc-val">—</div>
+                      <div class="card-subtext" id="card-gpu-proc-sub">Attributed compute VRAM</div>
+                    </div>
+                  </div>
+                </div>
+                <div class="telemetry-section" id="host-telemetry-section" hidden>
+                  <div class="telemetry-section-header">
+                    <span class="scope-tag host-scope">HOST &amp; SYSTEM (NOT ATTRIBUTED TO PROCESS)</span>
+                    <span class="telemetry-interval-note" id="host-sample-note">System-wide measurements</span>
+                  </div>
+                  <div class="telemetry-grid host-grid">
+                    <div class="telemetry-card" id="card-host-cpu">
+                      <div class="card-label">HOST CPU TOTAL</div>
+                      <div class="card-value" id="card-host-cpu-val">—</div>
+                      <div class="card-subtext" id="card-host-cpu-sub">System utilization</div>
+                    </div>
+                    <div class="telemetry-card" id="card-host-ram">
+                      <div class="card-label">HOST RAM</div>
+                      <div class="card-value" id="card-host-ram-val">—</div>
+                      <div class="card-subtext" id="card-host-ram-sub">Used / total capacity</div>
+                    </div>
+                    <div class="telemetry-card" id="card-host-net">
+                      <div class="card-label">HOST NETWORK (SYSTEM-WIDE)</div>
+                      <div class="card-value" id="card-host-net-val">—</div>
+                      <div class="card-subtext" id="card-host-net-sub">↓ Recv / ↑ Sent throughput</div>
+                    </div>
+                    <div class="telemetry-card" id="card-gpu-dev">
+                      <div class="card-label">GPU DEVICE (HARDWARE)</div>
+                      <div class="card-value" id="card-gpu-dev-val">—</div>
+                      <div class="card-subtext" id="card-gpu-dev-sub">Device load &amp; VRAM</div>
+                    </div>
+                  </div>
+                </div>
               </div>
               <div id="run-warning" class="run-warning" role="status" hidden></div>
               <div class="tab-bar" role="tablist" aria-label="Process views">

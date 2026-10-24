@@ -11,6 +11,17 @@ const EXPLORER_MIN_WIDTH = 220;
 const EXPLORER_MAX_WIDTH = 480;
 const STATUS_SORT_ORDER = ["running", "pending", "paused", "failed", "killed", "lost", "finished"];
 const VIEW_LIMIT = 512 * 1024;
+const OVERVIEW_MODE_STORAGE_KEY = "runmux-overview-mode-v1";
+const OVERVIEW_MODES = ["minimal", "inline", "dashboard", "expanded"];
+const TELEMETRY_INTERVAL_MS = 1800;
+const HOST_TELEMETRY_INTERVAL_MS = 5400;
+let overviewMode = "inline";
+let telemetryTimer = null;
+let telemetryRequestId = 0;
+let telemetryInFlightId = 0;
+let telemetryAbortController = null;
+let lastHostSampleTime = 0;
+let cachedHostStats = null;
 
 let runs = [];
 let selectedId = null;
@@ -116,6 +127,7 @@ function restoreRunViews() {
 }
 
 loadWorkspacePreferences();
+loadOverviewMode();
 
 function applyWorkspacePreferencesToControls() {
   $("#process-search").value = searchQuery;
@@ -296,7 +308,20 @@ $("#explorer-splitter").addEventListener("keydown", (event) => {
 });
 applyWorkspacePreferencesToControls();
 applyExplorerLayout();
+applyOverviewModeUI();
+setupModeListeners();
 setupOutputSearchListeners();
+
+if (typeof document !== "undefined" && document.addEventListener) {
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden) {
+      stopTelemetryPolling();
+    } else if (selectedId && overviewMode !== "minimal") {
+      startTelemetryPolling();
+      refreshTelemetry(selectionGeneration, selectedId);
+    }
+  });
+}
 $("#scroll-output").addEventListener("click", scrollOutputToEnd);
 $("#output-text").addEventListener("scroll", () => {
   const node = $("#output-text");
@@ -330,6 +355,10 @@ document.addEventListener("keydown", (event) => {
   }
   if (event.key === "Escape" && document.activeElement === $("#process-search")) {
     $("#process-search").value = ""; renderRuns(); $("#process-search").blur();
+  }
+  if (event.altKey && (event.key === "m" || event.key === "M")) {
+    event.preventDefault();
+    cycleOverviewMode();
   }
 });
 
@@ -625,6 +654,353 @@ function closeWorkspaceTab(runId) {
   persistWorkspaceState();
 }
 
+
+function loadOverviewMode() {
+  try {
+    const saved = globalThis.localStorage?.getItem(OVERVIEW_MODE_STORAGE_KEY);
+    if (saved && OVERVIEW_MODES.includes(saved)) {
+      overviewMode = saved;
+    } else {
+      overviewMode = "inline";
+    }
+  } catch {
+    overviewMode = "inline";
+  }
+  if (typeof window !== "undefined") {
+    window.overviewMode = overviewMode;
+    window.setOverviewMode = setOverviewMode;
+    window.cycleOverviewMode = cycleOverviewMode;
+  }
+}
+
+function applyOverviewModeUI() {
+  const inspector = $("#run-inspector");
+  if (!inspector) return;
+  OVERVIEW_MODES.forEach((m) => inspector.classList.remove(`mode-${m}`));
+  inspector.classList.add(`mode-${overviewMode}`);
+
+  const modeButtons = {
+    minimal: $("#mode-btn-a"),
+    inline: $("#mode-btn-b"),
+    dashboard: $("#mode-btn-c"),
+    expanded: $("#mode-btn-d"),
+  };
+  for (const [m, btn] of Object.entries(modeButtons)) {
+    if (!btn) continue;
+    const active = m === overviewMode;
+    btn.setAttribute("aria-pressed", String(active));
+    btn.classList.toggle("active", active);
+  }
+
+  const inlineEl = $("#inline-telemetry");
+  const panelEl = $("#telemetry-panel");
+  const hostSection = $("#host-telemetry-section");
+
+  if (inlineEl) inlineEl.hidden = overviewMode !== "inline";
+  if (panelEl) panelEl.hidden = overviewMode !== "dashboard" && overviewMode !== "expanded";
+  if (hostSection) hostSection.hidden = overviewMode !== "expanded";
+}
+
+function setOverviewMode(mode) {
+  if (!OVERVIEW_MODES.includes(mode)) return;
+  overviewMode = mode;
+  if (typeof window !== "undefined") {
+    window.overviewMode = overviewMode;
+  }
+  try {
+    globalThis.localStorage?.setItem(OVERVIEW_MODE_STORAGE_KEY, mode);
+  } catch { /* Non-sensitive persistence convenience */ }
+  applyOverviewModeUI();
+
+  if (selectedId) {
+    if (overviewMode === "minimal") {
+      stopTelemetryPolling();
+    } else {
+      startTelemetryPolling();
+      refreshTelemetry(selectionGeneration, selectedId);
+    }
+  }
+}
+
+function cycleOverviewMode() {
+  const cycleMap = {
+    minimal: "inline",
+    inline: "dashboard",
+    dashboard: "expanded",
+    expanded: "minimal",
+  };
+  setOverviewMode(cycleMap[overviewMode] || "inline");
+}
+
+function formatPercent(val) {
+  if (val == null || typeof val !== "number" || isNaN(val)) return "—";
+  return `${val.toFixed(1)}%`;
+}
+
+function formatBytes(bytes) {
+  if (bytes == null || typeof bytes !== "number" || isNaN(bytes)) return "—";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  if (bytes < 1024 * 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GiB`;
+}
+
+function formatBytesRate(rate) {
+  if (rate == null || typeof rate !== "number" || isNaN(rate)) return "—";
+  if (rate === 0) return "0 B/s";
+  if (rate < 1024) return `${rate.toFixed(0)} B/s`;
+  if (rate < 1024 * 1024) return `${(rate / 1024).toFixed(1)} KiB/s`;
+  return `${(rate / (1024 * 1024)).toFixed(1)} MiB/s`;
+}
+
+function parseTelemetryTimestamp(val) {
+  if (!val) return null;
+  if (typeof val === "number" && !isNaN(val)) return val > 1e11 ? val : val * 1000;
+  if (typeof val === "string") {
+    const ms = Date.parse(val);
+    return isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
+function renderTelemetry(processStats, hostStats = null) {
+  if (!processStats) return;
+
+  const banner = $("#telemetry-status-banner");
+  if (banner) {
+    const sampleMs = parseTelemetryTimestamp(processStats.sampled_at);
+    if (processStats.unavailable) {
+      banner.hidden = false;
+      banner.textContent = `Process inactive: ${processStats.unavailable}`;
+    } else if (sampleMs !== null && (Date.now() - sampleMs > 6000)) {
+      const ageSec = Math.round((Date.now() - sampleMs) / 1000);
+      banner.hidden = false;
+      banner.textContent = `Stale telemetry (${ageSec}s ago)`;
+    } else {
+      banner.hidden = true;
+    }
+  }
+
+  // Rate fields: null vs 0 vs number
+  const isBaselineOrUnavailable = processStats.unavailable != null || processStats.cpu_percent == null;
+  const cpuText = isBaselineOrUnavailable ? "—" : formatPercent(processStats.cpu_percent);
+  const rssText = processStats.unavailable != null ? "—" : formatBytes(processStats.rss_bytes);
+  const procCount = processStats.unavailable != null ? "—" : (processStats.process_count ?? "—");
+  const threadCount = processStats.unavailable != null ? "—" : (processStats.thread_count ?? "—");
+
+  // Mode B Inline Elements
+  const inlineCpu = $("#val-inline-cpu");
+  if (inlineCpu) inlineCpu.textContent = cpuText;
+  const inlineRss = $("#val-inline-rss");
+  if (inlineRss) inlineRss.textContent = rssText;
+  const inlineProcs = $("#val-inline-procs");
+  if (inlineProcs) inlineProcs.textContent = `${procCount}p / ${threadCount}t`;
+
+  // Mode C / D Process Cards
+  const cardCpuVal = $("#card-cpu-val");
+  if (cardCpuVal) cardCpuVal.textContent = cpuText;
+  const cardCpuSub = $("#card-cpu-sub");
+  if (cardCpuSub) {
+    if (processStats.unavailable) {
+      cardCpuSub.textContent = processStats.unavailable;
+    } else if (processStats.cpu_percent == null) {
+      cardCpuSub.textContent = "Baseline pending (first sample)";
+    } else if (processStats.cpu_count > 1 && processStats.cpu_percent_normalized != null) {
+      cardCpuSub.textContent = `${formatPercent(processStats.cpu_percent_normalized)} norm (${processStats.cpu_count} cores)`;
+    } else {
+      cardCpuSub.textContent = `${processStats.cpu_count || 1} core(s)`;
+    }
+  }
+
+  const cardRssVal = $("#card-rss-val");
+  if (cardRssVal) cardRssVal.textContent = rssText;
+  const cardRssSub = $("#card-rss-sub");
+  if (cardRssSub) cardRssSub.textContent = processStats.unavailable ? "Process exited" : "Resident physical memory";
+
+  const cardTreeVal = $("#card-tree-val");
+  if (cardTreeVal) cardTreeVal.textContent = isBaselineOrUnavailable && processStats.process_count == null ? "—" : `${procCount} procs · ${threadCount} threads`;
+  const cardTreeSub = $("#card-tree-sub");
+  if (cardTreeSub) cardTreeSub.textContent = processStats.unavailable ? "Process tree terminated" : "Living processes in tree";
+
+  const cardIoVal = $("#card-io-val");
+  if (cardIoVal) {
+    if (processStats.unavailable || (processStats.read_bytes_per_second == null && processStats.write_bytes_per_second == null)) {
+      cardIoVal.textContent = "—";
+    } else {
+      cardIoVal.textContent = `↓ ${formatBytesRate(processStats.read_bytes_per_second)} · ↑ ${formatBytesRate(processStats.write_bytes_per_second)}`;
+    }
+  }
+  const cardIoSub = $("#card-io-sub");
+  if (cardIoSub) {
+    if (processStats.unavailable) {
+      cardIoSub.textContent = "Process I/O ended";
+    } else if (processStats.total_read_bytes != null || processStats.total_write_bytes != null) {
+      cardIoSub.textContent = `Total: ↓ ${formatBytes(processStats.total_read_bytes)} · ↑ ${formatBytes(processStats.total_write_bytes)}`;
+    } else {
+      cardIoSub.textContent = "Read / write throughput";
+    }
+  }
+
+  // 5. Correct GPU attribution distinction: null = Unavailable, 0 = 0 B, >0 = formatted
+  const cardGpuProcVal = $("#card-gpu-proc-val");
+  const cardGpuProcSub = $("#card-gpu-proc-sub");
+  if (cardGpuProcVal) {
+    if (processStats.unavailable) {
+      cardGpuProcVal.textContent = "—";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Process inactive";
+    } else if (processStats.gpu_memory_bytes == null) {
+      cardGpuProcVal.textContent = "Unavailable";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "No GPU attribution data";
+    } else if (processStats.gpu_memory_bytes === 0) {
+      cardGpuProcVal.textContent = "0 B";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Verified zero GPU memory";
+    } else {
+      cardGpuProcVal.textContent = formatBytes(processStats.gpu_memory_bytes);
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Attributed compute VRAM";
+    }
+  }
+
+  // Mode D Host & Hardware Cards
+  if (hostStats) {
+    const cardHostCpuVal = $("#card-host-cpu-val");
+    if (cardHostCpuVal) cardHostCpuVal.textContent = formatPercent(hostStats.cpu_percent);
+    const cardHostCpuSub = $("#card-host-cpu-sub");
+    if (cardHostCpuSub) cardHostCpuSub.textContent = `${hostStats.cpu_count || 1} logical cores total`;
+
+    const cardHostRamVal = $("#card-host-ram-val");
+    if (cardHostRamVal) cardHostRamVal.textContent = `${formatBytes(hostStats.memory_used_bytes)} / ${formatBytes(hostStats.memory_total_bytes)}`;
+    const cardHostRamSub = $("#card-host-ram-sub");
+    if (cardHostRamSub) cardHostRamSub.textContent = `${formatPercent(hostStats.memory_percent)} system utilized`;
+
+    const cardHostNetVal = $("#card-host-net-val");
+    if (cardHostNetVal) {
+      if (hostStats.net_read_bytes_per_second == null && hostStats.net_write_bytes_per_second == null) {
+        cardHostNetVal.textContent = "—";
+      } else {
+        cardHostNetVal.textContent = `↓ ${formatBytesRate(hostStats.net_read_bytes_per_second)} · ↑ ${formatBytesRate(hostStats.net_write_bytes_per_second)}`;
+      }
+    }
+    const cardHostNetSub = $("#card-host-net-sub");
+    if (cardHostNetSub) cardHostNetSub.textContent = "Host-wide network delta";
+
+    const cardGpuDevVal = $("#card-gpu-dev-val");
+    const cardGpuDevSub = $("#card-gpu-dev-sub");
+    if (hostStats.gpu_devices == null) {
+      if (cardGpuDevVal) cardGpuDevVal.textContent = "Unavailable";
+      if (cardGpuDevSub) cardGpuDevSub.textContent = "Host GPU metrics unavailable";
+    } else if (Array.isArray(hostStats.gpu_devices) && hostStats.gpu_devices.length > 0) {
+      const dev = hostStats.gpu_devices[0];
+      if (cardGpuDevVal) cardGpuDevVal.textContent = `${dev.name || ("GPU " + dev.index)}: ${dev.load != null ? dev.load + "% load" : "—"}`;
+      if (cardGpuDevSub) cardGpuDevSub.textContent = `${formatBytes(dev.memory_used)} / ${formatBytes(dev.memory_total)} · ${dev.temperature != null ? dev.temperature + "°C" : "—"}`;
+    } else {
+      if (cardGpuDevVal) cardGpuDevVal.textContent = "No GPU detected";
+      if (cardGpuDevSub) cardGpuDevSub.textContent = "NVIDIA SMI or device unavailable";
+    }
+  }
+
+  // 4. Correct terminal state check: only stop polling if run is genuinely terminal
+  const isTerminalRun = processStats && (
+    ["finished", "failed", "killed", "lost"].includes(processStats.status) ||
+    processStats.unavailable === "run is finished" ||
+    processStats.unavailable === "process exited"
+  );
+  if (isTerminalRun) {
+    stopTelemetryPolling();
+  }
+}
+
+function startTelemetryPolling() {
+  stopTelemetryPolling();
+  if (overviewMode === "minimal" || !selectedId || (typeof document !== "undefined" && document.hidden)) return;
+  telemetryTimer = setInterval(() => {
+    if (!document.hidden && selectedId && overviewMode !== "minimal") {
+      refreshTelemetry(selectionGeneration, selectedId);
+    }
+  }, TELEMETRY_INTERVAL_MS);
+}
+
+function stopTelemetryPolling() {
+  telemetryRequestId++;
+  telemetryInFlightId = 0;
+  if (telemetryTimer) {
+    clearInterval(telemetryTimer);
+    telemetryTimer = null;
+  }
+  if (telemetryAbortController) {
+    try { telemetryAbortController.abort(); } catch {}
+    telemetryAbortController = null;
+  }
+}
+
+async function refreshTelemetry(generation = selectionGeneration, runId = selectedId) {
+  if (!runId || !isCurrentSelection(generation, runId) || overviewMode === "minimal" || (typeof document !== "undefined" && document.hidden)) return;
+  if (telemetryInFlightId !== 0) return;
+
+  const currentRequestId = ++telemetryRequestId;
+  telemetryInFlightId = currentRequestId;
+
+  if (telemetryAbortController) {
+    try { telemetryAbortController.abort(); } catch {}
+  }
+  const controller = new AbortController();
+  telemetryAbortController = controller;
+  const signal = controller.signal;
+
+  try {
+    let procStats = null;
+    let hostStats = cachedHostStats;
+
+    // 2. Correct polling overhead: Only query /api/telemetry (all active runs) every 5.4s in Mode D
+    const now = Date.now();
+    const shouldFetchHost = overviewMode === "expanded" && (!cachedHostStats || (now - lastHostSampleTime >= HOST_TELEMETRY_INTERVAL_MS));
+
+    if (shouldFetchHost) {
+      const [pRes, hRes] = await Promise.all([
+        api(`/api/runs/${encodeURIComponent(runId)}/telemetry`, { signal }),
+        api("/api/telemetry", { signal }),
+      ]);
+      if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
+      procStats = await pRes.json();
+      const hData = await hRes.json();
+      hostStats = hData?.host || null;
+      cachedHostStats = hostStats;
+      lastHostSampleTime = Date.now();
+    } else {
+      const pRes = await api(`/api/runs/${encodeURIComponent(runId)}/telemetry`, { signal });
+      if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
+      procStats = await pRes.json();
+    }
+
+    if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
+    renderTelemetry(procStats, hostStats);
+  } catch (error) {
+    if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
+    if (error.name === "AbortError") return;
+    if (error.message === "locked") {
+      showLogin("Session expired. Enter the current terminal login code again.");
+      return;
+    }
+    const banner = $("#telemetry-status-banner");
+    if (banner) {
+      banner.hidden = false;
+      banner.textContent = "Telemetry temporarily unavailable.";
+    }
+  } finally {
+    // 3. Fix request cancellation races: only clear in-flight ID if this request is still the active one
+    if (telemetryInFlightId === currentRequestId) {
+      telemetryInFlightId = 0;
+    }
+  }
+}
+
+function setupModeListeners() {
+  $("#mode-btn-a")?.addEventListener("click", () => setOverviewMode("minimal"));
+  $("#mode-btn-b")?.addEventListener("click", () => setOverviewMode("inline"));
+  $("#mode-btn-c")?.addEventListener("click", () => setOverviewMode("dashboard"));
+  $("#mode-btn-d")?.addEventListener("click", () => setOverviewMode("expanded"));
+  $("#mode-cycle-btn")?.addEventListener("click", () => cycleOverviewMode());
+}
+
 async function selectRun(runId) {
   newProcessOpen = false;
   if (selectedId === runId) {
@@ -653,9 +1029,17 @@ async function selectRun(runId) {
   renderRuns();
   renderWorkspaceTabs();
   persistWorkspaceState();
-  await Promise.all([refreshSelected(generation, runId), refreshOutput(generation, runId)]);
+  applyOverviewModeUI();
+  await Promise.all([
+    refreshSelected(generation, runId),
+    refreshOutput(generation, runId),
+    overviewMode !== "minimal" ? refreshTelemetry(generation, runId) : Promise.resolve(),
+  ]);
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
+  }
+  if (isCurrentSelection(generation, runId) && overviewMode !== "minimal") {
+    startTelemetryPolling();
   }
   if (isCurrentSelection(generation, runId) && !$("#terminal-pane").hidden) connectTerminal(generation, runId);
 }
@@ -1256,6 +1640,7 @@ function invalidateSelection() {
   outputTimer = null;
   outputRequestGeneration = null;
   closeTerminal();
+  stopTelemetryPolling();
 }
 
 function isCurrentSelection(generation, runId) {
