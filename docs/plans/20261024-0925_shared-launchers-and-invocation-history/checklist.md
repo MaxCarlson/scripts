@@ -1,0 +1,111 @@
+# Checklist: Shared Launchers and Invocation-History Infrastructure
+
+## Stage 1: Invocation Store, Redaction, Schema, and Core Persistence
+- [ ] Task 1.1: Models, Schema, and Path Resolver (`script_logging.invocation_store`, `script_logging.models`)
+  - [ ] 1.1.1: Write failing test for models and path resolution (`test_invocation_store.py`)
+  - [ ] 1.1.2: Run test to verify it fails
+  - [ ] 1.1.3: Implement `models.py` and `invocation_store.py` schema initialization
+  - [ ] 1.1.4: Run test to verify it passes
+  - [ ] 1.1.5: Commit Task 1.1
+- [ ] Task 1.2: Redaction Policy and Sanitization (`script_logging.redaction`)
+  - [ ] 1.2.1: Write failing test for redaction rules (`test_redaction.py`)
+  - [ ] 1.2.2: Run test to verify it fails
+  - [ ] 1.2.3: Implement `redaction.py`
+  - [ ] 1.2.4: Run test to verify it passes
+  - [ ] 1.2.5: Commit Task 1.2
+- [ ] Task 1.3: Start & Finish Lifecycle with Atomic Counter Invariants
+  - [ ] 1.3.1: Write failing test for start/finish and counter invariants
+  - [ ] 1.3.2: Run test to verify it fails
+  - [ ] 1.3.3: Implement `start_invocation` and `finish_invocation` in `invocation_store.py`
+  - [ ] 1.3.4: Run test to verify it passes
+  - [ ] 1.3.5: Commit Task 1.3
+- [ ] Task 1.4: Concurrency, Busy Timeout, and Fail-Open Safety
+  - [ ] 1.4.1: Write concurrency and fail-open tests (`test_invocation_concurrency.py`)
+  - [ ] 1.4.2: Run test to verify it fails
+  - [ ] 1.4.3: Implement concurrency tuning and fail-open wrappers in `invocation_store.py`
+  - [ ] 1.4.4: Run test to verify it passes
+  - [ ] 1.4.5: Commit Task 1.4
+
+## Stage 2: Read-Only Query API, Reader, and Reconciliation
+- [ ] Task 2.1: ReadOnlyHistoryReader (`script_logging.reader`)
+  - [ ] 2.1.1: Write failing tests for read-only invariants (`test_reader.py`)
+  - [ ] 2.1.2: Run test to verify it fails
+  - [ ] 2.1.3: Implement `ReadOnlyHistoryReader`
+  - [ ] 2.1.4: Run test to verify it passes
+  - [ ] 2.1.5: Commit Task 2.1
+- [ ] Task 2.2: Public Query API and Cursor Pagination
+  - [ ] 2.2.1: Write failing tests for queries and cursor pagination (`test_queries.py`)
+  - [ ] 2.2.2: Run test to verify it fails
+  - [ ] 2.2.3: Implement query methods and cursor serialization in `reader.py` and `__init__.py`
+  - [ ] 2.2.4: Run test to verify it passes
+  - [ ] 2.2.5: Commit Task 2.2
+- [ ] Task 2.3: Reconciliation Tooling (`script_logging.reconciliation`)
+  - [ ] 2.3.1: Write failing test for counter reconciliation (`test_reconciliation.py`)
+  - [ ] 2.3.2: Run test to verify it fails
+  - [ ] 2.3.3: Implement `reconciliation.py`
+  - [ ] 2.3.4: Run test to verify it passes
+  - [ ] 2.3.5: Commit Task 2.3
+- [ ] Task 2.4: Synthetic Fixture for Consumer Integration
+  - [ ] 2.4.1: Write consumer contract test using synthetic fixture (`test_consumer_contract.py`)
+  - [ ] 2.4.2: Run test to verify it fails
+  - [ ] 2.4.3: Implement `synthetic_history.py` fixture
+  - [ ] 2.4.4: Run test to verify it passes
+  - [ ] 2.4.5: Commit Task 2.4
+
+## Stage 3: Launcher Execution Engine & Diagnostic Argv-Echo
+- [ ] Task 3.1: Launcher Execution Engine (`script_logging.launcher`)
+  - [ ] 3.1.1: Write failing tests for launcher execution and recursion guard (`test_launcher.py`)
+  - [ ] 3.1.2: Run test to verify it fails
+  - [ ] 3.1.3: Implement `launcher.py`
+  - [ ] 3.1.4: Run test to verify it passes
+  - [ ] 3.1.5: Commit Task 3.1
+- [ ] Task 3.2: Diagnostic Argv-Echo Harness & Windows Argv Fidelity
+  - [ ] 3.2.1: Write diagnostic echo target (`argv_echo_target.py`) and test cases (`test_argv_fidelity.py`)
+  - [ ] 3.2.2: Run test to verify baseline
+  - [ ] 3.2.3: Implement Windows `.cmd` wrapper testing and batch edge-case handling
+  - [ ] 3.2.4: Run test to verify all argv fidelity tests pass
+  - [ ] 3.2.5: Commit Task 3.2
+
+## Stage 4: Manifest Generator, Unified Wrappers, Migration & Rollback
+- [ ] Task 4.1: Repository Inventory Scanner and Manifest Generator (`scripts_setup.launcher_generator`)
+  - [ ] 4.1.1: Write failing test for inventory scanning and collision detection (`test_launcher_generator.py`)
+  - [ ] 4.1.2: Run test to verify it fails
+  - [ ] 4.1.3: Implement repository scanner and manifest generation
+  - [ ] 4.1.4: Run test to verify it passes
+  - [ ] 4.1.5: Commit Task 4.1
+- [ ] Task 4.2: Wrapper Template Generation and Recognition
+  - [ ] 4.2.1: Write failing test for wrapper templates and signature detection
+  - [ ] 4.2.2: Run test to verify it fails
+  - [ ] 4.2.3: Implement wrapper generation with managed signature in `launcher_generator.py`
+  - [ ] 4.2.4: Run test to verify it passes
+  - [ ] 4.2.5: Commit Task 4.2
+- [ ] Task 4.3: Migration, Backup, Rollback, and Dry-Run Tooling
+  - [ ] 4.3.1: Write failing test for migration, backup, and rollback (`test_migration.py`)
+  - [ ] 4.3.2: Run test to verify it fails
+  - [ ] 4.3.3: Implement migration and rollback functions + CLI entry point
+  - [ ] 4.3.4: Run test to verify it passes
+  - [ ] 4.3.5: Commit Task 4.3
+- [ ] Task 4.4: Integration into Existing Setup Scripts
+  - [ ] 4.4.1: Write test verifying setup script delegation (`test_setup_integration.py`)
+  - [ ] 4.4.2: Run test to verify baseline
+  - [ ] 4.4.3: Refactor `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`
+  - [ ] 4.4.4: Run tests to verify all pass
+  - [ ] 4.4.5: Commit Task 4.4
+
+## Stage 5: End-to-End Validation, Overhead Benchmarks, Contract & Documentation
+- [ ] Task 5.1: End-to-End Integration Suite
+  - [ ] 5.1.1: Write failing end-to-end integration test (`test_shared_launcher_e2e.py`)
+  - [ ] 5.1.2: Run test to verify it fails/passes
+  - [ ] 5.1.3: Implement any boundary edge cases identified in e2e testing
+  - [ ] 5.1.4: Run test to verify it passes
+  - [ ] 5.1.5: Commit Task 5.1
+- [ ] Task 5.2: Startup Overhead Benchmarks
+  - [ ] 5.2.1: Write benchmark script (`benchmark_overhead.py`)
+  - [ ] 5.2.2: Run benchmark script and record measurements
+  - [ ] 5.2.3: Add automated latency bound test
+  - [ ] 5.2.4: Commit Task 5.2
+- [ ] Task 5.3: CONTRACT.md, Standards & Version Bumps
+  - [ ] 5.3.1: Draft `CONTRACT.md`
+  - [ ] 5.3.2: Bump `script-logging` to `0.2.0` in `pyproject.toml` and `__init__.py`
+  - [ ] 5.3.3: Run repository linter and test suite
+  - [ ] 5.3.4: Commit Task 5.3
