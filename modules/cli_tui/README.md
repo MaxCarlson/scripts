@@ -46,12 +46,15 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 
 | Key | Context | Action |
 |---|---|---|
-| `q` | Navigation | Prompt to exit (`Are you sure you want to exit? (y/n)`) |
+| `q` | Navigation | Confirm exit, then choose whether to save the pane layout |
 | `Q` | Any screen | Force quit immediately (kills active runner, exits 0) |
 | `Esc` | Menu / Form / Running | Navigate back up the command hierarchy |
 | `[` / `]` | Global | Cycle to previous / next workspace pane |
 | `p` | Global | Toggle Split Pane Manager overlay |
+| `Ctrl+O` | Global | Save the active pane transcript and stream later output to a chosen file |
 | `Shift+Esc` / `Ctrl+T` | Global | Branch from active pane to a new pane with argument inheritance |
+
+Pane layouts are stored as versioned JSON in the user config directory, keyed by the normalized launch directory and app identity. The next launch from that directory restores pane order, active pane, command form values, and console working directories without restarting commands. Pass layout_id= to CliTuiApp when multiple app frontends should use distinct stable identities.
 
 ### Form Configuration Screen
 
@@ -86,6 +89,7 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 | `n` | Open New Pane dialog (`[1] Command Menu`, `[2] Shell Console`) |
 | `d` | Delete highlighted pane (terminates runner if active) |
 | `D` | Delete all panes and reset to single clean workspace |
+| `s` / `S` | Save the pane layout now |
 | `Esc` | Close Pane Manager overlay |
 
 ### Side-by-Side Image Viewer (`tkinter`)

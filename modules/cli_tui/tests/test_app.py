@@ -46,9 +46,9 @@ def test_app_initialization_and_menu_navigation():
     assert app.screen_mode == TuiScreenMode.MENU
 
 
-def test_universal_key_q_confirmation_and_cancellation():
+def test_universal_key_q_confirmation_and_cancellation(tmp_path):
     parser = build_sample_parser()
-    app = CliTuiApp(parser=parser)
+    app = CliTuiApp(parser=parser, layout_dir=tmp_path, layout_id="quit-test")
 
     # Press 'q' from menu triggers confirmation
     app.process_key(ord("q"))
@@ -65,7 +65,10 @@ def test_universal_key_q_confirmation_and_cancellation():
     app.process_key(ord("q"))
     assert app.is_confirming_quit is True
     app.process_key(ord("y"))
+    assert app.is_asking_save_layout is True
+    app.process_key(ord("y"))
     assert app.is_terminated is True
+    assert app.layout_store.path.exists()
 
 
 def test_universal_key_Q_force_quit():
@@ -215,7 +218,8 @@ def test_form_run_button_and_ctrl_r_shortcut():
 def test_form_argument_inspector_displays_help_and_details():
     parser = argparse.ArgumentParser(prog="mytool")
     parser.add_argument(
-        "-f", "--format",
+        "-f",
+        "--format",
         choices=("auto", "webp", "jpeg"),
         default="auto",
         help="Target encoding format for images",
@@ -237,4 +241,3 @@ def test_form_argument_inspector_displays_help_and_details():
     screen_btn = "\n".join(app.render_virtual_screen(height=24, width=80))
     assert "Action: Run Command" in screen_btn
     assert "Execute this command in the background" in screen_btn
-

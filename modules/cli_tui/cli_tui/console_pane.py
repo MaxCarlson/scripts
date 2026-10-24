@@ -3,7 +3,8 @@ from __future__ import annotations
 import curses
 import os
 import sys
-from typing import Any, List, Optional
+import threading
+from typing import Any, Callable, List, Optional
 
 from .process_runner import ProcessRunner
 
@@ -23,6 +24,74 @@ class ConsolePaneRunner:
         self.input_buffer: str = ""
         self.cursor_pos: int = 0
         self.is_terminated: bool = False
+        self._output_listeners: List[Callable[[str], None]] = []
+        self._subscribed_runners: List[ProcessRunner] = []
+        self._output_lock = threading.RLock()
+
+    def add_output_listener(
+        self, callback: Callable[[str], None]
+    ) -> Callable[[], None]:
+        """Subscribe to console transcript changes and future command output."""
+        with self._output_lock:
+            self._output_listeners.append(callback)
+            if self.active_runner is not None:
+                self.active_runner.add_output_listener(callback)
+                if self.active_runner not in self._subscribed_runners:
+                    self._subscribed_runners.append(self.active_runner)
+
+        def unsubscribe() -> None:
+            with self._output_lock:
+                if callback in self._output_listeners:
+                    self._output_listeners.remove(callback)
+                for runner in self._subscribed_runners:
+                    runner.remove_output_listener(callback)
+
+        return unsubscribe
+
+    def snapshot_and_subscribe(
+        self, callback: Callable[[str], None]
+    ) -> tuple[list[str], Callable[[], None]]:
+        """Atomically snapshot the visible transcript and subscribe to later output."""
+        with self._output_lock:
+            self._output_listeners.append(callback)
+            runner_lines: list[str] = []
+            if self.active_runner is not None:
+                runner_lines, _ = self.active_runner.snapshot_and_subscribe(callback)
+                if self.active_runner not in self._subscribed_runners:
+                    self._subscribed_runners.append(self.active_runner)
+            lines = list(self.history_lines) + runner_lines
+
+        def unsubscribe() -> None:
+            with self._output_lock:
+                if callback in self._output_listeners:
+                    self._output_listeners.remove(callback)
+                for runner in self._subscribed_runners:
+                    runner.remove_output_listener(callback)
+
+        return lines, unsubscribe
+
+    def _emit_output(self, text: str) -> None:
+        with self._output_lock:
+            listeners = list(self._output_listeners)
+        for callback in listeners:
+            try:
+                callback(text)
+            except Exception:
+                with self._output_lock:
+                    if callback in self._output_listeners:
+                        self._output_listeners.remove(callback)
+
+    def _record_history(self, line: str) -> None:
+        with self._output_lock:
+            self.history_lines.append(line)
+            listeners = list(self._output_listeners)
+        for callback in listeners:
+            try:
+                callback(line + "\n")
+            except Exception:
+                with self._output_lock:
+                    if callback in self._output_listeners:
+                        self._output_listeners.remove(callback)
 
     @property
     def is_running(self) -> bool:
@@ -52,11 +121,11 @@ class ConsolePaneRunner:
     def execute_line(self, line: str) -> None:
         if self.active_runner:
             self.history_lines.extend(self.active_runner.lines)
-            self.history_lines.append("")
+            self._record_history("")
             self.active_runner = None
 
         cmd_str = line.strip()
-        self.history_lines.append(f"[{self.cwd}]> {line}")
+        self._record_history(f"[{self.cwd}]> {line}")
 
         if not cmd_str:
             return
@@ -90,15 +159,15 @@ class ConsolePaneRunner:
 
             if os.path.isdir(new_dir):
                 self.cwd = new_dir
-                self.history_lines.append(f"Directory changed to: {self.cwd}")
+                self._record_history(f"Directory changed to: {self.cwd}")
             else:
-                self.history_lines.append(f"Directory not found: {target}")
-            self.history_lines.append("")
+                self._record_history(f"Directory not found: {target}")
+            self._record_history("")
             return
 
         if cmd_str.lower() in ("exit", "quit"):
             self.is_terminated = True
-            self.history_lines.append("Console session terminated.")
+            self._record_history("Console session terminated.")
             return
 
         # Run via shell
@@ -108,13 +177,16 @@ class ConsolePaneRunner:
             argv = ["/bin/sh", "-c", cmd_str]
 
         self.active_runner = ProcessRunner(argv, cwd=self.cwd)
+        self._subscribed_runners.append(self.active_runner)
+        for callback in self._output_listeners:
+            self.active_runner.add_output_listener(callback)
         self.active_runner.start()
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
         if self.active_runner:
             rc = self.active_runner.wait(timeout=timeout)
             self.history_lines.extend(self.active_runner.lines)
-            self.history_lines.append("")
+            self._record_history("")
             self.active_runner = None
             return rc
         return 0

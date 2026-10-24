@@ -293,6 +293,7 @@ class PaneWorkspace:
             return False
 
         target = self.panes[index]
+        self._close_capture(target)
         if target.runner:
             if hasattr(target.runner, "stop"):
                 target.runner.stop()
@@ -311,9 +312,22 @@ class PaneWorkspace:
             self.active_index -= 1
         return True
 
+    @staticmethod
+    def _close_capture(pane: PaneSession) -> None:
+        unsubscribe = pane.extra_data.pop("capture_unsubscribe", None)
+        if callable(unsubscribe):
+            try:
+                unsubscribe()
+            except Exception:
+                pass
+        capture = pane.extra_data.pop("output_capture", None)
+        if capture is not None and hasattr(capture, "close"):
+            capture.close()
+
     def terminate_all(self) -> None:
         """Terminate all running background processes across all panes."""
         for pane in self.panes:
+            self._close_capture(pane)
             if pane.runner:
                 if hasattr(pane.runner, "stop"):
                     pane.runner.stop()

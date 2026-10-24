@@ -6,7 +6,7 @@ import subprocess
 import textwrap
 import threading
 import time
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
@@ -222,6 +222,7 @@ class ProcessRunner:
         self.max_lines = max_lines
         self._lines: deque[str] = deque(maxlen=max_lines)
         self._lock = threading.Lock()
+        self._output_listeners: List[Callable[[str], None]] = []
         self._process: Optional[subprocess.Popen[bytes]] = None
         self._thread: Optional[threading.Thread] = None
         self._start_time: Optional[float] = None
@@ -273,11 +274,15 @@ class ProcessRunner:
                     with self._lock:
                         buffer.feed(text)
                         self._lines = deque(buffer.get_lines(), maxlen=self.max_lines)
+                        listeners = list(self._output_listeners)
+                    self._dispatch_output(text, listeners)
             final_text = decoder.decode(b"", final=True)
             if final_text:
                 with self._lock:
                     buffer.feed(final_text)
                     self._lines = deque(buffer.get_lines(), maxlen=self.max_lines)
+                    listeners = list(self._output_listeners)
+                self._dispatch_output(final_text, listeners)
         except Exception:
             pass
         finally:
@@ -285,6 +290,55 @@ class ProcessRunner:
                 self._process.wait()
                 self._exit_code = self._process.poll()
                 self._end_time = time.monotonic()
+
+    def add_output_listener(
+        self, callback: Callable[[str], None]
+    ) -> Callable[[], None]:
+        """Subscribe to decoded output; return a function that removes the listener."""
+        with self._lock:
+            self._output_listeners.append(callback)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                if callback in self._output_listeners:
+                    self._output_listeners.remove(callback)
+
+        return unsubscribe
+
+    def remove_output_listener(self, callback: Callable[[str], None]) -> None:
+        """Remove a previously registered output listener."""
+        with self._lock:
+            if callback in self._output_listeners:
+                self._output_listeners.remove(callback)
+
+    def snapshot_and_subscribe(
+        self, callback: Callable[[str], None]
+    ) -> Tuple[List[str], Callable[[], None]]:
+        """Subscribe and snapshot retained lines under the same runner lock."""
+        with self._lock:
+            self._output_listeners.append(callback)
+            lines = list(self._lines)
+        return lines, lambda: self.remove_output_listener(callback)
+
+    def _dispatch_output(
+        self, text: str, listeners: Optional[List[Callable[[str], None]]] = None
+    ) -> None:
+        if listeners is None:
+            with self._lock:
+                listeners = list(self._output_listeners)
+        failed: List[Callable[[str], None]] = []
+        for listener in listeners:
+            try:
+                listener(text)
+            except Exception:
+                failed.append(listener)
+        if failed:
+            with self._lock:
+                self._output_listeners = [
+                    listener
+                    for listener in self._output_listeners
+                    if listener not in failed
+                ]
 
     @property
     def is_running(self) -> bool:
