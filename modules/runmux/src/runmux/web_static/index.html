@@ -143,6 +143,13 @@
                   </div>
                 </div>
                 <div class="inspector-head-actions">
+                  <div class="lifecycle-controls" id="lifecycle-controls" role="group" aria-label="Process lifecycle controls">
+                    <button id="action-stop-btn" class="lifecycle-btn lifecycle-btn-stop" type="button" title="Gracefully stop process" disabled>Stop</button>
+                    <button id="action-kill-btn" class="lifecycle-btn lifecycle-btn-kill" type="button" title="Force kill process" disabled>Kill</button>
+                    <button id="action-restart-btn" class="lifecycle-btn lifecycle-btn-restart" type="button" title="Restart terminated process as new run" disabled>Restart</button>
+                    <button id="action-duplicate-btn" class="lifecycle-btn lifecycle-btn-duplicate" type="button" title="Duplicate as new parallel run" disabled>Duplicate</button>
+                    <button id="action-pause-btn" class="lifecycle-btn lifecycle-btn-pause" type="button" title="Pause process (unsupported on Windows)" disabled>Pause</button>
+                  </div>
                   <div class="overview-mode-selector" role="group" aria-label="Process overview density mode">
                     <button id="mode-btn-a" class="mode-btn" type="button" data-mode="minimal" title="Mode A: Minimal — Maximum log space (Alt+M to cycle)" aria-pressed="false">A</button>
                     <button id="mode-btn-b" class="mode-btn active" type="button" data-mode="inline" title="Mode B: Inline — Compact indicators" aria-pressed="true">B</button>
@@ -153,6 +160,7 @@
                   <span id="selected-status" class="status-badge">—</span>
                 </div>
               </div>
+              <div id="lifecycle-feedback" class="lifecycle-feedback" role="status" aria-live="polite" hidden></div>
               <div id="telemetry-panel" class="telemetry-panel" hidden>
                 <div id="telemetry-status-banner" class="telemetry-status-banner" role="status" hidden></div>
                 <div class="telemetry-section" id="process-telemetry-section">
@@ -286,6 +294,32 @@
           </section>
         </section>
       </section>
+      <div id="lifecycle-confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" hidden>
+        <div class="modal-box">
+          <div class="modal-header">
+            <h3 id="confirm-modal-title">Confirm Action</h3>
+            <button id="confirm-modal-close" class="icon-button small-button" type="button" aria-label="Close dialog">×</button>
+          </div>
+          <div class="modal-body">
+            <p id="confirm-modal-desc">Are you sure you want to proceed?</p>
+            <div class="confirm-target-info">
+              <div class="confirm-field">
+                <span class="confirm-label">PROCESS NAME</span>
+                <strong id="confirm-run-name" class="confirm-value">—</strong>
+              </div>
+              <div class="confirm-field">
+                <span class="confirm-label">IMMUTABLE RUN ID</span>
+                <code id="confirm-run-id" class="confirm-value">—</code>
+              </div>
+            </div>
+            <div id="confirm-warning-note" class="confirm-warning-note"></div>
+          </div>
+          <div class="modal-actions">
+            <button id="confirm-cancel-btn" class="modal-btn modal-btn-cancel" type="button">Cancel</button>
+            <button id="confirm-submit-btn" class="modal-btn modal-btn-confirm" type="button">Confirm</button>
+          </div>
+        </div>
+      </div>
     </main>
   </body>
 </html>

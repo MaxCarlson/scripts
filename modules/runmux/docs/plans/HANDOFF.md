@@ -17,6 +17,10 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
+The active Runmux Web UI Phase 4A lifecycle frontend plan is:
+
+- `20261024-1315_runmux-web-lifecycle-frontend/`: Phase 4A browser-facing process lifecycle controls for Stop, Kill, Restart, Duplicate, and Pause/Resume. Read its `00_implementation-plan.md`, `checklist.md`, `STATUS.md`, and `HANDOFF.md` for scope, invariants, and progress.
+
 The completed Runmux Web UI Phase 5A+ overview modes and live telemetry plan is:
 
 - `20261024-runmux-web-overview-telemetry/`: Phase 5A four selectable overview modes (Minimal, Inline, Dashboard, Expanded) and complete frontend integration of Phase 5B live telemetry endpoints. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `screenshots/` for implementation details, verification results, and representative browser screenshots.
