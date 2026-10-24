@@ -6,3 +6,4 @@
 - [x] Run focused regression suites, Ruff, and `git diff --check`.
 - [x] Review branch and commits; self-review found no Critical or Important findings.
 - [x] Push the branch for user review; do not merge.
+- [x] Make native TUI dependencies optional and document local `cli_tui` installation with a focused missing-dependency hint.

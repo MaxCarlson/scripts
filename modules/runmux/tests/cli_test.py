@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import builtins
 import io
 import json
 import sys
@@ -95,6 +96,27 @@ def test_tui_command_uses_custom_state_history_and_current_root(tmp_path: Path, 
     assert args.func is handle_tui
     assert handle_tui(args) == 0
     assert calls == [(tmp_path / "state", tmp_path / "state" / "commands.json", root)]
+
+
+def test_tui_missing_dependencies_shows_installation_hint_without_opening_registry(
+    tmp_path: Path, monkeypatch, capsys
+) -> None:
+    original_import = builtins.__import__
+
+    def import_without_tui(name, *args, **kwargs):
+        if name == "runmux.tui":
+            raise ModuleNotFoundError("No module named 'cli_tui'", name="cli_tui")
+        return original_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", import_without_tui)
+    args = build_parser().parse_args(["--state-dir", str(tmp_path), "tui"])
+
+    assert handle_tui(args) == 2
+    error = capsys.readouterr().err
+    assert "native TUI dependencies are missing" in error
+    assert "python -m pip install -e .\\modules\\cli_tui" in error
+    assert 'python -m pip install -e ".\\modules\\runmux[tui]"' in error
+    assert not (tmp_path / "registry.sqlite3").exists()
 
 
 def test_ls_defaults_to_active_only_and_supports_terminal_views(tmp_path: Path) -> None:

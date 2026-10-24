@@ -1,5 +1,19 @@
 # runmux
 
+## Native terminal workspace
+
+The native interface is optional. From the scripts repository root, install
+the repository-local `cli_tui` package and the Runmux `tui` extra:
+
+```powershell
+python -m pip install -e .\modules\cli_tui
+python -m pip install -e ".\modules\runmux[tui]"
+```
+
+Then start the workspace with `runmux tui`. The base Runmux CLI does not need
+these terminal UI dependencies; if they are missing, the command prints these
+installation steps and exits without opening the registry.
+
 ## Read-only browser view
 
 Install the reusable browser service and Runmux's optional web extra:

@@ -1020,7 +1020,17 @@ def handle_tui(args: argparse.Namespace) -> int:
     """Handle ``runmux tui`` without loading terminal UI code for other commands."""
 
     from runmux.history import history_path_for_state_dir
-    from runmux.tui import run_tui
+
+    try:
+        from runmux.tui import run_tui
+    except ImportError:
+        print(
+            "runmux: native TUI dependencies are missing. From the scripts repository root, run:\n"
+            "  python -m pip install -e .\\modules\\cli_tui\n"
+            '  python -m pip install -e ".\\modules\\runmux[tui]"',
+            file=sys.stderr,
+        )
+        return 2
 
     store = get_store(args)
     return run_tui(

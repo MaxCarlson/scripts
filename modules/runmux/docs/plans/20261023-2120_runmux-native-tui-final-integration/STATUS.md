@@ -10,4 +10,6 @@
 - Consolidated `cli_tui` checks: process runner/schema/import boundary 15 passed from the repository root. The broader suite was inconclusive: Windows worktree temp-directory ACL errors caused pytest errors and cleanup failure; a separate `test_fix_pass.py` run had 6 pass and 1 `%TEMP%` ACL failure. The import-boundary test passes from the repository root with the intended `PYTHONPATH`.
 - Manual Windows TUI smoke: process listed/opened; after quitting, registry still showed it running. The test process was then stopped and its temporary state removed.
 - Final review: self-review (no subagent dispatch authorized); no Critical or Important findings.
-- Next: user reviews the branch; do not merge until explicitly requested.
+- Packaging follow-up: moved `cli_tui` and Windows `windows-curses` into the `tui` extra; `runmux tui` now prints the repository-local installation commands when imports are unavailable.
+- Packaging checks: 5 focused CLI/Web tests passed; base CLI import and parsed dependency-boundary checks passed; Ruff and `git diff --check` passed.
+- Next: review and push this packaging follow-up; do not merge until explicitly requested.
