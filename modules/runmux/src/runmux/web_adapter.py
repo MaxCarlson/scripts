@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import binascii
 import codecs
 import concurrent.futures
 import hashlib
@@ -12,6 +13,7 @@ import sqlite3
 import time
 from contextlib import closing
 from dataclasses import dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -20,9 +22,9 @@ from web_ui_tools.terminal import TerminalParserState, TerminalTextSanitizer
 
 from runmux.constants import STATUS_LOST, TERMINAL_STATUSES
 from runmux.ipc import IpcError, request_json
-from runmux.models import RunRecord
+from runmux.models import LifecycleEvent, RunLineageSummary, RunPage, RunRecord
 from runmux.stats import HostTelemetry, ProcessStats, TelemetrySampler
-from runmux.store import RunNotFoundError
+from runmux.store import RunNotFoundError, RunStore
 from runmux.telemetry_store import TelemetryQueryPoint, TelemetryStore
 
 RUN_ID_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}\Z")
@@ -86,6 +88,7 @@ class ReadOnlyRunmux:
         self.db_path = self.state_dir / "registry.sqlite3"
         self._telemetry_sampler = sampler or TelemetrySampler()
         self._telemetry_store = telemetry_store or TelemetryStore(self.state_dir, auto_init=False)
+        self._run_store = _ReadOnlyRunStore(self.state_dir)
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.is_file():
@@ -113,6 +116,219 @@ class ReadOnlyRunmux:
             return [RunRecord.from_row(row) for row in rows]
         except (sqlite3.Error, OSError) as error:
             raise RegistryReadError("The Runmux registry is unavailable for read-only access.") from error
+
+    def query_runs_history(self, **query: Any) -> dict[str, Any]:
+        """Return one allowlisted history page without initializing or writing the registry."""
+
+        if not self.db_path.is_file():
+            page = RunPage([], None, False, 0, 0 if query.get("include_total") else None)
+        else:
+            try:
+                page = self._run_store.query_runs(**query)
+            except sqlite3.OperationalError as error:
+                if "interrupted" in str(error).casefold():
+                    raise ValueError("Query exceeded the bounded SQLite work budget; narrow the filters.") from error
+                raise RegistryReadError("The Runmux registry is unavailable for read-only access.") from error
+            except (sqlite3.Error, OSError) as error:
+                raise RegistryReadError("The Runmux registry is unavailable for read-only access.") from error
+        result = _serialize_run_page(page)
+        result["sort_by"] = query.get("sort_by", "created_at")
+        result["sort_dir"] = query.get("sort_dir", "desc")
+        result["filters"] = {
+            key: value
+            for key, value in query.items()
+            if key not in {"cursor", "limit", "sort_by", "sort_dir", "include_total"}
+            and value not in (None, False, "")
+        }
+        return result
+
+    def get_run_lineage(self, run_id: str, *, limit: int = 200) -> dict[str, Any]:
+        """Return bounded restart/duplicate lineage for a full immutable Run ID."""
+
+        record = self.get_run(run_id)
+        try:
+            lineage = self._run_store.get_run_lineage(record.id, max_nodes=limit)
+        except (sqlite3.Error, OSError) as error:
+            raise RegistryReadError("The Runmux registry is unavailable for read-only access.") from error
+        return _serialize_lineage(lineage)
+
+    def get_run_events(
+        self,
+        run_id: str,
+        *,
+        limit: int = 200,
+        cursor: str | None = None,
+    ) -> dict[str, Any]:
+        """Return genuine telemetry events and timestamped registry markers with provenance."""
+
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000.")
+        record = self.get_run(run_id)
+        cursor_key = _decode_event_cursor(cursor, record.id) if cursor else None
+        events: list[LifecycleEvent] = []
+        has_more = False
+        if record.created_at:
+            events.append(
+                LifecycleEvent(
+                    "registered",
+                    record.created_at,
+                    "registry_record",
+                    epoch=_timestamp_epoch(record.created_at),
+                )
+            )
+        if record.started_at:
+            events.append(
+                LifecycleEvent(
+                    "started",
+                    record.started_at,
+                    "registry_record",
+                    epoch=_timestamp_epoch(record.started_at),
+                )
+            )
+        if record.ended_at:
+            events.append(
+                LifecycleEvent(
+                    "terminated",
+                    record.ended_at,
+                    "registry_record",
+                    epoch=_timestamp_epoch(record.ended_at),
+                    details={"status": record.status, "exit_code": record.exit_code},
+                )
+            )
+        if record.restart_of:
+            events.append(
+                LifecycleEvent(
+                    "restarted_from",
+                    record.created_at,
+                    "registry_record",
+                    epoch=_timestamp_epoch(record.created_at),
+                    details={"related_run_id": record.restart_of},
+                )
+            )
+        if record.duplicate_of:
+            events.append(
+                LifecycleEvent(
+                    "duplicated_from",
+                    record.created_at,
+                    "registry_record",
+                    epoch=_timestamp_epoch(record.created_at),
+                    details={"related_run_id": record.duplicate_of},
+                )
+            )
+        try:
+            with closing(self._run_store.connect()) as connection:
+                child_sql = (
+                    "SELECT id, created_at, restart_of, duplicate_of FROM runs "
+                    "WHERE (restart_of = ? OR duplicate_of = ?)"
+                )
+                child_params: list[Any] = [record.id, record.id]
+                if cursor_key is not None:
+                    cursor_timestamp = datetime.fromtimestamp(cursor_key[0], timezone.utc).isoformat(
+                        timespec="seconds"
+                    )
+                    if cursor_key[1] > -1:
+                        child_sql += " AND created_at > ?"
+                        child_params.append(cursor_timestamp)
+                    else:
+                        child_type, cursor_related = cursor_key[2], cursor_key[4]
+                        relation_type = "CASE WHEN restart_of = ? THEN 'restarted_by' ELSE 'duplicated_by' END"
+                        child_sql += (
+                            " AND (created_at > ? OR (created_at = ? AND ("
+                            f"{relation_type} > ? OR ({relation_type} = ? AND id > ?))))"
+                        )
+                        child_params.extend(
+                            (
+                                cursor_timestamp,
+                                cursor_timestamp,
+                                record.id,
+                                child_type,
+                                record.id,
+                                child_type,
+                                cursor_related,
+                            )
+                        )
+                child_sql += " ORDER BY created_at ASC, id ASC LIMIT ?"
+                child_params.append(limit + 1)
+                children = connection.execute(child_sql, child_params).fetchall()
+            for child_id, created_at, restart_of, _duplicate_of in children[:limit]:
+                event_type = "restarted_by" if restart_of == record.id else "duplicated_by"
+                events.append(
+                    LifecycleEvent(
+                        event_type,
+                        str(created_at),
+                        "registry_record",
+                        epoch=_timestamp_epoch(str(created_at)),
+                        details={"related_run_id": str(child_id)},
+                    )
+                )
+            if len(children) > limit:
+                has_more = True
+        except (sqlite3.Error, OSError) as error:
+            raise RegistryReadError("The Runmux registry is unavailable for read-only access.") from error
+
+        # The index makes the chronological page lookup bounded even if a telemetry
+        # database has accumulated many events. Details and free-text reasons are
+        # withheld because their arbitrary payloads have no safe disclosure schema.
+        recorded: list[dict[str, Any]] = []
+        telemetry_path = self.state_dir / "telemetry.sqlite3"
+        if telemetry_path.is_file():
+            try:
+                uri = telemetry_path.as_uri() + "?mode=ro"
+                with closing(sqlite3.connect(uri, uri=True, timeout=1.0)) as connection:
+                    if cursor_key is None:
+                        rows = connection.execute(
+                            "SELECT event_id, timestamp, event_type FROM telemetry_events "
+                            "WHERE run_id = ? ORDER BY timestamp ASC, event_id ASC LIMIT ?",
+                            (run_id, limit + 1),
+                        ).fetchall()
+                    else:
+                        rows = connection.execute(
+                            "SELECT event_id, timestamp, event_type FROM telemetry_events "
+                            "WHERE run_id = ? AND (timestamp > ? OR (timestamp = ? AND event_id > ?)) "
+                            "ORDER BY timestamp ASC, event_id ASC LIMIT ?",
+                            (run_id, cursor_key[0], cursor_key[0], cursor_key[1], limit + 1),
+                        ).fetchall()
+                for event_id, timestamp, event_type in rows:
+                    epoch = float(timestamp)
+                    recorded.append(
+                        {
+                            "event_id": int(event_id),
+                            "epoch": epoch,
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(epoch)),
+                            "event_type": str(event_type),
+                            "provenance": "telemetry_store",
+                        }
+                    )
+            except sqlite3.OperationalError as error:
+                # An older/partially initialized telemetry DB has no event table.
+                if "no such table" in str(error).casefold():
+                    recorded = []
+                else:
+                    raise RegistryReadError("The telemetry event store is unavailable for read-only access.") from error
+        has_more = has_more or len(recorded) > limit
+        recorded = recorded[:limit]
+        events.extend(
+            LifecycleEvent(
+                row["event_type"],
+                row["timestamp"],
+                row["provenance"],
+                event_id=row["event_id"],
+                epoch=row["epoch"],
+            )
+            for row in recorded
+        )
+
+        # Event pages are chronological. The cursor's remaining keys resolve
+        # timestamp collisions across telemetry and registry markers.
+        serialized = [serialize_lifecycle_event(event) for event in events]
+        serialized.sort(key=_lifecycle_event_sort_key)
+        if cursor_key is not None:
+            serialized = [item for item in serialized if _lifecycle_event_sort_key(item) > cursor_key]
+        if len(serialized) > limit:
+            serialized = serialized[:limit]
+            has_more = True
+        next_cursor = _encode_event_cursor(record.id, serialized[-1]) if has_more and serialized else None
+        return {"run_id": record.id, "events": serialized, "has_more": has_more, "next_cursor": next_cursor}
 
     def get_run(self, run_id: str) -> RunRecord:
         """Resolve an exact immutable full ID; numeric and abbreviated IDs are rejected."""
@@ -436,6 +652,121 @@ def serialize_host_telemetry(host: HostTelemetry) -> dict[str, Any]:
         "gpu_devices": host.gpu_devices,
         "sampled_at": host.sampled_at,
     }
+
+
+class _ReadOnlyRunStore(RunStore):
+    """RunStore query methods backed by SQLite read-only mode, without initialization."""
+
+    def __init__(self, state_dir: Path) -> None:
+        self.state_dir = state_dir
+        self.db_path = state_dir / "registry.sqlite3"
+
+    def connect(self) -> sqlite3.Connection:
+        if not self.db_path.is_file():
+            raise FileNotFoundError(self.db_path.name)
+        connection = sqlite3.connect(self.db_path.as_uri() + "?mode=ro", uri=True, timeout=1.0)
+        connection.row_factory = sqlite3.Row
+        connection.execute("PRAGMA query_only=ON")
+        connection.execute("PRAGMA busy_timeout=1000")
+        return connection
+
+
+def _serialize_run_page(page: RunPage) -> dict[str, Any]:
+    return {
+        "items": [serialize_run(record) for record in page.items],
+        "next_cursor": page.next_cursor,
+        "has_more": page.has_more,
+        "page_size": page.page_size,
+        "total_count": page.total_count,
+    }
+
+
+def _serialize_lineage(lineage: RunLineageSummary) -> dict[str, Any]:
+    def node(value: Any) -> dict[str, Any]:
+        return {
+            "id": value.id,
+            "numeric_id": value.numeric_id,
+            "name": TerminalTextSanitizer().feed(value.name or "")[:128],
+            "status": value.status,
+            "created_at": value.created_at,
+            "relationship": value.relationship,
+            "exit_code": value.exit_code,
+        }
+
+    return {
+        "run_id": lineage.run_id,
+        "root_run_id": lineage.root_run_id,
+        "ancestors": [node(value) for value in lineage.ancestors],
+        "descendants": [node(value) for value in lineage.descendants],
+        "total_restarts": lineage.total_restarts,
+        "total_duplicates": lineage.total_duplicates,
+        "truncated": lineage.truncated,
+    }
+
+
+def serialize_lifecycle_event(event: LifecycleEvent) -> dict[str, Any]:
+    """Serialize event identity and provenance while withholding arbitrary payload text."""
+
+    result: dict[str, Any] = {
+        "event_type": TerminalTextSanitizer().feed(event.event_type)[:128],
+        "timestamp": TerminalTextSanitizer().feed(event.timestamp)[:64],
+        "provenance": event.provenance,
+        "epoch": event.epoch if event.epoch is not None else _timestamp_epoch(event.timestamp),
+    }
+    if event.event_id is not None:
+        result["event_id"] = event.event_id
+    if event.details:
+        related_run_id = event.details.get("related_run_id")
+        if isinstance(related_run_id, str):
+            result["related_run_id"] = related_run_id
+        for key in ("status", "exit_code"):
+            if key in event.details:
+                result[key] = event.details[key]
+    return result
+
+
+def _timestamp_epoch(timestamp: str) -> float:
+    normalized = timestamp[:-1] + "+00:00" if timestamp.endswith("Z") else timestamp
+    try:
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed.timestamp()
+    except ValueError:
+        return float("inf")
+
+
+def _lifecycle_event_sort_key(event: dict[str, Any]) -> tuple[float, int, str, str, str]:
+    return (
+        float(event.get("epoch", _timestamp_epoch(str(event["timestamp"])))),
+        int(event.get("event_id", -1)),
+        str(event["event_type"]),
+        str(event["provenance"]),
+        str(event.get("related_run_id", "")),
+    )
+
+
+def _encode_event_cursor(run_id: str, event: dict[str, Any]) -> str:
+    payload = {
+        "v": 1,
+        "run_id": run_id,
+        "key": list(_lifecycle_event_sort_key(event)),
+    }
+    raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+
+
+def _decode_event_cursor(cursor: str, run_id: str) -> tuple[float, int, str, str, str]:
+    if not cursor or len(cursor) > 4096:
+        raise ValueError("cursor is invalid.")
+    try:
+        payload = json.loads(base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4)).decode("utf-8"))
+        key = payload["key"]
+        if payload.get("v") != 1 or payload.get("run_id") != run_id or len(key) != 5:
+            raise ValueError("cursor is invalid or belongs to another run.")
+        return float(key[0]), int(key[1]), str(key[2]), str(key[3]), str(key[4])
+    except (KeyError, TypeError, ValueError, UnicodeDecodeError, binascii.Error) as error:
+        raise ValueError("cursor is invalid or belongs to another run.") from error
 
 
 def serialize_run(record: RunRecord, *, connection: str = "unchecked") -> dict[str, Any]:

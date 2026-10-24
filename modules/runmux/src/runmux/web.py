@@ -123,6 +123,78 @@ def create_runmux_web_app(
         except RegistryReadError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
+    @api.get("/runs/history")
+    async def runs_history(
+        cursor: str | None = None,
+        limit: int = 50,
+        sort_by: str = "created_at",
+        sort_dir: str = "desc",
+        status: str | None = None,
+        state: str | None = None,
+        name: str | None = None,
+        name_exact: bool = False,
+        since: str | None = None,
+        until: str | None = None,
+        time_field: str = "created_at",
+        exit_code: int | None = None,
+        failed_only: bool = False,
+        lost_only: bool = False,
+        restart_of: str | None = None,
+        duplicate_of: str | None = None,
+        has_restarts: bool = False,
+        include_total: bool = False,
+    ) -> dict[str, Any]:
+        """Return a bounded, authenticated page of historical run metadata."""
+
+        try:
+            return await run_in_threadpool(
+                backend.query_runs_history,
+                cursor=cursor,
+                limit=limit,
+                sort_by=sort_by,
+                sort_dir=sort_dir,
+                status=status,
+                state=state,
+                name=name,
+                name_exact=name_exact,
+                since=since,
+                until=until,
+                time_field=time_field,
+                exit_code=exit_code,
+                failed_only=failed_only,
+                lost_only=lost_only,
+                restart_of=restart_of,
+                duplicate_of=duplicate_of,
+                has_restarts=has_restarts,
+                include_total=include_total,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except RegistryReadError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.get("/runs/{run_id}/events")
+    async def run_events(run_id: str, limit: int = 200, cursor: str | None = None) -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(backend.get_run_events, run_id, limit=limit, cursor=cursor)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except RegistryReadError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @api.get("/runs/{run_id}/lineage")
+    async def run_lineage(run_id: str, limit: int = 200) -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(backend.get_run_lineage, run_id, limit=limit)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except RegistryReadError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
     @api.get("/launch-defaults")
     def launch_defaults() -> dict[str, str]:
         return {"cwd": str(default_cwd)}

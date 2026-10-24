@@ -76,4 +76,5 @@ Update upon actual merge; do not mark work complete merely because a branch exis
 | Phase 3 | `54502666b5724596ee3d21c1e694b8522d5a5151` | Windows JS and headless browser checks pass; Python startup hangs | Integrated into main; full argv/cwd disclosure remains deferred |
 | 4A / 4B | — | — | Separate implementation assignments |
 | 5A / 5B / 5C | 5B: `9f01984d` | 5B backend integrated | 5A/5C remain unassigned |
-| Phase 6 slices | — | — | User-selected optional enhancements |
+| Phase 6C backend | — | `codex/runmux-historical-runs-backend-20261024` | Backend implementation verified on its feature branch; dedicated UI remains a separate assignment; not merged |
+| Other Phase 6 slices | — | — | User-selected optional enhancements |
