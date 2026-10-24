@@ -1,5 +1,14 @@
 # Runmux Current Handoff
 
+## Runmux Web UI — Phase 4B implemented (unmerged)
+
+Phase 4B (Enhanced Output Search and Filtering) is implemented on dedicated branch
+`codex/runmux-web-phase4b-20261024` from `origin/main` at `5ce51607 docs(runmux): reconcile phase 3 integration status`.
+It provides bounded Output search, highlighted matches, safe regex, next/previous navigation,
+conservative severity filtering (`all`, `error`, `warn`, `info`, `debug`, `other`), and accurate count/scope labeling.
+Tested with headless Chrome CDP, Node unit tests, and Python test suites. Branch pushed without merging.
+See `plans/20261024-runmux-web-enhanced-logs/HANDOFF.md` and `STATUS.md`.
+
 ## Runmux Web UI — Phase 3 integrated
 
 Phase 1 browser launching, Phase 2 terminal/log correctness, and the Phase 5B

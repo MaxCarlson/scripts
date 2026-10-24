@@ -46,6 +46,15 @@ let workspaceRestored = false;
 let savedRunViews = { openRunIds: [], selectedId: null };
 let searchQuery = "";
 let tabScrollTarget = null;
+const MAX_SEARCH_MATCHES = 10000;
+let outputSearchQuery = "";
+let outputSearchCase = false;
+let outputSearchRegex = false;
+let outputSeverityFilter = "all";
+let outputMatches = [];
+let outputActiveMatchIndex = -1;
+let outputSearchError = null;
+let outputTruncated = false;
 
 function clampExplorerWidth(value) {
   return Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, Math.round(value)));
@@ -284,6 +293,7 @@ $("#explorer-splitter").addEventListener("keydown", (event) => {
 });
 applyWorkspacePreferencesToControls();
 applyExplorerLayout();
+setupOutputSearchListeners();
 $("#scroll-output").addEventListener("click", scrollOutputToEnd);
 $("#output-text").addEventListener("scroll", () => {
   const node = $("#output-text");
@@ -293,6 +303,25 @@ document.querySelectorAll(".tab-button").forEach((button) => button.addEventList
 $("#terminal-control-button").addEventListener("click", toggleTerminalControl);
 $("#terminal-lock-button").addEventListener("click", requestTerminalLock);
 document.addEventListener("keydown", (event) => {
+  if (document.activeElement && (document.activeElement.closest?.("#terminal-pane") || document.activeElement.id === "terminal-container")) {
+    return;
+  }
+  const terminalActive = !$("#terminal-pane")?.hidden;
+  if (terminalActive) return;
+
+  if ((event.ctrlKey || event.metaKey) && event.key === "f" && !event.altKey && !event.shiftKey) {
+    const outputActive = !$("#output-pane")?.hidden;
+    if (outputActive) {
+      event.preventDefault();
+      const input = $("#output-search-query");
+      if (input) {
+        input.focus();
+        if (typeof input.select === "function") input.select();
+      }
+      return;
+    }
+  }
+
   if (event.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) {
     event.preventDefault(); $("#process-search").focus();
   }
@@ -608,6 +637,11 @@ async function selectRun(runId) {
   outputCursor = null;
   lastOutput = "";
   outputFinished = false;
+  outputTruncated = false;
+  outputMatches = [];
+  outputActiveMatchIndex = -1;
+  outputSearchError = null;
+  computeOutputSearchAndFilter();
   $("#output-text").textContent = "";
   $("#output-state").textContent = "Loading process output…";
   $("#output-state").hidden = false;
@@ -679,6 +713,382 @@ async function copyRunField(selector, label) {
   }
 }
 
+function createTextNode(text) {
+  if (typeof document.createTextNode === "function") {
+    return document.createTextNode(text);
+  }
+  return { textContent: text, nodeType: 3 };
+}
+
+function appendChildNode(parent, child) {
+  if (typeof parent.appendChild === "function") parent.appendChild(child);
+  else if (typeof parent.append === "function") parent.append(child);
+  else if (Array.isArray(parent.children)) parent.children.push(child);
+}
+
+function formatByteSize(bytes) {
+  if (bytes < 1024) return `${bytes} B`;
+  return `${Math.round(bytes / 1024)} KiB`;
+}
+
+function classifyLogLine(line) {
+  if (!line || typeof line !== "string") return "other";
+  const trimmed = line.trim();
+  if (!trimmed) return "other";
+
+  const jsonMatch = trimmed.match(/"(?:level|lvl|severity)"\s*:\s*"(fatal|critical|error|warn(?:ing)?|info|notice|debug|trace)"/i);
+  if (jsonMatch) return normalizeSeverityLevel(jsonMatch[1]);
+
+  const kvMatch = trimmed.match(/\b(?:level|lvl|severity)=(?:"?)(fatal|critical|error|warn(?:ing)?|info|notice|debug|trace)(?:"?)(?:\s|$)/i);
+  if (kvMatch) return normalizeSeverityLevel(kvMatch[1]);
+
+  const delimMatch = trimmed.match(/\s+[-|]\s+(FATAL|CRITICAL|ERROR|WARN(?:ING)?|INFO|NOTICE|DEBUG|TRACE)\s+[-|]\s+/i);
+  if (delimMatch) return normalizeSeverityLevel(delimMatch[1]);
+
+  const bracketMatch = trimmed.match(/\[(?:[^\]]*\s)?(FATAL|CRITICAL|ERROR|WARN(?:ING)?|INFO|NOTICE|DEBUG|TRACE)(?:\s[^\]]*|:[^\]]*)?\]/i);
+  if (bracketMatch) return normalizeSeverityLevel(bracketMatch[1]);
+
+  const startMatch = trimmed.match(/^(?:(?:\d{4}[-/]\d{2}[-/]\d{2}[T\s][\d:.]+(?:Z|[+-]\d{2}:?\d{2})?|[\w.-]+)[:\s]+)?(FATAL|CRITICAL|ERROR|WARN(?:ING)?|INFO|NOTICE|DEBUG|TRACE)(?::|\s|$)/i);
+  if (startMatch) {
+    const token = startMatch[1];
+    if (token === token.toUpperCase() || startMatch[0].endsWith(":") || startMatch[0].includes(":")) {
+      return normalizeSeverityLevel(token);
+    }
+  }
+
+  return "other";
+}
+
+function normalizeSeverityLevel(level) {
+  const lower = level.toLowerCase();
+  if (lower === "fatal" || lower === "critical" || lower === "error") return "error";
+  if (lower === "warn" || lower === "warning") return "warn";
+  if (lower === "info" || lower === "notice") return "info";
+  if (lower === "debug" || lower === "trace") return "debug";
+  return "other";
+}
+
+function matchesSeverityFilter(lineSeverity, filterValue) {
+  if (!filterValue || filterValue === "all") return true;
+  if (filterValue === "error") return lineSeverity === "error";
+  if (filterValue === "warn") return lineSeverity === "warn" || lineSeverity === "error";
+  if (filterValue === "info") return lineSeverity === "info";
+  if (filterValue === "debug") return lineSeverity === "debug";
+  if (filterValue === "other") return lineSeverity === "other";
+  return true;
+}
+
+function computeOutputSearchAndFilter() {
+  const query = outputSearchQuery.trim();
+  const caseSensitive = outputSearchCase;
+  const isRegex = outputSearchRegex;
+  const filter = outputSeverityFilter;
+
+  const rawLines = lastOutput ? lastOutput.split("\n") : [];
+  const totalLineCount = rawLines.length;
+
+  const lineRecords = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const text = rawLines[i];
+    const severity = classifyLogLine(text);
+    if (matchesSeverityFilter(severity, filter)) {
+      lineRecords.push({ originalIndex: i, text, severity });
+    }
+  }
+
+  let regex = null;
+  outputSearchError = null;
+  if (query) {
+    if (isRegex) {
+      try {
+        regex = new RegExp(query, caseSensitive ? "gu" : "gui");
+      } catch (err) {
+        outputSearchError = "Invalid regex";
+      }
+    } else {
+      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      regex = new RegExp(escaped, caseSensitive ? "gu" : "gui");
+    }
+  }
+
+  outputMatches = [];
+  let isCapped = false;
+  if (regex && !outputSearchError) {
+    for (let li = 0; li < lineRecords.length; li++) {
+      const lineRec = lineRecords[li];
+      regex.lastIndex = 0;
+      let match;
+      while ((match = regex.exec(lineRec.text)) !== null) {
+        if (match[0].length === 0) {
+          regex.lastIndex++;
+          continue;
+        }
+        outputMatches.push({
+          matchIndex: outputMatches.length,
+          lineIndex: li,
+          start: match.index,
+          end: match.index + match[0].length,
+          text: match[0],
+        });
+        if (outputMatches.length >= MAX_SEARCH_MATCHES) {
+          isCapped = true;
+          break;
+        }
+      }
+      if (isCapped) break;
+    }
+  }
+
+  if (outputMatches.length === 0) {
+    outputActiveMatchIndex = -1;
+  } else if (outputActiveMatchIndex < 0 || outputActiveMatchIndex >= outputMatches.length) {
+    outputActiveMatchIndex = 0;
+  }
+
+  updateOutputSearchUI(totalLineCount, lineRecords.length, isCapped);
+  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex);
+}
+
+function updateOutputSearchUI(totalLines, visibleLines, isCapped = false) {
+  const query = outputSearchQuery.trim();
+  const searchCountEl = $("#output-search-count");
+  const scopeNoteEl = $("#output-scope-note");
+  const clearBtn = $("#output-search-clear");
+  const prevBtn = $("#output-search-prev");
+  const nextBtn = $("#output-search-next");
+
+  const bufferBytes = new TextEncoder().encode(lastOutput || "").length;
+  const sizeLabel = formatByteSize(bufferBytes);
+  const tailSuffix = outputTruncated ? "tail · earlier output omitted" : "buffer";
+
+  if (scopeNoteEl) {
+    if (outputSeverityFilter !== "all") {
+      scopeNoteEl.textContent = `Showing ${visibleLines} of ${totalLines} lines (loaded ${tailSuffix})`;
+    } else {
+      scopeNoteEl.textContent = `Loaded ${tailSuffix}: ${totalLines} lines · ${sizeLabel}`;
+    }
+  }
+
+  if (clearBtn) clearBtn.hidden = !query;
+
+  if (outputSearchError) {
+    if (searchCountEl) {
+      searchCountEl.textContent = outputSearchError;
+      searchCountEl.className = "output-search-count has-error";
+    }
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+  } else if (!query) {
+    if (searchCountEl) {
+      searchCountEl.textContent = "No query";
+      searchCountEl.className = "output-search-count";
+    }
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+  } else if (outputMatches.length === 0) {
+    if (searchCountEl) {
+      searchCountEl.textContent = `0 matches (loaded ${tailSuffix})`;
+      searchCountEl.className = "output-search-count";
+    }
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+  } else {
+    const cappedNote = isCapped ? "+" : "";
+    if (searchCountEl) {
+      searchCountEl.textContent = `${outputActiveMatchIndex + 1} of ${outputMatches.length}${cappedNote} (loaded ${tailSuffix})`;
+      searchCountEl.className = "output-search-count has-matches";
+    }
+    if (prevBtn) prevBtn.disabled = false;
+    if (nextBtn) nextBtn.disabled = false;
+  }
+}
+
+function renderOutputDOM(lineRecords, matches, activeMatchIndex) {
+  const container = $("#output-text");
+  if (!container) return;
+
+  const query = outputSearchQuery.trim();
+  const filter = outputSeverityFilter;
+
+  if (!query && filter === "all") {
+    container.textContent = lastOutput;
+    return;
+  }
+
+  if (lineRecords.length === 0) {
+    container.textContent = "";
+    return;
+  }
+
+  const matchesByLine = new Map();
+  for (let i = 0; i < matches.length; i++) {
+    const m = matches[i];
+    if (!matchesByLine.has(m.lineIndex)) matchesByLine.set(m.lineIndex, []);
+    matchesByLine.get(m.lineIndex).push(m);
+  }
+
+  const nodes = [];
+  let activeElement = null;
+
+  for (let li = 0; li < lineRecords.length; li++) {
+    const lineRec = lineRecords[li];
+    const lineMatches = matchesByLine.get(li);
+
+    const lineSpan = document.createElement("span");
+    lineSpan.className = "output-line";
+
+    if (!lineMatches || lineMatches.length === 0) {
+      appendChildNode(lineSpan, createTextNode(lineRec.text));
+    } else {
+      let lastPos = 0;
+      for (let mi = 0; mi < lineMatches.length; mi++) {
+        const m = lineMatches[mi];
+        if (m.start > lastPos) {
+          appendChildNode(lineSpan, createTextNode(lineRec.text.slice(lastPos, m.start)));
+        }
+        const mark = document.createElement("mark");
+        const isActive = (m.matchIndex === activeMatchIndex);
+        mark.className = "output-match" + (isActive ? " active-match" : "");
+        appendChildNode(mark, createTextNode(m.text));
+        if (isActive) {
+          mark.id = "active-output-match";
+          activeElement = mark;
+        }
+        appendChildNode(lineSpan, mark);
+        lastPos = m.end;
+      }
+      if (lastPos < lineRec.text.length) {
+        appendChildNode(lineSpan, createTextNode(lineRec.text.slice(lastPos)));
+      }
+    }
+
+    nodes.push(lineSpan);
+    if (li < lineRecords.length - 1) {
+      nodes.push(createTextNode("\n"));
+    }
+  }
+
+  if (typeof container.replaceChildren === "function") {
+    container.replaceChildren(...nodes);
+  } else {
+    container.textContent = "";
+    for (const node of nodes) appendChildNode(container, node);
+  }
+
+  if (activeElement && typeof activeElement.scrollIntoView === "function") {
+    activeElement.scrollIntoView({ block: "nearest", behavior: "auto" });
+  }
+}
+
+function nextOutputMatch() {
+  if (outputMatches.length === 0) return;
+  outputActiveMatchIndex = (outputActiveMatchIndex + 1) % outputMatches.length;
+  onMatchNavigated();
+}
+
+function prevOutputMatch() {
+  if (outputMatches.length === 0) return;
+  outputActiveMatchIndex = (outputActiveMatchIndex - 1 + outputMatches.length) % outputMatches.length;
+  onMatchNavigated();
+}
+
+function onMatchNavigated() {
+  const followCheckbox = $("#follow-output");
+  if (followCheckbox) followCheckbox.checked = false;
+
+  const rawLines = lastOutput ? lastOutput.split("\n") : [];
+  const lineRecords = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const text = rawLines[i];
+    const severity = classifyLogLine(text);
+    if (matchesSeverityFilter(severity, outputSeverityFilter)) {
+      lineRecords.push({ originalIndex: i, text, severity });
+    }
+  }
+
+  updateOutputSearchUI(rawLines.length, lineRecords.length);
+  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex);
+}
+
+function clearOutputSearch() {
+  outputSearchQuery = "";
+  outputSearchError = null;
+  outputMatches = [];
+  outputActiveMatchIndex = -1;
+  const input = $("#output-search-query");
+  if (input) input.value = "";
+  computeOutputSearchAndFilter();
+  if (input && typeof input.focus === "function") input.focus();
+}
+
+function setupOutputSearchListeners() {
+  const queryInput = $("#output-search-query");
+  if (queryInput) {
+    queryInput.addEventListener("input", () => {
+      outputSearchQuery = queryInput.value;
+      computeOutputSearchAndFilter();
+    });
+    queryInput.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") {
+        event.preventDefault();
+        if (event.shiftKey) prevOutputMatch();
+        else nextOutputMatch();
+      } else if (event.key === "Escape") {
+        event.preventDefault();
+        clearOutputSearch();
+        if (typeof queryInput.blur === "function") queryInput.blur();
+      }
+    });
+  }
+
+  const caseBtn = $("#output-search-case");
+  if (caseBtn) {
+    caseBtn.addEventListener("click", () => {
+      outputSearchCase = !outputSearchCase;
+      caseBtn.setAttribute("aria-pressed", `${outputSearchCase}`);
+      computeOutputSearchAndFilter();
+    });
+  }
+
+  const regexBtn = $("#output-search-regex");
+  if (regexBtn) {
+    regexBtn.addEventListener("click", () => {
+      outputSearchRegex = !outputSearchRegex;
+      regexBtn.setAttribute("aria-pressed", `${outputSearchRegex}`);
+      computeOutputSearchAndFilter();
+    });
+  }
+
+  const clearBtn = $("#output-search-clear");
+  if (clearBtn) {
+    clearBtn.addEventListener("click", () => {
+      clearOutputSearch();
+    });
+  }
+
+  const prevBtn = $("#output-search-prev");
+  if (prevBtn) {
+    prevBtn.addEventListener("click", () => {
+      prevOutputMatch();
+    });
+  }
+
+  const nextBtn = $("#output-search-next");
+  if (nextBtn) {
+    nextBtn.addEventListener("click", () => {
+      nextOutputMatch();
+    });
+  }
+
+  const filterSelect = $("#output-severity-filter");
+  if (filterSelect) {
+    filterSelect.addEventListener("change", () => {
+      outputSeverityFilter = filterSelect.value;
+      computeOutputSearchAndFilter();
+    });
+  }
+}
+
 async function refreshOutput(generation = selectionGeneration, runId = selectedId) {
   if (!runId || !isCurrentSelection(generation, runId) || outputRequestGeneration === generation) return;
   outputRequestGeneration = generation;
@@ -689,6 +1099,7 @@ async function refreshOutput(generation = selectionGeneration, runId = selectedI
     const chunk = await response.json();
     if (!isCurrentSelection(generation, runId)) return;
     outputFinished = Boolean(chunk.finished && chunk.at_end);
+    outputTruncated = Boolean(chunk.truncated);
     if (chunk.reset) {
       lastOutput = "";
       outputPendingCarriageReturn = false;
@@ -700,7 +1111,7 @@ async function refreshOutput(generation = selectionGeneration, runId = selectedI
       const characters = Array.from(lastOutput);
       if (characters.length > VIEW_LIMIT) lastOutput = characters.slice(-VIEW_LIMIT).join("");
     }
-    $("#output-text").textContent = lastOutput;
+    computeOutputSearchAndFilter();
     $("#output-note").textContent = chunk.truncated ? "Latest 64 KiB shown · earlier output omitted" : "";
     $("#output-state").hidden = Boolean(lastOutput);
     if (chunk.state === "missing" || chunk.state === "inaccessible") {
@@ -781,6 +1192,12 @@ function clearSelection() {
   selectedId = null;
   openRunIds = [];
   outputCursor = null;
+  lastOutput = "";
+  outputTruncated = false;
+  outputMatches = [];
+  outputActiveMatchIndex = -1;
+  outputSearchError = null;
+  computeOutputSearchAndFilter();
   $("#run-inspector").hidden = true;
   $("#empty-inspector").hidden = false;
   renderRuns();

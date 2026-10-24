@@ -19,7 +19,18 @@ function element(tagName = "div") {
     attributes: {},
     dataset: {},
     hidden: false,
-    textContent: "",
+    _textContent: undefined,
+    get textContent() {
+      if (this._textContent !== undefined) return this._textContent;
+      if (this.children.length > 0) {
+        return this.children.map((c) => (typeof c === "string" ? c : c.textContent || "")).join("");
+      }
+      return "";
+    },
+    set textContent(val) {
+      this._textContent = val;
+      this.children = [];
+    },
     value: "",
     checked: true,
     className: "",
@@ -32,11 +43,14 @@ function element(tagName = "div") {
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatch(name, ...args) { listeners.get(name)?.(...args); },
     setAttribute(name, value) { this.attributes[name] = value; },
-    append(...children) { this.children.push(...children); },
-    replaceChildren(...children) { this.children = [...children]; },
+    append(...children) { this._textContent = undefined; this.children.push(...children); },
+    appendChild(child) { this._textContent = undefined; this.children.push(child); },
+    replaceChildren(...children) { this._textContent = undefined; this.children = [...children]; },
     focus() {},
     blur() {},
+    select() {},
     scrollIntoView() {},
+    closest() { return null; },
   };
 }
 
@@ -53,6 +67,7 @@ function dashboardHarness(storageData = new Map()) {
     },
     querySelectorAll() { return []; },
     createElement(tagName) { return element(tagName); },
+    createTextNode(text) { return { textContent: text, nodeType: 3 }; },
     addEventListener() {},
   };
   const fetch = (url) => {
@@ -96,6 +111,25 @@ function dashboardHarness(storageData = new Map()) {
     terminalReplayMessage,
     setRuns(value) { runs = value; },
     setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
+    classifyLogLine,
+    normalizeSeverityLevel,
+    matchesSeverityFilter,
+    computeOutputSearchAndFilter,
+    nextOutputMatch,
+    prevOutputMatch,
+    clearOutputSearch,
+    setupOutputSearchListeners,
+    getOutputMatches: () => outputMatches,
+    getOutputActiveMatchIndex: () => outputActiveMatchIndex,
+    getOutputSearchError: () => outputSearchError,
+    getOutputSearchQuery: () => outputSearchQuery,
+    setOutputSearchQuery: (q) => { outputSearchQuery = q; if ($("#output-search-query")) $("#output-search-query").value = q; computeOutputSearchAndFilter(); },
+    setOutputSearchCase: (c) => { outputSearchCase = c; if ($("#output-search-case")) $("#output-search-case").setAttribute("aria-pressed", String(c)); computeOutputSearchAndFilter(); },
+    setOutputSearchRegex: (r) => { outputSearchRegex = r; if ($("#output-search-regex")) $("#output-search-regex").setAttribute("aria-pressed", String(r)); computeOutputSearchAndFilter(); },
+    setOutputSeverityFilter: (f) => { outputSeverityFilter = f; if ($("#output-severity-filter")) $("#output-severity-filter").value = f; computeOutputSearchAndFilter(); },
+    getLastOutput: () => lastOutput,
+    setLastOutput: (val, truncated = false) => { lastOutput = val; outputTruncated = truncated; computeOutputSearchAndFilter(); },
+    getOutputTruncated: () => outputTruncated,
   };`, context);
   return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
 }
@@ -531,6 +565,264 @@ function testExplorerResizeAndCollapseStateCanBeChangedAccessibly() {
   assert.equal(getElement("#explorer-toggle").attributes["aria-expanded"], "false");
 }
 
+
+function testLogClassificationAndSeverityFiltering() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+
+  // 1. Classification
+  assert.equal(d.classifyLogLine("[ERROR] Connection refused"), "error");
+  assert.equal(d.classifyLogLine("2026-10-24 10:00:00 [INFO] Listening on port 8080"), "info");
+  assert.equal(d.classifyLogLine("WARNING: High CPU load detected"), "warn");
+  assert.equal(d.classifyLogLine("error: failed to open config.yaml"), "error");
+  assert.equal(d.classifyLogLine('{"level": "error", "message": "panic"}'), "error");
+  assert.equal(d.classifyLogLine('timestamp=123 level=warn msg="retrying"'), "warn");
+  assert.equal(d.classifyLogLine("2026-10-24 12:00:00 - app - DEBUG - query params"), "debug");
+  assert.equal(d.classifyLogLine("Progress: 45% (120/300 files)"), "other");
+  assert.equal(d.classifyLogLine("An error occurred in user input during normal run"), "other");
+  assert.equal(d.classifyLogLine("Random unstructured log line 1234"), "other");
+
+  // 2. matchesSeverityFilter
+  assert.equal(d.matchesSeverityFilter("error", "all"), true);
+  assert.equal(d.matchesSeverityFilter("other", "all"), true);
+  assert.equal(d.matchesSeverityFilter("error", "error"), true);
+  assert.equal(d.matchesSeverityFilter("warn", "error"), false);
+  assert.equal(d.matchesSeverityFilter("error", "warn"), true);
+  assert.equal(d.matchesSeverityFilter("warn", "warn"), true);
+  assert.equal(d.matchesSeverityFilter("info", "warn"), false);
+  assert.equal(d.matchesSeverityFilter("info", "info"), true);
+  assert.equal(d.matchesSeverityFilter("debug", "debug"), true);
+  assert.equal(d.matchesSeverityFilter("other", "other"), true);
+  assert.equal(d.matchesSeverityFilter("error", "other"), false);
+
+  // 3. Output filtering in dashboard
+  const logs = [
+    "[INFO] System boot",
+    "[WARN] Disk threshold 80%",
+    "[ERROR] Out of memory",
+    "Unstructured progress trace",
+  ].join("\n");
+
+  d.setLastOutput(logs);
+  assert.equal(getElement("#output-scope-note").textContent, "Loaded buffer: 4 lines · 94 B");
+
+  // Filter to errors only
+  d.setOutputSeverityFilter("error");
+  assert.equal(getElement("#output-scope-note").textContent, "Showing 1 of 4 lines (loaded buffer)");
+  assert.match(getElement("#output-text").textContent, /Out of memory/);
+  assert.doesNotMatch(getElement("#output-text").textContent, /System boot/);
+
+  // Filter to other (unstructured)
+  d.setOutputSeverityFilter("other");
+  assert.equal(getElement("#output-scope-note").textContent, "Showing 1 of 4 lines (loaded buffer)");
+  assert.match(getElement("#output-text").textContent, /Unstructured progress trace/);
+  assert.doesNotMatch(getElement("#output-text").textContent, /Out of memory/);
+
+  // Reset to all
+  d.setOutputSeverityFilter("all");
+  assert.equal(getElement("#output-scope-note").textContent, "Loaded buffer: 4 lines · 94 B");
+  assert.equal(getElement("#output-text").textContent, logs);
+}
+
+function testBoundedOutputSearchPlainAndRegex() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+
+  const logs = [
+    "[INFO] Worker 1 started on port 8080",
+    "[WARN] Worker 1 high load",
+    "[ERROR] worker 2 terminated",
+    "Batch completed successfully",
+  ].join("\n");
+
+  d.setLastOutput(logs);
+
+  // 1. Plain search (case insensitive by default)
+  d.setOutputSearchQuery("worker");
+  assert.equal(d.getOutputMatches().length, 3);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 3 (loaded buffer)");
+  assert.equal(getElement("#output-search-clear").hidden, false);
+  assert.equal(getElement("#output-search-prev").disabled, false);
+  assert.equal(getElement("#output-search-next").disabled, false);
+
+  // 2. Case sensitive search
+  d.setOutputSearchCase(true);
+  d.computeOutputSearchAndFilter();
+  assert.equal(d.getOutputMatches().length, 1);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 1 (loaded buffer)");
+
+  // 3. Regex search
+  d.setOutputSearchCase(false);
+  d.setOutputSearchRegex(true);
+  d.setOutputSearchQuery("port \\d+");
+  d.computeOutputSearchAndFilter();
+  assert.equal(d.getOutputMatches().length, 1);
+  assert.equal(d.getOutputMatches()[0].text, "port 8080");
+  assert.equal(getElement("#output-search-count").textContent, "1 of 1 (loaded buffer)");
+
+  // 4. Invalid regex handling
+  d.setOutputSearchQuery("[invalid(");
+  d.computeOutputSearchAndFilter();
+  assert.equal(d.getOutputMatches().length, 0);
+  assert.equal(d.getOutputSearchError(), "Invalid regex");
+  assert.equal(getElement("#output-search-count").textContent, "Invalid regex");
+  assert.equal(getElement("#output-search-count").className.includes("has-error"), true);
+  assert.equal(getElement("#output-search-prev").disabled, true);
+  assert.equal(getElement("#output-search-next").disabled, true);
+
+  // 5. Clear search
+  d.clearOutputSearch();
+  assert.equal(d.getOutputMatches().length, 0);
+  assert.equal(d.getOutputSearchQuery(), "");
+  assert.equal(getElement("#output-search-count").textContent, "No query");
+  assert.equal(getElement("#output-search-clear").hidden, true);
+}
+
+function testOutputMatchNavigationAndFollowCoordination() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+
+  const logs = [
+    "alpha line one",
+    "alpha line two",
+    "alpha line three",
+  ].join("\n");
+
+  d.setLastOutput(logs);
+  d.setOutputSearchQuery("alpha");
+  assert.equal(d.getOutputMatches().length, 3);
+  assert.equal(d.getOutputActiveMatchIndex(), 0);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 3 (loaded buffer)");
+
+  // Initially follow is checked
+  getElement("#follow-output").checked = true;
+
+  // Next match moves to index 1 and unchecks follow
+  d.nextOutputMatch();
+  assert.equal(d.getOutputActiveMatchIndex(), 1);
+  assert.equal(getElement("#output-search-count").textContent, "2 of 3 (loaded buffer)");
+  assert.equal(getElement("#follow-output").checked, false);
+
+  // Next match moves to index 2
+  d.nextOutputMatch();
+  assert.equal(d.getOutputActiveMatchIndex(), 2);
+  assert.equal(getElement("#output-search-count").textContent, "3 of 3 (loaded buffer)");
+
+  // Wrap around to index 0
+  d.nextOutputMatch();
+  assert.equal(d.getOutputActiveMatchIndex(), 0);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 3 (loaded buffer)");
+
+  // Prev match wraps back to index 2
+  d.prevOutputMatch();
+  assert.equal(d.getOutputActiveMatchIndex(), 2);
+  assert.equal(getElement("#output-search-count").textContent, "3 of 3 (loaded buffer)");
+
+  // Jump to latest re-enables follow
+  getElement("#scroll-output").dispatch("click");
+  assert.equal(getElement("#follow-output").checked, true);
+}
+
+function testOutputSearchAndFilterAccurateScopeLabeling() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+
+  const logs = "line 1\nline 2\nline 3\n[ERROR] line 4";
+
+  // Full buffer (not truncated)
+  d.setLastOutput(logs, false);
+  assert.match(getElement("#output-scope-note").textContent, /Loaded buffer: 4 lines/);
+
+  d.setOutputSearchQuery("line");
+  assert.equal(getElement("#output-search-count").textContent, "1 of 4 (loaded buffer)");
+
+  // Filtered scope
+  d.setOutputSeverityFilter("error");
+  assert.equal(getElement("#output-scope-note").textContent, "Showing 1 of 4 lines (loaded buffer)");
+  assert.equal(getElement("#output-search-count").textContent, "1 of 1 (loaded buffer)");
+
+  // Truncated tail (chunk.truncated === true)
+  d.setOutputSeverityFilter("all");
+  d.setLastOutput(logs, true);
+  assert.match(getElement("#output-scope-note").textContent, /Loaded tail · earlier output omitted: 4 lines/);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 4 (loaded tail · earlier output omitted)");
+
+  // 0 matches in truncated tail
+  d.setOutputSearchQuery("nonexistent");
+  assert.equal(getElement("#output-search-count").textContent, "0 matches (loaded tail · earlier output omitted)");
+}
+
+async function testOutputLiveStreamingUpdatesSearchAndFilter() {
+  const { context, getElement, requests } = dashboardHarness();
+  const d = context.__dashboard;
+
+  const runPromise = d.selectRun("stream-run");
+  await Promise.resolve();
+
+  // Initial chunk arrives with 2 errors
+  const detailReq = requests.find((r) => !r.url.includes("/output"));
+  const outputReq = requests.find((r) => r.url.includes("/output"));
+  detailReq.resolve(response(run("stream-run", "stream worker")));
+  outputReq.resolve(response({
+    state: "available",
+    text: "[ERROR] first fail\n[INFO] running\n[ERROR] second fail\n",
+    cursor: "cur1",
+    reset: true,
+    truncated: false,
+    at_end: false,
+    finished: false,
+  }));
+  await runPromise;
+
+  // Set search query to "ERROR"
+  d.setOutputSearchQuery("ERROR");
+  assert.equal(d.getOutputMatches().length, 2);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 2 (loaded buffer)");
+
+  // Streaming chunk arrives with a 3rd error
+  d.refreshOutput();
+  await Promise.resolve();
+  const nextOutputReq = requests.filter((r) => r.url.includes("/output")).at(-1);
+  nextOutputReq.resolve(response({
+    state: "available",
+    text: "[ERROR] third fail\n",
+    cursor: "cur2",
+    reset: false,
+    truncated: false,
+    at_end: false,
+    finished: false,
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  // Search matches should automatically update to 3!
+  assert.equal(d.getOutputMatches().length, 3);
+  assert.equal(getElement("#output-search-count").textContent, "1 of 3 (loaded buffer)");
+}
+
+function testOutputTextSecurityAndXssImmunity() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+
+  const maliciousText = '<script>alert("pwned")</script><img src=x onerror=alert(1)>';
+  d.setLastOutput(maliciousText);
+  d.setOutputSearchQuery("alert");
+
+  const container = getElement("#output-text");
+  const spans = container.children.filter((c) => c.className === "output-line");
+  assert.equal(spans.length, 1);
+  const marks = spans[0].children.filter((c) => c.tagName === "mark");
+  assert.equal(marks.length, 2);
+  assert.equal(marks[0].textContent, "alert");
+  assert.equal(marks[1].textContent, "alert");
+
+  const tags = container.children.map((c) => c.tagName);
+  assert.equal(tags.includes("script"), false);
+  assert.equal(tags.includes("img"), false);
+  const spanChildTags = spans[0].children.map((c) => c.tagName);
+  assert.equal(spanChildTags.includes("script"), false);
+  assert.equal(spanChildTags.includes("img"), false);
+}
+
 Promise.all([
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
@@ -547,6 +839,12 @@ Promise.all([
   testSelectedDetailRefreshReconcilesExplorerStatusByRunId(),
   Promise.resolve().then(testExplorerResizeAndCollapseStateCanBeChangedAccessibly),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
+  Promise.resolve().then(testLogClassificationAndSeverityFiltering),
+  Promise.resolve().then(testBoundedOutputSearchPlainAndRegex),
+  Promise.resolve().then(testOutputMatchNavigationAndFollowCoordination),
+  Promise.resolve().then(testOutputSearchAndFilterAccurateScopeLabeling),
+  testOutputLiveStreamingUpdatesSearchAndFilter(),
+  Promise.resolve().then(testOutputTextSecurityAndXssImmunity),
 ]).catch((error) => {
   console.error(error);
   process.exitCode = 1;
