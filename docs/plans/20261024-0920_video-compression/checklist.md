@@ -47,9 +47,13 @@
 - [x] Verify zero full-file encoding and zero source mutations
 
 ## Stage 5: Quality, Compare & Preview
-- [ ] Implement `videocompress.adapters.quality`: VMAF / metric calculation with aligned frames
-- [ ] Implement `vcompress compare`: side-by-side recipe comparison reports
-- [ ] Implement `vcompress preview`: external player clips and manifest generation
+- [x] Implement `videocompress.quality`: frame-aligned SSIM, PSNR, and VMAF calculation via FFmpeg filtergraph
+- [x] Implement perceptual vs bitrate confidence separation contracts and generational loss caveats
+- [x] Implement `videocompress.compare`: multi-recipe comparison engine across shared sample windows
+- [x] Implement `videocompress.preview`: side-by-side split-screen comparison clip generator and visual manifest exporter
+- [x] Connect CLI commands: `vcompress compare`, `vcompress analyze`, and `vcompress preview`
+- [x] Unit & integration tests for frame-aligned scoring, multi-recipe comparison, preview rendering, and source immutability
+- [x] Verify zero full-file encoding and zero source mutations
 
 ## Stage 6: Estimation Calibration & Selection
 - [ ] Prepare isolated, royalty-free test video corpus

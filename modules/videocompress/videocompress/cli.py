@@ -14,6 +14,7 @@ from typing import Any, Sequence
 
 from . import __version__
 from .capabilities import probe_capabilities
+from .compare import AssetComparisonReport, RecipeComparisonResult, run_recipe_comparison
 from .contracts import (
     CompressionReport,
     EligibilityDecision,
@@ -29,6 +30,8 @@ from .events import ProgressEmitter
 from .inventory import InventoryReport, InventoryStore, scan_inventory
 from .plan import build_estimation_plan
 from .predictor import FeasibilityAssessment, evaluate_feasibility
+from .preview import PreviewClipRecord, PreviewManifest, generate_preview_clips
+from .quality import DEFAULT_QUALITY_CAVEATS
 from .recipes import DEFAULT_RECIPE_ID, STANDARD_RECIPES, get_recipe, list_standard_recipes
 from .trials import (
     SamplePrediction,
@@ -338,17 +341,68 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum number of new sample encoding trials allowed.",
     )
 
+    # Common comparison parent parser
+    common_compare = argparse.ArgumentParser(add_help=False)
+    common_compare.add_argument(
+        "-e",
+        "--recipes",
+        dest="candidate_recipes",
+        default=None,
+        help="Comma-separated candidate recipe IDs to compare (default: all standard recipes).",
+    )
+    common_compare.add_argument(
+        "-u",
+        "--sample-schedule",
+        dest="sample_schedule",
+        choices=["s3", "s5", "s8"],
+        default="s3",
+        help="Sampling schedule for trial encodes: 's3' (3 clips), 's5' (5 clips), 's8' (8 clips).",
+    )
+    common_compare.add_argument(
+        "-d",
+        "--sample-duration",
+        dest="sample_duration",
+        type=float,
+        default=10.0,
+        help="Nominal duration in seconds for each sample clip (default: 10.0).",
+    )
+    common_compare.add_argument(
+        "-q",
+        "--skip-quality",
+        dest="skip_quality",
+        action="store_true",
+        default=False,
+        help="Skip frame-aligned objective quality metric calculation (SSIM/PSNR).",
+    )
+    common_compare.add_argument(
+        "-P",
+        "--min-savings-pct",
+        dest="min_savings_pct",
+        type=float,
+        default=None,
+        help="Minimum required percentage savings (e.g. 20.0).",
+    )
+    common_compare.add_argument(
+        "-f",
+        "--force",
+        "--force-refresh",
+        dest="force_refresh",
+        action="store_true",
+        default=False,
+        help="Force re-running sample trials, ignoring cached trial records.",
+    )
+
     # 5. analyze
     subparsers.add_parser(
         "analyze",
-        parents=[common_base, common_target, common_plan],
+        parents=[common_base, common_target, common_plan, common_compare],
         help="Execute sample trials across multiple candidate recipes for comparison.",
     )
 
     # 6. compare
     subparsers.add_parser(
         "compare",
-        parents=[common_base, common_target, common_plan],
+        parents=[common_base, common_target, common_plan, common_compare],
         help="Compare measured compression savings and quality metrics across candidate recipes.",
     )
 
@@ -359,12 +413,35 @@ def build_parser() -> argparse.ArgumentParser:
         help="Generate side-by-side or sequential video clips with manifest for visual inspection.",
     )
     prev_parser.add_argument(
+        "-e",
+        "--recipe",
+        dest="recipe_id",
+        default=DEFAULT_RECIPE_ID,
+        help=f"Target standard recipe ID (default: {DEFAULT_RECIPE_ID}).",
+    )
+    prev_parser.add_argument(
         "-n",
         "--num-clips",
         dest="num_clips",
         type=int,
         default=3,
         help="Number of preview clips to generate per source (default: 3).",
+    )
+    prev_parser.add_argument(
+        "-d",
+        "--clip-duration",
+        dest="clip_duration",
+        type=float,
+        default=5.0,
+        help="Nominal duration in seconds for each preview clip (default: 5.0).",
+    )
+    prev_parser.add_argument(
+        "-m",
+        "--mode",
+        dest="preview_mode",
+        choices=["split", "standalone"],
+        default="split",
+        help="Preview layout mode: 'split' (side-by-side split screen) or 'standalone'.",
     )
 
     # 8. apply
@@ -778,6 +855,206 @@ def run_estimate(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_compare(args: argparse.Namespace) -> int:
+    """Execute side-by-side recipe comparison across candidate recipes with Pareto rankings."""
+    is_json = getattr(args, "json", False)
+
+    # 1. Resolve workspace and inventory
+    ws = resolve_workspace(args.input_target, parent=getattr(args, "workspace_root", None))
+    store = InventoryStore(ws.inventory_db)
+
+    # 2. Resolve recipes
+    recipe_str = getattr(args, "candidate_recipes", None)
+    if recipe_str:
+        candidate_recipes = [get_recipe(r.strip()) for r in recipe_str.split(",") if r.strip()]
+    else:
+        candidate_recipes = list(list_standard_recipes())
+
+    # 3. Gather target assets
+    plan_id = getattr(args, "plan_id", None)
+    if plan_id:
+        plan_file = ws.plans_dir / f"{plan_id}.json"
+        if not plan_file.exists():
+            sys.stderr.write(f"Error: Specified plan file does not exist: {plan_file}\n")
+            return 1
+        plan_data = json.loads(plan_file.read_text(encoding="utf-8"))
+        target_sids = set(plan_data.get("source_ids", []))
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in target_sids]
+    else:
+        inv_report = scan_inventory(
+            target=args.input_target,
+            workspace_root=ws.root,
+            min_video_bitrate=getattr(args, "min_video_bitrate", None),
+            min_resolution=getattr(args, "min_resolution", None),
+            min_size=getattr(args, "min_size", None),
+            min_duration=getattr(args, "min_duration", None),
+            inventory_depth="probe",
+            force_refresh=getattr(args, "force_refresh", False),
+        )
+        eligible_sids = {
+            rec["source_id"]
+            for rec in inv_report.per_source_records
+            if rec.get("eligibility", {}).get("status") == "eligible"
+        }
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in eligible_sids]
+
+    canonical_paths = store.get_canonical_paths()
+    reports: list[AssetComparisonReport] = []
+
+    for asset in assets_to_assess:
+        cpath = canonical_paths.get(asset.source_id)
+        if not cpath or not Path(cpath).exists():
+            continue
+        rep = run_recipe_comparison(
+            asset=asset,
+            canonical_path=cpath,
+            candidate_recipes=candidate_recipes,
+            workspace=ws,
+            schedule=getattr(args, "sample_schedule", "s3"),
+            window_duration_seconds=float(getattr(args, "sample_duration", 10.0)),
+            compute_quality=not getattr(args, "skip_quality", False),
+            min_savings_pct=getattr(args, "min_savings_pct", None),
+        )
+        reports.append(rep)
+
+    if is_json:
+        out_dict = {
+            "schema_version": 1,
+            "operation": args.operation,
+            "target": str(args.input_target),
+            "candidate_recipes": [r.to_dict() for r in candidate_recipes],
+            "total_evaluated_assets": len(reports),
+            "reports": [r.to_dict() for r in reports],
+            "quality_caveats": list(DEFAULT_QUALITY_CAVEATS),
+        }
+        print(json.dumps(out_dict, indent=2))
+    else:
+        print(f"=== videocompress Recipe Comparison & Pareto Ranking ({args.operation.upper()}) ===")
+        print(f"Target: {args.input_target}")
+        print(f"Candidate Recipes: {', '.join(r.recipe_id for r in candidate_recipes)}")
+        print(f"Evaluated Assets: {len(reports)}")
+        print("=" * 96)
+
+        for rep in reports:
+            print(f"\nAsset [{rep.source_id[:8]}]: {_format_bytes(rep.source_bytes)} ({rep.duration_seconds:.1f}s)")
+            print(f"Recommended Recipe: {rep.recommended_recipe_id or 'None'}")
+            print(f"{'Rank':<5} {'Recipe ID':<18} {'Codec':<6} {'CQ':<5} {'Video Bps':<11} {'Est Size':<10} {'Savings%':<10} {'SSIM':<8} {'PSNR':<8} {'FPS':<7} {'Pareto?'}")
+            print("-" * 96)
+            for res in rep.recipe_results:
+                ssim_str = f"{res.quality_ssim:.4f}" if res.quality_ssim is not None else "N/A"
+                psnr_str = f"{res.quality_psnr:.1f}dB" if res.quality_psnr is not None else "N/A"
+                pareto_str = "YES" if res.is_pareto_efficient else "dominated"
+                print(
+                    f"{res.rank:<5} {res.recipe_id:<18} {res.codec:<6} {res.cq:<5.0f} "
+                    f"{_format_bps(res.measured_mean_bps):<11} {_format_bytes(res.predicted_container_bytes):<10} "
+                    f"{res.predicted_savings_pct:>7.1f}%   {ssim_str:<8} {psnr_str:<8} {res.fps_throughput:>5.1f}   {pareto_str}"
+                )
+        print("-" * 96)
+        print("Notice: Source media untouched (read-only verification passed). Pareto frontier computed across savings, quality, and encoding throughput.")
+
+    return 0
+
+
+def run_preview(args: argparse.Namespace) -> int:
+    """Generate side-by-side or standalone preview clips and preview manifest."""
+    is_json = getattr(args, "json", False)
+
+    # 1. Resolve workspace and inventory
+    ws = resolve_workspace(args.input_target, parent=getattr(args, "workspace_root", None))
+    store = InventoryStore(ws.inventory_db)
+
+    # 2. Resolve recipe
+    recipe_id = getattr(args, "recipe_id", None) or DEFAULT_RECIPE_ID
+    recipe = get_recipe(recipe_id)
+
+    # 3. Gather target assets
+    plan_id = getattr(args, "plan_id", None)
+    if plan_id:
+        plan_file = ws.plans_dir / f"{plan_id}.json"
+        if not plan_file.exists():
+            sys.stderr.write(f"Error: Specified plan file does not exist: {plan_file}\n")
+            return 1
+        plan_data = json.loads(plan_file.read_text(encoding="utf-8"))
+        target_sids = set(plan_data.get("source_ids", []))
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in target_sids]
+    else:
+        inv_report = scan_inventory(
+            target=args.input_target,
+            workspace_root=ws.root,
+            min_video_bitrate=getattr(args, "min_video_bitrate", None),
+            min_resolution=getattr(args, "min_resolution", None),
+            min_size=getattr(args, "min_size", None),
+            min_duration=getattr(args, "min_duration", None),
+            inventory_depth="probe",
+            force_refresh=getattr(args, "force_refresh", False),
+        )
+        eligible_sids = {
+            rec["source_id"]
+            for rec in inv_report.per_source_records
+            if rec.get("eligibility", {}).get("status") == "eligible"
+        }
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in eligible_sids]
+
+    canonical_paths = store.get_canonical_paths()
+    num_clips = int(getattr(args, "num_clips", 3))
+    clip_duration = float(getattr(args, "clip_duration", 5.0))
+    preview_mode = getattr(args, "preview_mode", "split")
+
+    manifests: list[PreviewManifest] = []
+
+    for asset in assets_to_assess:
+        cpath = canonical_paths.get(asset.source_id)
+        if not cpath or not Path(cpath).exists():
+            continue
+        pm = generate_preview_clips(
+            asset=asset,
+            canonical_path=cpath,
+            recipe=recipe,
+            workspace=ws,
+            num_clips=num_clips,
+            clip_duration_seconds=clip_duration,
+            preview_mode=preview_mode,
+        )
+        manifests.append(pm)
+
+    if is_json:
+        out_dict = {
+            "schema_version": 1,
+            "operation": "preview",
+            "target": str(args.input_target),
+            "recipe": recipe.to_dict(),
+            "preview_mode": preview_mode,
+            "manifests": [m.to_dict() for m in manifests],
+        }
+        print(json.dumps(out_dict, indent=2))
+    else:
+        print("=== videocompress Visual Preview Generator ===")
+        print(f"Target: {args.input_target}")
+        print(f"Target Recipe: {recipe.recipe_id} ({recipe.encoder}, cq={recipe.rate_control_value})")
+        print(f"Mode: {preview_mode.upper()} | Clips per asset: {num_clips} ({clip_duration}s/clip)")
+        print(f"Generated Manifests: {len(manifests)}")
+        print("-" * 88)
+
+        for pm in manifests:
+            print(f"Manifest: {pm.manifest_id}")
+            print(f"  Target: {pm.target_path}")
+            for c in pm.clips:
+                q_info = ""
+                if c.metrics and c.metrics.ssim_all is not None:
+                    q_info = f" | SSIM: {c.metrics.ssim_all:.4f} | PSNR: {c.metrics.psnr_all:.1f}dB"
+                print(f"  Clip w{c.window_index} [{c.start_seconds:.1f}s..{c.start_seconds + c.duration_seconds:.1f}s]: {c.clip_path} ({_format_bytes(c.clip_bytes)}{q_info})")
+
+        print("-" * 88)
+        print("Instructions: Open preview clips in VLC, mpv, or Windows Media Player to visually inspect quality.")
+        print("Notice: Source media untouched (read-only verification passed). Zero full-file encodes performed.")
+
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for vcompress."""
     parser = build_parser()
@@ -791,6 +1068,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_plan(args)
     elif args.operation == "estimate":
         return run_estimate(args)
+    elif args.operation in ("analyze", "compare"):
+        return run_compare(args)
+    elif args.operation == "preview":
+        return run_preview(args)
 
     # Staged implementation placeholder for other operations
     if getattr(args, "json", False):

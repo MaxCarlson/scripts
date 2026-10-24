@@ -2,6 +2,30 @@
 
 ## Operational Ledger
 
+- **2026-10-24 15:10 (Stage 5 Completed — Quality, Compare & Preview)**
+  - Stage 5 implementation complete: `videocompress/quality.py`, `videocompress/compare.py`, `videocompress/preview.py`, and `videocompress/cli.py`.
+  - Frame-aligned quality scoring:
+    - Implemented `settb=AVTB,setpts=PTS-STARTPTS,format=yuv420p` filtergraph with split filters for concurrent SSIM, PSNR, and VMAF evaluation.
+    - Verified source media immutability guard: initial fingerprint `(mtime_ns, size)` strictly asserted before and after metric calculation; raises `SourceMutationError` if mutated.
+  - Perceptual vs bitrate confidence separation:
+    - Full-reference metrics explicitly documented as measuring fidelity to the existing lossy file, not absolute perceptual perfection.
+    - Attached mandatory `DEFAULT_QUALITY_CAVEATS` alerting that measured bitrate confidence does not guarantee preserved visual quality.
+  - Multi-recipe comparison & Pareto efficiency (`vcompress compare` / `vcompress analyze`):
+    - Implemented `run_recipe_comparison()` evaluating candidate recipes across shared sample windows.
+    - Implemented `compute_pareto_efficiency()` identifying non-dominated recipes across savings %, SSIM/PSNR quality, and encoding throughput (FPS).
+    - Ranked candidate recipes with composite efficiency score and explicit caveat reporting.
+  - Visual preview generation (`vcompress preview`):
+    - Implemented `generate_preview_clips()` producing side-by-side split comparison clips (`hstack`) or standalone preview clips in `<workspace>/previews/<preview_id>/`.
+    - Generates structured inspection manifest `preview_manifest.json` referencing preview clips and quality metrics for external review (e.g. VLC/mpv).
+    - Verified source immutability guard before/after preview rendering. Intermediate scratch clips reliably pruned.
+  - CLI integration:
+    - Connected `vcompress compare`, `vcompress analyze`, and `vcompress preview` with human-readable comparison tables and structured JSON (`-J`).
+    - Verified all flags conform to scripts repo rules: every option has both short (`-X`) and long (`--long`) forms.
+  - Test suites:
+    - `videocompress` unit & integration tests expanded to 85 tests (`85/85 passed` in 3.88s).
+    - Full regression test suites verified: `cli_tui` (107 passed), `compresser` (523 passed, 1 skipped), `scripts_help` (55 passed). Total: 770 passed tests.
+  - Next Action: Present Stage 5 report and verification evidence to user for review before proceeding to Stage 6 (Calibration & Selection).
+
 - **2026-10-24 14:24 (Stage 4 Completed — Controlled Encoder & Measurement Backend)**
   - Stage 4 implementation complete: `videocompress/sampling.py`, `videocompress/adapters/ffmpeg.py`, `videocompress/trials.py`, and `videocompress/cli.py`.
   - Media safety contracts verified:

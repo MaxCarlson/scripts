@@ -4,7 +4,7 @@
 Location: docs/plans/20261024-0920_video-compression/
 Branch: videocompress-20261024-0920
 Worktree: C:\Users\mcarls\src\scripts\.worktrees\videocompress-20261024-0920
-Status: Stage 0, Stage 2, and Stage 1 completed and verified (tests passing across videocompress, cli_tui, compresser, mangadl). Awaiting user review before Stage 3.
+Status: Stage 0, Stage 1, Stage 2, Stage 3, Stage 4, and Stage 5 completed and verified (770 tests passing across videocompress, cli_tui, compresser, scripts_help). Stage 5 quality scoring, recipe compare, and preview generator operational. Ready for user review before Stage 6.
 Scope: Standalone `modules/videocompress` backend (`vcompress`), `compresser video` router, `compresser tui`, and hardware-accelerated NVENC (RTX 5090 Blackwell) compression pipeline.
 
 2026-10-19 active plan: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
