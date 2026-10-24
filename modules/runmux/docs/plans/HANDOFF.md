@@ -17,7 +17,11 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The latest integrated Runmux Web UI phase plans are:
+The completed Runmux Web UI Phase 5A+ overview modes and live telemetry plan is:
+
+- `20261024-runmux-web-overview-telemetry/`: Phase 5A four selectable overview modes (Minimal, Inline, Dashboard, Expanded) and complete frontend integration of Phase 5B live telemetry endpoints. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `screenshots/` for implementation details, verification results, and representative browser screenshots.
+
+The latest integrated Runmux Web UI phase plans on `main` are:
 
 - `20261024-runmux-lifecycle-backend/`: Phase 4A lifecycle controls backend integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `LIFECYCLE_API_SPEC.md` for endpoint specs, verification results, and safety boundaries.
 - `20261024-runmux-web-enhanced-logs/`: Phase 4B enhanced output search and filtering integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, and `checklist.md` for implementation details, verification results, and boundaries.
@@ -29,7 +33,7 @@ The previously completed Runmux Web UI phase plan is:
 Phase 3 is integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. Read its `HANDOFF.md`,
 `STATUS.md`, and `checklist.md` for verified results and limitations.
 
-Phase 2 terminal/log correctness and Phase 5B telemetry are included in the
+Phase 2 terminal/log correctness and Phase 5B telemetry backend are included in the
 integrated baseline; Phase 2 evidence is retained in
 `20261024-runmux-web-terminal-log-correctness/`. Phase 1 launch evidence is in
 `20261024-runmux-web-process-launching/`.
