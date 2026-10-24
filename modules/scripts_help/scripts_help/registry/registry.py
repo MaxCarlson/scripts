@@ -161,6 +161,18 @@ REGISTRY: dict = {
                     },
                 ],
             },
+            "Database & Storage": {
+                "desc": "Inspect, browse, search, backup, and safely manage SQLite databases",
+                "items": [
+                    {
+                        "name": "db-manager (module)",
+                        "path": "modules/db_manager",
+                        "desc": "Reusable SQLite database explorer, inspector, online backup, and safe manager",
+                        "help_cmd": ["python", "-m", "db_manager.cli", "--help"],
+                        "version": "1.0.0",
+                    },
+                ],
+            },
             "File Analysis": {
                 "desc": "Analyze disk usage, find duplicates, compare folders",
                 "items": [
