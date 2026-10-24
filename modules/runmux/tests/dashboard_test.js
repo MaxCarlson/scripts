@@ -26,6 +26,7 @@ function element(tagName = "div") {
     scrollHeight: 0,
     scrollTop: 0,
     clientHeight: 0,
+    style: {},
     lastElementChild: { textContent: "" },
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener(name, handler) { listeners.set(name, handler); },
@@ -35,10 +36,11 @@ function element(tagName = "div") {
     replaceChildren(...children) { this.children = [...children]; },
     focus() {},
     blur() {},
+    scrollIntoView() {},
   };
 }
 
-function dashboardHarness() {
+function dashboardHarness(storageData = new Map()) {
   const elements = new Map();
   const intervals = new Map();
   const requests = [];
@@ -61,6 +63,12 @@ function dashboardHarness() {
   const context = {
     document,
     fetch,
+    navigator: { clipboard: { writeText: async () => {} } },
+    sessionStorage: {
+      getItem(key) { return storageData.get(key) ?? null; },
+      setItem(key, value) { storageData.set(key, `${value}`); },
+      removeItem(key) { storageData.delete(key); },
+    },
     TextEncoder,
     URLSearchParams,
     setInterval(callback, delay) {
@@ -77,13 +85,19 @@ function dashboardHarness() {
   const source = fs.readFileSync(path.join(__dirname, "../src/runmux/web_static/assets/dashboard.js"), "utf8");
   vm.runInNewContext(`${source}\nglobalThis.__dashboard = {
     selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
-    renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch,
+    renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch, refreshSelected,
+    persistWorkspaceState, restoreRunViews, toggleExplorerCollapsed, resizeExplorerBy,
+    getRun(id) { return runs.find((run) => run.id === id); },
+    runCount() { return runs.length; },
+    openRunIds() { return openRunIds; },
+    explorerWidth() { return explorerWidth; },
+    explorerCollapsed() { return explorerCollapsed; },
     updateTerminalControls,
     terminalReplayMessage,
     setRuns(value) { runs = value; },
     setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
   };`, context);
-  return { context, elements, intervals, requests, getElement: (selector) => document.querySelector(selector) };
+  return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
 }
 
 function response(payload) {
@@ -354,6 +368,144 @@ async function testTruncatedTerminalReplayWarnsThatScreenMayBeIncomplete() {
   assert.equal(context.__dashboard.terminalReplayMessage(false), "");
 }
 
+function testExplorerGroupingFilteringSortingAndEmptyMessages() {
+  const { context, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([
+    { ...run("id-a", "zulu"), status: "running", created_at: "2026-01-02T00:00:00Z", runtime_seconds: 30 },
+    { ...run("id-b", "alpha"), status: "failed", created_at: "2026-01-03T00:00:00Z", runtime_seconds: 10 },
+    { ...run("id-c", "beta"), status: "finished", created_at: "2026-01-01T00:00:00Z", runtime_seconds: 20 },
+  ]);
+
+  getElement("#process-grouping").value = "none";
+  getElement("#process-grouping").dispatch("change");
+  getElement("#process-sort").value = "name";
+  getElement("#process-sort").dispatch("change");
+  context.__dashboard.renderRuns();
+  assert.deepEqual(getElement("#process-list").children.map((row) => row.children[1].children[0].textContent), ["alpha", "beta", "zulu"]);
+
+  getElement("#process-status-filter").value = "failed";
+  getElement("#process-status-filter").dispatch("change");
+  context.__dashboard.renderRuns();
+  assert.equal(getElement("#process-count").textContent, "1");
+  assert.equal(getElement("#process-list").children[0].title, "alpha · id-b");
+
+  getElement("#process-search").value = "not present";
+  context.__dashboard.renderRuns();
+  assert.equal(getElement("#list-state").textContent, "No processes match these filters.");
+  assert.equal(getElement("#new-process-empty-button").hidden, true);
+}
+
+function testExplorerPaginationKeepsDomBoundedAndSearchesAllRuns() {
+  const { context, getElement } = dashboardHarness();
+  getElement("#process-grouping").value = "none";
+  getElement("#process-grouping").dispatch("change");
+  context.__dashboard.setRuns(Array.from({ length: 450 }, (_, index) => run(`run-${index}`, `worker ${index}`)));
+  context.__dashboard.renderRuns();
+  assert.equal(getElement("#process-count").textContent, "450");
+  assert.equal(getElement("#process-list").children.length, 100);
+  assert.equal(getElement("#process-page-state").textContent, "1 / 5");
+
+  getElement("#process-next-page").dispatch("click");
+  assert.equal(getElement("#process-page-state").textContent, "2 / 5");
+  assert.equal(getElement("#process-list").children.length, 100);
+  getElement("#process-search").value = "worker 449";
+  context.__dashboard.renderRuns();
+  assert.equal(getElement("#process-count").textContent, "1");
+  assert.equal(getElement("#process-list").children.length, 1);
+}
+
+async function testWorkspaceSessionStorageRestoresOnlyValidRunIdsAndSafePreferences() {
+  const { context, requests, storageData, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([
+    { ...run("run-safe", "visible name"), command: "private-command.exe", cwd: "C:/private" },
+    run("run-stale", "stale"),
+  ]);
+  const selected = context.__dashboard.selectRun("run-safe");
+  await Promise.resolve();
+  for (const request of requests) {
+    request.resolve(response(request.url.includes("/output")
+      ? { state: "available", text: "secret output", cursor: "c1", reset: true, at_end: true, finished: true }
+      : { ...run("run-safe", "visible name"), command: "private-command.exe", cwd: "C:/private" }));
+  }
+  await selected;
+  getElement("#process-grouping").value = "none";
+  getElement("#process-grouping").dispatch("change");
+  getElement("#process-sort").value = "name";
+  getElement("#process-sort").dispatch("change");
+  context.__dashboard.persistWorkspaceState();
+  const raw = storageData.get("runmux-workspace-v1");
+  assert.ok(raw.includes("run-safe"));
+  assert.ok(!raw.includes("private-command"));
+  assert.ok(!raw.includes("C:/private"));
+  assert.ok(!raw.includes("secret output"));
+
+  const restored = dashboardHarness(storageData);
+  restored.context.__dashboard.setRuns([run("run-safe", "visible name")]);
+  const selectedId = restored.context.__dashboard.restoreRunViews();
+  assert.equal(selectedId, "run-safe");
+  assert.deepEqual(Array.from(restored.context.__dashboard.openRunIds()), ["run-safe"]);
+  assert.equal(restored.getElement("#process-grouping").value, "none");
+}
+
+async function testDuplicateNameRunsKeepDistinctTabIdentityAndCloseOnlyView() {
+  const { context, requests, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([
+    run("20261024-120000-a1b2c3", "same worker"),
+    run("20261024-120001-d4e5f6", "same worker"),
+  ]);
+  context.__dashboard.renderRuns();
+  const rows = getElement("#process-list").children[0].children.slice(1);
+  assert.equal(rows.length, 2);
+  assert.notEqual(rows[0].title, rows[1].title);
+
+  const first = context.__dashboard.selectRun("20261024-120000-a1b2c3");
+  await Promise.resolve();
+  for (const request of requests) request.resolve(response(request.url.includes("/output")
+    ? { state: "available", text: "", cursor: "", reset: true, at_end: true, finished: true }
+    : run("20261024-120000-a1b2c3", "same worker")));
+  await first;
+  const second = context.__dashboard.selectRun("20261024-120001-d4e5f6");
+  await Promise.resolve();
+  for (const request of requests.slice(2)) request.resolve(response(request.url.includes("/output")
+    ? { state: "available", text: "", cursor: "", reset: true, at_end: true, finished: true }
+    : run("20261024-120001-d4e5f6", "same worker")));
+  await second;
+
+  const tabs = getElement("#workspace-tabs").children.slice(0, 2);
+  assert.equal(tabs.length, 2);
+  assert.deepEqual(tabs.map((tab) => tab.children[0].children.at(-1).textContent), ["a1b2c3", "d4e5f6"]);
+  context.__dashboard.closeWorkspaceTab("20261024-120001-d4e5f6");
+  assert.equal(context.__dashboard.runCount(), 2);
+}
+
+async function testSelectedDetailRefreshReconcilesExplorerStatusByRunId() {
+  const { context, requests, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([run("run-a", "active worker"), run("run-b", "other worker")]);
+  const selected = context.__dashboard.selectRun("run-a");
+  await Promise.resolve();
+  for (const request of requests) request.resolve(response(request.url.includes("/output")
+    ? { state: "available", text: "", cursor: "", reset: true, at_end: true, finished: true }
+    : run("run-a", "active worker")));
+  await selected;
+
+  const detail = context.__dashboard.refreshSelected();
+  await Promise.resolve();
+  requests.at(-1).resolve(response({ ...run("run-a", "active worker"), status: "finished", exit_code: 0 }));
+  await detail;
+  assert.equal(context.__dashboard.getRun("run-a").status, "finished");
+  assert.equal(context.__dashboard.getRun("run-b").status, "running");
+  assert.equal(getElement("#selected-status").textContent, "Completed");
+}
+
+function testExplorerResizeAndCollapseStateCanBeChangedAccessibly() {
+  const { context, getElement } = dashboardHarness();
+  context.__dashboard.resizeExplorerBy(24);
+  assert.equal(context.__dashboard.explorerWidth(), 324);
+  context.__dashboard.toggleExplorerCollapsed();
+  assert.equal(context.__dashboard.explorerCollapsed(), true);
+  assert.equal(getElement("#explorer-toggle").attributes["aria-expanded"], "false");
+}
+
 Promise.all([
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
@@ -363,6 +515,12 @@ Promise.all([
   testFollowOutputSuspendsOnScrollAndJumpResumesIt(),
   testOutputHistoryStaysWithinConfiguredViewLimit(),
   testTruncatedTerminalReplayWarnsThatScreenMayBeIncomplete(),
+  Promise.resolve().then(testExplorerGroupingFilteringSortingAndEmptyMessages),
+  Promise.resolve().then(testExplorerPaginationKeepsDomBoundedAndSearchesAllRuns),
+  testWorkspaceSessionStorageRestoresOnlyValidRunIdsAndSafePreferences(),
+  testDuplicateNameRunsKeepDistinctTabIdentityAndCloseOnlyView(),
+  testSelectedDetailRefreshReconcilesExplorerStatusByRunId(),
+  Promise.resolve().then(testExplorerResizeAndCollapseStateCanBeChangedAccessibly),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
 ]).catch((error) => {
   console.error(error);

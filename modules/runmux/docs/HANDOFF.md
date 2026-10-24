@@ -1,20 +1,16 @@
 # Runmux Current Handoff
 
-## Current feature branch — Web terminal and log correctness (Phase 2)
+## Current feature branch — Explorer and workspace (Phase 3)
 
-As of 2026-10-24, Phase 1 browser process launching is merged to `main` at
-`97515f0905aa2cdc194cabd9c06a250d503256a3`. Phase 2 work is in
+Phase 2 is merged to `main` at
+`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`. Phase 3 is active in
 `.worktrees/runmux-web-launch-20261024` on
-`codex/runmux-web-phase2-20261024`, based on that merged `origin/main` commit.
-Phase 2 diagnosis and focused validation are complete. Read
-`plans/20261024-runmux-web-terminal-log-correctness/` for evidence and explicit
-limits, and `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md` for
-scope. Output CR progress normalization, Runmux-scoped xterm CSP styling, and
-POSIX PTY SIGWINCH delivery are covered by tests and synthetic browser checks.
-WSL validates 39 Runmux tests and 8 shared web UI tests. Windows focused tests
-stall in Proactor self-pipe creation; Windows ConPTY resize is not claimed.
-Bounded replay cannot reconstruct omitted screen history. Phase 2 is committed;
-push the branch without merging.
+`codex/runmux-web-phase3-20261024`. Read
+`plans/20261024-runmux-web-explorer-workspace/` for the active plan and
+progress, and `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md` for
+scope. The current API omits arguments, working directory, environment,
+credentials, and log paths; preserve that boundary unless an explicit server
+authorization policy is approved.
 
 Last updated: 2026-10-24
 

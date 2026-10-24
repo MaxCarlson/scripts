@@ -110,5 +110,6 @@ ConPTY resize and Linux glyph rendering above.
 
 ## Delivery
 
-Committed on `codex/runmux-web-phase2-20261024`. Push this branch to `origin`;
-do not merge. The final SHA is reported in the handoff.
+Merged and pushed to `origin/main` at
+`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`. Phase 3 continues on fresh branch
+`codex/runmux-web-phase3-20261024`; the Phase 2 worktree and branch are retained.

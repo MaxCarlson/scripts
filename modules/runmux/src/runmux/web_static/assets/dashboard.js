@@ -1,9 +1,15 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
-const STATUS_CLASS = { pending: "pending", running: "running", paused: "paused", finished: "finished", failed: "failed", lost: "lost" };
-const STATUS_ORDER = ["running", "pending", "paused", "failed", "lost", "finished"];
-const STATUS_LABEL = { running: "Running", pending: "Waiting", paused: "Paused", failed: "Failed", lost: "Disconnected", finished: "Completed" };
+const STATUS_CLASS = { pending: "pending", running: "running", paused: "paused", finished: "finished", failed: "failed", killed: "killed", lost: "lost" };
+const STATUS_ORDER = ["running", "pending", "paused", "failed", "killed", "lost", "finished"];
+const STATUS_LABEL = { running: "Running", pending: "Waiting", paused: "Paused", failed: "Failed", killed: "Killed", lost: "Disconnected", finished: "Completed" };
+const STATUS_VALUES = ["pending", "running", "paused", "finished", "failed", "killed", "lost"];
+const WORKSPACE_STORAGE_KEY = "runmux-workspace-v1";
+const PROCESS_PAGE_SIZE = 100;
+const EXPLORER_MIN_WIDTH = 220;
+const EXPLORER_MAX_WIDTH = 480;
+const STATUS_SORT_ORDER = ["running", "pending", "paused", "failed", "killed", "lost", "finished"];
 const VIEW_LIMIT = 512 * 1024;
 
 let runs = [];
@@ -29,6 +35,128 @@ const TERMINAL_SCROLLBACK = 5000;
 let newProcessOpen = false;
 let launchPending = false;
 let launchDefaultCwd = "";
+let groupingMode = "status";
+let statusFilter = "";
+let sortMode = "recent";
+let processPage = 0;
+let explorerWidth = 300;
+let explorerCollapsed = false;
+let explorerResizeActive = false;
+let workspaceRestored = false;
+let savedRunViews = { openRunIds: [], selectedId: null };
+
+function clampExplorerWidth(value) {
+  return Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, Math.round(value)));
+}
+
+function loadWorkspacePreferences() {
+  let saved = null;
+  try {
+    saved = JSON.parse(globalThis.sessionStorage?.getItem(WORKSPACE_STORAGE_KEY) || "null");
+  } catch { /* Invalid or unavailable session storage uses defaults. */ }
+  if (!saved || saved.version !== 1 || typeof saved !== "object") return;
+  if (["status", "none"].includes(saved.groupingMode)) groupingMode = saved.groupingMode;
+  if (saved.statusFilter === "" || STATUS_VALUES.includes(saved.statusFilter)) statusFilter = saved.statusFilter;
+  if (["recent", "started", "name", "duration", "status"].includes(saved.sortMode)) sortMode = saved.sortMode;
+  if (Number.isInteger(saved.processPage) && saved.processPage >= 0 && saved.processPage < 100000) processPage = saved.processPage;
+  if (Number.isFinite(saved.explorerWidth)) explorerWidth = clampExplorerWidth(saved.explorerWidth);
+  explorerCollapsed = saved.explorerCollapsed === true;
+  if (Array.isArray(saved.collapsedGroups)) {
+    for (const status of saved.collapsedGroups) if (STATUS_VALUES.includes(status)) collapsedGroups.add(status);
+  }
+  if (Array.isArray(saved.openRunIds)) {
+    savedRunViews.openRunIds = [...new Set(saved.openRunIds.filter((id) => typeof id === "string" && id.length <= 128))].slice(0, 64);
+  }
+  if (typeof saved.selectedId === "string" && saved.selectedId.length <= 128) savedRunViews.selectedId = saved.selectedId;
+}
+
+function persistWorkspaceState() {
+  const state = {
+    version: 1,
+    groupingMode,
+    statusFilter,
+    sortMode,
+    processPage,
+    collapsedGroups: [...collapsedGroups],
+    explorerWidth,
+    explorerCollapsed,
+    openRunIds: openRunIds.slice(-64),
+    selectedId,
+  };
+  try { globalThis.sessionStorage?.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(state)); }
+  catch { /* Storage is a convenience; the workspace remains usable without it. */ }
+}
+
+function restoreRunViews() {
+  const validIds = new Set(runs.map((run) => run.id));
+  openRunIds = [...new Set(savedRunViews.openRunIds.filter((id) => validIds.has(id)))];
+  const selected = savedRunViews.selectedId && openRunIds.includes(savedRunViews.selectedId)
+    ? savedRunViews.selectedId
+    : openRunIds.at(-1) || null;
+  savedRunViews = { openRunIds: [], selectedId: null };
+  workspaceRestored = true;
+  return selected;
+}
+
+loadWorkspacePreferences();
+
+function applyWorkspacePreferencesToControls() {
+  $("#process-grouping").value = groupingMode;
+  $("#process-status-filter").value = statusFilter;
+  $("#process-sort").value = sortMode;
+}
+
+function applyExplorerLayout() {
+  const workspace = $(".workspace");
+  workspace.style.setProperty?.("--explorer-width", `${explorerWidth}px`);
+  if (!workspace.style.setProperty) workspace.style["--explorer-width"] = `${explorerWidth}px`;
+  workspace.classList.toggle("explorer-collapsed", explorerCollapsed);
+  const toggle = $("#explorer-toggle");
+  toggle.setAttribute("aria-expanded", `${!explorerCollapsed}`);
+  toggle.setAttribute("aria-label", explorerCollapsed ? "Expand process explorer" : "Collapse process explorer");
+  toggle.title = explorerCollapsed ? "Expand process explorer" : "Collapse process explorer";
+  $("#explorer-splitter").setAttribute("aria-valuenow", `${explorerWidth}`);
+}
+
+function resizeExplorerBy(delta) {
+  explorerWidth = clampExplorerWidth(explorerWidth + delta);
+  applyExplorerLayout();
+  persistWorkspaceState();
+}
+
+function toggleExplorerCollapsed() {
+  explorerCollapsed = !explorerCollapsed;
+  applyExplorerLayout();
+  persistWorkspaceState();
+}
+
+function runTimestamp(run, key) {
+  const value = key === "started" ? run.started_at || run.created_at : run.created_at;
+  const timestamp = value ? Date.parse(value) : Number.NaN;
+  return Number.isFinite(timestamp) ? timestamp : 0;
+}
+
+function compareRuns(left, right) {
+  let comparison = 0;
+  if (sortMode === "name") comparison = (left.name || left.command || "").localeCompare(right.name || right.command || "", undefined, { sensitivity: "base" });
+  else if (sortMode === "started") comparison = runTimestamp(right, "started") - runTimestamp(left, "started");
+  else if (sortMode === "duration") comparison = (Number(right.runtime_seconds) || 0) - (Number(left.runtime_seconds) || 0);
+  else if (sortMode === "status") {
+    const leftIndex = STATUS_SORT_ORDER.indexOf(left.status);
+    const rightIndex = STATUS_SORT_ORDER.indexOf(right.status);
+    comparison = (leftIndex < 0 ? STATUS_SORT_ORDER.length : leftIndex) - (rightIndex < 0 ? STATUS_SORT_ORDER.length : rightIndex);
+  } else comparison = runTimestamp(right, "created") - runTimestamp(left, "created");
+  return comparison || `${left.id}`.localeCompare(`${right.id}`);
+}
+
+function filteredRuns() {
+  const query = $("#process-search").value.trim().toLowerCase();
+  return runs.filter((run) => {
+    if (statusFilter && run.status !== statusFilter) return false;
+    const searchable = `${run.name || ""} ${run.command || ""} ${run.status || ""} ${run.id || ""}`.toLowerCase();
+    return !query || searchable.includes(query);
+  }).sort(compareRuns);
+}
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options });
@@ -98,8 +226,58 @@ $("#new-process-empty-button").addEventListener("click", openNewProcess);
 $("#new-process-empty-workspace").addEventListener("click", openNewProcess);
 $("#cancel-launch").addEventListener("click", closeNewProcess);
 $("#launch-form").addEventListener("submit", submitLaunch);
-$("#process-search").addEventListener("input", renderRuns);
-$("#clear-search").addEventListener("click", () => { $("#process-search").value = ""; renderRuns(); });
+$("#process-search").addEventListener("input", () => { processPage = 0; persistWorkspaceState(); renderRuns(); });
+$("#process-grouping").addEventListener("change", () => {
+  groupingMode = $("#process-grouping").value === "none" ? "none" : "status";
+  processPage = 0;
+  persistWorkspaceState();
+  renderRuns();
+});
+$("#process-status-filter").addEventListener("change", () => {
+  const value = $("#process-status-filter").value;
+  statusFilter = STATUS_VALUES.includes(value) ? value : "";
+  processPage = 0;
+  persistWorkspaceState();
+  renderRuns();
+});
+$("#process-sort").addEventListener("change", () => {
+  const value = $("#process-sort").value;
+  sortMode = ["recent", "started", "name", "duration", "status"].includes(value) ? value : "recent";
+  processPage = 0;
+  persistWorkspaceState();
+  renderRuns();
+});
+$("#clear-search").addEventListener("click", () => { $("#process-search").value = ""; processPage = 0; persistWorkspaceState(); renderRuns(); });
+$("#process-previous-page").addEventListener("click", () => { processPage = Math.max(0, processPage - 1); persistWorkspaceState(); renderRuns(); });
+$("#process-next-page").addEventListener("click", () => { processPage += 1; persistWorkspaceState(); renderRuns(); });
+$("#explorer-toggle").addEventListener("click", toggleExplorerCollapsed);
+$("#copy-run-id").addEventListener("click", () => copyRunField("#detail-id", "Run ID"));
+$("#copy-run-pid").addEventListener("click", () => copyRunField("#detail-pid", "PID"));
+$("#copy-run-command").addEventListener("click", () => copyRunField("#detail-command", "Executable name"));
+$("#explorer-splitter").addEventListener("pointerdown", (event) => {
+  explorerResizeActive = true;
+  event.currentTarget.setPointerCapture?.(event.pointerId);
+  event.preventDefault();
+});
+document.addEventListener("pointermove", (event) => {
+  if (!explorerResizeActive) return;
+  const bounds = $(".workspace").getBoundingClientRect();
+  explorerWidth = clampExplorerWidth(event.clientX - bounds.left);
+  applyExplorerLayout();
+});
+document.addEventListener("pointerup", () => {
+  if (!explorerResizeActive) return;
+  explorerResizeActive = false;
+  persistWorkspaceState();
+});
+$("#explorer-splitter").addEventListener("keydown", (event) => {
+  if (event.key === "ArrowLeft") { event.preventDefault(); resizeExplorerBy(-16); }
+  else if (event.key === "ArrowRight") { event.preventDefault(); resizeExplorerBy(16); }
+  else if (event.key === "Home") { event.preventDefault(); explorerWidth = EXPLORER_MIN_WIDTH; applyExplorerLayout(); persistWorkspaceState(); }
+  else if (event.key === "End") { event.preventDefault(); explorerWidth = EXPLORER_MAX_WIDTH; applyExplorerLayout(); persistWorkspaceState(); }
+});
+applyWorkspacePreferencesToControls();
+applyExplorerLayout();
 $("#scroll-output").addEventListener("click", scrollOutputToEnd);
 $("#output-text").addEventListener("scroll", () => {
   const node = $("#output-text");
@@ -123,10 +301,17 @@ async function refreshRuns() {
     const response = await api("/api/runs");
     const nextRuns = await response.json();
     if (requestGeneration !== authGeneration) return;
-    runs = nextRuns;
+    const seenIds = new Set();
+    runs = nextRuns.filter((run) => {
+      if (!run || typeof run.id !== "string" || seenIds.has(run.id)) return false;
+      seenIds.add(run.id);
+      return true;
+    });
     $("#last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
     $("#connection-state").className = "connection-state connected";
     $("#connection-state").lastElementChild.textContent = "Registry connected";
+    let restoredRunId = null;
+    if (!workspaceRestored) restoredRunId = restoreRunViews();
     openRunIds = openRunIds.filter((runId) => runs.some((run) => run.id === runId));
     if (selectedId && !runs.some((run) => run.id === selectedId)) {
       const fallbackId = openRunIds[openRunIds.length - 1] || null;
@@ -137,6 +322,11 @@ async function refreshRuns() {
     renderRuns();
     renderWorkspaceTabs();
     renderWorkspaceView();
+    if (restoredRunId) {
+      await selectRun(restoredRunId);
+      return;
+    }
+    persistWorkspaceState();
     if (selectedId) await refreshSelected(selectionGeneration, selectedId);
   } catch (error) {
     if (requestGeneration !== authGeneration) return;
@@ -148,68 +338,87 @@ async function refreshRuns() {
 }
 
 function renderRuns() {
-  const query = $("#process-search").value.trim().toLowerCase();
-  const filtered = runs.filter((run) => `${run.name} ${run.command} ${run.status} ${run.id}`.toLowerCase().includes(query));
+  const filtered = filteredRuns();
+  const pageCount = Math.max(1, Math.ceil(filtered.length / PROCESS_PAGE_SIZE));
+  processPage = Math.max(0, Math.min(processPage, pageCount - 1));
+  const visible = filtered.slice(processPage * PROCESS_PAGE_SIZE, (processPage + 1) * PROCESS_PAGE_SIZE);
   const list = $("#process-list");
   list.replaceChildren();
   $("#process-count").textContent = `${filtered.length}`;
+  const query = $("#process-search").value.trim();
   $("#clear-search").hidden = !query;
-  $("#list-state").textContent = filtered.length ? "" : query ? "No process matches this search." : "No managed processes yet.";
-  $("#new-process-empty-button").hidden = Boolean(query) || runs.length > 0;
-  const statuses = [...new Set(filtered.map((run) => run.status))].sort((left, right) => {
-    const leftIndex = STATUS_ORDER.indexOf(left);
-    const rightIndex = STATUS_ORDER.indexOf(right);
-    return (leftIndex < 0 ? STATUS_ORDER.length : leftIndex) - (rightIndex < 0 ? STATUS_ORDER.length : rightIndex)
-      || left.localeCompare(right);
-  });
-  for (const status of statuses) {
-    const groupRuns = filtered.filter((run) => run.status === status);
-    const group = document.createElement("details");
-    group.className = "process-group";
-    group.open = !collapsedGroups.has(status);
-    group.addEventListener("toggle", () => {
-      if (group.open) collapsedGroups.delete(status);
-      else collapsedGroups.add(status);
+  $("#list-state").textContent = filtered.length ? "" : runs.length ? "No processes match these filters." : "No managed processes yet.";
+  $("#new-process-empty-button").hidden = Boolean(query || statusFilter) || runs.length > 0;
+  $("#process-pagination").hidden = filtered.length <= PROCESS_PAGE_SIZE;
+  $("#process-page-state").textContent = `${processPage + 1} / ${pageCount}`;
+  $("#process-previous-page").disabled = processPage === 0;
+  $("#process-next-page").disabled = processPage >= pageCount - 1;
+
+  if (groupingMode === "status") {
+    const statuses = [...new Set(visible.map((run) => run.status))].sort((left, right) => {
+      const leftIndex = STATUS_ORDER.indexOf(left);
+      const rightIndex = STATUS_ORDER.indexOf(right);
+      return (leftIndex < 0 ? STATUS_ORDER.length : leftIndex) - (rightIndex < 0 ? STATUS_ORDER.length : rightIndex)
+        || left.localeCompare(right);
     });
-    const heading = document.createElement("summary");
-    heading.className = "group-heading";
-    const headingLabel = document.createElement("span");
-    headingLabel.textContent = STATUS_LABEL[status] || status;
-    const count = document.createElement("span");
-    count.className = "group-count";
-    count.textContent = `${groupRuns.length}`;
-    heading.append(headingLabel, count);
-    group.append(heading);
-    for (const run of groupRuns) {
-      const row = document.createElement("button");
-      row.type = "button";
-      row.className = `process-row${run.id === selectedId ? " selected" : ""}`;
-      row.setAttribute("aria-current", run.id === selectedId ? "true" : "false");
-      row.addEventListener("click", () => selectRun(run.id));
-      const dot = document.createElement("span");
-      dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
-      const main = document.createElement("span");
-      main.className = "row-main";
-      const title = document.createElement("span");
-      title.className = "row-title";
-      title.textContent = run.name || run.command || "Unnamed process";
-      title.title = run.name || run.command || "Unnamed process";
-      const command = document.createElement("span");
-      command.className = "row-command";
-      command.textContent = run.command;
-      command.title = run.command;
-      const meta = document.createElement("span");
-      meta.className = "row-meta";
-      meta.textContent = `${formatRuntime(run.runtime_seconds)} · ${relativeTime(run.started_at || run.created_at)}`;
-      main.append(title, command, meta);
-      const badge = document.createElement("span");
-      badge.className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
-      badge.textContent = run.status;
-      row.append(dot, main, badge);
-      group.append(row);
+    for (const status of statuses) {
+      const groupRuns = visible.filter((run) => run.status === status);
+      const group = document.createElement("details");
+      group.className = "process-group";
+      group.open = !collapsedGroups.has(status);
+      group.addEventListener("toggle", () => {
+        if (group.open) collapsedGroups.delete(status);
+        else collapsedGroups.add(status);
+        persistWorkspaceState();
+      });
+      const heading = document.createElement("summary");
+      heading.className = "group-heading";
+      const headingLabel = document.createElement("span");
+      headingLabel.textContent = STATUS_LABEL[status] || status;
+      const count = document.createElement("span");
+      count.className = "group-count";
+      count.textContent = `${groupRuns.length}`;
+      heading.append(headingLabel, count);
+      group.append(heading);
+      for (const run of groupRuns) group.append(createProcessRow(run));
+      list.append(group);
     }
-    list.append(group);
+  } else {
+    for (const run of visible) list.append(createProcessRow(run));
   }
+  persistWorkspaceState();
+}
+
+function createProcessRow(run) {
+  const row = document.createElement("button");
+  const displayName = run.name || run.command || "Unnamed process";
+  const shortId = `${run.id}`.slice(-6);
+  row.type = "button";
+  row.className = `process-row${run.id === selectedId ? " selected" : ""}`;
+  row.title = `${displayName} · ${run.id}`;
+  row.setAttribute("aria-current", run.id === selectedId ? "true" : "false");
+  row.addEventListener("click", () => selectRun(run.id));
+  const dot = document.createElement("span");
+  dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
+  const main = document.createElement("span");
+  main.className = "row-main";
+  const title = document.createElement("span");
+  title.className = "row-title";
+  title.textContent = displayName;
+  title.title = displayName;
+  const command = document.createElement("span");
+  command.className = "row-command";
+  command.textContent = run.command || "";
+  command.title = run.command || "";
+  const meta = document.createElement("span");
+  meta.className = "row-meta";
+  meta.textContent = `${formatRuntime(run.runtime_seconds)} · ${relativeTime(run.started_at || run.created_at)} · ${shortId}`;
+  main.append(title, command, meta);
+  const badge = document.createElement("span");
+  badge.className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
+  badge.textContent = STATUS_LABEL[run.status] || run.status;
+  row.append(dot, main, badge);
+  return row;
 }
 
 function renderWorkspaceTabs() {
@@ -225,23 +434,30 @@ function renderWorkspaceTabs() {
     activate.className = "workspace-tab-select";
     activate.setAttribute("role", "tab");
     activate.setAttribute("aria-selected", `${run.id === selectedId}`);
-    activate.title = run.name || run.command || "Unnamed process";
+    const displayName = run.name || run.command || "Unnamed process";
+    activate.title = `${displayName} · ${run.id}`;
+    activate.setAttribute("aria-label", `Open ${displayName}, run ${run.id}`);
+    activate.setAttribute("aria-controls", "run-inspector");
     activate.addEventListener("click", () => selectRun(run.id));
     const dot = document.createElement("span");
     dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
     const label = document.createElement("span");
     label.className = "workspace-tab-label";
-    label.textContent = run.name || run.command || "Unnamed process";
-    activate.append(dot, label);
+    label.textContent = displayName;
+    const identity = document.createElement("span");
+    identity.className = "workspace-tab-id";
+    identity.textContent = `${run.id}`.slice(-6);
+    activate.append(dot, label, identity);
     const close = document.createElement("button");
     close.type = "button";
     close.className = "workspace-tab-close";
-    close.setAttribute("aria-label", `Close ${run.name || run.command || "process"} view`);
+    close.setAttribute("aria-label", `Close ${displayName} run ${run.id} view`);
     close.title = "Close view";
     close.textContent = "×";
     close.addEventListener("click", () => closeWorkspaceTab(run.id));
     tab.append(activate, close);
     tabs.append(tab);
+    if (run.id === selectedId) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
   }
   const addTab = document.createElement("button");
   addTab.type = "button";
@@ -253,6 +469,7 @@ function renderWorkspaceTabs() {
   addTab.textContent = "+";
   addTab.addEventListener("click", openNewProcess);
   tabs.append(addTab);
+  persistWorkspaceState();
 }
 
 function renderWorkspaceView() {
@@ -360,6 +577,7 @@ function closeWorkspaceTab(runId) {
   }
   renderRuns();
   renderWorkspaceTabs();
+  persistWorkspaceState();
 }
 
 async function selectRun(runId) {
@@ -383,6 +601,7 @@ async function selectRun(runId) {
   $("#run-inspector").hidden = false;
   renderRuns();
   renderWorkspaceTabs();
+  persistWorkspaceState();
   await Promise.all([refreshSelected(generation, runId), refreshOutput(generation, runId)]);
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
@@ -396,16 +615,26 @@ async function refreshSelected(generation = selectionGeneration, runId = selecte
     const response = await api(`/api/runs/${encodeURIComponent(runId)}`);
     const run = await response.json();
     if (!isCurrentSelection(generation, runId)) return;
-    $("#selected-name").textContent = run.name || run.command || "Unnamed process";
+    const displayName = run.name || run.command || "Unnamed process";
+    $("#selected-name").textContent = displayName;
+    $("#selected-identity").textContent = `RUN ${run.id}`;
     $("#selected-command").textContent = run.command;
     $("#selected-status").className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
-    $("#selected-status").textContent = run.status;
+    $("#selected-status").textContent = STATUS_LABEL[run.status] || run.status;
     $("#detail-id").textContent = run.id;
     $("#detail-pid").textContent = run.pid == null ? "—" : `${run.pid}`;
     $("#detail-exit").textContent = run.exit_code == null ? "—" : `${run.exit_code}`;
     $("#detail-runtime").textContent = formatRuntime(run.runtime_seconds);
     $("#detail-started").textContent = formatDate(run.started_at || run.created_at);
     $("#detail-ended").textContent = formatDate(run.ended_at);
+    $("#detail-started").title = relativeTime(run.started_at || run.created_at);
+    $("#detail-ended").title = run.ended_at ? relativeTime(run.ended_at) : "Not ended";
+    $("#detail-command").textContent = run.command || "—";
+    $("#detail-connection").textContent = run.connection === "disconnected" ? "Supervisor disconnected" : run.connection === "connected" ? "Supervisor connected" : "Not checked";
+    $("#copy-run-id").disabled = !run.id;
+    $("#copy-run-pid").disabled = run.pid == null;
+    $("#copy-run-command").disabled = !run.command;
+    reconcileRunSummary(run);
     const warning = $("#run-warning");
     warning.hidden = run.connection !== "disconnected";
     warning.textContent = run.connection === "disconnected" ? "Supervisor is unreachable. Showing the last recorded status and available log output." : "";
@@ -414,6 +643,25 @@ async function refreshSelected(generation = selectionGeneration, runId = selecte
     if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
     $("#run-warning").hidden = false;
     $("#run-warning").textContent = "Process details are temporarily unavailable. Retrying on the next refresh.";
+  }
+}
+
+function reconcileRunSummary(run) {
+  const index = runs.findIndex((item) => item.id === run.id);
+  if (index < 0) return;
+  runs[index] = { ...runs[index], ...run };
+  renderRuns();
+  renderWorkspaceTabs();
+}
+
+async function copyRunField(selector, label) {
+  const value = $(selector).textContent;
+  if (!value || value === "—") return;
+  try {
+    await navigator.clipboard.writeText(value);
+    $("#details-copy-status").textContent = `${label} copied.`;
+  } catch {
+    $("#details-copy-status").textContent = "Clipboard access is unavailable; select the value to copy it.";
   }
 }
 
@@ -523,6 +771,7 @@ function clearSelection() {
   $("#empty-inspector").hidden = false;
   renderRuns();
   renderWorkspaceTabs();
+  persistWorkspaceState();
 }
 
 function invalidateSelection() {
