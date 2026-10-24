@@ -3,8 +3,8 @@
 **Plan Location:** `docs/plans/20261024-0925_shared-launchers-and-invocation-history/`
 **Branch:** `shared-launchers-20261024-0925`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925`
-**Baseline:** `origin/main` at `a0028473523f6208ea298218e0e666d56d083c9c`
-**Status:** Stages 1-3 complete; Stage 4 rehearsal and setup script integration complete; awaiting user approval before applying changes to production `bin/`.
+**Baseline:** `origin/main` at `1618996cd8573ebe25ed9810ab333e6456b7ddf0`
+**Status:** All Stages 1–5 Complete; Production Migration Applied to `bin/`; 101 Tests Passing; Ready for Final Integration / PR Merge.
 
 ## Objective & Scope
 Implement generated cross-platform native wrappers, central invocation recording, SQLite WAL persistence with atomic counter invariants, and a stable read-only consumer API in `modules/script_logging` and `scripts_setup`.
@@ -14,8 +14,10 @@ Excluded from this handoff: `scripts_help` TUI views and generic database browse
 1. **Dedicated Invocation Storage:** Invocations and counters reside in `invocations.sqlite3` with platform-specific standard state paths (`%LOCALAPPDATA%\ScriptsToolkit\` on Windows, `${XDG_STATE_HOME:-~/.local/state}/scripts-toolkit/` on POSIX) and `SCRIPT_LOGGING_INVOCATION_DB` override.
 2. **Fail-Open Execution:** Invocation recording failure must NEVER block the child program from executing. Target resolution errors remain actionable launch failures (exit code 127).
 3. **No Write Locks in Reader:** `ReadOnlyHistoryReader` uses SQLite URI `mode=ro` and strictly refuses to create files or directories.
-4. **Non-Destructive Migration & Rehearsal:** Completed automated rehearsal against all 257 live files in a disposable environment. 168 legacy wrappers upgraded, 10 unmanaged custom scripts preserved byte-for-byte, 79 obsolete third-party wrappers untouched, 0 collisions. Full rollback and argument fidelity verified.
+4. **Symlink Safety in Backup & Rollback:** Symlinks are never dereferenced or written to. The 10 unmanaged custom symlinks are preserved byte-for-byte and tracked in `symlinks.json`.
 5. **Setup Entry Point Integration:** `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, and `scripts_setup/setup_utils.py` refactored to delegate wrapper generation to `launcher_generator.write_wrapper` and update `scripts_manifest.json`.
+6. **Production Migration Applied:** 168 legacy managed wrappers upgraded, 1 missing wrapper created (`db-manager.cmd`), 10 unmanaged custom symlinks preserved, 79 obsolete third-party wrappers untouched. Automated backup at `.launcher_backup_20261024_220544`.
+7. **Smoke-Tested In Production:** Tested `mangadl.cmd --help`, `termdash.cmd --help`, `append_clipboard.cmd --help`, and missing target exit code 127. Recorded invocations verified in `%LOCALAPPDATA%\ScriptsToolkit\invocations.sqlite3`.
 
 ## Document Index
 - `00_implementation-plan.md`: Master architectural overview and global constraints.

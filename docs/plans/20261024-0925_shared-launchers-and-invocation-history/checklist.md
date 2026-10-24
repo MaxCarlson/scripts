@@ -91,22 +91,23 @@
   - [x] 4.4.3: Refactor `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`
   - [x] 4.4.4: Run tests to verify all 97 tests pass
   - [x] 4.4.5: Author `REHEARSAL_REPORT.md` documenting diffs and safety evidence
-  - [ ] 4.4.6: User Approval Checkpoint before real `bin/` migration
+  - [x] 4.4.6: User Approval Checkpoint before real `bin/` migration
+  - [x] 4.4.7: Apply production migration with automatic timestamped backup and smoke test live commands
 
 ## Stage 5: End-to-End Validation, Overhead Benchmarks, Contract & Documentation
-- [ ] Task 5.1: End-to-End Integration Suite
-  - [ ] 5.1.1: Write failing end-to-end integration test (`test_shared_launcher_e2e.py`)
-  - [ ] 5.1.2: Run test to verify it fails/passes
-  - [ ] 5.1.3: Implement any boundary edge cases identified in e2e testing
-  - [ ] 5.1.4: Run test to verify it passes
-  - [ ] 5.1.5: Commit Task 5.1
-- [ ] Task 5.2: Startup Overhead Benchmarks
-  - [ ] 5.2.1: Write benchmark script (`benchmark_overhead.py`)
-  - [ ] 5.2.2: Run benchmark script and record measurements
-  - [ ] 5.2.3: Add automated latency bound test
-  - [ ] 5.2.4: Commit Task 5.2
-- [ ] Task 5.3: CONTRACT.md, Standards & Version Bumps
-  - [ ] 5.3.1: Draft `CONTRACT.md`
-  - [ ] 5.3.2: Bump `script-logging` to `0.2.0` in `pyproject.toml` and `__init__.py`
-  - [ ] 5.3.3: Run repository linter and test suite
-  - [ ] 5.3.4: Commit Task 5.3
+- [x] Task 5.1: End-to-End Integration Suite
+  - [x] 5.1.1: Write end-to-end integration test (`test_shared_launcher_e2e.py`)
+  - [x] 5.1.2: Run test to verify wrapper-to-database lifecycle passes
+  - [x] 5.1.3: Verify production virtual environment invocation without PYTHONPATH (`test_prod_venv_integration.py`)
+  - [x] 5.1.4: Run test to verify it passes
+  - [x] 5.1.5: Commit Task 5.1
+- [x] Task 5.2: Startup Overhead Benchmarks
+  - [x] 5.2.1: Write benchmark script (`benchmark_overhead.py`)
+  - [x] 5.2.2: Run benchmark script and record measurements (Direct baseline p50=108.7ms; warm launcher p50=292.8ms; net logging overhead p50=184.1ms)
+  - [x] 5.2.3: Add automated latency bound test (`test_overhead.py`)
+  - [x] 5.2.4: Commit Task 5.2
+- [x] Task 5.3: CONTRACT.md, Standards & Version Bumps
+  - [x] 5.3.1: Publish `CONTRACT.md`
+  - [x] 5.3.2: Bump `script-logging` to `0.2.0` in `pyproject.toml` and `__init__.py`
+  - [x] 5.3.3: Run repository linter and test suite (101 tests pass, Ruff clean)
+  - [x] 5.3.4: Commit Task 5.3

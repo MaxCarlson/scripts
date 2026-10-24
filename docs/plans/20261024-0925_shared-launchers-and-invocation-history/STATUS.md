@@ -3,7 +3,7 @@
 **Plan:** `docs/plans/20261024-0925_shared-launchers-and-invocation-history/`
 **Branch:** `shared-launchers-20261024-0925`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925`
-**Current Stage:** Stage 4 Rehearsal & Setup Integration Complete (Awaiting user approval before applying wrapper migration to production `bin/`)
+**Current Stage:** Stage 4 Production Migration & Stage 5 Complete (Ready for Final Delivery)
 
 ## Operational Ledger
 - **2026-10-24**: Isolated git worktree created at `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925` on branch `shared-launchers-20261024-0925`.
@@ -26,16 +26,25 @@
   - Total 76 tests passing cleanly in `modules/script_logging`.
 - **2026-10-24**: Stage 4 Preparation & Dry-Run Report completed:
   - Implemented `scripts_setup/launcher_generator.py`: repository inventory scanner (`scan_repository_programs`), collision analyzer (`detect_collisions`), wrapper recognizer (`is_managed_wrapper`), template generators, atomic manifest writer (`scripts_manifest.json`), backup/migration/rollback engine, and CLI.
-  - Implemented unit tests: `tests/test_launcher_generator.py` and `tests/test_migration.py`. Total 83 tests passing across repository test suite.
-  - Executed live repository dry-run: scanned 168 repo-owned commands, 257 existing wrappers in `bin/` (247 legacy managed, 10 unmanaged custom symlinks preserved, 79 obsolete third-party wrappers, 0 collisions detected).
-  - Production `bin/` wrappers remain 100% untouched.
-- **2026-10-24**: Isolated Migration Rehearsal & Setup Integration verified:
-  - Automated rehearsal in disposable native Windows workspace (`tests/test_migration_rehearsal.py`): verified content-signature recognition of all 168 legacy wrappers, 100% byte-for-byte preservation of all 10 unmanaged custom wrappers and 79 obsolete wrappers, automated backup completeness, idempotent regeneration, interrupted recovery, full rollback restoring pre-migration hashes across all 257 files, and CMD/pwsh argument fidelity with Unicode and exit codes.
+  - Implemented unit tests: `tests/test_launcher_generator.py` and `tests/test_migration.py`.
+- **2026-10-24**: Stage 4 Rehearsal & Setup Integration verified:
+  - Automated rehearsal in disposable native Windows workspace (`tests/test_migration_rehearsal.py`): verified content-signature recognition, 100% byte-for-byte preservation of unmanaged custom wrappers and obsolete wrappers, automated backup completeness, idempotent regeneration, interrupted recovery, full rollback restoring pre-migration hashes, and CMD/pwsh argument fidelity with Unicode and exit codes.
   - Integrated 4 setup entry points (`modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`) to delegate wrapper creation to `launcher_generator` (`write_wrapper`), preserving CLI compatibility (`tests/test_setup_integration.py`).
   - Authored comprehensive `REHEARSAL_REPORT.md`.
-  - Rebased onto latest `origin/main` (`a0028473523f6208ea298218e0e666d56d083c9c`).
-  - All 97 tests passing across the test suite (`modules/script_logging/tests` and `tests/`).
-  - Production `bin/` wrappers remain 100% untouched pending user approval.
+- **2026-10-24**: Stage 5 Validation, Overhead Benchmarks & Reconcile:
+  - Verified symlink-safe rollback without dereferencing or modifying target shell scripts. Regression tested all 10 unmanaged launchers.
+  - Verified representative invocation through production virtual environment without `PYTHONPATH` (`tests/test_prod_venv_integration.py`).
+  - Added wrapper-to-database end-to-end integration test (`tests/test_shared_launcher_e2e.py`).
+  - Measured startup overhead (`modules/script_logging/tests/benchmark_overhead.py`): Direct baseline p50=108.68ms; warm launcher execution p50=292.81ms; net logging overhead p50=184.13ms. Added latency bound test (`modules/script_logging/tests/test_overhead.py`).
+  - Reconciled with latest `origin/main` (`1618996c`, including new `db_manager` module). Clean rebase with 0 conflicts.
+  - Total 101 tests passing across test suite.
+- **2026-10-24**: Production Migration Executed:
+  - Applied migration to `C:\Users\mcarls\src\scripts\bin` with automated snapshot backup to `.launcher_backup_20261024_220544`.
+  - 168 legacy managed wrappers upgraded to unified managed template.
+  - 1 new wrapper created for `db-manager` (discovered from merged `origin/main`).
+  - 10 unmanaged custom symlinks preserved 100% byte-for-byte.
+  - 79 obsolete third-party wrappers untouched.
+  - Smoke-tested live commands under both CMD and PowerShell (`mangadl --help`, `termdash --help`, `append_clipboard --help`, missing target exit 127). Verified invocations recorded to SQLite WAL at `%LOCALAPPDATA%\ScriptsToolkit\invocations.sqlite3`.
 
 ## Next Action
-Present the full Migration Rehearsal Report, representative before/after diffs, and rollback results to the user and wait for explicit approval before modifying the production `bin/` directory.
+Deliver the final migration summary, benchmark metrics, integration SHA, and verification status to the user.
