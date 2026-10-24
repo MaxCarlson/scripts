@@ -1,6 +1,6 @@
 # Runmux Web UI — Phase 4B: Enhanced Output Search and Filtering
 
-**Status:** Completed with bounded-performance protections on branch `codex/runmux-web-phase4b-20261024` | **Priority:** P1 | **Backlog:** T08–T09, selected W05–W06
+**Status:** Merged to main | **Priority:** P1 | **Backlog:** T08–T09, selected W05–W06
 
 ## Objective
 
