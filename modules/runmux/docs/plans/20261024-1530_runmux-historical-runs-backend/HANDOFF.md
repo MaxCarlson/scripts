@@ -42,6 +42,8 @@ Event objects expose event type, timestamp, provenance, optional telemetry event
 - HTTP TestClient execution was blocked by Windows sandbox asyncio loop initialization hanging while opening an internal socket pair. Adapter logic and route registration are covered; new routes use the existing authenticated `/api` router.
 - Lineage output is capped. `total_restarts` and `total_duplicates` count direct relationships for the selected run. Registry transitions are reconstructable only at stored timestamps; the registry is not an event log.
 
-## 4. Next Action
+## 4. Publication State
 
-Review the final diff and status, rerun focused checks, then commit and push this feature branch. Do not merge into `main`.
+- Implementation commit `7c7360935242c6ed42bc3ac54040934b67520161` is pushed to `origin/codex/runmux-historical-runs-backend-20261024`.
+- The feature branch remains unmerged. Do not merge into `main` as part of Phase 6C backend work.
+- A future Phase 6C frontend assignment can consume these APIs after its own approval and integration planning.

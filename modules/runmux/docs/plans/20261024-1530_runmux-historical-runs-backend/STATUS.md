@@ -4,7 +4,8 @@
 **Branch:** `codex/runmux-historical-runs-backend-20261024`
 **Base:** `origin/main` (`8befeae3375740e21cdfe17a081387f0e3cf8f54`)
 **Current Stage:** Complete (backend-only)
-**Approval State:** Implemented and verified on the authorized feature branch; not merged.
+**Approval State:** Implemented, verified, and pushed; not merged.
+**Implementation Commit:** `7c7360935242c6ed42bc3ac54040934b67520161`
 
 ---
 
