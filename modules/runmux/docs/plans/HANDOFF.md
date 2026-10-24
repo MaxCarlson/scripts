@@ -17,6 +17,10 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
+The latest active Runmux Web UI phase proposal is:
+
+- `20261024-runmux-historical-telemetry/`: Phase 5C historical telemetry architecture, empirical benchmarks, and implementation plan. Read its `00_implementation-plan.md`, `01_architecture_specification.md`, `02_alternatives_analysis.md`, `03_resource_budget_and_benchmarks.md`, `04_api_proposal.md`, `05_implementation_plan.md`, and `06_approval_decisions.md`.
+
 The latest integrated Runmux Web UI phase plans are:
 
 - `20261024-runmux-lifecycle-backend/`: Phase 4A lifecycle controls backend integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `LIFECYCLE_API_SPEC.md` for endpoint specs, verification results, and safety boundaries.
