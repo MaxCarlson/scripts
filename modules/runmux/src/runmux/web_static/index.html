@@ -140,6 +140,34 @@
               </div>
               <div id="output-pane" class="tab-pane output-pane" role="tabpanel" aria-labelledby="tab-output">
                 <div class="output-toolbar"><span><span class="output-dot"></span> LIVE OUTPUT</span><span id="output-note" class="output-note"></span><button id="scroll-output" class="text-button" type="button">Jump to latest ↓</button></div>
+                <div class="output-search-bar" role="search" aria-label="Output search and filter">
+                  <div class="output-search-input-group">
+                    <span class="output-search-icon" aria-hidden="true">⌕</span>
+                    <input id="output-search-query" type="search" placeholder="Search output…" autocomplete="off" spellcheck="false" maxlength="256" aria-label="Search output">
+                    <div class="output-search-toggles">
+                      <button id="output-search-case" class="toggle-button" type="button" aria-pressed="false" title="Match case (Alt+C)">Aa</button>
+                    </div>
+                    <button id="output-search-clear" class="icon-button small-button" type="button" aria-label="Clear search" title="Clear search" hidden>×</button>
+                  </div>
+                  <div class="output-search-nav">
+                    <button id="output-search-prev" class="icon-button small-button" type="button" aria-label="Previous match" title="Previous match (Shift+Enter)" disabled>▲</button>
+                    <button id="output-search-next" class="icon-button small-button" type="button" aria-label="Next match" title="Next match (Enter)" disabled>▼</button>
+                    <span id="output-search-count" class="output-search-count" aria-live="polite">No query</span>
+                  </div>
+                  <div class="output-filter-group">
+                    <label for="output-severity-filter">Severity
+                      <select id="output-severity-filter" aria-label="Filter output by severity">
+                        <option value="all">All levels</option>
+                        <option value="error">Errors only</option>
+                        <option value="warn">Warnings &amp; errors</option>
+                        <option value="info">Info only</option>
+                        <option value="debug">Debug only</option>
+                        <option value="other">Unstructured / Other</option>
+                      </select>
+                    </label>
+                    <span id="output-scope-note" class="output-scope-note" title="Scope of current output view and search">Loaded buffer: 0 lines</span>
+                  </div>
+                </div>
                 <pre id="output-text" class="output-text" aria-live="off"></pre>
                 <div id="output-state" class="output-state">Select a process to load output.</div>
               </div>

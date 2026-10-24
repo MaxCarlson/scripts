@@ -17,7 +17,13 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The latest completed Runmux Web UI phase plan is:
+The latest implemented Runmux Web UI phase plan is:
+
+`20261024-runmux-web-enhanced-logs/`
+
+Phase 4B is implemented on feature branch `codex/runmux-web-phase4b-20261024` (ready for review, unmerged). Read its `HANDOFF.md`, `STATUS.md`, and `checklist.md` for implementation details, verification results, and boundaries.
+
+The previously completed Runmux Web UI phase plan is:
 
 `20261024-runmux-web-explorer-workspace/`
 
