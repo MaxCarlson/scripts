@@ -15,4 +15,5 @@ include = ["script_logging*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 tmp_path_retention_policy = "none"
