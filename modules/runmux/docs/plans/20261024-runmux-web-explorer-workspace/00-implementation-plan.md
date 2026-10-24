@@ -2,7 +2,7 @@
 
 **Phase:** RUNMUX-WEB-P3
 **Branch:** `codex/runmux-web-phase3-20261024`
-**Base:** merged Phase 2 at `bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`
+**Base:** updated `origin/main` at `9f01984d3dedf05781a19f8d131956662ee5b29d` (Phase 2 and Phase 5B integrated)
 **Spec:** [`web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`](../web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md)
 
 ## Goal and architecture

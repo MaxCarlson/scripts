@@ -1,15 +1,10 @@
 # Runmux Web Explorer and Workspace Handoff
 
-- Goal: implement RUNMUX-WEB-P3 without replacing the existing Runmux web UI.
-- Branch/worktree: `codex/runmux-web-phase3-20261024` in
-  `.worktrees/runmux-web-launch-20261024`.
-- Base: merged Phase 2 at
-  `bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`.
+- Goal: complete RUNMUX-WEB-P3 on the existing Phase 3 branch without replacing the Runmux web UI.
+- Branch/worktree: `codex/runmux-web-phase3-20261024` in `.worktrees/runmux-web-launch-20261024`.
+- Integrated base: `origin/main` at `9f01984d3dedf05781a19f8d131956662ee5b29d`; merge commit `8184a3e9`, no conflicts.
 - Specification: `docs/plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`.
-- Plan and status: this directory's `00-implementation-plan.md`, `STATUS.md`,
-  and `checklist.md`.
-- Current finding: API responses intentionally omit argv, cwd, environment,
-  supervisor credentials, and log paths. Preserve this privacy boundary.
-- Next action: baseline browser screenshot, then test-first explorer controls
-  using only supported list metadata. Keep all synthetic registry/process
-  tests disposable. Do not begin Phase 4.
+- Status/checklist: this directory's `STATUS.md` and `checklist.md`.
+- Privacy boundary: the API omits argv, cwd, environment, supervisor credentials, and log paths. Phase 3 preserves this boundary.
+- Verification: Node dashboard tests and headless native Windows Chromium checks pass. Focused Python web tests hang during Windows test startup and were interrupted after 15 seconds; module Ruff reports 42 existing Python lint issues, while Phase 3 changes no Python files.
+- Next action: commit and push this branch; do not merge it to main without explicit authorization.

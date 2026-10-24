@@ -85,7 +85,7 @@ function dashboardHarness(storageData = new Map()) {
   const source = fs.readFileSync(path.join(__dirname, "../src/runmux/web_static/assets/dashboard.js"), "utf8");
   vm.runInNewContext(`${source}\nglobalThis.__dashboard = {
     selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
-    renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch, refreshSelected,
+    renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch, refreshSelected, refreshRuns,
     persistWorkspaceState, restoreRunViews, toggleExplorerCollapsed, resizeExplorerBy,
     getRun(id) { return runs.find((run) => run.id === id); },
     runCount() { return runs.length; },
@@ -371,9 +371,9 @@ async function testTruncatedTerminalReplayWarnsThatScreenMayBeIncomplete() {
 function testExplorerGroupingFilteringSortingAndEmptyMessages() {
   const { context, getElement } = dashboardHarness();
   context.__dashboard.setRuns([
-    { ...run("id-a", "zulu"), status: "running", created_at: "2026-01-02T00:00:00Z", runtime_seconds: 30 },
-    { ...run("id-b", "alpha"), status: "failed", created_at: "2026-01-03T00:00:00Z", runtime_seconds: 10 },
-    { ...run("id-c", "beta"), status: "finished", created_at: "2026-01-01T00:00:00Z", runtime_seconds: 20 },
+    { ...run("id-a", "zulu"), status: "running", created_at: "2026-01-02T00:00:00Z", started_at: "2026-01-02T00:00:00Z", runtime_seconds: 30 },
+    { ...run("id-b", "alpha"), status: "failed", created_at: "2026-01-03T00:00:00Z", started_at: "2026-01-03T00:00:00Z", runtime_seconds: 10 },
+    { ...run("id-c", "beta"), status: "finished", created_at: "2026-01-01T00:00:00Z", started_at: "2026-01-01T00:00:00Z", runtime_seconds: 20 },
   ]);
 
   getElement("#process-grouping").value = "none";
@@ -382,6 +382,19 @@ function testExplorerGroupingFilteringSortingAndEmptyMessages() {
   getElement("#process-sort").dispatch("change");
   context.__dashboard.renderRuns();
   assert.deepEqual(getElement("#process-list").children.map((row) => row.children[1].children[0].textContent), ["alpha", "beta", "zulu"]);
+
+  for (const [sort, names] of [
+    ["recent", ["alpha", "zulu", "beta"]],
+    ["started", ["alpha", "zulu", "beta"]],
+    ["duration", ["zulu", "beta", "alpha"]],
+    ["status", ["zulu", "alpha", "beta"]],
+  ]) {
+    getElement("#process-sort").value = sort;
+    getElement("#process-sort").dispatch("change");
+    assert.deepEqual(getElement("#process-list").children.map((row) => row.children[1].children[0].textContent), names);
+  }
+  getElement("#process-sort").value = "name";
+  getElement("#process-sort").dispatch("change");
 
   getElement("#process-status-filter").value = "failed";
   getElement("#process-status-filter").dispatch("change");
@@ -428,6 +441,8 @@ async function testWorkspaceSessionStorageRestoresOnlyValidRunIdsAndSafePreferen
       : { ...run("run-safe", "visible name"), command: "private-command.exe", cwd: "C:/private" }));
   }
   await selected;
+  getElement("#process-search").value = "safe query";
+  getElement("#process-search").dispatch("input");
   getElement("#process-grouping").value = "none";
   getElement("#process-grouping").dispatch("change");
   getElement("#process-sort").value = "name";
@@ -438,6 +453,10 @@ async function testWorkspaceSessionStorageRestoresOnlyValidRunIdsAndSafePreferen
   assert.ok(!raw.includes("private-command"));
   assert.ok(!raw.includes("C:/private"));
   assert.ok(!raw.includes("secret output"));
+  const stored = JSON.parse(raw);
+  stored.openRunIds.push("run-stale");
+  stored.selectedId = "run-stale";
+  storageData.set("runmux-workspace-v1", JSON.stringify(stored));
 
   const restored = dashboardHarness(storageData);
   restored.context.__dashboard.setRuns([run("run-safe", "visible name")]);
@@ -445,6 +464,12 @@ async function testWorkspaceSessionStorageRestoresOnlyValidRunIdsAndSafePreferen
   assert.equal(selectedId, "run-safe");
   assert.deepEqual(Array.from(restored.context.__dashboard.openRunIds()), ["run-safe"]);
   assert.equal(restored.getElement("#process-grouping").value, "none");
+  assert.equal(restored.getElement("#process-search").value, "safe query");
+
+  const malformedStorage = new Map([["runmux-workspace-v1", "{" ]]);
+  const safeDefaults = dashboardHarness(malformedStorage);
+  assert.equal(safeDefaults.getElement("#process-grouping").value, "status");
+  assert.equal(safeDefaults.getElement("#process-search").value, "");
 }
 
 async function testDuplicateNameRunsKeepDistinctTabIdentityAndCloseOnlyView() {

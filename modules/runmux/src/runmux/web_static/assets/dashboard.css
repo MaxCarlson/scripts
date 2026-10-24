@@ -221,7 +221,9 @@ button:focus-visible { outline: 2px solid rgba(59,130,246,.9); outline-offset: 2
   .local-badge { font-size: 8px; }
   .connection-state { width: 24px; min-width: 24px; justify-content: center; padding: 6px; }
   .workspace { height: auto; min-height: 0; grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(68vh,1fr); gap: 8px; padding-top: 8px; }
-  .process-panel { grid-column: 1; min-height: 180px; max-height: 300px; }
+  .process-panel { grid-column: 1; min-height: 240px; max-height: min(420px, 48vh); }
+  .process-controls { grid-template-columns: repeat(3, minmax(0,1fr)); }
+  .process-controls .sort-control { grid-column: auto; }
   .explorer-splitter { display: none; }
   .workspace-shell { grid-column: 1; min-height: 68vh; }
   .workspace.explorer-collapsed { grid-template-columns: minmax(0,1fr); grid-template-rows: auto minmax(68vh,1fr); }

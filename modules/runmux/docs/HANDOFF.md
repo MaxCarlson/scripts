@@ -2,19 +2,18 @@
 
 ## Current feature branch — Explorer and workspace (Phase 3)
 
-Phase 2 is merged to `main` at
-`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`. Phase 3 is active in
-`.worktrees/runmux-web-launch-20261024` on
-`codex/runmux-web-phase3-20261024`. Read
-`plans/20261024-runmux-web-explorer-workspace/` for the active plan and
-progress, and `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md` for
-scope. The current API omits arguments, working directory, environment,
-credentials, and log paths; preserve that boundary unless an explicit server
-authorization policy is approved.
+Phase 2 and Phase 5B are integrated in `origin/main` at
+`9f01984d3dedf05781a19f8d131956662ee5b29d`. Phase 3 is complete on
+`codex/runmux-web-phase3-20261024` in
+`.worktrees/runmux-web-launch-20261024`; its merge of updated `origin/main`
+was conflict-free. Phase 3 has not been merged to main. Read
+`plans/20261024-runmux-web-explorer-workspace/STATUS.md` and `checklist.md` for
+validation, limitations, and delivery state. Preserve the API privacy boundary:
+full argv, cwd, environment, credentials, and log paths are not exposed.
 
 Last updated: 2026-10-24
 
-## Resume Here
+## Historical notes — completed earlier phases
 
 The Runmux Web UI UX refinement was merged into `main` on 2026-10-24
 from `codex/runmux-web-ux-20261024`, based on `origin/main` at
@@ -38,15 +37,15 @@ its completed record remains in `plans/20261023-runmux-web-interactive-terminal/
   sandbox could not bind the port; no production state was opened.
 - Automated test results are recorded in the UX refinement plan.
 
-The current isolated feature branch adds an authenticated browser terminal to
-the existing read-only Web UI. Its plan and current status are in
-`plans/20261023-runmux-web-interactive-terminal/`. The branch starts at the
-latest fetched `origin/main`; commit and push it for review, but do not merge.
+An earlier branch added an authenticated browser terminal to the Web UI. Its
+archived plan and validation are in
+`plans/20261023-runmux-web-interactive-terminal/`. That historical branch was
+published for review without merging.
 
 The earlier native TUI integration remains recorded below as project history;
 the branch named in that historical section differs from this feature branch.
 
-Read in this order:
+For that historical integration, the original read order was:
 
 1. Applicable global and repository-level LLM instructions
 2. `README.md`

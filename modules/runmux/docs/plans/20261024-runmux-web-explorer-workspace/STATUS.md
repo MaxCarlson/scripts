@@ -4,47 +4,49 @@ Updated: 2026-10-24
 
 ## Current state
 
-Phase 3 is active on `codex/runmux-web-phase3-20261024`, based on Phase 2
-merged to `origin/main` at `bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`.
-The implementation plan is in `00-implementation-plan.md`; scope is
-`plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`.
+Phase 3 implementation is complete on `codex/runmux-web-phase3-20261024` in
+`.worktrees/runmux-web-launch-20261024`. The branch includes a conflict-free
+merge of `origin/main` at `9f01984d3dedf05781a19f8d131956662ee5b29d` (merge
+commit `8184a3e9`), preserving Phase 2 terminal/log fixes and the Phase 5B
+telemetry API. Phase 3 is not merged to `main`.
 
-## Reconnaissance
+## Delivered
 
-- The current explorer groups by status and searches name, executable basename,
-  status, and Run ID; it has no grouping selector, status filter, sort control,
-  or list pagination.
-- Run views are keyed by immutable Run ID and closing a tab only removes the
-  browser view. The tab bar scrolls horizontally, but duplicate names have no
-  visible identity cue and views are not restored after reload.
-- `sessionStorage`/`localStorage` are not currently used by the dashboard.
-- The API allowlist includes Run ID, display name, executable basename, status,
-  connection, PID, exit code, runtime, and timestamps. It omits full arguments,
-  cwd, environment, IPC auth token, and log path.
-- Selected-run detail refresh can return updated status, but the current client
-  does not merge that response back into the explorer row.
-- The registry list API returns all records. Client-side filtering can cover the
-  fetched list while rendering only a bounded page at a time.
+- Switchable status/ungrouped grouping, real status filters, supported sorts,
+  complete-list search, and a 100-row bounded explorer page.
+- Versioned `sessionStorage` preferences and valid Run-ID tab restoration;
+  stale IDs are pruned and no credentials, full records, or output are saved.
+- Duplicate-name distinction in rows and tabs, Run-ID keyed views, horizontal
+  tab navigation, and close-view behavior that leaves the registry intact.
+- Selected detail reconciliation by Run ID, registry connection distinction,
+  safe metadata copy controls, and accessible explorer collapse/resize.
+- Mobile explorer sizing that leaves a visible, scrollable run list.
 
-## Decisions
+## Privacy and remaining scope
 
-- Status is the default grouping; ungrouped is the only other grouping until
-  category/workspace metadata exists.
-- Filters and sort choices use only actual API fields/enums. No last-activity
-  sort or metadata search is offered where the API has no safe source.
-- Persist only UI preferences and exact Run IDs in tab-scoped `sessionStorage`;
-  never store authentication material, full run records, or log contents.
-- Preserve the existing API privacy allowlist. Defer full command/argv and cwd
-  disclosure (D01/D02) until there is an explicit server-side authorization
-  policy. Expose no HTML-only reveal.
+- Full argv and working-directory disclosure (D01/D02) remains deferred. The
+  existing API intentionally omits those fields and Phase 3 does not expand its
+  disclosure policy.
+- Category/workspace grouping, server-side pagination, last-activity sorting,
+  lifecycle controls, metrics dashboards, and advanced workspace features are
+  not part of this phase.
 
 ## Verification
 
-Not yet run for Phase 3. Baseline browser capture and TDD implementation are the
-next steps. Phase 2 validation remains recorded in
-`../20261024-runmux-web-terminal-log-correctness/STATUS.md`.
+- Windows: `node tests/dashboard_test.js` passed; `node --check
+  src/runmux/web_static/assets/dashboard.js` passed; `git diff --check` passed.
+- Windows headless Chromium with a disposable loopback registry passed at
+  1920, 1366, 768, and 390 px: empty-registry entry points, 450 synthetic runs,
+  100-row rendering, filtering, pagination, sorting, keyboard search/splitter,
+  reload tab restoration, close-view registry survival, safe text rendering,
+  and zero browser console errors.
+- Windows: `python -m pytest tests/web_test.py -q` was stopped after 15 seconds
+  with no output. The same Windows Proactor/event-loop startup hang was observed
+  previously; backend tests therefore remain unverified on this host.
+- Windows: `ruff check .` reports 42 lint issues in existing Python files;
+  Phase 3 changes no Python files.
 
 ## Next action
 
-Capture a fresh baseline with disposable synthetic state, then add and verify
-the explorer filter/group/sort/page regressions before implementing UI behavior.
+Commit and push the completed Phase 3 feature branch. Do not merge it without
+explicit authorization.

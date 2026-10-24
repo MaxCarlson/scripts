@@ -44,6 +44,8 @@ let explorerCollapsed = false;
 let explorerResizeActive = false;
 let workspaceRestored = false;
 let savedRunViews = { openRunIds: [], selectedId: null };
+let searchQuery = "";
+let tabScrollTarget = null;
 
 function clampExplorerWidth(value) {
   return Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, Math.round(value)));
@@ -58,6 +60,7 @@ function loadWorkspacePreferences() {
   if (["status", "none"].includes(saved.groupingMode)) groupingMode = saved.groupingMode;
   if (saved.statusFilter === "" || STATUS_VALUES.includes(saved.statusFilter)) statusFilter = saved.statusFilter;
   if (["recent", "started", "name", "duration", "status"].includes(saved.sortMode)) sortMode = saved.sortMode;
+  if (typeof saved.searchQuery === "string") searchQuery = saved.searchQuery.slice(0, 512);
   if (Number.isInteger(saved.processPage) && saved.processPage >= 0 && saved.processPage < 100000) processPage = saved.processPage;
   if (Number.isFinite(saved.explorerWidth)) explorerWidth = clampExplorerWidth(saved.explorerWidth);
   explorerCollapsed = saved.explorerCollapsed === true;
@@ -71,11 +74,13 @@ function loadWorkspacePreferences() {
 }
 
 function persistWorkspaceState() {
+  searchQuery = $("#process-search").value.slice(0, 512);
   const state = {
     version: 1,
     groupingMode,
     statusFilter,
     sortMode,
+    searchQuery,
     processPage,
     collapsedGroups: [...collapsedGroups],
     explorerWidth,
@@ -101,6 +106,7 @@ function restoreRunViews() {
 loadWorkspacePreferences();
 
 function applyWorkspacePreferencesToControls() {
+  $("#process-search").value = searchQuery;
   $("#process-grouping").value = groupingMode;
   $("#process-status-filter").value = statusFilter;
   $("#process-sort").value = sortMode;
@@ -423,8 +429,10 @@ function createProcessRow(run) {
 
 function renderWorkspaceTabs() {
   const tabs = $("#workspace-tabs");
+  const previousScrollLeft = Number(tabs.scrollLeft) || 0;
   tabs.replaceChildren();
   const openedRuns = openRunIds.map((runId) => runs.find((run) => run.id === runId)).filter(Boolean);
+  let scrollTargetElement = null;
   tabs.hidden = false;
   for (const run of openedRuns) {
     const tab = document.createElement("div");
@@ -457,7 +465,7 @@ function renderWorkspaceTabs() {
     close.addEventListener("click", () => closeWorkspaceTab(run.id));
     tab.append(activate, close);
     tabs.append(tab);
-    if (run.id === selectedId) tab.scrollIntoView({ block: "nearest", inline: "nearest" });
+    if (tabScrollTarget === run.id) scrollTargetElement = tab;
   }
   const addTab = document.createElement("button");
   addTab.type = "button";
@@ -469,6 +477,10 @@ function renderWorkspaceTabs() {
   addTab.textContent = "+";
   addTab.addEventListener("click", openNewProcess);
   tabs.append(addTab);
+  if (tabScrollTarget === "new-process") addTab.scrollIntoView({ block: "nearest", inline: "nearest" });
+  else if (scrollTargetElement) scrollTargetElement.scrollIntoView({ block: "nearest", inline: "nearest" });
+  else tabs.scrollLeft = previousScrollLeft;
+  tabScrollTarget = null;
   persistWorkspaceState();
 }
 
@@ -480,6 +492,7 @@ function renderWorkspaceView() {
 
 async function openNewProcess() {
   newProcessOpen = true;
+  tabScrollTarget = "new-process";
   closeTerminal();
   selectTab("output");
   renderWorkspaceTabs();
@@ -588,6 +601,7 @@ async function selectRun(runId) {
     return;
   }
   if (!openRunIds.includes(runId)) openRunIds.push(runId);
+  tabScrollTarget = runId;
   invalidateSelection();
   const generation = selectionGeneration;
   selectedId = runId;
