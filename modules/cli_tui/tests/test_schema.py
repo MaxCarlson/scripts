@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from cli_tui.schema import CliCommand, introspect_parser
+from cli_tui.state import FormState
 
 
 def test_introspect_flat_parser():
@@ -116,6 +117,14 @@ def test_introspect_rejects_custom_actions_instead_of_calling_them_store():
 
     with pytest.raises(ValueError, match="unsupported argparse action.*UppercaseAction"):
         introspect_parser(parser)
+
+
+def test_introspect_omits_help_and_version_actions_from_interactive_forms():
+    parser = argparse.ArgumentParser(prog="tool")
+    parser.add_argument("--version", action="version", version="%(prog)s 1.0")
+    command = introspect_parser(parser)
+
+    assert command.arguments == ()
 
 
 def test_nested_subcommand_aliases_build_a_parseable_argument_vector():

@@ -4,7 +4,7 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 
 ## Key Features
 
-- **Automatic Parser Introspection**: Recursively inspects any standard Python `argparse.ArgumentParser` to extract command hierarchies, subcommands, arguments, defaults, choices, flags, and help text.
+- **Automatic Parser Introspection**: Recursively inspects supported Python `argparse.ArgumentParser` actions, including nested subparsers, to extract command hierarchies, arguments, defaults, choices, flags, and help text. Unsupported custom actions are rejected explicitly.
 - **Dynamic Form Widgets**: Automatically generates interactive form widgets for boolean flags (`[X]`), choice dropdowns (`◀ opt ▶`), text inputs (`[ value ]`), counter flags (`-v`, `-vv`), and multi-choice selections.
 - **Live Streaming Process Runner**: Runs child processes asynchronously, streaming stdout and stderr into a thread-safe circular buffer with ANSI color rendering (8-color palette) and virtual terminal in-place overwrite (`\r`) support.
 - **Scrollable Output Viewport**: Top-aligned, width-aware line wrapping that preserves table borders and ANSI formatting, with real-time status, execution duration, and line scroll indicators (`Lines X-Y of Z`).
@@ -44,6 +44,24 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 | `cli_tui.output_capture` | UTF-8 pane transcript and live output writer | `OutputFileCapture` |
 | `cli_tui.preview_set` | Preview discovery and variant grouping | `scan_preview_directory`, `PreviewSet`, `PreviewItem`, `PreviewVariant` |
 | `cli_tui.image_viewer` | Native Tkinter side-by-side comparison viewer | `SideBySideImageViewer`, `ImageViewerState`, `launch_image_viewer` |
+
+## Parser-Only Integration
+
+Python tools that only need parser metadata can import `cli_tui.schema` without
+loading the curses app, widgets, or image viewer:
+
+```python
+from cli_tui.schema import introspect_parser
+
+command_tree = introspect_parser(parser)
+```
+
+`CliCommand` and `CliArgument` are Python objects, not a JSON wire format. Their
+defaults, choices, or `type_fn` may contain non-serializable values. See
+[`docs/argparse-and-browser-boundary.md`](docs/argparse-and-browser-boundary.md)
+for the supported argparse subset and a provisional browser metadata direction.
+The owning application parser remains responsible for validating and executing
+commands.
 
 ---
 

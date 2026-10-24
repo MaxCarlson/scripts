@@ -46,7 +46,7 @@ def introspect_parser(
 
     for action in parser._actions:
         # Ignore help actions and suppressed actions
-        if isinstance(action, argparse._HelpAction) or action.help == argparse.SUPPRESS:
+        if isinstance(action, (argparse._HelpAction, argparse._VersionAction)) or action.help == argparse.SUPPRESS:
             continue
 
         if isinstance(action, argparse._SubParsersAction):

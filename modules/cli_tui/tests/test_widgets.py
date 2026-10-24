@@ -148,6 +148,18 @@ def test_create_widget_for_count_arg():
     assert widget.value == 1
 
 
+def test_count_widget_does_not_go_below_count_default():
+    arg = CliArgument(
+        dest="verbose", flags=("-v",), action_type="count", default=2
+    )
+    widget = create_widget_for_arg(arg, value=2)
+
+    assert widget.handle_key(curses.KEY_LEFT) is False
+    assert widget.value == 2
+    assert widget.handle_key(ord(" ")) is True
+    assert widget.value == 3
+
+
 def test_multichoice_widget_wrapping_lines():
     arg = CliArgument(
         dest="format",

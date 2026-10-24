@@ -163,10 +163,15 @@ class FormState:
                 except (ValueError, TypeError):
                     count_val = 0
                 base_default = arg.default if isinstance(arg.default, int) else 0
+                if count_val < base_default:
+                    raise ValueError(
+                        f"Cannot set argparse count '{arg.dest}' below its default ({base_default})"
+                    )
                 if count_val > base_default:
                     diff = count_val - base_default
                     argv.extend([short_flag] * diff)
             elif arg.action_type == "append":
+                sequence_value = isinstance(val, (list, tuple))
                 values = list(val) if isinstance(val, (list, tuple)) else [val]
                 default_values = arg.default if isinstance(arg.default, list) else []
                 if default_values:
@@ -180,7 +185,13 @@ class FormState:
                     for item in values:
                         if item is None or str(item) == "":
                             continue
-                        tokens = _split_arg_tokens(item) if isinstance(item, str) else [str(item)]
+                        tokens = (
+                            [str(item)]
+                            if sequence_value
+                            else _split_arg_tokens(item)
+                            if isinstance(item, str)
+                            else [str(item)]
+                        )
                         for token in tokens:
                             argv.extend([short_flag, token])
                 else:

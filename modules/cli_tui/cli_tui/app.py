@@ -1056,12 +1056,26 @@ class CliTuiApp:
     def _start_execution(self) -> None:
         if not self.current_form:
             return
-        argv = self.current_form.build_argv(executable=self.executable)
+        argv = self._build_current_argv()
+        if argv is None:
+            return
         self.runner = ProcessRunner(argv)
         self.viewport.scroll_to_end()
         self.runner.start()
         self.navigation.current_screen = TuiScreenMode.RUNNING
         self._sync_target_pid()
+
+    def _build_current_argv(self) -> Optional[List[str]]:
+        if not self.current_form:
+            return None
+        try:
+            argv = self.current_form.build_argv(executable=self.executable)
+        except (TypeError, ValueError) as exc:
+            self.last_message = f"Cannot build command: {exc}"
+            return None
+        if self.last_message.startswith("Cannot build command:"):
+            self.last_message = ""
+        return argv
 
     def _handle_running_key(self, key: int) -> bool:
         if key in (curses.KEY_UP, ord("k")):
@@ -1655,11 +1669,15 @@ class CliTuiApp:
                 " ".join(self.executable) if self.executable else sys.executable
             )
             if self.current_form:
-                argv = self.current_form.build_argv(executable=self.executable)
-                exec_len = len(self.executable) if self.executable else 0
-                cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
-                cmd_str = " ".join(cmd_tokens)
-                full_invocation = " ".join(argv)
+                argv = self._build_current_argv()
+                if argv is None:
+                    cmd_str = self.last_message
+                    full_invocation = cmd_str
+                else:
+                    exec_len = len(self.executable) if self.executable else 0
+                    cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
+                    cmd_str = " ".join(cmd_tokens)
+                    full_invocation = " ".join(argv)
             else:
                 cmd_str = ""
                 full_invocation = runner_str
@@ -1767,13 +1785,16 @@ class CliTuiApp:
             content_lines.append(button_row)
 
             if self.current_form:
-                argv = self.current_form.build_argv(executable=self.executable)
+                argv = self._build_current_argv()
                 exec_len = len(self.executable) if self.executable else 0
                 runner_str = (
                     " ".join(self.executable) if self.executable else sys.executable
                 )
-                cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
-                cmd_str = " ".join(cmd_tokens)
+                if argv is None:
+                    cmd_str = self.last_message
+                else:
+                    cmd_tokens = argv[exec_len:] if exec_len > 0 else argv
+                    cmd_str = " ".join(cmd_tokens)
                 cwd = os.getcwd()
 
                 content_lines.append("")
