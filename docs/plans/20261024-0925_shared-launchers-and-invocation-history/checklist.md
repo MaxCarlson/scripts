@@ -1,30 +1,30 @@
 # Checklist: Shared Launchers and Invocation-History Infrastructure
 
 ## Stage 1: Invocation Store, Redaction, Schema, and Core Persistence
-- [ ] Task 1.1: Models, Schema, and Path Resolver (`script_logging.invocation_store`, `script_logging.models`)
-  - [ ] 1.1.1: Write failing test for models and path resolution (`test_invocation_store.py`)
-  - [ ] 1.1.2: Run test to verify it fails
-  - [ ] 1.1.3: Implement `models.py` and `invocation_store.py` schema initialization
-  - [ ] 1.1.4: Run test to verify it passes
-  - [ ] 1.1.5: Commit Task 1.1
-- [ ] Task 1.2: Redaction Policy and Sanitization (`script_logging.redaction`)
-  - [ ] 1.2.1: Write failing test for redaction rules (`test_redaction.py`)
-  - [ ] 1.2.2: Run test to verify it fails
-  - [ ] 1.2.3: Implement `redaction.py`
-  - [ ] 1.2.4: Run test to verify it passes
-  - [ ] 1.2.5: Commit Task 1.2
-- [ ] Task 1.3: Start & Finish Lifecycle with Atomic Counter Invariants
-  - [ ] 1.3.1: Write failing test for start/finish and counter invariants
-  - [ ] 1.3.2: Run test to verify it fails
-  - [ ] 1.3.3: Implement `start_invocation` and `finish_invocation` in `invocation_store.py`
-  - [ ] 1.3.4: Run test to verify it passes
-  - [ ] 1.3.5: Commit Task 1.3
-- [ ] Task 1.4: Concurrency, Busy Timeout, and Fail-Open Safety
-  - [ ] 1.4.1: Write concurrency and fail-open tests (`test_invocation_concurrency.py`)
-  - [ ] 1.4.2: Run test to verify it fails
-  - [ ] 1.4.3: Implement concurrency tuning and fail-open wrappers in `invocation_store.py`
-  - [ ] 1.4.4: Run test to verify it passes
-  - [ ] 1.4.5: Commit Task 1.4
+- [x] Task 1.1: Models, Schema, and Path Resolver (`script_logging.invocation_store`, `script_logging.models`)
+  - [x] 1.1.1: Write failing test for models and path resolution (`test_invocation_store.py`)
+  - [x] 1.1.2: Run test to verify it fails
+  - [x] 1.1.3: Implement `models.py` and `invocation_store.py` schema initialization
+  - [x] 1.1.4: Run test to verify it passes
+  - [x] 1.1.5: Commit Task 1.1
+- [x] Task 1.2: Redaction Policy and Sanitization (`script_logging.redaction`)
+  - [x] 1.2.1: Write failing test for redaction rules (`test_redaction.py`)
+  - [x] 1.2.2: Run test to verify it fails
+  - [x] 1.2.3: Implement `redaction.py`
+  - [x] 1.2.4: Run test to verify it passes
+  - [x] 1.2.5: Commit Task 1.2
+- [x] Task 1.3: Start & Finish Lifecycle with Atomic Counter Invariants
+  - [x] 1.3.1: Write failing test for start/finish and counter invariants
+  - [x] 1.3.2: Run test to verify it fails
+  - [x] 1.3.3: Implement `start_invocation` and `finish_invocation` in `invocation_store.py`
+  - [x] 1.3.4: Run test to verify it passes
+  - [x] 1.3.5: Commit Task 1.3
+- [x] Task 1.4: Concurrency, Busy Timeout, and Fail-Open Safety
+  - [x] 1.4.1: Write concurrency and fail-open tests (`test_invocation_concurrency.py`)
+  - [x] 1.4.2: Run test to verify it fails
+  - [x] 1.4.3: Implement concurrency tuning and fail-open wrappers in `invocation_store.py`
+  - [x] 1.4.4: Run test to verify it passes
+  - [x] 1.4.5: Commit Task 1.4
 
 ## Stage 2: Read-Only Query API, Reader, and Reconciliation
 - [ ] Task 2.1: ReadOnlyHistoryReader (`script_logging.reader`)

@@ -18,7 +18,7 @@
   - `resolve_invocation_db_path(*, create: bool = False) -> Path` in `script_logging.invocation_store`.
   - `InvocationStore` class in `script_logging.invocation_store`.
 
-- [ ] **Step 1: Write the failing test for models and path resolution**
+- [x] **Step 1: Write the failing test for models and path resolution**
 
 ```python
 # modules/script_logging/tests/test_invocation_store.py
@@ -56,23 +56,23 @@ def test_invocation_store_initializes_schema(tmp_path):
         assert version == "1"
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_store.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `ModuleNotFoundError: No module named 'script_logging.models'` or `cannot import name 'InvocationStore'`
 
-- [ ] **Step 3: Implement `models.py` and `invocation_store.py` schema initialization**
+- [x] **Step 3: Implement `models.py` and `invocation_store.py` schema initialization**
 
 Implement `models.py` with typed frozen dataclasses (`InvocationRecord`, `CommandPattern`, `ProgramStatistics`, `AliasStatistics`, `Page`, `ReconciliationReport`).
 Implement `resolve_invocation_db_path` supporting `SCRIPT_LOGGING_INVOCATION_DB`, Windows `%LOCALAPPDATA%\ScriptsToolkit\invocations.sqlite3`, POSIX `${XDG_STATE_HOME:-~/.local/state}/scripts-toolkit/invocations.sqlite3`, and macOS `~/Library/Application Support/ScriptsToolkit/invocations.sqlite3`.
 Implement `InvocationStore.__init__` with SQLite WAL mode, foreign keys, busy timeout (15000ms), and `CREATE TABLE IF NOT EXISTS` for `schema_meta`, `invocations`, `command_patterns`, `program_usage`, and `alias_usage`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_store.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 1.1**
+- [x] **Step 5: Commit Task 1.1**
 
 ```bash
 git add modules/script_logging/script_logging/models.py modules/script_logging/script_logging/invocation_store.py modules/script_logging/tests/test_invocation_store.py
@@ -94,7 +94,7 @@ git commit -m "feat(script_logging): add invocation models, schema initializatio
   - `compute_pattern_id(program_id: str, redacted_argv: tuple[str, ...]) -> str`
   - `normalize_argv_json(redacted_argv: tuple[str, ...]) -> str`
 
-- [ ] **Step 1: Write the failing test for redaction rules**
+- [x] **Step 1: Write the failing test for redaction rules**
 
 ```python
 # modules/script_logging/tests/test_redaction.py
@@ -136,21 +136,21 @@ def test_pattern_id_deterministic():
     assert p1 != p3
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_redaction.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `ModuleNotFoundError: No module named 'script_logging.redaction'`
 
-- [ ] **Step 3: Implement `redaction.py`**
+- [x] **Step 3: Implement `redaction.py`**
 
 Implement regex and URL parsing for credentials, tokens, sensitive query parameters (`token`, `secret`, `key`, `auth`, `password`), flag-value pair tracking, length/count truncation with explicit `[TRUNCATED:...]` markers, and SHA-256 pattern hashing.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_redaction.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 1.2**
+- [x] **Step 5: Commit Task 1.2**
 
 ```bash
 git add modules/script_logging/script_logging/redaction.py modules/script_logging/tests/test_redaction.py
@@ -172,7 +172,7 @@ git commit -m "feat(script_logging): implement sensitive argument redaction and 
   - `InvocationStore.finish_invocation(...) -> None`
   - `InvocationStore.get_invocation(invocation_id: str) -> InvocationRecord | None`
 
-- [ ] **Step 1: Write the failing test for start/finish and counter invariants**
+- [x] **Step 1: Write the failing test for start/finish and counter invariants**
 
 ```python
 # in modules/script_logging/tests/test_invocation_store.py
@@ -221,12 +221,12 @@ def test_start_and_finish_invocation_lifecycle(tmp_path):
         assert usage["success_count"] == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_store.py -k test_start_and_finish_invocation_lifecycle --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `AttributeError: 'InvocationStore' object has no attribute 'start_invocation'`
 
-- [ ] **Step 3: Implement `start_invocation` and `finish_invocation`**
+- [x] **Step 3: Implement `start_invocation` and `finish_invocation`**
 
 In `invocation_store.py`:
 - `start_invocation`:
@@ -241,12 +241,12 @@ In `invocation_store.py`:
   - Updates `invocations` row (`finished_at_utc`, `duration_ms`, `exit_code`, `status`).
   - Inside the same transaction, updates summary counts (`success_count` if `exit_code == 0 and status == "exited"`, else `failure_count` or `unknown_count`) in `command_patterns`, `program_usage`, and `alias_usage`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_store.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 1.3**
+- [x] **Step 5: Commit Task 1.3**
 
 ```bash
 git add modules/script_logging/script_logging/invocation_store.py modules/script_logging/tests/test_invocation_store.py
@@ -265,7 +265,7 @@ git commit -m "feat(script_logging): implement start/finish invocation lifecycle
 - Consumes: `InvocationStore`.
 - Produces: Robust WAL concurrency and fail-open exception wrappers.
 
-- [ ] **Step 1: Write concurrency and fail-open tests**
+- [x] **Step 1: Write concurrency and fail-open tests**
 
 ```python
 # modules/script_logging/tests/test_invocation_concurrency.py
@@ -326,23 +326,23 @@ def test_fail_open_on_readonly_storage(tmp_path, monkeypatch):
     store.finish_invocation(inv_id, exit_code=0, status="exited", fail_open=True)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_concurrency.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL
 
-- [ ] **Step 3: Implement concurrency tuning and fail-open wrappers**
+- [x] **Step 3: Implement concurrency tuning and fail-open wrappers**
 
 In `invocation_store.py`:
 - Ensure `PRAGMA journal_mode = WAL;` and `PRAGMA busy_timeout = 15000;` on all connections.
 - Support `fail_open: bool = True` on `start_invocation` and `finish_invocation`: catches `sqlite3.Error`, generates ephemeral fallback UUID, and optionally writes bounded diagnostic warning to stderr only if `os.environ.get("SCRIPT_LOGGING_DEBUG") == "1"`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_invocation_concurrency.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 1.4**
+- [x] **Step 5: Commit Task 1.4**
 
 ```bash
 git add modules/script_logging/script_logging/invocation_store.py modules/script_logging/tests/test_invocation_concurrency.py
