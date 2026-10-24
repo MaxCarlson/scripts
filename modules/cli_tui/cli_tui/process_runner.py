@@ -3,6 +3,7 @@ from collections import deque
 import os
 import re
 import subprocess
+import sys
 import textwrap
 import threading
 import time
@@ -366,19 +367,33 @@ class ProcessRunner:
             return list(self._lines)
 
     def terminate(self) -> None:
-        """Gracefully terminate running process."""
+        """Gracefully terminate running process and its child processes (non-forced)."""
         if self._process and self.is_running:
             self._cancelled = True
             try:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/PID", str(self._process.pid), "/T"],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
                 self._process.terminate()
             except Exception:
                 pass
 
     def kill(self) -> None:
-        """Force kill running process."""
+        """Force kill running process and its child processes."""
         if self._process and self.is_running:
             self._cancelled = True
             try:
+                if sys.platform == "win32":
+                    subprocess.run(
+                        ["taskkill", "/F", "/T", "/PID", str(self._process.pid)],
+                        stdout=subprocess.DEVNULL,
+                        stderr=subprocess.DEVNULL,
+                        check=False,
+                    )
                 self._process.kill()
             except Exception:
                 pass

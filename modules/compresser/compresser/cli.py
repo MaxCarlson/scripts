@@ -43,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(prog="compresser", description="Measure and manage image compression.")
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
+    parser.add_argument("-T", "--tui", action="store_true", help="Launch interactive terminal user interface.")
     build_operation_parsers(parser, owner="compresser")
     return parser
 
@@ -203,8 +204,34 @@ def run_comparison(
 @report_operation
 @profile_pipeline
 def main(argv: list[str] | None = None) -> int:
+    raw_argv = list(sys.argv[1:] if argv is None else argv)
+    if raw_argv and (raw_argv[0] == "tui" or raw_argv[0] in ("-T", "--tui")):
+        from .tui import launch_tui
+        return launch_tui(raw_argv[1:])
+
+    if raw_argv and raw_argv[0] == "video":
+        try:
+            from videocompress.cli import main as vcompress_main
+            return vcompress_main(raw_argv[1:])
+        except ImportError:
+            print("Error: videocompress module is not installed.", file=sys.stderr)
+            return 1
+
     parser = build_parser()
     parsed = parser.parse_args(argv)
+
+    if getattr(parsed, "tui", False) or getattr(parsed, "operation", None) == "tui":
+        from .tui import launch_tui
+        return launch_tui(raw_argv[1:] if raw_argv and raw_argv[0] == "tui" else raw_argv)
+
+    if getattr(parsed, "operation", None) == "video":
+        try:
+            from videocompress.cli import main as vcompress_main
+            return vcompress_main(raw_argv[1:] if raw_argv and raw_argv[0] == "video" else [])
+        except ImportError:
+            print("Error: videocompress module is not installed.", file=sys.stderr)
+            return 1
+
     if not getattr(parsed, "operation", None):
         parser.print_help()
         return 0

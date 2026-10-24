@@ -454,6 +454,21 @@ def build_operation_parsers(parent: argparse.ArgumentParser, *, owner: str) -> N
         help="Exact fresh recovery token required with --write.",
     )
 
+    if owner == "compresser":
+        tui = operations.add_parser(
+            "tui",
+            help="Launch interactive terminal user interface.",
+            description="Launch interactive terminal user interface for compresser.",
+        )
+        tui.add_argument(
+            "-i",
+            "--input",
+            type=Path,
+            default=None,
+            help="Optional initial directory to prefill in the dashboard.",
+        )
+        tui.add_argument("-v", "--verbose", action="count", default=0, help="Increase diagnostic output.")
+
 
 def _measurement_options(
     parser: argparse.ArgumentParser, *, scratch: bool = False

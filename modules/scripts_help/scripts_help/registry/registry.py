@@ -397,6 +397,13 @@ REGISTRY: dict = {
                  "version": "3.2.0",
             },
             {
+                "name": "videocompress (module)",
+                "path": "modules/videocompress",
+                "desc": "Estimation-first media-aware video compression, analysis, and preservation backend",
+                "help_cmd": ["python", "-m", "videocompress.cli", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "mangadl (module)",
                 "path": "modules/mangadl",
                 "desc": "Concurrent manga/gallery downloader with resumable jobs, integrity audits, SSD-aware workers, safe partial cleanup, and preview-first Kavita collection tools",

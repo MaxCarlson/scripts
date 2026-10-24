@@ -1,5 +1,12 @@
 # Scripts Repository Handoff
 
+2026-10-24 active plan: Estimation-First Video Compression for scripts
+Location: docs/plans/20261024-0920_video-compression/
+Branch: videocompress-20261024-0920
+Worktree: C:\Users\mcarls\src\scripts\.worktrees\videocompress-20261024-0920
+Status: Stage 0, Stage 2, and Stage 1 completed and verified (tests passing across videocompress, cli_tui, compresser, mangadl). Awaiting user review before Stage 3.
+Scope: Standalone `modules/videocompress` backend (`vcompress`), `compresser video` router, `compresser tui`, and hardware-accelerated NVENC (RTX 5090 Blackwell) compression pipeline.
+
 2026-10-19 active plan: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
 Location: docs/plans/20261019-0358_mangadl-cli-tui-and-preview-viewer/
 Branch: mangadl-cli-tui-20261019-0358

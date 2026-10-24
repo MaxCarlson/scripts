@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import sys
 from uuid import uuid4
 
 import pytest
 
 _MODULE_ROOT = Path(__file__).resolve().parents[1]
 _BASE_TEMP_ROOT = _MODULE_ROOT / ".pytest_tmp_root"
+
+if str(_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MODULE_ROOT))
 
 
 def _unique_base_temp() -> Path:

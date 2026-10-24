@@ -164,3 +164,38 @@ def test_output_viewport_wrap_ansi_and_box_drawing():
     assert len(wrapped) == 2
     assert "\033[36m" in wrapped[0]
     assert "\033[36m" in wrapped[1]
+
+
+def test_process_runner_tree_termination(tmp_path):
+    import time
+    import psutil
+
+    pid_file = tmp_path / "child.pid"
+    script = (
+        f"import subprocess, sys, time, pathlib\n"
+        f"child = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)'])\n"
+        f"pathlib.Path(r'{pid_file}').write_text(str(child.pid))\n"
+        f"child.wait()\n"
+    )
+    runner = ProcessRunner([sys.executable, "-c", script])
+    runner.start()
+
+    child_pid = None
+    for _ in range(50):
+        if pid_file.exists() and pid_file.read_text().strip():
+            child_pid = int(pid_file.read_text().strip())
+            break
+        time.sleep(0.1)
+
+    assert child_pid is not None
+    assert runner.is_running is True
+
+    # Use forced kill for uncooperative background tree
+    runner.kill()
+    runner.wait(timeout=5.0)
+
+    assert runner.is_running is False
+    # Ensure child process was not orphaned
+    # Allow a brief moment for OS process table update
+    time.sleep(0.5)
+    assert not psutil.pid_exists(child_pid)

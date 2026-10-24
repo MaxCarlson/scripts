@@ -14,6 +14,7 @@ authors = [{ name = "Scripts Project Authors" }]
 dependencies = [
   "termdash>=0.8.0",
   "pillow>=10.0",
+  "windows-curses>=2.4.1; sys_platform == 'win32'",
 ]
 
 [project.optional-dependencies]

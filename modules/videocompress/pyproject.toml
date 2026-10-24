@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "videocompress"
+version = "0.1.0"
+description = "Estimation-first media-aware video compression, analysis, and preservation backend for scripts."
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+authors = [{ name = "Scripts Project Authors" }]
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Environment :: Console",
+  "Topic :: Multimedia :: Video",
+  "Operating System :: OS Independent",
+]
+
+dependencies = [
+  "termdash>=0.8.0",
+  "cross_platform>=0.8.0",
+]
+
+[project.scripts]
+vcompress = "videocompress.cli:main"
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.0",
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["videocompress", "videocompress.*"]
+exclude = ["tests*", "*.egg-info"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py", "*_test.py"]
+python_functions = ["test_*"]
+addopts = ["--import-mode=importlib", "--basetemp=.pytest_tmp_root"]
