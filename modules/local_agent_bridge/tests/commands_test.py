@@ -1,4 +1,5 @@
 from local_agent_bridge.commands import main
+import local_agent_bridge.cli as cli_module
 
 
 def test_bare_help_and_isolated_plan_do_not_start_services(tmp_path, capsys):
@@ -30,3 +31,24 @@ def test_run_parser_keeps_management_in_model_group():
     parser = build_parser(runtime_only=True)
     assert parser.parse_args(['-M', 'ls']).nickname == 'ls'
     assert '--delete-model' not in parser.format_help()
+
+
+def test_gpu_headroom_uses_shared_used_free_and_total_bytes(monkeypatch, capsys):
+    monkeypatch.setattr(cli_module, "resolve_executable", lambda _: "nvidia-smi")
+    monkeypatch.setattr(
+        cli_module,
+        "nvidia_gpus",
+        lambda **kwargs: [{
+            "name": "RTX",
+            "mem_used": 4 * 1024**3,
+            "mem_free": 8 * 1024**3,
+            "mem_total": 12 * 1024**3,
+        }],
+    )
+
+    cli_module.show_gpu_headroom()
+
+    output = capsys.readouterr().out
+    assert "Used: 4.00 GiB (4096 MiB)" in output
+    assert "Free Headroom: 8.00 GiB (8192 MiB)" in output
+    assert "Total: 12.00 GiB" in output

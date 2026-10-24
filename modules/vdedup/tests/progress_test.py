@@ -2,6 +2,7 @@ import time
 
 from rich.text import Text
 
+import vdedup.progress as progress_module
 from vdedup.progress import ProgressReporter
 
 
@@ -11,6 +12,22 @@ def test_progress_bar_returns_rich_text() -> None:
     assert isinstance(bar, Text)
     assert "[green]" not in bar.plain
     assert "%" in bar.plain
+
+
+def test_gpu_refresh_uses_shared_free_vram_measurement(monkeypatch) -> None:
+    reporter = ProgressReporter(enable_dash=False)
+    reporter.set_gpu_status(available=True, active=False, device_id=1)
+    monkeypatch.setattr(
+        progress_module,
+        "nvidia_gpus",
+        lambda **kwargs: [{"id": 1, "load": 70, "mem_total": 8 * 1024**3, "mem_free": 3 * 1024**3}],
+    )
+
+    reporter._maybe_refresh_gpu_telemetry()
+
+    assert reporter.gpu_util_percent == 70
+    assert reporter.gpu_total_vram_bytes == 8 * 1024**3
+    assert reporter.gpu_free_vram_bytes == 3 * 1024**3
 
 
 def test_stage_extension_request_updates_plan() -> None:

@@ -24,7 +24,7 @@ from .scanner import inspect_image_file, scan_directory, select_sample
 from .measurement import MeasurementBatch, MeasurementJob, measure_jobs
 from .trial_budget import BudgetExceeded, TrialBudget, TrialPermit
 
-__version__ = "3.2.0"
+__version__ = "3.3.0"
 
 
 def analyze_collection(

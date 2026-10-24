@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from backup_module.core import (
     DEFAULT_EXCLUDES_FILE,
     DEFAULT_LOCK_FILE,
@@ -17,6 +19,7 @@ from backup_module.core import (
     expand_restore_include_values,
     to_restic_path,
 )
+import backup_module.core as core_module
 
 
 def make_config() -> BackupConfig:
@@ -32,6 +35,21 @@ def make_config() -> BackupConfig:
         restic_executable="restic",
         default_restore_root="B:\\ResticRestore",
     )
+
+
+def test_measure_cpu_percent_uses_shared_sampler_with_blocking_interval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(core_module, "cpu_percent", lambda **kwargs: calls.append(kwargs) or 12.5)
+
+    assert core_module.measure_cpu_percent(2.5) == 12.5
+    assert calls == [{"interval": 2.5}]
+
+
+def test_measure_cpu_percent_fails_when_shared_sampler_is_unavailable(monkeypatch):
+    monkeypatch.setattr(core_module, "cpu_percent", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="CPU telemetry unavailable"):
+        core_module.measure_cpu_percent(2.5)
 
 
 def test_default_config_uses_current_windows_setup_values() -> None:

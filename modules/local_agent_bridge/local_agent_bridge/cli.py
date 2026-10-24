@@ -43,6 +43,7 @@ import urllib.request
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
+from resource_metrics import nvidia_gpus
 
 # ---------------------------------------------------------------------------
 # Constants & Paths
@@ -1106,35 +1107,30 @@ def show_gpu_headroom() -> None:
         print_warn("`nvidia-smi` not found in PATH.")
         return
 
-    res = run_cmd(
-        [
-            "nvidia-smi",
-            "--query-gpu=name,memory.used,memory.free,memory.total",
-            "--format=csv,noheader,nounits",
-        ],
-        timeout=15,
-        check=False,
-    )
-    if res.returncode != 0 or not res.stdout:
+    devices = nvidia_gpus(timeout=15)
+    if not devices:
         print_warn("Could not query GPU memory via `nvidia-smi`.")
         return
 
-    for line in res.stdout.splitlines():
-        parts = [p.strip() for p in line.split(",")]
-        if len(parts) >= 4:
-            gpu_name = parts[0]
-            used_mib = float(parts[1])
-            free_mib = float(parts[2])
-            total_mib = float(parts[3])
-            print_ok(
-                f"GPU: {gpu_name} | Used: {used_mib / 1024:.2f} GiB ({int(used_mib)} MiB) | "
-                f"Free Headroom: {free_mib / 1024:.2f} GiB ({int(free_mib)} MiB) | "
-                f"Total: {total_mib / 1024:.2f} GiB"
+    for device in devices:
+        name = device.get("name")
+        used = device.get("mem_used")
+        free = device.get("mem_free")
+        total = device.get("mem_total")
+        if name is None or used is None or free is None or total is None:
+            continue
+        used_mib = float(used) / (1024**2)
+        free_mib = float(free) / (1024**2)
+        total_mib = float(total) / (1024**2)
+        print_ok(
+            f"GPU: {name} | Used: {used_mib / 1024:.2f} GiB ({int(used_mib)} MiB) | "
+            f"Free Headroom: {free_mib / 1024:.2f} GiB ({int(free_mib)} MiB) | "
+            f"Total: {total_mib / 1024:.2f} GiB"
+        )
+        if free_mib < 2048:
+            print_warn(
+                "Less than 2.0 GiB VRAM headroom remaining! Consider Q4_K_M or Q8_0 KV cache for longer context."
             )
-            if free_mib < 2048:
-                print_warn(
-                    "Less than 2.0 GiB VRAM headroom remaining! Consider Q4_K_M or Q8_0 KV cache for longer context."
-                )
 
 
 def show_recommended_settings(context_length: int) -> None:

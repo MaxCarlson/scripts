@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Callable, List, Optional
 
-import psutil
+from resource_metrics import cpu_percent
 
 from .models import ensure_utc, utc_now
 
@@ -72,7 +72,10 @@ class WaitResult:
 def measure_cpu_percent(sample_seconds: float) -> float:
     """Measure system-wide CPU usage."""
 
-    return float(psutil.cpu_percent(interval=sample_seconds))
+    sample = cpu_percent(interval=sample_seconds)
+    if sample is None:
+        raise RuntimeError("System CPU telemetry unavailable")
+    return float(sample)
 
 
 def evaluate_cpu_policy(

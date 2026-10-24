@@ -2,6 +2,34 @@
 
 import pytest
 
+import compresser.memory_policy as memory_policy_module
+
+
+def test_available_memory_bytes_uses_shared_memory_measurement(monkeypatch):
+    monkeypatch.setattr(memory_policy_module, "memory_stats", lambda: {"available": 123456})
+
+    assert memory_policy_module.available_memory_bytes() == 123456
+
+
+def test_available_memory_bytes_keeps_native_fallback_when_shared_sample_is_unavailable(monkeypatch):
+    from pathlib import Path
+    from cross_platform import system_utils
+
+    class LinuxSystemUtils:
+        @staticmethod
+        def is_windows():
+            return False
+
+        @staticmethod
+        def is_linux():
+            return True
+
+    monkeypatch.setattr(memory_policy_module, "memory_stats", lambda: None)
+    monkeypatch.setattr(system_utils, "SystemUtils", LinuxSystemUtils)
+    monkeypatch.setattr(Path, "read_text", lambda self: "MemAvailable: 123 kB\n")
+
+    assert memory_policy_module.available_memory_bytes() == 123 * 1024
+
 
 def test_fixed_default_and_explicit_budgets_never_query_ram():
     from compresser.memory_policy import resolve_memory_policy

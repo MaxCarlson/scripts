@@ -7,12 +7,14 @@ from resource_metrics import gpu
 def test_nvidia_gpu_query_parses_mib_and_unavailable(monkeypatch):
     monkeypatch.setattr(gpu.shutil, "which", lambda _: "nvidia-smi")
     monkeypatch.setattr(gpu.subprocess, "run", lambda *a, **k: SimpleNamespace(
-        returncode=0, stdout="RTX, 0, 70, N/A, 1024, 4096, 55\n"))
+        returncode=0, stdout="RTX, 0, 70, N/A, 1024, 3072, 4096, 55\n"))
     row = gpu.nvidia_gpus()[0]
     assert row["name"] == "RTX"
     assert row["load"] == 70.0
     assert row["memory_utilization"] is None
     assert row["mem_used"] == 1024**3
+    assert row["mem_free"] == 3 * 1024**3
+    assert row["mem_total"] == 4 * 1024**3
 
 
 def test_nvidia_gpu_query_unavailable(monkeypatch):

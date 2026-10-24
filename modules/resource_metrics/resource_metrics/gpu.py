@@ -39,16 +39,16 @@ def _query(fields: str, timeout: float = 1.5, *, binary_name: str = "nvidia-smi"
 
 def nvidia_gpus(*, timeout: float = 1.5, binary_name: str = "nvidia-smi", include_power: bool = False) -> list[dict[str, Any]]:
     """Discover NVIDIA GPUs and report utilization, memory bytes, temperature, and power when available."""
-    fields = "name,index,utilization.gpu,utilization.memory,memory.used,memory.total,temperature.gpu"
+    fields = "name,index,utilization.gpu,utilization.memory,memory.used,memory.free,memory.total,temperature.gpu"
     if include_power:
         fields += ",power.draw"
     rows = _query(fields, timeout, binary_name=binary_name)
     devices = []
     for row in rows:
-        if len(row) != (8 if include_power else 7):
+        if len(row) != (9 if include_power else 8):
             continue
-        name, index, util, mem_util, used, total, temp = (item.strip() for item in row[:7])
-        power = row[7].strip() if include_power else "N/A"
+        name, index, util, mem_util, used, free, total, temp = (item.strip() for item in row[:8])
+        power = row[8].strip() if include_power else "N/A"
         try:
             device: dict[str, Any] = {
                 "name": name or None,
@@ -56,6 +56,7 @@ def nvidia_gpus(*, timeout: float = 1.5, binary_name: str = "nvidia-smi", includ
                 "load": _number(util),
                 "memory_utilization": _number(mem_util),
                 "mem_used": _number(used, mib=True),
+                "mem_free": _number(free, mib=True),
                 "mem_total": _number(total, mib=True),
                 "temp": _number(temp),
                 "power_w": _number(power),

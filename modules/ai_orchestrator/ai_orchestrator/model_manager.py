@@ -1,11 +1,11 @@
 """Model Manager - Manages AI models and selects best model for tasks."""
 
 import json
-import subprocess
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional, List, Dict
 from pathlib import Path
+from resource_metrics import nvidia_gpus
 
 
 class ModelCapability(Enum):
@@ -88,27 +88,19 @@ class ModelManager:
 
     def _detect_gpu(self):
         """Detect available GPU (if any)."""
-        try:
-            # Try nvidia-smi for NVIDIA GPUs
-            result = subprocess.run(
-                ["nvidia-smi", "--query-gpu=name,memory.total,memory.free", "--format=csv,noheader,nounits"],
-                capture_output=True,
-                text=True,
-                timeout=5
-            )
-            if result.returncode == 0:
-                lines = result.stdout.strip().split("\n")
-                if lines:
-                    parts = lines[0].split(",")
-                    if len(parts) >= 3:
-                        self.gpu_info = GPUInfo(
-                            name=parts[0].strip(),
-                            vram_total_gb=float(parts[1].strip()) / 1024,
-                            vram_available_gb=float(parts[2].strip()) / 1024
-                        )
-        except (FileNotFoundError, subprocess.TimeoutExpired, ValueError):
-            # nvidia-smi not available or failed
-            pass
+        devices = nvidia_gpus(timeout=5)
+        if not devices:
+            return
+        device = devices[0]
+        total = device.get("mem_total")
+        free = device.get("mem_free")
+        if total is None or free is None:
+            return
+        self.gpu_info = GPUInfo(
+            name=device.get("name") or "",
+            vram_total_gb=float(total) / (1024**3),
+            vram_available_gb=float(free) / (1024**3),
+        )
 
     def _register_default_models(self):
         """Register common models."""
