@@ -197,13 +197,14 @@ def read_output_chunk(
 
             stream.seek(start)
             data = stream.read(max_bytes)
+            read_reached_eof = stream.tell() >= _file_stat(stream).st_size
             if reset and start > 0:
                 line_end = data.find(b"\n")
                 if line_end >= 0:
                     start += line_end + 1
                     data = data[line_end + 1 :]
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            decoded = decoder.decode(data, final=finished)
+            decoded = decoder.decode(data, final=finished and read_reached_eof)
             buffered = decoder.getstate()[0]
             next_offset = start + len(data) - len(buffered)
             sanitizer = TerminalTextSanitizer(state=parser_state)

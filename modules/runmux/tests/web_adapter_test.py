@@ -138,6 +138,49 @@ def test_log_chunks_preserve_split_utf8_and_detect_truncation_and_rotation(tmp_p
     assert rotated.text == "rotated output\n"
 
 
+def test_completed_log_defers_utf8_finalization_until_eof(tmp_path: Path) -> None:
+    run_id = "20261023-123456-a1b2c3"
+    state_dir = tmp_path / "state"
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "output.ansi"
+    log_path.write_bytes(b"A")
+    initial = read_output_chunk(log_path, state_dir=state_dir, run_id=run_id, max_bytes=4)
+    log_path.write_bytes(b"ABC\xe2\x82\xacDEFG")
+
+    first = read_output_chunk(
+        log_path,
+        state_dir=state_dir,
+        run_id=run_id,
+        cursor=initial.cursor,
+        max_bytes=4,
+        finished=True,
+    )
+    second = read_output_chunk(
+        log_path,
+        state_dir=state_dir,
+        run_id=run_id,
+        cursor=first.cursor,
+        max_bytes=4,
+        finished=True,
+    )
+    final = read_output_chunk(
+        log_path,
+        state_dir=state_dir,
+        run_id=run_id,
+        cursor=second.cursor,
+        max_bytes=4,
+        finished=True,
+    )
+
+    assert first.text == "BC"
+    assert first.at_end is False
+    assert second.text == "€D"
+    assert second.at_end is False
+    assert final.text == "EFG"
+    assert final.at_end is True
+
+
 def test_log_reader_enforces_owned_path_and_reports_missing_files(tmp_path: Path) -> None:
     state_dir = tmp_path / "state"
     store = RunStore(state_dir)
