@@ -55,10 +55,11 @@ class LaunchRequest(BaseModel):
     name: str | None = Field(default=None, max_length=120)
     cwd: str | None = Field(default=None, max_length=MAX_LAUNCH_VALUE_LENGTH)
 
+
 class StopRequest(BaseModel):
     """Optional configuration for terminating a managed process."""
 
-    force: bool = False
+    force: bool | None = None
 
 
 class RestartRequest(BaseModel):
@@ -177,7 +178,7 @@ def create_runmux_web_app(
         run_id: str,
         payload: StopRequest | None = None,
     ) -> dict[str, Any]:
-        force = payload.force if payload else False
+        force = payload.force if (payload and payload.force is not None) else False
         try:
             result = await run_in_threadpool(lifecycle.stop_run, run_id, force=force)
             return {

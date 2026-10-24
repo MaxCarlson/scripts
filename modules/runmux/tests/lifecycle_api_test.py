@@ -296,9 +296,7 @@ def test_api_repeated_restart_with_active_restart_returns_409(tmp_path: Path) ->
         assert "already running" in res.json()["detail"]
 
 
-def test_api_duplicate_run_returns_201_with_duplicate_of(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_api_duplicate_run_returns_201_with_duplicate_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = RunStore(tmp_path)
     source_id = "20261024-010101-abcdef"
     create_test_run(store, tmp_path, run_id=source_id, status="running")
@@ -362,9 +360,7 @@ def test_api_pause_and_resume_on_windows_returns_501(tmp_path: Path, monkeypatch
         assert "not supported on Windows" in res_resume.json()["detail"]
 
 
-def test_websocket_disconnect_leaves_managed_process_running(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_websocket_disconnect_leaves_managed_process_running(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = RunStore(tmp_path)
     run_id = "20261024-010101-abcdef"
     create_test_run(store, tmp_path, run_id=run_id, status="running")
@@ -405,3 +401,99 @@ def test_websocket_disconnect_leaves_managed_process_running(
     # And detach was requested for the view session
     assert "attach" in operations
     assert "detach" in operations
+
+
+def test_api_kill_endpoint_consistently_defaults_to_forced(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=run_id, status="running")
+
+    ipc_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def mock_request_json(record: RunRecord, *, op: str, payload: dict[str, Any] | None = None, **kwargs: Any):
+        ipc_calls.append((op, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr("runmux.runner.request_json", mock_request_json)
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        # 1. No body -> force=True
+        res_no_body = client.post(f"/api/runs/{run_id}/kill", headers={"Origin": "http://localhost"})
+        assert res_no_body.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": True})
+
+        # 2. Empty JSON body {} -> force=True
+        res_empty_dict = client.post(f"/api/runs/{run_id}/kill", json={}, headers={"Origin": "http://localhost"})
+        assert res_empty_dict.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": True})
+
+        # 3. Explicit force=False
+        res_graceful = client.post(
+            f"/api/runs/{run_id}/kill", json={"force": False}, headers={"Origin": "http://localhost"}
+        )
+        assert res_graceful.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": False})
+
+
+def test_api_stop_endpoint_consistently_defaults_to_graceful(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=run_id, status="running")
+
+    ipc_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def mock_request_json(record: RunRecord, *, op: str, payload: dict[str, Any] | None = None, **kwargs: Any):
+        ipc_calls.append((op, payload))
+        return {"ok": True}
+
+    monkeypatch.setattr("runmux.runner.request_json", mock_request_json)
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        # 1. No body -> force=False
+        res_no_body = client.post(f"/api/runs/{run_id}/stop", headers={"Origin": "http://localhost"})
+        assert res_no_body.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": False})
+
+        # 2. Empty JSON body {} -> force=False
+        res_empty_dict = client.post(f"/api/runs/{run_id}/stop", json={}, headers={"Origin": "http://localhost"})
+        assert res_empty_dict.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": False})
+
+        # 3. Explicit force=True
+        res_forced = client.post(
+            f"/api/runs/{run_id}/stop", json={"force": True}, headers={"Origin": "http://localhost"}
+        )
+        assert res_forced.status_code == 200
+        assert ipc_calls[-1] == ("kill", {"force": True})
+
+
+def test_api_stop_reports_terminating_when_process_remains_active(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=run_id, status="running")
+
+    def mock_kill_run(*args: Any, **kwargs: Any):
+        return store.get_run(run_id)
+
+    monkeypatch.setattr("runmux.lifecycle.kill_run", mock_kill_run)
+    monkeypatch.setattr("runmux.web_adapter.request_json", lambda record, **kwargs: {"ok": True, "status": "running"})
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        res = client.post(f"/api/runs/{run_id}/stop", headers={"Origin": "http://localhost"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["action"] == "stop"
+        assert data["status"] == "terminating"
+        assert "shutdown is in progress" in data["message"]
+        assert data["run"]["status"] == "running"

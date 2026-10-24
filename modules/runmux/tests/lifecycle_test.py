@@ -439,9 +439,7 @@ def test_restart_active_run_raises_invalid_transition(tmp_path: Path) -> None:
     assert "Cannot restart active run" in str(exc_info.value)
 
 
-def test_duplicate_run_creates_new_record_with_duplicate_of(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_duplicate_run_creates_new_record_with_duplicate_of(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = RunStore(tmp_path)
     source_id = "20261024-010101-abcdef"
     create_test_record(store, tmp_path, run_id=source_id, status="running")
@@ -482,9 +480,7 @@ def test_duplicate_run_creates_new_record_with_duplicate_of(
     assert result.run.duplicate_of == source_id
 
 
-def test_pause_and_resume_on_windows_raises_platform_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_pause_and_resume_on_windows_raises_platform_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     store = RunStore(tmp_path)
     run_id = "20261024-010101-abcdef"
     create_test_record(store, tmp_path, run_id=run_id, status="running")
@@ -544,3 +540,70 @@ def test_pause_and_resume_on_posix(tmp_path: Path, monkeypatch: pytest.MonkeyPat
     assert resume_again.status == "already_running"
 
     assert ipc_ops == ["pause", "resume"]
+
+
+def test_stop_run_reports_terminating_when_process_remains_active_after_ipc(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When supervisor accepts kill but process is still shutting down, status is 'terminating'."""
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_record(store, tmp_path, run_id=run_id, status="running")
+
+    def mock_kill_run(store_arg: Any, *, run_id: str, force: bool):
+        # Supervisor accepted IPC, but run remains running in store
+        return store.get_run(run_id)
+
+    monkeypatch.setattr("runmux.lifecycle.kill_run", mock_kill_run)
+    monkeypatch.setattr("runmux.web_adapter.request_json", lambda record, **kwargs: {"ok": True, "status": "running"})
+
+    manager = LifecycleManager(tmp_path)
+    result = manager.stop_run(run_id)
+
+    assert result.action == "stop"
+    assert result.status == "terminating"
+    assert "shutdown is in progress" in result.message
+    assert result.run.status == "running"
+
+
+def test_kill_run_supervisor_ipc_timeout_returns_active_run_and_reports_terminating(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When runner.kill_run() IPC times out, active record is preserved and LifecycleManager reports terminating."""
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_record(store, tmp_path, run_id=run_id, status="running", port=45123)
+
+    # 1. Supervisor accepts kill IPC
+    ipc_ops = []
+
+    def mock_ipc(record: RunRecord, *, op: str, **kwargs: Any):
+        ipc_ops.append(op)
+        return {"ok": True, "status": "running"}
+
+    monkeypatch.setattr("runmux.runner.request_json", mock_ipc)
+    monkeypatch.setattr("runmux.web_adapter.request_json", mock_ipc)
+
+    # Fast-forward time so kill_run loop times out without sleeping 1.5s
+    curr_time = 1000.0
+
+    def fake_monotonic():
+        nonlocal curr_time
+        curr_time += 1.0
+        return curr_time
+
+    monkeypatch.setattr("time.monotonic", fake_monotonic)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    # runner.kill_run returns active record on timeout without falling back to PID kill or error
+    record_after_kill = kill_run(store, run_id=run_id, force=False)
+    assert record_after_kill.status == "running"
+    assert "kill" in ipc_ops
+
+    # LifecycleManager.stop_run sees run is still active and returns 'terminating'
+    manager = LifecycleManager(tmp_path)
+    result = manager.stop_run(run_id)
+    assert result.action == "stop"
+    assert result.status == "terminating"
+    assert "shutdown is in progress" in result.message
+    assert result.run.status == "running"

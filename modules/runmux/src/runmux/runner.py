@@ -237,7 +237,7 @@ def startup_failure(record: RunRecord) -> RunnerError:
 
     exit_text = "--" if record.exit_code is None else str(record.exit_code)
     tail = read_log_tail(record.log_file)
-    message = f"Run '{record.numeric_id}' exited during startup " f"(status={record.status}, exit_code={exit_text})."
+    message = f"Run '{record.numeric_id}' exited during startup (status={record.status}, exit_code={exit_text})."
     if tail:
         message += f"\nLast output:\n{tail}"
     return RunnerError(message)
@@ -377,7 +377,7 @@ def restart_run(
     source = store.get_run(run_id)
     if source.status not in TERMINAL_STATUSES:
         raise RunnerError(
-            f"Run '{source.id}' is not finished. Use duplicate for concurrent copies, " "or kill it before restarting."
+            f"Run '{source.id}' is not finished. Use duplicate for concurrent copies, or kill it before restarting."
         )
     return clone_run(store, source=source, restart_of=source.id, duplicate_of=None, force_color=force_color)
 

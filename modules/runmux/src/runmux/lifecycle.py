@@ -122,10 +122,18 @@ class LifecycleManager:
                 # kill_run contacts supervisor via IPC, falling back to PID termination on error
                 updated = kill_run(self.store, run_id=valid_id, force=force)
                 refreshed, _ = self.read_only.refresh_display_status(updated)
+                success_verb = "stopped" if action == "stop" else "killed"
+                if refreshed.status in TERMINAL_STATUSES:
+                    return LifecycleResult(
+                        action=action,
+                        status="ok",
+                        message=f"Run '{valid_id}' {success_verb} successfully.",
+                        run=refreshed,
+                    )
                 return LifecycleResult(
                     action=action,
-                    status="ok",
-                    message=f"Run '{valid_id}' stopped successfully.",
+                    status="terminating",
+                    message=f"Termination requested for run '{valid_id}'; process shutdown is in progress.",
                     run=refreshed,
                 )
             except RunnerError as error:
@@ -222,9 +230,7 @@ class LifecycleManager:
             raise LifecyclePlatformError("Pause is not supported on Windows without an external process API.")
 
         if record.status in TERMINAL_STATUSES:
-            raise InvalidLifecycleTransitionError(
-                f"Cannot pause terminal run '{run_id}' (status: {record.status})."
-            )
+            raise InvalidLifecycleTransitionError(f"Cannot pause terminal run '{run_id}' (status: {record.status}).")
 
         if record.status == STATUS_PAUSED:
             return LifecycleResult(
@@ -260,9 +266,7 @@ class LifecycleManager:
             raise LifecyclePlatformError("Resume is not supported on Windows without an external process API.")
 
         if record.status in TERMINAL_STATUSES:
-            raise InvalidLifecycleTransitionError(
-                f"Cannot resume terminal run '{run_id}' (status: {record.status})."
-            )
+            raise InvalidLifecycleTransitionError(f"Cannot resume terminal run '{run_id}' (status: {record.status}).")
 
         if record.status == "running":
             return LifecycleResult(
