@@ -24,6 +24,7 @@ from runmux.store import RunNotFoundError
 RUN_ID_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}\Z")
 DEFAULT_LOG_CHUNK_BYTES = 64 * 1024
 MAX_LOG_CHUNK_BYTES = 64 * 1024
+DEFAULT_TERMINAL_TAIL_BYTES = 128 * 1024
 FINGERPRINT_BYTES = 32
 CURSOR_MODES = {"text", "escape", "escape-intermediate", "csi", "osc", "string", "string-escape"}
 
@@ -39,6 +40,20 @@ class OutputChunk:
     state: str
     text: str
     cursor: str | None
+    reset: bool
+    truncated: bool
+    message: str | None = None
+    at_end: bool = False
+
+
+@dataclass(frozen=True)
+class TerminalChunk:
+    """One bounded raw ANSI byte range for the interactive browser terminal."""
+
+    state: str
+    data: bytes
+    offset: int | None
+    generation: str | None
     reset: bool
     truncated: bool
     message: str | None = None
@@ -218,6 +233,77 @@ def read_output_chunk(
         return OutputChunk("missing", "", cursor, False, False, "Output is not available.")
     except OSError:
         return OutputChunk("inaccessible", "", cursor, False, False, "Output cannot be read.")
+
+
+def read_terminal_chunk(
+    path: Path,
+    *,
+    state_dir: Path,
+    run_id: str,
+    offset: int | None = None,
+    generation: str | None = None,
+    max_bytes: int = MAX_LOG_CHUNK_BYTES,
+    initial_tail_bytes: int = DEFAULT_TERMINAL_TAIL_BYTES,
+) -> TerminalChunk:
+    """Read raw ANSI bytes from the selected run's log using bounded file access."""
+
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise ValueError("Run ID must be a full immutable Runmux ID.")
+    if max_bytes < 1 or max_bytes > MAX_LOG_CHUNK_BYTES:
+        raise ValueError(f"max_bytes must be between 1 and {MAX_LOG_CHUNK_BYTES}.")
+    if initial_tail_bytes < 1:
+        raise ValueError("initial_tail_bytes must be greater than zero.")
+
+    root = Path(state_dir).expanduser().resolve()
+    expected_path = (root / "runs" / run_id / "output.ansi").resolve()
+    stored_path = Path(path).expanduser()
+    if stored_path.is_absolute():
+        selected_path = stored_path.resolve()
+    else:
+        selected_path = (root / stored_path).resolve()
+        if selected_path != expected_path:
+            selected_path = stored_path.resolve()
+    if selected_path != expected_path:
+        raise ValueError("Output path does not belong to the selected run.")
+    if not selected_path.is_file():
+        return TerminalChunk("missing", b"", offset, generation, False, False, "Output is not available.")
+
+    try:
+        with selected_path.open("rb") as stream:
+            stat = _file_stat(stream)
+            current_generation = f"{stat.st_dev:x}:{stat.st_ino:x}"
+            size = stat.st_size
+            reset = offset is None or generation != current_generation or offset > size
+            truncated = False
+            if reset:
+                start = max(0, size - initial_tail_bytes)
+                truncated = start > 0
+                if truncated:
+                    stream.seek(start)
+                    prefix = stream.read(min(4096, size - start))
+                    line_end = prefix.find(b"\n")
+                    if line_end >= 0:
+                        start += line_end + 1
+            else:
+                start = offset
+            stream.seek(start)
+            data = stream.read(max_bytes)
+            next_offset = start + len(data)
+            return TerminalChunk(
+                "available",
+                data,
+                next_offset,
+                current_generation,
+                reset,
+                truncated,
+                at_end=next_offset >= _file_stat(stream).st_size,
+            )
+    except PermissionError:
+        return TerminalChunk("inaccessible", b"", offset, generation, False, False, "Output cannot be read.")
+    except FileNotFoundError:
+        return TerminalChunk("missing", b"", offset, generation, False, False, "Output is not available.")
+    except OSError:
+        return TerminalChunk("inaccessible", b"", offset, generation, False, False, "Output cannot be read.")
 
 
 def _file_stat(stream: Any) -> Any:

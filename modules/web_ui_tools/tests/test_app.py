@@ -2,8 +2,9 @@ from pathlib import Path
 from secrets import token_urlsafe
 
 import pytest
-from fastapi import APIRouter
+from fastapi import APIRouter, WebSocket
 from fastapi.testclient import TestClient
+from starlette.websockets import WebSocketDisconnect
 
 from web_ui_tools.app import create_app, create_server
 
@@ -15,7 +16,69 @@ def make_router() -> APIRouter:
     def sample() -> dict[str, str]:
         return {"application": "sample", "value": "ok"}
 
+    @router.websocket("/socket")
+    async def socket(websocket: WebSocket) -> None:
+        await websocket.accept()
+        await websocket.send_text("connected")
+
     return router
+
+
+def test_websocket_requires_same_origin_and_live_browser_session() -> None:
+    login_code = token_urlsafe(32)
+    app = make_app(login_code)
+    with TestClient(app) as client:
+        with (
+            pytest.raises(WebSocketDisconnect) as unauthorized,
+            client.websocket_connect("/api/socket", headers={"Origin": "http://testserver"}) as websocket,
+        ):
+            websocket.receive_text()
+        assert unauthorized.value.code == 4401
+
+        client.post("/auth/login", json={"code": login_code}, headers={"Origin": "http://testserver"})
+        session_cookie = f"web_ui_session={client.cookies.get('web_ui_session')}"
+        with client.websocket_connect(
+            "/api/socket",
+            headers={"Origin": "http://testserver", "Cookie": session_cookie},
+        ) as websocket:
+            assert websocket.receive_text() == "connected"
+
+        with (
+            pytest.raises(WebSocketDisconnect) as foreign_origin,
+            client.websocket_connect(
+                "/api/socket",
+                headers={"Origin": "http://attacker.test", "Cookie": session_cookie},
+            ) as websocket,
+        ):
+            websocket.receive_text()
+        assert foreign_origin.value.code == 4403
+
+        with (
+            pytest.raises(WebSocketDisconnect) as untrusted_host,
+            client.websocket_connect(
+                "/api/socket",
+                headers={
+                    "Origin": "http://attacker.test",
+                    "Host": "attacker.test",
+                    "Cookie": session_cookie,
+                },
+            ) as websocket,
+        ):
+            websocket.receive_text()
+        assert untrusted_host.value.code == 4400
+
+        session_id = client.cookies.get("web_ui_session")
+        assert session_id
+        app.state.sessions[session_id] = 0
+        with (
+            pytest.raises(WebSocketDisconnect) as expired,
+            client.websocket_connect(
+                "/api/socket",
+                headers={"Origin": "http://testserver", "Cookie": session_cookie},
+            ) as websocket,
+        ):
+            websocket.receive_text()
+        assert expired.value.code == 4401
 
 
 def make_app(login_code: str) -> object:
@@ -93,6 +156,11 @@ def test_server_refuses_non_loopback_bind_addresses() -> None:
         create_server(make_app(token_urlsafe(32)), host="localhost")
 
 
+def test_server_enables_websocket_transport() -> None:
+    server = create_server(make_app(token_urlsafe(32)), host="127.0.0.1", port=0)
+    assert server.config.ws == "wsproto"
+
+
 def test_app_rejects_application_routes_outside_protected_api() -> None:
     router = APIRouter()
 
@@ -121,3 +189,6 @@ def test_app_serves_static_ui_without_importing_runmux(monkeypatch) -> None:
         response = client.get("/")
         assert response.status_code == 200
         assert "Local Web Tools" in response.text
+        policy = response.headers["content-security-policy"]
+        assert "ws://127.0.0.1:*" in policy
+        assert "ws://localhost:*" in policy

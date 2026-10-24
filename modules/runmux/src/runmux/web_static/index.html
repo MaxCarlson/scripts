@@ -5,7 +5,10 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
     <title>Runmux · Local process desk</title>
+    <link rel="stylesheet" href="/assets/vendor/xterm.css">
     <link rel="stylesheet" href="/assets/dashboard.css">
+    <script src="/assets/vendor/xterm.js" defer></script>
+    <script src="/assets/vendor/addon-fit.js" defer></script>
     <script src="/assets/dashboard.js" defer></script>
   </head>
   <body>
@@ -85,6 +88,7 @@
             <div id="run-warning" class="run-warning" role="status" hidden></div>
             <div class="tab-bar" role="tablist" aria-label="Process views">
               <button class="tab-button active" id="tab-output" type="button" role="tab" aria-selected="true" data-tab="output">Output <span id="output-activity" class="activity-mark"></span></button>
+              <button class="tab-button" id="tab-terminal" type="button" role="tab" aria-selected="false" data-tab="terminal">Terminal</button>
               <button class="tab-button" id="tab-details" type="button" role="tab" aria-selected="false" data-tab="details">Details</button>
               <div class="tab-spacer"></div>
               <label class="follow-toggle"><input id="follow-output" type="checkbox" checked><span class="toggle-track"></span> Follow</label>
@@ -93,6 +97,16 @@
               <div class="output-toolbar"><span><span class="output-dot"></span> LIVE OUTPUT</span><span id="output-note" class="output-note"></span><button id="scroll-output" class="text-button" type="button">Jump to latest ↓</button></div>
               <pre id="output-text" class="output-text" aria-live="off"></pre>
               <div id="output-state" class="output-state">Select a process to load output.</div>
+            </div>
+            <div id="terminal-pane" class="tab-pane terminal-pane" role="tabpanel" aria-labelledby="tab-terminal" hidden>
+              <div class="terminal-toolbar">
+                <span><span class="output-dot"></span> ANSI TERMINAL</span>
+                <span id="terminal-state" class="terminal-state" role="status">Select a process to attach.</span>
+                <button id="terminal-lock-button" class="text-button" type="button" hidden>Request input lock</button>
+                <button id="terminal-control-button" class="terminal-control-button" type="button" disabled>Request control</button>
+              </div>
+              <div id="terminal-container" class="terminal-container" aria-label="Runmux process terminal" tabindex="0"></div>
+              <div id="terminal-message" class="terminal-message" role="status" hidden></div>
             </div>
             <div id="details-pane" class="tab-pane details-pane" role="tabpanel" aria-labelledby="tab-details" hidden>
               <div class="detail-grid">
@@ -108,7 +122,7 @@
           </div>
         </section>
       </section>
-      <footer class="page-footer"><span>RUNMUX LOCAL PROCESS DESK</span><span>Output is shown as plain text; terminal control sequences are ignored.</span></footer>
+      <footer class="page-footer"><span>RUNMUX LOCAL PROCESS DESK</span><span>Logs are read only · Terminal input is supervisor lock controlled.</span></footer>
     </main>
   </body>
 </html>

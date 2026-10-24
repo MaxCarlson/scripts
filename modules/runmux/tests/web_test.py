@@ -176,3 +176,148 @@ def test_output_does_not_treat_unreachable_supervisor_as_finished(tmp_path: Path
 
     assert response.status_code == 200
     assert response.json()["finished"] is False
+
+
+def test_terminal_websocket_streams_raw_output_and_routes_input_through_supervisor(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    import runmux.web as web_module
+
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    make_run(store, state_dir, run_id)
+    record = store.update_run(run_id, status="running", port=43123, supervisor_pid=9002)
+    operations: list[tuple[str, dict[str, object]]] = []
+    input_bytes: list[bytes] = []
+    input_closed: list[bool] = []
+    session_modes: dict[object, str] = {}
+    lock_holders: set[object] = set()
+
+    class InputChannel:
+        def sendall(self, data: bytes) -> None:
+            input_bytes.append(data)
+
+        def close(self) -> None:
+            input_closed.append(True)
+
+        def shutdown(self, _how: int) -> None:
+            return
+
+    def fake_request(_record, *, op: str, payload: dict[str, object] | None = None, timeout: float = 1.0):
+        details = dict(payload or {})
+        operations.append((op, details))
+        if op == "attach":
+            session_modes[details.get("session_id")] = str(details.get("mode"))
+        if op == "lock":
+            lock_holders.add(details.get("session_id"))
+        if op in {"attach", "heartbeat", "lock", "status"}:
+            session_id = details.get("session_id")
+            return {
+                "ok": True,
+                "session_holds_lock": session_id in lock_holders,
+                "session_queue_position": 1 if session_modes.get(session_id) == "interact" else None,
+                "lock_queue_count": 1 if session_modes.get(session_id) == "interact" else 0,
+            }
+        return {"ok": True}
+
+    def fake_open_input(_record, *, session_id: str, timeout: float = 1.0):
+        session_modes[session_id] = "interact"
+        return InputChannel()
+
+    monkeypatch.setattr(web_module, "request_json", fake_request)
+    monkeypatch.setattr(web_module, "open_input_socket", fake_open_input)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        session_cookie = f"web_ui_session={client.cookies.get('web_ui_session')}"
+        with client.websocket_connect(
+            f"/api/runs/{run_id}/terminal",
+            headers={"Host": "localhost", "Origin": "http://localhost", "Cookie": session_cookie},
+        ) as websocket:
+            attached = websocket.receive_json()
+            assert attached["type"] == "status"
+            assert attached["mode"] == "view"
+            assert attached["session_holds_lock"] is False
+            websocket.send_bytes(b"view-only input\n")
+            assert websocket.receive_json()["type"] == "output_reset"
+            assert websocket.receive_bytes() == b"\x1b[31mline <script>alert(1)</script>\x1b[0m\n"
+
+            websocket.send_json({"type": "control", "enabled": True})
+            controlled = websocket.receive_json()
+            assert controlled["type"] == "status"
+            assert controlled["mode"] == "interact"
+            assert controlled["session_holds_lock"] is False
+            websocket.send_bytes(b"queued input\n")
+            websocket.send_json({"type": "lock"})
+            assert websocket.receive_json()["session_holds_lock"] is True
+            websocket.send_bytes(b"synthetic input\n")
+
+    assert input_bytes == [b"synthetic input\n"]
+    assert input_closed == [True]
+    assert [op for op, _payload in operations if op == "attach"] == ["attach"]
+    assert any(op == "detach" for op, _payload in operations)
+    assert store.get_run(run_id).status == "running"
+    assert record.status == "running"
+
+
+def test_finished_terminal_websocket_replays_output_without_supervisor_attachment(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    make_run(store, state_dir, run_id)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        session_cookie = f"web_ui_session={client.cookies.get('web_ui_session')}"
+        with client.websocket_connect(
+            f"/api/runs/{run_id}/terminal",
+            headers={"Host": "localhost", "Origin": "http://localhost", "Cookie": session_cookie},
+        ) as websocket:
+            status = websocket.receive_json()
+            assert status["mode"] == "view"
+            assert status["finished"] is True
+            assert websocket.receive_json()["type"] == "output_reset"
+            assert websocket.receive_bytes() == b"\x1b[31mline <script>alert(1)</script>\x1b[0m\n"
+
+    assert store.attachment_summary(run_id).current_viewers == 0
+
+
+def test_terminal_disconnect_and_reconnect_only_change_synthetic_attachment_state(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    started = create_managed_run(
+        store,
+        program_args=[sys.executable, "-u", "-c", "import time; print('READY', flush=True); time.sleep(30)"],
+        cwd=tmp_path,
+        name="temporary browser terminal",
+        force_color=True,
+        record_history=False,
+    )
+    process_pid = started.record.pid
+    try:
+        assert process_pid is not None
+        deadline = time.monotonic() + 5
+        while b"READY" not in Path(started.record.log_path).read_bytes() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        app = create_runmux_web_app(state_dir, login_code="test-login")
+        with TestClient(app, base_url="http://localhost") as client:
+            client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+            session_cookie = f"web_ui_session={client.cookies.get('web_ui_session')}"
+            for _ in range(2):
+                with client.websocket_connect(
+                    f"/api/runs/{started.record.id}/terminal",
+                    headers={"Host": "localhost", "Origin": "http://localhost", "Cookie": session_cookie},
+                ) as websocket:
+                    assert websocket.receive_json()["mode"] == "view"
+                    assert websocket.receive_json()["type"] == "output_reset"
+                    assert b"READY" in websocket.receive_bytes()
+                assert store.get_run(started.record.id).status == "running"
+                assert store.attachment_summary(started.record.id).current_viewers == 0
+                assert psutil.pid_exists(process_pid)
+    finally:
+        if psutil.pid_exists(process_pid):
+            kill_run(store, run_id=started.record.id, force=True)

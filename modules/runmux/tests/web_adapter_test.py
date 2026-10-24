@@ -6,7 +6,7 @@ import pytest
 
 from runmux.models import RunRecord
 from runmux.store import RunNotFoundError, RunStore
-from runmux.web_adapter import ReadOnlyRunmux, read_output_chunk, serialize_run
+from runmux.web_adapter import ReadOnlyRunmux, read_output_chunk, read_terminal_chunk, serialize_run
 
 
 def create_record(store: RunStore, state_dir: Path, run_id: str, *, status: str = "finished") -> RunRecord:
@@ -216,3 +216,38 @@ def test_log_reader_resolves_paths_stored_from_relative_state_dir(tmp_path: Path
     )
 
     assert chunk.state == "available"
+
+
+def test_terminal_output_reader_preserves_ansi_and_enforces_byte_limit(tmp_path: Path) -> None:
+    run_id = "20261023-123456-a1b2c3"
+    state_dir = tmp_path / "state"
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "output.ansi"
+    log_path.write_bytes(b"\x1b[31mred\x1b[0m\n")
+
+    first = read_terminal_chunk(log_path, state_dir=state_dir, run_id=run_id, max_bytes=7)
+    assert first.data == b"\x1b[31mre"
+    assert first.reset is True
+
+    with log_path.open("ab") as output:
+        output.write(b"ed\x1b[0m\n")
+    second = read_terminal_chunk(
+        log_path,
+        state_dir=state_dir,
+        run_id=run_id,
+        offset=first.offset,
+        generation=first.generation,
+        max_bytes=7,
+    )
+    assert second.data == b"d\x1b[0m\ne"
+    assert second.reset is False
+
+
+def test_terminal_output_reader_rejects_paths_outside_selected_run(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="selected run"):
+        read_terminal_chunk(
+            tmp_path / "elsewhere.ansi",
+            state_dir=tmp_path / "state",
+            run_id="20261023-123456-a1b2c3",
+        )

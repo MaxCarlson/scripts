@@ -1,6 +1,6 @@
 # Runmux Plans Index Handoff
 
-Last updated: 2026-10-23 21:20:00 -07:00
+Last updated: 2026-10-23
 
 This folder contains dated, self-contained implementation plans for runmux.
 
@@ -17,13 +17,19 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The active integration plan is:
+The active feature branch plan is:
+
+`20261023-runmux-web-interactive-terminal/`
+
+Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
+`00-implementation-plan.md` for the authenticated browser terminal work.
+
+The previously active native TUI integration plan is:
 
 `20261023-2120_runmux-native-tui-final-integration/`
 
-Read that folder's `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
-`00-implementation-plan.md` before continuing. The older multi-attach and
-history plan remains historical design and implementation evidence.
+Its documents remain historical design and implementation evidence. The older
+multi-attach and history plan is also retained as history.
 
 New implementation plans that require multiple work stages must receive their
 own dated folder here. Completed plans remain available as historical design and

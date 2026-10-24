@@ -1,22 +1,26 @@
 # Runmux Current Handoff
 
-Last updated: 2026-10-23 21:20:00 -07:00
+Last updated: 2026-10-23
 
 ## Resume Here
 
-Runmux is in the final integration of the native terminal workspace alongside
-the read-only Web UI. This branch starts at the latest fetched `origin/main`
-and is intended for review; do not merge it into `main`.
+The current isolated feature branch adds an authenticated browser terminal to
+the existing read-only Web UI. Its plan and current status are in
+`plans/20261023-runmux-web-interactive-terminal/`. The branch starts at the
+latest fetched `origin/main`; commit and push it for review, but do not merge.
+
+The earlier native TUI integration remains recorded below as project history;
+the branch named in that historical section differs from this feature branch.
 
 Read in this order:
 
 1. Applicable global and repository-level LLM instructions
 2. `README.md`
 3. `plans/HANDOFF.md`
-4. `plans/20261023-2120_runmux-native-tui-final-integration/HANDOFF.md`
-5. `plans/20261023-2120_runmux-native-tui-final-integration/STATUS.md`
-6. `plans/20261023-2120_runmux-native-tui-final-integration/checklist.md`
-7. `plans/20261023-2120_runmux-native-tui-final-integration/00-implementation-plan.md`
+4. `plans/20261023-runmux-web-interactive-terminal/HANDOFF.md`
+5. `plans/20261023-runmux-web-interactive-terminal/STATUS.md`
+6. `plans/20261023-runmux-web-interactive-terminal/checklist.md`
+7. `plans/20261023-runmux-web-interactive-terminal/00-implementation-plan.md`
 
 ## Current State
 

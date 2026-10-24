@@ -239,6 +239,28 @@ def test_supervisor_state_accepts_input_only_from_lock_holder(monkeypatch, tmp_p
     assert process.writes == ["accepted", "next"]
 
 
+def test_supervisor_state_resizes_only_for_current_input_lock_holder(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    record = create_supervisor_record(store, tmp_path)
+    state = supervisor.SupervisorState(store=store, record=record)
+    state.register_attachment("first", "interact")
+    state.register_attachment("second", "interact")
+    state.request_input_lock("second")
+    resize_calls: list[tuple[int, int]] = []
+    state.resize = lambda rows, columns: resize_calls.append((rows, columns))  # type: ignore[method-assign]
+
+    try:
+        state.resize_for_session("second", 50, 140)
+    except RuntimeError as exc:
+        assert "input lock" in str(exc)
+    else:
+        raise AssertionError("a queued session must not resize the process terminal")
+
+    state.resize_for_session("first", 45, 120)
+
+    assert resize_calls == [(45, 120)]
+
+
 def test_supervisor_state_expires_stale_lock_holder(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     record = create_supervisor_record(store, tmp_path)

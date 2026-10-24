@@ -29,7 +29,11 @@ Use `runmux web -H 127.0.0.1 -p 8787 -s <state-directory>` to choose the bind ad
 
 The browser shows the full stable run ID, optional user name, executable basename, status, PID, exit code, runtime, and timestamps. Names and executable basenames may themselves identify private projects or tools, so anyone with the local browser session can see them. The view hides command arguments, working directories, environment overrides, log paths, IPC ports, and credentials. User-provided names and process output are treated as untrusted text. Output is decoded incrementally as UTF-8 (invalid bytes become replacement characters), ANSI/control sequences are stripped across chunk boundaries, each response is limited to 64 KiB, and the visible transcript is capped at 512 Ki characters.
 
-The browser opens the existing SQLite registry with `mode=ro`; missing registries display as empty without initialization. Selected active-run details may request the existing supervisor's authenticated `status` operation and project the response without persisting it. Log reads are restricted to that run's `output.ansi` file. Registry pruning, process control, input attachment, and lifecycle operations are not available from the browser. Closing the web server does not detach or stop managed processes.
+The browser opens the existing SQLite registry with `mode=ro`; missing registries display as empty without initialization. Selected active-run details may request the existing supervisor's authenticated `status` operation and project the response without persisting it. Log reads are restricted to that run's `output.ansi` file. Registry pruning, process control, and lifecycle operations are not available from the browser. Closing the web server does not stop managed processes.
+
+The **Terminal** process view uses locally packaged xterm.js assets to render the original ANSI output. Its same-origin WebSocket requires the authenticated browser session cookie and trusted loopback host/origin checks. Opening the view creates a normal Runmux viewer attachment; requesting control creates an interact attachment through the supervisor. Keystrokes are sent only when that session holds the supervisor's FIFO input lock, and the supervisor remains authoritative if ownership changes. Resizing is sent only while the browser session reports the input lock. Reconnecting creates a fresh viewer attachment and replays at most the latest 128 KiB before following output in bounded chunks. Terminal scrollback is capped at 5,000 lines.
+
+Closing the terminal view, locking the browser session, losing the WebSocket, or shutting down `runmux web` closes only the browser attachment and releases its input-lock ownership. It does not stop, restart, or otherwise change the supervised process. The existing Output and Details views remain available; browser-based process lifecycle controls are still not exposed.
 
 `runmux` is a cross-platform managed process runner. It starts programs under a small
 supervisor process, stores run metadata in a shared local registry, writes byte-preserving
@@ -85,11 +89,13 @@ runmux load
   and process operations. Closing a view or the TUI never stops a managed
   process. Workspace state is scoped to the canonical directory where Runmux
   starts and the selected Runmux state directory.
-- `runmux web` starts the read-only local browser interface. It prints a
-  one-time startup login code that remains valid until the web server exits.
-  Closing the browser or stopping the web server never stops managed processes.
-  Install the optional browser dependencies with the `web` extra; browser
-  dependencies are loaded only when this command is selected.
+- `runmux web` starts the local browser interface. Its process browsing and
+  lifecycle controls remain read-only; the Terminal view can send program input
+  only while its authenticated attachment owns the supervisor input lock. It
+  prints a one-time startup login code that remains valid until the web server
+  exits. Closing the browser or stopping the web server only detaches browser
+  sessions and never stops managed processes. Install browser dependencies with
+  the `web` extra; they are loaded only when this command is selected.
 - `runmux list` opens the live list. Use Up/Down to select a run, `v` to view,
   `i` to interact, and `q` to quit.
 - `runmux ls` prints a non-interactive one-shot list.
