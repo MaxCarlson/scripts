@@ -7,7 +7,13 @@ from enum import Enum
 from typing import List, Optional, Tuple
 
 import psutil
-from resource_metrics import cpu_count, cpu_percent, memory_stats, nvidia_gpus, process_tree
+from resource_metrics import (
+    cpu_count,
+    cpu_percent,
+    gpu_devices,
+    memory_stats,
+    process_tree,
+)
 
 
 class TelemetryDisplayMode(Enum):
@@ -46,7 +52,7 @@ class ProcessStats:
 
 def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
     """Query NVIDIA devices through the shared best-effort collector."""
-    rows = nvidia_gpus()
+    rows = gpu_devices()
     return rows, None if rows else "GPU info unavailable"
 
 

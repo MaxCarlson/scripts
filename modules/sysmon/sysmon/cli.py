@@ -22,9 +22,9 @@ import psutil
 from resource_metrics import cpu_percent as shared_cpu_percent
 from resource_metrics import (
     disk_io_counters,
+    gpu_devices,
     memory_stats,
     net_io_counters,
-    nvidia_gpus,
 )
 from rich import box
 from rich.console import Group
@@ -781,7 +781,7 @@ class GpuState:
         self.graph_mode = "total"
 
 def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
-    rows = [row for row in nvidia_gpus()
+    rows = [row for row in gpu_devices()
             if None not in (row["load"], row["mem_used"], row["mem_total"], row["temp"])]
     for row in rows:
         row["mem_used"] /= 1024 ** 2

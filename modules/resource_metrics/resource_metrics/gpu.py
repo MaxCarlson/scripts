@@ -91,3 +91,28 @@ def gpu_process_memory(*, timeout: float = 1.5, binary_name: str = "nvidia-smi")
         except ValueError:
             continue
     return results
+
+
+def gpu_devices(*, timeout: float = 1.5) -> list[dict[str, Any]]:
+    """Discover NVIDIA GPUs via nvidia-smi, falling back to the existing optional GPUtil path."""
+    devices = nvidia_gpus(timeout=timeout)
+    if devices:
+        return devices
+    try:
+        import GPUtil  # type: ignore
+
+        return [
+            {
+                "name": device.name,
+                "id": int(device.id),
+                "load": float(device.load) * 100.0,
+                "memory_utilization": None,
+                "mem_used": float(device.memoryUsed) * MIB,
+                "mem_total": float(device.memoryTotal) * MIB,
+                "temp": float(device.temperature),
+                "power_w": None,
+            }
+            for device in GPUtil.getGPUs()
+        ]
+    except Exception:
+        return []
