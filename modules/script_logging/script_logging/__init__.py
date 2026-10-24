@@ -7,6 +7,7 @@ from typing import Optional, Union
 
 from .formatting import EventFormatter, StoreHandler, text_file_handler
 from .invocation_store import InvocationStore, resolve_invocation_db_path
+from .launcher import launch_target
 from .models import (
     AliasStatistics,
     CommandPattern,
@@ -103,6 +104,7 @@ __all__ = [
     "compute_pattern_id",
     "get_command_statistics",
     "get_program_statistics",
+    "launch_target",
     "list_invocations",
     "list_unique_commands",
     "open_invocation_reader",
