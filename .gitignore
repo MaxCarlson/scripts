@@ -232,3 +232,7 @@ modules/scheduler/scheduler_history.sqlite3
 
 # Superpowers temporary artifacts
 .superpowers/
+
+# Launcher backups and generated manifests
+.launcher_backup_*
+scripts_manifest.json

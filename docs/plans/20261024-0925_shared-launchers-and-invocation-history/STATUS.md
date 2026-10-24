@@ -3,7 +3,7 @@
 **Plan:** `docs/plans/20261024-0925_shared-launchers-and-invocation-history/`
 **Branch:** `shared-launchers-20261024-0925`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925`
-**Current Stage:** Stage 4 Preparation & Checkpoint Complete (Awaiting user approval before applying wrapper migration)
+**Current Stage:** Stage 4 Rehearsal & Setup Integration Complete (Awaiting user approval before applying wrapper migration to production `bin/`)
 
 ## Operational Ledger
 - **2026-10-24**: Isolated git worktree created at `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925` on branch `shared-launchers-20261024-0925`.
@@ -29,6 +29,13 @@
   - Implemented unit tests: `tests/test_launcher_generator.py` and `tests/test_migration.py`. Total 83 tests passing across repository test suite.
   - Executed live repository dry-run: scanned 168 repo-owned commands, 257 existing wrappers in `bin/` (247 legacy managed, 10 unmanaged custom symlinks preserved, 79 obsolete third-party wrappers, 0 collisions detected).
   - Production `bin/` wrappers remain 100% untouched.
+- **2026-10-24**: Isolated Migration Rehearsal & Setup Integration verified:
+  - Automated rehearsal in disposable native Windows workspace (`tests/test_migration_rehearsal.py`): verified content-signature recognition of all 168 legacy wrappers, 100% byte-for-byte preservation of all 10 unmanaged custom wrappers and 79 obsolete wrappers, automated backup completeness, idempotent regeneration, interrupted recovery, full rollback restoring pre-migration hashes across all 257 files, and CMD/pwsh argument fidelity with Unicode and exit codes.
+  - Integrated 4 setup entry points (`modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`) to delegate wrapper creation to `launcher_generator` (`write_wrapper`), preserving CLI compatibility (`tests/test_setup_integration.py`).
+  - Authored comprehensive `REHEARSAL_REPORT.md`.
+  - Rebased onto latest `origin/main` (`a0028473523f6208ea298218e0e666d56d083c9c`).
+  - All 97 tests passing across the test suite (`modules/script_logging/tests` and `tests/`).
+  - Production `bin/` wrappers remain 100% untouched pending user approval.
 
 ## Next Action
-Present the full Dry-Run Migration Report, collision analysis, and proposed changes to the user and wait for explicit approval before modifying production wrappers in Stage 4.
+Present the full Migration Rehearsal Report, representative before/after diffs, and rollback results to the user and wait for explicit approval before modifying the production `bin/` directory.

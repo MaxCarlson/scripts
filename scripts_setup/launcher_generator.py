@@ -313,6 +313,42 @@ exec "$VENV_PY" -m script_logging.launcher --manifest "$MANIFEST" --command "${{
 """
 
 
+def write_wrapper(
+    wrapper_path: Path,
+    command_name: str,
+    *,
+    is_windows: Optional[bool] = None,
+    overwrite_unmanaged: bool = False,
+) -> bool:
+    """Safely write a unified managed wrapper, refusing to overwrite unmanaged files."""
+    if is_windows is None:
+        is_windows = (wrapper_path.suffix.lower() == ".cmd") or (os.name == "nt")
+
+    if wrapper_path.exists() or wrapper_path.is_symlink():
+        if not overwrite_unmanaged and not is_managed_wrapper(wrapper_path):
+            return False
+
+    content = generate_windows_wrapper(command_name) if is_windows else generate_posix_wrapper(command_name)
+    wrapper_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if wrapper_path.is_file() and not wrapper_path.is_symlink():
+        try:
+            existing = wrapper_path.read_text(encoding="utf-8")
+            if existing == content:
+                return False
+        except OSError:
+            pass
+
+    newline = "\r\n" if is_windows else "\n"
+    wrapper_path.write_text(content, encoding="utf-8", newline=newline)
+    if not is_windows:
+        try:
+            wrapper_path.chmod(0o755)
+        except OSError:
+            pass
+    return True
+
+
 def generate_manifest(repo_root: Path, target_path: Optional[Path] = None) -> Path:
     """Scan repository programs and write atomic scripts_manifest.json."""
     root = repo_root.resolve()
@@ -348,6 +384,7 @@ def analyze_migration(repo_root: Path, bin_dir: Path) -> MigrationPlan:
         existing_files = []
 
     # Map existing files by stem
+    active_command_names = set(commands.keys())
     existing_by_stem: Dict[str, Path] = {}
     for f in existing_files:
         stem = f.stem if f.suffix.lower() == ".cmd" else f.name
@@ -355,9 +392,15 @@ def analyze_migration(repo_root: Path, bin_dir: Path) -> MigrationPlan:
 
         classification = classify_wrapper(f)
         if classification.status == "managed_current":
-            plan.managed_up_to_date.append(f)
+            if stem in active_command_names:
+                plan.managed_up_to_date.append(f)
+            else:
+                plan.obsolete_managed.append(f)
         elif classification.status == "managed_legacy":
-            plan.managed_to_update.append(f)
+            if stem in active_command_names:
+                plan.managed_to_update.append(f)
+            else:
+                plan.obsolete_managed.append(f)
         else:
             plan.unmanaged_preserved.append(f)
 
@@ -367,13 +410,6 @@ def analyze_migration(repo_root: Path, bin_dir: Path) -> MigrationPlan:
         wrapper_path = bin_dir / expected_wrapper_name
         if not wrapper_path.exists():
             plan.missing_to_create.append(cmd_name)
-
-    # Check for obsolete managed wrappers
-    active_command_names = set(commands.keys())
-    for f in plan.managed_up_to_date + plan.managed_to_update:
-        stem = f.stem if f.suffix.lower() == ".cmd" else f.name
-        if stem not in active_command_names:
-            plan.obsolete_managed.append(f)
 
     return plan
 
@@ -433,10 +469,12 @@ def migrate_wrappers(
     backup_path.mkdir(parents=True, exist_ok=True)
     report.backup_path = backup_path
 
-    # Back up existing files in bin
+    # Back up existing files in bin (preserving existing baseline files if already backed up)
     for f in bin_path.iterdir():
         if f.is_file():
-            shutil.copy2(f, backup_path / f.name)
+            dest = backup_path / f.name
+            if not dest.exists():
+                shutil.copy2(f, dest)
 
     # 2. Write manifest
     generate_manifest(root)

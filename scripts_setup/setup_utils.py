@@ -87,41 +87,46 @@ def create_symlink(src: Path, dest: Path, verbose: bool = True) -> bool:
         sys.exit(1)
 
 def _create_windows_cmd_wrapper(wrapper_path: Path, target_script: Path, verbose: bool):
-    """
-    Create/refresh a .cmd wrapper that invokes the target Python script.
-    Order of interpreter preference:
-      1) The exact Python used to run setup (sys.executable) if it exists
-      2) %CONDA_PREFIX%\\python.exe if a conda/mamba env is active
-      3) %MAMBA_ROOT_PREFIX%\\python.exe (base) if defined
-      4) python.exe found on PATH
-      5) py.exe -3 (Windows launcher) LAST, to avoid broken conda 'py' shims
-    """
-    py_abs = sys.executable.replace("/", "\\")
-    script_abs = str(target_script.resolve()).replace("/", "\\")
-    content = (
-        "@echo off\r\n"
-        "setlocal\r\n"
-        f"set \"_PY_ABS={py_abs}\"\r\n"
-        f"set \"_SCRIPT={script_abs}\"\r\n"
-        "if exist \"%_PY_ABS%\" goto run\r\n"
-        "if defined CONDA_PREFIX (\r\n"
-        "  if exist \"%CONDA_PREFIX%\\python.exe\" set \"_PY_ABS=%CONDA_PREFIX%\\python.exe\"\r\n"
-        ")\r\n"
-        "if exist \"%_PY_ABS%\" goto run\r\n"
-        "if defined MAMBA_ROOT_PREFIX (\r\n"
-        "  if exist \"%MAMBA_ROOT_PREFIX%\\python.exe\" set \"_PY_ABS=%MAMBA_ROOT_PREFIX%\\python.exe\"\r\n"
-        ")\r\n"
-        "if exist \"%_PY_ABS%\" goto run\r\n"
-        "for %%I in (python.exe) do if exist \"%%~$PATH:I\" set \"_PY_ABS=%%~$PATH:I\"\r\n"
-        "if exist \"%_PY_ABS%\" goto run\r\n"
-        "for %%I in (py.exe) do if exist \"%%~$PATH:I\" set \"_PY_LAUNCH=%%~$PATH:I\"\r\n"
-        "if defined _PY_LAUNCH \"%_PY_LAUNCH%\" -3 \"%_SCRIPT%\" %* & goto :eof\r\n"
-        "echo Python interpreter not found. Ensure Python is installed and on PATH.\r\n"
-        "exit /b 9009\r\n"
-        ":run\r\n"
-        "\"%_PY_ABS%\" \"%_SCRIPT%\" %*\r\n"
-    )
-    _write_text_if_changed(wrapper_path, content, verbose, crlf=True)
+    """Create/refresh a .cmd wrapper that invokes the target Python script."""
+    cmd_name = wrapper_path.stem
+    try:
+        from scripts_setup.launcher_generator import write_wrapper, is_managed_wrapper
+        if wrapper_path.exists() and not is_managed_wrapper(wrapper_path):
+            _log_info(f"Preserving unmanaged wrapper: {wrapper_path}", verbose)
+            return
+        changed = write_wrapper(wrapper_path, cmd_name, is_windows=True)
+        if changed:
+            _log_success(f"Wrote wrapper {wrapper_path}", verbose)
+        else:
+            _log_info(f"No change for {wrapper_path.name}", verbose)
+    except ImportError:
+        py_abs = sys.executable.replace("/", "\\")
+        script_abs = str(target_script.resolve()).replace("/", "\\")
+        content = (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            f'set "_PY_ABS={py_abs}"\r\n'
+            f'set "_SCRIPT={script_abs}"\r\n'
+            'if exist "%_PY_ABS%" goto run\r\n'
+            'if defined CONDA_PREFIX (\r\n'
+            '  if exist "%CONDA_PREFIX%\\python.exe" set "_PY_ABS=%CONDA_PREFIX%\\python.exe"\r\n'
+            ')\r\n'
+            'if exist "%_PY_ABS%" goto run\r\n'
+            'if defined MAMBA_ROOT_PREFIX (\r\n'
+            '  if exist "%MAMBA_ROOT_PREFIX%\\python.exe" set "_PY_ABS=%MAMBA_ROOT_PREFIX%\\python.exe"\r\n'
+            ')\r\n'
+            'if exist "%_PY_ABS%" goto run\r\n'
+            'for %%I in (python.exe) do if exist "%%~$PATH:I" set "_PY_ABS=%%~$PATH:I"\r\n'
+            'if exist "%_PY_ABS%" goto run\r\n'
+            'for %%I in (py.exe) do if exist "%%~$PATH:I" set "_PY_LAUNCH=%%~$PATH:I"\r\n'
+            'if defined _PY_LAUNCH "%_PY_LAUNCH%" -3 "%_SCRIPT%" %* & goto :eof\r\n'
+            'echo Python interpreter not found. Ensure Python is installed and on PATH.\r\n'
+            'exit /b 9009\r\n'
+            ':run\r\n'
+            '"%_PY_ABS%" "%_SCRIPT%" %*\r\n'
+        )
+        _write_text_if_changed(wrapper_path, content, verbose, crlf=True)
+
 
 def make_executable(script_path: Path, verbose: bool = True) -> None:
     """Ensure a script is executable (POSIX) or inform about Windows behavior."""

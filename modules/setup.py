@@ -1044,9 +1044,40 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
 
     created = 0
     unchanged = 0
+
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from scripts_setup.launcher_generator import (
+            write_wrapper,
+            is_managed_wrapper,
+            generate_manifest,
+        )
+    except ImportError:
+        write_wrapper = None
+        is_managed_wrapper = None
+        generate_manifest = None
+
     for script_name in sorted(console_map.keys()):
-        if os.name == "nt":
-            wrapper = bin_dir / f"{script_name}.cmd"
+        is_win = os.name == "nt"
+        wrapper = bin_dir / (f"{script_name}.cmd" if is_win else script_name)
+
+        if write_wrapper is not None:
+            if wrapper.exists() and not is_managed_wrapper(wrapper):
+                if _is_verbose:
+                    print(f"[INFO] Preserving unmanaged wrapper: {wrapper.name}")
+                unchanged += 1
+                continue
+            changed = write_wrapper(wrapper, script_name, is_windows=is_win)
+            if changed:
+                created += 1
+                if _is_verbose:
+                    print(f"[SUCCESS] Wrote {wrapper}")
+            else:
+                unchanged += 1
+                if _is_verbose:
+                    print(f"[INFO] No change for {wrapper.name}")
+        elif is_win:
             content = (
                 "@echo off\r\n"
                 "setlocal\r\n"
@@ -1066,7 +1097,6 @@ def generate_console_proxies(installed_pkg_names: list[str]) -> None:
             else:
                 unchanged += 1
         else:
-            wrapper = bin_dir / script_name
             content = f"""#!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
@@ -1084,6 +1114,14 @@ exec "{script_name}" "$@"
                 created += 1
             else:
                 unchanged += 1
+
+    if generate_manifest is not None:
+        try:
+            generate_manifest(scripts_dir)
+        except Exception as e:
+            if _is_verbose:
+                print(f"[WARN] Could not update scripts_manifest.json: {e}")
+
 
     status_line(f"Console proxies: {created} created/updated, {unchanged} unchanged", "ok")
 

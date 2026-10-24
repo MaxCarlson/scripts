@@ -85,12 +85,13 @@
   - [x] 4.3.3: Implement migration and rollback functions + CLI entry point
   - [x] 4.3.4: Run test to verify it passes
   - [x] 4.3.5: Commit Task 4.3
-- [ ] Task 4.4: Integration into Existing Setup Scripts (Awaiting user approval checkpoint)
-  - [ ] 4.4.1: Write test verifying setup script delegation (`test_setup_integration.py`)
-  - [ ] 4.4.2: Run test to verify baseline
-  - [ ] 4.4.3: Refactor `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`
-  - [ ] 4.4.4: Run tests to verify all pass
-  - [ ] 4.4.5: Commit Task 4.4
+- [x] Task 4.4: Integration into Existing Setup Scripts & Disposable Rehearsal
+  - [x] 4.4.1: Write rehearsal test verifying full workflow, backup, rollback, and execution (`test_migration_rehearsal.py`)
+  - [x] 4.4.2: Write test verifying setup script delegation (`test_setup_integration.py`)
+  - [x] 4.4.3: Refactor `modules/setup.py`, `pyscripts/setup.py`, `bootstrap_latest.py`, `scripts_setup/setup_utils.py`
+  - [x] 4.4.4: Run tests to verify all 97 tests pass
+  - [x] 4.4.5: Author `REHEARSAL_REPORT.md` documenting diffs and safety evidence
+  - [ ] 4.4.6: User Approval Checkpoint before real `bin/` migration
 
 ## Stage 5: End-to-End Validation, Overhead Benchmarks, Contract & Documentation
 - [ ] Task 5.1: End-to-End Integration Suite
