@@ -141,6 +141,7 @@ def test_stats_table_and_json_include_resource_fields() -> None:
     assert "python busy.py" in table
     assert payload["numeric_id"] == 2
     assert "thread_count" in payload
+    assert "net_read_bytes_per_second" in payload
 
 
 def test_stats_table_cells_share_header_columns_without_ansi_padding() -> None:
@@ -161,7 +162,6 @@ def test_stats_table_cells_share_header_columns_without_ansi_padding() -> None:
 
     assert header.index("GPU") == row.index("--")
     assert header.index("P/T") == row.index("1/4")
-    assert "net_read_bytes_per_second" in payload
 
 
 def test_stats_table_can_colorize_status_and_metrics() -> None:

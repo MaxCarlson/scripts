@@ -179,6 +179,82 @@ def test_form_state_nargs_string_tokens_splitting():
         "-u",
         "https://site/2",
     ]
+    parsed = parser.parse_args(argv[1:])
+    assert parsed.quality == [80, 70]
+    assert parsed.url == ["https://site/1", "https://site/2"]
+    assert parsed.files == ["a.txt", "b.txt"]
+
+
+def test_form_state_common_actions_round_trip_through_argparse():
+    parser = argparse.ArgumentParser(prog="tool")
+    parser.add_argument("source", type=Path)
+    parser.add_argument("--mode", choices=("fast", "safe"), required=True)
+    parser.add_argument("--pair", nargs=2)
+    parser.add_argument("-I", "--include", action="append", default=[])
+    parser.add_argument("--sorted", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("-v", "--verbose", action="count", default=1)
+    parser.add_argument("-q", "--quiet", action="store_true")
+    command = introspect_parser(parser)
+    form = FormState(command)
+    form.set_value("source", "folder with space/input.txt")
+    form.set_value("mode", "safe")
+    form.set_value("pair", ["left", "right"])
+    form.set_value("include", ["one", "two"])
+    form.set_value("sorted", False)
+    form.set_value("verbose", 3)
+    form.set_value("quiet", True)
+
+    argv = form.build_argv(executable=["tool"])[1:]
+    parsed = parser.parse_args(argv)
+
+    assert parsed.source == Path("folder with space/input.txt")
+    assert parsed.mode == "safe"
+    assert parsed.pair == ["left", "right"]
+    assert parsed.include == ["one", "two"]
+    assert parsed.sorted is False
+    assert parsed.verbose == 3
+    assert parsed.quiet is True
+
+
+def test_form_state_fixed_nargs_round_trips_through_argparse():
+    parser = argparse.ArgumentParser(prog="tool")
+    parser.add_argument("--pair", nargs=2)
+    parser.add_argument("--batch", action="append", nargs=2)
+    command = introspect_parser(parser)
+    form = FormState(command)
+    form.set_value("pair", ["left side", "right"])
+    form.set_value("batch", [["one", "two"], ["three", "four"]])
+
+    argv = form.build_argv(executable=["tool"])[1:]
+
+    assert argv == [
+        "--pair",
+        "left side",
+        "right",
+        "--batch",
+        "one",
+        "two",
+        "--batch",
+        "three",
+        "four",
+    ]
+    assert vars(parser.parse_args(argv)) == {
+        "pair": ["left side", "right"],
+        "batch": [["one", "two"], ["three", "four"]],
+    }
+
+
+def test_append_nargs_default_is_not_emitted_twice():
+    parser = argparse.ArgumentParser(prog="tool")
+    parser.add_argument("--tag", action="append", default=["base"])
+    command = introspect_parser(parser)
+    form = FormState(command)
+    form.set_value("tag", ["base", "extra"])
+
+    argv = form.build_argv(executable=["tool"])[1:]
+
+    assert argv == ["--tag", "extra"]
+    assert parser.parse_args(argv).tag == ["base", "extra"]
 
 
 def test_copy_matching_form_values_filters_choices():

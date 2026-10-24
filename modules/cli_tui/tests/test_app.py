@@ -65,6 +65,9 @@ def test_universal_key_q_confirmation_and_cancellation():
     app.process_key(ord("q"))
     assert app.is_confirming_quit is True
     app.process_key(ord("y"))
+    assert app.is_confirming_layout_save is True
+    assert app.is_terminated is False
+    app.process_key(ord("n"))
     assert app.is_terminated is True
 
 

@@ -26,11 +26,11 @@ from runmux.history import (
     history_entry_by_id,
     indexed_history_entries,
     list_saved_commands,
+    load_unique_commands,
     mark_saved_command_run,
     most_common_history_entries,
     save_command,
     save_record_command,
-    load_unique_commands,
     saved_bases,
 )
 from runmux.ipc import IpcError
@@ -317,6 +317,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     stats_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON and exit.")
     stats_parser.set_defaults(func=handle_stats)
+
+    tui_parser = subparsers.add_parser("tui", help="Open the persistent process workspace.")
+    tui_parser.set_defaults(func=handle_tui)
 
     history_parser = subparsers.add_parser("history", help="Show runmux command history.")
     history_parser.add_argument(
@@ -989,6 +992,20 @@ def handle_stats(args: argparse.Namespace) -> int:
     )
 
 
+def handle_tui(args: argparse.Namespace) -> int:
+    """Handle ``runmux tui``."""
+
+    from runmux.history import history_path_for_state_dir
+    from runmux.tui import run_tui
+
+    store = get_store(args)
+    return run_tui(
+        store,
+        history_path=history_path_for_state_dir(store.state_dir),
+        root_dir=Path.cwd(),
+    )
+
+
 def handle_history(args: argparse.Namespace) -> int:
     """Handle ``runmux history``."""
 
@@ -1322,7 +1339,8 @@ def render_history_browser(
         columns,
     )
     help_lines = wrap_history_browser_text(
-        "↑/↓ j/k | PgUp/PgDn page | r run | Enter inspect | p print | s save | d delete | b prefix | / contains | c clear | v details | w/x wrap | q",
+        "↑/↓ j/k | PgUp/PgDn page | r run | s save | Enter inspect | p print | "
+        "d delete | b prefix | / contains | c clear | v details | w/x wrap | q",
         columns,
     )
     footer_lines = message_lines + filter_lines + help_lines

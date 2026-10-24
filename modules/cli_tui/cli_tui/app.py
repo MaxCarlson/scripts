@@ -3,12 +3,15 @@ from __future__ import annotations
 import argparse
 import curses
 import os
+from pathlib import Path
 import re
 import sys
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional, Sequence
 
 from .console_pane import ConsolePaneRunner
+from .layout_store import PaneLayoutStore
+from .output_capture import OutputFileCapture
 from .process_runner import OutputViewport, ProcessRunner, _visible_len, wrap_ansi_line
 from .schema import CliCommand, introspect_parser
 from .state import (
@@ -195,6 +198,32 @@ class PostRunAction:
     predicate: Optional[Callable[[CliTuiApp], bool]] = None
 
 
+def _nonnegative_index(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError, OverflowError):
+        return 0
+
+
+def _is_json_value(value: Any) -> bool:
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return True
+    if isinstance(value, list):
+        return all(_is_json_value(item) for item in value)
+    return False
+
+
+class _RestoredPaneOutput:
+    """Read-only output snapshot restored from a saved workspace layout."""
+
+    def __init__(self, lines: Sequence[str]) -> None:
+        self.lines = list(lines)
+        self.is_running = False
+        self.exit_code = 0
+        self.elapsed_seconds = 0.0
+        self.restored = True
+
+
 class CliTuiApp:
     """Main interactive TUI controller for command-line tools."""
 
@@ -206,6 +235,10 @@ class CliTuiApp:
         title: Optional[str] = None,
         executable: Optional[Sequence[str]] = None,
         action_handlers: Optional[Dict[str, Callable[[], None]]] = None,
+        layout_dir: Optional[str | os.PathLike[str]] = None,
+        launch_dir: Optional[str | os.PathLike[str]] = None,
+        app_id: Optional[str] = None,
+        enable_layout_persistence: bool = True,
     ) -> None:
         if root_command is not None:
             self.root_command = root_command
@@ -230,6 +263,16 @@ class CliTuiApp:
             0  # 0..len(widgets)-1: widget, len: [Run], len+1: [Preview], len+2: [Back]
         )
         self.menu_cursor: int = 0
+        self.layout_store = PaneLayoutStore(layout_dir) if enable_layout_persistence else None
+        self.layout_root = Path(launch_dir or os.getcwd()).expanduser().resolve()
+        self.layout_app_id = app_id or self.root_command.prog or self.title
+        self.last_message = ""
+        self.is_confirming_layout_save = False
+        self.is_showing_output_capture = False
+        self.is_confirming_output_overwrite = False
+        self.output_capture_directory = str(Path.cwd())
+        self.output_capture_filename = "pane-output.log"
+        self.output_capture_field = 0
 
         self.is_pane_manager_open: bool = False
         self.manager_cursor: int = 0
@@ -252,6 +295,226 @@ class CliTuiApp:
                 self.sampler = None
         self._last_sys_stats: Optional[Any] = None
         self._last_proc_stats: Optional[Any] = None
+        self._load_saved_layout()
+
+    def _load_saved_layout(self) -> None:
+        if self.layout_store is None:
+            return
+        saved = self.layout_store.load(self.layout_root, self.layout_app_id)
+        if not saved or not isinstance(saved.get("panes"), list):
+            return
+
+        panes: List[PaneSession] = []
+        for descriptor in saved["panes"][:50]:
+            if not isinstance(descriptor, dict):
+                continue
+            try:
+                pane_type = PaneType(descriptor.get("type", PaneType.COMMAND.value))
+            except (TypeError, ValueError):
+                pane_type = PaneType.COMMAND
+            pane = PaneSession(
+                id=os.urandom(4).hex(),
+                title=str(descriptor.get("title") or "Main"),
+                pane_type=pane_type,
+            )
+            path = descriptor.get("path", [])
+            if not isinstance(path, list):
+                path = []
+            command = self.root_command
+            for crumb in path:
+                if not isinstance(crumb, str) or crumb not in command.subcommands:
+                    break
+                command = command.subcommands[crumb]
+                pane.navigation.push(crumb, TuiScreenMode.MENU)
+
+            screen_name = descriptor.get("screen", TuiScreenMode.MENU.name)
+            try:
+                screen = TuiScreenMode[screen_name]
+            except (KeyError, TypeError):
+                screen = TuiScreenMode.MENU
+            values = descriptor.get("form_values")
+            if pane_type == PaneType.COMMAND and isinstance(values, dict):
+                pane.current_form = FormState(command, subcommands_path=pane.navigation.path)
+                valid_destinations = {arg.dest for arg in command.arguments}
+                for key, value in values.items():
+                    if key in valid_destinations and _is_json_value(value):
+                        pane.current_form.set_value(key, value)
+                pane.current_form.focused_index = _nonnegative_index(
+                    descriptor.get("form_cursor")
+                )
+            if screen == TuiScreenMode.RUNNING and pane_type == PaneType.COMMAND:
+                output = descriptor.get("output", [])
+                if isinstance(output, list) and all(isinstance(line, str) for line in output):
+                    pane.runner = _RestoredPaneOutput(output)
+            if pane_type == PaneType.CONSOLE:
+                console_cwd = descriptor.get("console_cwd")
+                if not isinstance(console_cwd, str) or not console_cwd:
+                    console_cwd = os.getcwd()
+                console = ConsolePaneRunner(cwd=console_cwd)
+                history = descriptor.get("console_history")
+                if isinstance(history, list) and all(isinstance(line, str) for line in history):
+                    console.history_lines = history[-10000:]
+                pane.runner = console
+                pane.extra_data["console_runner"] = console
+                screen = TuiScreenMode.RUNNING
+            pane.navigation.current_screen = screen
+            pane.screen_mode = screen
+            pane.extra_data["form_cursor"] = _nonnegative_index(descriptor.get("form_cursor"))
+            pane.extra_data["menu_cursor"] = _nonnegative_index(descriptor.get("menu_cursor"))
+            viewport = descriptor.get("viewport")
+            if isinstance(viewport, dict):
+                pane.viewport.scroll_offset = _nonnegative_index(viewport.get("scroll_offset"))
+                if isinstance(viewport.get("auto_scroll"), bool):
+                    pane.viewport.auto_scroll = viewport["auto_scroll"]
+            panes.append(pane)
+
+        if panes:
+            self.workspace.panes = panes
+            self.workspace.active_index = min(
+                _nonnegative_index(saved.get("active_index")), len(panes) - 1
+            )
+            self._restore_active_pane_state()
+
+    def _layout_data(self) -> Dict[str, Any]:
+        self._save_current_pane_state()
+        panes: List[Dict[str, Any]] = []
+        for pane in self.workspace.panes:
+            screen = pane.navigation.current_screen
+            output: List[str] = []
+            if pane.runner is not None and hasattr(pane.runner, "lines"):
+                try:
+                    output = list(pane.runner.lines)[-10000:]
+                except Exception:
+                    output = []
+            form_values = pane.current_form.values if pane.current_form else None
+            try:
+                import json
+
+                safe_values = json.loads(json.dumps(form_values)) if form_values is not None else None
+            except (TypeError, ValueError):
+                safe_values = None
+            descriptor: Dict[str, Any] = {
+                "title": pane.title,
+                "type": pane.pane_type.value,
+                "screen": screen.name,
+                "path": pane.navigation.path,
+                "form_values": safe_values,
+                "form_cursor": pane.extra_data.get(
+                    "form_cursor", pane.current_form.focused_index if pane.current_form else 0
+                ),
+                "menu_cursor": pane.extra_data.get("menu_cursor", 0),
+                "viewport": {
+                    "scroll_offset": pane.viewport.scroll_offset,
+                    "auto_scroll": pane.viewport.auto_scroll,
+                },
+            }
+            if screen == TuiScreenMode.RUNNING:
+                descriptor["output"] = output
+            if pane.pane_type == PaneType.CONSOLE and pane.runner is not None:
+                descriptor["console_cwd"] = getattr(pane.runner, "cwd", os.getcwd())
+                descriptor["console_history"] = list(getattr(pane.runner, "lines", []))[-10000:]
+            panes.append(descriptor)
+        return {"panes": panes, "active_index": self.workspace.active_index}
+
+    def save_layout(self) -> bool:
+        if self.layout_store is None:
+            self.last_message = "Pane layout saving is disabled"
+            return False
+        try:
+            self.layout_store.save(self.layout_root, self.layout_app_id, self._layout_data())
+        except (OSError, TypeError, ValueError) as exc:
+            self.last_message = f"Could not save pane layout: {exc}"
+            return False
+        self.last_message = "Pane layout saved"
+        return True
+
+    def _finish_quit(self) -> None:
+        self.workspace.terminate_all()
+        if self.runner and getattr(self.runner, "is_running", False):
+            self.runner.terminate()
+        self.is_terminated = True
+        self.is_confirming_quit = False
+        self.is_confirming_layout_save = False
+
+    def _open_output_capture_dialog(self) -> None:
+        pane = self.workspace.active_pane
+        safe_title = re.sub(r"[^A-Za-z0-9._-]+", "_", pane.title).strip("._") or "pane"
+        self.output_capture_directory = str(Path.cwd())
+        self.output_capture_filename = f"{safe_title}.log"
+        self.output_capture_field = 0
+        self.is_showing_output_capture = True
+        self.is_confirming_output_overwrite = False
+
+    def _handle_output_capture_key(self, key: int) -> bool:
+        if self.is_confirming_output_overwrite:
+            if key in (ord("y"), ord("Y")):
+                self._start_output_capture(overwrite=True)
+            elif key in (ord("n"), ord("N"), 27):
+                self.is_confirming_output_overwrite = False
+                self.is_showing_output_capture = False
+            return True
+        if key == 27:
+            self.is_showing_output_capture = False
+            return True
+        if key in (9, curses.KEY_BTAB):
+            self.output_capture_field = 1 - self.output_capture_field
+            return True
+        if key in (10, 13):
+            if self.output_capture_field == 0:
+                self.output_capture_field = 1
+            else:
+                target = Path(self.output_capture_directory).expanduser() / self.output_capture_filename
+                if target.exists():
+                    self.is_confirming_output_overwrite = True
+                else:
+                    self._start_output_capture(overwrite=False)
+            return True
+        values = [self.output_capture_directory, self.output_capture_filename]
+        if key in (8, 127, curses.KEY_BACKSPACE):
+            values[self.output_capture_field] = values[self.output_capture_field][:-1]
+        elif 32 <= key <= 126:
+            values[self.output_capture_field] += chr(key)
+        self.output_capture_directory, self.output_capture_filename = values
+        return True
+
+    def _start_output_capture(self, *, overwrite: bool) -> None:
+        self.is_confirming_output_overwrite = False
+        self.is_showing_output_capture = False
+        pane = self.workspace.active_pane
+        target = Path(self.output_capture_directory).expanduser() / self.output_capture_filename
+        capture: Optional[OutputFileCapture] = None
+        try:
+            previous = pane.extra_data.get("output_capture")
+            if previous is not None:
+                previous.close()
+                pane.extra_data.pop("output_capture", None)
+            capture = OutputFileCapture(
+                target,
+                overwrite=overwrite,
+                on_error=lambda exc: setattr(self, "last_message", f"Output capture failed: {exc}"),
+            )
+            runner = pane.runner
+            active_runner = getattr(runner, "active_runner", None) or runner
+            capture_runner = runner if hasattr(runner, "subscribe_output") else active_runner
+            if hasattr(capture_runner, "subscribe_output"):
+                capture.attach(capture_runner)
+            elif hasattr(runner, "lines"):
+                capture.write_snapshot(runner.lines)
+            else:
+                capture.close()
+                self.last_message = "The active pane has no capturable output"
+                return
+            pane.extra_data["output_capture"] = capture
+            self.last_message = f"Saving pane output to {target}"
+        except (OSError, TypeError, ValueError) as exc:
+            if capture is not None:
+                capture.close()
+            self.last_message = f"Could not save pane output: {exc}"
+
+    def _close_output_capture(self, pane: PaneSession) -> None:
+        capture = pane.extra_data.pop("output_capture", None)
+        if capture is not None:
+            capture.close()
 
     def add_post_run_action(self, action: PostRunAction) -> None:
         """Register a post-run action callback."""
@@ -462,6 +725,15 @@ class CliTuiApp:
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
+        if self.is_showing_output_capture:
+            return self._handle_output_capture_key(key)
+        if key == 19:  # Ctrl+S saves the current pane workspace.
+            self.save_layout()
+            return True
+        if key == 15:  # Ctrl+O opens pane output capture.
+            self._open_output_capture_dialog()
+            return True
+
         # 0a. Choice dialog routing
         if getattr(self, "is_showing_new_pane_choice", False):
             return self._handle_choice_dialog_key(key)
@@ -490,6 +762,7 @@ class CliTuiApp:
             if runner and hasattr(runner, "handle_key"):
                 handled = runner.handle_key(key)
                 if getattr(runner, "is_terminated", False):
+                    self._close_output_capture(self.workspace.active_pane)
                     self.workspace.delete_pane(self.workspace.active_index)
                     self._restore_active_pane_state()
                     return True
@@ -506,13 +779,18 @@ class CliTuiApp:
             return True
 
         # 2. Quit confirmation dialog handling
+        if self.is_confirming_layout_save:
+            if key in (ord("y"), ord("Y")):
+                if self.save_layout():
+                    self._finish_quit()
+            elif key in (ord("n"), ord("N"), 27):
+                self._finish_quit()
+            return True
+
         if self.is_confirming_quit:
             if key in (ord("y"), ord("Y")):
-                self.workspace.terminate_all()
-                if self.runner and self.runner.is_running:
-                    self.runner.terminate()
-                self.is_terminated = True
                 self.is_confirming_quit = False
+                self.is_confirming_layout_save = True
             elif key in (ord("n"), ord("N"), 27):  # 'n' or Esc cancels
                 self.is_confirming_quit = False
             return True
@@ -634,12 +912,16 @@ class CliTuiApp:
             return True
         elif key == ord("d"):
             if len(self.workspace.panes) > 1:
+                removed_pane = self.workspace.panes[self.manager_cursor]
                 self.workspace.delete_pane(self.manager_cursor)
+                self._close_output_capture(removed_pane)
                 if self.manager_cursor >= len(self.workspace.panes):
                     self.manager_cursor = max(0, len(self.workspace.panes) - 1)
                 self._restore_active_pane_state()
             return True
         elif key == ord("D"):
+            for pane in self.workspace.panes:
+                self._close_output_capture(pane)
             self.workspace.delete_all()
             self.manager_cursor = 0
             self._restore_active_pane_state()
@@ -1333,6 +1615,23 @@ class CliTuiApp:
 
     def render_virtual_screen(self, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
+        if self.is_confirming_layout_save:
+            prompt = ["Save the current pane layout before exiting?", "[y] Save and exit", "[n] Exit without saving"]
+            if self.last_message.startswith("Could not save"):
+                prompt.insert(0, self.last_message)
+            return self._render_simple_dialog("Save Pane Layout", prompt, height, width)
+        if self.is_showing_output_capture:
+            if self.is_confirming_output_overwrite:
+                prompt = ["The target file already exists.", str(Path(self.output_capture_directory) / self.output_capture_filename), "[y] Overwrite", "[n] Cancel"]
+                return self._render_simple_dialog("Confirm Output File", prompt, height, width)
+            prompt = [
+                "Directory (Tab to switch):",
+                f"  {'▶ ' if self.output_capture_field == 0 else '  '}{self.output_capture_directory}",
+                "Filename:",
+                f"  {'▶ ' if self.output_capture_field == 1 else '  '}{self.output_capture_filename}",
+                "[Enter] Continue / Save    [Esc] Cancel",
+            ]
+            return self._render_simple_dialog("Capture Pane Output", prompt, height, width)
         if getattr(self, "is_showing_new_pane_choice", False):
             return self.render_new_pane_choice_dialog(height=height, width=width)
 
@@ -1411,6 +1710,21 @@ class CliTuiApp:
             is_scrollable = total_l > max(1, height - len(telemetry_lines) - 6)
 
         badges = self._get_active_hotkey_badges(is_scrollable=is_scrollable)
+        if width >= 120:
+            compact_labels = {
+                "[Q] Force Quit": "[Q] Force",
+                "[Esc] Back": "[Esc]",
+                "[t] Telemetry: Full": "[t] Telemetry",
+                "[t] Telemetry: Compact": "[t] Telemetry",
+                "[t] Telemetry: Off": "[t] Telemetry",
+                "[↑/↓] Scroll": "[↑/↓]",
+            }
+            badges = [compact_labels.get(badge, badge) for badge in badges]
+            badges.append("[Ctrl+S] Save / [Ctrl+O] File")
+        else:
+            badges.extend(["[Ctrl+S] Save Layout", "[Ctrl+O] Capture Output"])
+        if self.last_message:
+            badges.append(self.last_message)
         footer_lines = format_hotkey_footer(badges, width)
         inner_height = max(1, height - len(telemetry_lines) - 1 - len(footer_lines))
 
@@ -1610,7 +1924,9 @@ class CliTuiApp:
 
         elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
-            if runner and runner.is_running:
+            if runner and getattr(runner, "restored", False):
+                status_text = "RESTORED OUTPUT  |  Process was not restarted"
+            elif runner and runner.is_running:
                 status_text = f"RUNNING  |  Elapsed: {runner.elapsed_seconds:.1f}s"
             elif runner and runner.exit_code == 0:
                 status_text = (
@@ -1645,9 +1961,19 @@ class CliTuiApp:
         lines.extend(footer_lines)
         return lines[:height]
 
+    def _render_simple_dialog(self, title: str, content: List[str], height: int, width: int) -> List[str]:
+        border_w = max(24, min(width - 2, 80))
+        lines = [f"┌─ {title} ".ljust(border_w - 1, "─") + "┐"]
+        inner_width = border_w - 4
+        lines.extend(f"│  {line[:inner_width].ljust(inner_width)}  │" for line in content)
+        lines.append("└" + "─" * (border_w - 2) + "┘")
+        return lines[:height]
+
     def close(self) -> None:
-        """Cleanly terminate runners and background telemetry sampler."""
+        """Cleanly terminate runners, close output captures, and stop telemetry."""
         self.workspace.terminate_all()
+        for pane in self.workspace.panes:
+            self._close_output_capture(pane)
         if self.runner and self.runner.is_running:
             self.runner.terminate()
         if self.sampler is not None:

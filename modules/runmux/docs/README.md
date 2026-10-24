@@ -1,6 +1,6 @@
 # Runmux Engineering Guide
 
-Last updated: 2026-06-22 06:44:27 -07:00
+Last updated: 2026-10-23
 
 This directory is the one-stop engineering introduction and handoff space for
 `runmux`. It explains what the program is, how it is built, its important

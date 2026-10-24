@@ -8,6 +8,8 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 - **Dynamic Form Widgets**: Automatically generates interactive form widgets for boolean flags (`[X]`), choice dropdowns (`◀ opt ▶`), text inputs (`[ value ]`), counter flags (`-v`, `-vv`), and multi-choice selections.
 - **Live Streaming Process Runner**: Runs child processes asynchronously, streaming stdout and stderr into a thread-safe circular buffer with ANSI color rendering (8-color palette) and virtual terminal in-place overwrite (`\r`) support.
 - **Scrollable Output Viewport**: Top-aligned, width-aware line wrapping that preserves table borders and ANSI formatting, with real-time status, execution duration, and line scroll indicators (`Lines X-Y of Z`).
+- **Persistent Pane Workspaces**: Save and restore pane navigation, forms, scrollback, console directory, and active pane. Layouts are scoped to the canonical launch directory and app ID; running commands are restored as read-only output and are never relaunched.
+- **Pane Output Capture**: Use `Ctrl+O` to choose a directory and filename, then stream the pane's current output and new process output into a UTF-8 file. Existing files require overwrite confirmation.
 - **Multi-Pane Workspace Manager**:
   - Top tab strip navigation (`[1: title (status)] ▶ [2: title (status)] [+ Shift+Esc]`).
   - Hotkey pane cycling (`[` / `]`).
@@ -18,7 +20,10 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 - **Side-by-Side Comparison Image Viewer**: Native Tkinter + Pillow viewer for visual comparisons (e.g. compression preview sets), featuring aspect-ratio-preserving scaling, 1:1 zoom toggle, and keyboard navigation.
 - **Universal Key Navigation**:
   - `q`: Exit confirmation prompt (context-aware: types 'q' in text fields, prompts in navigation).
-  - `Q`: Unconditional immediate exit (kills child processes, restores terminal cleanly).
+  - `Q`: Unconditional immediate exit (kills direct child processes and restores the terminal).
+  - After confirming `q`, choose whether to save the pane layout before exiting.
+  - `Ctrl+S`: Save the current pane layout immediately.
+  - `Ctrl+O`: Choose a destination file for the active pane's output.
   - `Esc`: Hierarchical back navigation (running -> form -> parent menu -> exit prompt).
 - **Post-Run Action Hooks**: Register custom callback actions (e.g. `[v] View Previews`) triggered upon process completion.
 - **100% Headless Testability**: Includes virtual screen rendering (`render_virtual_screen`) and keystroke dispatch (`process_key`) for comprehensive unit testing without an interactive terminal.
@@ -35,6 +40,8 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 | `cli_tui.process_runner` | Subprocess streaming, ANSI buffer, and viewport | `ProcessRunner`, `OutputViewport`, `VirtualTerminalBuffer`, `wrap_ansi_line` |
 | `cli_tui.console_pane` | Interactive shell console runner | `ConsolePaneRunner` |
 | `cli_tui.app` | Main curses application controller and overlays | `CliTuiApp`, `PostRunAction`, `addstr_ansi` |
+| `cli_tui.layout_store` | Root/app-scoped atomic pane-layout storage | `PaneLayoutStore` |
+| `cli_tui.output_capture` | UTF-8 pane transcript and live output writer | `OutputFileCapture` |
 | `cli_tui.preview_set` | Preview discovery and variant grouping | `scan_preview_directory`, `PreviewSet`, `PreviewItem`, `PreviewVariant` |
 | `cli_tui.image_viewer` | Native Tkinter side-by-side comparison viewer | `SideBySideImageViewer`, `ImageViewerState`, `launch_image_viewer` |
 
@@ -52,6 +59,8 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 | `[` / `]` | Global | Cycle to previous / next workspace pane |
 | `p` | Global | Toggle Split Pane Manager overlay |
 | `Shift+Esc` / `Ctrl+T` | Global | Branch from active pane to a new pane with argument inheritance |
+| `Ctrl+S` | Global | Save the current pane layout |
+| `Ctrl+O` | Global | Choose a file for the active pane's output |
 
 ### Form Configuration Screen
 
@@ -96,6 +105,16 @@ Reusable argparse-to-termdash TUI engine. Automatically converts any `argparse.A
 | `↑` / `↓` (or `k` / `j`) | Cycle between sample images in preview set |
 | `Space` | Toggle 1:1 pixel zoom vs fit-to-panel scaling |
 | `Esc` / `q` / `Q` | Close image viewer and return to TUI |
+
+---
+
+## Pane Layout Storage
+
+`CliTuiApp` loads a saved layout for the current launch directory and parser program name. Layouts are stored under `%LOCALAPPDATA%\cli_tui\layouts` on Windows, or `$XDG_CONFIG_HOME/cli_tui/layouts` (default `~/.config/cli_tui/layouts`) elsewhere. Set `CLI_TUI_LAYOUT_DIR` to override the store location, or pass `layout_dir`, `launch_dir`, and `app_id` to `CliTuiApp` for explicit scoping.
+
+A saved layout keeps pane order, active pane, navigation path, form values, each pane's scroll position, console directory/history, and the last visible output. A running command is not restarted when its layout is restored. Press `Ctrl+S` to save at any time; confirming `q` asks whether to save before exit. `Q` retains its immediate force-quit behavior.
+
+`Ctrl+O` opens the output capture dialog. Choose a directory and filename; an existing file is never overwritten without a separate confirmation. Capture starts with the pane's current scrollback and follows new output from the active process.
 
 ---
 

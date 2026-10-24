@@ -1,4 +1,4 @@
-<!-- version: 0.5.1 -->
+<!-- version: 0.6.1 -->
 # scripts-help
 
 Interactive help browser and registry/README sync for the scripts repository.

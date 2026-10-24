@@ -6,9 +6,10 @@ import json
 import sys
 import threading
 import time
-import pytest
 from pathlib import Path
 from unittest.mock import Mock, patch
+
+import pytest
 
 import runmux.runner as runner
 from runmux.cli import (
@@ -16,12 +17,13 @@ from runmux.cli import (
     browse_history_fzf,
     build_parser,
     format_history_entry,
-    handle_load,
     handle_history,
+    handle_load,
     handle_ls,
     handle_remove,
     handle_run,
     handle_save,
+    handle_tui,
     launch_history_entry,
     print_command_stats,
     render_history_browser,
@@ -42,6 +44,7 @@ from runmux.client import (
     tail_file,
     view_input_loop,
 )
+from runmux.history import SavedCommand
 from runmux.models import AttachmentSummary, RunRecord
 from runmux.runner import (
     build_env_overrides,
@@ -78,6 +81,22 @@ def test_ls_alias_defaults_to_one_shot_list(tmp_path: Path) -> None:
     args = build_parser().parse_args(["--state-dir", str(tmp_path), "ls"])
 
     assert args.func is handle_ls
+
+
+def test_tui_command_uses_custom_state_history_and_current_root(tmp_path: Path, monkeypatch) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path / "state"), "tui"])
+    calls: list[tuple[Path, Path, Path]] = []
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        "runmux.tui.run_tui",
+        lambda store, *, history_path, root_dir: calls.append((store.state_dir, history_path, root_dir)) or 0,
+    )
+
+    assert args.func is handle_tui
+    assert handle_tui(args) == 0
+    assert calls == [(tmp_path / "state", tmp_path / "state" / "commands.json", root)]
 
 
 def test_ls_defaults_to_active_only_and_supports_terminal_views(tmp_path: Path) -> None:
@@ -878,7 +897,8 @@ def test_list_rows_show_numeric_id_and_selected_actions() -> None:
 
     rows = build_list_rows([record], width=80, selected_index=0)
 
-    assert any("3" in row and "python" in row for row in rows)
+    assert any("3" in row for row in rows)
+    assert any("python" in row for row in rows)
     assert any("i=interact" in row and "v=view" in row for row in rows)
 
 
@@ -911,7 +931,7 @@ def test_list_rows_can_colorize_status_and_selection() -> None:
 
     rendered = "\n".join(build_list_rows([record], width=80, selected_index=0, color=True))
 
-    assert "\x1b[1;37mID" in rendered
+    assert "\x1b[1;37m    ID" in rendered
     assert "\x1b[32mrunning  " in rendered
     assert "\x1b[7m" in rendered
 
@@ -1138,17 +1158,25 @@ def test_handle_run_save_command_marks_saved(tmp_path: Path) -> None:
     )
     record = Mock(id="run-id", command_line="python -V", cwd=str(tmp_path))
     started = Mock(record=record)
+    saved = SavedCommand(
+        id=7,
+        base="python",
+        argv=["python", "-V"],
+        command_line="python -V",
+        cwd=str(tmp_path),
+        saved_at="2026-10-23T00:00:00+00:00",
+    )
 
     with (
         patch("runmux.cli.create_managed_run", return_value=started),
-        patch("runmux.cli.save_command") as save_command_mock,
+        patch("runmux.cli.save_record_command", return_value=saved) as save_record_mock,
         patch("runmux.cli.mark_saved_command_run") as mark_run_mock,
     ):
         result = handle_run(args)
 
     assert result == 0
-    save_command_mock.assert_called_once()
-    mark_run_mock.assert_called_once_with("python -V")
+    save_record_mock.assert_called_once_with(record)
+    mark_run_mock.assert_called_once_with("python -V", cwd=str(tmp_path))
 
 
 def test_interact_tails_from_end_for_live_tui_without_tail_lines(tmp_path: Path) -> None:

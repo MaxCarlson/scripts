@@ -3,7 +3,8 @@ from __future__ import annotations
 import curses
 import os
 import sys
-from typing import Any, List, Optional
+import threading
+from typing import Any, Callable, List, Optional
 
 from .process_runner import ProcessRunner
 
@@ -23,6 +24,10 @@ class ConsolePaneRunner:
         self.input_buffer: str = ""
         self.cursor_pos: int = 0
         self.is_terminated: bool = False
+        self._output_lock = threading.RLock()
+        self._output_listeners: set[Callable[[str], None]] = set()
+        self._active_output_runner: Optional[ProcessRunner] = None
+        self._active_output_unsubscribe: Optional[Callable[[], None]] = None
 
     @property
     def is_running(self) -> bool:
@@ -42,6 +47,49 @@ class ConsolePaneRunner:
             return self.active_runner.pid
         return None
 
+    def subscribe_output(
+        self,
+        callback: Callable[[str], None],
+        *,
+        seed_callback: Optional[Callable[[List[str]], None]] = None,
+    ) -> Callable[[], None]:
+        """Subscribe to the full console transcript, including future commands."""
+        with self._output_lock:
+            if seed_callback:
+                seed_callback(self.lines)
+            self._output_listeners.add(callback)
+            self._ensure_active_output_subscription()
+
+        def unsubscribe() -> None:
+            with self._output_lock:
+                self._output_listeners.discard(callback)
+
+        return unsubscribe
+
+    def _ensure_active_output_subscription(self) -> None:
+        runner = self.active_runner
+        if runner is None or runner is self._active_output_runner:
+            return
+        if self._active_output_unsubscribe:
+            self._active_output_unsubscribe()
+        self._active_output_runner = runner
+        self._active_output_unsubscribe = runner.subscribe_output(self._broadcast_output)
+
+    def _broadcast_output(self, text: str) -> None:
+        with self._output_lock:
+            listeners = tuple(self._output_listeners)
+        for listener in listeners:
+            try:
+                listener(text)
+            except Exception:
+                continue
+
+    def _clear_active_output_subscription(self) -> None:
+        if self._active_output_unsubscribe:
+            self._active_output_unsubscribe()
+        self._active_output_runner = None
+        self._active_output_unsubscribe = None
+
     @property
     def lines(self) -> List[str]:
         output = list(self.history_lines)
@@ -53,6 +101,7 @@ class ConsolePaneRunner:
         if self.active_runner:
             self.history_lines.extend(self.active_runner.lines)
             self.history_lines.append("")
+            self._clear_active_output_subscription()
             self.active_runner = None
 
         cmd_str = line.strip()
@@ -108,6 +157,8 @@ class ConsolePaneRunner:
             argv = ["/bin/sh", "-c", cmd_str]
 
         self.active_runner = ProcessRunner(argv, cwd=self.cwd)
+        with self._output_lock:
+            self._ensure_active_output_subscription()
         self.active_runner.start()
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
@@ -115,6 +166,7 @@ class ConsolePaneRunner:
             rc = self.active_runner.wait(timeout=timeout)
             self.history_lines.extend(self.active_runner.lines)
             self.history_lines.append("")
+            self._clear_active_output_subscription()
             self.active_runner = None
             return rc
         return 0

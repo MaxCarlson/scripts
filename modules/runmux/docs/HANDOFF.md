@@ -1,100 +1,47 @@
 # Runmux Current Handoff
 
-Last updated: 2026-07-19 08:18:00 -07:00
+Last updated: 2026-10-23
 
 ## Resume Here
 
-Runmux is midway through the multi-attach, input-lock, attachment UI, and
-history roadmap.
+Active work: `runmux tui` persistent process workspace integration.
 
-Read in this order:
+- Branch: `codex/runmux-tui-integration`
+- Worktree: `C:\Users\mcarls\.codex\worktrees\59dc\scripts`
+- Plan: `plans/20261023-1644_runmux-tui-integration/`
+- Status: Runmux TUI plus generic cli_tui persistence/capture implementation complete; awaiting user review.
+- Preserve the main checkout's unrelated documentation changes and leave the older cli_tui worktree untouched.
+- No commit, push, or merge is authorized.
 
-1. Applicable global and repository-level LLM instructions
-2. `README.md`
-3. `plans/HANDOFF.md`
-4. `plans/20260622-0551_runmux-multi-attach-input-lock-history/HANDOFF.md`
-5. `plans/20260622-0551_runmux-multi-attach-input-lock-history/STATUS.md`
-6. `plans/20260622-0551_runmux-multi-attach-input-lock-history/checklist.md`
-7. `plans/20260622-0551_runmux-multi-attach-input-lock-history/00_implementation-plan.md`
-8. `plans/20260622-0551_runmux-multi-attach-input-lock-history/04_history-search-and-summary__planned.md`
+Read the active plan's `HANDOFF.md`, `STATUS.md`, `checklist.md`,
+`ARCHITECTURE_ASSESSMENT.md`, and `00_implementation-plan.md` before resuming.
 
-## Current State
+## Implemented
 
-- Cycle 1 was committed as `f697615`.
-- Stage 2 was committed as `1cb73e4` and manually approved on 2026-07-19.
-- Current branch is `main`; verify it again before implementation or commit work.
-- Runmux source version is `0.9.0`.
-- Stage 2 automated verification passed and the user confirmed concurrent
-  terminals can interact with or view the same managed run.
-- Stage 4 history display, filtering, common-command, replay, interactive, and
-  fzf code is implemented but awaiting user-run tests and manual validation.
-- Documentation now includes a detailed project README, reusable AGENTS policy,
-  and HANDOFF files in every created documentation directory.
-- The active implementation plan is self-contained under
-  `docs/plans/20260622-0551_runmux-multi-attach-input-lock-history/`.
-- Its checklist begins with plan creation, stage completion, and full-plan
-  completion timestamps.
-- Current branch: `main`.
+- Read-only full-ID process adapter and transient status projection.
+- Bounded incremental byte-log reader, background followers, ANSI output capture.
+- Root/app-scoped saved workspace state, browser, output tabs, and `runmux tui` CLI entry.
+- Manual JSON argv launch, history/saved command chooser, lifecycle actions, and confirmations.
+- Per-file cross-process JSON locks and atomic replacements for run history and unique-command ledger.
+- SQLite run creation now reserves an immediate write transaction before allocating reusable numeric IDs.
+- Curses-to-`interact_run` handoff with workspace restoration and IPC error recovery.
 
-## Cycle 2 Implementation
+## Verification So Far
 
-- SQLite attachment-session schema and lifetime counters.
-- View and interact registration with heartbeat leases.
-- Concurrent interact clients.
-- Supervisor-owned FIFO input lock.
-- First interactor receives initial ownership.
-- Lowercase `l` requests ownership from Ctrl-X command mode.
-- Ten-second minimum tenure and 250 ms input-idle transfer.
-- Immediate holder-disconnect handoff.
-- Stale-session expiration.
-- Input from non-holders is discarded rather than replayed.
-- `runmux ls/list` and JSON expose attachment and lock counts.
-
-## Verification Evidence
-
-```text
-pytest --tb=short -q .\modules\runmux\  -> 72 passed
-ruff check ...                         -> passed
-black --check --line-length 120 ...    -> passed
-python -m compileall ...               -> passed
-coverage                               -> 54% overall, store 89%
-real IPC smoke                         -> I:2 V:1 T:3 L:1 Q:1
-```
-
-## Manual Validation
-
-The user confirmed on 2026-07-19 that multiple terminals can interact with or
-view the same managed run. The original validation procedure was:
-
-1. Start an indefinitely interactive managed program.
-2. Open two `runmux interact` clients for the same run.
-3. Verify Ctrl-X works independently in both clients.
-4. Verify only the first client initially controls program input.
-5. In the second client press Ctrl-X, then lowercase `l`.
-6. Verify it reports queue position 1.
-7. After minimum tenure and holder inactivity, verify control transfers.
-8. Add a view client and check live output.
-9. Check `runmux ls` current/lifetime and lock counts.
-10. Detach clients and confirm current counts drop while lifetime totals remain.
-
-## Known Risks
-
-- Stage 3 persistent configuration remains incomplete even though attachment
-  status rendering exists in the current code.
-- Stage 4 storage migration/retention remains unfinished.
-- Existing overall coverage remains modest because older CLI/supervisor paths
-  have limited tests, though new state/store logic has direct coverage.
+- Baseline: Runmux 90 passed / 5 failed; cli_tui 69 passed.
+- Current Runmux suite: 134 passed; cli_tui 85 passed; scripts_help 55 passed. The five initial Runmux baseline failures were resolved in the final stabilization pass. The cli_tui follow-up adds root/app-scoped layout restore, save-on-exit prompt, Ctrl+S save, and Ctrl+O output capture.
+- scripts_help suite: 55 passed.
+- Four concurrent isolated managed launches pass; six concurrent history writers pass three consecutive Windows runs after locking.
+- The worktree's default editable install points to the main checkout. Set `PYTHONPATH` to the worktree Runmux `src` and `modules/cli_tui` when testing.
+- Windows pseudo-terminal startup/render/quit prompt smoke passed using isolated state. This shell was not Windows Terminal (`WT_SESSION` absent).
+- WSL2 Ubuntu is installed, but its Python lacks `psutil`; no package installation or WSL TUI smoke was performed.
 
 ## Next Action
 
-Run the user-owned targeted test commands and manually validate the Stage 4
-history workflow. The second-round requirements are coded but not validated:
-isolated test-history routing, legacy probe filtering, left-aligned/multiline
-colored metadata, combined/clearable filters, metadata/full-content toggles,
-the multi-instance original/current/custom-path run dialog, date-separated
-interactive rows, `w`/`x` wrapping, Enter inspection, and `-V/--verify` replay
-confirmation. The follow-up now uses Enter inspection plus `p` detail printing,
-page navigation, ANSI-safe stats columns, and full saved-command execution
-context. `runmux load` now provides the saved-command browser and `cmd` is its
-compatibility alias. Normal history now records only `runmux run` launch paths;
-restart and duplicate clones are excluded. Do not commit before validation.
+Review the isolated worktree diff, including `modules/cli_tui/docs/plans/20261023-pane-layout-output-capture/`, and decide whether to integrate it later. No commit, push, or merge is authorized.
+
+## Prior Runmux Work
+
+The 2026-06 multi-attach, input-lock, and history work remains documented in
+`plans/20260622-0551_runmux-multi-attach-input-lock-history/` as historical
+implementation context.

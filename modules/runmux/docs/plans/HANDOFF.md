@@ -1,29 +1,16 @@
 # Runmux Plans Index Handoff
 
-Last updated: 2026-07-19 07:04:35 -07:00
+Last updated: 2026-10-23
 
-This folder contains dated, self-contained implementation plans for runmux.
+The active plan is:
 
-Optional project-wide future planning, if created, belongs in:
+`20261023-1644_runmux-tui-integration/`
 
-- `master_plan.md`
-- `master_plan_checklist.md`
+Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`,
+`ARCHITECTURE_ASSESSMENT.md`, and `00_implementation-plan.md` before resuming.
+The earlier multi-attach and history plan remains available as historical
+context at `20260622-0551_runmux-multi-attach-input-lock-history/`.
 
-Their absence is not an error.
-
-Folder naming:
-
-```text
-YYYYMMDD-HHMM_<descriptive-plan-name>/
-```
-
-The most recently worked plan is:
-
-`20260622-0551_runmux-multi-attach-input-lock-history/`
-
-Read that folder's `HANDOFF.md`, `STATUS.md`, `checklist.md`, implementation
-plan, and `04_history-search-and-summary__planned.md` before continuing.
-
-New implementation plans that require multiple work stages must receive their
-own dated folder here. Completed plans remain available as historical design and
-implementation evidence.
+New multi-stage work should receive a dated folder in the documented
+`YYYYMMDD-HHMM_<descriptive-plan-name>/` format. No commit, push, or merge is
+authorized for the active TUI work.

@@ -270,10 +270,10 @@ def format_stats_table(
             f"R {format_bytes(item.read_bytes_per_second):>10}/s "
             f"W {format_bytes(item.write_bytes_per_second):>10}/s"
         )
-        disk = colorize(disk_plain, "36", enabled=color)
+        disk = colorize(f"{disk_plain:<31}", "36", enabled=color)
         gpu_plain = format_gpu_cell(item, color=False)
-        gpu = colorize(f"{gpu_plain:>14}", "32" if gpu_plain != "--" else "90", enabled=color)
-        procs_threads = colorize(f"{item.process_count:>2}/{item.thread_count:<3}", "90", enabled=color)
+        gpu = colorize(f"{gpu_plain:<14}", "32" if gpu_plain != "--" else "90", enabled=color)
+        procs_threads = colorize(f"{item.process_count}/{item.thread_count:<7}", "90", enabled=color)
         command = colorize(detail, "97", enabled=color)
         rows.append(
             f"{item.record.numeric_id:<4} {status} {cpu} {rss} {disk} {gpu} {procs_threads} {command}"
@@ -307,7 +307,7 @@ def format_stats_summary(stats: list[ProcessStats], *, color: bool) -> str:
 def format_stats_header(*, color: bool) -> str:
     """Format the stats table header."""
 
-    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<31} " f"{'GPU':>14} {'P/T':>7} COMMAND"
+    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<31} " f"{'GPU':<14} {'P/T':<7} COMMAND"
     return colorize(header, "1;37", enabled=color)
 
 

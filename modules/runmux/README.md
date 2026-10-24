@@ -28,6 +28,10 @@ runmux interact -i 0
 ```
 
 ```powershell
+runmux tui
+```
+
+```powershell
 runmux stats
 runmux history
 runmux history --starts-with ytaedl
@@ -39,6 +43,20 @@ runmux load
 ```
 
 ## Notes
+
+- `runmux tui` opens the persistent process workspace. Press `?` for the
+  complete hotkey list. Arrow keys navigate or scroll, Enter opens a process,
+  Tab switches focus, `[`/`]` switch views, and `/` searches. Use `l` to launch
+  a JSON argv array, `h` for command history, `c` for saved commands, `v` to
+  save the active command, and `e` to capture pane output to a file. `p`
+  pauses/resumes, `d` duplicates, `r` restarts a terminal run, `i` attaches
+  interactively, `k`/`K` confirm normal/force kill, and `z` confirms removal of
+  a terminal record. `x` closes a view and `s` saves the workspace. On quit,
+  Runmux asks whether to save open views and their scroll positions. Closing a
+  view or the TUI never stops a managed process.
+- Workspace layouts are scoped to the canonical directory where `runmux tui`
+  is started and the Runmux app identity. Layouts live under the selected
+  Runmux state directory, including when `--state-dir` is supplied.
 
 - `runmux list` opens the live list. Use Up/Down to select a run, `v` to view,
   `i` to interact, and `q` to quit.

@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
+import pytest
+
 from cli_tui.schema import CliCommand, introspect_parser
 
 
@@ -102,3 +104,42 @@ def test_introspect_nested_subparsers():
     assert any(a.dest == "name" and a.is_positional for a in add_node.arguments)
     assert any(a.dest == "url" and a.is_positional for a in add_node.arguments)
     assert any(a.dest == "fetch" and not a.is_positional for a in add_node.arguments)
+
+
+def test_introspect_rejects_custom_actions_instead_of_calling_them_store():
+    class UppercaseAction(argparse.Action):
+        def __call__(self, parser, namespace, values, option_string=None):
+            setattr(namespace, self.dest, values.upper())
+
+    parser = argparse.ArgumentParser(prog="tool")
+    parser.add_argument("--name", action=UppercaseAction)
+
+    with pytest.raises(ValueError, match="unsupported argparse action.*UppercaseAction"):
+        introspect_parser(parser)
+
+
+def test_nested_subcommand_aliases_build_a_parseable_argument_vector():
+    parser = argparse.ArgumentParser(prog="tool")
+    root_commands = parser.add_subparsers(dest="command", required=True)
+    remote = root_commands.add_parser("remote", aliases=["r"])
+    remote_commands = remote.add_subparsers(dest="remote_command", required=True)
+    add = remote_commands.add_parser("add", aliases=["a"])
+    add.add_argument("name")
+    add.add_argument("url")
+
+    root = introspect_parser(parser)
+    form = FormState(
+        root.subcommands["r"].subcommands["a"],
+        subcommands_path=["r", "a"],
+    )
+    form.set_value("name", "origin")
+    form.set_value("url", "https://example.test/repo with space")
+
+    argv = form.build_argv(executable=["tool"])[1:]
+    parsed = parser.parse_args(argv)
+
+    assert argv == ["r", "a", "origin", "https://example.test/repo with space"]
+    assert parsed.command == "r"
+    assert parsed.remote_command == "a"
+    assert parsed.name == "origin"
+    assert parsed.url == "https://example.test/repo with space"

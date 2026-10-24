@@ -3,11 +3,21 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
+import tempfile
+import threading
+import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+if os.name == "nt":
+    import msvcrt
+else:
+    import fcntl
 
 from runmux.models import RunRecord, parse_iso_datetime, utc_now_iso
 from runmux.platform_paths import get_state_dir
@@ -15,6 +25,55 @@ from runmux.platform_paths import get_state_dir
 HISTORY_DIR_NAME = ".runmux"
 HISTORY_FILE_NAME = "commands.json"
 UNIQUE_COMMANDS_FILE_NAME = "unique_commands.json"
+_LOCKS_GUARD = threading.Lock()
+_THREAD_LOCKS: dict[str, threading.RLock] = {}
+
+
+@contextmanager
+def _data_lock(path: Path):
+    """Serialize JSON read-modify-write operations across threads and processes."""
+
+    lock_path = Path(path).expanduser().resolve().with_suffix(Path(path).suffix + ".lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    key = str(lock_path)
+    with _LOCKS_GUARD:
+        thread_lock = _THREAD_LOCKS.setdefault(key, threading.RLock())
+    with thread_lock, lock_path.open("a+b") as stream:
+        # Lock byte zero directly. Writing an initialization byte here races
+        # across Windows processes that are opening a brand-new lock file.
+        stream.seek(0)
+        if os.name == "nt":
+            while True:
+                try:
+                    msvcrt.locking(stream.fileno(), msvcrt.LK_LOCK, 1)
+                    break
+                except OSError:
+                    time.sleep(0.05)
+        else:
+            fcntl.flock(stream.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if os.name == "nt":
+                stream.seek(0)
+                msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+            else:
+                fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
+
+
+def _atomic_json_write(path: Path, data: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, temporary_name = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as stream:
+            json.dump(data, stream, indent=2, sort_keys=True)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 class HistoryError(RuntimeError):
@@ -83,8 +142,7 @@ def save_data(data: dict[str, Any], path: Path | None = None) -> None:
     """Write command history data."""
 
     data_path = path or get_history_path()
-    data_path.parent.mkdir(parents=True, exist_ok=True)
-    data_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _atomic_json_write(data_path, data)
 
 
 def command_base(argv: list[str]) -> str:
@@ -98,23 +156,25 @@ def command_base(argv: list[str]) -> str:
 def record_run_started(record: RunRecord, *, path: Path | None = None) -> None:
     """Append a run start entry to history."""
 
-    data = load_data(path)
-    argv = decode_argv(record.argv_json)
-    data["history"].append(
-        {
-            "run_id": record.id,
-            "numeric_id": record.numeric_id,
-            "base": command_base(argv),
-            "argv": argv,
-            "command_line": record.command_line,
-            "cwd": record.cwd,
-            "status": record.status,
-            "started_at": record.started_at or record.created_at,
-            "ended_at": None,
-            "runtime_seconds": None,
-        }
-    )
-    save_data(data, path)
+    data_path = path or get_history_path()
+    with _data_lock(data_path):
+        data = load_data(data_path)
+        argv = decode_argv(record.argv_json)
+        data["history"].append(
+            {
+                "run_id": record.id,
+                "numeric_id": record.numeric_id,
+                "base": command_base(argv),
+                "argv": argv,
+                "command_line": record.command_line,
+                "cwd": record.cwd,
+                "status": record.status,
+                "started_at": record.started_at or record.created_at,
+                "ended_at": None,
+                "runtime_seconds": None,
+            }
+        )
+        save_data(data, data_path)
     record_unique_command_start(record, history_path=path)
 
 
@@ -128,18 +188,21 @@ def record_run_finished(
 ) -> None:
     """Update the matching history entry when a run exits."""
 
-    data = load_data(path)
-    changed = False
-    for item in reversed(data["history"]):
-        if item.get("run_id") == run_id:
-            item["status"] = status
-            item["ended_at"] = utc_now_iso()
-            item["runtime_seconds"] = runtime_seconds
-            item["exit_code"] = exit_code
-            changed = True
-            break
+    data_path = path or get_history_path()
+    with _data_lock(data_path):
+        data = load_data(data_path)
+        changed = False
+        for item in reversed(data["history"]):
+            if item.get("run_id") == run_id:
+                item["status"] = status
+                item["ended_at"] = utc_now_iso()
+                item["runtime_seconds"] = runtime_seconds
+                item["exit_code"] = exit_code
+                changed = True
+                break
+        if changed:
+            save_data(data, data_path)
     if changed:
-        save_data(data, path)
         record_unique_command_finish(
             run_id,
             status=status,
@@ -167,45 +230,46 @@ def save_unique_commands(data: dict[str, Any], path: Path | None = None) -> None
     """Persist the unique-command ledger."""
 
     data_path = unique_commands_path(path)
-    data_path.parent.mkdir(parents=True, exist_ok=True)
-    data_path.write_text(json.dumps(data, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    _atomic_json_write(data_path, data)
 
 
 def record_unique_command_start(record: RunRecord, *, history_path: Path | None = None) -> None:
     """Append one exact effective-cwd run to its command's ledger entry."""
 
-    argv = decode_argv(record.argv_json)
-    data = load_unique_commands(history_path)
-    command_line = record.command_line
-    key = command_line.casefold()
-    entry = next((item for item in data["commands"] if item.get("key") == key), None)
-    started_at = record.started_at or record.created_at
-    run = {
-        "run_id": record.id,
-        "started_at": started_at,
-        "ended_at": None,
-        "status": record.status,
-        "runtime_seconds": None,
-        "cwd": record.cwd,
-    }
-    if entry is None:
-        entry = {
-            "key": key,
-            "command_line": command_line,
-            "argv": argv,
-            "first_run_at": started_at,
-            "last_run_at": started_at,
-            "run_count": 0,
-            "paths": [],
-            "runs": [],
+    ledger_path = unique_commands_path(history_path)
+    with _data_lock(ledger_path):
+        argv = decode_argv(record.argv_json)
+        data = load_unique_commands(history_path)
+        command_line = record.command_line
+        key = command_line.casefold()
+        entry = next((item for item in data["commands"] if item.get("key") == key), None)
+        started_at = record.started_at or record.created_at
+        run = {
+            "run_id": record.id,
+            "started_at": started_at,
+            "ended_at": None,
+            "status": record.status,
+            "runtime_seconds": None,
+            "cwd": record.cwd,
         }
-        data["commands"].append(entry)
-    entry["run_count"] = int(entry.get("run_count", 0)) + 1
-    entry["last_run_at"] = started_at
-    if record.cwd not in entry["paths"]:
-        entry["paths"].append(record.cwd)
-    entry["runs"].append(run)
-    save_unique_commands(data, history_path)
+        if entry is None:
+            entry = {
+                "key": key,
+                "command_line": command_line,
+                "argv": argv,
+                "first_run_at": started_at,
+                "last_run_at": started_at,
+                "run_count": 0,
+                "paths": [],
+                "runs": [],
+            }
+            data["commands"].append(entry)
+        entry["run_count"] = int(entry.get("run_count", 0)) + 1
+        entry["last_run_at"] = started_at
+        if record.cwd not in entry["paths"]:
+            entry["paths"].append(record.cwd)
+        entry["runs"].append(run)
+        save_unique_commands(data, history_path)
 
 
 def record_unique_command_finish(
@@ -217,26 +281,30 @@ def record_unique_command_finish(
 ) -> None:
     """Complete the matching unique-command run without deleting historical data."""
 
-    data = load_unique_commands(history_path)
-    for entry in data["commands"]:
-        for run in reversed(entry.get("runs", [])):
-            if run.get("run_id") == run_id:
-                run["status"] = status
-                run["ended_at"] = utc_now_iso()
-                run["runtime_seconds"] = runtime_seconds
-                save_unique_commands(data, history_path)
-                return
+    ledger_path = unique_commands_path(history_path)
+    with _data_lock(ledger_path):
+        data = load_unique_commands(history_path)
+        for entry in data["commands"]:
+            for run in reversed(entry.get("runs", [])):
+                if run.get("run_id") == run_id:
+                    run["status"] = status
+                    run["ended_at"] = utc_now_iso()
+                    run["runtime_seconds"] = runtime_seconds
+                    save_unique_commands(data, history_path)
+                    return
 
 
 def delete_saved_commands(ids: set[int], *, path: Path | None = None) -> list[SavedCommand]:
     """Delete selected saved-command records only, preserving all history/ledger data."""
 
-    data = load_data(path)
-    removed = [saved_from_dict(raw) for raw in data["saved_commands"] if int(raw.get("id", -1)) in ids]
-    if removed:
-        data["saved_commands"] = [raw for raw in data["saved_commands"] if int(raw.get("id", -1)) not in ids]
-        save_data(data, path)
-    return removed
+    data_path = path or get_history_path()
+    with _data_lock(data_path):
+        data = load_data(data_path)
+        removed = [saved_from_dict(raw) for raw in data["saved_commands"] if int(raw.get("id", -1)) in ids]
+        if removed:
+            data["saved_commands"] = [raw for raw in data["saved_commands"] if int(raw.get("id", -1)) not in ids]
+            save_data(data, data_path)
+        return removed
 
 
 def save_record_command(record: RunRecord, *, path: Path | None = None) -> SavedCommand:
@@ -275,42 +343,46 @@ def save_command(
 
     if not argv:
         raise HistoryError("Cannot save an empty command.")
-    data = load_data(path)
-    rendered = command_line or render_command_line(argv)
-    for raw in data["saved_commands"]:
-        if raw.get("command_line") == rendered and raw.get("cwd") == cwd:
-            return saved_from_dict(raw)
-    next_id = next_saved_id(data["saved_commands"])
-    item = {
-        "id": next_id,
-        "base": command_base(argv),
-        "argv": argv,
-        "command_line": rendered,
-        "cwd": cwd,
-        "name": name,
-        "rows": rows,
-        "columns": columns,
-        "force_color": force_color,
-        "saved_at": utc_now_iso(),
-        "last_run_at": None,
-    }
-    data["saved_commands"].append(item)
-    save_data(data, path)
-    return saved_from_dict(item)
+    data_path = path or get_history_path()
+    with _data_lock(data_path):
+        data = load_data(data_path)
+        rendered = command_line or render_command_line(argv)
+        for raw in data["saved_commands"]:
+            if raw.get("command_line") == rendered and raw.get("cwd") == cwd:
+                return saved_from_dict(raw)
+        next_id = next_saved_id(data["saved_commands"])
+        item = {
+            "id": next_id,
+            "base": command_base(argv),
+            "argv": argv,
+            "command_line": rendered,
+            "cwd": cwd,
+            "name": name,
+            "rows": rows,
+            "columns": columns,
+            "force_color": force_color,
+            "saved_at": utc_now_iso(),
+            "last_run_at": None,
+        }
+        data["saved_commands"].append(item)
+        save_data(data, data_path)
+        return saved_from_dict(item)
 
 
 def mark_saved_command_run(command_line: str, *, cwd: str | None = None, path: Path | None = None) -> None:
     """Record that a saved command was launched."""
 
-    data = load_data(path)
-    changed = False
-    for raw in data["saved_commands"]:
-        if raw.get("command_line") == command_line and (cwd is None or raw.get("cwd") == cwd):
-            raw["last_run_at"] = utc_now_iso()
-            changed = True
-            break
-    if changed:
-        save_data(data, path)
+    data_path = path or get_history_path()
+    with _data_lock(data_path):
+        data = load_data(data_path)
+        changed = False
+        for raw in data["saved_commands"]:
+            if raw.get("command_line") == command_line and (cwd is None or raw.get("cwd") == cwd):
+                raw["last_run_at"] = utc_now_iso()
+                changed = True
+                break
+        if changed:
+            save_data(data, data_path)
 
 
 def list_saved_commands(path: Path | None = None) -> list[SavedCommand]:
