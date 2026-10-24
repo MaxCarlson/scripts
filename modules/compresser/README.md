@@ -125,8 +125,8 @@ when current available memory falls. UI reports the wait reason; Ctrl+C stops
 submissions and drains active owners. Reservations estimate this process's work,
 not OS-enforced limits or a global cross-process budget. Long native calls still
 need to return. Explicit budgets do not query system memory.
-Telemetry uses optional psutil's available value or native Windows/Linux APIs,
-never total RAM. See [psutil](https://psutil.readthedocs.io/stable/index.html#psutil.virtual_memory)
+Telemetry uses shared `resource_metrics` available memory or native Windows/Linux
+fallbacks, never total RAM. See [psutil](https://psutil.readthedocs.io/stable/index.html#psutil.virtual_memory)
 and [Windows MEMORYSTATUSEX](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/ns-sysinfoapi-memorystatusex).
 
 AUTO read-only analysis now saves verified per-format trial results immediately.

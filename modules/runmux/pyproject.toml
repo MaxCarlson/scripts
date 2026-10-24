@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runmux"
-version = "0.11.0"
+version = "0.12.0"
 description = "Cross-platform managed process runner with shared live view and interaction sessions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -36,6 +36,7 @@ classifiers = [
 ]
 dependencies = [
     "psutil>=5.9",
+    "resource-metrics>=0.1.0",
     "pywinpty>=3.0.0; sys_platform == 'win32'",
 ]
 

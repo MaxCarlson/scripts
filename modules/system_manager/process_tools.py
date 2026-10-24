@@ -14,6 +14,8 @@ from typing import Any, Dict, Iterable, List, Optional
 import psutil
 
 from cross_platform import SystemUtils, run_powershell_text
+from resource_metrics import cpu_count, cpu_percent as host_cpu_percent, process_tree as collect_process_tree
+from resource_metrics.process import process_io
 
 
 sysu = SystemUtils()
@@ -336,9 +338,7 @@ def sample_process_stats(
     started = time.monotonic()
 
     for index in range(samples):
-        procs = [root]
-        if include_tree:
-            procs.extend(root.children(recursive=True))
+        procs = collect_process_tree(pid) if include_tree else [root]
         live = []
         for proc in procs:
             try:
@@ -355,7 +355,7 @@ def sample_process_stats(
                 cpu_percent = proc.cpu_percent(interval=None)
                 mem = proc.memory_info()
                 cpu_times = proc.cpu_times()
-                io = proc.io_counters() if hasattr(proc, "io_counters") else None
+                io = process_io(proc)
                 if proc.pid not in first_cpu:
                     first_cpu[proc.pid] = cpu_times
                 if io and proc.pid not in first_io:
@@ -382,7 +382,7 @@ def sample_process_stats(
         per_sample.append(
             {
                 "sample": index + 1,
-                "system_cpu_per_core": psutil.cpu_percent(interval=None, percpu=True),
+                "system_cpu_per_core": host_cpu_percent(interval=None, per_cpu=True) or [],
                 "processes": proc_rows,
             }
         )
@@ -407,8 +407,8 @@ def sample_process_stats(
         "samples": samples,
         "interval_seconds": interval,
         "elapsed_seconds": round(elapsed, 3),
-        "logical_cores": psutil.cpu_count(logical=True),
-        "physical_cores": psutil.cpu_count(logical=False),
+        "logical_cores": cpu_count(logical=True),
+        "physical_cores": cpu_count(logical=False),
         "cpu_time_delta_seconds": round(cpu_time_delta, 6),
         "estimated_core_seconds": round(cpu_time_delta, 6),
         "read_bytes_delta": read_delta,

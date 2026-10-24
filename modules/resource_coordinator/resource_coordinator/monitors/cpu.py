@@ -7,7 +7,7 @@ from __future__ import annotations
 import time
 from typing import List
 
-import psutil
+from resource_metrics import cpu_percent
 
 
 class CpuMonitor:
@@ -19,7 +19,7 @@ class CpuMonitor:
 
     def sample(self) -> float:
         """Take a sample of total CPU utilization percent."""
-        pct = float(psutil.cpu_percent(interval=None))
+        pct = float(cpu_percent() or 0.0)
         now = time.time()
         self._samples.append((now, pct))
         self._prune(now)

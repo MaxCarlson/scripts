@@ -12,16 +12,21 @@ def test_modules_path_import_resolves_regular_package_and_backup_cli(
     repo_root = Path(__file__).resolve().parents[3]
     modules_root = repo_root / "modules"
     environment = os.environ.copy()
-    environment["PYTHONPATH"] = str(modules_root)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        (str(modules_root), str(modules_root / "resource_metrics"))
+    )
 
     script = (
+        "import sys, importlib.machinery; "
+        "sys.meta_path.remove(importlib.machinery.PathFinder); "
+        "sys.meta_path.insert(1, importlib.machinery.PathFinder); "
         "import rrbackup; "
         "import termdash; "
         "from rrbackup import __version__; "
         "from rrbackup.application import build_parser; "
         "assert rrbackup.__file__; "
         "assert termdash.__file__; "
-        "assert __version__ == '2.0.0'; "
+        "assert __version__ == '2.1.0'; "
         "parser = build_parser('backup'); "
         "assert parser.prog == 'backup'; "
         "assert 'create' in parser.format_help(); "

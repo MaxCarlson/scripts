@@ -5,12 +5,15 @@ from __future__ import annotations
 import json
 import select
 import shutil
-import subprocess
 import sys
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
+
+from resource_metrics import gpu_process_memory, process_tree
+from resource_metrics.process import process_io
+from resource_metrics.system import net_io_counters, rate
 
 from runmux.client import refresh_active_statuses
 from runmux.constants import TERMINAL_STATUSES
@@ -137,9 +140,8 @@ def snapshot_record_io(psutil_module: Any, record: RunRecord) -> tuple[int, int]
     read_bytes = 0
     write_bytes = 0
     for process in processes:
-        try:
-            counters = process.io_counters()
-        except (psutil_module.Error, AttributeError):
+        counters = process_io(process, psutil_module=psutil_module)
+        if counters is None:
             continue
         read_bytes += int(getattr(counters, "read_bytes", 0))
         write_bytes += int(getattr(counters, "write_bytes", 0))
@@ -186,20 +188,18 @@ def build_process_stats(
             cpu_percent += float(process.cpu_percent(interval=None))
         with suppress(psutil_module.Error):
             rss_bytes += int(process.memory_info().rss)
-        try:
-            counters = process.io_counters()
+        counters = process_io(process, psutil_module=psutil_module)
+        if counters is not None:
             read_bytes += int(getattr(counters, "read_bytes", 0))
             write_bytes += int(getattr(counters, "write_bytes", 0))
-        except (psutil_module.Error, AttributeError):
-            pass
 
     elapsed = max(0.1, interval_seconds)
     if previous_io is None:
         read_rate = 0.0
         write_rate = 0.0
     else:
-        read_rate = max(0.0, (read_bytes - previous_io[0]) / elapsed)
-        write_rate = max(0.0, (write_bytes - previous_io[1]) / elapsed)
+        read_rate = rate(previous_io[0], read_bytes, elapsed) or 0.0
+        write_rate = rate(previous_io[1], write_bytes, elapsed) or 0.0
 
     gpu_memory = 0
     gpu_util_values: list[float] = []
@@ -232,14 +232,15 @@ def get_process_tree(psutil_module: Any, pid: int | None) -> list[Any]:
 
     if pid is None:
         return []
-    try:
-        root = psutil_module.Process(pid)
-        children = root.children(recursive=True)
-    except psutil_module.Error:
+    processes = process_tree(pid, psutil_module=psutil_module)
+    if not processes:
         return []
-    processes = [root]
-    processes.extend(child for child in children if child.is_running())
-    return processes
+    live = [processes[0]]
+    for process in processes[1:]:
+        with suppress(psutil_module.Error):
+            if process.is_running():
+                live.append(process)
+    return live
 
 
 def format_stats_table(
@@ -352,8 +353,8 @@ def snapshot_system_net(psutil_module: Any) -> tuple[int, int] | None:
     while keeping JSON fields explicit.
     """
 
-    with suppress(psutil_module.Error, AttributeError):
-        counters = psutil_module.net_io_counters()
+    counters = net_io_counters()
+    if counters is not None:
         return int(counters.bytes_recv), int(counters.bytes_sent)
     return None
 
@@ -368,32 +369,18 @@ def net_delta(
     if before is None or after is None:
         return None
     elapsed = max(0.1, interval_seconds)
-    return max(0.0, (after[0] - before[0]) / elapsed), max(0.0, (after[1] - before[1]) / elapsed)
+    return (rate(before[0], after[0], elapsed) or 0.0,
+            rate(before[1], after[1], elapsed) or 0.0)
 
 
 def query_gpu_usage_by_pid() -> dict[int, tuple[int, float | None]]:
-    """Return best-effort NVIDIA GPU usage keyed by process PID."""
+    """Return best-effort NVIDIA GPU memory keyed by process PID."""
 
-    command = [
-        "nvidia-smi",
-        "--query-compute-apps=pid,used_memory",
-        "--format=csv,noheader,nounits",
-    ]
-    try:
-        result = subprocess.run(command, capture_output=True, text=True, timeout=1, check=False)
-    except (OSError, subprocess.TimeoutExpired):
-        return {}
-    if result.returncode != 0:
-        return {}
     usage: dict[int, tuple[int, float | None]] = {}
-    for line in result.stdout.splitlines():
-        parts = [part.strip() for part in line.split(",")]
-        if len(parts) < 2:
-            continue
-        with suppress(ValueError):
-            pid = int(parts[0])
-            memory_bytes = int(float(parts[1]) * 1024 * 1024)
-            usage[pid] = (memory_bytes, None)
+    for item in gpu_process_memory(timeout=1.0):
+        memory = item.get("memory_bytes")
+        if memory is not None:
+            usage[int(item["pid"])] = (int(memory), None)
     return usage
 
 

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "compresser"
-version = "3.2.0"
+version = "3.3.0"
 description = "Reusable image compression, analysis, and perceptual optimization module for manga and manhwa."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -23,6 +23,7 @@ dependencies = [
   "numpy>=1.20",
   "termdash>=0.8.0",
   "cross_platform>=0.8.0",
+  "resource-metrics>=0.1.0",
 ]
 
 [project.scripts]

@@ -4,11 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "backup-module"
-version = "0.1.0"
+version = "0.2.0"
 description = "Restic backup, search, restore, and scheduling CLI."
 requires-python = ">=3.10"
 dependencies = [
-    "psutil>=5.9.0"
+    "psutil>=5.9.0",
+    "resource-metrics>=0.1.0"
 ]
 
 [project.optional-dependencies]
@@ -30,4 +31,4 @@ testpaths = ["tests"]
 addopts = "-ra"
 pythonpath = [
     ".."
-]   
+]

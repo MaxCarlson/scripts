@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from rrbackup.policy import CpuPolicy, evaluate_cpu_policy, wait_for_cpu_window
+import rrbackup.policy as policy_module
 
 UTC = timezone.utc
 NOW = datetime(2026, 7, 29, 12, 0, tzinfo=UTC)
@@ -17,6 +18,21 @@ def test_policy_validation_rejects_invalid_thresholds():
         CpuPolicy(normal_threshold=90, overdue_threshold=80).validate()
     with pytest.raises(ValueError, match="sample_seconds"):
         CpuPolicy(sample_seconds=0).validate()
+
+
+def test_measure_cpu_percent_uses_shared_sampler_with_blocking_interval(monkeypatch):
+    calls = []
+    monkeypatch.setattr(policy_module, "cpu_percent", lambda **kwargs: calls.append(kwargs) or 12.5)
+
+    assert policy_module.measure_cpu_percent(2.5) == 12.5
+    assert calls == [{"interval": 2.5}]
+
+
+def test_measure_cpu_percent_fails_when_shared_sampler_is_unavailable(monkeypatch):
+    monkeypatch.setattr(policy_module, "cpu_percent", lambda **kwargs: None)
+
+    with pytest.raises(RuntimeError, match="CPU telemetry unavailable"):
+        policy_module.measure_cpu_percent(2.5)
 
 
 def test_recent_backup_uses_normal_threshold():

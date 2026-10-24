@@ -1212,11 +1212,12 @@ def main():
 
     # Core modules — now safe because we're under ./.venv
     # Order matters: cross_platform must be installed before python_setup (dependency)
-    with setup_group("Core Modules", 5):
+    with setup_group("Core Modules", 6):
         for name, path in [
             ("standard_ui", STANDARD_UI_SETUP_DIR),
             ("cross_platform", CROSS_PLATFORM_DIR),
             ("script_logging", SCRIPT_LOGGING_DIR),
+            ("resource_metrics", MODULES_DIR / "resource_metrics"),
             ("python_setup", PYTHON_SETUP_DIR),
             ("scripts_setup", SCRIPTS_SETUP_PACKAGE_DIR),
         ]:

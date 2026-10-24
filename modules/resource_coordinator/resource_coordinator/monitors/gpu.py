@@ -4,14 +4,12 @@ GPU utilization telemetry provider with pluggable detection.
 
 from __future__ import annotations
 
-import csv
-import io
 import logging
 import math
 from dataclasses import dataclass
 from typing import Dict, List, Protocol
 
-import anyio
+from resource_metrics import nvidia_gpus
 
 logger = logging.getLogger(__name__)
 
@@ -61,60 +59,37 @@ class NvidiaGpuMonitor:
     async def get_metrics(self) -> List[GpuDeviceMetrics]:
         import asyncio
 
-        proc = None
         try:
-            cmd = [
-                self.binary_name,
-                "--query-gpu=index,name,utilization.gpu,memory.used,memory.total,power.draw",
-                "--format=csv,noheader,nounits",
-            ]
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+            devices = await asyncio.to_thread(
+                nvidia_gpus, timeout=self.timeout_seconds, binary_name=self.binary_name, include_power=True
             )
-            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_seconds)
-            if proc.returncode != 0:
-                return []
-
-            lines = stdout.decode("utf-8", errors="replace").strip().splitlines()
-            metrics: List[GpuDeviceMetrics] = []
-            for parts in csv.reader(io.StringIO("\n".join(lines)), skipinitialspace=True):
-                if len(parts) == 6:
-                    idx = parts[0]
-                    dev_id = f"gpu-{idx}"
-                    try:
-                        util = float(parts[2])
-                        mem_used = float(parts[3])
-                        mem_total = float(parts[4])
-                        power = float(parts[5])
-                        if not all(math.isfinite(v) for v in (util, mem_used, mem_total, power)):
-                            continue
-                        if not 0 <= util <= 100 or not 0 <= mem_used <= mem_total or mem_total <= 0 or power < 0:
-                            continue
-                    except ValueError:
-                        continue
-                    metrics.append(
-                        GpuDeviceMetrics(
-                            device_id=dev_id,
-                            utilization_pct=util,
-                            memory_used_mb=mem_used,
-                            memory_total_mb=mem_total,
-                            power_draw_w=power,
-                        )
+            metrics = []
+            for device in devices:
+                util = device.get("load")
+                memory_used = device.get("mem_used")
+                memory_total = device.get("mem_total")
+                power = device.get("power_w")
+                if None in (util, memory_used, memory_total, power):
+                    continue
+                values = (float(util), float(memory_used), float(memory_total), float(power))
+                if not all(math.isfinite(value) for value in values):
+                    continue
+                util, memory_used, memory_total, power = values
+                if not 0 <= util <= 100 or not 0 <= memory_used <= memory_total or memory_total <= 0 or power < 0:
+                    continue
+                metrics.append(
+                    GpuDeviceMetrics(
+                        device_id=f"gpu-{device['id']}",
+                        utilization_pct=util,
+                        memory_used_mb=memory_used / (1024**2),
+                        memory_total_mb=memory_total / (1024**2),
+                        power_draw_w=power,
                     )
+                )
             return metrics
         except Exception as exc:
             logger.debug("Failed querying NVIDIA GPU telemetry via %s: %s", self.binary_name, exc)
             return []
-        finally:
-            if proc is not None and proc.returncode is None:
-                with anyio.CancelScope(shield=True):
-                    try:
-                        proc.kill()
-                    except ProcessLookupError:
-                        pass
-                    await proc.wait()
 
     async def get_max_utilization(self) -> float:
         metrics = await self.get_metrics()

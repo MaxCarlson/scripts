@@ -10,6 +10,8 @@ from pathlib import Path
 import time
 from typing import Callable
 
+from resource_metrics import memory_stats
+
 MIB = 1024**2
 
 
@@ -44,14 +46,15 @@ def parse_memory_budget(value):
 
 
 def available_memory_bytes() -> int | None:
-    """Use available, never total RAM; optional psutil or native Windows/Linux."""
-    try:
-        import psutil
+    """Use available, never total RAM; fall back to native Windows/Linux counters."""
+    stats = memory_stats()
+    if stats is not None and stats.get("available") is not None:
+        return int(stats["available"])
 
-        return int(psutil.virtual_memory().available)
-    except (ImportError, OSError, AttributeError, NotImplementedError):
-        pass
-    from cross_platform.system_utils import SystemUtils
+    try:
+        from cross_platform.system_utils import SystemUtils
+    except ImportError:
+        return None
 
     system = SystemUtils()
     if system.is_windows():

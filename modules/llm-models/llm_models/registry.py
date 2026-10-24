@@ -5,9 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 import logging
 import os
-import subprocess
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence
+
+from resource_metrics import nvidia_gpus
 
 try:
     from huggingface_hub import snapshot_download
@@ -176,19 +177,10 @@ class ModelAssignmentManager:
                 LOGGER.warning("Invalid LLM_MAX_VRAM_GB value '%s'", os.environ["LLM_MAX_VRAM_GB"])
 
         nvidia_smi = os.environ.get("NVIDIA_SMI", "nvidia-smi")
-        try:
-            result = subprocess.run(
-                [nvidia_smi, "--query-gpu=memory.total", "--format=csv,noheader,nounits"],
-                check=True,
-                capture_output=True,
-                text=True,
-                timeout=5,
-            )
-            first_line = result.stdout.strip().splitlines()[0].strip()
-            return int(first_line)
-        except (subprocess.SubprocessError, FileNotFoundError, ValueError, IndexError) as error:
-            LOGGER.debug("Unable to query nvidia-smi: %s", error)
+        devices = nvidia_gpus(timeout=5, binary_name=nvidia_smi)
+        if not devices or devices[0].get("mem_total") is None:
             return None
+        return int(float(devices[0]["mem_total"]) / (1024**2))
 
 
 DEFAULT_MODEL_SPECS: List[ModelSpec] = [
