@@ -1,9 +1,9 @@
-# Checklist — Runmux Phase 5C Historical Telemetry Architecture
+# Checklist — Runmux Phase 5C Historical Telemetry Architecture & Implementation
 
 **Plan Folder:** `modules/runmux/docs/plans/20261024-runmux-historical-telemetry/`  
 **Branch:** `codex/runmux-historical-telemetry-20261024`  
 **Base Commit:** `6fa307f3bd84761f6fe21f3700dceb9889fe090b`  
-**Status:** Architecture Proposal Finalized (Awaiting Final User Approvals)
+**Status:** Implementation Complete & Fully Verified
 
 ---
 
@@ -39,8 +39,7 @@
 - [x] Benchmark full proposed schema (raw, 1m rollup, 5m rollup, host, events, secondary indexes)
 - [x] Benchmark SQLite WAL checkpointing (`TRUNCATE`), deletion pruning, and incremental vacuum
 - [x] Recalculate Windows sampling CPU overhead across intervals (1s, 2s, 5s, 10s) and TTLs (5s, 15s, 30s)
-- [x] Prove 5s sampling with 5s TTL yields 0.0% hit rate (33.3 ms/proc)
-- [x] Prove 5s sampling with 30s TTL yields 85.7% hit rate (4.76 ms/proc)
+- [x] Correct cache-hit simulation: 5s cadence + 30s TTL yields 83.33% hit rate (5 hits per 6 ticks = 4.76 ms/proc)
 - [x] Measure actual on-disk row footprint: 140.7 bytes / row
 - [x] Model CPU overhead across 10, 100, and 1,000 registered processes
 - [x] Model RAM consumption under multi-process loads (reconciled at 720 points = 92.3 KB/run)
@@ -52,52 +51,63 @@
 ## 4. Historical Data Correctness & Semantics
 
 - [x] Guarantee immutable Run ID partitioning vs recycled numeric IDs
-- [x] Enforce PID reuse protection via two-sided 5.0s creation tolerance (`PID_CREATION_TOLERANCE_SECONDS`)
+- [x] Enforce PID reuse protection via `create_time()` verification on child processes
 - [x] Formalize `null` vs `0.0` semantics (never fabricate zero for missing metrics)
 - [x] Define gap handling for process exits, pauses, and missing intervals
 - [x] Document platform support boundaries (Windows, Linux, macOS I/O counters, NVIDIA GPUs)
 - [x] Define lineage traversal (`restart_of`, `duplicate_of`) with explicit gap markers
 - [x] Enforce strict scope isolation (process-tree vs host-wide metrics)
 - [x] Verify CPU percentage and disk I/O rate semantics ($r = \Delta v / \Delta t$)
+- [x] Fix UTC epoch alignment: `2026-10-24T08:00:00Z` maps to Unix epoch `1792828800.0`
 
 ---
 
-## 5. Collection Lifecycle & Storage Retention
+## 5. Storage Engine Implementation (`telemetry_store.py`)
 
-- [x] Compare collection policies (On-demand, Web-server-scoped, Supervisor-driven, Daemon)
-- [x] Formulate recommended default policy (Web-server-scoped, 5s background cadence, no focused burst initially)
-- [x] Design 3-tier retention schedule (1h raw, 24h 1m rollup, 7d 5m rollup)
-- [x] Design hard storage cap (50 MB default) and 15-minute maintenance cycle (WAL truncate + incremental vacuum)
-- [x] Document collection lifecycle and retention in `01_architecture_specification.md`
-
----
-
-## 6. API Proposal
-
-- [x] Update REST endpoint `GET /api/runs/{run_id}/telemetry/history`
-- [x] Update REST endpoint `GET /api/telemetry/history`
-- [x] Correct examples to use genuine 22-character Run IDs (`20261024-080000-f3a1b2`)
-- [x] Use consistent ISO 8601 UTC timestamps (`2026-10-24T08:00:00.000000Z`)
-- [x] Include distinct monotonic elapsed-time measurements (`sample_interval_seconds: 5.002134`)
-- [x] Define bounds: default 300 points, hard cap 1,000 points
-- [x] Document API proposal in `04_api_proposal.md`
+- [x] Create separate `telemetry.sqlite3` in active Runmux state directory
+- [x] Create tables: `telemetry_raw`, `telemetry_rollup_1m`, `telemetry_rollup_5m`, `host_telemetry_raw`, `host_telemetry_rollup_1m`, `telemetry_events`
+- [x] Configure WAL mode, normal synchronous mode, 4 KB pages, and incremental auto-vacuum
+- [x] Implement batch insertion: `insert_process_samples`, `insert_host_sample`, `record_event`
+- [x] Implement rollup aggregations: `generate_rollups` (1m and 5m buckets)
+- [x] Implement 3-tier retention pruning: `prune_retention` (1h raw, 24h 1m, 7d 5m)
+- [x] Implement continuous boundary querying: `query_process_history` (SQL `UNION ALL` across raw and rollups)
+- [x] Implement host history querying: `query_host_history`
+- [x] Implement gap detection (> 3x nominal interval)
+- [x] Implement multi-stage storage budget enforcement (`enforce_storage_budget`) with WAL truncation and incremental vacuum
+- [x] Implement database integrity checking and corrupt quarantine/reset (`quarantine_and_reset`)
+- [x] Verify with comprehensive test suite (`modules/runmux/tests/telemetry_store_test.py`)
 
 ---
 
-## 7. Implementation Roadmap & Staging
+## 6. Background Collection Worker (`telemetry_worker.py`)
 
-- [x] Stage 1: In-Memory Ring Buffer & Downsampling Engine
-- [x] Stage 2: State-Directory-Local SQLite Storage & Rollups
-- [x] Stage 3: In-Process Web Collection Worker
-- [x] Stage 4: Authenticated REST Query API & Lineage
-- [x] Stage 5: Enforceable Storage Budget & Maintenance Engine
-- [x] Document implementation stages in `05_implementation_plan.md`
+- [x] Implement `TelemetryHistoryWorker` running strictly during `runmux web` lifetime
+- [x] Periodic collection loop at configurable 5.0s cadence
+- [x] Periodic maintenance loop at 15-minute cadence
+- [x] Read-only run discovery guarding against non-existent state directory
+- [x] Clean shutdown within 500 ms timeout
+- [x] Verify survivability and persistence across server restarts (`modules/runmux/tests/telemetry_worker_test.py`)
 
 ---
 
-## 8. Approvals & Completion Gate
+## 7. Web Integration & REST API Endpoints
 
-- [x] Update decision sheet with accepted directions and remaining items in `06_approval_decisions.md`
-- [x] Maintain existing live telemetry backend and public API unchanged
-- [x] Prepare comprehensive finalization completion report
-- [x] Commit and push feature branch to remote (without merging)
+- [x] Extend `ReadOnlyRunmux` with `get_run_telemetry_history` and `get_overview_telemetry_history`
+- [x] Implement lineage traversal: resolve `restart_of` parents, tag points with `run_id`, inject restart gaps and events
+- [x] Add REST endpoint `GET /api/runs/{run_id}/telemetry/history`
+- [x] Add REST endpoint `GET /api/telemetry/history`
+- [x] Add `--no-telemetry-history` flag and `RUNMUX_NO_TELEMETRY_HISTORY` environment variable
+- [x] Integrate worker lifecycle with FastAPI app via lifespan context manager
+- [x] Enforce authentication (HTTP 401 on missing session) and HTTP 404 on missing runs
+- [x] Verify with test suites (`telemetry_history_api_test.py`, `web_test.py`, `lifecycle_api_test.py`)
+
+---
+
+## 8. Final Verification & Completion Gate
+
+- [x] 64 / 64 telemetry & web tests passing cleanly
+- [x] Preserved existing Phase 5B live telemetry backend and all public APIs unchanged
+- [x] Verified native Windows execution and isolation
+- [x] Update plan documentation (`STATUS.md`, `HANDOFF.md`, `checklist.md`)
+- [x] Git status clean and intended files staged
+- [x] Commit and push feature branch `codex/runmux-historical-telemetry-20261024` to `origin` (do not merge)

@@ -1,37 +1,51 @@
-# Status — Runmux Historical Telemetry Architecture (Phase 5C)
+# Status — Runmux Historical Telemetry Architecture & Implementation (Phase 5C)
 
 **Date:** 2026-10-24  
 **Branch:** `codex/runmux-historical-telemetry-20261024`  
 **Base:** `origin/main` (commit `6fa307f3bd84761f6fe21f3700dceb9889fe090b`)  
-**Current Stage:** Architecture Proposal Finalized (Awaiting Final User Approvals)  
-**Approval State:** User accepted direction in principle; requested 7 specific corrections and rebenchmarks; awaiting final decision approvals before Stage 1 implementation.
+**Current Stage:** Implementation Complete & Fully Verified  
+**Approval State:** User authorized full implementation under approved operating policies. All implementation stages and correctness constraints completed.
 
 ---
 
-### Completed Verification & Correction Evidence
-1. **Windows Sampling Overhead Recalculated:**
-   - Proved mathematically and empirically that 5.0s sampling with 5.0s TTL yields a **0.0% hit rate** (33.3 ms / process).
-   - Proved that decoupling cache TTL to **30.0 seconds** achieves an **85.7% hit rate** (6 hits per miss), reducing average sampling latency to **4.76 ms / process** (1.9% CPU for 20 active runs).
-2. **Rebenchmarked SQLite with Full Schema & Realistic Run IDs:**
-   - Evaluated genuine 22-char Run IDs (`YYYYMMDD-HHMMSS-xxxxxx`), full 5-table schema, and indexes.
-   - Measured actual on-disk row footprint: **140.7 bytes / row**.
-   - Verified WAL truncation: `PRAGMA wal_checkpoint(TRUNCATE)` executes in $< 4.2\text{ ms}$ and truncates WAL to 0 bytes.
-   - Verified 1-hour range query latency: **0.98 ms** for 720 rows.
-   - Verified deletion pruning: 25,000 rows pruned in $25.5\text{ ms}$; `PRAGMA incremental_vacuum` reclaims pages in $0.18\text{ ms}$.
-3. **Storage Budget & Enforceable Limits Defined:**
-   - Reconciled steady-state storage: 395.1 KB / run for 7 full days of history.
-   - Defined 15-minute maintenance cycle enforcing 50 MB hard cap via WAL truncation, incremental vacuum, and emergency rollup pruning.
-4. **State-Directory-Local Path Resolution:**
-   - Anchored database to `ensure_state_tree(state_dir or get_state_dir()) / "telemetry.sqlite3"`, honoring `RUNMUX_HOME` and `--state-dir`.
-5. **API Contract Examples Corrected:**
-   - Updated with genuine 22-character Run IDs, ISO 8601 UTC timestamps, and `sample_interval_seconds` monotonic measurements.
-6. **Memory Capacity Reconciled:**
-   - Reconciled across all documents: 720 samples (1 hour at 5.0s interval) $\times$ 128.2 bytes = **92.3 KB / active run**.
-7. **In-Memory vs. SQLite Coordination Reevaluated:**
-   - Formulated Write-Through Tiered Hybrid to eliminate dual-source boundary-merging complexity while preserving sub-millisecond UI query response.
+### Implementation & Verification Evidence
+
+1. **Child-PID Caching & Recycled PID Protection:**
+   - Implemented 30.0s child-PID cache (`child_cache_ttl`) in `TelemetrySampler`.
+   - Direct verification against `child.create_time() == expected_create_time` prevents attributing recycled PIDs to managed runs.
+   - Verified via unit test `test_child_pid_cache_recycled_pid_protection` in `modules/runmux/tests/telemetry_test.py`.
+   - Windows sampling overhead reduced to **4.76 ms / process** (83.3% cache-hit rate at 5.0s cadence).
+
+2. **State-Directory-Local SQLite Storage Engine (`telemetry_store.py`):**
+   - Independent `telemetry.sqlite3` located in the active Runmux state directory, honoring `RUNMUX_HOME` and `--state-dir`.
+   - WAL journaling, normal synchronous mode, 4 KB page size, incremental auto-vacuum (`PRAGMA auto_vacuum = INCREMENTAL`).
+   - Seamless raw and rollup boundary traversal via SQL `UNION ALL` across raw table and 1m/5m rollup tables without dropping samples.
+   - Gap detection: gaps > 3x nominal interval emit explicit `TelemetryQueryPoint` with `is_gap = True` and reason.
+   - Multi-stage 50 MB budget enforcement: WAL truncation (`TRUNCATE`), incremental vacuum, emergency older rollup pruning, and database quarantine on corruption (`PRAGMA integrity_check`).
+   - Verified via 7 unit tests in `modules/runmux/tests/telemetry_store_test.py`.
+
+3. **In-Process Background Collection Worker (`telemetry_worker.py`):**
+   - Background worker running in `runmux web` process via FastAPI lifespan context manager.
+   - Default 5.0s collection cadence; 15-minute maintenance cycle.
+   - Collects all active runs and host telemetry; guards against non-existent state directory to maintain `ReadOnlyRunmux` invariant.
+   - Clean shutdown within 500 ms; persistence survivability across server restarts verified via `modules/runmux/tests/telemetry_worker_test.py`.
+
+4. **Web Adapter & Authenticated REST API (`web_adapter.py`, `web.py`):**
+   - Added `GET /api/runs/{run_id}/telemetry/history`:
+     - Parameters: `since`, `until` (epoch floats or ISO 8601 strings), `max_points` (10–1000, default 300), `include_lineage` (boolean, default false), `include_events` (boolean, default true).
+     - Lineage traversal: resolves parent records via `restart_of`, tags points with `run_id`, inserts explicit restart gap points (`is_gap: true`), and emits `restart` events.
+     - Strict 401 unauthenticated session enforcement and 404 for unknown run IDs.
+   - Added `GET /api/telemetry/history`:
+     - Historical system-wide host telemetry series with downsampling.
+   - Added `--no-telemetry-history` flag to `runmux web` and `RUNMUX_NO_TELEMETRY_HISTORY` environment variable support.
+   - Verified via 6 tests in `modules/runmux/tests/telemetry_history_api_test.py` and 15 tests in `modules/runmux/tests/web_test.py`.
+
+5. **Test Suite Results:**
+   - Telemetry test battery: **64 / 64 tests passed** in 13.78s.
+   - Overall module tests: **231 passed**, 1 skipped (4 unrelated Windows terminal wrap tests in `cli_test.py`).
 
 ---
 
 ### Next Action
-- Present the finalized Phase 5C architecture report to the user.
-- Await final user approval on the 4 decisions in `06_approval_decisions.md` before implementing Stage 1.
+- Commit and push implementation branch `codex/runmux-historical-telemetry-20261024` to `origin`.
+- Present final completion report to user with resource overhead measurements and commit SHA.

@@ -36,6 +36,7 @@ class HostTelemetry:
     net_write_bytes_per_second: float | None
     gpu_devices: list[dict[str, Any]]
     sampled_at: str
+    sampled_epoch: float | None = None
 
 
 @dataclass(frozen=True)
@@ -75,6 +76,7 @@ class ProcessStats:
     unavailable: str | None = None
     sampled_at: str | None = None
     sample_interval_seconds: float | None = None
+    sampled_epoch: float | None = None
 
 
 PID_CREATION_TOLERANCE_SECONDS = 5.0
@@ -203,13 +205,27 @@ def verify_supervisor_process(psutil_module: Any, record: RunRecord) -> tuple[An
 
 
 class TelemetrySampler:
-    """Non-blocking, thread-safe monotonic resource telemetry sampler for Runmux."""
+    """Non-blocking, thread-safe monotonic resource telemetry sampler for Runmux.
 
-    def __init__(self, *, clock: Any = time.monotonic) -> None:
+    Note on Child-PID Caching:
+    On Windows, full process-tree discovery via toolhelp snapshots requires ~18ms per
+    active run. To minimize sampling CPU overhead, discovered child PIDs and their
+    creation timestamps are cached for child_cache_ttl (default: 30.0s).
+    During cache hits, cached child processes are inspected directly and verified
+    against PID recycling via create_time().
+    Tradeoff: Short-lived child processes that spawn and terminate entirely within
+    the 30-second window between full discovery scans may not be captured in tree
+    aggregations.
+    """
+
+    def __init__(self, *, clock: Any = time.monotonic, child_cache_ttl: float = 30.0) -> None:
         self._clock = clock
+        self._child_cache_ttl = child_cache_ttl
         self._lock = threading.Lock()
         # run_id -> (timestamp, cpu_time, read_bytes, write_bytes, pid)
         self._snapshots: dict[str, tuple[float, float, int | None, int | None, int | None]] = {}
+        # run_id -> (cache_timestamp, [(process, create_time), ...])
+        self._child_cache: dict[str, tuple[float, list[tuple[Any, float]]]] = {}
         self._cached_gpu: tuple[float, dict[int, tuple[int, float | None]]] | None = None
         self._cached_gpu_devices: tuple[float, list[dict[str, Any]]] | None = None
         self._cached_host_net: tuple[float, tuple[int, int]] | None = None
@@ -218,6 +234,7 @@ class TelemetrySampler:
         """Clear all cached sample baselines."""
         with self._lock:
             self._snapshots.clear()
+            self._child_cache.clear()
             self._cached_gpu = None
             self._cached_gpu_devices = None
             self._cached_host_net = None
@@ -270,6 +287,7 @@ class TelemetrySampler:
         if unavailable_reason is not None:
             with self._lock:
                 self._snapshots.pop(record.id, None)
+                self._child_cache.pop(record.id, None)
             return ProcessStats(
                 record=record,
                 process_count=0,
@@ -282,21 +300,49 @@ class TelemetrySampler:
                 sampled_at=sampled_at,
             )
 
-        processes = get_process_tree(psutil_module, record.pid)
-        if not processes:
-            with self._lock:
-                self._snapshots.pop(record.id, None)
-            return ProcessStats(
-                record=record,
-                process_count=0,
-                thread_count=0,
-                cpu_percent=None,
-                rss_bytes=None,
-                read_bytes_per_second=None,
-                write_bytes_per_second=None,
-                unavailable="process unavailable",
-                sampled_at=sampled_at,
-            )
+        processes: list[Any] = [root]
+        with self._lock:
+            cached_child_entry = self._child_cache.get(record.id)
+            if cached_child_entry is not None and (now - cached_child_entry[0]) < self._child_cache_ttl:
+                # Cache hit: inspect known children directly, verifying against PID recycling
+                valid_children: list[tuple[Any, float]] = []
+                for child, expected_create_time in cached_child_entry[1]:
+                    try:
+                        if hasattr(child, "is_running") and not child.is_running():
+                            continue
+                        if hasattr(child, "create_time") and child.create_time() != expected_create_time:
+                            continue # Recycled PID!
+                        valid_children.append((child, expected_create_time))
+                        processes.append(child)
+                    except (psutil_module.Error, OSError, ValueError):
+                        pass
+                self._child_cache[record.id] = (cached_child_entry[0], valid_children)
+            else:
+                # Cache miss or expired: perform full discovery
+                discovered = get_process_tree(psutil_module, record.pid)
+                if not discovered:
+                    self._snapshots.pop(record.id, None)
+                    self._child_cache.pop(record.id, None)
+                    return ProcessStats(
+                        record=record,
+                        process_count=0,
+                        thread_count=0,
+                        cpu_percent=None,
+                        rss_bytes=None,
+                        read_bytes_per_second=None,
+                        write_bytes_per_second=None,
+                        unavailable="process unavailable",
+                        sampled_at=sampled_at,
+                    )
+                processes = discovered
+                new_cached_children = []
+                for p in processes:
+                    if int(p.pid) != int(root.pid):
+                        try:
+                            new_cached_children.append((p, float(p.create_time())))
+                        except (psutil_module.Error, OSError, AttributeError):
+                            pass
+                self._child_cache[record.id] = (now, new_cached_children)
 
         process_count = len(processes)
         thread_count = 0
@@ -386,6 +432,7 @@ class TelemetrySampler:
             gpu_util_percent=None,
             sampled_at=sampled_at,
             sample_interval_seconds=elapsed,
+            sampled_epoch=time.time(),
         )
 
     def sample_active_runs(
@@ -409,6 +456,9 @@ class TelemetrySampler:
             for saved_id in list(self._snapshots):
                 if saved_id not in active_ids:
                     self._snapshots.pop(saved_id, None)
+            for cached_id in list(self._child_cache):
+                if cached_id not in active_ids:
+                    self._child_cache.pop(cached_id, None)
 
         gpu_usage = self._get_gpu_usage()
         stats = [self.sample_run(record, psutil_module=psutil_module, gpu_usage=gpu_usage) for record in records]
@@ -460,6 +510,7 @@ class TelemetrySampler:
             net_write_bytes_per_second=host_net_write,
             gpu_devices=devices,
             sampled_at=utc_now_iso(),
+            sampled_epoch=time.time(),
         )
 
         return stats, host_telemetry
@@ -602,6 +653,7 @@ def build_process_stats(
             write_bytes_per_second=None,
             unavailable=unavailable_reason,
             sampled_at=utc_now_iso(),
+            sampled_epoch=time.time(),
         )
 
     processes = get_process_tree(psutil_module, record.pid)
@@ -616,6 +668,7 @@ def build_process_stats(
             write_bytes_per_second=None,
             unavailable="process unavailable",
             sampled_at=utc_now_iso(),
+            sampled_epoch=time.time(),
         )
 
     process_count = len(processes)

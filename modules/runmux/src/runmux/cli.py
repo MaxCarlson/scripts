@@ -428,6 +428,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="Use this existing Runmux state directory instead of the default.",
     )
+    web_parser.add_argument(
+        "--no-telemetry-history",
+        action="store_true",
+        default=False,
+        help="Disable background telemetry collection and historical metrics storage.",
+    )
     web_parser.set_defaults(func=handle_web)
 
     return parser
@@ -1060,10 +1066,15 @@ def handle_web(args: argparse.Namespace) -> int:
     try:
         from web_ui_tools import LOOPBACK_HOSTS
 
+        enable_telemetry_history = not getattr(args, "no_telemetry_history", False)
+        if os.environ.get("RUNMUX_NO_TELEMETRY_HISTORY", "").lower() in {"1", "true", "yes"}:
+            enable_telemetry_history = False
+
         app = create_runmux_web_app(
             args.state_dir,
             login_code=login_code,
             allowed_hosts=(*LOOPBACK_HOSTS, args.host),
+            enable_telemetry_history=enable_telemetry_history,
         )
         server = create_server(app, host=args.host, port=args.port)
     except (OSError, ValueError) as error:

@@ -490,3 +490,34 @@ def test_unavailable_versus_zero_behavior() -> None:
     assert json_unavail["rss_bytes"] is None
     assert json_unavail["read_bytes_per_second"] is None
     assert json_unavail["unavailable"] == "process exited"
+
+
+def test_child_pid_cache_recycled_pid_protection() -> None:
+    clock_time = 50.0
+    sampler = TelemetrySampler(clock=lambda: clock_time, child_cache_ttl=30.0)
+
+    root_proc = MockLiveProcess(
+        100, user_time=1.0, system_time=0.5, rss=1000, read_bytes=500, write_bytes=200, threads=2
+    )
+    child_proc = MockLiveProcess(
+        101, user_time=2.0, system_time=1.0, rss=2000, read_bytes=700, write_bytes=300, threads=3
+    )
+    root_proc.children = lambda recursive=True: [child_proc]
+
+    harness = MockPsutilHarness(processes={100: root_proc, 101: child_proc}, cpu_count=8)
+    record = make_test_record(pid=100)
+
+    # First sample: discovers child_proc with create_time
+    sample1 = sampler.sample_run(record, psutil_module=harness)
+    assert sample1.process_count == 2
+    assert sample1.rss_bytes == 3000
+
+    # Advance clock within 30s TTL
+    clock_time = 55.0
+    # Simulate PID 101 being recycled to a completely different process with newer creation time
+    child_proc._created_at = 1792999999.0
+
+    sample2 = sampler.sample_run(record, psutil_module=harness)
+    # Recycled PID must be rejected; only root process attributed!
+    assert sample2.process_count == 1
+    assert sample2.rss_bytes == 1000
