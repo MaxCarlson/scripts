@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sqlite3
 import sys
 import time
 import uuid
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 from pathlib import Path
 from typing import Any
 
@@ -32,6 +33,7 @@ from runmux.lifecycle import (
 from runmux.platform_paths import get_state_dir
 from runmux.runner import RunnerError, create_managed_run
 from runmux.store import RunNotFoundError, RunStore
+from runmux.telemetry_worker import TelemetryHistoryWorker
 from runmux.web_adapter import (
     DEFAULT_LOG_CHUNK_BYTES,
     MAX_LOG_CHUNK_BYTES,
@@ -69,6 +71,29 @@ class RestartRequest(BaseModel):
     force_color: bool | None = None
 
 
+def parse_query_time(value: str | float | None, default: float) -> float:
+    """Parse an ISO 8601 string or numeric epoch timestamp into a float epoch."""
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return float(value)
+    value_str = str(value).strip()
+    if not value_str:
+        return default
+    try:
+        return float(value_str)
+    except ValueError:
+        pass
+    from runmux.models import parse_iso_datetime
+    dt = parse_iso_datetime(value_str)
+    if dt is not None:
+        return dt.timestamp()
+    raise ValueError(f"Invalid timestamp format: {value}")
+
+
+
+
+
 class DuplicateRequest(BaseModel):
     """Optional configuration for duplicating a managed run."""
 
@@ -80,6 +105,8 @@ def create_runmux_web_app(
     *,
     login_code: str,
     allowed_hosts: tuple[str, ...] = LOOPBACK_HOSTS,
+    enable_telemetry_history: bool = True,
+    telemetry_worker: TelemetryHistoryWorker | None = None,
 ) -> FastAPI:
     """Create an authenticated browser view and process-launch API for Runmux."""
 
@@ -181,6 +208,65 @@ def create_runmux_web_app(
             return await run_in_threadpool(backend.get_overview_telemetry)
         except RegistryReadError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.get("/runs/{run_id}/telemetry/history")
+    async def run_telemetry_history(
+        run_id: str,
+        since: str | None = None,
+        until: str | None = None,
+        max_points: int = Query(default=300, ge=10, le=1000),
+        include_lineage: bool = False,
+        include_events: bool = True,
+    ) -> dict[str, Any]:
+        try:
+            now = time.time()
+            until_val = parse_query_time(until, now)
+            since_val = parse_query_time(since, until_val - 3600.0)
+            if since_val > until_val:
+                raise HTTPException(status_code=400, detail="Parameter 'since' must be less than or equal to 'until'.")
+            return await run_in_threadpool(
+                backend.get_run_telemetry_history,
+                run_id,
+                since=since_val,
+                until=until_val,
+                max_points=max_points,
+                include_lineage=include_lineage,
+                include_events=include_events,
+            )
+        except HTTPException:
+            raise
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except (RegistryReadError, sqlite3.Error) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.get("/telemetry/history")
+    async def overview_telemetry_history(
+        since: str | None = None,
+        until: str | None = None,
+        max_points: int = Query(default=300, ge=10, le=1000),
+    ) -> dict[str, Any]:
+        try:
+            now = time.time()
+            until_val = parse_query_time(until, now)
+            since_val = parse_query_time(since, until_val - 3600.0)
+            if since_val > until_val:
+                raise HTTPException(status_code=400, detail="Parameter 'since' must be less than or equal to 'until'.")
+            return await run_in_threadpool(
+                backend.get_overview_telemetry_history,
+                since=since_val,
+                until=until_val,
+                max_points=max_points,
+            )
+        except HTTPException:
+            raise
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except (RegistryReadError, sqlite3.Error) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
 
     @api.post("/runs/{run_id}/stop")
     async def stop_run_endpoint(
@@ -562,13 +648,27 @@ def create_runmux_web_app(
                         timeout=1.0,
                     )
 
-    return create_app(
+    @asynccontextmanager
+    async def app_lifespan(app_instance: FastAPI):
+        if enable_telemetry_history:
+            worker = telemetry_worker or TelemetryHistoryWorker(resolved_state_dir)
+            app_instance.state.telemetry_worker = worker
+            await worker.start()
+        try:
+            yield
+        finally:
+            if enable_telemetry_history and getattr(app_instance.state, "telemetry_worker", None):
+                await app_instance.state.telemetry_worker.stop()
+
+    app = create_app(
         api_router=api,
         static_dir=STATIC_DIR,
         login_code=login_code,
         allowed_hosts=allowed_hosts,
         allow_inline_styles=True,
     )
+    app.router.lifespan_context = app_lifespan
+    return app
 
 
 def _terminal_status(value: dict[str, Any], *, mode: str, finished: bool = False) -> dict[str, Any]:

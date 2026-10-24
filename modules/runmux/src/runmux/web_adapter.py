@@ -9,6 +9,7 @@ import hashlib
 import json
 import re
 import sqlite3
+import time
 from contextlib import closing
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -22,6 +23,7 @@ from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
 from runmux.stats import HostTelemetry, ProcessStats, TelemetrySampler
 from runmux.store import RunNotFoundError
+from runmux.telemetry_store import TelemetryQueryPoint, TelemetryStore
 
 RUN_ID_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}\Z")
 DEFAULT_LOG_CHUNK_BYTES = 64 * 1024
@@ -73,10 +75,17 @@ class _Cursor:
 class ReadOnlyRunmux:
     """Query an existing registry using SQLite read-only mode without initialization or migration."""
 
-    def __init__(self, state_dir: Path, *, sampler: TelemetrySampler | None = None) -> None:
+    def __init__(
+        self,
+        state_dir: Path,
+        *,
+        sampler: TelemetrySampler | None = None,
+        telemetry_store: TelemetryStore | None = None,
+    ) -> None:
         self.state_dir = Path(state_dir).expanduser().resolve()
         self.db_path = self.state_dir / "registry.sqlite3"
         self._telemetry_sampler = sampler or TelemetrySampler()
+        self._telemetry_store = telemetry_store or TelemetryStore(self.state_dir, auto_init=False)
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.is_file():
@@ -171,6 +180,219 @@ class ReadOnlyRunmux:
             "runs": [serialize_process_telemetry(s) for s in stats_list],
             "host": serialize_host_telemetry(host),
         }
+
+
+    def get_run_telemetry_history(
+        self,
+        run_id: str,
+        *,
+        since: float | None = None,
+        until: float | None = None,
+        max_points: int = 300,
+        include_lineage: bool = False,
+        include_events: bool = True,
+    ) -> dict[str, Any]:
+        """Return historical resource metrics and events for a managed run."""
+        record = self.get_run(run_id)
+
+        now = time.time()
+        end_time = until if until is not None else now
+        start_time = since if since is not None else (end_time - 3600.0)
+
+        if start_time > end_time:
+            raise ValueError(f"since ({start_time}) must be less than or equal to until ({end_time})")
+
+        capped_max_points = max(10, min(max_points, 1000))
+
+        if not include_lineage:
+            points = self._telemetry_store.query_process_history(
+                run_id,
+                since=start_time,
+                until=end_time,
+                max_points=capped_max_points,
+            )
+            events = (
+                self._telemetry_store.query_events(run_id, since=start_time, until=end_time)
+                if include_events
+                else []
+            )
+            raw_sample_count = self._telemetry_store.count_raw_samples(run_id, since=start_time, until=end_time)
+        else:
+            # Lineage traversal: resolve parent runs via restart_of
+            chain: list[RunRecord] = [record]
+            curr = record
+            visited = {curr.id}
+            while curr.restart_of:
+                try:
+                    parent = self.get_run(curr.restart_of)
+                    if parent.id in visited:
+                        break
+                    visited.add(parent.id)
+                    chain.append(parent)
+                    curr = parent
+                except RunNotFoundError:
+                    break
+            chain.reverse()
+
+            combined_points: list[TelemetryQueryPoint] = []
+            combined_events: list[dict[str, Any]] = []
+            raw_sample_count = 0
+
+            for i, run_rec in enumerate(chain):
+                r_points = self._telemetry_store.query_process_history(
+                    run_rec.id,
+                    since=start_time,
+                    until=end_time,
+                    max_points=capped_max_points,
+                )
+                raw_sample_count += self._telemetry_store.count_raw_samples(
+                    run_rec.id, since=start_time, until=end_time
+                )
+                if include_events:
+                    combined_events.extend(
+                        self._telemetry_store.query_events(run_rec.id, since=start_time, until=end_time)
+                    )
+
+                if i > 0 and combined_points and r_points:
+                    prev_last = combined_points[-1]
+                    curr_first = r_points[0]
+                    if curr_first.epoch > prev_last.epoch:
+                        gap_epoch = prev_last.epoch + 0.001
+                        combined_points.append(
+                            TelemetryQueryPoint(
+                                timestamp=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(gap_epoch)),
+                                epoch=gap_epoch,
+                                sample_interval_seconds=curr_first.epoch - prev_last.epoch,
+                                cpu_percent=None,
+                                cpu_percent_normalized=None,
+                                rss_bytes=None,
+                                read_bytes_per_second=None,
+                                write_bytes_per_second=None,
+                                process_count=0,
+                                thread_count=0,
+                                gpu_memory_bytes=None,
+                                is_gap=True,
+                                gap_reason=f"restart from {chain[i - 1].id} to {run_rec.id}",
+                                run_id=chain[i - 1].id,
+                            )
+                        )
+                        combined_events.append({
+                            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(gap_epoch)),
+                            "epoch": gap_epoch,
+                            "event": "restart",
+                            "old_run_id": chain[i - 1].id,
+                            "new_run_id": run_rec.id,
+                            "reason": f"restarted as {run_rec.id}",
+                        })
+
+                combined_points.extend(r_points)
+
+            combined_events.sort(key=lambda e: float(e["epoch"]))
+            if len(combined_points) > capped_max_points:
+                points = self._telemetry_store._downsample_points(combined_points, capped_max_points)
+            else:
+                points = combined_points
+            events = combined_events
+
+        cores = 1
+        try:
+            import psutil
+            cores = psutil.cpu_count(logical=True) or 1
+        except Exception:
+            pass
+
+        duration = round(end_time - start_time, 3)
+        provenance = {
+            "cpu_scope": "process_tree",
+            "cpu_unit": "percent (100% = 1 core)",
+            "cpu_count": cores,
+            "rss_unit": "bytes",
+            "io_unit": "bytes_per_second",
+            "gpu_unit": "bytes",
+            "time_range": {
+                "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start_time)),
+                "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end_time)),
+                "duration_seconds": duration,
+            },
+            "resolution": "raw" if duration <= 3600.0 else ("1m_rollup" if duration <= 86400.0 else "5m_rollup"),
+            "raw_sample_count": raw_sample_count,
+            "returned_points": len(points),
+        }
+
+        return {
+            "run_id": record.id,
+            "numeric_id": record.numeric_id,
+            "status": record.status,
+            "provenance": provenance,
+            "series": [serialize_telemetry_query_point(p) for p in points],
+            "events": events,
+        }
+
+    def get_overview_telemetry_history(
+        self,
+        *,
+        since: float | None = None,
+        until: float | None = None,
+        max_points: int = 300,
+    ) -> dict[str, Any]:
+        """Return historical system-wide host telemetry."""
+        now = time.time()
+        end_time = until if until is not None else now
+        start_time = since if since is not None else (end_time - 3600.0)
+
+        if start_time > end_time:
+            raise ValueError(f"since ({start_time}) must be less than or equal to until ({end_time})")
+
+        capped_max_points = max(10, min(max_points, 1000))
+        series = self._telemetry_store.query_host_history(
+            since=start_time,
+            until=end_time,
+            max_points=capped_max_points,
+        )
+
+        duration = round(end_time - start_time, 3)
+        return {
+            "provenance": {
+                "scope": "host",
+                "cpu_unit": "percent (0.0 - 100.0%)",
+                "memory_unit": "bytes",
+                "net_unit": "bytes_per_second (host-wide aggregate)",
+                "time_range": {
+                    "start": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(start_time)),
+                    "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end_time)),
+                    "duration_seconds": duration,
+                },
+                "resolution": "raw" if duration <= 3600.0 else ("1m_rollup" if duration <= 86400.0 else "5m_rollup"),
+                "returned_points": len(series),
+            },
+            "series": series,
+        }
+
+
+def serialize_telemetry_query_point(point: TelemetryQueryPoint) -> dict[str, Any]:
+    """Serialize a single historical telemetry point according to the API contract."""
+    res: dict[str, Any] = {
+        "timestamp": point.timestamp,
+        "epoch": point.epoch,
+        "sample_interval_seconds": point.sample_interval_seconds,
+        "cpu_percent": point.cpu_percent,
+        "cpu_percent_normalized": point.cpu_percent_normalized,
+        "cpu_percent_min": point.cpu_percent_min,
+        "cpu_percent_max": point.cpu_percent_max,
+        "rss_bytes": point.rss_bytes,
+        "rss_bytes_max": point.rss_bytes_max,
+        "read_bytes_per_second": point.read_bytes_per_second,
+        "write_bytes_per_second": point.write_bytes_per_second,
+        "process_count": point.process_count,
+        "thread_count": point.thread_count,
+        "gpu_memory_bytes": point.gpu_memory_bytes,
+    }
+    if point.run_id is not None:
+        res["run_id"] = point.run_id
+    if point.is_gap:
+        res["is_gap"] = True
+        res["gap_reason"] = point.gap_reason
+    return res
 
 
 def serialize_process_telemetry(stats: ProcessStats) -> dict[str, Any]:
