@@ -13,6 +13,7 @@ function deferred() {
 
 function element(tagName = "div") {
   const listeners = new Map();
+  const classes = new Set();
   return {
     tagName,
     children: [],
@@ -33,16 +34,35 @@ function element(tagName = "div") {
     },
     value: "",
     checked: true,
-    className: "",
+    get className() {
+      return [...classes].join(" ");
+    },
+    set className(val) {
+      classes.clear();
+      if (val) val.split(/\s+/).filter(Boolean).forEach((c) => classes.add(c));
+    },
     scrollHeight: 0,
     scrollTop: 0,
     clientHeight: 0,
     style: {},
     lastElementChild: { textContent: "" },
-    classList: { add() {}, remove() {}, toggle() {} },
+    classList: {
+      add(...cs) { cs.forEach((c) => classes.add(c)); },
+      remove(...cs) { cs.forEach((c) => classes.delete(c)); },
+      toggle(c, force) {
+        if (force === undefined) {
+          if (classes.has(c)) { classes.delete(c); return false; }
+          classes.add(c); return true;
+        }
+        if (force) { classes.add(c); return true; }
+        classes.delete(c); return false;
+      },
+      contains(c) { return classes.has(c); },
+    },
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatch(name, ...args) { listeners.get(name)?.(...args); },
-    setAttribute(name, value) { this.attributes[name] = value; },
+    setAttribute(name, value) { this.attributes[name] = String(value); },
+    getAttribute(name) { return this.attributes[name] ?? null; },
     append(...children) { this._textContent = undefined; this.children.push(...children); },
     appendChild(child) { this._textContent = undefined; this.children.push(child); },
     replaceChildren(...children) { this._textContent = undefined; this.children = [...children]; },
@@ -54,12 +74,13 @@ function element(tagName = "div") {
   };
 }
 
-function dashboardHarness(storageData = new Map()) {
+function dashboardHarness(storageData = new Map(), localData = new Map()) {
   const elements = new Map();
   const intervals = new Map();
   const requests = [];
   let nextInterval = 1;
   const document = {
+    visibilityState: "visible",
     activeElement: { tagName: "BODY" },
     querySelector(selector) {
       if (!elements.has(selector)) elements.set(selector, element());
@@ -78,11 +99,18 @@ function dashboardHarness(storageData = new Map()) {
   const context = {
     document,
     fetch,
+    AbortController,
     navigator: { clipboard: { writeText: async () => {} } },
     sessionStorage: {
       getItem(key) { return storageData.get(key) ?? null; },
       setItem(key, value) { storageData.set(key, `${value}`); },
       removeItem(key) { storageData.delete(key); },
+    },
+    localStorage: {
+      getItem(key) { return localData.get(key) ?? null; },
+      setItem(key, value) { localData.set(key, `${value}`); },
+      removeItem(key) { localData.delete(key); },
+      clear() { localData.clear(); },
     },
     TextEncoder,
     URLSearchParams,
@@ -131,6 +159,20 @@ function dashboardHarness(storageData = new Map()) {
     getLastOutput: () => lastOutput,
     setLastOutput: (val, truncated = false) => { lastOutput = val; outputTruncated = truncated; computeOutputSearchAndFilter(); },
     getOutputTruncated: () => outputTruncated,
+    setSelectedId: (id) => { selectedId = id; },
+    getSelectedId: () => selectedId,
+    getOverviewMode: () => overviewMode,
+    setOverviewMode,
+    cycleOverviewMode,
+    formatPercent,
+    formatBytes,
+    formatBytesRate,
+    renderTelemetry,
+    refreshTelemetry,
+    startTelemetryPolling,
+    stopTelemetryPolling,
+    isTelemetryInFlight: () => telemetryInFlight,
+    getTelemetryTimer: () => telemetryTimer,
   };`, context);
   return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
 }
@@ -162,23 +204,27 @@ async function testRapidSelection() {
   const secondA = context.__dashboard.selectRun("A");
   await Promise.resolve();
 
-  const detailRequests = requests.filter((item) => !item.url.includes("/output"));
+  const detailRequests = requests.filter((item) => !item.url.includes("/output") && !item.url.includes("/telemetry"));
+  const telemetryRequests = requests.filter((item) => item.url.includes("/telemetry"));
   const outputRequests = requests.filter((item) => item.url.includes("/output"));
   assert.equal(detailRequests.length, 3);
   assert.equal(outputRequests.length, 3);
 
   detailRequests[2].resolve(response(run("A", "latest A")));
   outputRequests[2].resolve(response({ state: "available", text: "latest output", cursor: "latest", reset: true, at_end: false, finished: false }));
+  if (telemetryRequests[2]) telemetryRequests[2].resolve(response({ id: "A", cpu_percent: 10.0, rss_bytes: 1024 }));
   await secondA;
   detailRequests[0].resolve(response(run("A", "stale A")));
   outputRequests[0].resolve(response({ state: "available", text: "stale A output", cursor: "old", reset: true, at_end: false, finished: false }));
+  if (telemetryRequests[0]) telemetryRequests[0].resolve(response({ id: "A", cpu_percent: 5.0, rss_bytes: 1024 }));
   detailRequests[1].resolve(response(run("B", "stale B")));
   outputRequests[1].resolve(response({ state: "available", text: "stale B output", cursor: "old", reset: true, at_end: false, finished: false }));
+  if (telemetryRequests[1]) telemetryRequests[1].resolve(response({ id: "B", cpu_percent: 5.0, rss_bytes: 1024 }));
   await Promise.all([firstA, selectB]);
 
   assert.equal(elements.get("#selected-name").textContent, "latest A");
   assert.equal(elements.get("#output-text").textContent, "latest output");
-  assert.equal(intervals.size, 1);
+  assert.equal(intervals.size, 2); // outputTimer and telemetryTimer
   const currentOutputRequests = requests.filter((item) => item.url.includes("/output"));
   assert.equal(currentOutputRequests.length, 3);
   context.__dashboard.refreshOutput();
@@ -893,7 +939,244 @@ function testOutputTextSecurityAndXssImmunity() {
   assert.equal(spanChildTags.includes("img"), false);
 }
 
+
+async function testOverviewModeSelectionAndCycling() {
+  const localData = new Map();
+  const { context, getElement } = dashboardHarness(new Map(), localData);
+  const db = context.__dashboard;
+
+  // 1. Initial default mode should be "inline" (Mode B)
+  assert.equal(db.getOverviewMode(), "inline");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-inline"), true);
+  assert.equal(getElement("#mode-btn-b").getAttribute("aria-pressed"), "true");
+
+  // 2. Direct selection to Mode A (minimal)
+  db.setOverviewMode("minimal");
+  assert.equal(db.getOverviewMode(), "minimal");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-minimal"), true);
+  assert.equal(getElement("#mode-btn-a").getAttribute("aria-pressed"), "true");
+  assert.equal(getElement("#mode-btn-b").getAttribute("aria-pressed"), "false");
+  assert.equal(localData.get("runmux-overview-mode-v1"), "minimal");
+
+  // 3. Cycle: minimal -> inline -> dashboard -> expanded -> minimal
+  db.cycleOverviewMode();
+  assert.equal(db.getOverviewMode(), "inline");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-inline"), true);
+  assert.equal(getElement("#mode-btn-b").getAttribute("aria-pressed"), "true");
+
+  db.cycleOverviewMode();
+  assert.equal(db.getOverviewMode(), "dashboard");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-dashboard"), true);
+  assert.equal(getElement("#mode-btn-c").getAttribute("aria-pressed"), "true");
+
+  db.cycleOverviewMode();
+  assert.equal(db.getOverviewMode(), "expanded");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-expanded"), true);
+  assert.equal(getElement("#mode-btn-d").getAttribute("aria-pressed"), "true");
+
+  db.cycleOverviewMode();
+  assert.equal(db.getOverviewMode(), "minimal");
+  assert.equal(getElement("#run-inspector").classList.contains("mode-minimal"), true);
+
+  // 4. Persistence across reload:
+  localData.set("runmux-overview-mode-v1", "dashboard");
+  const reloadHarness = dashboardHarness(new Map(), localData);
+  assert.equal(reloadHarness.context.__dashboard.getOverviewMode(), "dashboard");
+  assert.equal(reloadHarness.getElement("#run-inspector").classList.contains("mode-dashboard"), true);
+  assert.equal(reloadHarness.getElement("#mode-btn-c").getAttribute("aria-pressed"), "true");
+}
+
+
+async function testLiveTelemetryRenderingAndZeroVsUnavailableDistinction() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  // 1. Test formatters directly
+  assert.equal(db.formatPercent(0.0), "0.0%");
+  assert.equal(db.formatPercent(null), "—");
+  assert.equal(db.formatPercent(undefined), "—");
+  assert.equal(db.formatPercent(42.56), "42.6%");
+
+  assert.equal(db.formatBytes(0), "0 B");
+  assert.equal(db.formatBytes(null), "—");
+  assert.equal(db.formatBytes(1024), "1.0 KiB");
+  assert.equal(db.formatBytes(52428800), "50.0 MiB");
+  assert.equal(db.formatBytes(1073741824), "1.00 GiB");
+
+  assert.equal(db.formatBytesRate(0), "0 B/s");
+  assert.equal(db.formatBytesRate(null), "—");
+  assert.equal(db.formatBytesRate(1048576), "1.0 MiB/s");
+  assert.equal(db.formatBytesRate(51200), "50.0 KiB/s");
+
+  // 2. Test renderTelemetry with active process in Mode D
+  db.setOverviewMode("expanded");
+
+  const activeProcessStats = {
+    id: "run-101",
+    numeric_id: 101,
+    status: "running",
+    pid: 1234,
+    process_count: 3,
+    thread_count: 12,
+    cpu_percent: 250.0,
+    cpu_percent_normalized: 62.5,
+    cpu_count: 4,
+    cpu_time_seconds: 14.5,
+    rss_bytes: 52428800, // 50 MiB
+    read_bytes_per_second: 1048576, // 1 MiB/s
+    write_bytes_per_second: 51200, // 50 KiB/s
+    total_read_bytes: 10485760, // 10 MiB
+    total_write_bytes: 2097152, // 2 MiB
+    gpu_memory_bytes: 1073741824, // 1 GiB
+    unavailable: null,
+    sampled_at: Date.now() / 1000,
+  };
+
+  const hostStats = {
+    cpu_percent: 34.2,
+    cpu_count: 8,
+    memory_used_bytes: 8589934592, // 8 GiB
+    memory_available_bytes: 25769803776,
+    memory_total_bytes: 34359738368, // 32 GiB
+    memory_percent: 25.0,
+    net_read_bytes_per_second: 2097152, // 2 MiB/s
+    net_write_bytes_per_second: 102400, // 100 KiB/s
+    gpu_devices: [{
+      index: 0,
+      name: "NVIDIA GeForce RTX 4090",
+      load: 72,
+      memory_used: 12884901888, // 12 GiB
+      memory_total: 25769803776, // 24 GiB
+      temperature: 58,
+    }],
+    sampled_at: Date.now() / 1000,
+  };
+
+  db.renderTelemetry(activeProcessStats, hostStats);
+
+  // Assert Process Tree Metrics
+  assert.equal(getElement("#val-inline-cpu").textContent, "250.0%");
+  assert.equal(getElement("#val-inline-rss").textContent, "50.0 MiB");
+  assert.equal(getElement("#val-inline-procs").textContent, "3p / 12t");
+
+  assert.equal(getElement("#card-cpu-val").textContent, "250.0%");
+  assert.equal(getElement("#card-cpu-sub").textContent, "62.5% norm (4 cores)");
+
+  assert.equal(getElement("#card-rss-val").textContent, "50.0 MiB");
+  assert.equal(getElement("#card-rss-sub").textContent, "Resident physical memory");
+
+  assert.equal(getElement("#card-tree-val").textContent, "3 procs · 12 threads");
+  assert.equal(getElement("#card-io-val").textContent, "↓ 1.0 MiB/s · ↑ 50.0 KiB/s");
+  assert.equal(getElement("#card-io-sub").textContent, "Total: ↓ 10.0 MiB · ↑ 2.0 MiB");
+
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "1.00 GiB");
+  assert.equal(getElement("#card-gpu-proc-sub").textContent, "Attributed compute VRAM");
+
+  // Assert Host & Device Metrics
+  assert.equal(getElement("#card-host-cpu-val").textContent, "34.2%");
+  assert.equal(getElement("#card-host-cpu-sub").textContent, "8 logical cores total");
+
+  assert.equal(getElement("#card-host-ram-val").textContent, "8.00 GiB / 32.00 GiB");
+  assert.equal(getElement("#card-host-ram-sub").textContent, "25.0% system utilized");
+
+  assert.equal(getElement("#card-host-net-val").textContent, "↓ 2.0 MiB/s · ↑ 100.0 KiB/s");
+  assert.equal(getElement("#card-host-net-sub").textContent, "Host-wide network delta");
+
+  assert.equal(getElement("#card-gpu-dev-val").textContent, "NVIDIA GeForce RTX 4090: 72% load");
+  assert.equal(getElement("#card-gpu-dev-sub").textContent, "12.00 GiB / 24.00 GiB · 58°C");
+
+  // 3. Test First-sample / Baseline state (rates are null, instantaneous are present)
+  const baselineStats = {
+    ...activeProcessStats,
+    cpu_percent: null,
+    cpu_percent_normalized: null,
+    read_bytes_per_second: null,
+    write_bytes_per_second: null,
+    gpu_memory_bytes: null,
+  };
+  db.renderTelemetry(baselineStats, hostStats);
+
+  assert.equal(getElement("#card-cpu-val").textContent, "—");
+  assert.equal(getElement("#card-cpu-sub").textContent, "Baseline pending (first sample)");
+  assert.equal(getElement("#card-io-val").textContent, "—");
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "None attributed");
+
+  // 4. Test Valid Zero Utilization (active process, 0% CPU, 0 B/s IO)
+  const zeroWorkStats = {
+    ...activeProcessStats,
+    cpu_percent: 0.0,
+    cpu_percent_normalized: 0.0,
+    read_bytes_per_second: 0,
+    write_bytes_per_second: 0,
+  };
+  db.renderTelemetry(zeroWorkStats, hostStats);
+  assert.equal(getElement("#card-cpu-val").textContent, "0.0%");
+  assert.equal(getElement("#card-io-val").textContent, "↓ 0 B/s · ↑ 0 B/s");
+
+  // 5. Test Unavailable / Exited Process
+  const exitedStats = {
+    ...activeProcessStats,
+    cpu_percent: null,
+    rss_bytes: null,
+    process_count: 0,
+    thread_count: 0,
+    unavailable: "process exited",
+  };
+  db.renderTelemetry(exitedStats, hostStats);
+
+  assert.equal(getElement("#card-cpu-val").textContent, "—");
+  assert.equal(getElement("#card-cpu-sub").textContent, "process exited");
+  assert.equal(getElement("#card-rss-val").textContent, "—");
+  assert.equal(getElement("#telemetry-status-banner").hidden, false);
+  assert.equal(getElement("#telemetry-status-banner").textContent, "Process inactive: process exited");
+}
+
+async function testTelemetryPollingBoundsAndLifecycle() {
+  const { context, getElement, intervals } = dashboardHarness();
+  const db = context.__dashboard;
+
+  // 1. Mode A (Minimal) must NOT start polling
+  db.setOverviewMode("minimal");
+  db.startTelemetryPolling();
+  assert.equal(db.getTelemetryTimer(), null);
+
+  // 2. Mode B should start polling interval
+  db.setOverviewMode("inline");
+  // Set selectedId to run-1
+  db.setRuns([run("run-1")]);
+  db.setSelectedId("run-1");
+  db.startTelemetryPolling();
+  assert.equal(db.getTelemetryTimer() !== null, true);
+
+  // 3. Stop polling clears timer
+  db.stopTelemetryPolling();
+  assert.equal(db.getTelemetryTimer(), null);
+
+  // 4. In-flight flag prevents concurrent overlapping requests
+  assert.equal(db.isTelemetryInFlight(), false);
+
+  // 5. Run switching cancels previous and starts new request
+  const h = dashboardHarness();
+  h.context.__dashboard.setRuns([run("run-A"), run("run-B")]);
+  h.context.__dashboard.setOverviewMode("inline");
+  const pA = h.context.__dashboard.selectRun("run-A");
+  await Promise.resolve();
+  const telA = h.requests.filter(r => r.url.includes("/api/runs/run-A/telemetry"));
+  assert.equal(telA.length, 1);
+
+  const pB = h.context.__dashboard.selectRun("run-B");
+  await Promise.resolve();
+  const telB = h.requests.filter(r => r.url.includes("/api/runs/run-B/telemetry"));
+  assert.equal(telB.length, 1);
+
+  h.context.__dashboard.clearSelection();
+  assert.equal(h.context.__dashboard.getTelemetryTimer(), null);
+}
+
 Promise.all([
+  testOverviewModeSelectionAndCycling(),
+  testLiveTelemetryRenderingAndZeroVsUnavailableDistinction(),
+  testTelemetryPollingBoundsAndLifecycle(),
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
   testStatusGroupsAndBrowserOnlyWorkspaceTabs(),
