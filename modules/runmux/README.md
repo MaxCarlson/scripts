@@ -1,5 +1,22 @@
 # runmux
 
+## Read-only browser view
+
+Install the reusable browser service and Runmux's optional web extra:
+
+```powershell
+python -m pip install -e .\modules\web_ui_tools
+python -m pip install -e ".\modules\runmux[web]"
+```
+
+Start the dashboard with `runmux web`. The service binds to `127.0.0.1:8787` by default and prints a startup login code in the launching terminal. Open the printed local URL and enter that code. It remains valid until the server exits; the browser receives a short-lived opaque `HttpOnly`, `SameSite=Strict` cookie, and neither code nor session value is placed in a URL or returned to page JavaScript. Access logs are disabled to keep request details out of logs. Only loopback IP bind addresses are accepted, and API calls require the matching local browser origin or a browser same-origin fetch marker, plus an authenticated session.
+
+Use `runmux web -H 127.0.0.1 -p 8787 -s <state-directory>` to choose the bind address, port, and existing registry. `-H/--host`, `-p/--port`, and `-s/--state-dir` are available in short and long forms. The default state directory follows Runmux's existing `RUNMUX_HOME`, `LOCALAPPDATA`, and XDG rules.
+
+The browser shows the full stable run ID, optional user name, executable basename, status, PID, exit code, runtime, and timestamps. Names and executable basenames may themselves identify private projects or tools, so anyone with the local browser session can see them. The view hides command arguments, working directories, environment overrides, log paths, IPC ports, and credentials. User-provided names and process output are treated as untrusted text. Output is decoded incrementally as UTF-8 (invalid bytes become replacement characters), ANSI/control sequences are stripped across chunk boundaries, each response is limited to 64 KiB, and the visible transcript is capped at 512 Ki characters.
+
+The browser opens the existing SQLite registry with `mode=ro`; missing registries display as empty without initialization. Selected active-run details may request the existing supervisor's authenticated `status` operation and project the response without persisting it. Log reads are restricted to that run's `output.ansi` file. Registry pruning, process control, input attachment, and lifecycle operations are not available from the browser. Closing the web server does not detach or stop managed processes.
+
 `runmux` is a cross-platform managed process runner. It starts programs under a small
 supervisor process, stores run metadata in a shared local registry, writes byte-preserving
 ANSI output logs, and lets any later shell list, view, kill, restart, duplicate, or interact
