@@ -89,4 +89,4 @@
 - [x] Run both packages' Ruff checks and `node --check`/dashboard tests.
 - [x] Verify ordinary CLI import/help works without optional web dependencies; verify web-ui-tools declares WebSocket transport.
 - [x] Review final diff and update `STATUS.md`, `checklist.md`, and Runmux handoffs.
-- [ ] Commit the focused change and push `codex/runmux-web-terminal-20261023`; record commit SHA and push result.
+- [x] Commit the focused change as `25d3393abb042edd91d289cd2080f57ae22e03bf` and push `codex/runmux-web-terminal-20261023`; verify remote ref. Do not merge.

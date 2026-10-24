@@ -21,6 +21,8 @@ Deliver an authenticated, reconnectable browser terminal for supervised Runmux p
 
 See `STATUS.md` for exact focused test counts, packaging checks, and the four existing unrelated CLI-test failures.
 
-## Next
+## Delivery
 
-Stop the temporary visual smoke server, release/kill the synthetic process, and remove only its verified disposable state. Review the staged scope, commit the feature branch, push it to origin, and record the commit SHA. Do not merge.
+Feature commit `25d3393abb042edd91d289cd2080f57ae22e03bf` is pushed to
+`origin/codex/runmux-web-terminal-20261023`. The remote ref was verified, the
+worktree is clean, and the branch is not merged.

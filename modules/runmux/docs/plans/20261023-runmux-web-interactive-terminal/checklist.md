@@ -12,4 +12,4 @@
 - [x] Run focused tests, lint, CLI/TUI compatibility checks, frontend checks, and wheel packaging.
 - [x] Stop and remove manual disposable browser-smoke state.
 - [x] Review final scoped diff and verify there are no whitespace errors.
-- [ ] Commit and push `codex/runmux-web-terminal-20261023`.
+- [x] Commit and push `codex/runmux-web-terminal-20261023`; verify the remote ref.

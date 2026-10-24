@@ -24,6 +24,8 @@ Implementation and focused validation are complete on `codex/runmux-web-terminal
 
 An earlier broader run including `modules/runmux/tests/cli_test.py` produced four known unrelated failures: `test_history_browser_renders_global_ids_and_bottom_hotkeys`, `test_list_rows_show_numeric_id_and_selected_actions`, `test_list_rows_can_colorize_status_and_selection`, and `test_handle_run_save_command_marks_saved`. Their expected output/record shape predates this feature; the existing read-only Web UI plan records related CLI baseline failures. They should be assessed separately from the interactive terminal change.
 
-## Remaining
+## Delivery
 
-- Inspect the final diff/status, then commit and push this feature branch only; do not merge.
+- Feature implementation commit: `25d3393abb042edd91d289cd2080f57ae22e03bf` (`feat(runmux): add authenticated browser terminal`).
+- Pushed to `origin/codex/runmux-web-terminal-20261023` and verified against the remote ref.
+- Not merged.
