@@ -18,6 +18,16 @@ from web_ui_tools import LOOPBACK_HOSTS, create_app
 
 from runmux.constants import TERMINAL_STATUSES
 from runmux.ipc import IpcError, open_input_socket, request_json
+from runmux.lifecycle import (
+    InvalidLifecycleTransitionError,
+    LifecycleError,
+    LifecycleManager,
+    LifecyclePlatformError,
+    LifecycleSupervisorUnavailableError,
+)
+from runmux.lifecycle import (
+    RunNotFoundError as LifecycleRunNotFoundError,
+)
 from runmux.platform_paths import get_state_dir
 from runmux.runner import RunnerError, create_managed_run
 from runmux.store import RunNotFoundError, RunStore
@@ -46,6 +56,24 @@ class LaunchRequest(BaseModel):
     cwd: str | None = Field(default=None, max_length=MAX_LAUNCH_VALUE_LENGTH)
 
 
+class StopRequest(BaseModel):
+    """Optional configuration for terminating a managed process."""
+
+    force: bool | None = None
+
+
+class RestartRequest(BaseModel):
+    """Optional configuration for restarting a managed run."""
+
+    force_color: bool | None = None
+
+
+class DuplicateRequest(BaseModel):
+    """Optional configuration for duplicating a managed run."""
+
+    force_color: bool | None = None
+
+
 def create_runmux_web_app(
     state_dir: Path | None = None,
     *,
@@ -56,6 +84,7 @@ def create_runmux_web_app(
 
     resolved_state_dir = state_dir or get_state_dir()
     backend = ReadOnlyRunmux(resolved_state_dir)
+    lifecycle = LifecycleManager(resolved_state_dir)
     default_cwd = Path.cwd().resolve()
     api = APIRouter(prefix="/api")
 
@@ -143,6 +172,144 @@ def create_runmux_web_app(
             return await run_in_threadpool(backend.get_overview_telemetry)
         except RegistryReadError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/stop")
+    async def stop_run_endpoint(
+        run_id: str,
+        payload: StopRequest | None = None,
+    ) -> dict[str, Any]:
+        force = payload.force if (payload and payload.force is not None) else False
+        try:
+            result = await run_in_threadpool(lifecycle.stop_run, run_id, force=force)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/kill")
+    async def kill_run_endpoint(
+        run_id: str,
+        payload: StopRequest | None = None,
+    ) -> dict[str, Any]:
+        force = payload.force if (payload and payload.force is not None) else True
+        try:
+            result = await run_in_threadpool(lifecycle.kill_run, run_id, force=force)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/restart", status_code=201)
+    async def restart_run_endpoint(
+        run_id: str,
+        payload: RestartRequest | None = None,
+    ) -> dict[str, Any]:
+        force_color = payload.force_color if payload else None
+        try:
+            result = await run_in_threadpool(lifecycle.restart_run, run_id, force_color=force_color)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+                "new_run_id": result.new_run_id,
+                "old_run_id": result.old_run_id,
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/duplicate", status_code=201)
+    async def duplicate_run_endpoint(
+        run_id: str,
+        payload: DuplicateRequest | None = None,
+    ) -> dict[str, Any]:
+        force_color = payload.force_color if payload else None
+        try:
+            result = await run_in_threadpool(lifecycle.duplicate_run, run_id, force_color=force_color)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+                "new_run_id": result.new_run_id,
+                "source_run_id": result.old_run_id,
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/pause")
+    async def pause_run_endpoint(run_id: str) -> dict[str, Any]:
+        try:
+            result = await run_in_threadpool(lifecycle.pause_run, run_id)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except LifecyclePlatformError as error:
+            raise HTTPException(status_code=501, detail=str(error)) from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/resume")
+    async def resume_run_endpoint(run_id: str) -> dict[str, Any]:
+        try:
+            result = await run_in_threadpool(lifecycle.resume_run, run_id)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except LifecyclePlatformError as error:
+            raise HTTPException(status_code=501, detail=str(error)) from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
 
     @api.get("/runs/{run_id}/output")
     def run_output(
