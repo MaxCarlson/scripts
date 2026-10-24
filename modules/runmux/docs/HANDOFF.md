@@ -1,8 +1,29 @@
 # Runmux Current Handoff
 
-Last updated: 2026-10-23
+Last updated: 2026-10-24
 
 ## Resume Here
+
+The current UX refinement is on `codex/runmux-web-ux-20261024`, based on
+`origin/main` at `3e84e8c9a5de3c83b268c7988944e34da716fb2b`. See
+`plans/20261024-runmux-web-ux-refinement/00-implementation-plan.md` for the
+gap assessment, scope, and focused validation. It adds status-grouped process
+navigation and browser-only process tabs, and gives the process workspace more
+screen space. It preserves the existing authenticated terminal and supervisor
+input-lock flow. Commit and push for review; do not merge.
+
+The preceding interactive-terminal feature was merged into `origin/main` and
+its completed record remains in `plans/20261023-runmux-web-interactive-terminal/`.
+
+### UX refinement validation
+
+- Desktop screenshot and interaction smoke used only the synthetic registry
+  under `.pytest_tmp_root/web-ux-visual`.
+- Verified status grouping, selecting two views, switching between them,
+  closing one view while its process remained listed, and the Details labels.
+- Browser access required an elevated local loopback server because the default
+  sandbox could not bind the port; no production state was opened.
+- Automated test results are recorded in the UX refinement plan.
 
 The current isolated feature branch adds an authenticated browser terminal to
 the existing read-only Web UI. Its plan and current status are in

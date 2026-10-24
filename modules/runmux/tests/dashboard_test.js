@@ -11,9 +11,13 @@ function deferred() {
   return { promise, resolve };
 }
 
-function element() {
+function element(tagName = "div") {
   const listeners = new Map();
   return {
+    tagName,
+    children: [],
+    attributes: {},
+    dataset: {},
     hidden: false,
     textContent: "",
     value: "",
@@ -25,9 +29,10 @@ function element() {
     lastElementChild: { textContent: "" },
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener(name, handler) { listeners.set(name, handler); },
-    setAttribute() {},
-    append() {},
-    replaceChildren() {},
+    dispatch(name) { listeners.get(name)?.(); },
+    setAttribute(name, value) { this.attributes[name] = value; },
+    append(...children) { this.children.push(...children); },
+    replaceChildren(...children) { this.children = [...children]; },
     focus() {},
     blur() {},
   };
@@ -45,7 +50,7 @@ function dashboardHarness() {
       return elements.get(selector);
     },
     querySelectorAll() { return []; },
-    createElement() { return element(); },
+    createElement(tagName) { return element(tagName); },
     addEventListener() {},
   };
   const fetch = (url) => {
@@ -72,7 +77,9 @@ function dashboardHarness() {
   const source = fs.readFileSync(path.join(__dirname, "../src/runmux/web_static/assets/dashboard.js"), "utf8");
   vm.runInNewContext(`${source}\nglobalThis.__dashboard = {
     selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
+    renderRuns, renderWorkspaceTabs, closeWorkspaceTab,
     updateTerminalControls,
+    setRuns(value) { runs = value; },
     setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
   };`, context);
   return { context, elements, intervals, requests, getElement: (selector) => document.querySelector(selector) };
@@ -202,9 +209,56 @@ async function testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket
   assert.equal(socket.readyState, 3);
 }
 
+async function testStatusGroupsAndBrowserOnlyWorkspaceTabs() {
+  const { context, requests, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([
+    run("A", "active worker"),
+    { ...run("B", "failed worker"), status: "failed" },
+    { ...run("C", "completed worker"), status: "finished" },
+  ]);
+  context.__dashboard.renderRuns();
+  const groups = getElement("#process-list").children;
+  assert.deepEqual(groups.map((group) => group.children[0].children[0].textContent), ["Running", "Failed", "Completed"]);
+  assert.deepEqual(groups.map((group) => group.children.length - 1), [1, 1, 1]);
+
+  const first = context.__dashboard.selectRun("A");
+  await Promise.resolve();
+  for (const request of requests) {
+    request.resolve(response(request.url.includes("/output")
+      ? { state: "available", text: "A output", cursor: "A", reset: true, at_end: true, finished: true }
+      : run("A", "active worker")));
+  }
+  await first;
+  assert.equal(getElement("#workspace-tabs").children.length, 1);
+  assert.equal(getElement("#workspace-tabs").children[0].children[0].children[1].textContent, "active worker");
+
+  const second = context.__dashboard.selectRun("B");
+  await Promise.resolve();
+  for (const request of requests.slice(2)) {
+    request.resolve(response(request.url.includes("/output")
+      ? { state: "available", text: "B output", cursor: "B", reset: true, at_end: true, finished: true }
+      : run("B", "failed worker")));
+  }
+  await second;
+  assert.equal(getElement("#workspace-tabs").children.length, 2);
+
+  const closeSelected = context.__dashboard.closeWorkspaceTab("B");
+  await Promise.resolve();
+  for (const request of requests.slice(4)) {
+    request.resolve(response(request.url.includes("/output")
+      ? { state: "available", text: "A output", cursor: "A2", reset: true, at_end: true, finished: true }
+      : run("A", "active worker")));
+  }
+  await closeSelected;
+  assert.equal(getElement("#workspace-tabs").children.length, 1);
+  assert.equal(getElement("#workspace-tabs").children[0].children[0].attributes["aria-selected"], "true");
+  assert.equal(getElement("#process-list").children[1].children.length, 2);
+}
+
 Promise.all([
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
+  testStatusGroupsAndBrowserOnlyWorkspaceTabs(),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
 ]).catch((error) => {
   console.error(error);

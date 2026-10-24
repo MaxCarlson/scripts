@@ -1,12 +1,15 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
-const ACTIVE = new Set(["pending", "running", "paused"]);
 const STATUS_CLASS = { pending: "pending", running: "running", paused: "paused", finished: "finished", failed: "failed", lost: "lost" };
+const STATUS_ORDER = ["running", "pending", "paused", "failed", "lost", "finished"];
+const STATUS_LABEL = { running: "Running", pending: "Waiting", paused: "Paused", failed: "Failed", lost: "Disconnected", finished: "Completed" };
 const VIEW_LIMIT = 512 * 1024;
 
 let runs = [];
 let selectedId = null;
+let openRunIds = [];
+const collapsedGroups = new Set();
 let selectionGeneration = 0;
 let authGeneration = 0;
 let outputCursor = null;
@@ -110,9 +113,16 @@ async function refreshRuns() {
     $("#last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
     $("#connection-state").className = "connection-state connected";
     $("#connection-state").lastElementChild.textContent = "Registry connected";
+    openRunIds = openRunIds.filter((runId) => runs.some((run) => run.id === runId));
+    if (selectedId && !runs.some((run) => run.id === selectedId)) {
+      const fallbackId = openRunIds[openRunIds.length - 1] || null;
+      if (fallbackId) await selectRun(fallbackId);
+      else clearSelection();
+      return;
+    }
     renderRuns();
-    if (selectedId && !runs.some((run) => run.id === selectedId)) clearSelection();
-    else if (selectedId) await refreshSelected(selectionGeneration, selectedId);
+    renderWorkspaceTabs();
+    if (selectedId) await refreshSelected(selectionGeneration, selectedId);
   } catch (error) {
     if (requestGeneration !== authGeneration) return;
     if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
@@ -128,40 +138,118 @@ function renderRuns() {
   const list = $("#process-list");
   list.replaceChildren();
   $("#process-count").textContent = `${filtered.length}`;
-  $("#active-count").textContent = `${runs.filter((run) => ACTIVE.has(run.status)).length}`;
-  $("#total-count").textContent = `${runs.length}`;
-  $("#completed-count").textContent = `${runs.filter((run) => !ACTIVE.has(run.status)).length}`;
   $("#clear-search").hidden = !query;
   $("#list-state").textContent = filtered.length ? "" : query ? "No process matches this search." : "No managed processes yet. Start one with runmux run.";
-  for (const run of filtered) {
-    const row = document.createElement("button");
-    row.type = "button";
-    row.className = `process-row${run.id === selectedId ? " selected" : ""}`;
-    row.setAttribute("aria-current", run.id === selectedId ? "true" : "false");
-    row.addEventListener("click", () => selectRun(run.id));
-    const dot = document.createElement("span");
-    dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
-    const main = document.createElement("span");
-    main.className = "row-main";
-    const title = document.createElement("span");
-    title.className = "row-title";
-    title.textContent = run.name || run.command || "Unnamed process";
-    const command = document.createElement("span");
-    command.className = "row-command";
-    command.textContent = run.command;
-    const meta = document.createElement("span");
-    meta.className = "row-meta";
-    meta.textContent = `${formatRuntime(run.runtime_seconds)} · ${relativeTime(run.started_at || run.created_at)}`;
-    main.append(title, command, meta);
-    const badge = document.createElement("span");
-    badge.className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
-    badge.textContent = run.status;
-    row.append(dot, main, badge);
-    list.append(row);
+  const statuses = [...new Set(filtered.map((run) => run.status))].sort((left, right) => {
+    const leftIndex = STATUS_ORDER.indexOf(left);
+    const rightIndex = STATUS_ORDER.indexOf(right);
+    return (leftIndex < 0 ? STATUS_ORDER.length : leftIndex) - (rightIndex < 0 ? STATUS_ORDER.length : rightIndex)
+      || left.localeCompare(right);
+  });
+  for (const status of statuses) {
+    const groupRuns = filtered.filter((run) => run.status === status);
+    const group = document.createElement("details");
+    group.className = "process-group";
+    group.open = !collapsedGroups.has(status);
+    group.addEventListener("toggle", () => {
+      if (group.open) collapsedGroups.delete(status);
+      else collapsedGroups.add(status);
+    });
+    const heading = document.createElement("summary");
+    heading.className = "group-heading";
+    const headingLabel = document.createElement("span");
+    headingLabel.textContent = STATUS_LABEL[status] || status;
+    const count = document.createElement("span");
+    count.className = "group-count";
+    count.textContent = `${groupRuns.length}`;
+    heading.append(headingLabel, count);
+    group.append(heading);
+    for (const run of groupRuns) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = `process-row${run.id === selectedId ? " selected" : ""}`;
+      row.setAttribute("aria-current", run.id === selectedId ? "true" : "false");
+      row.addEventListener("click", () => selectRun(run.id));
+      const dot = document.createElement("span");
+      dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
+      const main = document.createElement("span");
+      main.className = "row-main";
+      const title = document.createElement("span");
+      title.className = "row-title";
+      title.textContent = run.name || run.command || "Unnamed process";
+      title.title = run.name || run.command || "Unnamed process";
+      const command = document.createElement("span");
+      command.className = "row-command";
+      command.textContent = run.command;
+      command.title = run.command;
+      const meta = document.createElement("span");
+      meta.className = "row-meta";
+      meta.textContent = `${formatRuntime(run.runtime_seconds)} · ${relativeTime(run.started_at || run.created_at)}`;
+      main.append(title, command, meta);
+      const badge = document.createElement("span");
+      badge.className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
+      badge.textContent = run.status;
+      row.append(dot, main, badge);
+      group.append(row);
+    }
+    list.append(group);
   }
 }
 
+function renderWorkspaceTabs() {
+  const tabs = $("#workspace-tabs");
+  tabs.replaceChildren();
+  const openedRuns = openRunIds.map((runId) => runs.find((run) => run.id === runId)).filter(Boolean);
+  tabs.hidden = openedRuns.length === 0;
+  for (const run of openedRuns) {
+    const tab = document.createElement("div");
+    tab.className = `workspace-tab${run.id === selectedId ? " active" : ""}`;
+    const activate = document.createElement("button");
+    activate.type = "button";
+    activate.className = "workspace-tab-select";
+    activate.setAttribute("role", "tab");
+    activate.setAttribute("aria-selected", `${run.id === selectedId}`);
+    activate.title = run.name || run.command || "Unnamed process";
+    activate.addEventListener("click", () => selectRun(run.id));
+    const dot = document.createElement("span");
+    dot.className = `row-dot ${STATUS_CLASS[run.status] || ""}`;
+    const label = document.createElement("span");
+    label.className = "workspace-tab-label";
+    label.textContent = run.name || run.command || "Unnamed process";
+    activate.append(dot, label);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "workspace-tab-close";
+    close.setAttribute("aria-label", `Close ${run.name || run.command || "process"} view`);
+    close.title = "Close view";
+    close.textContent = "×";
+    close.addEventListener("click", () => closeWorkspaceTab(run.id));
+    tab.append(activate, close);
+    tabs.append(tab);
+  }
+}
+
+function closeWorkspaceTab(runId) {
+  const index = openRunIds.indexOf(runId);
+  if (index < 0) return;
+  openRunIds.splice(index, 1);
+  if (selectedId === runId) {
+    const nextId = openRunIds[Math.min(index, openRunIds.length - 1)];
+    if (nextId) {
+      selectedId = null;
+      return selectRun(nextId);
+    } else {
+      clearSelection();
+      return;
+    }
+  }
+  renderRuns();
+  renderWorkspaceTabs();
+}
+
 async function selectRun(runId) {
+  if (selectedId === runId) return;
+  if (!openRunIds.includes(runId)) openRunIds.push(runId);
   invalidateSelection();
   const generation = selectionGeneration;
   selectedId = runId;
@@ -174,6 +262,7 @@ async function selectRun(runId) {
   $("#empty-inspector").hidden = true;
   $("#run-inspector").hidden = false;
   renderRuns();
+  renderWorkspaceTabs();
   await Promise.all([refreshSelected(generation, runId), refreshOutput(generation, runId)]);
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
@@ -269,10 +358,12 @@ function selectTab(tab) {
 function clearSelection() {
   invalidateSelection();
   selectedId = null;
+  openRunIds = [];
   outputCursor = null;
   $("#run-inspector").hidden = true;
   $("#empty-inspector").hidden = false;
   renderRuns();
+  renderWorkspaceTabs();
 }
 
 function invalidateSelection() {
