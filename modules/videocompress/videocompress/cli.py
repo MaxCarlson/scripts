@@ -7,10 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
+import time
 from typing import Any, Sequence
 
 from . import __version__
+from .capabilities import probe_capabilities
 from .contracts import (
     CompressionReport,
     EligibilityDecision,
@@ -21,6 +24,39 @@ from .contracts import (
     VideoRecipe,
     VideoStream,
 )
+from .eligibility import parse_bitrate, parse_duration, parse_resolution, parse_size
+from .events import ProgressEmitter
+from .inventory import InventoryReport, InventoryStore, scan_inventory
+from .plan import build_estimation_plan
+from .predictor import FeasibilityAssessment, evaluate_feasibility
+from .recipes import DEFAULT_RECIPE_ID, STANDARD_RECIPES, get_recipe, list_standard_recipes
+from .workspace import resolve_workspace
+
+
+def _format_bytes(num_bytes: int | float | None) -> str:
+    """Format byte counts into human-readable binary units (KiB, MiB, GiB)."""
+    if num_bytes is None:
+        return "N/A"
+    b = float(num_bytes)
+    if abs(b) >= 1024**3:
+        return f"{b / (1024**3):.2f} GiB"
+    elif abs(b) >= 1024**2:
+        return f"{b / (1024**2):.1f} MiB"
+    elif abs(b) >= 1024:
+        return f"{b / 1024:.1f} KiB"
+    return f"{int(b)} B"
+
+
+def _format_bps(bps: int | float | None) -> str:
+    """Format bitrates into human-readable metric units (kbps, Mbps)."""
+    if bps is None:
+        return "unknown"
+    b = float(bps)
+    if b >= 1_000_000:
+        return f"{b / 1_000_000:.2f} Mbps"
+    elif b >= 1_000:
+        return f"{b / 1_000:.0f} kbps"
+    return f"{int(b)} bps"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,21 +67,21 @@ def build_parser() -> argparse.ArgumentParser:
         "-v",
         "--verbose",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Enable verbose diagnostic logging to stderr.",
     )
     common_base.add_argument(
         "-J",
         "--json",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Output structured JSON results to stdout.",
     )
     common_base.add_argument(
         "-N",
         "--no-ui",
         action="store_true",
-        default=False,
+        default=argparse.SUPPRESS,
         help="Disable interactive terminal UI/progress widgets.",
     )
 
@@ -80,7 +116,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--check-encode",
         action="store_true",
         default=False,
-        help="Perform a bounded 1-second smoke encode to verify hardware encoder functionality.",
+        help="Perform a bounded smoke encode to verify hardware encoder functionality.",
     )
 
     # Common parent parser for target-scoped operations
@@ -100,7 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="External workspace root directory (must reside outside input media tree).",
     )
 
-    # Filter parent parser
+    # Common filter parent parser
     common_filters = argparse.ArgumentParser(add_help=False)
     common_filters.add_argument(
         "-B",
@@ -129,6 +165,16 @@ def build_parser() -> argparse.ArgumentParser:
         dest="min_duration",
         default=None,
         help="Minimum media duration in seconds (e.g. 60, 300).",
+    )
+
+    # Common plan selector
+    common_plan = argparse.ArgumentParser(add_help=False)
+    common_plan.add_argument(
+        "-r",
+        "--plan-id",
+        dest="plan_id",
+        default=None,
+        help="Identifier of the frozen estimation plan to execute.",
     )
 
     # 2. inventory
@@ -175,22 +221,42 @@ def build_parser() -> argparse.ArgumentParser:
         default="p5",
         help="Target encoder speed/quality preset (default: p5 for nvenc).",
     )
-
-    # Common plan selector
-    common_plan = argparse.ArgumentParser(add_help=False)
-    common_plan.add_argument(
-        "-r",
-        "--plan-id",
-        dest="plan_id",
-        required=True,
-        help="Identifier of the frozen estimation plan to execute.",
+    plan_parser.add_argument(
+        "-e",
+        "--recipe",
+        dest="recipe_id",
+        default=DEFAULT_RECIPE_ID,
+        help=f"Target standard recipe ID (default: {DEFAULT_RECIPE_ID}). Choices: {', '.join(sorted(STANDARD_RECIPES.keys()))}.",
+    )
+    plan_parser.add_argument(
+        "-y",
+        "--strategy",
+        dest="sampling_strategy",
+        choices=["uniform_3x20", "uniform_5x20", "uniform_3x10", "uniform_5x10", "none"],
+        default="uniform_3x20",
+        help="Deterministic temporal sampling schedule for trial encoding (default: uniform_3x20).",
+    )
+    plan_parser.add_argument(
+        "-f",
+        "--force",
+        "--force-refresh",
+        dest="force_refresh",
+        action="store_true",
+        help="Force re-probing of all files, ignoring cached stat fingerprints.",
     )
 
     # 4. estimate
     est_parser = subparsers.add_parser(
         "estimate",
-        parents=[common_base, common_target, common_plan],
+        parents=[common_base, common_target, common_filters, common_plan],
         help="Estimate compression feasibility, file size, and potential savings.",
+    )
+    est_parser.add_argument(
+        "-e",
+        "--recipe",
+        dest="recipe_id",
+        default=DEFAULT_RECIPE_ID,
+        help=f"Target standard recipe ID (default: {DEFAULT_RECIPE_ID}).",
     )
     est_parser.add_argument(
         "-E",
@@ -199,6 +265,37 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["metadata", "features", "sampled", "calibrated"],
         default="metadata",
         help="Estimation tier: 'metadata' (zero-encode prior, default), 'sampled' (bounded trial encodes), etc.",
+    )
+    est_parser.add_argument(
+        "-P",
+        "--min-savings-pct",
+        dest="min_savings_pct",
+        type=float,
+        default=None,
+        help="Minimum required percentage savings (e.g. 20.0).",
+    )
+    est_parser.add_argument(
+        "-s",
+        "--min-savings-bytes",
+        dest="min_savings_bytes",
+        default=None,
+        help="Minimum required byte savings (e.g. '50M', 50000000).",
+    )
+    est_parser.add_argument(
+        "-p",
+        "--savings-policy",
+        dest="savings_policy",
+        choices=["both", "either"],
+        default="both",
+        help="Savings policy when both percentage and bytes are set: 'both' (%% AND bytes) or 'either' (%% OR bytes).",
+    )
+    est_parser.add_argument(
+        "-f",
+        "--force",
+        "--force-refresh",
+        dest="force_refresh",
+        action="store_true",
+        help="Force re-probing of all files, ignoring cached stat fingerprints.",
     )
     est_parser.add_argument(
         "-M",
@@ -249,7 +346,7 @@ def build_parser() -> argparse.ArgumentParser:
     app_parser = subparsers.add_parser(
         "apply",
         parents=[common_base, common_target, common_plan],
-        help="Transcode and publish candidate files under journaled media safety contracts.",
+        help="Execute authorized video transcoding and publication under media safety contracts.",
     )
     app_parser.add_argument(
         "-w",
@@ -257,7 +354,7 @@ def build_parser() -> argparse.ArgumentParser:
         dest="allow_write",
         action="store_true",
         default=False,
-        help="Authorize actual disk writes for publication (omitted means dry-run).",
+        help="Authorize executing live encoding work instead of dry-run inspection.",
     )
     app_parser.add_argument(
         "-L",
@@ -302,8 +399,6 @@ def build_parser() -> argparse.ArgumentParser:
 
 def run_capabilities(args: argparse.Namespace) -> int:
     """Inspect and report FFmpeg/GPU capabilities."""
-    from .capabilities import probe_capabilities
-
     caps = probe_capabilities(check_encode=getattr(args, "check_encode", False))
     if getattr(args, "json", False):
         print(json.dumps(caps, indent=2))
@@ -321,10 +416,6 @@ def run_capabilities(args: argparse.Namespace) -> int:
 
 def run_inventory(args: argparse.Namespace) -> int:
     """Execute inventory scan and report results."""
-    import time
-    from .events import ProgressEmitter
-    from .inventory import scan_inventory
-
     is_json = getattr(args, "json", False)
     no_ui = getattr(args, "no_ui", False)
     run_id = f"inv-{int(time.time())}"
@@ -368,6 +459,177 @@ def run_inventory(args: argparse.Namespace) -> int:
     return 0
 
 
+def run_plan(args: argparse.Namespace) -> int:
+    """Execute estimation planning and candidate freezing."""
+    recipe = get_recipe(getattr(args, "recipe_id", None))
+
+    plan = build_estimation_plan(
+        target=args.input_target,
+        recipes=[recipe],
+        workspace_root=getattr(args, "workspace_root", None),
+        min_video_bitrate=getattr(args, "min_video_bitrate", None),
+        min_resolution=getattr(args, "min_resolution", None),
+        min_size=getattr(args, "min_size", None),
+        min_duration=getattr(args, "min_duration", None),
+        sampling_strategy=getattr(args, "sampling_strategy", "uniform_3x20"),
+        force_refresh=getattr(args, "force_refresh", False),
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps(plan.to_dict(), indent=2))
+    else:
+        print("=== videocompress Estimation Plan ===")
+        print(f"Plan ID: {plan.plan_id}")
+        print(f"Target Scope: {plan.target_scope}")
+        print(f"Eligible Sources: {len(plan.source_ids)}")
+        print(f"Target Recipe: {recipe.recipe_id} ({recipe.encoder}, cq={recipe.rate_control_value}, {recipe.preset})")
+        print(f"Sampling Windows: {len(plan.sampling_windows)} scheduled intervals")
+        print(f"Artifact Saved: {plan.workspace_parent}/plans/{plan.plan_id}.json")
+    return 0
+
+
+def run_estimate(args: argparse.Namespace) -> int:
+    """Execute feasibility screening and file-size estimation."""
+    is_json = getattr(args, "json", False)
+    tier = getattr(args, "estimate_tier", "metadata")
+    if tier != "metadata":
+        sys.stderr.write(
+            f"Note: Tier '{tier}' requested. Metadata feasibility screening will run first.\n"
+        )
+
+    # 1. Resolve workspace and inventory
+    ws = resolve_workspace(args.input_target, parent=getattr(args, "workspace_root", None))
+    store = InventoryStore(ws.inventory_db)
+
+    # Parse savings thresholds
+    min_savings_pct = getattr(args, "min_savings_pct", None)
+    min_savings_bytes = parse_size(getattr(args, "min_savings_bytes", None))
+    savings_policy = getattr(args, "savings_policy", "both")
+
+    # Resolve recipe
+    recipe_id = getattr(args, "recipe_id", None) or DEFAULT_RECIPE_ID
+    recipe = get_recipe(recipe_id)
+
+    # Gather target assets
+    plan_id = getattr(args, "plan_id", None)
+    if plan_id:
+        plan_file = ws.plans_dir / f"{plan_id}.json"
+        if not plan_file.exists():
+            sys.stderr.write(f"Error: Specified plan file does not exist: {plan_file}\n")
+            return 1
+        plan_data = json.loads(plan_file.read_text(encoding="utf-8"))
+        target_sids = set(plan_data.get("source_ids", []))
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in target_sids]
+    else:
+        # Run/load inventory scan
+        inv_report = scan_inventory(
+            target=args.input_target,
+            workspace_root=ws.root,
+            min_video_bitrate=getattr(args, "min_video_bitrate", None),
+            min_resolution=getattr(args, "min_resolution", None),
+            min_size=getattr(args, "min_size", None),
+            min_duration=getattr(args, "min_duration", None),
+            inventory_depth="probe",
+            force_refresh=getattr(args, "force_refresh", False),
+        )
+        eligible_sids = {
+            rec["source_id"]
+            for rec in inv_report.per_source_records
+            if rec.get("eligibility", {}).get("status") == "eligible"
+        }
+        all_stored = store.list_assets()
+        assets_to_assess = [a for a in all_stored if a.source_id in eligible_sids]
+
+    # 2. Evaluate feasibility for each asset
+    assessments: list[FeasibilityAssessment] = []
+    for asset in assets_to_assess:
+        fa = evaluate_feasibility(
+            asset=asset,
+            recipe=recipe,
+            min_savings_pct=min_savings_pct,
+            min_savings_bytes=min_savings_bytes,
+            savings_policy=savings_policy,
+        )
+        assessments.append(fa)
+
+    # 3. Aggregate statistics
+    total_sources = len(assessments)
+    promising_count = sum(1 for a in assessments if a.decision == "eligible_promising")
+    uncertain_count = sum(1 for a in assessments if a.decision == "eligible_uncertain")
+    unlikely_count = sum(1 for a in assessments if a.decision == "eligible_unlikely")
+    infeasible_count = sum(1 for a in assessments if a.decision == "infeasible")
+    abstained_count = sum(1 for a in assessments if a.decision == "abstained")
+
+    total_source_bytes = sum(a.source_bytes for a in assessments)
+    p10_total_saved = sum(a.p10_savings_bytes for a in assessments)
+    p50_total_saved = sum(a.p50_savings_bytes for a in assessments)
+    p90_total_saved = sum(a.p90_savings_bytes for a in assessments)
+
+    if is_json:
+        out_dict = {
+            "schema_version": 1,
+            "operation": "estimate",
+            "tier": "metadata",
+            "recipe": recipe.to_dict(),
+            "target": str(args.input_target),
+            "summary": {
+                "total_evaluated_sources": total_sources,
+                "promising_sources": promising_count,
+                "uncertain_sources": uncertain_count,
+                "unlikely_sources": unlikely_count,
+                "infeasible_sources": infeasible_count,
+                "abstained_sources": abstained_count,
+                "total_source_bytes": total_source_bytes,
+                "predicted_savings_bytes": {
+                    "p10_conservative": p10_total_saved,
+                    "p50_expected": p50_total_saved,
+                    "p90_optimistic": p90_total_saved,
+                },
+                "predicted_savings_pct": {
+                    "p10_conservative": round((p10_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                    "p50_expected": round((p50_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                    "p90_optimistic": round((p90_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                },
+            },
+            "per_source_assessments": [a.to_dict() for a in assessments],
+            "calibration_caveat": (
+                "CRF/CQ predictions are preliminary estimates based on metadata priors without empirical calibration. "
+                "A lower bitrate does not guarantee preserved perceptual quality."
+            ),
+        }
+        print(json.dumps(out_dict, indent=2))
+    else:
+        print("=== videocompress Feasibility & Prediction Report (Tier 1 Metadata) ===")
+        print(f"Target: {args.input_target}")
+        print(f"Target Recipe: {recipe.recipe_id} ({recipe.encoder}, cq={recipe.rate_control_value})")
+        if min_savings_pct or min_savings_bytes:
+            print(f"Savings Criteria: min {min_savings_pct or 0}% {savings_policy.upper()} {_format_bytes(min_savings_bytes or 0)}")
+        print(f"Evaluated Assets: {total_sources} ({_format_bytes(total_source_bytes)})")
+        print(f"  Promising: {promising_count} | Uncertain: {uncertain_count} | Unlikely: {unlikely_count}")
+        print(f"  Infeasible: {infeasible_count} | Abstained: {abstained_count}")
+        print(f"Predicted Library Savings: {_format_bytes(p10_total_saved)} .. {_format_bytes(p90_total_saved)} [expected: {_format_bytes(p50_total_saved)}]")
+        print("-" * 88)
+
+        # Per source summary
+        for a in assessments:
+            prov_label = "" if a.bitrate_provenance == "ffprobe_stream" else f" ({a.bitrate_provenance})"
+            vbitrate_str = _format_bps(a.video_bitrate_bps) + prov_label
+            print(f"Asset [{a.source_id[:8]}]: {_format_bytes(a.source_bytes)} -> {_format_bytes(a.p50_output_bytes)} (exp) [{a.p50_savings_pct:.1f}% savings]")
+            print(f"  Video: {vbitrate_str} | Non-Video: {_format_bytes(a.breakdown.total_nonvideo_bytes)}")
+            print(f"  Plausible Range: {_format_bytes(a.p10_output_bytes)} .. {_format_bytes(a.p90_output_bytes)} | Decision: [{a.decision.upper()}] (conf: {a.confidence})")
+            if a.rejection_reasons:
+                for r in a.rejection_reasons:
+                    print(f"  * Rejection: {r}")
+            if a.warnings:
+                for w in a.warnings:
+                    print(f"  ! Warning: {w}")
+
+        print("-" * 88)
+        print("Notice: Zero encodes performed. Predictions are exploratory metadata priors and require empirical trial calibration.")
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI entrypoint for vcompress."""
     parser = build_parser()
@@ -377,6 +639,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         return run_capabilities(args)
     elif args.operation == "inventory":
         return run_inventory(args)
+    elif args.operation == "plan":
+        return run_plan(args)
+    elif args.operation == "estimate":
+        return run_estimate(args)
 
     # Staged implementation placeholder for other operations
     if getattr(args, "json", False):

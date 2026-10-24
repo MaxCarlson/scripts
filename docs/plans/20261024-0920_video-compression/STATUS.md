@@ -2,6 +2,19 @@
 
 ## Operational Ledger
 
+- **2026-10-24 13:35 (Stage 3 Completed — Cheap Predictor & Feasibility Screening)**
+  - Stage 3 implementation complete: `videocompress/recipes.py`, `videocompress/predictor.py`, `videocompress/plan.py`, and `videocompress/cli.py`.
+  - Zero-encode guarantee verified: pure mathematical predictor with zero FFmpeg/subprocess imports; subprocess calls forbidden and tested under monkeypatch guard.
+  - Container byte decomposition operational: separate accounting for audio streams (exact or codec/channel fallback), bitmap vs text subtitles, font attachments, and container mux overhead.
+  - Missing video bitrate handled conservatively: never substituted silently for container bitrate; explicitly labeled as `container_derived_approximation` when derived.
+  - Hard impossibility constraints distinguished from heuristic predictions: non-video budget overflows and bitrate quality floor violations trigger `infeasible` with explicit rejection reasons.
+  - Codec transition priors implemented across H.264, HEVC, and AV1 with adjustments for HDR10/10-bit color, low bpppf, and rate control CQ deltas.
+  - Plausible uncertainty ranges reported as `[p10, p50, p90]` intervals with honest calibration caveats (`calibration_status = "uncalibrated_metadata_prior"`).
+  - CLI operations `vcompress plan` and `vcompress estimate --tier metadata` connected with human-readable tables and structured JSON (`-J`).
+  - Unit and integration tests expanded to 51 tests (`51/51 passed` in 1.34s).
+  - Full regression verification: `cli_tui` (107/107 passed), `compresser` (523 passed, 1 skipped), `scripts_help` (55/55 passed).
+  - Next Action: Present Stage 3 report to user for validation before advancing to Stage 4 (Controlled Encoder & Measurement Backend).
+
 - **2026-10-24 13:20 (Stage 1 & 2 Approved, Findings Addressed)**
   - Addressed User Review Finding 1: Refined `ProcessRunner.terminate()` to use non-forced `taskkill /PID <pid> /T` preserving graceful semantics, while `ProcessRunner.kill()` uses forced `taskkill /F /T /PID <pid>`. Verified with tests.
   - Addressed User Review Finding 2: Decoupled `source_id` from mutable `mtime:size` stat fingerprint; `source_id` is now derived stably from normalized canonical path (`sha256(canonical_path)[:16]`).

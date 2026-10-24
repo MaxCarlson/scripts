@@ -32,10 +32,10 @@
 - [x] Run `cli_tui`, `compresser`, `mangadl`, and `videocompress` regression test suites
 
 ## Stage 3: Cheap Predictor & Feasibility Screening
-- [ ] Implement container byte decomposition and bit-budget feasibility arithmetic
-- [ ] Implement `videocompress plan`: freeze target scope, eligible population, recipes, windows
-- [ ] Implement `videocompress estimate --tier metadata`: zero-encode prior and honest abstention
-- [ ] Verify reporting of unknown fields and explicit decision states
+- [x] Implement container byte decomposition and bit-budget feasibility arithmetic
+- [x] Implement `videocompress plan`: freeze target scope, eligible population, recipes, windows
+- [x] Implement `videocompress estimate --tier metadata`: zero-encode prior and honest abstention
+- [x] Verify reporting of unknown fields and explicit decision states
 
 ## Stage 4: Controlled Encoder & Measurement Backend
 - [ ] Implement `videocompress.adapters.ffmpeg`: robust FFmpeg subprocess runner with `-nostdin` and `-progress`
