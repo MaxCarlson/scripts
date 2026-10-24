@@ -497,3 +497,22 @@ def test_api_stop_reports_terminating_when_process_remains_active(
         assert data["status"] == "terminating"
         assert "shutdown is in progress" in data["message"]
         assert data["run"]["status"] == "running"
+
+
+def test_api_capabilities_endpoint(tmp_path: Path) -> None:
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        # Unauthenticated request
+        unauth = client.get("/api/capabilities", headers={"Origin": "http://localhost"})
+        assert unauth.status_code in {401, 403}
+
+        # Authenticate
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        res = client.get("/api/capabilities", headers={"Origin": "http://localhost"})
+        assert res.status_code == 200
+        data = res.json()
+        assert "platform" in data
+        assert "supports_pause_resume" in data
+        assert isinstance(data["supports_pause_resume"], bool)
+        assert data["supports_pause_resume"] == (sys.platform != "win32")

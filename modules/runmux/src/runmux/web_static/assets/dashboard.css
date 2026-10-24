@@ -395,6 +395,12 @@ button:focus-visible { outline: 2px solid rgba(59,130,246,.9); outline-offset: 2
   border-color: rgba(148, 163, 184, 0.3);
 }
 
+.lifecycle-btn-resume:hover:not(:disabled) {
+  background: rgba(0, 212, 170, 0.12);
+  border-color: rgba(0, 212, 170, 0.35);
+  color: var(--accent);
+}
+
 /* Lifecycle Feedback Banner */
 .lifecycle-feedback {
   margin: 6px 0;

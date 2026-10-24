@@ -183,6 +183,10 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     clearLifecycleFeedback,
     getLifecycleInFlightRunId: () => lifecycleInFlightRunId,
     getPendingConfirmAction: () => pendingConfirmAction,
+    setSystemCapabilities: (caps) => { systemCapabilities = caps; },
+    getSystemCapabilities: () => systemCapabilities,
+    refreshCapabilities,
+    isPauseResumeSupported,
   };`, context);
   return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
 }
@@ -230,7 +234,71 @@ async function testRapidSelection() {
   detailRequests[1].resolve(response(run("B", "stale B")));
   outputRequests[1].resolve(response({ state: "available", text: "stale B output", cursor: "old", reset: true, at_end: false, finished: false }));
   if (telemetryRequests[1]) telemetryRequests[1].resolve(response({ id: "B", cpu_percent: 5.0, rss_bytes: 1024 }));
-  await Promise.all([firstA, selectB]);
+  await 
+async function testLifecyclePauseAndResumeExecution() {
+  const { context, getElement, requests } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const runningRun = { ...run("20261024-051200-abcdef", "active worker"), status: "running" };
+  const pausedRun = { ...run("20261024-051202-654321", "paused worker"), status: "paused" };
+
+  db.setRuns([runningRun, pausedRun]);
+
+  // 1. Supported platform: execute pause on running run
+  db.setSystemCapabilities({ platform: "linux", supports_pause_resume: true });
+  db.setSelectedId(runningRun.id);
+  db.updateLifecycleControls(runningRun);
+
+  context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    if (url.includes("/api/runs/20261024-051200-abcdef/pause")) {
+      return response({ action: "pause", status: "ok", message: "Process paused successfully." }, 200);
+    }
+    if (url.includes("/api/runs/20261024-051202-654321/resume")) {
+      return response({ action: "resume", status: "ok", message: "Process resumed successfully." }, 200);
+    }
+    if (url.includes("/api/runs")) {
+      return response([runningRun, pausedRun], 200);
+    }
+    return response({});
+  };
+
+  const pauseBtn = getElement("#action-pause-btn");
+  assert.equal(pauseBtn.textContent, "Pause");
+  pauseBtn.click();
+  await new Promise((r) => setTimeout(r, 20));
+
+  const pauseReq = requests.find((r) => r.url.includes("/pause"));
+  assert.ok(pauseReq, "Pause request should have been dispatched");
+
+  const feedbackBanner = getElement("#lifecycle-feedback");
+  assert.equal(feedbackBanner.hidden, false);
+  assert.match(feedbackBanner.textContent, /paused successfully/i);
+
+  // 2. Supported platform: execute resume on paused run
+  db.setSelectedId(pausedRun.id);
+  db.updateLifecycleControls(pausedRun);
+  assert.equal(pauseBtn.textContent, "Resume");
+  pauseBtn.click();
+  await new Promise((r) => setTimeout(r, 20));
+
+  const resumeReq = requests.find((r) => r.url.includes("/resume"));
+  assert.ok(resumeReq, "Resume request should have been dispatched");
+  assert.match(feedbackBanner.textContent, /resumed successfully/i);
+
+  // 3. Unsupported Windows platform: directly calling executeLifecycleAction shows 501 error banner
+  db.setSystemCapabilities({ platform: "win32", supports_pause_resume: false });
+  context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response({ detail: "Pausing processes is not supported on Windows." }, 501);
+  };
+
+  await db.executeLifecycleAction("pause", runningRun.id);
+  assert.equal(feedbackBanner.className, "lifecycle-feedback feedback-error");
+  assert.match(feedbackBanner.textContent, /not supported on Windows/i);
+}
+
+Promise.all([firstA, selectB]);
 
   assert.equal(elements.get("#selected-name").textContent, "latest A");
   assert.equal(elements.get("#output-text").textContent, "latest output");
@@ -1376,16 +1444,16 @@ async function testLifecycleButtonEligibilityByStatus() {
     ...run("20261024-051200-abcdef", "active worker"),
     status: "running",
   };
+  const pausedRun = {
+    ...run("20261024-051202-654321", "paused worker"),
+    status: "paused",
+  };
   const terminalRun = {
     ...run("20261024-051201-123456", "terminal worker"),
     status: "finished",
   };
 
-  db.setRuns([activeRun, terminalRun]);
-
-  // 1. When an active run is selected
-  db.setSelectedId(activeRun.id);
-  db.updateLifecycleControls(activeRun);
+  db.setRuns([activeRun, pausedRun, terminalRun]);
 
   const stopBtn = getElement("#action-stop-btn");
   const killBtn = getElement("#action-kill-btn");
@@ -1393,33 +1461,70 @@ async function testLifecycleButtonEligibilityByStatus() {
   const duplicateBtn = getElement("#action-duplicate-btn");
   const pauseBtn = getElement("#action-pause-btn");
 
+  // Part A: Platform where Pause/Resume is UNSUPPORTED (e.g. Windows backend)
+  db.setSystemCapabilities({ platform: "win32", supports_pause_resume: false });
+
+  // A1. Active running run on Windows: pause button is disabled with platform explanation
+  db.setSelectedId(activeRun.id);
+  db.updateLifecycleControls(activeRun);
   assert.equal(stopBtn.disabled, false, "Stop button should be enabled for active run");
   assert.equal(killBtn.disabled, false, "Kill button should be enabled for active run");
   assert.equal(restartBtn.disabled, true, "Restart button must be disabled for active run");
   assert.match(restartBtn.title, /Cannot restart an active process/);
   assert.equal(duplicateBtn.disabled, false, "Duplicate button should be enabled for active run");
-  assert.equal(pauseBtn.disabled, false, "Pause button should be present");
-  assert.match(pauseBtn.title, /unsupported on Windows/);
+  assert.equal(pauseBtn.disabled, true, "Pause button must be presented as unavailable on Windows");
+  assert.equal(pauseBtn.textContent, "Pause", "Action label should be Pause for running run");
+  assert.match(pauseBtn.title, /not supported on Windows/);
 
-  // 2. When a terminal run is selected
+  // A2. Paused run on Windows: resume button is disabled with platform explanation
+  db.setSelectedId(pausedRun.id);
+  db.updateLifecycleControls(pausedRun);
+  assert.equal(stopBtn.disabled, false, "Stop button should be enabled for paused run");
+  assert.equal(killBtn.disabled, false, "Kill button should be enabled for paused run");
+  assert.equal(pauseBtn.disabled, true, "Resume button must be presented as unavailable on Windows");
+  assert.equal(pauseBtn.textContent, "Resume", "Action label must switch to Resume for paused run");
+  assert.match(pauseBtn.title, /not supported on Windows/);
+
+  // A3. Terminal run on Windows
   db.setSelectedId(terminalRun.id);
   db.updateLifecycleControls(terminalRun);
-
   assert.equal(stopBtn.disabled, true, "Stop button must be disabled for finished run");
-  assert.match(stopBtn.title, /already terminated/);
   assert.equal(killBtn.disabled, true, "Kill button must be disabled for finished run");
-  assert.match(killBtn.title, /already terminated/);
   assert.equal(restartBtn.disabled, false, "Restart button should be enabled for terminal run");
   assert.equal(duplicateBtn.disabled, false, "Duplicate button should be enabled for terminal run");
   assert.equal(pauseBtn.disabled, true, "Pause button must be disabled for finished run");
   assert.match(pauseBtn.title, /already terminated/);
 
-  // 3. When selection is cleared
+  // Part B: Platform where Pause/Resume is SUPPORTED (e.g. POSIX / Linux backend)
+  db.setSystemCapabilities({ platform: "linux", supports_pause_resume: true });
+
+  // B1. Active running run on Linux: pause button is ENABLED
+  db.setSelectedId(activeRun.id);
+  db.updateLifecycleControls(activeRun);
+  assert.equal(pauseBtn.disabled, false, "Pause button must be enabled where supported");
+  assert.equal(pauseBtn.textContent, "Pause");
+  assert.match(pauseBtn.title, /Pause process/);
+
+  // B2. Paused run on Linux: resume button is ENABLED
+  db.setSelectedId(pausedRun.id);
+  db.updateLifecycleControls(pausedRun);
+  assert.equal(pauseBtn.disabled, false, "Resume button must be enabled where supported");
+  assert.equal(pauseBtn.textContent, "Resume", "Action label must switch to Resume for paused run");
+  assert.match(pauseBtn.title, /Resume process/);
+
+  // B3. Terminal run on Linux: pause/resume is disabled
+  db.setSelectedId(terminalRun.id);
+  db.updateLifecycleControls(terminalRun);
+  assert.equal(pauseBtn.disabled, true, "Pause/Resume must be disabled for terminal run");
+  assert.match(pauseBtn.title, /already terminated/);
+
+  // Part C: When selection is cleared
   db.clearSelection();
   assert.equal(stopBtn.disabled, true);
   assert.equal(killBtn.disabled, true);
   assert.equal(restartBtn.disabled, true);
   assert.equal(duplicateBtn.disabled, true);
+  assert.equal(pauseBtn.disabled, true);
 }
 
 async function testLifecycleDestructiveConfirmationModal() {
@@ -1702,8 +1807,73 @@ async function testLifecycleConcurrencyAndStaleSelectionGuards() {
   assert.equal(destructiveRequests.length, 0, "Closing a workspace tab must remain strictly view-only");
 }
 
+
+async function testLifecyclePauseAndResumeExecution() {
+  const { context, getElement, requests } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const runningRun = { ...run("20261024-051200-abcdef", "active worker"), status: "running" };
+  const pausedRun = { ...run("20261024-051202-654321", "paused worker"), status: "paused" };
+
+  db.setRuns([runningRun, pausedRun]);
+
+  // 1. Supported platform: execute pause on running run
+  db.setSystemCapabilities({ platform: "linux", supports_pause_resume: true });
+  db.setSelectedId(runningRun.id);
+  db.updateLifecycleControls(runningRun);
+
+  context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    if (url.includes("/api/runs/20261024-051200-abcdef/pause")) {
+      return response({ action: "pause", status: "ok", message: "Process paused successfully." }, 200);
+    }
+    if (url.includes("/api/runs/20261024-051202-654321/resume")) {
+      return response({ action: "resume", status: "ok", message: "Process resumed successfully." }, 200);
+    }
+    if (url.includes("/api/runs")) {
+      return response([runningRun, pausedRun], 200);
+    }
+    return response({});
+  };
+
+  const pauseBtn = getElement("#action-pause-btn");
+  assert.equal(pauseBtn.textContent, "Pause");
+  pauseBtn.click();
+  await new Promise((r) => setTimeout(r, 20));
+
+  const pauseReq = requests.find((r) => r.url.includes("/pause"));
+  assert.ok(pauseReq, "Pause request should have been dispatched");
+
+  const feedbackBanner = getElement("#lifecycle-feedback");
+  assert.equal(feedbackBanner.hidden, false);
+  assert.match(feedbackBanner.textContent, /paused successfully/i);
+
+  // 2. Supported platform: execute resume on paused run
+  db.setSelectedId(pausedRun.id);
+  db.updateLifecycleControls(pausedRun);
+  assert.equal(pauseBtn.textContent, "Resume");
+  pauseBtn.click();
+  await new Promise((r) => setTimeout(r, 20));
+
+  const resumeReq = requests.find((r) => r.url.includes("/resume"));
+  assert.ok(resumeReq, "Resume request should have been dispatched");
+  assert.match(feedbackBanner.textContent, /resumed successfully/i);
+
+  // 3. Unsupported Windows platform: directly calling executeLifecycleAction shows 501 error banner
+  db.setSystemCapabilities({ platform: "win32", supports_pause_resume: false });
+  context.fetch = async (url, options) => {
+    requests.push({ url, options });
+    return response({ detail: "Pausing processes is not supported on Windows." }, 501);
+  };
+
+  await db.executeLifecycleAction("pause", runningRun.id);
+  assert.equal(feedbackBanner.className, "lifecycle-feedback feedback-error");
+  assert.match(feedbackBanner.textContent, /not supported on Windows/i);
+}
+
 Promise.all([
   testLifecycleButtonEligibilityByStatus(),
+  testLifecyclePauseAndResumeExecution(),
   testLifecycleDestructiveConfirmationModal(),
   testLifecycleStopAndKillExecution(),
   testLifecycleRestartAndDuplicateReconciliation(),

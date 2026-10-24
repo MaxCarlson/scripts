@@ -20,7 +20,7 @@ Phase 4A Lifecycle Frontend implements selected-process browser controls for:
 
 ## 2. Invariants & Safety Model
 
-1. **Destructive Action Confirmation:** Stop and Kill require explicit user confirmation displaying both the human-readable run name and full 27-character immutable Run ID (`YYYYMMDD-HHMMSS-[0-9a-f]{6}`).
+1. **Destructive Action Confirmation:** Stop and Kill require explicit user confirmation displaying both the human-readable run name and full 22-character immutable Run ID (`YYYYMMDD-HHMMSS-[0-9a-f]{6}`).
 2. **Double-Click & In-Flight Protection:** Buttons transition to loading/busy state immediately; in-flight requests lock mutations for that Run ID.
 3. **Stale Selection Guard:** If the user switches processes while a mutation request is in flight, the completed response does not mutate the newly selected run's inspector.
 4. **View-Only Tab Closure:** Closing a browser tab or disconnecting the terminal WebSocket remains view-only and never affects process lifecycle.

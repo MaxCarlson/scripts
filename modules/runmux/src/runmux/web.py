@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import socket
+import sys
 import time
 import uuid
 from contextlib import suppress
@@ -98,6 +99,14 @@ def create_runmux_web_app(
     @api.get("/launch-defaults")
     def launch_defaults() -> dict[str, str]:
         return {"cwd": str(default_cwd)}
+
+    @api.get("/capabilities")
+    def get_capabilities() -> dict[str, Any]:
+        """Return host platform capabilities for process lifecycle and execution control."""
+        return {
+            "platform": sys.platform,
+            "supports_pause_resume": sys.platform != "win32",
+        }
 
     @api.post("/runs", status_code=201)
     async def launch_run(payload: LaunchRequest) -> dict[str, Any]:

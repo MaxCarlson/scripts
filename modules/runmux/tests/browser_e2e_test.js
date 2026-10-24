@@ -640,13 +640,16 @@ async function runBrowserE2E() {
     await sleep(500);
 
     // Verify initial button states on active run:
-    // Stop: enabled, Kill: enabled, Restart: disabled, Duplicate: enabled, Pause: enabled
+    // Stop: enabled, Kill: enabled, Restart: disabled, Duplicate: enabled
+    // On Windows backend, Pause/Resume is presented as unavailable (disabled = true) with explanatory title
     const initialButtonStates = await evaluate(`({
       stopDisabled: document.querySelector("#action-stop-btn").disabled,
       killDisabled: document.querySelector("#action-kill-btn").disabled,
       restartDisabled: document.querySelector("#action-restart-btn").disabled,
       dupDisabled: document.querySelector("#action-duplicate-btn").disabled,
       pauseDisabled: document.querySelector("#action-pause-btn").disabled,
+      pauseText: document.querySelector("#action-pause-btn").textContent,
+      pauseTitle: document.querySelector("#action-pause-btn").title,
       feedbackHidden: document.querySelector("#lifecycle-feedback").hidden,
       modalHidden: document.querySelector("#lifecycle-confirm-modal").hidden,
     })`);
@@ -654,9 +657,11 @@ async function runBrowserE2E() {
     assert.equal(initialButtonStates.killDisabled, false, "Kill button should be enabled on active run");
     assert.equal(initialButtonStates.restartDisabled, true, "Restart button must be disabled on active run");
     assert.equal(initialButtonStates.dupDisabled, false, "Duplicate button should be enabled on active run");
-    assert.equal(initialButtonStates.pauseDisabled, false, "Pause button should be enabled on active run");
+    assert.equal(initialButtonStates.pauseDisabled, true, "Pause button must be disabled on Windows backend");
+    assert.equal(initialButtonStates.pauseText, "Pause", "Action label should be Pause for running run");
+    assert.match(initialButtonStates.pauseTitle, /not supported on Windows/i, "Pause title must explain Windows lack of support");
     assert.equal(initialButtonStates.modalHidden, true, "Confirmation modal must be hidden initially");
-    console.log("Verified initial lifecycle button eligibility on active run.");
+    console.log("Verified initial lifecycle button eligibility on active run (Windows capability aware).");
 
     // A. Test Stop Confirmation Dialog & Cancel
     console.log("Testing Stop confirmation modal open and cancellation...");
@@ -808,9 +813,12 @@ async function runBrowserE2E() {
     assert.equal(postDupTabsCount, preDupTabsCount + 1, "Duplicate should add another tab");
     console.log("Verified duplicate reconciliation: new run created and selected.");
 
-    // F. Test Pause Button on Active Run (Windows 501 Unsupported)
-    console.log("Testing Pause button platform error handling (Windows 501)...");
-    await evaluate(`document.querySelector("#action-pause-btn").click()`);
+    // F. Test Pause Button & Platform Capability Awareness
+    console.log("Testing Pause/Resume platform capability awareness and direct 501 error handling...");
+    // Direct invocation on Windows backend to verify 501 error feedback
+    await evaluate(`(function() {
+      executeLifecycleAction("pause", selectedId);
+    })()`);
     await sleep(400);
 
     const pauseFeedback = await evaluate(`({
@@ -826,6 +834,54 @@ async function runBrowserE2E() {
     const outputFollowChecked = await evaluate(`document.querySelector("#follow-output") ? document.querySelector("#follow-output").checked : true`);
     assert.equal(outputFollowChecked, true, "Output follow state must not be simulated or altered by pause");
     console.log("Verified 501 Not Implemented handling for Pause without simulated freezing.");
+
+    // Test supported Pause -> Resume transitions
+    console.log("Testing supported Pause -> Resume transitions in browser...");
+    await evaluate(`(function() {
+      setSystemCapabilities({ platform: "linux", supports_pause_resume: true });
+      updateLifecycleControls(getRun(selectedId));
+    })()`);
+    await sleep(100);
+
+    const supportedRunningBtn = await evaluate(`({
+      disabled: document.querySelector("#action-pause-btn").disabled,
+      text: document.querySelector("#action-pause-btn").textContent,
+      title: document.querySelector("#action-pause-btn").title,
+    })`);
+    assert.equal(supportedRunningBtn.disabled, false, "Pause button must be enabled where supported");
+    assert.equal(supportedRunningBtn.text, "Pause");
+
+    // When status is paused, action must switch to Resume
+    await evaluate(`(function() {
+      const currentRun = getRun(selectedId);
+      if (currentRun) {
+        currentRun.status = "paused";
+        updateLifecycleControls(currentRun);
+      }
+    })()`);
+    await sleep(100);
+
+    const supportedPausedBtn = await evaluate(`({
+      disabled: document.querySelector("#action-pause-btn").disabled,
+      text: document.querySelector("#action-pause-btn").textContent,
+      action: document.querySelector("#action-pause-btn").getAttribute("data-action"),
+      title: document.querySelector("#action-pause-btn").title,
+    })`);
+    assert.equal(supportedPausedBtn.disabled, false, "Resume button must be enabled where supported");
+    assert.equal(supportedPausedBtn.text, "Resume", "Action label must switch to Resume for paused process");
+    assert.equal(supportedPausedBtn.action, "resume");
+    assert.match(supportedPausedBtn.title, /Resume process/);
+
+    // Restore real run status and capabilities
+    await evaluate(`(function() {
+      const currentRun = getRun(selectedId);
+      if (currentRun) {
+        currentRun.status = "running";
+      }
+      setSystemCapabilities({ platform: "win32", supports_pause_resume: false });
+      updateLifecycleControls(getRun(selectedId));
+    })()`);
+    console.log("Verified Pause -> Resume state and label transitions on supported platform.");
 
     // G. Test View-Only Tab Close
     console.log("Testing view-only tab close behavior...");

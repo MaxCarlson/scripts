@@ -24,6 +24,7 @@ let lastHostSampleTime = 0;
 let cachedHostStats = null;
 let lifecycleInFlightRunId = null;
 let pendingConfirmAction = null;
+let systemCapabilities = null;
 
 let runs = [];
 let selectedId = null;
@@ -223,6 +224,31 @@ function showLogin(message = "") {
 function showDashboard() {
   $("#login-view").hidden = true;
   $("#dashboard").hidden = false;
+  refreshCapabilities();
+}
+
+async function refreshCapabilities() {
+  try {
+    const response = await api("/api/capabilities");
+    systemCapabilities = await response.json();
+    if (selectedId) {
+      updateLifecycleControls(getRun(selectedId));
+    }
+  } catch {
+    // If not reachable or unauthorized, keep systemCapabilities as null
+  }
+  return systemCapabilities;
+}
+
+function setSystemCapabilities(caps) {
+  systemCapabilities = caps;
+}
+
+function isPauseResumeSupported() {
+  if (systemCapabilities && typeof systemCapabilities.supports_pause_resume === "boolean") {
+    return systemCapabilities.supports_pause_resume;
+  }
+  return false;
 }
 
 $("#login-form").addEventListener("submit", async (event) => {
@@ -368,6 +394,7 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function refreshRuns() {
+  if (systemCapabilities === null) refreshCapabilities();
   const requestGeneration = authGeneration;
   try {
     const response = await api("/api/runs");
@@ -1888,7 +1915,13 @@ function updateLifecycleControls(run) {
     killBtn.disabled = true;
     restartBtn.disabled = true;
     duplicateBtn.disabled = true;
-    if (pauseBtn) pauseBtn.disabled = true;
+    if (pauseBtn) {
+      pauseBtn.disabled = true;
+      pauseBtn.textContent = "Pause";
+      pauseBtn.setAttribute("data-action", "pause");
+      pauseBtn.className = "lifecycle-btn lifecycle-btn-pause";
+      pauseBtn.title = "Pause process";
+    }
     return;
   }
 
@@ -1930,14 +1963,25 @@ function updateLifecycleControls(run) {
   duplicateBtn.disabled = false;
   duplicateBtn.title = `Duplicate ${run.name || run.command} as a new parallel process`;
 
-  // Pause: allowed only for active processes (though returns 501 on Windows)
+  // Pause & Resume: state and platform aware
   if (pauseBtn) {
+    const isPaused = run.status === "paused";
+    const actionLabel = isPaused ? "Resume" : "Pause";
+    const actionVerb = isPaused ? "resume" : "pause";
+    pauseBtn.textContent = actionLabel;
+    pauseBtn.setAttribute("data-action", actionVerb);
+    pauseBtn.className = `lifecycle-btn ${isPaused ? "lifecycle-btn-resume" : "lifecycle-btn-pause"}`;
+
     if (isTerminal) {
       pauseBtn.disabled = true;
       pauseBtn.title = "Process is already terminated";
+    } else if (!isPauseResumeSupported()) {
+      pauseBtn.disabled = true;
+      const platformLabel = systemCapabilities?.platform === "win32" ? "Windows" : "this platform";
+      pauseBtn.title = `${actionLabel} is not supported on ${platformLabel}`;
     } else {
       pauseBtn.disabled = false;
-      pauseBtn.title = "Pause process (unsupported on Windows)";
+      pauseBtn.title = `${actionLabel} process ${run.name || run.command} (${run.id})`;
     }
   }
 }
@@ -2053,6 +2097,7 @@ async function executeLifecycleAction(action, runId, options = {}) {
     : action === "kill" ? "Killing"
     : action === "restart" ? "Restarting"
     : action === "duplicate" ? "Duplicating"
+    : action === "resume" ? "Resuming"
     : "Pausing";
 
   showLifecycleFeedback("in-flight", `${actionVerb} process ${displayName} (${runId})…`);
@@ -2082,8 +2127,18 @@ async function executeLifecycleAction(action, runId, options = {}) {
       showLifecycleFeedback("pending", `Termination requested for ${displayName} (${runId}); process shutdown is in progress.`);
     } else if (data.status === "already_terminated") {
       showLifecycleFeedback("pending", data.message || `Process ${displayName} (${runId}) is already terminated.`);
+    } else if (data.status === "already_paused") {
+      showLifecycleFeedback("pending", data.message || `Process ${displayName} (${runId}) is already paused.`);
+    } else if (data.status === "already_running") {
+      showLifecycleFeedback("pending", data.message || `Process ${displayName} (${runId}) is already running.`);
     } else {
-      showLifecycleFeedback("success", data.message || `${displayName} ${action} completed successfully.`);
+      const pastTense = action === "stop" ? "stopped"
+        : action === "kill" ? "killed"
+        : action === "restart" ? "restarted"
+        : action === "duplicate" ? "duplicated"
+        : action === "resume" ? "resumed"
+        : "paused";
+      showLifecycleFeedback("success", data.message || `${displayName} ${pastTense} successfully.`);
     }
 
     if (action === "restart" || action === "duplicate") {
@@ -2165,7 +2220,10 @@ function setupLifecycleListeners() {
   if (pauseBtn) {
     pauseBtn.addEventListener("click", () => {
       const run = getRun(selectedId);
-      if (run) executeLifecycleAction("pause", run.id);
+      if (run) {
+        const action = run.status === "paused" ? "resume" : "pause";
+        executeLifecycleAction(action, run.id);
+      }
     });
   }
 
