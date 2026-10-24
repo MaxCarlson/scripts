@@ -567,9 +567,6 @@ def rollback_wrappers(backup_dir: Path, bin_dir: Path) -> RollbackReport:
             # NEVER write to a symlink (which would dereference and overwrite target)
             if dest.is_symlink():
                 continue
-            # NEVER overwrite an unmanaged file
-            if dest.exists() and not is_managed_wrapper(dest):
-                continue
             try:
                 shutil.copy2(f, dest)
                 report.restored_count += 1

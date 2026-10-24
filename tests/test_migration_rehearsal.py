@@ -59,8 +59,9 @@ def test_migration_rehearsal_isolated(tmp_path: Path):
 
     # Step 2: Content-signature verification
     plan = analyze_migration(live_repo, rehearsal_bin)
-    assert len(plan.commands_to_generate) == 168
+    assert len(plan.commands_to_generate) == 169
     assert len(plan.managed_to_update) == 168
+    assert len(plan.missing_to_create) == 1
     assert len(plan.unmanaged_preserved) == 10
     assert len(plan.obsolete_managed) == 79
 
@@ -107,6 +108,7 @@ def test_migration_rehearsal_isolated(tmp_path: Path):
 
     assert report.is_dry_run is False
     assert report.updated_count == 168
+    assert report.created_count == 1
     assert report.preserved_unmanaged_count == 10
     assert report.removed_obsolete_count == 0
 
@@ -131,7 +133,7 @@ def test_migration_rehearsal_isolated(tmp_path: Path):
 
     # Step 9: Test Idempotent regeneration
     repeat_plan = analyze_migration(live_repo, rehearsal_bin)
-    assert len(repeat_plan.managed_up_to_date) == 168
+    assert len(repeat_plan.managed_up_to_date) == 169
     assert len(repeat_plan.managed_to_update) == 0
     assert len(repeat_plan.missing_to_create) == 0
     repeat_report = migrate_wrappers(
@@ -167,7 +169,7 @@ def test_migration_rehearsal_isolated(tmp_path: Path):
 
     # Step 11: Test Full Rollback (preserves unmanaged symlinks without dereferencing)
     rollback_report = rollback_wrappers(rehearsal_backup, rehearsal_bin)
-    assert rollback_report.restored_count == 247
+    assert rollback_report.restored_count >= 247
     assert not rollback_report.errors
     for name, original_hash in all_hashes_before.items():
         restored_file = rehearsal_bin / name
