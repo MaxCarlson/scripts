@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "runmux"
-version = "0.9.0"
+version = "0.10.0"
 description = "Cross-platform managed process runner with shared live view and interaction sessions."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -40,6 +40,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+web = ["web-ui-tools>=0.1.0"]
 dev = [
     "pytest>=8.0",
     "ruff>=0.6"
@@ -50,6 +51,7 @@ runmux = "runmux.cli:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/runmux"]
+include = ["src/runmux/web_static/**"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

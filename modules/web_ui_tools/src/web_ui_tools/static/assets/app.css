@@ -1,0 +1,15 @@
+:root { color-scheme: dark; font-family: Inter, "Segoe UI", system-ui, sans-serif; background: #0f0f0f; color: #e8e8e8; }
+* { box-sizing: border-box; }
+body { min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px; }
+.welcome { width: min(100%, 560px); padding: 32px; border: 1px solid rgba(255,255,255,.1); border-radius: 8px; background: #16213e; }
+.eyebrow { color: #00d4aa; font-size: 11px; letter-spacing: .12em; }
+h1 { margin: 12px 0; font-size: 28px; }
+p { color: #a0a0b0; line-height: 1.6; }
+form { display: grid; gap: 12px; margin: 24px 0; }
+label { color: #a0a0b0; font-size: 13px; }
+input, button { min-height: 42px; padding: 8px 12px; border: 1px solid rgba(255,255,255,.14); border-radius: 4px; font: inherit; }
+input { background: #0a0a1a; color: #e8e8e8; }
+button { border: 0; background: #00d4aa; color: #071d19; font-weight: 650; cursor: pointer; }
+button:focus-visible, input:focus-visible { outline: 2px solid #00d4aa; outline-offset: 2px; }
+output { min-height: 20px; color: #ef7777; font-size: 13px; }
+pre { overflow-wrap: anywhere; white-space: pre-wrap; font: 14px/1.5 Consolas, monospace; }

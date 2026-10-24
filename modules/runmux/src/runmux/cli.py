@@ -415,6 +415,18 @@ def build_parser() -> argparse.ArgumentParser:
     load_parser.add_argument("action", nargs="?", choices=["delete"], help="Optional saved-command action.")
     load_parser.set_defaults(func=handle_load)
 
+    web_parser = subparsers.add_parser("web", help="Browse managed runs and output in a local browser.")
+    web_parser.add_argument("-H", "--host", default="127.0.0.1", help="Loopback bind IP address (default: 127.0.0.1).")
+    web_parser.add_argument("-p", "--port", type=port_number, default=8787, help="Local browser service port (default: 8787).")
+    web_parser.add_argument(
+        "-s",
+        "--state-dir",
+        type=Path,
+        default=argparse.SUPPRESS,
+        help="Use this existing Runmux state directory instead of the default.",
+    )
+    web_parser.set_defaults(func=handle_web)
+
     return parser
 
 
@@ -987,6 +999,58 @@ def handle_stats(args: argparse.Namespace) -> int:
         refresh_seconds=args.refresh,
         output_json=args.json,
     )
+
+
+def port_number(value: str) -> int:
+    """Parse a valid TCP port for local web binding."""
+
+    try:
+        port = int(value)
+    except ValueError as error:
+        raise argparse.ArgumentTypeError("port must be an integer between 1 and 65535") from error
+    if not 1 <= port <= 65535:
+        raise argparse.ArgumentTypeError("port must be between 1 and 65535")
+    return port
+
+
+def handle_web(args: argparse.Namespace) -> int:
+    """Start the optional read-only local browser service."""
+
+    try:
+        from web_ui_tools import create_server
+        from runmux.web import create_runmux_web_app
+    except ImportError:
+        print(
+            "runmux: web view dependencies are not installed; install the optional runmux web extra "
+            "and the web-ui-tools package.",
+            file=sys.stderr,
+        )
+        return 2
+
+    import secrets
+
+    login_code = secrets.token_urlsafe(24)
+    try:
+        from web_ui_tools import LOOPBACK_HOSTS
+
+        app = create_runmux_web_app(
+            args.state_dir,
+            login_code=login_code,
+            allowed_hosts=(*LOOPBACK_HOSTS, args.host),
+        )
+        server = create_server(app, host=args.host, port=args.port)
+    except (OSError, ValueError) as error:
+        print(f"runmux: web: {error}", file=sys.stderr)
+        return 2
+    browser_host = f"[{args.host}]" if ":" in args.host else args.host
+    print(f"Runmux read-only browser: http://{browser_host}:{args.port}")
+    print(f"Startup login code (valid until server exit): {login_code}")
+    print("Press Ctrl+C to close the browser service; managed processes keep running.")
+    try:
+        server.run()
+    except KeyboardInterrupt:
+        return 130
+    return 0
 
 
 def handle_history(args: argparse.Namespace) -> int:

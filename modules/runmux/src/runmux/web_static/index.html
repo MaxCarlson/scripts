@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Runmux · Local process desk</title>
+    <link rel="stylesheet" href="/assets/dashboard.css">
+    <script src="/assets/dashboard.js" defer></script>
+  </head>
+  <body>
+    <section id="login-view" class="login-view">
+      <div class="login-card">
+        <div class="brand-mark" aria-hidden="true">R</div>
+        <div class="eyebrow">RUNMUX · LOCAL VIEW</div>
+        <h1>Process desk</h1>
+        <p class="muted">Enter the startup code printed in the terminal that launched this dashboard.</p>
+        <form id="login-form">
+          <label for="login-code">Local access code</label>
+          <input id="login-code" type="password" autocomplete="current-password" spellcheck="false" required>
+          <button class="primary-button" type="submit">Open process desk <span aria-hidden="true">→</span></button>
+          <output id="login-error" class="error-text" aria-live="polite"></output>
+        </form>
+        <div class="login-foot"><span class="live-dot"></span> Bound to this computer</div>
+      </div>
+    </section>
+
+    <main id="dashboard" class="dashboard" hidden>
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark small" aria-hidden="true">R</div>
+          <div><strong>runmux</strong><span>PROCESS DESK</span></div>
+        </div>
+        <div class="topbar-right">
+          <span class="local-badge"><span class="live-dot"></span> LOCAL SESSION</span>
+          <span id="last-updated" class="muted small-text">Connecting…</span>
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh process list" title="Refresh">↻</button>
+          <button id="logout-button" class="quiet-button" type="button">Lock</button>
+        </div>
+      </header>
+
+      <section class="page-heading">
+        <div>
+          <div class="eyebrow">SUPERVISED PROCESSES</div>
+          <h1>Local process desk</h1>
+          <p class="muted">Browse managed runs and follow their output. Process controls stay in your terminal.</p>
+        </div>
+        <div id="connection-state" class="connection-state"><span class="state-dot"></span><span>Loading registry</span></div>
+      </section>
+
+      <section class="metrics" aria-label="Process summary">
+        <article class="metric-card"><div class="metric-label">ACTIVE RUNS</div><div id="active-count" class="metric-value">—</div><div class="metric-note"><span class="metric-pip green"></span> Currently supervised</div></article>
+        <article class="metric-card"><div class="metric-label">IN HISTORY</div><div id="total-count" class="metric-value">—</div><div class="metric-note">Active and completed</div></article>
+        <article class="metric-card"><div class="metric-label">COMPLETED</div><div id="completed-count" class="metric-value">—</div><div class="metric-note">Available to inspect</div></article>
+      </section>
+
+      <section class="workspace">
+        <aside class="process-panel panel">
+          <div class="panel-heading process-heading">
+            <div><h2>Processes</h2><span id="process-count" class="count-pill">0</span></div>
+            <button id="clear-search" class="text-button" type="button" hidden>Clear</button>
+          </div>
+          <label class="search-box" for="process-search"><span aria-hidden="true">⌕</span><input id="process-search" type="search" placeholder="Search processes" autocomplete="off"><kbd>/</kbd></label>
+          <div id="process-list" class="process-list" aria-label="Managed processes"></div>
+          <div id="list-state" class="list-state" aria-live="polite"></div>
+          <div class="panel-foot">Read-only browser <span>·</span> Full run IDs</div>
+        </aside>
+
+        <section class="inspector panel" aria-label="Selected process">
+          <div id="empty-inspector" class="empty-inspector">
+            <div class="empty-icon" aria-hidden="true">▤</div>
+            <h2>Select a process</h2>
+            <p class="muted">Choose a run to inspect its status and follow output.</p>
+          </div>
+          <div id="run-inspector" class="run-inspector" hidden>
+            <div class="inspector-head">
+              <div class="run-symbol" aria-hidden="true">⌁</div>
+              <div class="run-title">
+                <div class="eyebrow">RUN INSPECTOR</div>
+                <h2 id="selected-name">—</h2>
+                <div id="selected-command" class="command-label">—</div>
+              </div>
+              <span id="selected-status" class="status-badge">—</span>
+            </div>
+            <div id="run-warning" class="run-warning" role="status" hidden></div>
+            <div class="tab-bar" role="tablist" aria-label="Process views">
+              <button class="tab-button active" id="tab-output" type="button" role="tab" aria-selected="true" data-tab="output">Output <span id="output-activity" class="activity-mark"></span></button>
+              <button class="tab-button" id="tab-details" type="button" role="tab" aria-selected="false" data-tab="details">Details</button>
+              <div class="tab-spacer"></div>
+              <label class="follow-toggle"><input id="follow-output" type="checkbox" checked><span class="toggle-track"></span> Follow</label>
+            </div>
+            <div id="output-pane" class="tab-pane output-pane" role="tabpanel" aria-labelledby="tab-output">
+              <div class="output-toolbar"><span><span class="output-dot"></span> LIVE OUTPUT</span><span id="output-note" class="output-note"></span><button id="scroll-output" class="text-button" type="button">Jump to latest ↓</button></div>
+              <pre id="output-text" class="output-text" aria-live="off"></pre>
+              <div id="output-state" class="output-state">Select a process to load output.</div>
+            </div>
+            <div id="details-pane" class="tab-pane details-pane" role="tabpanel" aria-labelledby="tab-details" hidden>
+              <div class="detail-grid">
+                <div class="detail-item"><span>PROCESS ID</span><code id="detail-id">—</code></div>
+                <div class="detail-item"><span>PROCESS ID</span><code id="detail-pid">—</code></div>
+                <div class="detail-item"><span>EXIT CODE</span><code id="detail-exit">—</code></div>
+                <div class="detail-item"><span>RUNTIME</span><code id="detail-runtime">—</code></div>
+                <div class="detail-item"><span>STARTED</span><code id="detail-started">—</code></div>
+                <div class="detail-item"><span>ENDED</span><code id="detail-ended">—</code></div>
+              </div>
+              <p class="disclosure-note">Command arguments and working directory are hidden in this browser view because they may contain private values.</p>
+            </div>
+          </div>
+        </section>
+      </section>
+      <footer class="page-footer"><span>RUNMUX LOCAL PROCESS DESK</span><span>Output is shown as plain text; terminal control sequences are ignored.</span></footer>
+    </main>
+  </body>
+</html>
