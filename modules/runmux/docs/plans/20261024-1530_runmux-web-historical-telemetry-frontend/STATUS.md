@@ -2,8 +2,8 @@
 
 **Branch:** `codex/runmux-web-historical-telemetry-frontend-20261024`
 **Base:** `origin/main` at `8befeae3375740e21cdfe17a081387f0e3cf8f54`
-**State:** Implementation and browser verification complete; publish the feature branch after commit.
-**Next:** Review the focused diff, commit the feature, and push this branch only.
+**State:** Complete, committed, pushed, and readiness-checked; not merged.
+**Next:** No implementation work remains. Keep this feature branch separate; do not merge into `main`.
 
 ## Recovered Baseline
 
@@ -28,9 +28,11 @@
 - `node --check modules/runmux/tests/dashboard_test.js` — passed.
 - `node --check modules/runmux/tests/browser_e2e_test.js` — passed.
 - `node modules/runmux/tests/dashboard_test.js` — passed.
-- `node modules/runmux/tests/browser_e2e_test.js` — passed in real headless Chrome using a synthetic registry and disposable telemetry database.
+- `node modules/runmux/tests/browser_e2e_test.js` — passed again in real headless Chrome using a synthetic registry and disposable telemetry database; existing tabs, terminal attachment, Output, and lifecycle checks passed.
+- The merged `/api/runs/{id}/telemetry/history` and `/api/telemetry/history` contracts were verified against this Chrome run, including range, process/host scope, lineage, gaps, and null I/O handling.
 
-## Remaining
+## Limitations
 
-- Final diff/status review, commit, and push to `origin/codex/runmux-web-historical-telemetry-frontend-20261024`. Do not merge into `main`.
+- The history API reports range resolution (`raw`, `1m_rollup`, or `5m_rollup`); a long-window response may contain mixed raw and rolled-up points.
+- Missing event annotations degrade to no markers; absent/null metric values render unavailable without fabricated zeros.
 - Browser E2E was run on the current Windows/Chrome host; other operating systems were not browser-tested.

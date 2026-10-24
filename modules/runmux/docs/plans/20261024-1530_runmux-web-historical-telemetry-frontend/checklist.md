@@ -33,5 +33,5 @@
 
 ## Task 6: Finalization
 - [x] Record implementation, test evidence, and platform limitation in `STATUS.md` and `HANDOFF.md`.
-- [ ] Review final diff and status.
-- [ ] Commit and push feature branch; do not merge.
+- [x] Review final diff and status; readiness review left the worktree clean.
+- [x] Commit and push feature branch (`89d530a8548a139261b3d0cf944d413ffa620426`); do not merge.

@@ -8,4 +8,4 @@
 - **Verification:** `node --check` for the changed JS files; `node modules/runmux/tests/dashboard_test.js`; `node modules/runmux/tests/browser_e2e_test.js` in real headless Chrome using only a synthetic registry and disposable telemetry DB. All passed.
 - **Screenshots:** `screenshots/mode_c_dashboard_charts.png`, `screenshots/mode_d_expanded_charts.png`, `screenshots/limited_retention_charts.png`.
 - **Limitations:** Chrome E2E ran on the current Windows host only. Host network history is explicitly system-wide and not attributed to a process. Unsupported process I/O is shown as unavailable.
-- **Next action:** Final diff/status review, commit, and push this feature branch only. Do not merge into `main`.
+- **Readiness:** Revalidated API contracts and real Chrome E2E on disposable synthetic state. The branch is committed and pushed at `89d530a8548a139261b3d0cf944d413ffa620426`; it is not merged.
