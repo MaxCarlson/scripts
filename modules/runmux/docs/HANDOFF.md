@@ -1,40 +1,42 @@
 # Runmux Current Handoff
 
-Last updated: 2026-07-19 08:18:00 -07:00
+Last updated: 2026-10-23 21:20:00 -07:00
 
 ## Resume Here
 
-Runmux is midway through the multi-attach, input-lock, attachment UI, and
-history roadmap.
+Runmux is in the final integration of the native terminal workspace alongside
+the read-only Web UI. This branch starts at the latest fetched `origin/main`
+and is intended for review; do not merge it into `main`.
 
 Read in this order:
 
 1. Applicable global and repository-level LLM instructions
 2. `README.md`
 3. `plans/HANDOFF.md`
-4. `plans/20260622-0551_runmux-multi-attach-input-lock-history/HANDOFF.md`
-5. `plans/20260622-0551_runmux-multi-attach-input-lock-history/STATUS.md`
-6. `plans/20260622-0551_runmux-multi-attach-input-lock-history/checklist.md`
-7. `plans/20260622-0551_runmux-multi-attach-input-lock-history/00_implementation-plan.md`
-8. `plans/20260622-0551_runmux-multi-attach-input-lock-history/04_history-search-and-summary__planned.md`
+4. `plans/20261023-2120_runmux-native-tui-final-integration/HANDOFF.md`
+5. `plans/20261023-2120_runmux-native-tui-final-integration/STATUS.md`
+6. `plans/20261023-2120_runmux-native-tui-final-integration/checklist.md`
+7. `plans/20261023-2120_runmux-native-tui-final-integration/00-implementation-plan.md`
 
 ## Current State
 
 - Cycle 1 was committed as `f697615`.
 - Stage 2 was committed as `1cb73e4` and manually approved on 2026-07-19.
-- Current branch is `main`; verify it again before implementation or commit work.
-- Runmux source version is `0.9.0`.
+- Integration branch is `codex/runmux-native-tui-final-integration`, based on
+  `f6bf043bee4cf9a694f52ce7c2845510f3cde5d0`.
+- Runmux source version is `0.11.0` on this branch.
+- The read-only browser UI is available as `runmux web`; its login code is
+  printed at startup and remains valid until server exit.
+- The native process workspace is available as `runmux tui`; it is being
+  integrated using the consolidated `cli_tui` package.
 - Stage 2 automated verification passed and the user confirmed concurrent
   terminals can interact with or view the same managed run.
 - Stage 4 history display, filtering, common-command, replay, interactive, and
   fzf code is implemented but awaiting user-run tests and manual validation.
 - Documentation now includes a detailed project README, reusable AGENTS policy,
   and HANDOFF files in every created documentation directory.
-- The active implementation plan is self-contained under
-  `docs/plans/20260622-0551_runmux-multi-attach-input-lock-history/`.
-- Its checklist begins with plan creation, stage completion, and full-plan
-  completion timestamps.
-- Current branch: `main`.
+- Current acceptance checks and remaining work are tracked in the final
+  integration plan linked above.
 
 ## Cycle 2 Implementation
 
@@ -87,14 +89,7 @@ view the same managed run. The original validation procedure was:
 
 ## Next Action
 
-Run the user-owned targeted test commands and manually validate the Stage 4
-history workflow. The second-round requirements are coded but not validated:
-isolated test-history routing, legacy probe filtering, left-aligned/multiline
-colored metadata, combined/clearable filters, metadata/full-content toggles,
-the multi-instance original/current/custom-path run dialog, date-separated
-interactive rows, `w`/`x` wrapping, Enter inspection, and `-V/--verify` replay
-confirmation. The follow-up now uses Enter inspection plus `p` detail printing,
-page navigation, ANSI-safe stats columns, and full saved-command execution
-context. `runmux load` now provides the saved-command browser and `cmd` is its
-compatibility alias. Normal history now records only `runmux run` launch paths;
-restart and duplicate clones are excluded. Do not commit before validation.
+Complete the focused TUI, web UI, lifecycle, package import-boundary,
+concurrency, Ruff, and diff checks. Record any remaining Windows terminal
+acceptance check in the plan. The authorized deliverable is a review branch;
+do not merge it into `main`.

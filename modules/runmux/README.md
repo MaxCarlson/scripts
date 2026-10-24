@@ -45,6 +45,14 @@ runmux interact -i 0
 ```
 
 ```powershell
+runmux tui
+```
+
+```powershell
+runmux web --host 127.0.0.1 --port 8787
+```
+
+```powershell
 runmux stats
 runmux history
 runmux history --starts-with ytaedl
@@ -57,6 +65,17 @@ runmux load
 
 ## Notes
 
+- `runmux tui` opens the native persistent process workspace. Press `?` for
+  the hotkeys. It supports process selection and details, live and historical
+  output views, tabs, saved workspace state, command history and saved commands,
+  and process operations. Closing a view or the TUI never stops a managed
+  process. Workspace state is scoped to the canonical directory where Runmux
+  starts and the selected Runmux state directory.
+- `runmux web` starts the read-only local browser interface. It prints a
+  one-time startup login code that remains valid until the web server exits.
+  Closing the browser or stopping the web server never stops managed processes.
+  Install the optional browser dependencies with the `web` extra; browser
+  dependencies are loaded only when this command is selected.
 - `runmux list` opens the live list. Use Up/Down to select a run, `v` to view,
   `i` to interact, and `q` to quit.
 - `runmux ls` prints a non-interactive one-shot list.

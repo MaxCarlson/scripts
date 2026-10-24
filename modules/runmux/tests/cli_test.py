@@ -16,6 +16,7 @@ from runmux.cli import (
     browse_history_fzf,
     build_parser,
     format_history_entry,
+    handle_tui,
     handle_load,
     handle_history,
     handle_ls,
@@ -78,6 +79,22 @@ def test_ls_alias_defaults_to_one_shot_list(tmp_path: Path) -> None:
     args = build_parser().parse_args(["--state-dir", str(tmp_path), "ls"])
 
     assert args.func is handle_ls
+
+
+def test_tui_command_uses_custom_state_history_and_current_root(tmp_path: Path, monkeypatch) -> None:
+    args = build_parser().parse_args(["--state-dir", str(tmp_path / "state"), "tui"])
+    calls: list[tuple[Path, Path, Path]] = []
+    root = tmp_path / "project"
+    root.mkdir()
+    monkeypatch.chdir(root)
+    monkeypatch.setattr(
+        "runmux.tui.run_tui",
+        lambda store, *, history_path, root_dir: calls.append((store.state_dir, history_path, root_dir)) or 0,
+    )
+
+    assert args.func is handle_tui
+    assert handle_tui(args) == 0
+    assert calls == [(tmp_path / "state", tmp_path / "state" / "commands.json", root)]
 
 
 def test_ls_defaults_to_active_only_and_supports_terminal_views(tmp_path: Path) -> None:

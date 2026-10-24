@@ -1,6 +1,6 @@
 # Runmux Plans Index Handoff
 
-Last updated: 2026-07-19 07:04:35 -07:00
+Last updated: 2026-10-23 21:20:00 -07:00
 
 This folder contains dated, self-contained implementation plans for runmux.
 
@@ -17,12 +17,13 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The most recently worked plan is:
+The active integration plan is:
 
-`20260622-0551_runmux-multi-attach-input-lock-history/`
+`20261023-2120_runmux-native-tui-final-integration/`
 
-Read that folder's `HANDOFF.md`, `STATUS.md`, `checklist.md`, implementation
-plan, and `04_history-search-and-summary__planned.md` before continuing.
+Read that folder's `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
+`00-implementation-plan.md` before continuing. The older multi-attach and
+history plan remains historical design and implementation evidence.
 
 New implementation plans that require multiple work stages must receive their
 own dated folder here. Completed plans remain available as historical design and

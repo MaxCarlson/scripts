@@ -318,6 +318,9 @@ def build_parser() -> argparse.ArgumentParser:
     stats_parser.add_argument("-j", "--json", action="store_true", help="Emit JSON and exit.")
     stats_parser.set_defaults(func=handle_stats)
 
+    tui_parser = subparsers.add_parser("tui", help="Open the persistent process workspace.")
+    tui_parser.set_defaults(func=handle_tui)
+
     history_parser = subparsers.add_parser("history", help="Show runmux command history.")
     history_parser.add_argument(
         "-l",
@@ -1011,6 +1014,20 @@ def port_number(value: str) -> int:
     if not 1 <= port <= 65535:
         raise argparse.ArgumentTypeError("port must be between 1 and 65535")
     return port
+
+
+def handle_tui(args: argparse.Namespace) -> int:
+    """Handle ``runmux tui`` without loading terminal UI code for other commands."""
+
+    from runmux.history import history_path_for_state_dir
+    from runmux.tui import run_tui
+
+    store = get_store(args)
+    return run_tui(
+        store,
+        history_path=history_path_for_state_dir(store.state_dir),
+        root_dir=Path.cwd(),
+    )
 
 
 def handle_web(args: argparse.Namespace) -> int:
