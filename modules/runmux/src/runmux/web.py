@@ -8,6 +8,7 @@ from typing import Any
 from fastapi import APIRouter, FastAPI, HTTPException, Query
 from web_ui_tools import LOOPBACK_HOSTS, create_app
 
+from runmux.constants import TERMINAL_STATUSES
 from runmux.platform_paths import get_state_dir
 from runmux.store import RunNotFoundError
 from runmux.web_adapter import (
@@ -59,12 +60,15 @@ def create_runmux_web_app(
     ) -> dict[str, Any]:
         try:
             record = backend.get_run(run_id)
+            record, _connection = backend.refresh_display_status(record)
+            finished = record.status in TERMINAL_STATUSES
             chunk = read_output_chunk(
                 Path(record.log_path),
                 state_dir=backend.state_dir,
                 run_id=record.id,
                 cursor=cursor,
                 max_bytes=limit,
+                finished=finished,
             )
             return {
                 "state": chunk.state,
@@ -74,7 +78,7 @@ def create_runmux_web_app(
                 "truncated": chunk.truncated,
                 "message": chunk.message,
                 "at_end": chunk.at_end,
-                "finished": record.status not in {"pending", "running", "paused"},
+                "finished": finished,
             }
         except RunNotFoundError as error:
             raise HTTPException(status_code=404, detail="Run not found") from error

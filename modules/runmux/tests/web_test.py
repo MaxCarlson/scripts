@@ -125,3 +125,54 @@ def test_web_server_shutdown_does_not_stop_supervised_child(tmp_path: Path) -> N
             server_thread.join(timeout=5)
         if psutil.pid_exists(process_pid):
             kill_run(store, run_id=started.record.id, force=True)
+
+
+def test_output_refreshes_status_and_flushes_final_incomplete_utf8(tmp_path: Path, monkeypatch) -> None:
+    import runmux.web_adapter as web_adapter
+
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    make_run(store, state_dir, run_id)
+    store.update_run(run_id, status="running", port=43123, supervisor_pid=9002)
+    with (state_dir / "runs" / run_id / "output.ansi").open("ab") as stream:
+        stream.write(b"final\xe2")
+    monkeypatch.setattr(
+        web_adapter,
+        "request_json",
+        lambda _record, *, op, timeout: {"status": "finished", "exit_code": 0, "pid": None},
+    )
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.get(f"/api/runs/{run_id}/output", headers={"Origin": "http://localhost"})
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "line <script>alert(1)</script>\nfinal\ufffd"
+    assert response.json()["finished"] is True
+    assert response.json()["at_end"] is True
+
+
+def test_output_does_not_treat_unreachable_supervisor_as_finished(tmp_path: Path, monkeypatch) -> None:
+    import runmux.web_adapter as web_adapter
+
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    make_run(store, state_dir, run_id)
+    store.update_run(run_id, status="running", port=43123, supervisor_pid=9002)
+
+    def unreachable(*_args, **_kwargs):
+        raise web_adapter.IpcError("temporary connection failure")
+
+    monkeypatch.setattr(web_adapter, "request_json", unreachable)
+    monkeypatch.setattr(web_adapter.psutil, "pid_exists", lambda _pid: True)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.get(f"/api/runs/{run_id}/output", headers={"Origin": "http://localhost"})
+
+    assert response.status_code == 200
+    assert response.json()["finished"] is False

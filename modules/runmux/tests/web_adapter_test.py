@@ -157,3 +157,19 @@ def test_log_reader_enforces_owned_path_and_reports_missing_files(tmp_path: Path
     missing = read_output_chunk(Path(record.log_path), state_dir=state_dir, run_id=run_id)
     assert missing.state == "missing"
     assert "output.ansi" not in missing.message
+
+
+def test_log_reader_resolves_paths_stored_from_relative_state_dir(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    state_dir = Path("relative-state")
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    record = create_record(store, state_dir, run_id)
+
+    chunk = read_output_chunk(
+        Path(record.log_path),
+        state_dir=state_dir.resolve(),
+        run_id=run_id,
+    )
+
+    assert chunk.state == "available"

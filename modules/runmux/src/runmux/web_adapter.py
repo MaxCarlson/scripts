@@ -153,6 +153,7 @@ def read_output_chunk(
     run_id: str,
     cursor: str | None = None,
     max_bytes: int = DEFAULT_LOG_CHUNK_BYTES,
+    finished: bool = False,
 ) -> OutputChunk:
     """Read one bounded log chunk, detect replacement/truncation, decode UTF-8 and strip terminal controls."""
 
@@ -163,7 +164,14 @@ def read_output_chunk(
     root = Path(state_dir).expanduser().resolve()
     expected_path = (root / "runs" / run_id / "output.ansi").resolve()
     stored_path = Path(path).expanduser()
-    selected_path = (root / stored_path if not stored_path.is_absolute() else stored_path).resolve()
+    if stored_path.is_absolute():
+        selected_path = stored_path.resolve()
+    else:
+        selected_path = (root / stored_path).resolve()
+        if selected_path != expected_path:
+            # Older records may contain a state-dir-relative path produced while
+            # Runmux was launched with a relative --state-dir.
+            selected_path = stored_path.resolve()
     if selected_path != expected_path:
         raise ValueError("Output path does not belong to the selected run.")
     if not selected_path.is_file():
@@ -195,7 +203,7 @@ def read_output_chunk(
                     start += line_end + 1
                     data = data[line_end + 1 :]
             decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
-            decoded = decoder.decode(data, final=False)
+            decoded = decoder.decode(data, final=finished)
             buffered = decoder.getstate()[0]
             next_offset = start + len(data) - len(buffered)
             sanitizer = TerminalTextSanitizer(state=parser_state)

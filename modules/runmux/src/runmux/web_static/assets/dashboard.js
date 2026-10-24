@@ -7,9 +7,12 @@ const VIEW_LIMIT = 512 * 1024;
 
 let runs = [];
 let selectedId = null;
+let selectionGeneration = 0;
+let authGeneration = 0;
 let outputCursor = null;
 let listTimer = null;
 let outputTimer = null;
+let outputRequestGeneration = null;
 let lastOutput = "";
 let outputFinished = false;
 
@@ -25,10 +28,10 @@ async function api(path, options = {}) {
 }
 
 function showLogin(message = "") {
+  authGeneration += 1;
+  invalidateSelection();
   clearInterval(listTimer);
-  clearInterval(outputTimer);
   listTimer = null;
-  outputTimer = null;
   $("#dashboard").hidden = true;
   $("#login-view").hidden = false;
   $("#login-error").textContent = message;
@@ -63,6 +66,10 @@ $("#login-form").addEventListener("submit", async (event) => {
 });
 
 $("#logout-button").addEventListener("click", async () => {
+  authGeneration += 1;
+  invalidateSelection();
+  clearInterval(listTimer);
+  listTimer = null;
   try { await fetch("/auth/logout", { method: "POST", credentials: "same-origin", cache: "no-store" }); }
   finally { showLogin("This browser session is locked."); }
 });
@@ -85,16 +92,20 @@ document.addEventListener("keydown", (event) => {
 });
 
 async function refreshRuns() {
+  const requestGeneration = authGeneration;
   try {
     const response = await api("/api/runs");
-    runs = await response.json();
+    const nextRuns = await response.json();
+    if (requestGeneration !== authGeneration) return;
+    runs = nextRuns;
     $("#last-updated").textContent = `Updated ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" })}`;
     $("#connection-state").className = "connection-state connected";
     $("#connection-state").lastElementChild.textContent = "Registry connected";
     renderRuns();
     if (selectedId && !runs.some((run) => run.id === selectedId)) clearSelection();
-    else if (selectedId) await refreshSelected();
+    else if (selectedId) await refreshSelected(selectionGeneration, selectedId);
   } catch (error) {
+    if (requestGeneration !== authGeneration) return;
     if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
     $("#connection-state").className = "connection-state error";
     $("#connection-state").lastElementChild.textContent = "Registry unavailable · retrying";
@@ -142,6 +153,8 @@ function renderRuns() {
 }
 
 async function selectRun(runId) {
+  invalidateSelection();
+  const generation = selectionGeneration;
   selectedId = runId;
   outputCursor = null;
   lastOutput = "";
@@ -152,17 +165,18 @@ async function selectRun(runId) {
   $("#empty-inspector").hidden = true;
   $("#run-inspector").hidden = false;
   renderRuns();
-  clearInterval(outputTimer);
-  await refreshSelected();
-  await refreshOutput();
-  if (!outputFinished) outputTimer = setInterval(refreshOutput, 900);
+  await Promise.all([refreshSelected(generation, runId), refreshOutput(generation, runId)]);
+  if (isCurrentSelection(generation, runId) && !outputFinished) {
+    outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
+  }
 }
 
-async function refreshSelected() {
-  if (!selectedId) return;
+async function refreshSelected(generation = selectionGeneration, runId = selectedId) {
+  if (!runId || !isCurrentSelection(generation, runId)) return;
   try {
-    const response = await api(`/api/runs/${encodeURIComponent(selectedId)}`);
+    const response = await api(`/api/runs/${encodeURIComponent(runId)}`);
     const run = await response.json();
+    if (!isCurrentSelection(generation, runId)) return;
     $("#selected-name").textContent = run.name || run.command || "Unnamed process";
     $("#selected-command").textContent = run.command;
     $("#selected-status").className = `status-badge ${STATUS_CLASS[run.status] || ""}`;
@@ -177,19 +191,22 @@ async function refreshSelected() {
     warning.hidden = run.connection !== "disconnected";
     warning.textContent = run.connection === "disconnected" ? "Supervisor is unreachable. Showing the last recorded status and available log output." : "";
   } catch (error) {
+    if (!isCurrentSelection(generation, runId)) return;
     if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
     $("#run-warning").hidden = false;
     $("#run-warning").textContent = "Process details are temporarily unavailable. Retrying on the next refresh.";
   }
 }
 
-async function refreshOutput() {
-  if (!selectedId) return;
+async function refreshOutput(generation = selectionGeneration, runId = selectedId) {
+  if (!runId || !isCurrentSelection(generation, runId) || outputRequestGeneration === generation) return;
+  outputRequestGeneration = generation;
   try {
     const params = new URLSearchParams({ limit: "65536" });
     if (outputCursor) params.set("cursor", outputCursor);
-    const response = await api(`/api/runs/${encodeURIComponent(selectedId)}/output?${params}`);
+    const response = await api(`/api/runs/${encodeURIComponent(runId)}/output?${params}`);
     const chunk = await response.json();
+    if (!isCurrentSelection(generation, runId)) return;
     outputFinished = Boolean(chunk.finished && chunk.at_end);
     if (chunk.reset) { lastOutput = chunk.text; outputCursor = chunk.cursor; }
     else { lastOutput += chunk.text; outputCursor = chunk.cursor; }
@@ -213,9 +230,12 @@ async function refreshOutput() {
     if ($("#follow-output").checked) scrollOutputToEnd();
     if (outputFinished && outputTimer) { clearInterval(outputTimer); outputTimer = null; }
   } catch (error) {
+    if (!isCurrentSelection(generation, runId)) return;
     if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
     $("#output-state").textContent = "Output temporarily unavailable. Retrying…";
     $("#output-state").hidden = false;
+  } finally {
+    if (outputRequestGeneration === generation) outputRequestGeneration = null;
   }
 }
 
@@ -230,12 +250,23 @@ function selectTab(tab) {
 }
 
 function clearSelection() {
+  invalidateSelection();
   selectedId = null;
   outputCursor = null;
-  clearInterval(outputTimer);
   $("#run-inspector").hidden = true;
   $("#empty-inspector").hidden = false;
   renderRuns();
+}
+
+function invalidateSelection() {
+  selectionGeneration += 1;
+  clearInterval(outputTimer);
+  outputTimer = null;
+  outputRequestGeneration = null;
+}
+
+function isCurrentSelection(generation, runId) {
+  return generation === selectionGeneration && runId === selectedId;
 }
 
 function scrollOutputToEnd() {
