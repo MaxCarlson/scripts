@@ -2,8 +2,8 @@
 
 **Plan Folder:** `modules/runmux/docs/plans/20261024-runmux-historical-telemetry/`  
 **Branch:** `codex/runmux-historical-telemetry-20261024`  
-**Base Commit:** `6fa307f3bd84761f6fe21f3700dceb9889fe090b`  
-**Status:** Implementation Complete & Fully Verified
+**Base Commit:** `a0028473` (integrated latest `origin/main` Phase 5A+)  
+**Status:** Integration Readiness Corrections Complete & Verified
 
 ---
 
@@ -39,12 +39,13 @@
 - [x] Benchmark full proposed schema (raw, 1m rollup, 5m rollup, host, events, secondary indexes)
 - [x] Benchmark SQLite WAL checkpointing (`TRUNCATE`), deletion pruning, and incremental vacuum
 - [x] Recalculate Windows sampling CPU overhead across intervals (1s, 2s, 5s, 10s) and TTLs (5s, 15s, 30s)
-- [x] Correct cache-hit simulation: 5s cadence + 30s TTL yields 83.33% hit rate (5 hits per 6 ticks = 4.76 ms/proc)
-- [x] Measure actual on-disk row footprint: 140.7 bytes / row
+- [x] Correct cache-hit simulation: 5s cadence + 30s TTL yields 83.33% hit rate (5 hits per 6 ticks = 5.60 ms/proc)
+- [x] Measure complete sampling-loop CPU usage: process discovery, thread caching, GPU queries, and database writes (2.095 ms / proc steady state)
+- [x] Measure actual on-disk row footprint: 140.0 bytes / row
 - [x] Model CPU overhead across 10, 100, and 1,000 registered processes
 - [x] Model RAM consumption under multi-process loads (reconciled at 720 points = 92.3 KB/run)
-- [x] Model steady-state database size (1h raw + 24h 1m + 7d 5m = 395.1 KB/run)
-- [x] Document enforceable 50 MB storage budget and maintenance cycles in `03_resource_budget_and_benchmarks.md`
+- [x] Model steady-state database size (1h raw + 24h 1m + 7d 5m = 394.6 KB/run)
+- [x] Document enforceable 50 MB target storage budget and maintenance cycles in `03_resource_budget_and_benchmarks.md`
 
 ---
 
@@ -103,11 +104,27 @@
 
 ---
 
-## 8. Final Verification & Completion Gate
+## 8. Integration Readiness Corrections
 
-- [x] 64 / 64 telemetry & web tests passing cleanly
+- [x] Implement 3-tier historical querying for `query_process_history()` (5m rollups + 1m rollups + raw)
+- [x] Implement 3-tier historical querying for `query_host_history()` (5m rollups + 1m rollups + raw)
+- [x] Non-overlapping tier boundaries, truthful representation of missing/incomplete buckets, resolution labeling
+- [x] Sample-count-weighted aggregation in 5-minute rollups for process and host history
+- [x] Strict NULL semantics in aggregation (all null -> null)
+- [x] Gap marker preservation in `_downsample_points()` without dropping valid measurements or restart boundaries
+- [x] Target storage budget documentation & active 4-stage overflow policy with graceful shedding and busy-reader resilience
+- [x] Worker lifecycle database integrity verification and automatic quarantine/recovery without destroying WAL files
+- [x] Eliminate per-tick Windows `num_threads()` scanning on child-PID cache hits
+- [x] Measure full sampling loop CPU overhead and update benchmarks / budget docs
+- [x] Add regression tests for 7-day process & host history, weighted rollups, downsampling gap preservation, worker recovery, and budget overflow
+
+---
+
+## 9. Final Verification & Completion Gate
+
+- [x] 71 / 71 telemetry & web tests passing cleanly
 - [x] Preserved existing Phase 5B live telemetry backend and all public APIs unchanged
 - [x] Verified native Windows execution and isolation
-- [x] Update plan documentation (`STATUS.md`, `HANDOFF.md`, `checklist.md`)
+- [x] Update plan documentation (`STATUS.md`, `HANDOFF.md`, `checklist.md`, `03_resource_budget_and_benchmarks.md`)
 - [x] Git status clean and intended files staged
 - [x] Commit and push feature branch `codex/runmux-historical-telemetry-20261024` to `origin` (do not merge)

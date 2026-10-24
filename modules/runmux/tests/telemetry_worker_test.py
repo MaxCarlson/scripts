@@ -114,3 +114,53 @@ async def test_server_restart_persistence_survivability(tmp_path: Path) -> None:
     )
     assert len(points) >= 1
     assert all(p.cpu_percent is not None or p.rss_bytes is not None for p in points)
+
+
+@pytest.mark.asyncio
+async def test_worker_lifecycle_detects_and_recovers_corrupt_database(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    record = store.create_run(
+        run_id="20261024-093000-deadbeef",
+        name="corruption_recovery_test",
+        status="running",
+        program=sys.executable,
+        argv_json="[]",
+        cwd=str(tmp_path),
+        env_overrides_json="{}",
+        auth_token="dummy_token",
+        log_path=str(tmp_path / "log.ansi"),
+        command_line="python",
+    )
+    import datetime
+    import psutil
+    proc = psutil.Process(os.getpid())
+    started_iso = datetime.datetime.fromtimestamp(proc.create_time(), datetime.timezone.utc).isoformat()
+    store.update_run(record.id, pid=os.getpid(), started_at=started_iso)
+
+    # Initialize a corrupted telemetry.sqlite3 and WAL file
+    db_file = tmp_path / "telemetry.sqlite3"
+    db_file.write_bytes(b"CORRUPTED INVALID SQLITE FILE HEADER")
+    wal_file = tmp_path / "telemetry.sqlite3-wal"
+    wal_file.write_bytes(b"RECOVERABLE WAL DATA")
+
+    worker = TelemetryHistoryWorker(tmp_path, cadence_seconds=0.1)
+    await worker.start()
+
+    # Let worker execute loop ticks
+    await asyncio.sleep(0.3)
+    await worker.stop()
+
+    # Verify that:
+    # 1. Recoverable WAL was preserved in quarantine
+    wal_quarantined = list(tmp_path.glob("telemetry.sqlite3-wal.corrupt.*"))
+    assert len(wal_quarantined) == 1
+    assert wal_quarantined[0].read_bytes() == b"RECOVERABLE WAL DATA"
+
+    # 2. Fresh telemetry.sqlite3 was initialized and is healthy
+    fresh_store = TelemetryStore(tmp_path)
+    assert fresh_store.check_integrity() is True
+
+    # 3. Worker continued running and successfully inserted samples
+    with fresh_store.connect() as conn:
+        count = conn.execute("SELECT COUNT(*) FROM telemetry_raw WHERE run_id = ?", (record.id,)).fetchone()[0]
+        assert count >= 1

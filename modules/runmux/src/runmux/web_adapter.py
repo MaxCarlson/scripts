@@ -314,7 +314,7 @@ class ReadOnlyRunmux:
                 "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end_time)),
                 "duration_seconds": duration,
             },
-            "resolution": "raw" if duration <= 3600.0 else "rollup",
+            "resolution": "raw" if duration <= 3600.0 else ("1m_rollup" if duration <= 86400.0 else "5m_rollup"),
             "raw_sample_count": raw_sample_count,
             "returned_points": len(points),
         }
@@ -362,6 +362,7 @@ class ReadOnlyRunmux:
                     "end": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(end_time)),
                     "duration_seconds": duration,
                 },
+                "resolution": "raw" if duration <= 3600.0 else ("1m_rollup" if duration <= 86400.0 else "5m_rollup"),
                 "returned_points": len(series),
             },
             "series": series,

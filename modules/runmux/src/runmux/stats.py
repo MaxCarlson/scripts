@@ -225,7 +225,7 @@ class TelemetrySampler:
         # run_id -> (timestamp, cpu_time, read_bytes, write_bytes, pid)
         self._snapshots: dict[str, tuple[float, float, int | None, int | None, int | None]] = {}
         # run_id -> (cache_timestamp, [(process, create_time), ...])
-        self._child_cache: dict[str, tuple[float, list[tuple[Any, float]]]] = {}
+        self._child_cache: dict[str, tuple[float, list[tuple[Any, float, int]], int]] = {}
         self._cached_gpu: tuple[float, dict[int, tuple[int, float | None]]] | None = None
         self._cached_gpu_devices: tuple[float, list[dict[str, Any]]] | None = None
         self._cached_host_net: tuple[float, tuple[int, int]] | None = None
@@ -301,24 +301,28 @@ class TelemetrySampler:
             )
 
         processes: list[Any] = [root]
+        thread_count = 0
         with self._lock:
             cached_child_entry = self._child_cache.get(record.id)
             if cached_child_entry is not None and (now - cached_child_entry[0]) < self._child_cache_ttl:
-                # Cache hit: inspect known children directly, verifying against PID recycling
-                valid_children: list[tuple[Any, float]] = []
-                for child, expected_create_time in cached_child_entry[1]:
+                # Cache hit: inspect known children directly, verifying against PID recycling, reusing cached thread counts
+                valid_children: list[tuple[Any, float, int]] = []
+                cached_time, cached_children, cached_root_threads = cached_child_entry
+                thread_count = cached_root_threads
+                for child, expected_create_time, c_threads in cached_children:
                     try:
                         if hasattr(child, "is_running") and not child.is_running():
                             continue
                         if hasattr(child, "create_time") and child.create_time() != expected_create_time:
                             continue # Recycled PID!
-                        valid_children.append((child, expected_create_time))
+                        valid_children.append((child, expected_create_time, c_threads))
                         processes.append(child)
+                        thread_count += c_threads
                     except (psutil_module.Error, OSError, ValueError):
                         pass
-                self._child_cache[record.id] = (cached_child_entry[0], valid_children)
+                self._child_cache[record.id] = (cached_time, valid_children, cached_root_threads)
             else:
-                # Cache miss or expired: perform full discovery
+                # Cache miss or expired: perform full discovery and populate thread count cache
                 discovered = get_process_tree(psutil_module, record.pid)
                 if not discovered:
                     self._snapshots.pop(record.id, None)
@@ -335,17 +339,26 @@ class TelemetrySampler:
                         sampled_at=sampled_at,
                     )
                 processes = discovered
-                new_cached_children = []
+                root_threads = 0
+                with suppress(psutil_module.Error, OSError, AttributeError):
+                    root_threads = int(root.num_threads())
+                thread_count = root_threads
+
+                new_cached_children: list[tuple[Any, float, int]] = []
                 for p in processes:
                     if int(p.pid) != int(root.pid):
-                        try:
-                            new_cached_children.append((p, float(p.create_time())))
-                        except (psutil_module.Error, OSError, AttributeError):
-                            pass
-                self._child_cache[record.id] = (now, new_cached_children)
+                        c_time = None
+                        with suppress(psutil_module.Error, OSError, AttributeError):
+                            c_time = float(p.create_time())
+                        c_threads = 0
+                        with suppress(psutil_module.Error, OSError, AttributeError):
+                            c_threads = int(p.num_threads())
+                        thread_count += c_threads
+                        if c_time is not None:
+                            new_cached_children.append((p, c_time, c_threads))
+                self._child_cache[record.id] = (now, new_cached_children, root_threads)
 
         process_count = len(processes)
-        thread_count = 0
         rss_bytes = 0
         cpu_time = 0.0
         read_bytes: int | None = None
@@ -355,8 +368,6 @@ class TelemetrySampler:
 
         for process in processes:
             pids.add(int(process.pid))
-            with suppress(psutil_module.Error, OSError):
-                thread_count += int(process.num_threads())
             with suppress(psutil_module.Error, OSError):
                 times = process.cpu_times()
                 cpu_time += float(times.user) + float(times.system)

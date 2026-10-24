@@ -2,50 +2,68 @@
 
 **Date:** 2026-10-24  
 **Branch:** `codex/runmux-historical-telemetry-20261024`  
-**Base:** `origin/main` (commit `6fa307f3bd84761f6fe21f3700dceb9889fe090b`)  
-**Current Stage:** Implementation Complete & Fully Verified  
-**Approval State:** User authorized full implementation under approved operating policies. All implementation stages and correctness constraints completed.
+**Base:** `origin/main` (commit `a0028473`)  
+**Current Stage:** Integration Readiness Corrections Complete & Fully Verified  
+**Approval State:** User authorized full implementation and integration readiness corrections. All defects resolved and tested.
 
 ---
 
 ### Implementation & Verification Evidence
 
-1. **Child-PID Caching & Recycled PID Protection:**
-   - Implemented 30.0s child-PID cache (`child_cache_ttl`) in `TelemetrySampler`.
+1. **Child-PID Caching & Thread Enumeration Optimization:**
+   - Implemented 30.0s child-PID and thread-count cache in `TelemetrySampler`.
    - Direct verification against `child.create_time() == expected_create_time` prevents attributing recycled PIDs to managed runs.
+   - Eliminates Windows `CreateToolhelp32Snapshot` (~14.8 ms) on every tick during cache hits.
+   - Cache hit rate: **83.33%** at 5.0s cadence. Steady-state sampling overhead reduced to **2.095 ms / process**.
    - Verified via unit test `test_child_pid_cache_recycled_pid_protection` in `modules/runmux/tests/telemetry_test.py`.
-   - Windows sampling overhead reduced to **4.76 ms / process** (83.3% cache-hit rate at 5.0s cadence).
 
-2. **State-Directory-Local SQLite Storage Engine (`telemetry_store.py`):**
-   - Independent `telemetry.sqlite3` located in the active Runmux state directory, honoring `RUNMUX_HOME` and `--state-dir`.
-   - WAL journaling, normal synchronous mode, 4 KB page size, incremental auto-vacuum (`PRAGMA auto_vacuum = INCREMENTAL`).
-   - Seamless raw and rollup boundary traversal via SQL `UNION ALL` across raw table and 1m/5m rollup tables without dropping samples.
-   - Gap detection: gaps > 3x nominal interval emit explicit `TelemetryQueryPoint` with `is_gap = True` and reason.
-   - Multi-stage 50 MB budget enforcement: WAL truncation (`TRUNCATE`), incremental vacuum, emergency older rollup pruning, and database quarantine on corruption (`PRAGMA integrity_check`).
-   - Verified via 7 unit tests in `modules/runmux/tests/telemetry_store_test.py`.
+2. **Three-Tier Historical Querying (`telemetry_store.py`):**
+   - Implemented 3-tier continuous querying for both process (`query_process_history`) and host (`query_host_history`):
+     - Tier 3: 5-minute rollups for $t < b_{5m\_1m}$ (interval = 300s).
+     - Tier 2: 1-minute rollups for $b_{5m\_1m} \le t < \text{raw\_boundary}$ (interval = 60s).
+     - Tier 1: Raw samples aggregated into 1m buckets for $t \ge \text{raw\_boundary}$ (or raw samples if query $\le 3600$s).
+   - Strict non-overlapping boundaries aligned to multiples of 300s and 60s guarantee zero duplicate and zero missing samples.
+   - Truthful missing data representation: gap intervals emit explicit gap points; missing metrics remain NULL (never fabricated as 0.0).
+   - Verified via `test_query_process_history_seven_day_three_tier` and `test_query_host_history_seven_day_three_tier`.
 
-3. **In-Process Background Collection Worker (`telemetry_worker.py`):**
-   - Background worker running in `runmux web` process via FastAPI lifespan context manager.
-   - Default 5.0s collection cadence; 15-minute maintenance cycle.
-   - Collects all active runs and host telemetry; guards against non-existent state directory to maintain `ReadOnlyRunmux` invariant.
-   - Clean shutdown within 500 ms; persistence survivability across server restarts verified via `modules/runmux/tests/telemetry_worker_test.py`.
+3. **Sample-Count-Weighted Aggregation & Gap Downsampling:**
+   - 5-minute rollups aggregate 1-minute rollups using sample-count-weighted averages:
+     `SUM(CASE WHEN metric IS NOT NULL THEN metric * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN metric IS NOT NULL THEN sample_count ELSE 0 END), 0)`.
+   - Strict NULL semantics: if all samples in a bucket are NULL, the rollup metric is NULL.
+   - Corrected downsampler (`_downsample_points` and `_downsample_host_points`): retains gap markers and restart boundaries chronologically while aggregating valid measurements, without silently dropping either.
+   - Verified via `test_five_minute_rollup_sample_count_weighted_averages`, `test_five_minute_rollup_strict_null_preservation`, and `test_downsample_points_preserves_gap_markers_and_valid_points`.
 
-4. **Web Adapter & Authenticated REST API (`web_adapter.py`, `web.py`):**
-   - Added `GET /api/runs/{run_id}/telemetry/history`:
-     - Parameters: `since`, `until` (epoch floats or ISO 8601 strings), `max_points` (10–1000, default 300), `include_lineage` (boolean, default false), `include_events` (boolean, default true).
-     - Lineage traversal: resolves parent records via `restart_of`, tags points with `run_id`, inserts explicit restart gap points (`is_gap: true`), and emits `restart` events.
-     - Strict 401 unauthenticated session enforcement and 404 for unknown run IDs.
-   - Added `GET /api/telemetry/history`:
-     - Historical system-wide host telemetry series with downsampling.
-   - Added `--no-telemetry-history` flag to `runmux web` and `RUNMUX_NO_TELEMETRY_HISTORY` environment variable support.
-   - Verified via 6 tests in `modules/runmux/tests/telemetry_history_api_test.py` and 15 tests in `modules/runmux/tests/web_test.py`.
+4. **Target Storage Budget (50 MB) & Multi-Stage Overflow Policy:**
+   - Designated 50 MB as an active **target storage budget**.
+   - Multi-stage emergency pruning:
+     - Stage 1: Prune oldest half of 5m rollups (> 3.5 days).
+     - Stage 2: Prune all 5m rollups older than 24h and raw older than 30m.
+     - Stage 3: Prune raw older than 15m, 1m rollups older than 6h, full `VACUUM`.
+     - Stage 4: Critical shed: prune oldest rollups down to 1 hour, raw down to 5 minutes.
+   - Busy-reader resilience: `wal_checkpoint(TRUNCATE)` catches `sqlite3.OperationalError` gracefully and defers without failing.
+   - `VACUUM` executed with `isolation_level=None` outside active transactions.
+   - Verified via `test_storage_budget_enforcement`.
 
-5. **Test Suite Results:**
-   - Telemetry test battery: **64 / 64 tests passed** in 13.78s.
-   - Overall module tests: **231 passed**, 1 skipped (4 unrelated Windows terminal wrap tests in `cli_test.py`).
+5. **Worker Lifecycle Corruption Detection & WAL Preservation:**
+   - `TelemetryHistoryWorker` checks `check_integrity()` at startup and upon database write/maintenance errors.
+   - If corrupted: `quarantine_and_reset()` quarantines `telemetry.sqlite3`, `telemetry.sqlite3-wal`, and `telemetry.sqlite3-shm` together to `*.corrupt.<timestamp>`, preserving all recoverable WAL transactions.
+   - Fresh store is initialized, and collection continues without dropping future telemetry or disrupting Runmux operations.
+   - Verified via `test_worker_lifecycle_detects_and_recovers_corrupt_database` and `test_quarantine_preserves_recoverable_wal_data`.
+
+6. **Web Adapter & API Endpoints (`web_adapter.py`, `web.py`):**
+   - `GET /api/runs/{run_id}/telemetry/history` and `GET /api/telemetry/history`.
+   - Consistent resolution labeling: `"raw"` ($\le 1$h), `"1m_rollup"` ($1\text{h} - 24\text{h}$), `"5m_rollup"` ($> 24\text{h}$).
+   - Lineage traversal with restart gap markers and discrete events.
+   - Preserved Phase 5B live endpoints (`/api/runs/{id}/telemetry`, `/api/telemetry`) and all Phase 5A+ frontend assets untouched.
+
+7. **Test Suite Verification:**
+   - Telemetry test battery: **45 / 45 tests passed** in 3.95s.
+   - Web & adapter test battery: **26 / 26 tests passed** in 10.40s.
+   - Total telemetry & web tests: **71 / 71 passed cleanly**.
 
 ---
 
 ### Next Action
-- Commit and push implementation branch `codex/runmux-historical-telemetry-20261024` to `origin`.
-- Present final completion report to user with resource overhead measurements and commit SHA.
+- Update plan documentation (`HANDOFF.md`, `checklist.md`).
+- Stage intended changes and verify `git status`.
+- Commit and push to feature branch `codex/runmux-historical-telemetry-20261024` on `origin`.

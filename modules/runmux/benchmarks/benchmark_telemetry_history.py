@@ -25,6 +25,9 @@ from typing import Any
 
 import psutil
 
+# Ensure runmux package in src/ is on sys.path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
+
 
 @dataclass(slots=True)
 class TelemetryPointSlots:
@@ -305,6 +308,89 @@ def benchmark_sqlite_full_schema(row_counts: list[int]) -> dict[str, Any]:
     return results
 
 
+
+def benchmark_complete_sampling_loop(num_runs: int = 10, total_ticks: int = 12) -> dict[str, Any]:
+    """Measure full sampling loop CPU and wall time including process sampling, GPU queries, and SQLite persistence."""
+    import sys
+    from runmux.models import RunRecord
+    from runmux.stats import TelemetrySampler
+    from runmux.telemetry_store import TelemetryStore
+
+    current_pid = os.getpid()
+    proc = psutil.Process(current_pid)
+    proc_create = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(proc.create_time()))
+
+    records = []
+    for i in range(num_runs):
+        records.append(
+            RunRecord(
+                id=generate_genuine_run_id(),
+                numeric_id=i + 1,
+                name=f"worker_{i}",
+                status="running",
+                created_at=proc_create,
+                updated_at=proc_create,
+                started_at=proc_create,
+                ended_at=None,
+                exit_code=None,
+                pid=current_pid,
+                supervisor_pid=current_pid,
+                program=sys.executable,
+                argv_json="[]",
+                cwd=tempfile.gettempdir(),
+                env_overrides_json="{}",
+                port=8000 + i,
+                auth_token="dummy",
+                log_path=os.path.join(tempfile.gettempdir(), f"run_{i}.log"),
+                command_line="python",
+                restart_of=None,
+                duplicate_of=None,
+                rows=24,
+                columns=80,
+            )
+        )
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        store = TelemetryStore(tmpdir)
+        sampler = TelemetrySampler(child_cache_ttl=30.0)
+
+        tick_latencies_ms = []
+        cpu_times_ms = []
+
+        for tick in range(total_ticks):
+            t0 = time.perf_counter()
+            p_cpu0 = proc.cpu_times()
+            p_cpu_t0 = p_cpu0.user + p_cpu0.system
+
+            stats, host = sampler.sample_active_runs(records, psutil_module=psutil)
+            store.insert_process_samples(stats)
+            store.insert_host_sample(host)
+
+            p_cpu1 = proc.cpu_times()
+            p_cpu_t1 = p_cpu1.user + p_cpu1.system
+
+            elapsed_ms = (time.perf_counter() - t0) * 1000
+            cpu_consumed_ms = (p_cpu_t1 - p_cpu_t0) * 1000
+
+            tick_latencies_ms.append(elapsed_ms)
+            cpu_times_ms.append(cpu_consumed_ms)
+
+        avg_tick_latency_ms = sum(tick_latencies_ms) / len(tick_latencies_ms)
+        avg_tick_cpu_ms = sum(cpu_times_ms) / len(cpu_times_ms)
+        first_tick_ms = tick_latencies_ms[0] # Miss
+        steady_tick_ms = sum(tick_latencies_ms[1:]) / max(1, len(tick_latencies_ms) - 1) # Hits
+
+        return {
+            "num_runs": num_runs,
+            "total_ticks": total_ticks,
+            "first_tick_miss_ms": first_tick_ms,
+            "steady_tick_hit_ms": steady_tick_ms,
+            "avg_tick_latency_ms": avg_tick_latency_ms,
+            "avg_tick_cpu_ms": avg_tick_cpu_ms,
+            "per_process_steady_ms": steady_tick_ms / num_runs,
+            "per_process_cpu_ms": avg_tick_cpu_ms / num_runs,
+        }
+
 def main():
     print("=== RUNMUX HISTORICAL TELEMETRY BENCHMARK FINALIZATION ===")
     print(f"Platform: {sys.platform} | Python: {sys.version.split()[0]}")
@@ -330,19 +416,27 @@ def main():
             # Total ticks in a TTL window = ceil(ttl / interval)
             # Hits = max(0, ceil(ttl / interval) - 1)
             # Misses = 1
-            total_ticks = max(1, int(ttl // interval) + (1 if (ttl % interval > 0.001) else 0))
             if interval >= ttl:
                 hit_rate = 0.0
                 avg_cost = miss_cost
             else:
-                hits = max(0, int(ttl // interval))
-                # Every (hits + 1) ticks has 1 miss and (hits) hits
-                hit_rate = (hits / (hits + 1)) * 100.0
-                avg_cost = (miss_cost + hits * hit_cost) / (hits + 1)
+                total_ticks = max(1, int(ttl // interval) + (1 if (ttl % interval > 0.001) else 0))
+                hits = total_ticks - 1
+                hit_rate = (hits / total_ticks) * 100.0
+                avg_cost = (miss_cost + hits * hit_cost) / total_ticks
             print(f"    TTL={ttl:4.1f}s -> Hit Rate: {hit_rate:5.1f}% | Avg Sample Latency: {avg_cost:6.3f} ms/proc")
     print()
 
-    print("3. SQLITE FULL SCHEMA, WAL CHECKPOINT, PRUNING & VACUUM")
+    print("3. COMPLETE SAMPLING-LOOP BENCHMARK (SAMPLER + GPU + THREADS + SQLITE WRITES)")
+    loop_res = benchmark_complete_sampling_loop(num_runs=10, total_ticks=12)
+    print(f"  Runs: {loop_res['num_runs']} registered active runs")
+    print(f"    First Tick (Cache Miss)  : {loop_res['first_tick_miss_ms']:.3f} ms total ({loop_res['first_tick_miss_ms'] / 10:.3f} ms/proc)")
+    print(f"    Steady Tick (Cache Hit)  : {loop_res['steady_tick_hit_ms']:.3f} ms total ({loop_res['per_process_steady_ms']:.3f} ms/proc)")
+    print(f"    Avg Tick Latency (12 ticks): {loop_res['avg_tick_latency_ms']:.3f} ms total ({loop_res['avg_tick_latency_ms'] / 10:.3f} ms/proc)")
+    print(f"    Avg Process CPU Time     : {loop_res['avg_tick_cpu_ms']:.3f} ms ({loop_res['per_process_cpu_ms']:.3f} ms/proc)")
+    print()
+
+    print("4. SQLITE FULL SCHEMA, WAL CHECKPOINT, PRUNING & VACUUM")
     counts = [1000, 10000, 50000]
     s_res = benchmark_sqlite_full_schema(counts)
     for c, data in s_res.items():

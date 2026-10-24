@@ -68,16 +68,29 @@ class TelemetryHistoryWorker:
                 self._task.cancel()
         self._executor.shutdown(wait=False)
 
+    def _verify_store_integrity_sync(self) -> None:
+        """Verify store health and quarantine corrupt database without interrupting Runmux operations."""
+        try:
+            if not self.telemetry_store.check_integrity():
+                logger.warning("Corrupt telemetry database detected. Quarantining and resetting store.")
+                self.telemetry_store.quarantine_and_reset()
+        except Exception as error:
+            logger.error("Error checking or resetting telemetry store integrity: %s", error)
+
     def _sample_and_persist_sync(self, records: list[RunRecord]) -> None:
         """Synchronously sample active runs and write to SQLite."""
         if not self.state_dir.exists():
             return
         active = [r for r in records if r.status not in TERMINAL_STATUSES]
         stats, host = self.sampler.sample_active_runs(active, psutil_module=self.psutil_module)
-        if stats:
-            self.telemetry_store.insert_process_samples(stats)
-        if host:
-            self.telemetry_store.insert_host_sample(host)
+        try:
+            if stats:
+                self.telemetry_store.insert_process_samples(stats)
+            if host:
+                self.telemetry_store.insert_host_sample(host)
+        except Exception as error:
+            logger.error("Failed persisting telemetry samples: %s", error)
+            self._verify_store_integrity_sync()
 
     def _run_maintenance_sync(self, now: float) -> None:
         """Synchronously run rollup generation, retention pruning, and budget enforcement."""
@@ -88,11 +101,16 @@ class TelemetryHistoryWorker:
             self.telemetry_store.enforce_storage_budget()
         except Exception as error:
             logger.error("Telemetry maintenance error: %s", error)
+            self._verify_store_integrity_sync()
 
     async def _run_loop(self) -> None:
         """Continuous sampling loop executing every cadence_seconds."""
         loop = asyncio.get_running_loop()
         backend = ReadOnlyRunmux(self.state_dir)
+
+        # Pre-flight integrity verification at worker startup
+        if self.state_dir.exists():
+            await loop.run_in_executor(self._executor, self._verify_store_integrity_sync)
 
         while self._running:
             start_time = time.monotonic()
