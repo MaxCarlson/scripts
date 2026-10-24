@@ -2,6 +2,16 @@
 
 ## Operational Ledger
 
+- **2026-10-24 14:15 (Stage 3 Corrections Completed & Verified)**
+  - Reconciled quantile consistency: verified identity $\text{Output}(q) + \text{Savings}(q) = \text{Source}$ strictly for all quantiles ($p_{10}, p_{50}, p_{90}$).
+  - Monotonic ordering verified: $p_{10} \le p_{50} \le p_{90}$ for output size, and $p_{10} \ge p_{50} \ge p_{90}$ for savings.
+  - Implemented `SizeReconciliation` tracking `probed_video_bitrate_bps`, `implied_video_bytes`, `reconciled_video_bytes`, and `unaccounted_container_bytes` (e.g. 7.5 Mbps over 1440s = 1.35 GB vs 1.50 GB source with 107.25 MB discrepancy).
+  - Renamed decomposition claims: all non-video and mux components labeled as `estimated_stream_heuristics`, `estimated_fallback`, or `estimated_container_model`.
+  - Re-classified quality floor violations: `quality_floor_violation` is a heuristic risk signal (`is_hard_infeasible = False`), reserving `is_hard_infeasible = True` solely for true budget overflows ($V_{\max} \le 0$).
+  - Labeled `calibration_status = "uncalibrated_scenario_assumptions"` and capped confidence at `medium`/`low`.
+  - Added parameterized property-based tests in `test_predictor.py` (57/57 passed in 1.39s).
+  - Next Action: Commit Stage 3 corrections and proceed to Stage 4 (Controlled Encoder & Measurement Backend).
+
 - **2026-10-24 13:35 (Stage 3 Completed — Cheap Predictor & Feasibility Screening)**
   - Stage 3 implementation complete: `videocompress/recipes.py`, `videocompress/predictor.py`, `videocompress/plan.py`, and `videocompress/cli.py`.
   - Zero-encode guarantee verified: pure mathematical predictor with zero FFmpeg/subprocess imports; subprocess calls forbidden and tested under monkeypatch guard.

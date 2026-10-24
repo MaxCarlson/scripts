@@ -557,7 +557,8 @@ def run_estimate(args: argparse.Namespace) -> int:
     total_sources = len(assessments)
     promising_count = sum(1 for a in assessments if a.decision == "eligible_promising")
     uncertain_count = sum(1 for a in assessments if a.decision == "eligible_uncertain")
-    unlikely_count = sum(1 for a in assessments if a.decision == "eligible_unlikely")
+    unlikely_count = sum(1 for a in assessments if a.decision in ("eligible_unlikely", "quality_floor_violation"))
+    quality_floor_count = sum(1 for a in assessments if a.decision == "quality_floor_violation")
     infeasible_count = sum(1 for a in assessments if a.decision == "infeasible")
     abstained_count = sum(1 for a in assessments if a.decision == "abstained")
 
@@ -565,6 +566,10 @@ def run_estimate(args: argparse.Namespace) -> int:
     p10_total_saved = sum(a.p10_savings_bytes for a in assessments)
     p50_total_saved = sum(a.p50_savings_bytes for a in assessments)
     p90_total_saved = sum(a.p90_savings_bytes for a in assessments)
+
+    conservative_saved = p90_total_saved
+    expected_saved = p50_total_saved
+    optimistic_saved = p10_total_saved
 
     if is_json:
         out_dict = {
@@ -578,23 +583,28 @@ def run_estimate(args: argparse.Namespace) -> int:
                 "promising_sources": promising_count,
                 "uncertain_sources": uncertain_count,
                 "unlikely_sources": unlikely_count,
+                "quality_floor_violations": quality_floor_count,
                 "infeasible_sources": infeasible_count,
                 "abstained_sources": abstained_count,
                 "total_source_bytes": total_source_bytes,
                 "predicted_savings_bytes": {
-                    "p10_conservative": p10_total_saved,
-                    "p50_expected": p50_total_saved,
-                    "p90_optimistic": p90_total_saved,
+                    "conservative": conservative_saved,
+                    "expected": expected_saved,
+                    "optimistic": optimistic_saved,
+                    "p10": p10_total_saved,
+                    "p50": p50_total_saved,
+                    "p90": p90_total_saved,
                 },
                 "predicted_savings_pct": {
-                    "p10_conservative": round((p10_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
-                    "p50_expected": round((p50_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
-                    "p90_optimistic": round((p90_total_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                    "conservative": round((conservative_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                    "expected": round((expected_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                    "optimistic": round((optimistic_saved / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
                 },
             },
             "per_source_assessments": [a.to_dict() for a in assessments],
             "calibration_caveat": (
-                "CRF/CQ predictions are preliminary estimates based on metadata priors without empirical calibration. "
+                "Scenario projections are heuristic metadata assumptions, not statistically calibrated probability distributions. "
+                "Empirical sample encoding (Stage 4) is required for reliable decision boundaries. "
                 "A lower bitrate does not guarantee preserved perceptual quality."
             ),
         }
@@ -606,9 +616,9 @@ def run_estimate(args: argparse.Namespace) -> int:
         if min_savings_pct or min_savings_bytes:
             print(f"Savings Criteria: min {min_savings_pct or 0}% {savings_policy.upper()} {_format_bytes(min_savings_bytes or 0)}")
         print(f"Evaluated Assets: {total_sources} ({_format_bytes(total_source_bytes)})")
-        print(f"  Promising: {promising_count} | Uncertain: {uncertain_count} | Unlikely: {unlikely_count}")
+        print(f"  Promising: {promising_count} | Uncertain: {uncertain_count} | Unlikely/Quality Risks: {unlikely_count}")
         print(f"  Infeasible: {infeasible_count} | Abstained: {abstained_count}")
-        print(f"Predicted Library Savings: {_format_bytes(p10_total_saved)} .. {_format_bytes(p90_total_saved)} [expected: {_format_bytes(p50_total_saved)}]")
+        print(f"Predicted Library Savings: {_format_bytes(conservative_saved)} .. {_format_bytes(optimistic_saved)} [expected: {_format_bytes(expected_saved)}]")
         print("-" * 88)
 
         # Per source summary
@@ -618,6 +628,8 @@ def run_estimate(args: argparse.Namespace) -> int:
             print(f"Asset [{a.source_id[:8]}]: {_format_bytes(a.source_bytes)} -> {_format_bytes(a.p50_output_bytes)} (exp) [{a.p50_savings_pct:.1f}% savings]")
             print(f"  Video: {vbitrate_str} | Non-Video: {_format_bytes(a.breakdown.total_nonvideo_bytes)}")
             print(f"  Plausible Range: {_format_bytes(a.p10_output_bytes)} .. {_format_bytes(a.p90_output_bytes)} | Decision: [{a.decision.upper()}] (conf: {a.confidence})")
+            if a.reconciliation.unaccounted_container_bytes != 0:
+                print(f"  * Size Reconciliation: {a.reconciliation.unaccounted_container_bytes:,} unaccounted container bytes ({a.reconciliation.unaccounted_ratio:.1%})")
             if a.rejection_reasons:
                 for r in a.rejection_reasons:
                     print(f"  * Rejection: {r}")
@@ -626,7 +638,7 @@ def run_estimate(args: argparse.Namespace) -> int:
                     print(f"  ! Warning: {w}")
 
         print("-" * 88)
-        print("Notice: Zero encodes performed. Predictions are exploratory metadata priors and require empirical trial calibration.")
+        print("Notice: Zero encodes performed. Scenario predictions are exploratory heuristic assumptions and require empirical trial calibration.")
     return 0
 
 

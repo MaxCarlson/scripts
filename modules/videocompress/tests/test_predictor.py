@@ -178,9 +178,9 @@ def test_hard_infeasibility_below_quality_floor(av1_recipe):
     )
 
     assessment = evaluate_feasibility(asset, av1_recipe, min_savings_pct=50.0)
-    assert assessment.decision == "infeasible"
-    assert assessment.is_hard_infeasible is True
-    assert any("below minimum viable quality floor" in r for r in assessment.rejection_reasons)
+    assert assessment.decision == "quality_floor_violation"
+    assert assessment.is_hard_infeasible is False
+    assert any("below recommended visual quality floor" in r for r in assessment.rejection_reasons)
 
 
 def test_missing_video_bitrate_approximation_provenance(av1_recipe):
@@ -245,7 +245,7 @@ def test_already_efficient_av1_source_unlikely_savings(av1_recipe):
     # Requiring 25% savings on an already-efficient AV1 file
     assessment = evaluate_feasibility(asset, av1_recipe, min_savings_pct=25.0)
     assert assessment.decision == "eligible_unlikely"
-    assert any("Predicted savings under optimistic prior are below" in r for r in assessment.rejection_reasons)
+    assert any("below required threshold" in r for r in assessment.rejection_reasons)
 
 
 def test_low_bpppf_flagging(av1_recipe):
@@ -409,4 +409,126 @@ def test_recipe_cq_delta_scaling():
 
     assert ass34.p50_output_bytes < ass30.p50_output_bytes
     assert ass34.p50_savings_pct > ass30.p50_savings_pct
+
+
+@pytest.mark.parametrize(
+    "codec,width,height,bitrate,duration,file_bytes",
+    [
+        ("h264", 1920, 1080, 8_000_000, 1440.0, 1_500_000_000),
+        ("hevc", 3840, 2160, 20_000_000, 600.0, 1_600_000_000),
+        ("av1", 1280, 720, 1_200_000, 300.0, 50_000_000),
+        ("h264", 640, 480, 600_000, 60.0, 5_000_000),
+    ],
+)
+def test_quantile_identity_and_monotonicity_invariants(
+    codec, width, height, bitrate, duration, file_bytes
+):
+    """Output bytes and savings bytes must strictly satisfy identity: Output(q) + Savings(q) == Source."""
+    recipe = get_recipe("av1_nvenc_cq30")
+    vstream = VideoStream(
+        stream_index=0,
+        stream_type="video",
+        codec_name=codec,
+        width=width,
+        height=height,
+        bit_rate_bps=bitrate,
+        bitrate_provenance="ffprobe_stream",
+    )
+    astream = VideoStream(stream_index=1, stream_type="audio", codec_name="aac", bit_rate_bps=192_000)
+    asset = VideoAsset(
+        source_id="inv-asset",
+        relative_path="asset.mp4",
+        file_bytes=file_bytes,
+        container_format="mp4",
+        duration_seconds=duration,
+        streams=(vstream, astream),
+    )
+
+    ass = evaluate_feasibility(asset, recipe)
+
+    # 1. Strict additive identity: Output(q) + Savings(q) == Source
+    assert ass.p10_output_bytes + ass.p10_savings_bytes == asset.file_bytes
+    assert ass.p50_output_bytes + ass.p50_savings_bytes == asset.file_bytes
+    assert ass.p90_output_bytes + ass.p90_savings_bytes == asset.file_bytes
+
+    # 2. Monotonicity of output sizes: p10 <= p50 <= p90
+    assert ass.p10_output_bytes <= ass.p50_output_bytes <= ass.p90_output_bytes
+
+    # 3. Monotonicity of savings (inverses output size): p10 savings >= p50 savings >= p90 savings
+    # Because p10 output is the smallest, its savings is the largest (optimistic)
+    assert ass.p10_savings_bytes >= ass.p50_savings_bytes >= ass.p90_savings_bytes
+
+    # 4. Calibration status must state uncalibrated scenario assumptions
+    assert ass.calibration_status == "uncalibrated_scenario_assumptions"
+
+
+def test_size_reconciliation_7_5mbps_discrepancy():
+    """Test size reconciliation on 7.5 Mbps video stream over 1440s in a 1.5 GB source."""
+    # 7.5 Mbps over 1440s implies 1.35 GB video payload.
+    # Total source = 1.50 GB. Non-video streams ~42.748 MB.
+    # Unaccounted container bytes ~107.252 MB (~7.15% discrepancy).
+    recipe = get_recipe("av1_nvenc_cq30")
+    vstream = VideoStream(
+        stream_index=0,
+        stream_type="video",
+        codec_name="h264",
+        width=1920,
+        height=1080,
+        bit_rate_bps=7_500_000,
+        bitrate_provenance="ffprobe_stream",
+    )
+    # Audio 224 kbps stereo over 1440s = 40,320,000 bytes
+    astream = VideoStream(stream_index=1, stream_type="audio", codec_name="aac", channels=2, bit_rate_bps=224_000)
+    asset = VideoAsset(
+        source_id="reconcile-test",
+        relative_path="movie.mp4",
+        file_bytes=1_500_000_000,
+        container_format="mp4",
+        duration_seconds=1440.0,
+        streams=(vstream, astream),
+    )
+
+    ass = evaluate_feasibility(asset, recipe)
+    recon = ass.reconciliation
+
+    assert recon.source_bytes == 1_500_000_000
+    assert recon.duration_seconds == 1440.0
+    assert recon.probed_video_bitrate_bps == 7_500_000
+    assert recon.implied_video_bytes == 1_350_000_000
+    # Reconciliation must capture the unaccounted container bytes
+    assert recon.unaccounted_container_bytes > 0
+    assert abs(recon.unaccounted_ratio) > 0.05
+    assert any("Container size discrepancy" in w for w in ass.warnings)
+
+
+def test_estimated_nonvideo_decomposition_heuristics():
+    """Non-video decomposition must explicitly label heuristics and never claim exact breakdown."""
+    recipe = get_recipe("av1_nvenc_cq30")
+    vstream = VideoStream(
+        stream_index=0,
+        stream_type="video",
+        codec_name="h264",
+        width=1920,
+        height=1080,
+        bit_rate_bps=5_000_000,
+    )
+    # Audio with missing bitrate -> estimated fallback
+    astream = VideoStream(stream_index=1, stream_type="audio", codec_name="aac", channels=2, bit_rate_bps=None)
+    asset = VideoAsset(
+        source_id="heuristic-decomp",
+        relative_path="heuristic.mkv",
+        file_bytes=500_000_000,
+        container_format="matroska",
+        duration_seconds=600.0,
+        streams=(vstream, astream),
+    )
+
+    ass = evaluate_feasibility(asset, recipe)
+    assert ass.breakdown.decomposition_tier == "estimated_stream_heuristics"
+    assert ass.breakdown.audio_provenance == "estimated_fallback"
+    assert ass.breakdown.subtitle_provenance == "estimated_heuristic"
+    assert ass.breakdown.mux_provenance == "estimated_container_model"
+    # When heuristics are used, confidence must not be high
+    assert ass.confidence in ("medium", "low")
+
 

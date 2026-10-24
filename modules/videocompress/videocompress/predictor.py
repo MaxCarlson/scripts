@@ -15,7 +15,7 @@ from typing import Any, Mapping, Sequence
 from .contracts import Prediction, VideoAsset, VideoRecipe, VideoStream
 
 # Standard video quality bitrate floors (bps) by resolution tier for acceptable fidelity.
-# Bitrate required to reach minimum acceptable quality without severe blockiness/artifacts.
+# Heuristic screening thresholds to flag potato-quality distortion, NOT mathematical impossibilities.
 QUALITY_FLOOR_AV1_BPS = {
     "4k": 2_200_000,    # >= 3840x2160
     "1440p": 1_400_000, # >= 2560x1440
@@ -31,24 +31,25 @@ CODEC_FLOOR_MULTIPLIERS = {
     "h264": 1.85,
 }
 
-# Empirical codec transition priors: (p10, p50, p90) output-to-input video bitrate ratios.
-# Lower ratio = greater savings. p10 = optimistic savings, p90 = conservative/pessimistic savings.
-CODEC_PRIORS: dict[tuple[str, str], tuple[float, float, float]] = {
-    ("h264", "av1"): (0.45, 0.60, 0.75),
-    ("h264", "hevc"): (0.55, 0.70, 0.85),
-    ("h264", "h264"): (0.85, 0.98, 1.10),
-    ("hevc", "av1"): (0.65, 0.78, 0.90),
-    ("hevc", "hevc"): (0.85, 0.98, 1.10),
-    ("av1", "av1"): (0.90, 1.02, 1.15),  # Re-compressing AV1 usually yields negative/trivial savings
+# Heuristic codec transition scenario ratios: (optimistic, expected, conservative) output-to-input video bitrate ratios.
+# Note: These represent exploratory scenario assumptions, NOT statistically calibrated empirical probability distributions.
+# Lower ratio = greater savings.
+SCENARIO_RATIOS: dict[tuple[str, str], tuple[float, float, float]] = {
+    ("h264", "av1"): (0.45, 0.60, 0.80),
+    ("h264", "hevc"): (0.55, 0.70, 0.88),
+    ("h264", "h264"): (0.85, 0.98, 1.15),
+    ("hevc", "av1"): (0.65, 0.78, 0.92),
+    ("hevc", "hevc"): (0.85, 0.98, 1.15),
+    ("av1", "av1"): (0.90, 1.05, 1.25),  # Re-compressing AV1 usually yields negative/trivial savings or file bloat
     ("vp9", "av1"): (0.65, 0.80, 0.95),
 }
 
-FALLBACK_PRIOR = (0.55, 0.75, 1.00)
+FALLBACK_SCENARIO = (0.55, 0.75, 1.05)
 
 
 @dataclass(frozen=True, slots=True)
 class StreamPayloadBreakdown:
-    """Exact byte accounting for non-video elementary streams and container overhead."""
+    """Estimated byte accounting for non-video elementary streams and container overhead."""
 
     audio_bytes: int
     subtitle_bytes: int
@@ -56,6 +57,29 @@ class StreamPayloadBreakdown:
     mux_overhead_bytes: int
     total_nonvideo_bytes: int
     audio_provenance: str  # exact_probed, estimated_fallback, omitted
+    subtitle_provenance: str = "estimated_heuristic"
+    attachment_provenance: str = "estimated_heuristic"
+    mux_provenance: str = "estimated_container_model"
+    decomposition_tier: str = "estimated_stream_heuristics"
+    warnings: tuple[str, ...] = field(default_factory=tuple)
+
+
+@dataclass(frozen=True, slots=True)
+class SizeReconciliation:
+    """Detailed reconciliation of container file bytes versus stream bitrates."""
+
+    source_bytes: int
+    duration_seconds: float
+    probed_video_bitrate_bps: int | None
+    implied_video_bytes: int | None
+    reconciled_video_bytes: int
+    estimated_audio_bytes: int
+    estimated_subtitle_bytes: int
+    estimated_attachment_bytes: int
+    estimated_mux_overhead_bytes: int
+    total_estimated_nonvideo_bytes: int
+    unaccounted_container_bytes: int
+    unaccounted_ratio: float
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -70,6 +94,7 @@ class FeasibilityAssessment:
     video_bitrate_bps: int | None
     bitrate_provenance: str  # ffprobe_stream, container_derived_approximation, missing
     breakdown: StreamPayloadBreakdown
+    reconciliation: SizeReconciliation
 
     # Allowable budget under required savings
     max_output_container_bytes: int
@@ -77,7 +102,7 @@ class FeasibilityAssessment:
     max_video_bitrate_bps: int | None
     quality_floor_bps: int
 
-    # Predicted range (p10 = optimistic savings/lowest size, p50 = expected, p90 = conservative)
+    # Predicted range (p10 = optimistic scenario / lower size, p50 = expected, p90 = conservative / upper size)
     p10_output_bytes: int
     p50_output_bytes: int
     p90_output_bytes: int
@@ -88,12 +113,12 @@ class FeasibilityAssessment:
     p50_savings_pct: float
     p90_savings_pct: float
 
-    decision: str  # eligible_promising, eligible_uncertain, eligible_unlikely, infeasible, abstained
+    decision: str  # eligible_promising, eligible_uncertain, eligible_unlikely, quality_floor_violation, infeasible, abstained
     confidence: str  # high, medium, low, abstain
     is_hard_infeasible: bool
     rejection_reasons: tuple[str, ...] = field(default_factory=tuple)
     warnings: tuple[str, ...] = field(default_factory=tuple)
-    calibration_status: str = "uncalibrated_metadata_prior"
+    calibration_status: str = "uncalibrated_scenario_assumptions"
 
     @property
     def prediction(self) -> Prediction:
@@ -106,6 +131,8 @@ class FeasibilityAssessment:
             unknowns_list.append("video_bitrate_missing")
         if self.breakdown.audio_provenance == "estimated_fallback":
             unknowns_list.append("audio_bitrate_estimated")
+        if abs(self.reconciliation.unaccounted_container_bytes) > (0.02 * self.source_bytes):
+            unknowns_list.append("container_bitrate_discrepancy_unaccounted_bytes")
 
         return Prediction(
             source_id=self.source_id,
@@ -133,11 +160,29 @@ class FeasibilityAssessment:
             "video_bitrate_bps": self.video_bitrate_bps,
             "bitrate_provenance": self.bitrate_provenance,
             "breakdown": asdict(self.breakdown),
+            "reconciliation": asdict(self.reconciliation),
             "max_output_container_bytes": self.max_output_container_bytes,
             "max_video_elementary_bytes": self.max_video_elementary_bytes,
             "max_video_bitrate_bps": self.max_video_bitrate_bps,
             "quality_floor_bps": self.quality_floor_bps,
             "predictions": {
+                "scenarios": {
+                    "optimistic": {
+                        "output_bytes": self.p10_output_bytes,
+                        "savings_bytes": self.p10_savings_bytes,
+                        "savings_pct": round(self.p10_savings_pct, 2),
+                    },
+                    "expected": {
+                        "output_bytes": self.p50_output_bytes,
+                        "savings_bytes": self.p50_savings_bytes,
+                        "savings_pct": round(self.p50_savings_pct, 2),
+                    },
+                    "conservative": {
+                        "output_bytes": self.p90_output_bytes,
+                        "savings_bytes": self.p90_savings_bytes,
+                        "savings_pct": round(self.p90_savings_pct, 2),
+                    },
+                },
                 "p10_output_bytes": self.p10_output_bytes,
                 "p50_output_bytes": self.p50_output_bytes,
                 "p90_output_bytes": self.p90_output_bytes,
@@ -162,8 +207,8 @@ def compute_nonvideo_payload(
     recipe: VideoRecipe,
 ) -> StreamPayloadBreakdown:
     """
-    Perform exact size decomposition of non-video streams and container overhead.
-    Preserves all compatible audio, subtitle, and font attachments by default.
+    Perform estimated decomposition of non-video streams and container overhead.
+    Uses heuristic models when exact stream packet data is not probed.
     """
     duration = max(0.0, asset.duration_seconds)
     audio_bytes = 0
@@ -194,12 +239,12 @@ def compute_nonvideo_payload(
                     else:
                         rate_bps = 96_000 * ch
                     audio_bytes += int(rate_bps * duration / 8.0) if duration > 0 else 0
-                    warnings.append(f"Audio stream #{s.stream_index} bitrate missing; estimated at {rate_bps // 1000} kbps.")
+                    warnings.append(f"Audio stream #{s.stream_index} bitrate missing; estimated via heuristic at {rate_bps // 1000} kbps.")
     elif recipe.audio_policy == "omit":
         audio_prov = "omitted"
         audio_bytes = 0
 
-    # 2. Subtitle stream payload
+    # 2. Subtitle stream payload (heuristic estimates)
     subtitle_bytes = 0
     if recipe.subtitle_policy == "copy":
         for s in asset.streams:
@@ -220,7 +265,7 @@ def compute_nonvideo_payload(
                 # Average font attachment in Matroska ~150 KB
                 attachment_bytes += 150_000
 
-    # 4. Container muxing overhead
+    # 4. Container muxing overhead (heuristic model)
     # Matroska / MP4 muxing overhead:
     # Baseline index, cues, chapter markers, moov atom, cluster headers:
     # 0.8% of payload + minimum 128 KB for seekhead/cues
@@ -236,12 +281,16 @@ def compute_nonvideo_payload(
         mux_overhead_bytes=mux_overhead,
         total_nonvideo_bytes=total_nonvideo,
         audio_provenance=audio_prov,
+        subtitle_provenance="estimated_heuristic",
+        attachment_provenance="estimated_heuristic",
+        mux_provenance="estimated_container_model",
+        decomposition_tier="estimated_stream_heuristics",
         warnings=tuple(warnings),
     )
 
 
 def determine_quality_floor(stream: VideoStream, target_codec: str) -> int:
-    """Calculate minimum viable video bitrate (bps) for acceptable visual quality."""
+    """Calculate minimum recommended video bitrate (bps) for acceptable visual quality."""
     width = stream.width or 1920
     height = stream.height or 1080
     dim_max = max(width, height)
@@ -273,10 +322,10 @@ def evaluate_feasibility(
     Perform pure zero-encode metadata feasibility screening on a video asset.
 
     Evaluates:
-    1. Container byte decomposition (video vs audio vs subtitles vs mux overhead).
+    1. Container byte decomposition and size reconciliation.
     2. Missing video bitrate handling with explicit provenance labeling.
-    3. Hard budget and quality impossibility constraints.
-    4. Codec efficiency prior predictions with explicit [p10, p50, p90] uncertainty intervals.
+    3. Hard budget impossibility constraints (physical byte overflows) vs quality floor screening.
+    4. Codec efficiency scenario predictions with consistent [p10, p50, p90] ordering and output+savings=source identities.
     5. Rejection reasons and honest calibration caveats.
     """
     reasons: list[str] = []
@@ -294,12 +343,15 @@ def evaluate_feasibility(
     warnings.extend(breakdown.warnings)
 
     # 3. Determine video bitrate and provenance
-    video_bitrate_bps = pv.bit_rate_bps
-    if video_bitrate_bps and video_bitrate_bps > 0:
+    raw_video_bitrate = pv.bit_rate_bps
+    if raw_video_bitrate and raw_video_bitrate > 0:
+        video_bitrate_bps = raw_video_bitrate
         bitrate_provenance = pv.bitrate_provenance or "ffprobe_stream"
+        implied_video_bytes = int(video_bitrate_bps * duration / 8.0) if duration > 0 else None
     else:
         # Container fallback approximation:
         # Never substitute container bitrate without explicitly labeling it!
+        implied_video_bytes = None
         if duration > 0 and source_bytes > breakdown.total_nonvideo_bytes:
             video_bitrate_bps = int((source_bytes - breakdown.total_nonvideo_bytes) * 8.0 / duration)
             bitrate_provenance = "container_derived_approximation"
@@ -312,7 +364,39 @@ def evaluate_feasibility(
             bitrate_provenance = "missing"
             reasons.append("Video stream bitrate is missing and cannot be approximated (missing duration or invalid size).")
 
-    # 4. Target savings budget arithmetic
+    # 4. Container size reconciliation:
+    # Reconciles probed stream bitrate vs container file bytes
+    reconciled_video_bytes = max(0, source_bytes - breakdown.total_nonvideo_bytes)
+    if implied_video_bytes is not None:
+        unaccounted_bytes = source_bytes - (implied_video_bytes + breakdown.total_nonvideo_bytes)
+        unaccounted_ratio = (unaccounted_bytes / source_bytes) if source_bytes > 0 else 0.0
+        if abs(unaccounted_ratio) > 0.02:
+            warnings.append(
+                f"Container size discrepancy: probed stream bitrate implies {implied_video_bytes:,} video bytes, "
+                f"leaving {unaccounted_bytes:,} unaccounted container bytes ({unaccounted_ratio:.1%}). "
+                "Scenario predictions are conditioned on reconciled video payload."
+            )
+    else:
+        unaccounted_bytes = 0
+        unaccounted_ratio = 0.0
+
+    reconciliation = SizeReconciliation(
+        source_bytes=source_bytes,
+        duration_seconds=duration,
+        probed_video_bitrate_bps=raw_video_bitrate,
+        implied_video_bytes=implied_video_bytes,
+        reconciled_video_bytes=reconciled_video_bytes,
+        estimated_audio_bytes=breakdown.audio_bytes,
+        estimated_subtitle_bytes=breakdown.subtitle_bytes,
+        estimated_attachment_bytes=breakdown.attachment_bytes,
+        estimated_mux_overhead_bytes=breakdown.mux_overhead_bytes,
+        total_estimated_nonvideo_bytes=breakdown.total_nonvideo_bytes,
+        unaccounted_container_bytes=unaccounted_bytes,
+        unaccounted_ratio=round(unaccounted_ratio, 4),
+        warnings=tuple(w for w in warnings if "discrepancy" in w),
+    )
+
+    # 5. Target savings budget arithmetic
     pct_floor = min_savings_pct if min_savings_pct is not None else 0.0
     bytes_floor = min_savings_bytes if min_savings_bytes is not None else 0
 
@@ -329,16 +413,16 @@ def evaluate_feasibility(
     elif min_savings_bytes is not None:
         max_output_bytes = max_by_bytes
     else:
-        # No minimum savings specified: any non-negative savings
         max_output_bytes = source_bytes
 
     max_video_bytes = max_output_bytes - breakdown.total_nonvideo_bytes
     max_video_bitrate_bps = int(max_video_bytes * 8.0 / duration) if duration > 0 else None
 
-    # Quality floor calculation
+    # Quality floor calculation (heuristic screening threshold)
     quality_floor_bps = quality_floor_override_bps or determine_quality_floor(pv, recipe.codec)
 
-    # 5. Check hard impossibility
+    # 6. Check hard impossibility vs quality screening
+    # True mathematical impossibility ONLY occurs when non-video bytes exceed allowable output budget
     is_hard_infeasible = False
     if max_video_bytes <= 0:
         is_hard_infeasible = True
@@ -347,15 +431,17 @@ def evaluate_feasibility(
             f"maximum allowable output budget ({max_output_bytes:,} bytes) for required savings."
         )
 
+    # Quality floor violation is a heuristic quality risk signal, NOT a physical impossibility
+    quality_floor_violated = False
     if not is_hard_infeasible and max_video_bitrate_bps is not None and max_video_bitrate_bps < quality_floor_bps:
-        is_hard_infeasible = True
+        quality_floor_violated = True
         reasons.append(
             f"Maximum video bitrate to achieve savings ({max_video_bitrate_bps // 1000} kbps) "
-            f"is below minimum viable quality floor ({quality_floor_bps // 1000} kbps) for "
+            f"is below recommended visual quality floor ({quality_floor_bps // 1000} kbps) for "
             f"{recipe.codec.upper()} {pv.width or 0}x{pv.height or 0}."
         )
 
-    # 6. Prior-based prediction interval calculation
+    # 7. Scenario prediction calculation
     if video_bitrate_bps is None or duration <= 0:
         # Abstain: cannot make heuristic prediction without valid bitrate and duration
         return FeasibilityAssessment(
@@ -366,6 +452,7 @@ def evaluate_feasibility(
             video_bitrate_bps=None,
             bitrate_provenance=bitrate_provenance,
             breakdown=breakdown,
+            reconciliation=reconciliation,
             max_output_container_bytes=max_output_bytes,
             max_video_elementary_bytes=max_video_bytes,
             max_video_bitrate_bps=max_video_bitrate_bps,
@@ -386,20 +473,20 @@ def evaluate_feasibility(
             warnings=tuple(warnings),
         )
 
-    # Calculate plausible prior ratios
+    # Calculate scenario ratios: (optimistic, expected, conservative)
     src_codec = (pv.codec_name or "").lower()
     tgt_codec = (recipe.codec or "").lower()
 
     prior_key = (src_codec, tgt_codec)
-    p10_r, p50_r, p90_r = CODEC_PRIORS.get(prior_key, FALLBACK_PRIOR)
+    r_opt, r_exp, r_cons = SCENARIO_RATIOS.get(prior_key, FALLBACK_SCENARIO)
 
     # Adjustments:
     # A. HDR / 10-bit preservation
     if pv.is_hdr or (pv.bit_depth and pv.bit_depth >= 10):
-        p10_r += 0.05
-        p50_r += 0.05
-        p90_r += 0.05
-        warnings.append("HDR10/10-bit content detected; prediction interval widened to account for color precision preservation.")
+        r_opt += 0.05
+        r_exp += 0.05
+        r_cons += 0.05
+        warnings.append("HDR10/10-bit content detected; scenario range widened to protect high dynamic range precision.")
 
     # B. Already-low bits-per-pixel-per-frame (bpppf)
     width = pv.width or 1920
@@ -410,10 +497,9 @@ def evaluate_feasibility(
     if pixels_per_sec > 0:
         bpppf = video_bitrate_bps / pixels_per_sec
         if bpppf < 0.05:
-            # Source is already heavily compressed
-            p10_r += 0.15
-            p50_r += 0.15
-            p90_r += 0.15
+            r_opt += 0.15
+            r_exp += 0.15
+            r_cons += 0.15
             warnings.append(
                 f"Source has low bits-per-pixel-per-frame ({bpppf:.4f}); "
                 "further compression carries high visual artifact risk."
@@ -421,64 +507,80 @@ def evaluate_feasibility(
 
     # C. CQ value delta adjustment from standard baseline
     if recipe.rate_control_mode == "cq":
-        # Standard baseline CQ is 30 for AV1, 28 for HEVC, 24 for H.264
         base_cq = 30.0 if tgt_codec == "av1" else (28.0 if tgt_codec == "hevc" else 24.0)
         cq_delta = recipe.rate_control_value - base_cq
-        # Each CQ step shifts bitrate by ~3.5%
         cq_factor = 1.0 - (cq_delta * 0.035)
-        p10_r *= cq_factor
-        p50_r *= cq_factor
-        p90_r *= cq_factor
+        r_opt *= cq_factor
+        r_exp *= cq_factor
+        r_cons *= cq_factor
 
-    # Compute predicted video elementary bytes
-    source_video_bytes = int(video_bitrate_bps * duration / 8.0)
-    p10_video_bytes = max(0, int(source_video_bytes * p10_r))
-    p50_video_bytes = max(0, int(source_video_bytes * p50_r))
-    p90_video_bytes = max(0, int(source_video_bytes * p90_r))
+    # Ensure monotonic ordering of scenario ratios: r_opt <= r_exp <= r_cons
+    r_opt = max(0.10, r_opt)
+    r_exp = max(r_opt, r_exp)
+    r_cons = max(r_exp, r_cons)
 
-    # Output container bytes = video + nonvideo + overhead
-    p10_out = p10_video_bytes + breakdown.total_nonvideo_bytes
-    p50_out = p50_video_bytes + breakdown.total_nonvideo_bytes
-    p90_out = p90_video_bytes + breakdown.total_nonvideo_bytes
+    # Base predicted video bytes on reconciled video payload
+    base_video_bytes = reconciled_video_bytes
+    v_opt_bytes = max(0, int(base_video_bytes * r_opt))
+    v_exp_bytes = max(0, int(base_video_bytes * r_exp))
+    v_cons_bytes = max(0, int(base_video_bytes * r_cons))
 
-    # Savings relative to source
-    p10_sav_bytes = source_bytes - p90_out  # conservative savings = source - p90 out
-    p50_sav_bytes = source_bytes - p50_out  # expected savings
-    p90_sav_bytes = source_bytes - p10_out  # optimistic savings = source - p10 out
+    # Output container sizes for each scenario
+    # p10 = optimistic (smallest output size), p50 = expected, p90 = conservative (largest output size)
+    p10_out = v_opt_bytes + breakdown.total_nonvideo_bytes
+    p50_out = v_exp_bytes + breakdown.total_nonvideo_bytes
+    p90_out = v_cons_bytes + breakdown.total_nonvideo_bytes
+
+    # Clamping: output size cannot exceed source size in keep-original policy representation,
+    # but underlying estimate allows showing potential expansion
+    p10_out = max(breakdown.total_nonvideo_bytes, p10_out)
+    p50_out = max(p10_out, p50_out)
+    p90_out = max(p50_out, p90_out)
+
+    # Quantile consistency:
+    # output_bytes(q) + savings_bytes(q) == source_bytes for EVERY quantile q!
+    p10_sav_bytes = source_bytes - p10_out
+    p50_sav_bytes = source_bytes - p50_out
+    p90_sav_bytes = source_bytes - p90_out
 
     p10_sav_pct = (p10_sav_bytes / source_bytes * 100.0) if source_bytes > 0 else 0.0
     p50_sav_pct = (p50_sav_bytes / source_bytes * 100.0) if source_bytes > 0 else 0.0
     p90_sav_pct = (p90_sav_bytes / source_bytes * 100.0) if source_bytes > 0 else 0.0
 
-    # 7. Decision categorization
+    # 8. Decision categorization
     if is_hard_infeasible:
         decision = "infeasible"
-        confidence = "high"
+        confidence = "medium"  # Hard budget overflow is deterministic based on non-video bytes
+    elif quality_floor_violated:
+        decision = "quality_floor_violation"
+        confidence = "low"
     else:
-        # Check if optimistic savings meets the threshold
-        opt_meets_pct = (min_savings_pct is None) or (p90_sav_pct >= min_savings_pct)
-        opt_meets_bytes = (min_savings_bytes is None) or (p90_sav_bytes >= min_savings_bytes)
+        # Check if optimistic savings meets user thresholds
+        # Note: optimistic savings is p10_sav_bytes (since p10_out is the smallest output size)
+        opt_meets_pct = (min_savings_pct is None) or (p10_sav_pct >= min_savings_pct)
+        opt_meets_bytes = (min_savings_bytes is None) or (p10_sav_bytes >= min_savings_bytes)
         opt_meets = (opt_meets_pct and opt_meets_bytes) if savings_policy == "both" else (opt_meets_pct or opt_meets_bytes)
 
-        # Check if conservative savings meets the threshold
-        cons_meets_pct = (min_savings_pct is None) or (p10_sav_pct >= min_savings_pct)
-        cons_meets_bytes = (min_savings_bytes is None) or (p10_sav_bytes >= min_savings_bytes)
+        # Check if conservative savings meets user thresholds
+        # Note: conservative savings is p90_sav_bytes (since p90_out is the largest output size)
+        cons_meets_pct = (min_savings_pct is None) or (p90_sav_pct >= min_savings_pct)
+        cons_meets_bytes = (min_savings_bytes is None) or (p90_sav_bytes >= min_savings_bytes)
         cons_meets = (cons_meets_pct and cons_meets_bytes) if savings_policy == "both" else (cons_meets_pct or cons_meets_bytes)
 
         if not opt_meets:
             decision = "eligible_unlikely"
-            confidence = "medium"
-            reasons.append("Predicted savings under optimistic prior are below required savings threshold.")
+            confidence = "low"
+            reasons.append("Predicted savings even under optimistic scenario assumption are below required threshold.")
         elif cons_meets:
             decision = "eligible_promising"
-            confidence = "medium"
+            confidence = "low"  # Uncalibrated metadata estimates must not claim high confidence
         else:
             decision = "eligible_uncertain"
             confidence = "low"
             reasons.append("Plausible savings interval straddles decision threshold; sample trial measurement required.")
 
-    # Confidence rating
-    if bitrate_provenance == "container_derived_approximation" and confidence != "abstain":
+    # Confidence must never overstate evidence on uncalibrated priors
+    if bitrate_provenance == "container_derived_approximation" or breakdown.audio_provenance == "estimated_fallback":
         confidence = "low"
 
     return FeasibilityAssessment(
@@ -489,6 +591,7 @@ def evaluate_feasibility(
         video_bitrate_bps=video_bitrate_bps,
         bitrate_provenance=bitrate_provenance,
         breakdown=breakdown,
+        reconciliation=reconciliation,
         max_output_container_bytes=max_output_bytes,
         max_video_elementary_bytes=max_video_bytes,
         max_video_bitrate_bps=max_video_bitrate_bps,
@@ -507,6 +610,7 @@ def evaluate_feasibility(
         is_hard_infeasible=is_hard_infeasible,
         rejection_reasons=tuple(reasons),
         warnings=tuple(warnings),
+        calibration_status="uncalibrated_scenario_assumptions",
     )
 
 
@@ -519,6 +623,20 @@ def _make_ineligible_no_video(asset: VideoAsset, recipe: VideoRecipe) -> Feasibi
         total_nonvideo_bytes=0,
         audio_provenance="omitted",
     )
+    reconciliation = SizeReconciliation(
+        source_bytes=asset.file_bytes,
+        duration_seconds=asset.duration_seconds,
+        probed_video_bitrate_bps=None,
+        implied_video_bytes=None,
+        reconciled_video_bytes=0,
+        estimated_audio_bytes=0,
+        estimated_subtitle_bytes=0,
+        estimated_attachment_bytes=0,
+        estimated_mux_overhead_bytes=0,
+        total_estimated_nonvideo_bytes=0,
+        unaccounted_container_bytes=asset.file_bytes,
+        unaccounted_ratio=1.0,
+    )
     return FeasibilityAssessment(
         source_id=asset.source_id,
         recipe_id=recipe.recipe_id,
@@ -527,6 +645,7 @@ def _make_ineligible_no_video(asset: VideoAsset, recipe: VideoRecipe) -> Feasibi
         video_bitrate_bps=None,
         bitrate_provenance="missing",
         breakdown=breakdown,
+        reconciliation=reconciliation,
         max_output_container_bytes=asset.file_bytes,
         max_video_elementary_bytes=0,
         max_video_bitrate_bps=None,
@@ -541,8 +660,9 @@ def _make_ineligible_no_video(asset: VideoAsset, recipe: VideoRecipe) -> Feasibi
         p50_savings_pct=0.0,
         p90_savings_pct=0.0,
         decision="infeasible",
-        confidence="high",
+        confidence="medium",
         is_hard_infeasible=True,
         rejection_reasons=("No compatible video stream found in asset.",),
         warnings=(),
+        calibration_status="uncalibrated_scenario_assumptions",
     )
