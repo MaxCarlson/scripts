@@ -125,7 +125,8 @@ function dashboardHarness(storageData = new Map()) {
     getOutputSearchQuery: () => outputSearchQuery,
     setOutputSearchQuery: (q) => { outputSearchQuery = q; if ($("#output-search-query")) $("#output-search-query").value = q; computeOutputSearchAndFilter(); },
     setOutputSearchCase: (c) => { outputSearchCase = c; if ($("#output-search-case")) $("#output-search-case").setAttribute("aria-pressed", String(c)); computeOutputSearchAndFilter(); },
-    setOutputSearchRegex: (r) => { outputSearchRegex = r; if ($("#output-search-regex")) $("#output-search-regex").setAttribute("aria-pressed", String(r)); computeOutputSearchAndFilter(); },
+    onMatchNavigated,
+    setOutputActiveMatchIndex: (idx) => { outputActiveMatchIndex = idx; onMatchNavigated(); },
     setOutputSeverityFilter: (f) => { outputSeverityFilter = f; if ($("#output-severity-filter")) $("#output-severity-filter").value = f; computeOutputSearchAndFilter(); },
     getLastOutput: () => lastOutput,
     setLastOutput: (val, truncated = false) => { lastOutput = val; outputTruncated = truncated; computeOutputSearchAndFilter(); },
@@ -624,7 +625,7 @@ function testLogClassificationAndSeverityFiltering() {
   assert.equal(getElement("#output-text").textContent, logs);
 }
 
-function testBoundedOutputSearchPlainAndRegex() {
+function testBoundedOutputLiteralSearchAndReDoSProtection() {
   const { context, getElement } = dashboardHarness();
   const d = context.__dashboard;
 
@@ -651,31 +652,100 @@ function testBoundedOutputSearchPlainAndRegex() {
   assert.equal(d.getOutputMatches().length, 1);
   assert.equal(getElement("#output-search-count").textContent, "1 of 1 (loaded buffer)");
 
-  // 3. Regex search
+  // 3. Literal search handles special regex characters literally without error
   d.setOutputSearchCase(false);
-  d.setOutputSearchRegex(true);
-  d.setOutputSearchQuery("port \\d+");
+  d.setOutputSearchQuery("[INFO]");
   d.computeOutputSearchAndFilter();
   assert.equal(d.getOutputMatches().length, 1);
-  assert.equal(d.getOutputMatches()[0].text, "port 8080");
+  assert.equal(d.getOutputMatches()[0].text, "[INFO]");
   assert.equal(getElement("#output-search-count").textContent, "1 of 1 (loaded buffer)");
 
-  // 4. Invalid regex handling
+  // 4. Invalid unescaped regex pattern characters are safe and match literally
   d.setOutputSearchQuery("[invalid(");
   d.computeOutputSearchAndFilter();
   assert.equal(d.getOutputMatches().length, 0);
-  assert.equal(d.getOutputSearchError(), "Invalid regex");
-  assert.equal(getElement("#output-search-count").textContent, "Invalid regex");
-  assert.equal(getElement("#output-search-count").className.includes("has-error"), true);
+  assert.equal(d.getOutputSearchError(), null);
+  assert.equal(getElement("#output-search-count").textContent, "0 matches (loaded buffer)");
   assert.equal(getElement("#output-search-prev").disabled, true);
   assert.equal(getElement("#output-search-next").disabled, true);
 
-  // 5. Clear search
+  // 5. ReDoS Catastrophic Backtracking Protection:
+  // Testing pattern (a+)+$ against 100 'a's + 'b' executes safely in <50ms as a literal search
+  const pathologicalString = "a".repeat(100) + "b";
+  d.setLastOutput(pathologicalString);
+  const start = Date.now();
+  d.setOutputSearchQuery("(a+)+$");
+  d.computeOutputSearchAndFilter();
+  const duration = Date.now() - start;
+  assert.ok(duration < 50, `Literal search took too long: ${duration}ms`);
+  assert.equal(d.getOutputMatches().length, 0);
+  assert.equal(getElement("#output-search-count").textContent, "0 matches (loaded buffer)");
+
+  // 6. Clear search
   d.clearOutputSearch();
   assert.equal(d.getOutputMatches().length, 0);
   assert.equal(d.getOutputSearchQuery(), "");
   assert.equal(getElement("#output-search-count").textContent, "No query");
   assert.equal(getElement("#output-search-clear").hidden, true);
+}
+
+function testPathologicalBufferDomBoundingAndAccurateLabels() {
+  const { context, getElement } = dashboardHarness();
+  const d = context.__dashboard;
+  const container = getElement("#output-text");
+
+  // Generate 5,000 short lines (simulating a pathological high-line-count buffer)
+  const lines = [];
+  for (let i = 0; i < 5000; i++) {
+    lines.push(`synthetic log line ${i} event-payload`);
+  }
+  d.setLastOutput(lines.join("\n"));
+
+  // 1. With search active, DOM rendering bounds span.output-line elements to MAX_RENDER_LINES = 2000
+  d.setOutputSearchQuery("synthetic");
+  d.computeOutputSearchAndFilter();
+
+  const renderedLines = container.children.filter((c) => c.className === "output-line");
+  assert.equal(renderedLines.length, 2000, "DOM lines must be bounded to MAX_RENDER_LINES");
+  assert.equal(d.getOutputMatches().length, 5000, "Search must count all matches across loaded buffer");
+
+  // 2. Accurate search count and scope note when partially displayed
+  const countText = getElement("#output-search-count").textContent;
+  assert.equal(countText, "1 of 5,000 (loaded buffer · lines 1–2,000 displayed)");
+
+  const scopeNote = getElement("#output-scope-note").textContent;
+  assert.match(scopeNote, /Loaded buffer: 5,000 lines · \d+ \w+ \(displaying lines 1–2,000\)/);
+
+  // 3. Navigation across large buffer slides the displayed window to active match
+  // Navigate directly to match 3,500 using helper
+  d.setOutputActiveMatchIndex(3500);
+  assert.equal(d.getOutputActiveMatchIndex(), 3500);
+  const countAfterNav = getElement("#output-search-count").textContent;
+  assert.equal(countAfterNav, "3,501 of 5,000 (loaded buffer · lines 2,501–4,500 displayed)");
+
+  // Test incremental nextOutputMatch navigation
+  d.nextOutputMatch();
+  assert.equal(d.getOutputActiveMatchIndex(), 3501);
+  assert.equal(getElement("#output-search-count").textContent, "3,502 of 5,000 (loaded buffer · lines 2,502–4,501 displayed)");
+
+  // Active match element must be rendered in DOM
+  const activeMark = container.children
+    .flatMap((c) => c.children || [])
+    .find((m) => m.className && m.className.includes("active-match"));
+  assert.ok(activeMark, "Active match element must be rendered in DOM");
+
+  // 4. High match density on a single line / slice bounds <mark> elements to MAX_RENDER_MATCHES = 500
+  const denseLine = "word ".repeat(1000);
+  d.setLastOutput(denseLine);
+  d.setOutputSearchQuery("word");
+  d.computeOutputSearchAndFilter();
+  assert.equal(d.getOutputMatches().length, 1000);
+  const markCount = container.children
+    .flatMap((c) => c.children || [])
+    .filter((m) => m.tagName && m.tagName.toLowerCase() === "mark").length;
+  assert.equal(markCount, 500, "Rendered mark tags must be bounded to MAX_RENDER_MATCHES");
+
+  d.clearOutputSearch();
 }
 
 function testOutputMatchNavigationAndFollowCoordination() {
@@ -840,7 +910,8 @@ Promise.all([
   Promise.resolve().then(testExplorerResizeAndCollapseStateCanBeChangedAccessibly),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
   Promise.resolve().then(testLogClassificationAndSeverityFiltering),
-  Promise.resolve().then(testBoundedOutputSearchPlainAndRegex),
+  Promise.resolve().then(testBoundedOutputLiteralSearchAndReDoSProtection),
+  Promise.resolve().then(testPathologicalBufferDomBoundingAndAccurateLabels),
   Promise.resolve().then(testOutputMatchNavigationAndFollowCoordination),
   Promise.resolve().then(testOutputSearchAndFilterAccurateScopeLabeling),
   testOutputLiveStreamingUpdatesSearchAndFilter(),

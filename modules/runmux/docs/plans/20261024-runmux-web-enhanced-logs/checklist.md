@@ -25,3 +25,11 @@
 - [x] Run full test suite (Python pytest 29/29 + Node tests 21/21 passed)
 - [x] Update documentation, plan files, and handoffs
 - [x] Commit and push feature branch to origin
+
+## Stage 5: Bounded-Performance Protections & Main-Thread Safeguards
+- [x] Disable un-sandboxed regex mode to eliminate catastrophic backtracking (ReDoS); preserve linear-time literal search with case toggle (`Aa`)
+- [x] Bound DOM node rendering for pathological buffers (`MAX_RENDER_LINES = 2000`, `MAX_RENDER_MATCHES = 500`)
+- [x] Update search scope and count labels to accurately declare displayed line slices
+- [x] Cache filtered line records to prevent redundant re-classification during match navigation
+- [x] Focused automated unit tests for ReDoS protection and DOM bounding (`dashboard_test.js` 22/22 suites passed)
+- [x] Headless Chrome CDP tests with resource-intensive 5,000+ line synthetic input and ReDoS pattern input (`browser_e2e_test.js` passed)

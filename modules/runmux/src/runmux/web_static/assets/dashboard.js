@@ -47,10 +47,13 @@ let savedRunViews = { openRunIds: [], selectedId: null };
 let searchQuery = "";
 let tabScrollTarget = null;
 const MAX_SEARCH_MATCHES = 10000;
+const MAX_RENDER_LINES = 2000;
+const MAX_RENDER_MATCHES = 500;
 let outputSearchQuery = "";
 let outputSearchCase = false;
-let outputSearchRegex = false;
 let outputSeverityFilter = "all";
+let outputFilteredLines = [];
+let outputTotalLineCount = 0;
 let outputMatches = [];
 let outputActiveMatchIndex = -1;
 let outputSearchError = null;
@@ -781,11 +784,10 @@ function matchesSeverityFilter(lineSeverity, filterValue) {
 function computeOutputSearchAndFilter() {
   const query = outputSearchQuery.trim();
   const caseSensitive = outputSearchCase;
-  const isRegex = outputSearchRegex;
   const filter = outputSeverityFilter;
 
   const rawLines = lastOutput ? lastOutput.split("\n") : [];
-  const totalLineCount = rawLines.length;
+  outputTotalLineCount = rawLines.length;
 
   const lineRecords = [];
   for (let i = 0; i < rawLines.length; i++) {
@@ -795,20 +797,15 @@ function computeOutputSearchAndFilter() {
       lineRecords.push({ originalIndex: i, text, severity });
     }
   }
+  outputFilteredLines = lineRecords;
 
   let regex = null;
   outputSearchError = null;
   if (query) {
-    if (isRegex) {
-      try {
-        regex = new RegExp(query, caseSensitive ? "gu" : "gui");
-      } catch (err) {
-        outputSearchError = "Invalid regex";
-      }
-    } else {
-      const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      regex = new RegExp(escaped, caseSensitive ? "gu" : "gui");
-    }
+    // Literal search: safely escape all regex meta-characters.
+    // Guaranteed linear time O(N) execution; 100% immune to catastrophic backtracking.
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    regex = new RegExp(escaped, caseSensitive ? "gu" : "gui");
   }
 
   outputMatches = [];
@@ -845,11 +842,28 @@ function computeOutputSearchAndFilter() {
     outputActiveMatchIndex = 0;
   }
 
-  updateOutputSearchUI(totalLineCount, lineRecords.length, isCapped);
-  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex);
+  let startLineIndex = 0;
+  let endLineIndex = lineRecords.length;
+  if (lineRecords.length > MAX_RENDER_LINES) {
+    if (outputActiveMatchIndex >= 0 && outputMatches[outputActiveMatchIndex]) {
+      const targetLine = outputMatches[outputActiveMatchIndex].lineIndex;
+      const half = Math.floor(MAX_RENDER_LINES / 2);
+      startLineIndex = Math.max(0, targetLine - half);
+      endLineIndex = Math.min(lineRecords.length, startLineIndex + MAX_RENDER_LINES);
+      if (endLineIndex === lineRecords.length) {
+        startLineIndex = Math.max(0, endLineIndex - MAX_RENDER_LINES);
+      }
+    } else {
+      startLineIndex = Math.max(0, lineRecords.length - MAX_RENDER_LINES);
+      endLineIndex = lineRecords.length;
+    }
+  }
+
+  updateOutputSearchUI(outputTotalLineCount, lineRecords.length, isCapped, startLineIndex, endLineIndex);
+  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex, startLineIndex, endLineIndex);
 }
 
-function updateOutputSearchUI(totalLines, visibleLines, isCapped = false) {
+function updateOutputSearchUI(totalLines, visibleLines, isCapped = false, startLineIndex = 0, endLineIndex = visibleLines) {
   const query = outputSearchQuery.trim();
   const searchCountEl = $("#output-search-count");
   const scopeNoteEl = $("#output-scope-note");
@@ -860,12 +874,22 @@ function updateOutputSearchUI(totalLines, visibleLines, isCapped = false) {
   const bufferBytes = new TextEncoder().encode(lastOutput || "").length;
   const sizeLabel = formatByteSize(bufferBytes);
   const tailSuffix = outputTruncated ? "tail · earlier output omitted" : "buffer";
+  const isPartiallyDisplayed = (startLineIndex > 0 || endLineIndex < visibleLines);
 
   if (scopeNoteEl) {
-    if (outputSeverityFilter !== "all") {
-      scopeNoteEl.textContent = `Showing ${visibleLines} of ${totalLines} lines (loaded ${tailSuffix})`;
+    if (isPartiallyDisplayed) {
+      const displayedCount = endLineIndex - startLineIndex;
+      if (outputSeverityFilter !== "all") {
+        scopeNoteEl.textContent = `Showing lines ${(startLineIndex + 1).toLocaleString()}–${endLineIndex.toLocaleString()} of ${visibleLines.toLocaleString()} lines (${displayedCount.toLocaleString()} displayed · loaded ${tailSuffix})`;
+      } else {
+        scopeNoteEl.textContent = `Loaded ${tailSuffix}: ${totalLines.toLocaleString()} lines · ${sizeLabel} (displaying lines ${(startLineIndex + 1).toLocaleString()}–${endLineIndex.toLocaleString()})`;
+      }
     } else {
-      scopeNoteEl.textContent = `Loaded ${tailSuffix}: ${totalLines} lines · ${sizeLabel}`;
+      if (outputSeverityFilter !== "all") {
+        scopeNoteEl.textContent = `Showing ${visibleLines.toLocaleString()} of ${totalLines.toLocaleString()} lines (loaded ${tailSuffix})`;
+      } else {
+        scopeNoteEl.textContent = `Loaded ${tailSuffix}: ${totalLines.toLocaleString()} lines · ${sizeLabel}`;
+      }
     }
   }
 
@@ -894,8 +918,9 @@ function updateOutputSearchUI(totalLines, visibleLines, isCapped = false) {
     if (nextBtn) nextBtn.disabled = true;
   } else {
     const cappedNote = isCapped ? "+" : "";
+    const partialNote = isPartiallyDisplayed ? ` · lines ${(startLineIndex + 1).toLocaleString()}–${endLineIndex.toLocaleString()} displayed` : "";
     if (searchCountEl) {
-      searchCountEl.textContent = `${outputActiveMatchIndex + 1} of ${outputMatches.length}${cappedNote} (loaded ${tailSuffix})`;
+      searchCountEl.textContent = `${(outputActiveMatchIndex + 1).toLocaleString()} of ${outputMatches.length.toLocaleString()}${cappedNote} (loaded ${tailSuffix}${partialNote})`;
       searchCountEl.className = "output-search-count has-matches";
     }
     if (prevBtn) prevBtn.disabled = false;
@@ -903,7 +928,7 @@ function updateOutputSearchUI(totalLines, visibleLines, isCapped = false) {
   }
 }
 
-function renderOutputDOM(lineRecords, matches, activeMatchIndex) {
+function renderOutputDOM(lineRecords, matches, activeMatchIndex, startLineIndex = 0, endLineIndex = lineRecords.length) {
   const container = $("#output-text");
   if (!container) return;
 
@@ -920,17 +945,34 @@ function renderOutputDOM(lineRecords, matches, activeMatchIndex) {
     return;
   }
 
+  const effectiveStart = Math.max(0, Math.min(startLineIndex, lineRecords.length));
+  const effectiveEnd = Math.max(effectiveStart, Math.min(endLineIndex, lineRecords.length));
+
+  // Collect matches that fall in the displayed range [effectiveStart, effectiveEnd)
   const matchesByLine = new Map();
   for (let i = 0; i < matches.length; i++) {
     const m = matches[i];
-    if (!matchesByLine.has(m.lineIndex)) matchesByLine.set(m.lineIndex, []);
-    matchesByLine.get(m.lineIndex).push(m);
+    if (m.lineIndex >= effectiveStart && m.lineIndex < effectiveEnd) {
+      if (!matchesByLine.has(m.lineIndex)) matchesByLine.set(m.lineIndex, []);
+      matchesByLine.get(m.lineIndex).push(m);
+    }
+  }
+
+  // Bound highlighted match DOM elements to MAX_RENDER_MATCHES, ensuring active match is always included
+  const highlightedMatchIndices = new Set();
+  if (activeMatchIndex >= 0) highlightedMatchIndices.add(activeMatchIndex);
+  for (let i = 0; i < matches.length; i++) {
+    if (highlightedMatchIndices.size >= MAX_RENDER_MATCHES) break;
+    const m = matches[i];
+    if (m.lineIndex >= effectiveStart && m.lineIndex < effectiveEnd) {
+      highlightedMatchIndices.add(m.matchIndex);
+    }
   }
 
   const nodes = [];
   let activeElement = null;
 
-  for (let li = 0; li < lineRecords.length; li++) {
+  for (let li = effectiveStart; li < effectiveEnd; li++) {
     const lineRec = lineRecords[li];
     const lineMatches = matchesByLine.get(li);
 
@@ -946,15 +988,19 @@ function renderOutputDOM(lineRecords, matches, activeMatchIndex) {
         if (m.start > lastPos) {
           appendChildNode(lineSpan, createTextNode(lineRec.text.slice(lastPos, m.start)));
         }
-        const mark = document.createElement("mark");
         const isActive = (m.matchIndex === activeMatchIndex);
-        mark.className = "output-match" + (isActive ? " active-match" : "");
-        appendChildNode(mark, createTextNode(m.text));
-        if (isActive) {
-          mark.id = "active-output-match";
-          activeElement = mark;
+        if (highlightedMatchIndices.has(m.matchIndex)) {
+          const mark = document.createElement("mark");
+          mark.className = "output-match" + (isActive ? " active-match" : "");
+          appendChildNode(mark, createTextNode(m.text));
+          if (isActive) {
+            mark.id = "active-output-match";
+            activeElement = mark;
+          }
+          appendChildNode(lineSpan, mark);
+        } else {
+          appendChildNode(lineSpan, createTextNode(m.text));
         }
-        appendChildNode(lineSpan, mark);
         lastPos = m.end;
       }
       if (lastPos < lineRec.text.length) {
@@ -963,7 +1009,7 @@ function renderOutputDOM(lineRecords, matches, activeMatchIndex) {
     }
 
     nodes.push(lineSpan);
-    if (li < lineRecords.length - 1) {
+    if (li < effectiveEnd - 1) {
       nodes.push(createTextNode("\n"));
     }
   }
@@ -996,18 +1042,26 @@ function onMatchNavigated() {
   const followCheckbox = $("#follow-output");
   if (followCheckbox) followCheckbox.checked = false;
 
-  const rawLines = lastOutput ? lastOutput.split("\n") : [];
-  const lineRecords = [];
-  for (let i = 0; i < rawLines.length; i++) {
-    const text = rawLines[i];
-    const severity = classifyLogLine(text);
-    if (matchesSeverityFilter(severity, outputSeverityFilter)) {
-      lineRecords.push({ originalIndex: i, text, severity });
+  const lineRecords = outputFilteredLines;
+  let startLineIndex = 0;
+  let endLineIndex = lineRecords.length;
+  if (lineRecords.length > MAX_RENDER_LINES) {
+    if (outputActiveMatchIndex >= 0 && outputMatches[outputActiveMatchIndex]) {
+      const targetLine = outputMatches[outputActiveMatchIndex].lineIndex;
+      const half = Math.floor(MAX_RENDER_LINES / 2);
+      startLineIndex = Math.max(0, targetLine - half);
+      endLineIndex = Math.min(lineRecords.length, startLineIndex + MAX_RENDER_LINES);
+      if (endLineIndex === lineRecords.length) {
+        startLineIndex = Math.max(0, endLineIndex - MAX_RENDER_LINES);
+      }
+    } else {
+      startLineIndex = Math.max(0, lineRecords.length - MAX_RENDER_LINES);
+      endLineIndex = lineRecords.length;
     }
   }
 
-  updateOutputSearchUI(rawLines.length, lineRecords.length);
-  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex);
+  updateOutputSearchUI(outputTotalLineCount, lineRecords.length, false, startLineIndex, endLineIndex);
+  renderOutputDOM(lineRecords, outputMatches, outputActiveMatchIndex, startLineIndex, endLineIndex);
 }
 
 function clearOutputSearch() {
@@ -1046,15 +1100,6 @@ function setupOutputSearchListeners() {
     caseBtn.addEventListener("click", () => {
       outputSearchCase = !outputSearchCase;
       caseBtn.setAttribute("aria-pressed", `${outputSearchCase}`);
-      computeOutputSearchAndFilter();
-    });
-  }
-
-  const regexBtn = $("#output-search-regex");
-  if (regexBtn) {
-    regexBtn.addEventListener("click", () => {
-      outputSearchRegex = !outputSearchRegex;
-      regexBtn.setAttribute("aria-pressed", `${outputSearchRegex}`);
       computeOutputSearchAndFilter();
     });
   }

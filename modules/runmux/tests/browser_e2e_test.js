@@ -262,36 +262,41 @@ async function runBrowserE2E() {
     assert.equal(markFound, "timeout");
     console.log("Verified plain search match and highlight.");
 
-    // 7. Test Regex Search
-    console.log("Testing regex search...");
+    // 7. Test Literal Search with Special Characters & Case Sensitivity
+    console.log("Testing literal search with regex characters and case toggle...");
     await evaluate(`(function() {
-      document.querySelector("#output-search-regex").click();
+      const caseBtn = document.querySelector("#output-search-case");
+      caseBtn.click();
       const input = document.querySelector("#output-search-query");
-      input.value = "database:\\\\d+";
+      input.value = "[ERROR]";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
     await sleep(100);
 
-    const regexMatchCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
-    assert.equal(regexMatchCount, "1 of 1 (loaded buffer)");
-    const regexMarkText = await evaluate(`document.querySelector("#output-text mark.output-match").textContent`);
-    assert.equal(regexMarkText, "database:5432");
-    console.log("Verified regex search match.");
+    const literalCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
+    assert.equal(literalCount, "1 of 1 (loaded buffer)");
+    const literalMark = await evaluate(`document.querySelector("#output-text mark.output-match").textContent`);
+    assert.equal(literalMark, "[ERROR]");
+    console.log("Verified literal search with brackets and case toggle.");
 
-    // 8. Test Invalid Regex Handling
-    console.log("Testing invalid regex error handling...");
+    // 8. Test Catastrophic Backtracking ReDoS Protection in Real Chrome
+    console.log("Testing ReDoS catastrophic backtracking protection in browser...");
+    const redosStart = Date.now();
     await evaluate(`(function() {
       const input = document.querySelector("#output-search-query");
-      input.value = "[invalid(";
+      input.value = "(a+)+$";
       input.dispatchEvent(new Event("input", { bubbles: true }));
     })()`);
     await sleep(100);
+    const redosDuration = Date.now() - redosStart;
+    assert.ok(redosDuration < 500, `ReDoS search took too long in Chrome: ${redosDuration}ms`);
+    const redosCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
+    assert.equal(redosCount, "0 matches (loaded buffer)");
+    console.log("Verified zero UI freeze on catastrophic regex pattern input.");
 
-    const invalidRegexText = await evaluate(`document.querySelector("#output-search-count").textContent`);
-    assert.equal(invalidRegexText, "Invalid regex");
-    const hasErrorClass = await evaluate(`document.querySelector("#output-search-count").classList.contains("has-error")`);
-    assert.equal(hasErrorClass, true);
-    console.log("Verified invalid regex error state.");
+    // Reset case sensitivity toggle
+    await evaluate(`document.querySelector("#output-search-case").click()`);
+    await sleep(100);
 
     // 9. Test Clear Search
     console.log("Testing clear search...");
@@ -353,6 +358,54 @@ async function runBrowserE2E() {
     }
     assert.equal(liveStreamReceived, true, "Live stream update was not received by browser");
     console.log("Verified live streaming log updates in browser.");
+
+    // 12. Test Pathological Buffer DOM Bounding & Accurate Labels in Real Chrome
+    console.log("Testing pathological buffer DOM bounding in real Chrome...");
+    let pathologicalLines = "";
+    for (let i = 0; i < 4000; i++) {
+      pathologicalLines += `Synthetic pathological line ${i} data\n`;
+    }
+    fs.appendFileSync(logFile, pathologicalLines, "utf8");
+
+    // Wait for output chunk to be received
+    let streamArrived = false;
+    for (let i = 0; i < 30; i++) {
+      await sleep(300);
+      const text = await evaluate(`document.querySelector("#output-text").textContent`);
+      if (text && text.includes("Synthetic pathological line 3999")) {
+        streamArrived = true;
+        break;
+      }
+    }
+    assert.equal(streamArrived, true, "Pathological lines did not stream to browser");
+
+    // Trigger search over the 4000+ line buffer
+    await evaluate(`(function() {
+      const input = document.querySelector("#output-search-query");
+      input.value = "pathological";
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    })()`);
+    await sleep(200);
+
+    // Verify DOM element bounding in actual Chrome DOM tree
+    const domLineCount = await evaluate(`document.querySelectorAll("#output-text .output-line").length`);
+    assert.equal(domLineCount, 2000, "DOM lines must be strictly bounded to 2000 in real browser");
+
+    const pathScope = await evaluate(`document.querySelector("#output-scope-note").textContent`);
+    assert.match(pathScope, /displaying lines [\d,]+–[\d,]+/);
+
+    const pathCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
+    assert.match(pathCount, /lines [\d,]+–[\d,]+ displayed/);
+
+    // Navigate matches in real browser
+    await evaluate(`(function() {
+      document.querySelector("#output-search-next").click();
+      document.querySelector("#output-search-next").click();
+    })()`);
+    await sleep(100);
+    const navCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
+    assert.match(navCount, /^3 of [\d,]+/);
+    console.log("Verified DOM bounding (2,000 max nodes) and accurate labels in real Chrome engine.");
 
     console.log("\n==========================================");
     console.log("ALL REAL HEADLESS BROWSER E2E TESTS PASSED!");
