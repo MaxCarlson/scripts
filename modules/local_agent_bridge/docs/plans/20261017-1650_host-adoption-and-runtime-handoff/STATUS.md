@@ -1,5 +1,18 @@
 # Status: Host Adoption and Runtime Handoff
 
+## Current state - 2026-10-24
+
+Stage 4 Scenario B is now independently verified with a disposable fixture and
+actual `local-worker` edit/test tool calls. A read-only reviewer, observation
+timeout recovery, and same-session follow-up were also verified. The current
+acceptance is still **blocked for production Codex CLI dispatch**: independent
+ephemeral CLI processes resolve the MCP override correctly, but the enabled
+process does not expose `opencode_worker`; only the disabled process returning
+`NO_TOOL` is not sufficient isolation evidence. See
+[module validation](../../VALIDATION.md) for exact evidence. Next: diagnose the
+enabled CLI tool-discovery gap without changing global configuration, then rerun
+the enabled tool call and update this status.
+
 Updated: 2026-10-17 (America/Los_Angeles).
 
 - **Current State (corrected 2026-10-19)**: Stage 4 is incomplete: Scenario B

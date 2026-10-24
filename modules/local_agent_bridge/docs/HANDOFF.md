@@ -1,5 +1,22 @@
 # Local agent setup handoff
 
+## Live Codex dispatch acceptance update: 2026-10-24
+
+The current run verified the installed package/setup status, healthy OpenCode
+1.19.3, the loaded LM Studio `qwen38_23GB` model (Q4_K_M, 32k context), a
+read-only reviewer, a real bounded `local-worker` edit with focused tests, job
+timeout recovery by the same job ID, and a related same-session follow-up. See
+[VALIDATION.md](VALIDATION.md) for exact IDs, timing, tool traces and diffs.
+
+**Production Codex CLI dispatch remains blocked.** The process override resolves
+`opencode_worker` disabled/enabled as requested, and the disabled ephemeral CLI
+session cannot call it. An enabled ephemeral CLI session also reports no such
+tool, even though the connected MCP runtime used for the reviewer/worker trials
+can call it. No host config was changed. Next: resolve why the enabled Codex CLI
+process does not expose the configured MCP server, then rerun the enabled call
+and this acceptance's relevant checks. Keep the successful connected-runtime
+worker result distinct from Codex CLI readiness.
+
 ## Authorized host migration completed: 2026-10-19
 
 The user authorized applying the prepared bridge setup. A fresh fingerprint plan
