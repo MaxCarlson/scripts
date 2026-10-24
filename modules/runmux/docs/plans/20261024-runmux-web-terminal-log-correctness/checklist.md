@@ -25,4 +25,5 @@
   ConPTY resize not revalidated after fixes; WSL image lacks Unicode fonts;
   bounded replay cannot recreate missing terminal history.
 - [x] Update Runmux documentation and roadmap status with findings and limits.
-- [x] Commit and push the dedicated Phase 2 branch without merging.
+- [x] Commit, push, and fast-forward merge Phase 2 into `main` at
+  `bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`.

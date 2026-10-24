@@ -155,8 +155,8 @@ constraints:
 
 ## Active Implementation Plan
 
-The active Web UI correctness work is tracked in
-[`plans/20261024-runmux-web-terminal-log-correctness/00-implementation-plan.md`](plans/20261024-runmux-web-terminal-log-correctness/00-implementation-plan.md).
+The active Web UI explorer/workspace work is tracked in
+[`plans/20261024-runmux-web-explorer-workspace/00-implementation-plan.md`](plans/20261024-runmux-web-explorer-workspace/00-implementation-plan.md).
 The prior multi-attach and input-lock implementation plan remains the source
 history for supervisor ownership behavior.
 

@@ -1,24 +1,19 @@
 # Runmux Current Handoff
 
-## Current feature branch — Web terminal and log correctness (Phase 2)
+## Current feature branch — Explorer and workspace (Phase 3)
 
-As of 2026-10-24, Phase 1 browser process launching is merged to `main` at
-`97515f0905aa2cdc194cabd9c06a250d503256a3`. Phase 2 work is in
-`.worktrees/runmux-web-launch-20261024` on
-`codex/runmux-web-phase2-20261024`, based on that merged `origin/main` commit.
-Phase 2 diagnosis and focused validation are complete. Read
-`plans/20261024-runmux-web-terminal-log-correctness/` for evidence and explicit
-limits, and `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md` for
-scope. Output CR progress normalization, Runmux-scoped xterm CSP styling, and
-POSIX PTY SIGWINCH delivery are covered by tests and synthetic browser checks.
-WSL validates 39 Runmux tests and 8 shared web UI tests. Windows focused tests
-stall in Proactor self-pipe creation; Windows ConPTY resize is not claimed.
-Bounded replay cannot reconstruct omitted screen history. Phase 2 is committed;
-push the branch without merging.
+Phase 2 and Phase 5B are integrated in `origin/main` at
+`9f01984d3dedf05781a19f8d131956662ee5b29d`. Phase 3 is complete on
+`codex/runmux-web-phase3-20261024` in
+`.worktrees/runmux-web-launch-20261024`; its merge of updated `origin/main`
+was conflict-free. Phase 3 has not been merged to main. Read
+`plans/20261024-runmux-web-explorer-workspace/STATUS.md` and `checklist.md` for
+validation, limitations, and delivery state. Preserve the API privacy boundary:
+full argv, cwd, environment, credentials, and log paths are not exposed.
 
 Last updated: 2026-10-24
 
-## Resume Here
+## Historical notes — completed earlier phases
 
 The Runmux Web UI UX refinement was merged into `main` on 2026-10-24
 from `codex/runmux-web-ux-20261024`, based on `origin/main` at
@@ -42,15 +37,15 @@ its completed record remains in `plans/20261023-runmux-web-interactive-terminal/
   sandbox could not bind the port; no production state was opened.
 - Automated test results are recorded in the UX refinement plan.
 
-The current isolated feature branch adds an authenticated browser terminal to
-the existing read-only Web UI. Its plan and current status are in
-`plans/20261023-runmux-web-interactive-terminal/`. The branch starts at the
-latest fetched `origin/main`; commit and push it for review, but do not merge.
+An earlier branch added an authenticated browser terminal to the Web UI. Its
+archived plan and validation are in
+`plans/20261023-runmux-web-interactive-terminal/`. That historical branch was
+published for review without merging.
 
 The earlier native TUI integration remains recorded below as project history;
 the branch named in that historical section differs from this feature branch.
 
-Read in this order:
+For that historical integration, the original read order was:
 
 1. Applicable global and repository-level LLM instructions
 2. `README.md`

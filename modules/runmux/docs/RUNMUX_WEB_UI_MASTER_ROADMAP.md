@@ -10,16 +10,27 @@
 
 > **Use this as the durable project reference.** Assign only one phase-specific handoff at a time; the phase files below define individual work packages. Update this master when requirements, scope, approval, or validation outcomes change. Do not treat conceptual mockups as evidence of implemented backend features.
 
-## 1. Current situation and evidence
+## 1. Current implementation and evidence
 
-The user supplied screenshots of the current Web UI with no processes and with seven registered runs, including `file-util`, `mangadl`, and `ytaedl` entries. Visible capabilities include a dark application shell, searchable process explorer grouped by lifecycle state, multi-process tabs, Output/Terminal/Details views, follow control, registry-connected indicator, and limited run metadata. The interface presents itself as **read-only**, and there is **no browser process-launch form**.
+The latest integration baseline is `origin/main` at
+`9f01984d3dedf05781a19f8d131956662ee5b29d`. It includes the browser launch
+flow (Phase 1), terminal/log correctness work (Phase 2), and the Phase 5B
+telemetry backend. Phase 3 explorer/workspace improvements are complete on the
+separate `codex/runmux-web-phase3-20261024` branch and are not yet integrated.
 
-The examples of MangaDL and `file-util` show visually garbled/misaligned TUI output in at least some browser views. These screenshots establish a symptom, **not** its root cause. The Terminal view exists, with read-only/request-control affordances, but its exact security and PTY behavior must be inspected in code.
+The browser keeps Output and the ANSI Terminal as distinct views. The existing
+supervisor owns process lifecycle, PTY behavior, and terminal input locks. The
+API preserves a privacy allowlist; full command arguments, working directory,
+environment values, credentials, and log paths are not disclosed to the UI.
+Phase 3 adds explorer grouping/filtering/sorting/paging, Run-ID tab restoration,
+reconciliation, and responsive controls without expanding that allowlist.
 
-The target full-feature concept includes a dark IDE-like process workspace with a searchable explorer, tabs, selectable process-information densities, richer log tools, metrics, and an optional inspector. Those concept images show **aspirational design**, not verified features.
-
-**Evidence limits:** No source-code audit, installed-environment test, current endpoint audit, or telemetry inventory was performed in preparing these planning documents. Before implementation, inspect current `origin/main` and document actual APIs, security controls, and tests. The prior integration baseline `f6bf043bee4cf9a694f52ce7c2845510f3cde5d0` is historical context, **not** an assertion about current HEAD.
-
+Synthetic Windows headless Chromium checks cover the empty registry, 450-run
+registry, responsive layouts, keyboard controls, safe text rendering, reload
+tab restoration, and close-view behavior. Focused Windows Python tests remain
+unverified because the test process hangs during startup; see the active Phase 3
+status report. Concept images and browser screenshots are not evidence of
+unimplemented backend capabilities.
 ## 2. Governing product decisions
 
 1. **Desktop-first dark workspace.** Preserve the existing visual foundation; improve information density and layout rather than replacing it wholesale.
@@ -131,8 +142,8 @@ Record answers in this master as decisions, linking the relevant code/tests and 
 | Phase | Status | Implementation reference | Validation reference | Blockers/notes |
 |---|---|---|---|---|
 | 1 | Complete | `plans/20261024-runmux-web-process-launching/` | 33 focused web/readiness tests and prior browser smoke passed | Authenticated `create_managed_run` launch; full suite retains four failures reproduced on `origin/main`; wheel build unavailable because hatchling is not installed; POSIX runtime not exercised |
-| 2 | Implemented, validated and committed | `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`; `plans/20261024-runmux-web-terminal-log-correctness/` | WSL: 39 Runmux tests, 8 web_ui_tools tests; Ruff and dashboard JS checks pass; clean headless Chromium verified synthetic Manga-style/file-util-like Terminal flows | Windows Proactor self-pipe hang prevented focused Windows rerun and post-fix ConPTY visual check; WSL headless image lacks Unicode fonts; bounded replay cannot reconstruct omitted screen history |
-| 3 | Not assigned | — | — | Confirm data fields and persistence |
+| 2 | Complete and merged (`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`) | `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`; `plans/20261024-runmux-web-terminal-log-correctness/` | WSL: 39 Runmux tests, 8 web_ui_tools tests; Ruff and dashboard JS checks pass; clean headless Chromium verified synthetic Manga-style/file-util-like Terminal flows | Windows Proactor self-pipe hang prevented focused Windows rerun and post-fix ConPTY visual check; WSL headless image lacks Unicode fonts; bounded replay cannot reconstruct omitted screen history |
+| 3 | Active on `codex/runmux-web-phase3-20261024` | `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`; `plans/20261024-runmux-web-explorer-workspace/` | API/UI/privacy reconnaissance recorded; implementation and synthetic browser validation pending | Full argv/cwd are intentionally withheld by API; no new disclosure without a server-side authorization decision |
 | 4 | Not assigned | — | — | Depend on mutation security and log model |
 | 5 | Not assigned | — | — | Need verified resource telemetry |
 | 6 | Not assigned | — | — | Many items are optional or undecided |
