@@ -940,3 +940,45 @@ def test_quarantine_resilience_to_open_reader_and_locked_wal(tmp_path: Path) -> 
     assert quarantine_result.read_bytes() == b"CORRUPTED INVALID SQLITE FILE HEADER"
     # Fresh database initialized and integrity passes
     assert store.check_integrity() is True
+
+
+def test_quarantine_rollback_on_partial_failure_avoids_leftover_wal_and_data_loss(tmp_path: Path) -> None:
+    """Verify that if WAL or SHM cannot be moved (e.g. locked), the database rename is rolled back,
+    no replacement database is initialized against leftover files, and no data is lost."""
+    store = TelemetryStore(tmp_path)
+    store.db_path.write_bytes(b"CORRUPTED DB CONTENT")
+    store.wal_path.write_bytes(b"VALUABLE RECOVERABLE WAL TRANSACTIONS")
+
+    # Simulate an active reader holding a lock exclusively on the WAL file
+    wal_handle = open(store.wal_path, "rb")
+    try:
+        # Quarantine should attempt rename, fail on WAL, roll back DB rename, and return None
+        result = store.quarantine_and_reset()
+        assert result is None, "Quarantine must be deferred when WAL cannot be renamed"
+
+        # Both files must remain in place intact (rollback succeeded)
+        assert store.db_path.exists(), "Original DB must be rolled back and present"
+        assert store.db_path.read_bytes() == b"CORRUPTED DB CONTENT"
+        assert store.wal_path.exists(), "Original WAL must be present"
+        assert store.wal_path.read_bytes() == b"VALUABLE RECOVERABLE WAL TRANSACTIONS"
+
+        # Crucial invariant: no replacement database was initialized against the locked WAL
+        # Check that no corrupt files were orphaned
+        corrupt_files = list(tmp_path.glob("*.corrupt.*"))
+        assert len(corrupt_files) == 0, f"Expected 0 orphaned corrupt files, found {corrupt_files}"
+    finally:
+        wal_handle.close()
+
+    # Now that lock is released, quarantine must completely move both files and initialize a clean database
+    result = store.quarantine_and_reset()
+    assert result is not None
+    assert result.is_file()
+    assert result.read_bytes() == b"CORRUPTED DB CONTENT"
+
+    wal_corrupt = list(tmp_path.glob("telemetry.sqlite3-wal.corrupt.*"))
+    assert len(wal_corrupt) == 1
+    assert wal_corrupt[0].read_bytes() == b"VALUABLE RECOVERABLE WAL TRANSACTIONS"
+
+    # Fresh replacement database is initialized cleanly with no leftover WAL
+    assert store.check_integrity() is True
+    assert not store.wal_path.exists()

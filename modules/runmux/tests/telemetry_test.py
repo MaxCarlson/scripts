@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import psutil
+import pytest
 from fastapi.testclient import TestClient
 
 from runmux.models import RunRecord, parse_iso_datetime
@@ -521,3 +522,55 @@ def test_child_pid_cache_recycled_pid_protection() -> None:
     # Recycled PID must be rejected; only root process attributed!
     assert sample2.process_count == 1
     assert sample2.rss_bytes == 1000
+
+
+def test_live_telemetry_accuracy_and_sub_tick_updates_with_child_cache() -> None:
+    """Verify that historical sampling's 30s child cache does not regress live telemetry accuracy:
+    - Root process and children update CPU time, CPU percent, and RSS on every tick.
+    - Dead children are pruned immediately via is_running() detection.
+    - Recycled child PIDs are rejected immediately via create_time() mismatch."""
+    clock_time = 100.0
+    sampler = TelemetrySampler(clock=lambda: clock_time, child_cache_ttl=30.0)
+
+    root_proc = MockLiveProcess(
+        100, user_time=1.0, system_time=0.5, rss=10_000_000, read_bytes=5000, write_bytes=2000, threads=2
+    )
+    child_proc = MockLiveProcess(
+        101, user_time=2.0, system_time=1.0, rss=5_000_000, read_bytes=7000, write_bytes=3000, threads=3
+    )
+    root_proc.children = lambda recursive=True: [child_proc]
+
+    harness = MockPsutilHarness(processes={100: root_proc, 101: child_proc}, cpu_count=4)
+    record = make_test_record(pid=100)
+
+    # Tick 1: Cache miss (discovery scan)
+    s1 = sampler.sample_run(record, psutil_module=harness)
+    assert s1.process_count == 2
+    assert s1.rss_bytes == 15_000_000
+    assert s1.thread_count == 5
+    assert s1.cpu_percent is None  # Initial baseline sample
+
+    # Advance clock by 2.0s (live telemetry polling interval, well within 30s TTL)
+    clock_time = 102.0
+    root_proc._user += 1.0  # 1.0s CPU time consumed
+    child_proc._user += 0.5 # 0.5s CPU time consumed
+    root_proc._rss += 1_000_000 # RSS changes
+
+    # Tick 2: Cache hit (live polling at 2s interval)
+    s2 = sampler.sample_run(record, psutil_module=harness)
+    assert s2.process_count == 2
+    assert s2.rss_bytes == 16_000_000  # Immediately reflects fresh RSS
+    assert s2.thread_count == 5
+    # Total delta CPU time = 1.5s over 2.0s wall time = 75.0%
+    assert pytest.approx(s2.cpu_percent) == 75.0
+    assert pytest.approx(s2.cpu_percent_normalized) == (75.0 / 4.0)
+
+    # Advance clock by 2.0s: child terminates!
+    clock_time = 104.0
+    child_proc.is_running = lambda: False
+    root_proc._user += 1.0
+
+    # Tick 3: Cache hit detects child terminated and drops it immediately
+    s3 = sampler.sample_run(record, psutil_module=harness)
+    assert s3.process_count == 1
+    assert s3.rss_bytes == 11_000_000  # child's 5MB RSS dropped immediately

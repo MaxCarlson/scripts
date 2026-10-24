@@ -657,8 +657,11 @@ class TelemetryStore:
         """Move corrupted database AND accompanying WAL/SHM files to quarantine, preserving recoverable WAL data.
 
         Returns the quarantine path on success, or None if quarantine was deferred due to active locks.
+        Guarantees that partial quarantine failure cannot cause data loss or initialize a replacement
+        database against leftover WAL/SHM files.
         """
-        if not self.db_path.exists():
+        shm_path = self.state_dir / "telemetry.sqlite3-shm"
+        if not self.db_path.exists() and not self.wal_path.exists() and not shm_path.exists():
             try:
                 self.init_db()
             except (sqlite3.Error, OSError) as error:
@@ -666,35 +669,49 @@ class TelemetryStore:
             return None
 
         quarantine_ts = int(time.time())
-        quarantine_path = self.state_dir / f"telemetry.sqlite3.corrupt.{quarantine_ts}"
+        db_quarantine = self.state_dir / f"telemetry.sqlite3.corrupt.{quarantine_ts}"
+        wal_quarantine = self.state_dir / f"telemetry.sqlite3-wal.corrupt.{quarantine_ts}"
+        shm_quarantine = self.state_dir / f"telemetry.sqlite3-shm.corrupt.{quarantine_ts}"
 
-        # Attempt to rename the database file; on Windows, an active reader raises PermissionError
-        try:
-            self.db_path.rename(quarantine_path)
-        except OSError as error:
-            logger.warning("Quarantine deferred: cannot rename telemetry.sqlite3 (file may be in use by an active reader): %s", error)
+        renamed_files: list[tuple[Path, Path]] = []
+        targets = [
+            (self.db_path, db_quarantine),
+            (self.wal_path, wal_quarantine),
+            (shm_path, shm_quarantine),
+        ]
+
+        failed = False
+        for original, quarantined in targets:
+            if original.exists():
+                try:
+                    original.rename(quarantined)
+                    renamed_files.append((original, quarantined))
+                except OSError as error:
+                    logger.warning("Quarantine deferred: cannot rename %s (%s)", original.name, error)
+                    failed = True
+                    break
+
+        if failed:
+            # Rollback any files that were already renamed to preserve the database and WAL together
+            for original, quarantined in reversed(renamed_files):
+                try:
+                    if quarantined.exists():
+                        quarantined.rename(original)
+                except OSError as rollback_error:
+                    logger.error("Failed to rollback quarantined file %s -> %s: %s", quarantined, original, rollback_error)
             return None
 
-        # Main db was successfully quarantined. Now also quarantine WAL and SHM if present
-        if self.wal_path.exists():
-            try:
-                self.wal_path.rename(self.state_dir / f"telemetry.sqlite3-wal.corrupt.{quarantine_ts}")
-            except OSError as error:
-                logger.warning("Could not rename WAL file during quarantine: %s", error)
-
-        shm_path = self.state_dir / "telemetry.sqlite3-shm"
-        if shm_path.exists():
-            try:
-                shm_path.rename(self.state_dir / f"telemetry.sqlite3-shm.corrupt.{quarantine_ts}")
-            except OSError as error:
-                logger.warning("Could not rename SHM file during quarantine: %s", error)
+        # Invariant check: confirm NO leftover db/wal/shm files remain before initializing a replacement
+        if self.db_path.exists() or self.wal_path.exists() or shm_path.exists():
+            logger.error("Quarantine incomplete: leftover database or WAL/SHM files remain; aborting replacement initialization to prevent data corruption")
+            return None
 
         try:
             self.init_db()
         except (sqlite3.Error, OSError) as error:
             logger.error("Failed to re-initialize fresh telemetry database after quarantine: %s", error)
 
-        return quarantine_path
+        return db_quarantine if db_quarantine.exists() else (wal_quarantine if wal_quarantine.exists() else None)
 
     def query_process_history(
         self,
