@@ -28,7 +28,12 @@ def _query(fields: str, timeout: float = 1.5, *, binary_name: str = "nvidia-smi"
     try:
         result = subprocess.run(
             [binary, f"--query-gpu={fields}", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -37,8 +42,13 @@ def _query(fields: str, timeout: float = 1.5, *, binary_name: str = "nvidia-smi"
     return list(csv.reader(result.stdout.splitlines(), skipinitialspace=True))
 
 
-def nvidia_gpus(*, timeout: float = 1.5, binary_name: str = "nvidia-smi", include_power: bool = False) -> list[dict[str, Any]]:
-    """Discover NVIDIA GPUs and report utilization, memory bytes, temperature, and power when available."""
+def nvidia_gpus(
+    *, timeout: float = 1.5, binary_name: str = "nvidia-smi", include_power: bool = False
+) -> list[dict[str, Any]]:
+    """Discover NVIDIA GPUs and report utilization, memory bytes, temperature, and power when available.
+
+    Scope: Host/device level.
+    """
     fields = "name,index,utilization.gpu,utilization.memory,memory.used,memory.free,memory.total,temperature.gpu"
     if include_power:
         fields += ",power.draw"
@@ -75,7 +85,12 @@ def gpu_process_memory(*, timeout: float = 1.5, binary_name: str = "nvidia-smi")
     try:
         result = subprocess.run(
             [binary, "--query-compute-apps=pid,process_name,used_memory", "--format=csv,noheader,nounits"],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=timeout, check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout,
+            check=False,
         )
     except (OSError, subprocess.SubprocessError):
         return []
@@ -92,6 +107,36 @@ def gpu_process_memory(*, timeout: float = 1.5, binary_name: str = "nvidia-smi")
         except ValueError:
             continue
     return results
+
+
+def gpu_process_attribution(
+    pids: set[int] | list[int] | tuple[int, ...],
+    *,
+    timeout: float = 1.5,
+    binary_name: str = "nvidia-smi",
+) -> dict[str, Any]:
+    """Attribute GPU compute-process memory to a collection of PIDs (e.g. a process tree).
+
+    Note on scope: nvidia-smi compute-apps provides per-process GPU memory,
+    NOT per-process GPU utilization % (which is a device-wide metric).
+    """
+    pid_set = {int(p) for p in pids}
+    if not pid_set:
+        return {"total_memory_bytes": 0, "process_memory": {}}
+    apps = gpu_process_memory(timeout=timeout, binary_name=binary_name)
+    total_memory = 0
+    process_memory: dict[int, int] = {}
+    for item in apps:
+        item_pid = item.get("pid")
+        mem = item.get("memory_bytes")
+        if item_pid in pid_set and mem is not None:
+            mem_int = int(mem)
+            total_memory += mem_int
+            process_memory[item_pid] = mem_int
+    return {
+        "total_memory_bytes": total_memory,
+        "process_memory": process_memory,
+    }
 
 
 def gpu_devices(*, timeout: float = 1.5) -> list[dict[str, Any]]:

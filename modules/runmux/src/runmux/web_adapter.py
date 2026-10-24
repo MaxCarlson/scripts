@@ -19,6 +19,7 @@ from web_ui_tools.terminal import TerminalParserState, TerminalTextSanitizer
 from runmux.constants import STATUS_LOST, TERMINAL_STATUSES
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
+from runmux.stats import HostTelemetry, ProcessStats, TelemetrySampler
 from runmux.store import RunNotFoundError
 
 RUN_ID_PATTERN = re.compile(r"\d{8}-\d{6}-[0-9a-f]{6}\Z")
@@ -71,9 +72,10 @@ class _Cursor:
 class ReadOnlyRunmux:
     """Query an existing registry using SQLite read-only mode without initialization or migration."""
 
-    def __init__(self, state_dir: Path) -> None:
+    def __init__(self, state_dir: Path, *, sampler: TelemetrySampler | None = None) -> None:
         self.state_dir = Path(state_dir).expanduser().resolve()
         self.db_path = self.state_dir / "registry.sqlite3"
+        self._telemetry_sampler = sampler or TelemetrySampler()
 
     def _connect(self) -> sqlite3.Connection:
         if not self.db_path.is_file():
@@ -139,6 +141,69 @@ class ReadOnlyRunmux:
             if value is None or isinstance(value, int):
                 updates[field] = value
         return (replace(record, **updates) if updates else record), "connected"
+
+    def get_run_telemetry(self, run_id: str, *, psutil_module: Any = None) -> dict[str, Any]:
+        """Return verified resource telemetry for one run."""
+
+        record = self.get_run(run_id)
+        record, _ = self.refresh_display_status(record)
+        stats = self._telemetry_sampler.sample_run(record, psutil_module=psutil_module)
+        return serialize_process_telemetry(stats)
+
+    def get_overview_telemetry(self, *, psutil_module: Any = None) -> dict[str, Any]:
+        """Return overview resource telemetry for all active runs and host."""
+
+        records = self.list_runs()
+        active = [r for r in records if r.status not in TERMINAL_STATUSES]
+        refreshed = [self.refresh_display_status(r)[0] for r in active]
+        stats_list, host = self._telemetry_sampler.sample_active_runs(refreshed, psutil_module=psutil_module)
+        return {
+            "runs": [serialize_process_telemetry(s) for s in stats_list],
+            "host": serialize_host_telemetry(host),
+        }
+
+
+def serialize_process_telemetry(stats: ProcessStats) -> dict[str, Any]:
+    """Serialize verified process-tree telemetry for browser views without secret leakage."""
+
+    return {
+        "id": stats.record.id,
+        "numeric_id": stats.record.numeric_id,
+        "status": stats.record.status,
+        "pid": stats.record.pid,
+        "process_count": stats.process_count,
+        "thread_count": stats.thread_count,
+        "cpu_percent": stats.cpu_percent,
+        "cpu_percent_normalized": stats.cpu_percent_normalized,
+        "cpu_count": stats.cpu_count,
+        "cpu_time_seconds": stats.cpu_time_seconds,
+        "rss_bytes": stats.rss_bytes,
+        "read_bytes_per_second": stats.read_bytes_per_second,
+        "write_bytes_per_second": stats.write_bytes_per_second,
+        "total_read_bytes": stats.total_read_bytes,
+        "total_write_bytes": stats.total_write_bytes,
+        "gpu_memory_bytes": stats.gpu_memory_bytes,
+        "unavailable": stats.unavailable,
+        "sampled_at": stats.sampled_at,
+        "sample_interval_seconds": stats.sample_interval_seconds,
+    }
+
+
+def serialize_host_telemetry(host: HostTelemetry) -> dict[str, Any]:
+    """Serialize host-scoped telemetry."""
+
+    return {
+        "cpu_percent": host.cpu_percent,
+        "cpu_count": host.cpu_count,
+        "memory_used_bytes": host.memory_used_bytes,
+        "memory_available_bytes": host.memory_available_bytes,
+        "memory_total_bytes": host.memory_total_bytes,
+        "memory_percent": host.memory_percent,
+        "net_read_bytes_per_second": host.net_read_bytes_per_second,
+        "net_write_bytes_per_second": host.net_write_bytes_per_second,
+        "gpu_devices": host.gpu_devices,
+        "sampled_at": host.sampled_at,
+    }
 
 
 def serialize_run(record: RunRecord, *, connection: str = "unchecked") -> dict[str, Any]:
