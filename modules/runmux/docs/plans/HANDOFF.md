@@ -21,7 +21,7 @@ The current Phase 3 feature branch plan is:
 
 `20261024-runmux-web-explorer-workspace/`
 
-Phase 3 is implemented on its dedicated branch and awaits commit/push; read its
+Phase 3 is implemented, committed, and pushed on its dedicated branch; read its
 `HANDOFF.md`, `STATUS.md`, and `checklist.md` for verified results and limits.
 
 Phase 2 terminal/log correctness and Phase 5B telemetry are integrated in `origin/main`

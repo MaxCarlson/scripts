@@ -46,7 +46,7 @@ telemetry API. Phase 3 is not merged to `main`.
 - Windows: `ruff check .` reports 42 lint issues in existing Python files;
   Phase 3 changes no Python files.
 
-## Next action
+## Delivery
 
-Commit and push the completed Phase 3 feature branch. Do not merge it without
-explicit authorization.
+Phase 3 is committed and pushed on `codex/runmux-web-phase3-20261024`. The
+branch remains intentionally unmerged.
