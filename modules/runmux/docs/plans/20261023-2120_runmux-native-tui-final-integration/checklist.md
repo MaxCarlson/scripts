@@ -5,4 +5,4 @@
 - [x] Assess and separately commit justified backend concurrency fixes.
 - [x] Run focused regression suites, Ruff, and `git diff --check`.
 - [x] Review branch and commits; self-review found no Critical or Important findings.
-- [ ] Push the branch for user review; do not merge.
+- [x] Push the branch for user review; do not merge.
