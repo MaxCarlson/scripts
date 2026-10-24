@@ -73,7 +73,11 @@ class TelemetryHistoryWorker:
         try:
             if not self.telemetry_store.check_integrity():
                 logger.warning("Corrupt telemetry database detected. Quarantining and resetting store.")
-                self.telemetry_store.quarantine_and_reset()
+                quarantined = self.telemetry_store.quarantine_and_reset()
+                if quarantined is not None:
+                    logger.info("Successfully quarantined corrupt telemetry database to %s", quarantined)
+                else:
+                    logger.warning("Quarantine deferred (database files may be locked by an active reader).")
         except Exception as error:
             logger.error("Error checking or resetting telemetry store integrity: %s", error)
 

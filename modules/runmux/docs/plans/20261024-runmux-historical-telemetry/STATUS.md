@@ -56,10 +56,20 @@
    - Lineage traversal with restart gap markers and discrete events.
    - Preserved Phase 5B live endpoints (`/api/runs/{id}/telemetry`, `/api/telemetry`) and all Phase 5A+ frontend assets untouched.
 
+
+8. **Final Schema & Aggregation Corrections:**
+   - **Schema Migration Safety:** Specified explicit destination column lists on all `INSERT OR REPLACE INTO` statements (`telemetry_rollup_1m`, `telemetry_rollup_5m`, `host_telemetry_rollup_1m`, `host_telemetry_rollup_5m`, `telemetry_raw`, `host_telemetry_raw`). Dynamic `ensure_columns()` applies `ALTER TABLE ... ADD COLUMN` for `cpu_min` and `_count` columns on pre-existing databases without column ordinal misalignment. Verified via `test_schema_migration_preserves_column_order_and_values`.
+   - **Partial-Null Observation-Weighted Averages:** Process and host rollups now track per-metric non-null observation counts (`cpu_count`, `rss_count`, `read_bytes_count`, `write_bytes_count`, `memory_count`, `net_read_count`, `net_write_count`). 5m rollups weight averages strictly by valid observation counts rather than total ticks, avoiding distortion when buckets contain unequal sizes and mixed missing data. Includes backwards-compatible fallback for pre-migration rollups. Verified via `test_partial_null_weighted_averages_unequal_buckets` and `test_host_partial_null_weighted_averages`.
+   - **Windows File Lock Recovery Resilience:** Handled `PermissionError` / `OSError` in `quarantine_and_reset()` when active reader handles hold `telemetry.sqlite3` open on Windows. Defers quarantine safely without crashing or corrupting files, and cleanly self-heals on subsequent checks once locks release. Verified via `test_quarantine_resilience_to_open_reader_and_locked_wal` and `test_worker_graceful_degradation_when_database_locked`.
+
+9. **Updated Test Battery:**
+   - Telemetry store & worker battery: **21 / 21 tests passed**.
+   - Full telemetry, history, web adapter, and web battery: **79 / 79 tests passed** in 14.07s.
+
 7. **Test Suite Verification:**
    - Telemetry test battery: **45 / 45 tests passed** in 3.95s.
    - Web & adapter test battery: **26 / 26 tests passed** in 10.40s.
-   - Total telemetry & web tests: **71 / 71 passed cleanly**.
+   - Total telemetry & web tests: **79 / 79 passed cleanly**.
 
 ---
 

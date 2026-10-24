@@ -63,16 +63,22 @@
 
 ---
 
+
+7. **Final Schema Migration & Partial-Null Aggregation Corrections:**
+   - **Explicit Destination Columns:** Replaced all positional inserts with explicit column lists in `telemetry_store.py`. Schema migration helper `ensure_columns()` adds missing `cpu_min` and observation `_count` columns to existing databases via `ALTER TABLE ... ADD COLUMN` without breaking column alignment regardless of physical column position.
+   - **Exact Observation Weighting:** Implemented `cpu_count`, `rss_count`, `read_bytes_count`, and `write_bytes_count` (and host equivalents) in 1-minute rollups to count non-null observations. 5-minute rollup queries weight averages by effective observation counts, completely preventing distortion when raw ticks have mixed available/unavailable metrics.
+   - **Lock-Resilient Quarantine on Windows:** Updated `quarantine_and_reset()` to catch `OSError` (`PermissionError`) when an active reader holds an open file handle, returning `None` and deferring quarantine rather than raising. Once the handle closes, the store and worker successfully quarantine the damaged file and initialize a clean database.
+
 ## 3. Test Verification Battery
 
 - `modules/runmux/tests/telemetry_history_api_test.py`: **6 / 6 passed**.
-- `modules/runmux/tests/telemetry_store_test.py`: **13 / 13 passed**.
-- `modules/runmux/tests/telemetry_worker_test.py`: **3 / 3 passed**.
+- `modules/runmux/tests/telemetry_store_test.py`: **17 / 17 passed**.
+- `modules/runmux/tests/telemetry_worker_test.py`: **4 / 4 passed**.
 - `modules/runmux/tests/telemetry_test.py`: **12 / 12 passed**.
 - `modules/runmux/tests/stats_test.py`: **11 / 11 passed**.
 - `modules/runmux/tests/web_adapter_test.py`: **11 / 11 passed**.
 - `modules/runmux/tests/web_test.py`: **15 / 15 passed**.
-- **Total telemetry & web suite:** **71 / 71 passed cleanly** in native Windows environment.
+- **Total telemetry & web suite:** **79 / 79 passed cleanly** in native Windows environment.
 
 ---
 

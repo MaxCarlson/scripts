@@ -164,3 +164,52 @@ async def test_worker_lifecycle_detects_and_recovers_corrupt_database(tmp_path: 
     with fresh_store.connect() as conn:
         count = conn.execute("SELECT COUNT(*) FROM telemetry_raw WHERE run_id = ?", (record.id,)).fetchone()[0]
         assert count >= 1
+
+
+@pytest.mark.asyncio
+async def test_worker_graceful_degradation_when_database_locked(tmp_path: Path) -> None:
+    """Verify that the worker's integrity check handles an active lock gracefully without crashing,
+    and recovers on the subsequent check once the lock is released."""
+    store = RunStore(tmp_path)
+    record = store.create_run(
+        run_id="20261024-080000-f3a1b2",
+        name="worker_lock_test",
+        status="running",
+        program=sys.executable,
+        argv_json="[]",
+        cwd=str(tmp_path),
+        env_overrides_json="{}",
+        auth_token="dummy_token",
+        log_path=str(tmp_path / "log.ansi"),
+        command_line="python",
+    )
+    import datetime
+    import psutil
+    proc = psutil.Process(os.getpid())
+    started_iso = datetime.datetime.fromtimestamp(proc.create_time(), datetime.timezone.utc).isoformat()
+    store.update_run(record.id, pid=os.getpid(), started_at=started_iso)
+
+    # Initialize a corrupted telemetry.sqlite3
+    db_file = tmp_path / "telemetry.sqlite3"
+    db_file.write_bytes(b"CORRUPTED INVALID SQLITE FILE HEADER")
+
+    # Hold an open reader handle on the corrupt database
+    reader_handle = open(db_file, "rb")
+    worker = TelemetryHistoryWorker(tmp_path, cadence_seconds=0.1)
+
+    try:
+        # Worker integrity check should log a warning and defer quarantine without raising
+        worker._verify_store_integrity_sync()
+        assert db_file.exists()
+        assert db_file.read_bytes() == b"CORRUPTED INVALID SQLITE FILE HEADER"
+    finally:
+        reader_handle.close()
+
+    # Lock is now released; subsequent check should successfully quarantine and re-initialize
+    worker._verify_store_integrity_sync()
+    corrupt_files = list(tmp_path.glob("telemetry.sqlite3.corrupt.*"))
+    assert len(corrupt_files) == 1
+    assert corrupt_files[0].read_bytes() == b"CORRUPTED INVALID SQLITE FILE HEADER"
+
+    fresh_store = TelemetryStore(tmp_path)
+    assert fresh_store.check_integrity() is True

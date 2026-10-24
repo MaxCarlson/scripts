@@ -120,9 +120,24 @@
 
 ---
 
-## 9. Final Verification & Completion Gate
 
-- [x] 71 / 71 telemetry & web tests passing cleanly
+---
+
+## 9. Final Schema and Aggregation Corrections
+
+- [x] Explicit destination column lists on all `INSERT OR REPLACE` statements to eliminate positional column fragility
+- [x] Schema migration helper `ensure_columns()` for `cpu_min` and `_count` columns via `ALTER TABLE`
+- [x] Backward-compatible schema migration test (`test_schema_migration_preserves_column_order_and_values`)
+- [x] Valid observation counting (`cpu_count`, `rss_count`, `read_bytes_count`, `write_bytes_count` on process rollups; host equivalents on host rollups)
+- [x] Observation-count weighted rollup queries with backward-compatible fallback for legacy rollups
+- [x] Unequal bucket and partial-null weighted averages regression tests (`test_partial_null_weighted_averages_unequal_buckets`, `test_host_partial_null_weighted_averages`)
+- [x] Windows file-lock resilience during corruption recovery (`quarantine_and_reset()` returning `None` when locked)
+- [x] Quarantine resilience tests under active open reader handles (`test_quarantine_resilience_to_open_reader_and_locked_wal`, `test_worker_graceful_degradation_when_database_locked`)
+- [x] Verified full test battery: 79 / 79 tests passed
+
+## 10. Final Verification & Completion Gate
+
+- [x] 79 / 79 telemetry & web tests passing cleanly
 - [x] Preserved existing Phase 5B live telemetry backend and all public APIs unchanged
 - [x] Verified native Windows execution and isolation
 - [x] Update plan documentation (`STATUS.md`, `HANDOFF.md`, `checklist.md`, `03_resource_budget_and_benchmarks.md`)

@@ -95,120 +95,152 @@ class TelemetryStore:
             conn.close()
 
     def init_db(self) -> None:
-        """Create tables and indexes if they do not exist."""
+        """Create tables, indexes, and apply safe migrations for existing databases."""
         ensure_state_tree(self.state_dir)
-        with self.session() as conn:
-            av = conn.execute("PRAGMA auto_vacuum").fetchone()[0]
-            if av != 2:
-                conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
-                conn.execute("VACUUM")
+        try:
+            with self.session() as conn:
+                av = conn.execute("PRAGMA auto_vacuum").fetchone()[0]
+                if av != 2:
+                    conn.execute("PRAGMA auto_vacuum = INCREMENTAL")
+                    conn.execute("VACUUM")
 
-            conn.executescript("""
-                CREATE TABLE IF NOT EXISTS telemetry_raw (
-                    run_id TEXT NOT NULL,
-                    timestamp REAL NOT NULL,
-                    sampled_at TEXT NOT NULL,
-                    cpu_percent REAL,
-                    cpu_percent_normalized REAL,
-                    rss_bytes INTEGER,
-                    read_bytes_per_sec REAL,
-                    write_bytes_per_sec REAL,
-                    process_count INTEGER NOT NULL,
-                    thread_count INTEGER NOT NULL,
-                    gpu_memory_bytes INTEGER,
-                    PRIMARY KEY (run_id, timestamp)
-                ) WITHOUT ROWID;
+                conn.executescript("""
+                    CREATE TABLE IF NOT EXISTS telemetry_raw (
+                        run_id TEXT NOT NULL,
+                        timestamp REAL NOT NULL,
+                        sampled_at TEXT NOT NULL,
+                        cpu_percent REAL,
+                        cpu_percent_normalized REAL,
+                        rss_bytes INTEGER,
+                        read_bytes_per_sec REAL,
+                        write_bytes_per_sec REAL,
+                        process_count INTEGER NOT NULL,
+                        thread_count INTEGER NOT NULL,
+                        gpu_memory_bytes INTEGER,
+                        PRIMARY KEY (run_id, timestamp)
+                    ) WITHOUT ROWID;
 
-                CREATE INDEX IF NOT EXISTS idx_telemetry_raw_timestamp ON telemetry_raw(timestamp);
+                    CREATE INDEX IF NOT EXISTS idx_telemetry_raw_timestamp ON telemetry_raw(timestamp);
 
-                CREATE TABLE IF NOT EXISTS telemetry_rollup_1m (
-                    run_id TEXT NOT NULL,
-                    bucket_epoch INTEGER NOT NULL,
-                    sample_count INTEGER NOT NULL,
-                    cpu_avg REAL,
-                    cpu_min REAL,
-                    cpu_max REAL,
-                    rss_avg INTEGER,
-                    rss_max INTEGER,
-                    read_bytes_sec_avg REAL,
-                    write_bytes_sec_avg REAL,
-                    gpu_memory_bytes_max INTEGER,
-                    PRIMARY KEY (run_id, bucket_epoch)
-                ) WITHOUT ROWID;
+                    CREATE TABLE IF NOT EXISTS telemetry_rollup_1m (
+                        run_id TEXT NOT NULL,
+                        bucket_epoch INTEGER NOT NULL,
+                        sample_count INTEGER NOT NULL,
+                        cpu_avg REAL,
+                        cpu_min REAL,
+                        cpu_max REAL,
+                        cpu_count INTEGER NOT NULL DEFAULT 0,
+                        rss_avg INTEGER,
+                        rss_max INTEGER,
+                        rss_count INTEGER NOT NULL DEFAULT 0,
+                        read_bytes_sec_avg REAL,
+                        read_bytes_count INTEGER NOT NULL DEFAULT 0,
+                        write_bytes_sec_avg REAL,
+                        write_bytes_count INTEGER NOT NULL DEFAULT 0,
+                        gpu_memory_bytes_max INTEGER,
+                        PRIMARY KEY (run_id, bucket_epoch)
+                    ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS telemetry_rollup_5m (
-                    run_id TEXT NOT NULL,
-                    bucket_epoch INTEGER NOT NULL,
-                    sample_count INTEGER NOT NULL,
-                    cpu_avg REAL,
-                    cpu_min REAL,
-                    cpu_max REAL,
-                    rss_avg INTEGER,
-                    rss_max INTEGER,
-                    read_bytes_sec_avg REAL,
-                    write_bytes_sec_avg REAL,
-                    gpu_memory_bytes_max INTEGER,
-                    PRIMARY KEY (run_id, bucket_epoch)
-                ) WITHOUT ROWID;
+                    CREATE TABLE IF NOT EXISTS telemetry_rollup_5m (
+                        run_id TEXT NOT NULL,
+                        bucket_epoch INTEGER NOT NULL,
+                        sample_count INTEGER NOT NULL,
+                        cpu_avg REAL,
+                        cpu_min REAL,
+                        cpu_max REAL,
+                        rss_avg INTEGER,
+                        rss_max INTEGER,
+                        read_bytes_sec_avg REAL,
+                        write_bytes_sec_avg REAL,
+                        gpu_memory_bytes_max INTEGER,
+                        PRIMARY KEY (run_id, bucket_epoch)
+                    ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS host_telemetry_raw (
-                    timestamp REAL PRIMARY KEY,
-                    sampled_at TEXT NOT NULL,
-                    cpu_percent REAL,
-                    memory_used_bytes INTEGER,
-                    memory_available_bytes INTEGER,
-                    net_read_bytes_sec REAL,
-                    net_write_bytes_sec REAL
-                ) WITHOUT ROWID;
+                    CREATE TABLE IF NOT EXISTS host_telemetry_raw (
+                        timestamp REAL PRIMARY KEY,
+                        sampled_at TEXT NOT NULL,
+                        cpu_percent REAL,
+                        memory_used_bytes INTEGER,
+                        memory_available_bytes INTEGER,
+                        net_read_bytes_sec REAL,
+                        net_write_bytes_sec REAL
+                    ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS host_telemetry_rollup_1m (
-                    bucket_epoch INTEGER PRIMARY KEY,
-                    sample_count INTEGER NOT NULL,
-                    cpu_avg REAL,
-                    cpu_min REAL,
-                    cpu_max REAL,
-                    memory_used_avg INTEGER,
-                    memory_used_max INTEGER,
-                    net_read_sec_avg REAL,
-                    net_write_sec_avg REAL
-                ) WITHOUT ROWID;
+                    CREATE TABLE IF NOT EXISTS host_telemetry_rollup_1m (
+                        bucket_epoch INTEGER PRIMARY KEY,
+                        sample_count INTEGER NOT NULL,
+                        cpu_avg REAL,
+                        cpu_min REAL,
+                        cpu_max REAL,
+                        cpu_count INTEGER NOT NULL DEFAULT 0,
+                        memory_used_avg INTEGER,
+                        memory_used_max INTEGER,
+                        memory_count INTEGER NOT NULL DEFAULT 0,
+                        net_read_sec_avg REAL,
+                        net_read_count INTEGER NOT NULL DEFAULT 0,
+                        net_write_sec_avg REAL,
+                        net_write_count INTEGER NOT NULL DEFAULT 0
+                    ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS host_telemetry_rollup_5m (
-                    bucket_epoch INTEGER PRIMARY KEY,
-                    sample_count INTEGER NOT NULL,
-                    cpu_avg REAL,
-                    cpu_min REAL,
-                    cpu_max REAL,
-                    memory_used_avg INTEGER,
-                    memory_used_max INTEGER,
-                    net_read_sec_avg REAL,
-                    net_write_sec_avg REAL
-                ) WITHOUT ROWID;
+                    CREATE TABLE IF NOT EXISTS host_telemetry_rollup_5m (
+                        bucket_epoch INTEGER PRIMARY KEY,
+                        sample_count INTEGER NOT NULL,
+                        cpu_avg REAL,
+                        cpu_min REAL,
+                        cpu_max REAL,
+                        memory_used_avg INTEGER,
+                        memory_used_max INTEGER,
+                        net_read_sec_avg REAL,
+                        net_write_sec_avg REAL
+                    ) WITHOUT ROWID;
 
-                CREATE TABLE IF NOT EXISTS telemetry_events (
-                    event_id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    run_id TEXT NOT NULL,
-                    timestamp REAL NOT NULL,
-                    event_type TEXT NOT NULL,
-                    reason TEXT,
-                    details_json TEXT
-                );
+                    CREATE TABLE IF NOT EXISTS telemetry_events (
+                        event_id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_id TEXT NOT NULL,
+                        timestamp REAL NOT NULL,
+                        event_type TEXT NOT NULL,
+                        reason TEXT,
+                        details_json TEXT
+                    );
 
-                CREATE INDEX IF NOT EXISTS idx_telemetry_events_run ON telemetry_events(run_id, timestamp);
-            """)
+                    CREATE INDEX IF NOT EXISTS idx_telemetry_events_run ON telemetry_events(run_id, timestamp);
+                """)
 
-            # Ensure cpu_min exists on pre-existing 5m rollup tables if opened from older schema
-            try:
-                conn.execute("ALTER TABLE telemetry_rollup_5m ADD COLUMN cpu_min REAL")
-            except sqlite3.OperationalError:
-                pass
-            try:
-                conn.execute("ALTER TABLE host_telemetry_rollup_5m ADD COLUMN cpu_min REAL")
-            except sqlite3.OperationalError:
-                pass
+                # Schema migration helper: ensure any missing columns are safely added to pre-existing tables
+                def ensure_columns(table: str, required_cols: dict[str, str]) -> None:
+                    try:
+                        existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                        for col_name, col_type in required_cols.items():
+                            if col_name not in existing:
+                                conn.execute(f"ALTER TABLE {table} ADD COLUMN {col_name} {col_type}")
+                    except sqlite3.OperationalError as err:
+                        logger.warning("Column migration check on %s deferred: %s", table, err)
+
+                ensure_columns("telemetry_rollup_5m", {"cpu_min": "REAL"})
+                ensure_columns("host_telemetry_rollup_5m", {"cpu_min": "REAL"})
+                ensure_columns(
+                    "telemetry_rollup_1m",
+                    {
+                        "cpu_count": "INTEGER NOT NULL DEFAULT 0",
+                        "rss_count": "INTEGER NOT NULL DEFAULT 0",
+                        "read_bytes_count": "INTEGER NOT NULL DEFAULT 0",
+                        "write_bytes_count": "INTEGER NOT NULL DEFAULT 0",
+                    },
+                )
+                ensure_columns(
+                    "host_telemetry_rollup_1m",
+                    {
+                        "cpu_count": "INTEGER NOT NULL DEFAULT 0",
+                        "memory_count": "INTEGER NOT NULL DEFAULT 0",
+                        "net_read_count": "INTEGER NOT NULL DEFAULT 0",
+                        "net_write_count": "INTEGER NOT NULL DEFAULT 0",
+                    },
+                )
+        except sqlite3.OperationalError as error:
+            logger.warning("Database initialization deferred: %s", error)
 
     def insert_process_samples(self, samples: list[ProcessStats]) -> None:
-        """Batch insert process metric samples into telemetry_raw."""
+        """Batch insert process metric samples into telemetry_raw with explicit destination columns."""
         if not samples:
             return
         if not self.db_path.exists():
@@ -253,7 +285,7 @@ class TelemetryStore:
             self.enforce_storage_budget()
 
     def insert_host_sample(self, host: HostTelemetry) -> None:
-        """Insert host-level metrics into host_telemetry_raw."""
+        """Insert host-level metrics into host_telemetry_raw with explicit destination columns."""
         if not self.db_path.exists():
             ensure_state_tree(self.state_dir)
             self.init_db()
@@ -309,16 +341,32 @@ class TelemetryStore:
             logger.warning("Failed to record event: %s", error)
 
     def generate_rollups(self, now: float | None = None) -> None:
-        """Aggregate raw data into 1-minute rollups and 1-minute into 5-minute rollups using sample-weighted averages."""
+        """Aggregate raw data into 1m rollups and 1m into 5m rollups with explicit column targets and per-metric observation weighting."""
         ref_time = now if now is not None else time.time()
         completed_1m_boundary = int(ref_time // 60) * 60
         completed_5m_boundary = int(ref_time // 300) * 300
 
         with self.session() as conn:
-            # 1. Process 1-minute rollup from raw samples
+            # 1. Process 1-minute rollup from raw samples with explicit destination columns and per-metric observation counts
             conn.execute(
                 """
-                INSERT OR REPLACE INTO telemetry_rollup_1m
+                INSERT OR REPLACE INTO telemetry_rollup_1m (
+                    run_id,
+                    bucket_epoch,
+                    sample_count,
+                    cpu_avg,
+                    cpu_min,
+                    cpu_max,
+                    cpu_count,
+                    rss_avg,
+                    rss_max,
+                    rss_count,
+                    read_bytes_sec_avg,
+                    read_bytes_count,
+                    write_bytes_sec_avg,
+                    write_bytes_count,
+                    gpu_memory_bytes_max
+                )
                 SELECT
                     run_id,
                     CAST(timestamp / 60 AS INTEGER) * 60 AS bucket_epoch,
@@ -326,10 +374,14 @@ class TelemetryStore:
                     AVG(cpu_percent) AS cpu_avg,
                     MIN(cpu_percent) AS cpu_min,
                     MAX(cpu_percent) AS cpu_max,
+                    COUNT(cpu_percent) AS cpu_count,
                     CAST(ROUND(AVG(rss_bytes)) AS INTEGER) AS rss_avg,
                     MAX(rss_bytes) AS rss_max,
+                    COUNT(rss_bytes) AS rss_count,
                     AVG(read_bytes_per_sec) AS read_bytes_sec_avg,
+                    COUNT(read_bytes_per_sec) AS read_bytes_count,
                     AVG(write_bytes_per_sec) AS write_bytes_sec_avg,
+                    COUNT(write_bytes_per_sec) AS write_bytes_count,
                     MAX(gpu_memory_bytes) AS gpu_memory_bytes_max
                 FROM telemetry_raw
                 WHERE timestamp < ?
@@ -338,21 +390,33 @@ class TelemetryStore:
                 (completed_1m_boundary,),
             )
 
-            # 2. Process 5-minute rollup with sample-count-weighted averages and strict null preservation
+            # 2. Process 5-minute rollup with explicit destination columns and per-metric observation weighting
             conn.execute(
                 """
-                INSERT OR REPLACE INTO telemetry_rollup_5m
+                INSERT OR REPLACE INTO telemetry_rollup_5m (
+                    run_id,
+                    bucket_epoch,
+                    sample_count,
+                    cpu_avg,
+                    cpu_min,
+                    cpu_max,
+                    rss_avg,
+                    rss_max,
+                    read_bytes_sec_avg,
+                    write_bytes_sec_avg,
+                    gpu_memory_bytes_max
+                )
                 SELECT
                     run_id,
                     CAST(bucket_epoch / 300 AS INTEGER) * 300 AS bucket_epoch,
                     SUM(sample_count) AS sample_count,
-                    SUM(CASE WHEN cpu_avg IS NOT NULL THEN cpu_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN cpu_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS cpu_avg,
+                    SUM(CASE WHEN cpu_avg IS NOT NULL THEN cpu_avg * (CASE WHEN cpu_count > 0 THEN cpu_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN cpu_avg IS NOT NULL THEN (CASE WHEN cpu_count > 0 THEN cpu_count ELSE sample_count END) ELSE 0 END), 0) AS cpu_avg,
                     MIN(cpu_min) AS cpu_min,
                     MAX(cpu_max) AS cpu_max,
-                    CAST(ROUND(SUM(CASE WHEN rss_avg IS NOT NULL THEN rss_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN rss_avg IS NOT NULL THEN sample_count ELSE 0 END), 0)) AS INTEGER) AS rss_avg,
+                    CAST(ROUND(SUM(CASE WHEN rss_avg IS NOT NULL THEN rss_avg * (CASE WHEN rss_count > 0 THEN rss_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN rss_avg IS NOT NULL THEN (CASE WHEN rss_count > 0 THEN rss_count ELSE sample_count END) ELSE 0 END), 0)) AS INTEGER) AS rss_avg,
                     MAX(rss_max) AS rss_max,
-                    SUM(CASE WHEN read_bytes_sec_avg IS NOT NULL THEN read_bytes_sec_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN read_bytes_sec_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS read_bytes_sec_avg,
-                    SUM(CASE WHEN write_bytes_sec_avg IS NOT NULL THEN write_bytes_sec_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN write_bytes_sec_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS write_bytes_sec_avg,
+                    SUM(CASE WHEN read_bytes_sec_avg IS NOT NULL THEN read_bytes_sec_avg * (CASE WHEN read_bytes_count > 0 THEN read_bytes_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN read_bytes_sec_avg IS NOT NULL THEN (CASE WHEN read_bytes_count > 0 THEN read_bytes_count ELSE sample_count END) ELSE 0 END), 0) AS read_bytes_sec_avg,
+                    SUM(CASE WHEN write_bytes_sec_avg IS NOT NULL THEN write_bytes_sec_avg * (CASE WHEN write_bytes_count > 0 THEN write_bytes_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN write_bytes_sec_avg IS NOT NULL THEN (CASE WHEN write_bytes_count > 0 THEN write_bytes_count ELSE sample_count END) ELSE 0 END), 0) AS write_bytes_sec_avg,
                     MAX(gpu_memory_bytes_max) AS gpu_memory_bytes_max
                 FROM telemetry_rollup_1m
                 WHERE bucket_epoch < ?
@@ -361,20 +425,38 @@ class TelemetryStore:
                 (completed_5m_boundary,),
             )
 
-            # 3. Host 1-minute rollup
+            # 3. Host 1-minute rollup with explicit destination columns and per-metric observation counts
             conn.execute(
                 """
-                INSERT OR REPLACE INTO host_telemetry_rollup_1m
+                INSERT OR REPLACE INTO host_telemetry_rollup_1m (
+                    bucket_epoch,
+                    sample_count,
+                    cpu_avg,
+                    cpu_min,
+                    cpu_max,
+                    cpu_count,
+                    memory_used_avg,
+                    memory_used_max,
+                    memory_count,
+                    net_read_sec_avg,
+                    net_read_count,
+                    net_write_sec_avg,
+                    net_write_count
+                )
                 SELECT
                     CAST(timestamp / 60 AS INTEGER) * 60 AS bucket_epoch,
                     COUNT(*) AS sample_count,
                     AVG(cpu_percent) AS cpu_avg,
                     MIN(cpu_percent) AS cpu_min,
                     MAX(cpu_percent) AS cpu_max,
+                    COUNT(cpu_percent) AS cpu_count,
                     CAST(ROUND(AVG(memory_used_bytes)) AS INTEGER) AS memory_used_avg,
                     MAX(memory_used_bytes) AS memory_used_max,
+                    COUNT(memory_used_bytes) AS memory_count,
                     AVG(net_read_bytes_sec) AS net_read_sec_avg,
-                    AVG(net_write_bytes_sec) AS net_write_sec_avg
+                    COUNT(net_read_bytes_sec) AS net_read_count,
+                    AVG(net_write_bytes_sec) AS net_write_sec_avg,
+                    COUNT(net_write_bytes_sec) AS net_write_count
                 FROM host_telemetry_raw
                 WHERE timestamp < ?
                 GROUP BY CAST(timestamp / 60 AS INTEGER) * 60
@@ -382,20 +464,30 @@ class TelemetryStore:
                 (completed_1m_boundary,),
             )
 
-            # 4. Host 5-minute rollup with sample-count-weighted averages
+            # 4. Host 5-minute rollup with explicit destination columns and per-metric observation weighting
             conn.execute(
                 """
-                INSERT OR REPLACE INTO host_telemetry_rollup_5m
+                INSERT OR REPLACE INTO host_telemetry_rollup_5m (
+                    bucket_epoch,
+                    sample_count,
+                    cpu_avg,
+                    cpu_min,
+                    cpu_max,
+                    memory_used_avg,
+                    memory_used_max,
+                    net_read_sec_avg,
+                    net_write_sec_avg
+                )
                 SELECT
                     CAST(bucket_epoch / 300 AS INTEGER) * 300 AS bucket_epoch,
                     SUM(sample_count) AS sample_count,
-                    SUM(CASE WHEN cpu_avg IS NOT NULL THEN cpu_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN cpu_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS cpu_avg,
+                    SUM(CASE WHEN cpu_avg IS NOT NULL THEN cpu_avg * (CASE WHEN cpu_count > 0 THEN cpu_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN cpu_avg IS NOT NULL THEN (CASE WHEN cpu_count > 0 THEN cpu_count ELSE sample_count END) ELSE 0 END), 0) AS cpu_avg,
                     MIN(cpu_min) AS cpu_min,
                     MAX(cpu_max) AS cpu_max,
-                    CAST(ROUND(SUM(CASE WHEN memory_used_avg IS NOT NULL THEN memory_used_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN memory_used_avg IS NOT NULL THEN sample_count ELSE 0 END), 0)) AS INTEGER) AS memory_used_avg,
+                    CAST(ROUND(SUM(CASE WHEN memory_used_avg IS NOT NULL THEN memory_used_avg * (CASE WHEN memory_count > 0 THEN memory_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN memory_used_avg IS NOT NULL THEN (CASE WHEN memory_count > 0 THEN memory_count ELSE sample_count END) ELSE 0 END), 0)) AS INTEGER) AS memory_used_avg,
                     MAX(memory_used_max) AS memory_used_max,
-                    SUM(CASE WHEN net_read_sec_avg IS NOT NULL THEN net_read_sec_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN net_read_sec_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS net_read_sec_avg,
-                    SUM(CASE WHEN net_write_sec_avg IS NOT NULL THEN net_write_sec_avg * sample_count END) * 1.0 / NULLIF(SUM(CASE WHEN net_write_sec_avg IS NOT NULL THEN sample_count ELSE 0 END), 0) AS net_write_sec_avg
+                    SUM(CASE WHEN net_read_sec_avg IS NOT NULL THEN net_read_sec_avg * (CASE WHEN net_read_count > 0 THEN net_read_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN net_read_sec_avg IS NOT NULL THEN (CASE WHEN net_read_count > 0 THEN net_read_count ELSE sample_count END) ELSE 0 END), 0) AS net_read_sec_avg,
+                    SUM(CASE WHEN net_write_sec_avg IS NOT NULL THEN net_write_sec_avg * (CASE WHEN net_write_count > 0 THEN net_write_count ELSE sample_count END) END) * 1.0 / NULLIF(SUM(CASE WHEN net_write_sec_avg IS NOT NULL THEN (CASE WHEN net_write_count > 0 THEN net_write_count ELSE sample_count END) ELSE 0 END), 0) AS net_write_sec_avg
                 FROM host_telemetry_rollup_1m
                 WHERE bucket_epoch < ?
                 GROUP BY CAST(bucket_epoch / 300 AS INTEGER) * 300
@@ -437,13 +529,14 @@ class TelemetryStore:
         """Run full VACUUM outside of a transaction to reclaim all freed pages."""
         if not self.db_path.exists():
             return
-        conn = sqlite3.connect(str(self.db_path), timeout=10.0, isolation_level=None)
         try:
-            conn.execute("VACUUM")
+            conn = sqlite3.connect(str(self.db_path), timeout=10.0, isolation_level=None)
+            try:
+                conn.execute("VACUUM")
+            finally:
+                conn.close()
         except sqlite3.OperationalError as error:
             logger.warning("VACUUM deferred: %s", error)
-        finally:
-            conn.close()
 
     def incremental_vacuum(self, max_pages: int = 500) -> None:
         """Reclaim unused pages from the SQLite freelist."""
@@ -561,25 +654,46 @@ class TelemetryStore:
             return False
 
     def quarantine_and_reset(self) -> Path | None:
-        """Move corrupted database AND accompanying WAL/SHM files to quarantine, preserving recoverable WAL data."""
+        """Move corrupted database AND accompanying WAL/SHM files to quarantine, preserving recoverable WAL data.
+
+        Returns the quarantine path on success, or None if quarantine was deferred due to active locks.
+        """
         if not self.db_path.exists():
-            self.init_db()
+            try:
+                self.init_db()
+            except (sqlite3.Error, OSError) as error:
+                logger.warning("Could not initialize fresh database: %s", error)
             return None
 
         quarantine_ts = int(time.time())
         quarantine_path = self.state_dir / f"telemetry.sqlite3.corrupt.{quarantine_ts}"
-        try:
-            if self.db_path.exists():
-                self.db_path.rename(quarantine_path)
-            if self.wal_path.exists():
-                self.wal_path.rename(self.state_dir / f"telemetry.sqlite3-wal.corrupt.{quarantine_ts}")
-            shm_path = self.state_dir / "telemetry.sqlite3-shm"
-            if shm_path.exists():
-                shm_path.rename(self.state_dir / f"telemetry.sqlite3-shm.corrupt.{quarantine_ts}")
-        except OSError as error:
-            logger.error("Failed to quarantine database: %s", error)
 
-        self.init_db()
+        # Attempt to rename the database file; on Windows, an active reader raises PermissionError
+        try:
+            self.db_path.rename(quarantine_path)
+        except OSError as error:
+            logger.warning("Quarantine deferred: cannot rename telemetry.sqlite3 (file may be in use by an active reader): %s", error)
+            return None
+
+        # Main db was successfully quarantined. Now also quarantine WAL and SHM if present
+        if self.wal_path.exists():
+            try:
+                self.wal_path.rename(self.state_dir / f"telemetry.sqlite3-wal.corrupt.{quarantine_ts}")
+            except OSError as error:
+                logger.warning("Could not rename WAL file during quarantine: %s", error)
+
+        shm_path = self.state_dir / "telemetry.sqlite3-shm"
+        if shm_path.exists():
+            try:
+                shm_path.rename(self.state_dir / f"telemetry.sqlite3-shm.corrupt.{quarantine_ts}")
+            except OSError as error:
+                logger.warning("Could not rename SHM file during quarantine: %s", error)
+
+        try:
+            self.init_db()
+        except (sqlite3.Error, OSError) as error:
+            logger.error("Failed to re-initialize fresh telemetry database after quarantine: %s", error)
+
         return quarantine_path
 
     def query_process_history(
