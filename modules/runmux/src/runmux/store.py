@@ -156,6 +156,10 @@ class RunStore:
 
         now = utc_now_iso()
         with self.connect() as connection:
+            # Reserve the SQLite writer before selecting the next reusable ID.
+            # A deferred transaction lets concurrent launchers observe the same
+            # maximum numeric ID before either insert commits.
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 """
                 INSERT INTO runs(
