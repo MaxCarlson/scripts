@@ -1,0 +1,23 @@
+# Checklist — Runmux Process Lifecycle Backend (Phase 4A)
+
+- [x] Stage 1: Planning and Specification Documentation
+  - [x] Create dated plan folder `modules/runmux/docs/plans/20261024-runmux-lifecycle-backend/`.
+  - [x] Verify existing CLI/TUI lifecycle semantics and restart identity preservation.
+  - [x] Create `LIFECYCLE_API_SPEC.md`, `00_implementation-plan.md`, `STATUS.md`, `checklist.md`, and `HANDOFF.md`.
+- [x] Stage 2: Core Lifecycle Service (`lifecycle.py`)
+  - [x] Write failing unit tests in `modules/runmux/tests/lifecycle_test.py`.
+  - [x] Implement `LifecycleManager` in `modules/runmux/src/runmux/lifecycle.py`.
+  - [x] Verify unit tests pass and linter is clean.
+- [x] Stage 3: Authenticated Web API Endpoints (`web.py`)
+  - [x] Write failing integration tests in `modules/runmux/tests/lifecycle_api_test.py`.
+  - [x] Implement endpoints `/api/runs/{run_id}/stop`, `/kill`, `/restart`, `/duplicate`, `/pause`, `/resume` in `modules/runmux/src/runmux/web.py`.
+  - [x] Verify integration tests pass.
+- [x] Stage 4: Compatibility, Regression & Platform Verification
+  - [x] Run full Runmux and resource_metrics test suites.
+  - [x] Verify CLI commands remain backward compatible.
+  - [x] Confirm browser disconnect does not stop or pause process.
+- [x] Stage 5: Documentation & Feature Branch Delivery
+  - [x] Update `STATUS.md`, `checklist.md`, `HANDOFF.md`.
+  - [x] Commit all changes to `codex/runmux-lifecycle-backend-20261024`.
+  - [x] Push to `origin` without merging.
+  - [x] Report delivery summary.

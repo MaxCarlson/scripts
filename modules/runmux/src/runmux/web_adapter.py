@@ -233,6 +233,8 @@ def serialize_run(record: RunRecord, *, connection: str = "unchecked") -> dict[s
         "created_at": record.created_at,
         "started_at": record.started_at,
         "ended_at": record.ended_at,
+        "restart_of": record.restart_of,
+        "duplicate_of": record.duplicate_of,
     }
 
 
