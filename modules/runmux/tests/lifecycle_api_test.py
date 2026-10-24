@@ -104,7 +104,10 @@ def test_api_stop_active_run_returns_200_and_killed_status(tmp_path: Path, monke
     run_id = "20261024-010101-abcdef"
     create_test_run(store, tmp_path, run_id=run_id, status="running")
 
+    ipc_calls: list[tuple[str, dict[str, Any] | None]] = []
+
     def mock_request_json(record: RunRecord, *, op: str, payload: dict[str, Any] | None = None, **kwargs: Any):
+        ipc_calls.append((op, payload))
         store.update_run(record.id, status=STATUS_KILLED)
         return {"ok": True}
 
@@ -114,13 +117,72 @@ def test_api_stop_active_run_returns_200_and_killed_status(tmp_path: Path, monke
     with TestClient(app, base_url="http://localhost") as client:
         client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
 
-        res = client.post(f"/api/runs/{run_id}/stop", json={"force": True}, headers={"Origin": "http://localhost"})
+        # Stop defaults to graceful (force=False)
+        res = client.post(f"/api/runs/{run_id}/stop", headers={"Origin": "http://localhost"})
         assert res.status_code == 200
         data = res.json()
         assert data["action"] == "stop"
         assert data["status"] == "ok"
         assert data["run"]["id"] == run_id
         assert data["run"]["status"] == STATUS_KILLED
+        assert ipc_calls == [("kill", {"force": False})]
+
+
+def test_api_kill_active_run_returns_200_with_action_kill_and_forced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=run_id, status="running")
+
+    ipc_calls: list[tuple[str, dict[str, Any] | None]] = []
+
+    def mock_request_json(record: RunRecord, *, op: str, payload: dict[str, Any] | None = None, **kwargs: Any):
+        ipc_calls.append((op, payload))
+        store.update_run(record.id, status=STATUS_KILLED)
+        return {"ok": True}
+
+    monkeypatch.setattr("runmux.runner.request_json", mock_request_json)
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        # Kill defaults to forced (force=True)
+        res = client.post(f"/api/runs/{run_id}/kill", headers={"Origin": "http://localhost"})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["action"] == "kill"
+        assert data["status"] == "ok"
+        assert data["run"]["id"] == run_id
+        assert data["run"]["status"] == STATUS_KILLED
+        assert ipc_calls == [("kill", {"force": True})]
+
+
+def test_api_termination_failure_returns_500_and_leaves_run_running(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from runmux.runner import RunnerError
+
+    store = RunStore(tmp_path)
+    run_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=run_id, status="running")
+
+    def mock_kill_run(*args: Any, **kwargs: Any):
+        raise RunnerError("Process could not be terminated: Access is denied")
+
+    monkeypatch.setattr("runmux.lifecycle.kill_run", mock_kill_run)
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        res = client.post(f"/api/runs/{run_id}/stop", headers={"Origin": "http://localhost"})
+        assert res.status_code == 500
+        assert "Could not terminate run" in res.json()["detail"]
+
+    # Verify run remains running in the store
+    assert store.get_run(run_id).status == "running"
 
 
 def test_api_stop_terminal_run_is_idempotent(tmp_path: Path) -> None:
@@ -199,6 +261,39 @@ def test_api_restart_active_run_returns_409_conflict(tmp_path: Path) -> None:
         res = client.post(f"/api/runs/{run_id}/restart", headers={"Origin": "http://localhost"})
         assert res.status_code == 409
         assert "Cannot restart active run" in res.json()["detail"]
+
+
+def test_api_repeated_restart_with_active_restart_returns_409(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    old_id = "20261024-010101-abcdef"
+    create_test_run(store, tmp_path, run_id=old_id, status=STATUS_FINISHED)
+
+    # Active restart already running
+    active_id = "20261024-020202-123456"
+    run_dir = tmp_path / "runs" / active_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "output.ansi").write_bytes(b"")
+    store.create_run(
+        run_id=active_id,
+        name="test-worker",
+        status="running",
+        program="python",
+        argv_json=json.dumps(["python", "worker.py"]),
+        cwd=str(tmp_path),
+        env_overrides_json="{}",
+        auth_token="tok",
+        log_path=run_dir / "output.ansi",
+        command_line="python worker.py",
+        restart_of=old_id,
+    )
+
+    app = create_runmux_web_app(tmp_path, login_code="secret123")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "secret123"}, headers={"Origin": "http://localhost"})
+
+        res = client.post(f"/api/runs/{old_id}/restart", headers={"Origin": "http://localhost"})
+        assert res.status_code == 409
+        assert "already running" in res.json()["detail"]
 
 
 def test_api_duplicate_run_returns_201_with_duplicate_of(

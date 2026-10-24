@@ -6,20 +6,28 @@
 **Assignment:** Backend-only subset of `PHASE_04A_LIFECYCLE_CONTROLS.md`.  
 
 ## Scope & Non-Goals
-- **Scope:** Backend lifecycle management service (`runmux/lifecycle.py`), authenticated browser REST API endpoints in `runmux/web.py` (`/api/runs/{run_id}/stop`, `/kill`, `/restart`, `/duplicate`, `/pause`, `/resume`), comprehensive tests in `tests/lifecycle_test.py` and `tests/lifecycle_api_test.py`, and specification documentation in `docs/plans/20261024-runmux-lifecycle-backend/`.
+- **Scope:** Backend lifecycle management service (`runmux/lifecycle.py`), core process control hardening (`runmux/runner.py`), authenticated browser REST API endpoints in `runmux/web.py` (`/api/runs/{run_id}/stop`, `/kill`, `/restart`, `/duplicate`, `/pause`, `/resume`), comprehensive tests in `tests/lifecycle_test.py` and `tests/lifecycle_api_test.py`, and specification documentation in `docs/plans/20261024-runmux-lifecycle-backend/`.
 - **Non-Goals:** Zero frontend modifications (`dashboard.js`, CSS, HTML), no changes to explorer tab behavior or terminal attachments, no WebSocket input-lock modifications, no WSL execution.
 
 ## Coordination with Parallel Agents
 - Another agent is developing Phase 3 browser workspace changes in `.worktrees/runmux-web-launch-20261024` on branch `codex/runmux-web-phase3-20261024` modifying `dashboard.js` and `dashboard_test.js`.
 - This Phase 4A backend branch touches **zero frontend files**, ensuring completely orthogonal work with zero merge conflicts.
 
-## Endpoints Implemented
-- `POST /api/runs/{run_id}/stop` & `POST /api/runs/{run_id}/kill` -> HTTP 200 OK
-- `POST /api/runs/{run_id}/restart` -> HTTP 201 Created (target must be terminal; active run returns 409 Conflict)
-- `POST /api/runs/{run_id}/duplicate` -> HTTP 201 Created
+## Endpoints Implemented & Action Semantics
+- `POST /api/runs/{run_id}/stop` -> HTTP 200 OK (graceful termination by default; `action="stop"`)
+- `POST /api/runs/{run_id}/kill` -> HTTP 200 OK (forced termination by default; `action="kill"`)
+- `POST /api/runs/{run_id}/restart` -> HTTP 201 Created (target must be terminal; active run returns 409 Conflict; active restart returns 409 Conflict; in-flight restart returns 409 Conflict)
+- `POST /api/runs/{run_id}/duplicate` -> HTTP 201 Created (in-flight duplicate returns 409 Conflict)
 - `POST /api/runs/{run_id}/pause` & `POST /api/runs/{run_id}/resume` -> HTTP 200 OK on POSIX, HTTP 501 Not Implemented on Windows
 
+## Key Safety Invariants & Review Hardening
+- **Termination Failure:** Never report successful termination or write a terminal status if termination failed. Actual running state is preserved in the store and HTTP 500 is returned.
+- **Fallback PID Safety:** When supervisor IPC fails, process identity is verified (`verify_run_process`) before direct PID termination. If a PID was reused by another process, the innocent process is never killed.
+- **Windows taskkill Checks:** Checked for non-zero exit codes (other than 128); if process remains alive, `RunnerError` is raised.
+- **Environment Overrides:** Preserved across both restart and duplicate.
+
 ## Verification
-- Unit & API tests: `python -m pytest modules/runmux/tests/lifecycle_test.py modules/runmux/tests/lifecycle_api_test.py -v` (19 passed)
-- Web, adapter, and telemetry suites: `python -m pytest modules/runmux/tests/web_test.py modules/runmux/tests/web_adapter_test.py modules/runmux/tests/web_cli_test.py modules/runmux/tests/stats_test.py modules/runmux/tests/telemetry_test.py -v` (51 passed; 70 passed combined)
+- Unit & API tests: `python -m pytest modules/runmux/tests/lifecycle_test.py modules/runmux/tests/lifecycle_api_test.py -v` (29 passed)
+- Web suite: `python -m pytest modules/runmux/tests/web_test.py -v` (15 passed)
+- Web adapter, stats, and telemetry suites: `python -m pytest modules/runmux/tests/web_adapter_test.py modules/runmux/tests/web_cli_test.py modules/runmux/tests/stats_test.py modules/runmux/tests/telemetry_test.py -v` (36 passed)
 - Lint check: `ruff check` passed cleanly on all modified and new files.

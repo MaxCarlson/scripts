@@ -3,7 +3,7 @@
 **Date:** 2026-10-24  
 **Branch:** `codex/runmux-lifecycle-backend-20261024`  
 **Base:** `origin/main` (commit `9f01984d`)  
-**Current Stage:** All Stages (1-5) complete; feature branch ready for push.  
+**Current Stage:** Final Lifecycle Safety Review completed; all audit findings resolved.  
 **Approval State:** User authorized execution; commit and push without merge upon completion.  
 
 ### Completed Evidence
@@ -14,6 +14,10 @@
 - Implemented `LifecycleManager` in `runmux.lifecycle` with lazy store initialization, immutable ID enforcement, and OS fallback kill handling.
 - Implemented authenticated endpoints in `runmux.web`: `POST /api/runs/{run_id}/stop`, `POST /api/runs/{run_id}/kill`, `POST /api/runs/{run_id}/restart`, `POST /api/runs/{run_id}/duplicate`, `POST /api/runs/{run_id}/pause`, and `POST /api/runs/{run_id}/resume`.
 - Extended `web_adapter.serialize_run` to expose `restart_of` and `duplicate_of`.
-- Wrote 19 focused tests across `lifecycle_test.py` and `lifecycle_api_test.py` (all 19 pass).
-- Verified full web, adapter, and telemetry test suites pass (70/70 tests pass).
-- Verified `ruff check` passes cleanly on all modified and created files.
+- **Termination failure safety audit resolved:** `LifecycleManager.stop_run` now preserves actual process/store state and raises `LifecycleError` (HTTP 500) if termination fails; never falsely reports success or marks record killed.
+- **Fallback PID safety audit resolved:** `runner.kill_run` invokes `verify_run_process` before direct PID termination. If PID reuse is detected, the recycled PID is never terminated. On Windows, `taskkill` exit codes are checked (non-zero exits other than 128 raise `RunnerError` if PID is still alive). Termination outcomes are verified within a bounded deadline.
+- **API semantics clarified:** `/kill` defaults to forced termination (`force=True`, `action="kill"`), while `/stop` defaults to graceful termination (`force=False`, `action="stop"`).
+- **Restart/duplicate parity and concurrency guards:** `runner.create_managed_run` and `clone_run` preserve all environment overrides from `source.env_overrides_json`. Concurrency locks reject in-flight restarts/duplicates, and repeated restarts while an active restart exists are rejected with HTTP 409 Conflict.
+- 29 unit and API lifecycle tests in `lifecycle_test.py` and `lifecycle_api_test.py` pass (29/29 passed).
+- Verified full web, adapter, and telemetry test suites pass cleanly.
+- `ruff check` passes cleanly on all modified and created files.

@@ -16,10 +16,18 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from runmux.constants import DEFAULT_STARTUP_TIMEOUT_SECONDS, STATUS_PENDING, TERMINAL_STATUSES
+import psutil
+
+from runmux.constants import (
+    DEFAULT_STARTUP_TIMEOUT_SECONDS,
+    STATUS_KILLED,
+    STATUS_PENDING,
+    TERMINAL_STATUSES,
+)
 from runmux.history import history_path_for_state_dir, mark_saved_command_run, record_run_started, save_record_command
 from runmux.ipc import IpcError, request_json
 from runmux.models import RunRecord
+from runmux.stats import verify_run_process
 from runmux.store import RunStore
 
 
@@ -99,6 +107,7 @@ def create_managed_run(
     columns: int | None = None,
     reserve_rows: int = 0,
     record_history: bool = True,
+    extra_env: dict[str, str] | None = None,
 ) -> StartedRun:
     """Create a registry record and start a detached supervisor."""
 
@@ -114,6 +123,8 @@ def create_managed_run(
         raise RunnerError(f"Working directory does not exist or is not a directory: {resolved_cwd}")
 
     env_overrides = build_env_overrides(force_color=force_color)
+    if extra_env:
+        env_overrides.update(extra_env)
     terminal_size = shutil.get_terminal_size(fallback=(80, 24))
     final_rows = max(1, (rows or terminal_size.lines) - max(0, reserve_rows))
     final_columns = columns or terminal_size.columns
@@ -262,16 +273,48 @@ def kill_run(store: RunStore, *, run_id: str, force: bool) -> RunRecord:
     if record.port is not None:
         try:
             request_json(record, op="kill", payload={"force": force})
+            deadline = time.monotonic() + 1.5
+            while time.monotonic() < deadline:
+                updated = store.get_run(record.id)
+                if updated.status in TERMINAL_STATUSES:
+                    return updated
+                time.sleep(0.05)
             return store.get_run(record.id)
         except IpcError:
             pass
+
     if record.pid is None:
         raise RunnerError(f"Run '{record.id}' has no process ID to kill.")
+
+    proc, unavailable_reason = verify_run_process(psutil, record)
+    if unavailable_reason in ("pid reused by another process", "process exited") or not psutil.pid_exists(record.pid):
+        cleanup_supervisor_process(record)
+        return store.update_run(record.id, status=STATUS_KILLED)
+    elif unavailable_reason == "permission denied":
+        raise RunnerError(f"Permission denied accessing PID {record.pid} for run '{record.id}'.")
+
     try:
         terminate_pid(record.pid, force=force)
-    except OSError as error:
+    except (OSError, subprocess.SubprocessError) as error:
         raise RunnerError(f"Could not kill run '{record.id}' PID {record.pid}: {error}") from error
-    return store.update_run(record.id, status="killed")
+
+    deadline = time.monotonic() + (2.0 if not force else 1.0)
+    terminated = False
+    while time.monotonic() < deadline:
+        if not psutil.pid_exists(record.pid):
+            terminated = True
+            break
+        _, reason = verify_run_process(psutil, record)
+        if reason in ("process exited", "pid reused by another process"):
+            terminated = True
+            break
+        time.sleep(0.05)
+
+    if not terminated and psutil.pid_exists(record.pid):
+        raise RunnerError(f"Process {record.pid} for run '{record.id}' could not be terminated.")
+
+    cleanup_supervisor_process(record)
+    return store.update_run(record.id, status=STATUS_KILLED)
 
 
 def terminate_pid(pid: int, *, force: bool) -> None:
@@ -281,16 +324,20 @@ def terminate_pid(pid: int, *, force: bool) -> None:
         command = ["taskkill", "/PID", str(pid), "/T"]
         if force:
             command.append("/F")
-        subprocess.run(
+        result = subprocess.run(
             command,
+            capture_output=True,
+            text=True,
             check=False,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
         )
+        if result.returncode not in (0, 128) and psutil.pid_exists(pid):
+            error_msg = result.stderr.strip() or f"exit code {result.returncode}"
+            raise OSError(f"taskkill failed for PID {pid}: {error_msg}")
         return
     import signal
 
-    os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
+    with suppress(ProcessLookupError):
+        os.kill(pid, signal.SIGKILL if force else signal.SIGTERM)
 
 
 def remove_run(store: RunStore, *, run_id: str) -> RunRecord:
@@ -377,6 +424,7 @@ def clone_run(
         rows=source.rows,
         columns=source.columns,
         record_history=False,
+        extra_env=existing_overrides,
     )
 
 

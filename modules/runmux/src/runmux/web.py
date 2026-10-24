@@ -173,7 +173,6 @@ def create_runmux_web_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @api.post("/runs/{run_id}/stop")
-    @api.post("/runs/{run_id}/kill")
     async def stop_run_endpoint(
         run_id: str,
         payload: StopRequest | None = None,
@@ -194,7 +193,30 @@ def create_runmux_web_app(
         except LifecycleSupervisorUnavailableError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except LifecycleError as error:
-            raise HTTPException(status_code=400, detail=str(error)) from error
+            raise HTTPException(status_code=500, detail=str(error)) from error
+
+    @api.post("/runs/{run_id}/kill")
+    async def kill_run_endpoint(
+        run_id: str,
+        payload: StopRequest | None = None,
+    ) -> dict[str, Any]:
+        force = payload.force if (payload and payload.force is not None) else True
+        try:
+            result = await run_in_threadpool(lifecycle.kill_run, run_id, force=force)
+            return {
+                "action": result.action,
+                "status": result.status,
+                "message": result.message,
+                "run": serialize_run(result.run),
+            }
+        except LifecycleRunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except InvalidLifecycleTransitionError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except LifecycleSupervisorUnavailableError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except LifecycleError as error:
+            raise HTTPException(status_code=500, detail=str(error)) from error
 
     @api.post("/runs/{run_id}/restart", status_code=201)
     async def restart_run_endpoint(

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import sys
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from runmux.constants import STATUS_KILLED, STATUS_PAUSED, TERMINAL_STATUSES
+from runmux.constants import STATUS_PAUSED, TERMINAL_STATUSES
 from runmux.ipc import IpcError
 from runmux.models import RunRecord
 from runmux.runner import (
@@ -63,6 +64,10 @@ class LifecycleManager:
         self.db_path = self.state_dir / "registry.sqlite3"
         self._store: RunStore | None = None
         self.read_only = ReadOnlyRunmux(self.state_dir)
+        self._lock = threading.Lock()
+        self._in_flight_stops: set[str] = set()
+        self._in_flight_restarts: set[str] = set()
+        self._in_flight_duplicates: set[str] = set()
 
     @property
     def store(self) -> RunStore:
@@ -84,60 +89,91 @@ class LifecycleManager:
         except StoreRunNotFoundError as error:
             raise RunNotFoundError(f"Run '{run_id}' not found.") from error
 
-    def stop_run(self, run_id: str, *, force: bool = False) -> LifecycleResult:
+    def _find_active_restart(self, run_id: str) -> RunRecord | None:
+        """Find an existing active run created as a restart of the specified run ID."""
+        active_runs = self.store.list_runs(statuses=["pending", "running", "paused"])
+        for candidate in active_runs:
+            if candidate.restart_of == run_id:
+                return candidate
+        return None
+
+    def stop_run(self, run_id: str, *, force: bool = False, action: str = "stop") -> LifecycleResult:
         """Stop or terminate a managed run idempotently."""
 
-        record = self._get_run(run_id)
-
-        # Idempotency check: if run is already in terminal state, return without error
-        if record.status in TERMINAL_STATUSES:
-            return LifecycleResult(
-                action="stop",
-                status="already_terminated",
-                message=f"Run '{run_id}' is already {record.status}.",
-                run=record,
-            )
+        valid_id = self._validate_run_id(run_id)
+        with self._lock:
+            if valid_id in self._in_flight_stops:
+                raise InvalidLifecycleTransitionError(f"Termination is already in progress for run '{valid_id}'.")
+            self._in_flight_stops.add(valid_id)
 
         try:
-            # kill_run contacts supervisor via IPC, falling back to PID termination on error
-            updated = kill_run(self.store, run_id=run_id, force=force)
-            refreshed, _ = self.read_only.refresh_display_status(updated)
-            return LifecycleResult(
-                action="stop",
-                status="ok",
-                message=f"Run '{run_id}' stopped successfully.",
-                run=refreshed,
-            )
-        except RunnerError as error:
-            # If kill_run encountered an error but the run could not be stopped normally,
-            # mark it as killed in the store to maintain consistent terminal status
-            updated = self.store.update_run(record.id, status=STATUS_KILLED)
-            return LifecycleResult(
-                action="stop",
-                status="ok",
-                message=f"Run '{run_id}' marked killed ({error}).",
-                run=updated,
-            )
+            record = self._get_run(valid_id)
+
+            # Idempotency check: if run is already in terminal state, return without error
+            if record.status in TERMINAL_STATUSES:
+                return LifecycleResult(
+                    action=action,
+                    status="already_terminated",
+                    message=f"Run '{valid_id}' is already {record.status}.",
+                    run=record,
+                )
+
+            try:
+                # kill_run contacts supervisor via IPC, falling back to PID termination on error
+                updated = kill_run(self.store, run_id=valid_id, force=force)
+                refreshed, _ = self.read_only.refresh_display_status(updated)
+                return LifecycleResult(
+                    action=action,
+                    status="ok",
+                    message=f"Run '{valid_id}' stopped successfully.",
+                    run=refreshed,
+                )
+            except RunnerError as error:
+                # Never write a terminal status solely because termination failed.
+                # Preserve actual state and return an error when outcome is unconfirmed.
+                raise LifecycleError(f"Could not terminate run '{valid_id}': {error}") from error
+        finally:
+            with self._lock:
+                self._in_flight_stops.discard(valid_id)
+
+    def kill_run(self, run_id: str, *, force: bool = True) -> LifecycleResult:
+        """Force terminate a managed run immediately."""
+        return self.stop_run(run_id, force=force, action="kill")
 
     def restart_run(self, run_id: str, *, force_color: bool | None = None) -> LifecycleResult:
         """Restart a terminated run, creating a new run record while preserving historical identity."""
 
-        record = self._get_run(run_id)
+        valid_id = self._validate_run_id(run_id)
+        with self._lock:
+            if valid_id in self._in_flight_restarts:
+                raise InvalidLifecycleTransitionError(f"Restart is already in progress for run '{valid_id}'.")
 
-        # Invariant check: only terminal runs may be restarted
-        if record.status not in TERMINAL_STATUSES:
-            raise InvalidLifecycleTransitionError(
-                f"Cannot restart active run '{run_id}' (status: {record.status}). "
-                "Stop the run first before restarting, or duplicate it."
-            )
+            record = self._get_run(valid_id)
+
+            # Invariant check: only terminal runs may be restarted
+            if record.status not in TERMINAL_STATUSES:
+                raise InvalidLifecycleTransitionError(
+                    f"Cannot restart active run '{valid_id}' (status: {record.status}). "
+                    "Stop the run first before restarting, or duplicate it."
+                )
+
+            # Invariant check: prevent duplicate active restarts from repeated requests
+            active_restart = self._find_active_restart(valid_id)
+            if active_restart is not None:
+                raise InvalidLifecycleTransitionError(
+                    f"Cannot restart run '{valid_id}': active restart '{active_restart.id}' is already running. "
+                    "Use duplicate for concurrent runs."
+                )
+
+            self._in_flight_restarts.add(valid_id)
 
         try:
-            started = restart_run(self.store, run_id=run_id, force_color=force_color)
+            started = restart_run(self.store, run_id=valid_id, force_color=force_color)
             new_record, _ = self.read_only.refresh_display_status(started.record)
             return LifecycleResult(
                 action="restart",
                 status="ok",
-                message=f"Run '{run_id}' restarted as '{new_record.id}'.",
+                message=f"Run '{valid_id}' restarted as '{new_record.id}'.",
                 run=new_record,
                 new_run=new_record,
                 new_run_id=new_record.id,
@@ -145,19 +181,27 @@ class LifecycleManager:
             )
         except RunnerError as error:
             raise InvalidLifecycleTransitionError(str(error)) from error
+        finally:
+            with self._lock:
+                self._in_flight_restarts.discard(valid_id)
 
     def duplicate_run(self, run_id: str, *, force_color: bool | None = None) -> LifecycleResult:
         """Duplicate an existing run (active or terminal) into a new parallel managed run."""
 
-        record = self._get_run(run_id)
+        valid_id = self._validate_run_id(run_id)
+        with self._lock:
+            if valid_id in self._in_flight_duplicates:
+                raise InvalidLifecycleTransitionError(f"Duplicate is already in progress for run '{valid_id}'.")
+            record = self._get_run(valid_id)
+            self._in_flight_duplicates.add(valid_id)
 
         try:
-            started = duplicate_run(self.store, run_id=run_id, force_color=force_color)
+            started = duplicate_run(self.store, run_id=valid_id, force_color=force_color)
             new_record, _ = self.read_only.refresh_display_status(started.record)
             return LifecycleResult(
                 action="duplicate",
                 status="ok",
-                message=f"Run '{run_id}' duplicated as '{new_record.id}'.",
+                message=f"Run '{valid_id}' duplicated as '{new_record.id}'.",
                 run=new_record,
                 new_run=new_record,
                 new_run_id=new_record.id,
@@ -165,6 +209,9 @@ class LifecycleManager:
             )
         except RunnerError as error:
             raise LifecycleError(str(error)) from error
+        finally:
+            with self._lock:
+                self._in_flight_duplicates.discard(valid_id)
 
     def pause_run(self, run_id: str) -> LifecycleResult:
         """Pause a running process when supported by host platform."""
