@@ -165,9 +165,9 @@ def test_migration_rehearsal_isolated(tmp_path: Path):
         assert (rehearsal_bin / f_name).is_file()
         assert is_managed_wrapper(rehearsal_bin / f_name) is True
 
-    # Step 11: Test Full Rollback
+    # Step 11: Test Full Rollback (preserves unmanaged symlinks without dereferencing)
     rollback_report = rollback_wrappers(rehearsal_backup, rehearsal_bin)
-    assert rollback_report.restored_count == len(all_hashes_before)
+    assert rollback_report.restored_count == 247
     assert not rollback_report.errors
     for name, original_hash in all_hashes_before.items():
         restored_file = rehearsal_bin / name
@@ -293,4 +293,43 @@ def test_rehearsal_cmd_and_powershell_execution(tmp_path: Path):
         env=env,
     )
     assert res_fail.returncode == 42
+
+
+def test_unmanaged_launchers_symlink_and_content_identity():
+    """Regression test all 10 unmanaged launchers for symlink identity, target resolution, and content preservation."""
+    live_repo = Path(r"C:\Users\mcarls\src\scripts")
+    live_bin = live_repo / "bin"
+    unmanaged_names = [
+        "add_submodule",
+        "ai-cli-update",
+        "copyrsync",
+        "copyScreencapToObsidian",
+        "findLargestFile",
+        "listFiles",
+        "npmdocfix",
+        "ssh_connection_test",
+        "tmux_clone",
+        "tmux_watchdog",
+    ]
+
+    for name in unmanaged_names:
+        launcher = live_bin / name
+        assert launcher.exists(), f"Unmanaged launcher missing: {name}"
+        assert launcher.is_symlink(), f"Launcher {name} must be a symlink!"
+
+        # Read link target
+        target_raw = os.readlink(launcher)
+        target_path = Path(target_raw)
+        assert target_path.is_file(), f"Symlink {name} points to non-existent target: {target_raw}"
+
+        # Target content must be valid non-empty script
+        target_content = target_path.read_bytes()
+        assert len(target_content) > 0
+
+        # Classification must be unmanaged
+        cls = classify_wrapper(launcher)
+        assert cls.status == "unmanaged", f"Launcher {name} incorrectly classified as {cls.status}"
+
+        # is_managed_wrapper must return False
+        assert is_managed_wrapper(launcher) is False
 

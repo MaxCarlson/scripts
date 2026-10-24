@@ -470,11 +470,22 @@ def migrate_wrappers(
     report.backup_path = backup_path
 
     # Back up existing files in bin (preserving existing baseline files if already backed up)
+    symlinks_map: Dict[str, str] = {}
     for f in bin_path.iterdir():
-        if f.is_file():
+        if f.is_symlink():
+            try:
+                symlinks_map[f.name] = os.readlink(f)
+            except OSError:
+                pass
+        elif f.is_file():
             dest = backup_path / f.name
             if not dest.exists():
                 shutil.copy2(f, dest)
+
+    if symlinks_map:
+        symlinks_file = backup_path / "symlinks.json"
+        if not symlinks_file.exists():
+            symlinks_file.write_text(json.dumps(symlinks_map, indent=2), encoding="utf-8")
 
     # 2. Write manifest
     generate_manifest(root)
@@ -510,7 +521,7 @@ def migrate_wrappers(
 
 
 def rollback_wrappers(backup_dir: Path, bin_dir: Path) -> RollbackReport:
-    """Restore bin/ wrappers from an existing backup directory."""
+    """Restore bin/ wrappers from an existing backup directory without dereferencing symlinks."""
     backup_path = backup_dir.resolve()
     bin_path = bin_dir.resolve()
     report = RollbackReport(restored_count=0)
@@ -520,10 +531,47 @@ def rollback_wrappers(backup_dir: Path, bin_dir: Path) -> RollbackReport:
         return report
 
     bin_path.mkdir(parents=True, exist_ok=True)
-    for f in backup_path.iterdir():
-        if f.is_file():
+
+    # 1. Check for symlinks metadata
+    symlinks_map: Dict[str, str] = {}
+    symlinks_file = backup_path / "symlinks.json"
+    if symlinks_file.is_file():
+        try:
+            symlinks_map = json.loads(symlinks_file.read_text(encoding="utf-8"))
+        except Exception as exc:
+            report.errors.append(f"Failed to read symlinks.json: {exc}")
+
+    # Validate existing symlinks in bin_path against symlinks_map without modifying targets
+    for name, expected_target in symlinks_map.items():
+        dest = bin_path / name
+        if dest.is_symlink():
             try:
-                shutil.copy2(f, bin_path / f.name)
+                current_target = os.readlink(dest)
+                if current_target == expected_target:
+                    # Preserved exactly as a symlink without touching or dereferencing
+                    continue
+            except OSError:
+                pass
+        elif not dest.exists():
+            try:
+                dest.symlink_to(expected_target)
+            except OSError as exc:
+                report.errors.append(f"Could not recreate symlink {name} -> {expected_target}: {exc}")
+
+    # 2. Restore regular files (strictly managed wrappers, never writing to symlinks)
+    for f in backup_path.iterdir():
+        if f.name == "symlinks.json":
+            continue
+        if f.is_file():
+            dest = bin_path / f.name
+            # NEVER write to a symlink (which would dereference and overwrite target)
+            if dest.is_symlink():
+                continue
+            # NEVER overwrite an unmanaged file
+            if dest.exists() and not is_managed_wrapper(dest):
+                continue
+            try:
+                shutil.copy2(f, dest)
                 report.restored_count += 1
             except OSError as exc:
                 report.errors.append(f"Failed to restore {f.name}: {exc}")
