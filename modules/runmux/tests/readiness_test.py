@@ -68,6 +68,35 @@ def test_wait_for_supervisor_ready_handles_delayed_port(tmp_path: Path) -> None:
     assert ready.port == 9876
 
 
+def test_wait_for_supervisor_ready_waits_for_child_pid_after_ipc_is_ready(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    record = create_run(store, tmp_path)
+    store.update_run(record.id, port=9876)
+    ipc_attempts = 0
+
+    def request_status(*_args, **_kwargs):
+        nonlocal ipc_attempts
+        ipc_attempts += 1
+        if ipc_attempts == 2:
+            store.mark_started(run_id=record.id, pid=123, supervisor_pid=4321, port=9876)
+        return {"status": "pending" if ipc_attempts == 1 else "running"}
+
+    with (
+        patch("runmux.runner.request_json", side_effect=request_status),
+        patch("runmux.runner.time.sleep"),
+    ):
+        ready = wait_for_supervisor_ready(
+            store,
+            run_id=record.id,
+            supervisor=LiveSupervisor(),
+            timeout_seconds=1,
+        )
+
+    assert ipc_attempts == 2
+    assert ready.status == "running"
+    assert ready.pid == 123
+
+
 def test_wait_for_supervisor_ready_reports_terminal_failure(tmp_path: Path) -> None:
     store = RunStore(tmp_path)
     record = create_run(store, tmp_path)
@@ -83,6 +112,24 @@ def test_wait_for_supervisor_ready_reports_terminal_failure(tmp_path: Path) -> N
         )
 
     assert "exit_code=7" in str(error.value)
+
+
+def test_wait_for_supervisor_ready_returns_run_that_started_then_exited(tmp_path: Path) -> None:
+    store = RunStore(tmp_path)
+    record = create_run(store, tmp_path)
+    store.mark_started(run_id=record.id, pid=123, supervisor_pid=4321, port=9876)
+    store.mark_finished(run_id=record.id, status="failed", exit_code=7)
+
+    started = wait_for_supervisor_ready(
+        store,
+        run_id=record.id,
+        supervisor=LiveSupervisor(),
+        timeout_seconds=1,
+    )
+
+    assert started.status == "failed"
+    assert started.pid == 123
+    assert started.exit_code == 7
 
 
 def test_wait_for_supervisor_ready_timeout_leaves_attach_hint(tmp_path: Path) -> None:

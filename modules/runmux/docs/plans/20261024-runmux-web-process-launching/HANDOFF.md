@@ -14,5 +14,7 @@
 - Verification: see `STATUS.md` for focused test results, browser smoke, package
   metadata checks, the reproduced origin/main suite failures, and the missing
   Hatchling build dependency.
-- Remaining work: final diff/status check, commit, and push this branch. Do not
-  merge.
+- Remaining work: final diff/status check, commit and push this branch, then
+  merge into `main` as authorized. After confirming the merge, create a fresh
+  Phase 2 feature branch and follow
+  `docs/plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`.

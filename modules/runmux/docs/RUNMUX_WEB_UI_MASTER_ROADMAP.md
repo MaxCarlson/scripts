@@ -130,8 +130,8 @@ Record answers in this master as decisions, linking the relevant code/tests and 
 
 | Phase | Status | Implementation reference | Validation reference | Blockers/notes |
 |---|---|---|---|---|
-| 1 | Complete | `plans/20261024-runmux-web-process-launching/` | Focused tests and browser smoke passed | Authenticated `create_managed_run` launch; full suite retains four failures reproduced on `origin/main`; wheel build unavailable because hatchling is not installed |
-| 2 | Not assigned | — | — | Diagnose TUI source of corruption |
+| 1 | Complete | `plans/20261024-runmux-web-process-launching/` | 33 focused web/readiness tests and prior browser smoke passed | Authenticated `create_managed_run` launch; full suite retains four failures reproduced on `origin/main`; wheel build unavailable because hatchling is not installed; POSIX runtime not exercised |
+| 2 | Assigned; queued after Phase 1 merge | `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md` | Pending | Diagnose TUI source of corruption |
 | 3 | Not assigned | — | — | Confirm data fields and persistence |
 | 4 | Not assigned | — | — | Depend on mutation security and log model |
 | 5 | Not assigned | — | — | Need verified resource telemetry |

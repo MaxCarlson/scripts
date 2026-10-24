@@ -189,17 +189,23 @@ def wait_for_supervisor_ready(
     while time.monotonic() < deadline:
         record = store.get_run(run_id)
         if record.status in TERMINAL_STATUSES:
+            if record.pid is not None:
+                return record
             raise startup_failure(record)
         if record.port is not None:
             try:
                 request_json(record, op="status", timeout=min(0.5, poll_seconds * 4))
-                return store.get_run(run_id)
+                ready_record = store.get_run(run_id)
+                if ready_record.pid is not None:
+                    return ready_record
             except IpcError as error:
                 last_ipc_error = error
         poll = getattr(supervisor, "poll", None)
         if callable(poll) and poll() is not None:
             record = store.get_run(run_id)
             if record.status in TERMINAL_STATUSES:
+                if record.pid is not None:
+                    return record
                 raise startup_failure(record)
             raise RunnerError(
                 f"Supervisor exited before run '{record.numeric_id}' became ready. "

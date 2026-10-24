@@ -124,6 +124,81 @@ def test_browser_launch_registers_supervised_synthetic_run_and_captures_output(t
     kill_run(store, run_id=run_id, force=True)
 
 
+def test_browser_launch_keeps_immediately_exited_process_as_a_real_run(tmp_path: Path) -> None:
+    state_dir = tmp_path / "synthetic-state"
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.post(
+            "/api/runs",
+            json={
+                "program": sys.executable,
+                "arguments": ["-c", "print('IMMEDIATE_EXIT_OUTPUT', flush=True); raise SystemExit(7)"],
+                "name": "immediate exit",
+                "cwd": str(tmp_path),
+            },
+            headers={"Origin": "http://localhost"},
+        )
+        assert response.status_code == 201, response.text
+        launched = response.json()
+        assert launched["id"]
+        deadline = time.monotonic() + 20
+        while launched["status"] not in {"failed", "finished", "killed"} and time.monotonic() < deadline:
+            time.sleep(0.05)
+            launched = client.get(
+                f"/api/runs/{launched['id']}", headers={"Origin": "http://localhost"}
+            ).json()
+        assert launched["status"] == "failed"
+        output = client.get(f"/api/runs/{launched['id']}/output", headers={"Origin": "http://localhost"})
+
+    assert output.status_code == 200
+    assert "IMMEDIATE_EXIT_OUTPUT" in output.json()["text"]
+
+
+def test_browser_launch_reports_missing_executable_as_failure(tmp_path: Path) -> None:
+    state_dir = tmp_path / "synthetic-state"
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.post(
+            "/api/runs",
+            json={"program": str(tmp_path / "missing executable.exe"), "arguments": [], "cwd": str(tmp_path)},
+            headers={"Origin": "http://localhost"},
+        )
+
+    assert response.status_code == 400
+    assert "program not found" in response.json()["detail"].lower()
+    records = RunStore(state_dir).list_runs()
+    assert not any(record.is_active for record in records)
+
+
+def test_browser_launch_allows_duplicate_names_with_distinct_run_ids(tmp_path: Path) -> None:
+    state_dir = tmp_path / "synthetic-state"
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+    started_ids: list[str] = []
+    try:
+        with TestClient(app, base_url="http://localhost") as client:
+            client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+            payload = {
+                "program": sys.executable,
+                "arguments": ["-c", "import time; time.sleep(30)"],
+                "name": "same synthetic name",
+                "cwd": str(tmp_path),
+            }
+            for _ in range(2):
+                response = client.post("/api/runs", json=payload, headers={"Origin": "http://localhost"})
+                assert response.status_code == 201, response.text
+                started_ids.append(response.json()["id"])
+
+            assert len(set(started_ids)) == 2
+            records = {record.id: record for record in RunStore(state_dir).list_runs()}
+            assert {records[run_id].name for run_id in started_ids} == {"same synthetic name"}
+    finally:
+        store = RunStore(state_dir)
+        for run_id in started_ids:
+            kill_run(store, run_id=run_id, force=True)
+
+
 def make_run(store: RunStore, state_dir: Path, run_id: str) -> None:
     run_dir = state_dir / "runs" / run_id
     run_dir.mkdir(parents=True)

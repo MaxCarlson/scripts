@@ -4,4 +4,6 @@
 - [x] Implement New Process tab, form, validation, pending, success, and errors.
 - [x] Run focused tests, syntax/style/package checks, and synthetic browser smoke.
 - [x] Update README and handoffs with launch behavior and validation evidence.
-- [ ] Commit and push the dedicated branch; do not merge.
+- [x] Verify addendum regressions for immediate exit, missing executable, duplicate names, and process-start readiness.
+- [x] Import the reconciled phase handoff bundle into `docs/plans/web-ui-handoff/`.
+- [ ] Commit and push the dedicated branch, then merge into `main` as authorized.
