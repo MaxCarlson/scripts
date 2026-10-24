@@ -111,5 +111,5 @@ ConPTY resize and Linux glyph rendering above.
 ## Delivery
 
 Merged and pushed to `origin/main` at
-`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`. Phase 3 continues on fresh branch
-`codex/runmux-web-phase3-20261024`; the Phase 2 worktree and branch are retained.
+`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`. Phase 3 subsequently integrated
+into main at `54502666b5724596ee3d21c1e694b8522d5a5151`; the Phase 2 worktree and branch are retained.

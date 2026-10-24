@@ -39,7 +39,7 @@ Evidence limits: These facts are supported by source inspection, **not** end-to-
 |---|---|---|---|
 | **1 Launch** | **Merged to origin/main** | New Process tab and verified `runmux run` parity (L01–L09) | Existing auth and supervisor; send Phase 1 addendum |
 | **2 Terminal fidelity** | **Merged to origin/main** | Diagnose/fix existing capture, replay, PTY dimensions, Output/Terminal behavior (T01–T07) | Can investigate independently of 1; coordinate frontend edits |
-| **3 Explorer** | **Complete on dedicated branch; not merged** | Group/filter/sort, tab state/overflow, safe metadata (N01–N08, D01–D05) | Prefer start after 1 and 2 integration |
+| **3 Explorer** | **Merged into main at `54502666b5724596ee3d21c1e694b8522d5a5151`** | Group/filter/sort, tab state/overflow, safe metadata (N01–N08, D01–D05) | Prefer start after 1 and 2 integration |
 | **4A Lifecycle** | Planned | Secure stop/restart/pause-resume only where supported (C02–C07) | Phase 1 authorization pattern |
 | **4B Enhanced logs** | Planned | Search, navigation, conservative severity filters/count scopes (T08–T09) | Phase 2 representation contract |
 | **5A Overview modes** | Planned | Global A/B/C/D selector and persistence (M01–M06) | Stable process header and tabs |
@@ -47,7 +47,7 @@ Evidence limits: These facts are supported by source inspection, **not** end-to-
 | **5C Metric history** | Planned, separate approval for storage | Real bounded sampling, charts/ranges and optional detailed drawer (M10–M11) | 5B verified; retention/cost review |
 | **6 Advanced workspace** | Candidates only | Inspector, stream panes where streams exist, history/events, presets and layout | Select one approved 6A–6D slice |
 
-**Sequencing:** Phase 2 diagnosis can run in parallel with Phase 1 if the two agents don't independently rewrite `dashboard.js`, `dashboard.css`, or `index.html`. Worktrees prevent collision but not merge conflict. Phase 3 should start from the integrated UI. Phase 4A and 4B are **separate assignments**, as are Phase 5A/5B/5C. No agent should implement every item in Phases 4–6 just because it is documented.
+**Sequencing:** Phase 2 diagnosis can run in parallel with Phase 1 if the two agents don't independently rewrite `dashboard.js`, `dashboard.css`, or `index.html`. Worktrees prevent collision but not merge conflict. Phase 3 started from the integrated UI and is now merged to main. Phase 4A and 4B are **separate assignments**, as are Phase 5A/5B/5C. No agent should implement every item in Phases 4–6 just because it is documented.
 
 ## 5. Completion gate for every assignment
 
@@ -73,7 +73,7 @@ Update upon actual merge; do not mark work complete merely because a branch exis
 |---|---|---|---|
 | Phase 1 | `9f01984d` integration baseline | Verified earlier | Browser process launch is integrated on main |
 | Phase 2 | `9f01984d` integration baseline | Focused evidence in Phase 2 status | Terminal/output correctness is integrated on main |
-| Phase 3 | Pending | Windows JS and headless browser checks pass; Python startup hangs | Complete on feature branch; not merged |
+| Phase 3 | `54502666b5724596ee3d21c1e694b8522d5a5151` | Windows JS and headless browser checks pass; Python startup hangs | Integrated into main; full argv/cwd disclosure remains deferred |
 | 4A / 4B | — | — | Separate implementation assignments |
 | 5A / 5B / 5C | 5B: `9f01984d` | 5B backend integrated | 5A/5C remain unassigned |
 | Phase 6 slices | — | — | User-selected optional enhancements |

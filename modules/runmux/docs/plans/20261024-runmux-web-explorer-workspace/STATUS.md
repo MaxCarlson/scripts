@@ -5,10 +5,11 @@ Updated: 2026-10-24
 ## Current state
 
 Phase 3 implementation is complete on `codex/runmux-web-phase3-20261024` in
-`.worktrees/runmux-web-launch-20261024`. The branch includes a conflict-free
-merge of `origin/main` at `9f01984d3dedf05781a19f8d131956662ee5b29d` (merge
-commit `8184a3e9`), preserving Phase 2 terminal/log fixes and the Phase 5B
-telemetry API. Phase 3 is not merged to `main`.
+`.worktrees/runmux-web-launch-20261024` and is integrated into `main` at
+`54502666b5724596ee3d21c1e694b8522d5a5151`. The feature branch included conflict-free integration of
+`origin/main` at `9f01984d3dedf05781a19f8d131956662ee5b29d` (commit
+`8184a3e9`), preserving Phase 2 terminal/log fixes and the Phase 5B telemetry
+API.
 
 ## Delivered
 
@@ -48,5 +49,5 @@ telemetry API. Phase 3 is not merged to `main`.
 
 ## Delivery
 
-Phase 3 is committed and pushed on `codex/runmux-web-phase3-20261024`. The
-branch remains intentionally unmerged.
+Phase 3 is merged into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. The feature branch remains
+published as `codex/runmux-web-phase3-20261024`.

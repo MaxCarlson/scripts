@@ -1,15 +1,13 @@
 # Runmux Current Handoff
 
-## Current feature branch — Explorer and workspace (Phase 3)
+## Runmux Web UI — Phase 3 integrated
 
-Phase 2 and Phase 5B are integrated in `origin/main` at
-`9f01984d3dedf05781a19f8d131956662ee5b29d`. Phase 3 is complete on
-`codex/runmux-web-phase3-20261024` in
-`.worktrees/runmux-web-launch-20261024`; its merge of updated `origin/main`
-was conflict-free. Phase 3 has not been merged to main. Read
-`plans/20261024-runmux-web-explorer-workspace/STATUS.md` and `checklist.md` for
-validation, limitations, and delivery state. Preserve the API privacy boundary:
-full argv, cwd, environment, credentials, and log paths are not exposed.
+Phase 1 browser launching, Phase 2 terminal/log correctness, and the Phase 5B
+telemetry backend are present in the `main` baseline. Phase 3 was merged from
+`codex/runmux-web-phase3-20261024` into main at `54502666b5724596ee3d21c1e694b8522d5a5151` with no conflicts.
+The feature branch and its worktree remain available for reference. Read
+`plans/20261024-runmux-web-explorer-workspace/STATUS.md` for validation,
+privacy boundaries, and remaining limitations.
 
 Last updated: 2026-10-24
 

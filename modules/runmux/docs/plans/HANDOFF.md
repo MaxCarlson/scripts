@@ -17,15 +17,15 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The current Phase 3 feature branch plan is:
+The latest completed Runmux Web UI phase plan is:
 
 `20261024-runmux-web-explorer-workspace/`
 
-Phase 3 is implemented, committed, and pushed on its dedicated branch; read its
-`HANDOFF.md`, `STATUS.md`, and `checklist.md` for verified results and limits.
+Phase 3 is integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. Read its `HANDOFF.md`,
+`STATUS.md`, and `checklist.md` for verified results and limitations.
 
-Phase 2 terminal/log correctness and Phase 5B telemetry are integrated in `origin/main`
-at `9f01984d3dedf05781a19f8d131956662ee5b29d`; Phase 2 evidence is retained in
+Phase 2 terminal/log correctness and Phase 5B telemetry are included in the
+integrated baseline; Phase 2 evidence is retained in
 `20261024-runmux-web-terminal-log-correctness/`. Phase 1 launch evidence is in
 `20261024-runmux-web-process-launching/`.
 

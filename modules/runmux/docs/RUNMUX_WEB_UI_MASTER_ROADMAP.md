@@ -12,11 +12,10 @@
 
 ## 1. Current implementation and evidence
 
-The latest integration baseline is `origin/main` at
-`9f01984d3dedf05781a19f8d131956662ee5b29d`. It includes the browser launch
-flow (Phase 1), terminal/log correctness work (Phase 2), and the Phase 5B
-telemetry backend. Phase 3 explorer/workspace improvements are complete on the
-separate `codex/runmux-web-phase3-20261024` branch and are not yet integrated.
+Phase 3 was integrated from the `origin/main` baseline at `9f01984d3dedf05781a19f8d131956662ee5b29d`, which
+already contained Phase 1 launch, Phase 2 terminal/log correctness, and the
+Phase 5B telemetry backend. The Phase 3 merge commit is
+`54502666b5724596ee3d21c1e694b8522d5a5151`.
 
 The browser keeps Output and the ANSI Terminal as distinct views. The existing
 supervisor owns process lifecycle, PTY behavior, and terminal input locks. The
@@ -28,8 +27,8 @@ reconciliation, and responsive controls without expanding that allowlist.
 Synthetic Windows headless Chromium checks cover the empty registry, 450-run
 registry, responsive layouts, keyboard controls, safe text rendering, reload
 tab restoration, and close-view behavior. Focused Windows Python tests remain
-unverified because the test process hangs during startup; see the active Phase 3
-status report. Concept images and browser screenshots are not evidence of
+unverified because the test process hangs during startup; see the Phase 3
+status report for validation limits. Concept images and browser screenshots are not evidence of
 unimplemented backend capabilities.
 ## 2. Governing product decisions
 
@@ -142,10 +141,10 @@ Record answers in this master as decisions, linking the relevant code/tests and 
 | Phase | Status | Implementation reference | Validation reference | Blockers/notes |
 |---|---|---|---|---|
 | 1 | Complete | `plans/20261024-runmux-web-process-launching/` | 33 focused web/readiness tests and prior browser smoke passed | Authenticated `create_managed_run` launch; full suite retains four failures reproduced on `origin/main`; wheel build unavailable because hatchling is not installed; POSIX runtime not exercised |
-| 2 | Complete and merged (`bc2975c410c2f1eb71da9975d4fd27e8f895cfa9`) | `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`; `plans/20261024-runmux-web-terminal-log-correctness/` | WSL: 39 Runmux tests, 8 web_ui_tools tests; Ruff and dashboard JS checks pass; clean headless Chromium verified synthetic Manga-style/file-util-like Terminal flows | Windows Proactor self-pipe hang prevented focused Windows rerun and post-fix ConPTY visual check; WSL headless image lacks Unicode fonts; bounded replay cannot reconstruct omitted screen history |
-| 3 | Active on `codex/runmux-web-phase3-20261024` | `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`; `plans/20261024-runmux-web-explorer-workspace/` | API/UI/privacy reconnaissance recorded; implementation and synthetic browser validation pending | Full argv/cwd are intentionally withheld by API; no new disclosure without a server-side authorization decision |
+| 2 | Complete and merged before Phase 3 in baseline `9f01984d3dedf05781a19f8d131956662ee5b29d` | `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`; `plans/20261024-runmux-web-terminal-log-correctness/` | Prior platform validation is in the Phase 2 status report | Windows Proactor hang limited native post-fix validation; bounded replay cannot reconstruct omitted screen history |
+| 3 | Complete and merged (`54502666b5724596ee3d21c1e694b8522d5a5151`) | `plans/web-ui-handoff/PHASE_03_EXPLORER_AND_WORKSPACE.md`; `plans/20261024-runmux-web-explorer-workspace/` | Windows Node suite and native headless Chromium validation pass; see status report | Full argv/cwd remain withheld; focused Python web tests are unverified due documented Windows startup hang |
 | 4 | Not assigned | — | — | Depend on mutation security and log model |
-| 5 | Not assigned | — | — | Need verified resource telemetry |
+| 5 | 5B backend merged in baseline `9f01984d`; 5A/5C not assigned | `src/runmux/web.py` telemetry routes | 5B backend integrated | Metrics UI and history remain unassigned |
 | 6 | Not assigned | — | — | Many items are optional or undecided |
 
 ## 9. Reference material

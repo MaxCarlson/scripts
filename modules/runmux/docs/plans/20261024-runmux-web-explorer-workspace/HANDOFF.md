@@ -7,4 +7,4 @@
 - Status/checklist: this directory's `STATUS.md` and `checklist.md`.
 - Privacy boundary: the API omits argv, cwd, environment, supervisor credentials, and log paths. Phase 3 preserves this boundary.
 - Verification: Node dashboard tests and headless native Windows Chromium checks pass. Focused Python web tests hang during Windows test startup and were interrupted after 15 seconds; module Ruff reports 42 existing Python lint issues, while Phase 3 changes no Python files.
-- Delivery: branch is committed and pushed; it remains unmerged.
+- Delivery: integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`; feature branch remains published.

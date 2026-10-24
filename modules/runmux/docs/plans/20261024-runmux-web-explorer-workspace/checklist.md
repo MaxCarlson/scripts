@@ -11,4 +11,4 @@
 - [x] Verify 450 synthetic records, desktop/tablet/mobile sizes, keyboard use, browser console, safe output rendering, reload restore, and close-view state invariants.
 - [x] Update phase status and roadmap; run focused JavaScript and whitespace checks.
 - [ ] Backend pytest is blocked on this Windows host: bounded `python -m pytest tests/web_test.py -q` produced no output for 15 seconds and was interrupted; see STATUS.
-- [x] Commit and push the dedicated Phase 3 branch; leave it unmerged.
+- [x] Commit and push the dedicated Phase 3 branch; merge into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`.
