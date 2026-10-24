@@ -4,14 +4,14 @@ Last updated: 2026-10-24
 
 ## Resume Here
 
-The current UX refinement is on `codex/runmux-web-ux-20261024`, based on
-`origin/main` at `3e84e8c9a5de3c83b268c7988944e34da716fb2b`. See
+The Runmux Web UI UX refinement was merged into `main` on 2026-10-24
+from `codex/runmux-web-ux-20261024`, based on `origin/main` at
+`3e84e8c9a5de3c83b268c7988944e34da716fb2b`. See
 `plans/20261024-runmux-web-ux-refinement/00-implementation-plan.md` for the
-gap assessment, scope, and focused validation. It adds status-grouped process
-navigation and browser-only process tabs, and gives the process workspace more
-screen space. It preserves the existing authenticated terminal and supervisor
-input-lock flow. Its implementation commit is pushed to the dedicated review
-branch; do not merge.
+gap assessment and validation. It adds status-grouped process navigation and
+browser-only process tabs, and gives the process workspace more screen space.
+It preserves the existing authenticated terminal and supervisor input-lock
+flow. The merge is published on `origin/main`.
 
 The preceding interactive-terminal feature was merged into `origin/main` and
 its completed record remains in `plans/20261023-runmux-web-interactive-terminal/`.

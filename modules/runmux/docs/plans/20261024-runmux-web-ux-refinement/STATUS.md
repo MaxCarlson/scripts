@@ -29,4 +29,5 @@ Implementation and focused validation are complete on
 ## Delivery state
 
 Implementation commit `479323a7` is pushed to
-`origin/codex/runmux-web-ux-20261024`. The branch is not merged into `main`.
+`origin/codex/runmux-web-ux-20261024` and merged into `main` at `6d007b72`,
+published on `origin/main`.
