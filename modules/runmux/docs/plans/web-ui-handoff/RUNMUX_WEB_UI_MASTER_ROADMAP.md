@@ -40,7 +40,7 @@ Evidence limits: These facts are supported by source inspection, **not** end-to-
 | **1 Launch** | **Merged to origin/main** | New Process tab and verified `runmux run` parity (L01–L09) | Existing auth and supervisor; send Phase 1 addendum |
 | **2 Terminal fidelity** | **Merged to origin/main** | Diagnose/fix existing capture, replay, PTY dimensions, Output/Terminal behavior (T01–T07) | Can investigate independently of 1; coordinate frontend edits |
 | **3 Explorer** | **Merged into main at `54502666b5724596ee3d21c1e694b8522d5a5151`** | Group/filter/sort, tab state/overflow, safe metadata (N01–N08, D01–D05) | Prefer start after 1 and 2 integration |
-| **4A Lifecycle** | Planned | Secure stop/restart/pause-resume only where supported (C02–C07) | Phase 1 authorization pattern |
+| **4A Lifecycle** | **Merged to origin/main** | Secure stop/restart/pause-resume only where supported (C02–C07) | Phase 1 authorization pattern |
 | **4B Enhanced logs** | **Merged to origin/main** | Search, navigation, conservative severity filters/count scopes (T08–T09) | Phase 2 representation contract |
 | **5A Overview modes** | Planned | Global A/B/C/D selector and persistence (M01–M06) | Stable process header and tabs |
 | **5B Live telemetry** | **Merged to origin/main at `9f01984d`** | Reuse audited `runmux.stats`/`resource_metrics`; provenance, unavailable states (M07–M09, M12–M13) | 5A useful but not mandatory |

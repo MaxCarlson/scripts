@@ -1,5 +1,12 @@
 # Runmux Current Handoff
 
+## Runmux Web UI — Phase 4A integrated
+
+Phase 4A (Lifecycle Controls Backend) was merged into `main` from `codex/runmux-lifecycle-backend-20261024` with no conflicts.
+It provides authenticated, same-origin REST lifecycle endpoints (`POST /api/runs/{run_id}/stop`, `POST /api/runs/{run_id}/kill`, `POST /api/runs/{run_id}/restart`, `POST /api/runs/{run_id}/pause`, `POST /api/runs/{run_id}/resume`) with state machine validation, supervisor PID reuse protection, and inconclusive process identity fallback safety.
+Verified with Python test suites (`lifecycle_test.py`, `lifecycle_api_test.py`).
+See `plans/20261024-runmux-lifecycle-backend/HANDOFF.md`, `STATUS.md`, and `LIFECYCLE_API_SPEC.md`.
+
 ## Runmux Web UI — Phase 4B integrated
 
 Phase 4B (Enhanced Output Search and Filtering) was merged into `main` from `codex/runmux-web-phase4b-20261024` with no conflicts.
