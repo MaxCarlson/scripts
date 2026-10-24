@@ -7,6 +7,7 @@ import ipaddress
 import secrets
 import time
 from collections.abc import Sequence
+from http.cookies import SimpleCookie
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
@@ -26,7 +27,9 @@ SECURITY_HEADERS = {
     "Referrer-Policy": "no-referrer",
     "Content-Security-Policy": (
         "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; "
-        "connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
+        "connect-src 'self' ws://127.0.0.1:* ws://localhost:* ws://[::1]:* "
+        "wss://127.0.0.1:* wss://localhost:* wss://[::1]:*; "
+        "object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'"
     ),
 }
 
@@ -66,6 +69,11 @@ def create_app(
     app.state.login_code = login_code
     app.state.sessions = {}
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=list(allowed_hosts))
+    app.add_middleware(
+        WebSocketSessionMiddleware,
+        sessions=app.state.sessions,
+        allowed_hosts=allowed_hosts,
+    )
     app.include_router(api_router)
 
     @app.middleware("http")
@@ -133,7 +141,7 @@ def create_server(app: FastAPI, *, host: str = "127.0.0.1", port: int = 8787) ->
         raise ValueError("Web service host must be a loopback IP address (127.0.0.1 or ::1).")
     if not 0 <= port <= 65535:
         raise ValueError("port must be between 0 and 65535")
-    config = uvicorn.Config(app, host=host, port=port, access_log=False, log_level="info", ws="none")
+    config = uvicorn.Config(app, host=host, port=port, access_log=False, log_level="info", ws="wsproto")
     return uvicorn.Server(config)
 
 
@@ -152,11 +160,14 @@ def _same_origin(request: Request) -> bool:
         # Chromium omits Origin on same-origin GET fetches. Fetch Metadata is browser-controlled,
         # so accept only safe read methods carrying the explicit same-origin marker.
         return request.method in {"GET", "HEAD"} and request.headers.get("sec-fetch-site") == "same-origin"
-    return hmac.compare_digest(origin.rstrip("/").lower(), f"{request.url.scheme}://{host}".lower())
+    return _same_origin_values(origin, host, request.url.scheme)
 
 
 def _trusted_host(request: Request, allowed_hosts: Sequence[str]) -> bool:
-    host_header = request.headers.get("host")
+    return _trusted_host_value(request.headers.get("host"), allowed_hosts)
+
+
+def _trusted_host_value(host_header: str | None, allowed_hosts: Sequence[str]) -> bool:
     if not host_header:
         return False
     try:
@@ -167,3 +178,52 @@ def _trusted_host(request: Request, allowed_hosts: Sequence[str]) -> bool:
         return False
     trusted = {host.strip("[]").lower() for host in allowed_hosts}
     return host_name.lower() in trusted
+
+
+def _same_origin_values(origin: str | None, host: str | None, scheme: str) -> bool:
+    if not origin or not host:
+        return False
+    expected_scheme = "https" if scheme in {"https", "wss"} else "http"
+    return hmac.compare_digest(origin.rstrip("/").lower(), f"{expected_scheme}://{host}".lower())
+
+
+class WebSocketSessionMiddleware:
+    """Require the shared local browser session for application API WebSockets."""
+
+    def __init__(self, app: Any, *, sessions: dict[str, float], allowed_hosts: Sequence[str]) -> None:
+        self.app = app
+        self.sessions = sessions
+        self.allowed_hosts = tuple(allowed_hosts)
+
+    async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
+        if scope["type"] != "websocket" or not (
+            scope.get("path") == "/api" or scope.get("path", "").startswith("/api/")
+        ):
+            await self.app(scope, receive, send)
+            return
+
+        headers = {key.lower(): value for key, value in scope.get("headers", [])}
+        host = headers.get(b"host", b"").decode("latin-1")
+        if not _trusted_host_value(host, self.allowed_hosts):
+            await send({"type": "websocket.close", "code": 4400})
+            return
+        origin = headers.get(b"origin", b"").decode("latin-1")
+        if not _same_origin_values(origin, host, scope.get("scheme", "ws")):
+            await send({"type": "websocket.close", "code": 4403})
+            return
+
+        cookie_header = headers.get(b"cookie", b"").decode("latin-1")
+        cookies = SimpleCookie()
+        try:
+            cookies.load(cookie_header)
+        except Exception:  # noqa: BLE001 - malformed browser cookies are treated as unauthenticated.
+            cookies = SimpleCookie()
+        morsel = cookies.get(SESSION_COOKIE)
+        session_id = None if morsel is None else morsel.value
+        expires_at = self.sessions.get(session_id) if session_id else None
+        if expires_at is None or expires_at <= time.time():
+            if session_id:
+                self.sessions.pop(session_id, None)
+            await send({"type": "websocket.close", "code": 4401})
+            return
+        await self.app(scope, receive, send)

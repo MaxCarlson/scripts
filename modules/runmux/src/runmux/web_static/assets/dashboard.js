@@ -15,6 +15,13 @@ let outputTimer = null;
 let outputRequestGeneration = null;
 let lastOutput = "";
 let outputFinished = false;
+let terminalSocket = null;
+let terminalStatus = null;
+let terminalInstance = null;
+let terminalFitAddon = null;
+let terminalResizeObserver = null;
+let terminalReconnectTimer = null;
+const TERMINAL_SCROLLBACK = 5000;
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options });
@@ -82,6 +89,8 @@ $("#output-text").addEventListener("scroll", () => {
   if (node.scrollHeight - node.scrollTop - node.clientHeight > 40) $("#follow-output").checked = false;
 });
 document.querySelectorAll(".tab-button").forEach((button) => button.addEventListener("click", () => selectTab(button.dataset.tab)));
+$("#terminal-control-button").addEventListener("click", toggleTerminalControl);
+$("#terminal-lock-button").addEventListener("click", requestTerminalLock);
 document.addEventListener("keydown", (event) => {
   if (event.key === "/" && !["INPUT", "TEXTAREA"].includes(document.activeElement.tagName)) {
     event.preventDefault(); $("#process-search").focus();
@@ -169,6 +178,7 @@ async function selectRun(runId) {
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
   }
+  if (isCurrentSelection(generation, runId) && !$("#terminal-pane").hidden) connectTerminal(generation, runId);
 }
 
 async function refreshSelected(generation = selectionGeneration, runId = selectedId) {
@@ -241,12 +251,19 @@ async function refreshOutput(generation = selectionGeneration, runId = selectedI
 
 function selectTab(tab) {
   const outputSelected = tab === "output";
+  const terminalSelected = tab === "terminal";
   $("#tab-output").classList.toggle("active", outputSelected);
   $("#tab-output").setAttribute("aria-selected", `${outputSelected}`);
-  $("#tab-details").classList.toggle("active", !outputSelected);
-  $("#tab-details").setAttribute("aria-selected", `${!outputSelected}`);
+  $("#tab-terminal").classList.toggle("active", terminalSelected);
+  $("#tab-terminal").setAttribute("aria-selected", `${terminalSelected}`);
+  $("#tab-details").classList.toggle("active", !outputSelected && !terminalSelected);
+  $("#tab-details").setAttribute("aria-selected", `${!outputSelected && !terminalSelected}`);
   $("#output-pane").hidden = !outputSelected;
-  $("#details-pane").hidden = outputSelected;
+  $("#terminal-pane").hidden = !terminalSelected;
+  $("#details-pane").hidden = outputSelected || terminalSelected;
+  $(".follow-toggle").hidden = !outputSelected;
+  if (terminalSelected && selectedId) connectTerminal(selectionGeneration, selectedId);
+  else closeTerminal();
 }
 
 function clearSelection() {
@@ -263,6 +280,7 @@ function invalidateSelection() {
   clearInterval(outputTimer);
   outputTimer = null;
   outputRequestGeneration = null;
+  closeTerminal();
 }
 
 function isCurrentSelection(generation, runId) {
@@ -292,4 +310,190 @@ function relativeTime(value) {
   if (!value) return "time unknown";
   const seconds = Math.max(0, Math.floor((Date.now() - new Date(value).valueOf()) / 1000));
   return seconds < 60 ? "just now" : seconds < 3600 ? `${Math.floor(seconds / 60)}m ago` : `${Math.floor(seconds / 3600)}h ago`;
+}
+
+function ensureTerminal() {
+  if (terminalInstance) return terminalInstance;
+  const TerminalConstructor = globalThis.Terminal?.Terminal || globalThis.Terminal;
+  const FitAddonConstructor = globalThis.FitAddon?.FitAddon;
+  if (!TerminalConstructor || !FitAddonConstructor) {
+    $("#terminal-message").hidden = false;
+    $("#terminal-message").textContent = "The bundled terminal renderer could not be loaded. Refresh the page to retry.";
+    return null;
+  }
+  terminalInstance = new TerminalConstructor({
+    cursorBlink: false,
+    convertEol: true,
+    scrollback: TERMINAL_SCROLLBACK,
+    fontFamily: '"Cascadia Code", "Cascadia Mono", Consolas, monospace',
+    fontSize: 12,
+    theme: { background: "#080c13", foreground: "#c6d1dc", cursor: "#51d6bd", selectionBackground: "#245a59" },
+  });
+  terminalFitAddon = new FitAddonConstructor();
+  terminalInstance.loadAddon(terminalFitAddon);
+  terminalInstance.open($("#terminal-container"));
+  terminalInstance.onData(sendTerminalInput);
+  terminalInstance.onResize(({ rows, cols }) => {
+    if (terminalInputAllowed() && terminalSocket.readyState === 1) {
+      sendTerminalMessage({ type: "resize", rows, columns: cols });
+    }
+  });
+  if (globalThis.ResizeObserver) {
+    terminalResizeObserver = new ResizeObserver(() => fitTerminal());
+    terminalResizeObserver.observe($("#terminal-container"));
+  } else if (globalThis.addEventListener) {
+    globalThis.addEventListener("resize", fitTerminal);
+  }
+  fitTerminal();
+  return terminalInstance;
+}
+
+function fitTerminal() {
+  if (!terminalFitAddon || $("#terminal-pane").hidden) return;
+  try { terminalFitAddon.fit(); } catch { /* The panel may be hidden during a layout change. */ }
+}
+
+function connectTerminal(generation = selectionGeneration, runId = selectedId) {
+  if (!runId || !isCurrentSelection(generation, runId) || $("#terminal-pane").hidden) return;
+  if (terminalSocket?.readyState === 0 || terminalSocket?.readyState === 1) return;
+  if (!ensureTerminal()) return;
+  clearTimeout(terminalReconnectTimer);
+  terminalReconnectTimer = null;
+  terminalStatus = null;
+  updateTerminalControls();
+  $("#terminal-message").hidden = true;
+  $("#terminal-state").textContent = "Connecting to supervisor…";
+
+  const scheme = globalThis.location?.protocol === "https:" ? "wss:" : "ws:";
+  const host = globalThis.location?.host || "localhost";
+  const socket = new WebSocket(`${scheme}//${host}/api/runs/${encodeURIComponent(runId)}/terminal`);
+  terminalSocket = socket;
+  socket.binaryType = "arraybuffer";
+  socket.addEventListener("open", () => {
+    if (terminalSocket !== socket || !isCurrentSelection(generation, runId)) return;
+    $("#terminal-state").textContent = "Connected · read only";
+    updateTerminalControls();
+    fitTerminal();
+  });
+  socket.addEventListener("message", (event) => {
+    if (terminalSocket !== socket || !isCurrentSelection(generation, runId)) return;
+    if (event.data instanceof ArrayBuffer) {
+      terminalInstance.write(new Uint8Array(event.data), () => {
+        if (socket.readyState === 1) sendTerminalMessage({ type: "ack" }, socket);
+      });
+      return;
+    }
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    if (message.type === "status") {
+      terminalStatus = message;
+      renderTerminalStatus(message);
+    } else if (message.type === "output_reset") {
+      terminalInstance.reset();
+      $("#terminal-message").hidden = !message.truncated;
+      $("#terminal-message").textContent = message.truncated ? "Showing the latest bounded terminal history." : "";
+    } else if (message.type === "output_state") {
+      $("#terminal-message").hidden = false;
+      $("#terminal-message").textContent = message.message || "Terminal output is unavailable.";
+    } else if (message.type === "error") {
+      $("#terminal-message").hidden = false;
+      $("#terminal-message").textContent = message.message || "Terminal connection failed.";
+      if (message.message === "This run has already finished.") $("#terminal-control-button").disabled = true;
+    }
+  });
+  socket.addEventListener("close", (event) => {
+    if (terminalSocket !== socket) return;
+    terminalSocket = null;
+    terminalStatus = null;
+    updateTerminalControls();
+    if (!isCurrentSelection(generation, runId)) return;
+    if (event.code === 4401) {
+      showLogin("Session expired. Enter the current terminal login code again.");
+      return;
+    }
+    if (event.code === 4404) {
+      $("#terminal-state").textContent = "Run is no longer available";
+      return;
+    }
+    $("#terminal-state").textContent = "Disconnected · reconnecting…";
+    terminalReconnectTimer = setTimeout(() => connectTerminal(generation, runId), 1000);
+  });
+  socket.addEventListener("error", () => {
+    if (terminalSocket === socket) $("#terminal-state").textContent = "Connection interrupted";
+  });
+}
+
+function renderTerminalStatus(status) {
+  const button = $("#terminal-control-button");
+  const lockButton = $("#terminal-lock-button");
+  button.disabled = status.finished === true;
+  button.textContent = status.mode === "interact" ? "Release control" : "Request control";
+  lockButton.hidden = status.mode !== "interact" || status.session_holds_lock;
+  if (status.finished) {
+    $("#terminal-state").textContent = "Process finished · read only";
+  } else if (status.mode !== "interact") {
+    $("#terminal-state").textContent = "Connected · read only";
+  } else if (status.session_holds_lock) {
+    $("#terminal-state").textContent = "Input lock held · terminal input enabled";
+    terminalInstance.options.cursorBlink = true;
+    fitTerminal();
+    sendTerminalMessage({ type: "resize", rows: terminalInstance.rows, columns: terminalInstance.cols });
+  } else if (status.session_queue_position) {
+    $("#terminal-state").textContent = `Waiting for input lock · position ${status.session_queue_position}`;
+    terminalInstance.options.cursorBlink = false;
+  } else {
+    $("#terminal-state").textContent = "Control attached · request the input lock to type";
+    terminalInstance.options.cursorBlink = false;
+  }
+  updateTerminalControls();
+}
+
+function updateTerminalControls() {
+  const connected = terminalSocket?.readyState === 1;
+  $("#terminal-control-button").disabled = !connected || terminalStatus?.finished === true;
+  $("#terminal-lock-button").disabled = !connected || terminalStatus?.finished === true || terminalStatus?.mode !== "interact";
+}
+
+function toggleTerminalControl() {
+  if (terminalSocket?.readyState !== 1) return;
+  if (terminalStatus?.mode === "interact") {
+    sendTerminalMessage({ type: "control", enabled: false });
+    $("#terminal-state").textContent = "Releasing input control…";
+  } else {
+    sendTerminalMessage({ type: "control", enabled: true });
+    $("#terminal-state").textContent = "Requesting input control…";
+  }
+}
+
+function requestTerminalLock() {
+  if (terminalSocket?.readyState === 1 && terminalStatus?.mode === "interact") {
+    sendTerminalMessage({ type: "lock" });
+    $("#terminal-state").textContent = "Requesting supervisor input lock…";
+  }
+}
+
+function sendTerminalMessage(value, socket = terminalSocket) {
+  if (socket?.readyState === 1) socket.send(JSON.stringify(value));
+}
+
+function terminalInputAllowed() {
+  return terminalSocket?.readyState === 1
+    && terminalStatus?.mode === "interact"
+    && terminalStatus.session_holds_lock === true;
+}
+
+function sendTerminalInput(value) {
+  if (!terminalInputAllowed()) return false;
+  terminalSocket.send(new TextEncoder().encode(value));
+  return true;
+}
+
+function closeTerminal() {
+  clearTimeout(terminalReconnectTimer);
+  terminalReconnectTimer = null;
+  const socket = terminalSocket;
+  terminalSocket = null;
+  terminalStatus = null;
+  updateTerminalControls();
+  if (socket && (socket.readyState === 0 || socket.readyState === 1)) socket.close(1000, "terminal view closed");
 }

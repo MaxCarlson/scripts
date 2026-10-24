@@ -380,6 +380,19 @@ class SupervisorState:
         fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, packed_size)
         self.store.update_run(self.record.id, rows=rows, columns=columns)
 
+    def resize_for_session(self, session_id: str, rows: int, columns: int) -> None:
+        """Resize only while the requesting attachment owns terminal input."""
+
+        now = time.monotonic()
+        with self.session_lock:
+            self.expire_stale_sessions(now=now)
+            if self.input_lock.maybe_transfer(now=now):
+                self._persist_lock_state()
+            session = self.sessions.get(session_id)
+            if session is None or session.mode != "interact" or self.input_lock.holder_id != session_id:
+                raise RuntimeError("Only the active input lock holder can resize the process terminal.")
+            self.resize(rows, columns)
+
 
 def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler]:
     """Create an IPC handler class bound to supervisor state."""
@@ -421,7 +434,11 @@ def make_handler(state: SupervisorState) -> type[socketserver.BaseRequestHandler
                 elif op == "resize":
                     rows = int(request.get("rows") or 24)
                     columns = int(request.get("columns") or 80)
-                    state.resize(rows, columns)
+                    session_id = request.get("session_id")
+                    if isinstance(session_id, str) and session_id:
+                        state.resize_for_session(session_id, rows, columns)
+                    else:
+                        state.resize(rows, columns)
                     self._send_json({"ok": True})
                 elif op == "input":
                     session_id = str(request.get("session_id") or "")

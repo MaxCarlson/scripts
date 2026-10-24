@@ -135,6 +135,15 @@ kbd { padding: 1px 4px; border: 1px solid var(--border); border-radius: 3px; col
 .output-dot { width: 5px; height: 5px; margin-right: 6px; vertical-align: 1px; }
 .output-text { overflow: auto; min-height: 0; flex: 1; margin: 0; padding: 14px 16px 24px; color: #c6d1dc; font: 11px/1.65 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; tab-size: 4; }
 .output-state { position: absolute; top: 50%; right: 16px; left: 16px; color: var(--faint); font-size: 11px; text-align: center; pointer-events: none; }
+.terminal-pane { position: relative; display: flex; min-height: 0; flex-direction: column; background: #080c13; }
+.terminal-toolbar { min-height: 36px; display: flex; align-items: center; gap: 12px; padding: 5px 10px 5px 13px; border-bottom: 1px solid rgba(255,255,255,.045); color: var(--faint); font-size: 9px; letter-spacing: .07em; }
+.terminal-state { min-width: 0; flex: 1; overflow: hidden; color: var(--muted); font-size: 10px; letter-spacing: 0; text-overflow: ellipsis; white-space: nowrap; }
+.terminal-control-button { flex: none; padding: 6px 10px; border: 1px solid rgba(0,212,170,.3); border-radius: 5px; background: rgba(0,212,170,.08); color: #92e5d5; font-size: 10px; }
+.terminal-control-button:disabled { border-color: var(--border); background: transparent; color: var(--faint); cursor: not-allowed; }
+.terminal-container { min-height: 0; flex: 1; overflow: hidden; padding: 8px 10px; outline: none; }
+.terminal-container .xterm { height: 100%; }
+.terminal-container .xterm-viewport { overflow-y: auto !important; }
+.terminal-message { position: absolute; right: 16px; bottom: 14px; left: 16px; padding: 8px 10px; border: 1px solid rgba(245,158,11,.18); border-radius: 5px; background: rgba(11,17,27,.94); color: #eabf6d; font-size: 10px; pointer-events: none; }
 .details-pane { overflow: auto; padding: 20px; }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 1px; overflow: hidden; border: 1px solid var(--border); border-radius: 6px; background: var(--border); }
 .detail-item { min-width: 0; padding: 13px; background: #151b28; }

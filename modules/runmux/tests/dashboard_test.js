@@ -56,6 +56,7 @@ function dashboardHarness() {
   const context = {
     document,
     fetch,
+    TextEncoder,
     URLSearchParams,
     setInterval(callback, delay) {
       const id = nextInterval++;
@@ -63,11 +64,17 @@ function dashboardHarness() {
       return id;
     },
     clearInterval(id) { intervals.delete(id); },
+    setTimeout(callback, delay) { return { callback, delay }; },
+    clearTimeout() {},
     Date,
     console,
   };
   const source = fs.readFileSync(path.join(__dirname, "../src/runmux/web_static/assets/dashboard.js"), "utf8");
-  vm.runInNewContext(`${source}\nglobalThis.__dashboard = { selectRun, clearSelection, refreshOutput, showLogin };`, context);
+  vm.runInNewContext(`${source}\nglobalThis.__dashboard = {
+    selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
+    updateTerminalControls,
+    setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
+  };`, context);
   return { context, elements, intervals, requests, getElement: (selector) => document.querySelector(selector) };
 }
 
@@ -164,7 +171,42 @@ async function testClearInvalidatesPendingSelection() {
   assert.equal(loggedOut.intervals.size, 0);
 }
 
-Promise.all([testRapidSelection(), testClearInvalidatesPendingSelection()]).catch((error) => {
+async function testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket() {
+  const { context } = dashboardHarness();
+  const sent = [];
+  const closed = [];
+  const socket = {
+    readyState: 1,
+    send(value) { sent.push(value); },
+    close(code, reason) { closed.push({ code, reason }); this.readyState = 3; },
+  };
+
+  context.__dashboard.setTerminalTestState(socket, { mode: "view", session_holds_lock: false });
+  assert.equal(context.__dashboard.terminalInputAllowed(), false);
+  assert.equal(context.__dashboard.sendTerminalInput("view input"), false);
+  context.__dashboard.setTerminalTestState(socket, { mode: "interact", session_holds_lock: false });
+  assert.equal(context.__dashboard.terminalInputAllowed(), false);
+  assert.equal(context.__dashboard.sendTerminalInput("queued input"), false);
+  context.__dashboard.setTerminalTestState(socket, { mode: "interact", session_holds_lock: true });
+  assert.equal(context.__dashboard.terminalInputAllowed(), true);
+  assert.equal(context.__dashboard.sendTerminalInput("authorized input"), true);
+  assert.deepEqual(Array.from(sent[0]), Array.from(new TextEncoder().encode("authorized input")));
+
+  context.__dashboard.setTerminalTestState(socket, { mode: "view", session_holds_lock: false, finished: true });
+  context.__dashboard.updateTerminalControls();
+  assert.equal(context.document.querySelector("#terminal-control-button").disabled, true);
+  assert.equal(context.document.querySelector("#terminal-lock-button").disabled, true);
+
+  context.__dashboard.closeTerminal();
+  assert.deepEqual(closed, [{ code: 1000, reason: "terminal view closed" }]);
+  assert.equal(socket.readyState, 3);
+}
+
+Promise.all([
+  testRapidSelection(),
+  testClearInvalidatesPendingSelection(),
+  testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
+]).catch((error) => {
   console.error(error);
   process.exitCode = 1;
 });

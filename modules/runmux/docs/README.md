@@ -150,8 +150,10 @@ constraints:
 
 ## Active Implementation Plan
 
-The current implementation plan is
-[`plans/20260622-0551_runmux-multi-attach-input-lock-history/00_implementation-plan.md`](plans/20260622-0551_runmux-multi-attach-input-lock-history/00_implementation-plan.md).
+The latest feature branch work is tracked in
+[`plans/20261023-runmux-web-interactive-terminal/00-implementation-plan.md`](plans/20261023-runmux-web-interactive-terminal/00-implementation-plan.md).
+The prior multi-attach and input-lock implementation plan remains the source
+history for supervisor ownership behavior.
 
 This is the implementation plan for one set of features. It is not the
 ultimate end goal or complete permanent roadmap for runmux.
