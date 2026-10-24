@@ -17,11 +17,13 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The latest active Runmux Web UI phase proposal is:
+The latest active Runmux Web UI phase plan is:
 
 - `20261024-runmux-historical-telemetry/`: Phase 5C historical telemetry architecture, empirical benchmarks, and implementation plan. Read its `00_implementation-plan.md`, `01_architecture_specification.md`, `02_alternatives_analysis.md`, `03_resource_budget_and_benchmarks.md`, `04_api_proposal.md`, `05_implementation_plan.md`, and `06_approval_decisions.md`.
 
-The latest integrated Runmux Web UI phase plans are:
+The latest integrated Runmux Web UI phase plans on `main` are:
+
+- `20261024-runmux-web-overview-telemetry/`: Phase 5A four selectable overview modes (Minimal, Inline, Dashboard, Expanded) and complete frontend integration of Phase 5B live telemetry endpoints. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `screenshots/` for implementation details, verification results, and representative browser screenshots.
 
 - `20261024-runmux-lifecycle-backend/`: Phase 4A lifecycle controls backend integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `LIFECYCLE_API_SPEC.md` for endpoint specs, verification results, and safety boundaries.
 - `20261024-runmux-web-enhanced-logs/`: Phase 4B enhanced output search and filtering integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, and `checklist.md` for implementation details, verification results, and boundaries.
@@ -33,7 +35,7 @@ The previously completed Runmux Web UI phase plan is:
 Phase 3 is integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. Read its `HANDOFF.md`,
 `STATUS.md`, and `checklist.md` for verified results and limitations.
 
-Phase 2 terminal/log correctness and Phase 5B telemetry are included in the
+Phase 2 terminal/log correctness and Phase 5B telemetry backend are included in the
 integrated baseline; Phase 2 evidence is retained in
 `20261024-runmux-web-terminal-log-correctness/`. Phase 1 launch evidence is in
 `20261024-runmux-web-process-launching/`.

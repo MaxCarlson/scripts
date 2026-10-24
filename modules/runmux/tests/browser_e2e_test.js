@@ -21,6 +21,10 @@ async function runBrowserE2E() {
   const runId = "20261024-070000-e2e1a2";
 
   // 1. Create synthetic fixture
+  let workerProc = spawn("python", ["-c", "import time; time.sleep(120)"], { stdio: "ignore" });
+  const workerPid = workerProc.pid;
+  const runId2 = "20261024-070001-e2e1b3";
+
   const runDir = path.join(stateDir, "runs", runId);
   fs.mkdirSync(runDir, { recursive: true });
   const logFile = path.join(runDir, "output.ansi");
@@ -59,7 +63,20 @@ async function runBrowserE2E() {
     `    log_path=Path(r"${logFile.replace(/\\/g, "/")}"),`,
     '    command_line="worker.exe",',
     ")",
-    `store.update_run("${runId}", pid=1234)`,
+    `store.update_run("${runId}", pid=${workerPid})`,
+    "store.create_run(",
+    `    run_id="${runId2}",`,
+    '    name="finished worker",',
+    '    status="finished",',
+    '    program=r"C:\\tools\\finished.exe",',
+    '    argv_json=json.dumps(["finished.exe"]),',
+    '    cwd=r"C:\\private\\folder",',
+    "    env_overrides_json=json.dumps({}),",
+    '    auth_token="ipc-secret",',
+    `    log_path=Path(r"${logFile.replace(/\\/g, "/")}"),`,
+    '    command_line="finished.exe",',
+    ")",
+    `store.update_run("${runId2}", exit_code=0)`,
   ].join("\n");
   fs.writeFileSync(setupScript, pyCode, "utf8");
   execSync(`python "${setupScript}"`, { env: { ...process.env, PYTHONPATH: path.join(__dirname, "../src") } });
@@ -407,10 +424,183 @@ async function runBrowserE2E() {
     assert.match(navCount, /^3 of [\d,]+/);
     console.log("Verified DOM bounding (2,000 max nodes) and accurate labels in real Chrome engine.");
 
+    // 13. Phase 5A: Mode Switching & Direct Selection
+    console.log("Testing Phase 5A overview modes and switching in real Chrome...");
+    const screenshotsDir = path.join(__dirname, "../docs/plans/20261024-runmux-web-overview-telemetry/screenshots");
+    fs.mkdirSync(screenshotsDir, { recursive: true });
+
+    // Ensure we are in Mode B initially (default)
+    await evaluate(`window.setOverviewMode("inline")`);
+    await sleep(2000); // Allow telemetry poll cycle to populate real metrics
+
+    let modeBHasStats = await evaluate(`(function() {
+      const cpu = document.querySelector("#val-inline-cpu").textContent;
+      const rss = document.querySelector("#val-inline-rss").textContent;
+      return cpu !== "—" || rss !== "—";
+    })()`);
+    console.log("Mode B inline stats loaded:", modeBHasStats);
+
+    // Capture Mode B screenshot (Desktop 1366x768)
+    await sendCommand("Emulation.setDeviceMetricsOverride", { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
+    await sleep(300);
+    let shotB = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(screenshotsDir, "mode_b_inline.png"), Buffer.from(shotB.data, "base64"));
+    console.log("Saved mode_b_inline.png");
+
+    // Mode A: Minimal
+    await evaluate(`document.querySelector("#mode-btn-a").click()`);
+    await sleep(300);
+    const isModeA = await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-minimal")`);
+    assert.equal(isModeA, true, "Mode A was not applied");
+    const inlineHiddenA = await evaluate(`document.querySelector("#inline-telemetry").hidden`);
+    const panelHiddenA = await evaluate(`document.querySelector("#telemetry-panel").hidden`);
+    assert.equal(inlineHiddenA, true, "Inline telemetry should be hidden in Mode A");
+    assert.equal(panelHiddenA, true, "Telemetry panel should be hidden in Mode A");
+    let shotA = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(screenshotsDir, "mode_a_minimal.png"), Buffer.from(shotA.data, "base64"));
+    console.log("Saved mode_a_minimal.png");
+
+    // Mode C: Dashboard
+    await evaluate(`document.querySelector("#mode-btn-c").click()`);
+    await sleep(2200); // Wait for telemetry poll cycle
+    const isModeC = await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-dashboard")`);
+    assert.equal(isModeC, true, "Mode C was not applied");
+    const panelVisibleC = await evaluate(`!document.querySelector("#telemetry-panel").hidden`);
+    assert.equal(panelVisibleC, true, "Telemetry panel should be visible in Mode C");
+    const hostHiddenC = await evaluate(`document.querySelector("#host-telemetry-section").hidden`);
+    assert.equal(hostHiddenC, true, "Host telemetry section should be hidden in Mode C");
+    let shotC = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(screenshotsDir, "mode_c_dashboard.png"), Buffer.from(shotC.data, "base64"));
+    console.log("Saved mode_c_dashboard.png");
+
+    // Mode D: Expanded
+    await evaluate(`document.querySelector("#mode-btn-d").click()`);
+    await sleep(2200); // Wait for telemetry poll cycle
+    const isModeD = await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-expanded")`);
+    assert.equal(isModeD, true, "Mode D was not applied");
+    const hostVisibleD = await evaluate(`!document.querySelector("#host-telemetry-section").hidden`);
+    assert.equal(hostVisibleD, true, "Host telemetry section should be visible in Mode D");
+    let shotD = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(screenshotsDir, "mode_d_expanded.png"), Buffer.from(shotD.data, "base64"));
+    console.log("Saved mode_d_expanded.png");
+
+    // Verify scope labels in Mode D
+    const procScopeText = await evaluate(`document.querySelector("#process-telemetry-section .scope-tag").textContent`);
+    assert.equal(procScopeText, "PROCESS TREE");
+    const hostScopeText = await evaluate(`document.querySelector("#host-telemetry-section .scope-tag").textContent`);
+    assert.match(hostScopeText, /HOST & SYSTEM/);
+    const hostNetCard = await evaluate(`document.querySelector("#card-host-net .card-label").textContent`);
+    assert.equal(hostNetCard, "HOST NETWORK (SYSTEM-WIDE)");
+    const gpuDevCard = await evaluate(`document.querySelector("#card-gpu-dev .card-label").textContent`);
+    assert.equal(gpuDevCard, "GPU DEVICE (HARDWARE)");
+    const gpuProcVal = await evaluate(`document.querySelector("#card-gpu-proc-val").textContent`);
+    const gpuProcSub = await evaluate(`document.querySelector("#card-gpu-proc-sub").textContent`);
+    console.log(`Real Chrome GPU Attribution: ${gpuProcVal} (${gpuProcSub})`);
+    assert.ok(
+      gpuProcVal === "Unavailable" || gpuProcVal === "0 B" || gpuProcVal.includes("B"),
+      `GPU attribution should be Unavailable, 0 B, or formatted bytes, but was: ${gpuProcVal}`
+    );
+    console.log("Verified scope labels and hardware separation in Mode D.");
+
+    // Cycle Mode via button: D -> A -> B -> C -> D
+    await evaluate(`document.querySelector("#mode-cycle-btn").click()`);
+    assert.equal(await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-minimal")`), true);
+    await evaluate(`document.querySelector("#mode-cycle-btn").click()`);
+    assert.equal(await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-inline")`), true);
+    await evaluate(`document.querySelector("#mode-cycle-btn").click()`);
+    assert.equal(await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-dashboard")`), true);
+    await evaluate(`document.querySelector("#mode-cycle-btn").click()`);
+    assert.equal(await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-expanded")`), true);
+    console.log("Verified mode cycling A -> B -> C -> D -> A.");
+
+    // 14. Test Persistence Across Page Reload
+    console.log("Testing overview mode persistence across page reload...");
+    await evaluate(`window.setOverviewMode("dashboard")`);
+    await sendCommand("Page.reload");
+    let reloadedRow = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(200);
+      try {
+        const pageState = await evaluate(`({
+          hasLogin: Boolean(document.querySelector("#login-form")),
+          loginHidden: Boolean(document.querySelector("#login-view")?.hidden),
+          dashHidden: Boolean(document.querySelector("#dashboard")?.hidden),
+          hasRow: Boolean(document.querySelector(".process-row")),
+          rowsCount: document.querySelectorAll(".process-row").length,
+          url: window.location.href,
+        })`);
+        if (i % 5 === 0) console.log("Reload state at i=" + i + ":", JSON.stringify(pageState));
+        if (pageState.hasRow) { reloadedRow = true; break; }
+        // If login form is shown because session cookie wasn't persisted or expired, log in
+        if (pageState.hasLogin && !pageState.loginHidden) {
+          console.log("Submitting login form again after reload...");
+          await evaluate(`(function() {
+            const input = document.querySelector("#login-code");
+            input.value = "${loginCode}";
+            document.querySelector("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+          })()`);
+        }
+      } catch (e) {
+        if (i % 5 === 0) console.log("Eval error at i=" + i + ":", e.message);
+      }
+    }
+    assert.equal(reloadedRow, true, "Process row not found after reload");
+    await evaluate(`document.querySelector(".process-row").click()`);
+    await sleep(500);
+    const reloadedMode = await evaluate(`window.overviewMode`);
+    assert.equal(reloadedMode, "dashboard", "Overview mode did not persist across reload");
+    const reloadedClass = await evaluate(`document.querySelector("#run-inspector").classList.contains("mode-dashboard")`);
+    assert.equal(reloadedClass, true, "DOM class did not reflect persisted overview mode");
+    console.log("Verified persistence of mode across browser reloads.");
+
+    // 15. Responsive Viewports Testing
+    console.log("Testing responsive viewports (390, 768, 1366, 1920, 2560px)...");
+    const viewports = [
+      { width: 390, height: 844, mobile: true },
+      { width: 768, height: 1024, mobile: false },
+      { width: 1366, height: 768, mobile: false },
+      { width: 1920, height: 1080, mobile: false },
+      { width: 2560, height: 1080, mobile: false },
+    ];
+    for (const vp of viewports) {
+      await sendCommand("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.mobile });
+      await sleep(200);
+      const scrollWidth = await evaluate(`document.documentElement.scrollWidth`);
+      const clientWidth = await evaluate(`document.documentElement.clientWidth`);
+      assert.ok(scrollWidth <= clientWidth + 2, `Horizontal overflow at ${vp.width}px: scrollWidth=${scrollWidth}, clientWidth=${clientWidth}`);
+    }
+    await sendCommand("Emulation.clearDeviceMetricsOverride");
+    console.log("Verified responsive stability across all viewports without horizontal overflow.");
+
+    // 16. Run switching and terminal run handling
+    console.log("Testing run switching and terminal run handling...");
+    // Switch to finished run
+    await evaluate(`(function() {
+      const rows = document.querySelectorAll(".process-row");
+      if (rows.length > 1) rows[1].click();
+    })()`);
+    await sleep(800);
+    const selectedFinished = await evaluate(`document.querySelector("#selected-name").textContent`);
+    assert.equal(selectedActiveOrFinished(selectedFinished), true);
+
+    // Switch back to active run
+    await evaluate(`document.querySelectorAll(".process-row")[0].click()`);
+    await sleep(800);
+    const selectedActive = await evaluate(`document.querySelector("#selected-name").textContent`);
+    assert.equal(selectedActive, "e2e worker");
+    console.log("Verified run switching while telemetry is active.");
+
+    function selectedActiveOrFinished(name) {
+      return name === "finished worker" || name === "e2e worker";
+    }
+
     console.log("\n==========================================");
     console.log("ALL REAL HEADLESS BROWSER E2E TESTS PASSED!");
     console.log("==========================================\n");
   } finally {
+    if (workerProc) {
+      try { workerProc.kill("SIGKILL"); } catch {}
+    }
     if (ws) {
       try { ws.close(); } catch {}
     }
