@@ -49,8 +49,10 @@ def test_utilization_percentages_use_requested_color_bands() -> None:
 
 
 def test_resource_snapshot_reads_host_ram_and_gpu_metrics(monkeypatch) -> None:
+    import resource_metrics.system as resource_system
+
     monkeypatch.setattr(
-        telemetry.psutil,
+        resource_system.psutil,
         "virtual_memory",
         lambda: SimpleNamespace(used=16 * 1024**3, total=32 * 1024**3, percent=50.0,
                                 available=16 * 1024**3),
@@ -112,7 +114,7 @@ def test_resource_sampler_calls_sample_observer(monkeypatch) -> None:
 def test_runtime_memory_guard_stops_before_host_exhaustion(monkeypatch):
     import pytest
 
-    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+    monkeypatch.setattr("resource_metrics.system.psutil.virtual_memory", lambda: SimpleNamespace(
         percent=87.5, available=7 * 1024**3))
     monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [{"pid": 42, "name": "llama-server", "rss_bytes": 30}])
     with pytest.raises(telemetry.ResourceLimitExceeded, match="87.5%"):
@@ -122,7 +124,7 @@ def test_runtime_memory_guard_stops_before_host_exhaustion(monkeypatch):
 def test_runtime_memory_guard_logs_process_attribution_without_stopping_healthy_host(monkeypatch, caplog):
     import logging
 
-    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+    monkeypatch.setattr("resource_metrics.system.psutil.virtual_memory", lambda: SimpleNamespace(
         percent=55.0, available=28 * 1024**3))
     monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [{"pid": 42, "name": "llama-server", "rss_bytes": 30}])
     monkeypatch.setattr(logging.getLogger("agent_benchmark"), "propagate", True)
@@ -134,7 +136,7 @@ def test_runtime_memory_guard_logs_process_attribution_without_stopping_healthy_
 def test_runtime_memory_guard_checks_available_ram_even_below_percentage_limit(monkeypatch):
     import pytest
 
-    monkeypatch.setattr(telemetry.psutil, "virtual_memory", lambda: SimpleNamespace(
+    monkeypatch.setattr("resource_metrics.system.psutil.virtual_memory", lambda: SimpleNamespace(
         percent=70.0, available=3 * 1024**3))
     monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [])
     with pytest.raises(telemetry.ResourceLimitExceeded):
@@ -150,6 +152,8 @@ def test_process_memory_snapshot_sorts_and_omits_unavailable_process_memory(monk
                 SimpleNamespace(info={"pid": 2, "name": "large", "memory_info": SimpleNamespace(rss=100)}),
                 SimpleNamespace(info={"pid": 3, "name": "unavailable", "memory_info": None})]
 
-    monkeypatch.setattr(telemetry.psutil, "process_iter", process_iter)
+    import resource_metrics.process as resource_process
+
+    monkeypatch.setattr(resource_process.psutil, "process_iter", process_iter)
     assert telemetry.process_memory_snapshot(1) == [{"pid": 2, "name": "large", "rss_bytes": 100}]
     assert requested == ["pid", "name", "memory_info"]

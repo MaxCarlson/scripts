@@ -15,9 +15,17 @@ import sys
 import time
 from dataclasses import dataclass
 from datetime import datetime
+from types import SimpleNamespace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import psutil
+from resource_metrics import cpu_percent as shared_cpu_percent
+from resource_metrics import (
+    disk_io_counters,
+    memory_stats,
+    net_io_counters,
+    nvidia_gpus,
+)
 from rich import box
 from rich.console import Group
 from rich.live import Live
@@ -46,7 +54,8 @@ if os.name == "nt":
                 return None
             return ch
 else:
-    import tty, termios
+    import termios
+    import tty
 
     class KeyReader:
         def __enter__(self):
@@ -176,16 +185,14 @@ def human_mbps(bits_per_sec: float, base: str) -> float:
 
 # ─────────────────────────── Safe psutil wrappers ────────────────────────────
 def safe_cpu_percent() -> float:
-    try:    return float(psutil.cpu_percent(interval=None))
-    except: return 0.0
+    return float(shared_cpu_percent() or 0.0)
 
 def safe_virtual_memory():
-    try: return psutil.virtual_memory()
-    except:
-        class _Dummy:
-            total = used = available = 0
-            percent = 0.0
-        return _Dummy()
+    stats = memory_stats()
+    if stats is None:
+        return SimpleNamespace(total=0, used=0, available=0, percent=0.0)
+    return SimpleNamespace(total=stats.get("total") or 0, used=stats.get("used") or 0,
+                           available=stats.get("available") or 0, percent=stats.get("percent") or 0.0)
 
 # ─────────────────────────── Process snapshotting ────────────────────────────
 @dataclass
@@ -457,8 +464,7 @@ class DiskLiveState:
         self.col_offset           = 0
 
 def safe_disk_io_counters_perdisk() -> Dict:
-    try:    return psutil.disk_io_counters(perdisk=True) or {}
-    except: return {}
+    return disk_io_counters(per_disk=True) or {}
 
 def _win_populate_drive_models() -> Dict[str, str]:
     if os.name != "nt": return {}
@@ -657,7 +663,7 @@ def _sysfs_sum_net_bytes() -> Optional[Tuple[int, int]]:
 
 def get_total_counters() -> Tuple[int, int]:
     try:
-        c = psutil.net_io_counters(pernic=False)
+        c = net_io_counters(per_nic=False)
         return c.bytes_sent, c.bytes_recv
     except:
         return _sysfs_sum_net_bytes() or (0, 0)
@@ -775,28 +781,12 @@ class GpuState:
         self.graph_mode = "total"
 
 def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
-    try:
-        import GPUtil  # type: ignore
-        return [{"name": g.name, "id": g.id, "load": g.load * 100.0,
-                 "mem_used": g.memoryUsed, "mem_total": g.memoryTotal, "temp": g.temperature}
-                for g in GPUtil.getGPUs()], None
-    except Exception:
-        pass
-    try:
-        out = subprocess.check_output(
-            ["nvidia-smi",
-             "--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu",
-             "--format=csv,noheader,nounits"],
-            stderr=subprocess.DEVNULL, text=True, timeout=1.5
-        )
-        rows = []
-        for line in out.strip().splitlines():
-            name, idx, util, mu, mt, temp = [s.strip() for s in line.split(",")]
-            rows.append({"name": name, "id": int(idx), "load": float(util),
-                         "mem_used": float(mu), "mem_total": float(mt), "temp": float(temp)})
-        return rows, None
-    except Exception:
-        return [], "GPU info unavailable (install GPUtil or nvidia-smi)"
+    rows = [row for row in nvidia_gpus()
+            if None not in (row["load"], row["mem_used"], row["mem_total"], row["temp"])]
+    for row in rows:
+        row["mem_used"] /= 1024 ** 2
+        row["mem_total"] /= 1024 ** 2
+    return rows, None if rows else "GPU info unavailable (nvidia-smi not available)"
 
 # Keep legacy name for sysmon_capture.py compatibility
 def gpu_info() -> Tuple[List[dict], Optional[str]]:

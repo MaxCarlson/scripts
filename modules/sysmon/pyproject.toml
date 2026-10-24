@@ -4,12 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "sysmon"
-version = "0.3.0"
+version = "0.4.0"
 description = "Beautiful cross-platform system monitor TUI — CPU / RAM / Disk / Network / GPU."
 authors = [{ name = "Maxwell Carlson", email = "carlsonamax@gmail.com" }]
 requires-python = ">=3.9"
 dependencies = [
     "psutil>=5.9",
+    "resource-metrics>=0.1.0",
     "rich>=13.0",
 ]
 
