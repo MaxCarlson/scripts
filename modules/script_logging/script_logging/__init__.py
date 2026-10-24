@@ -20,6 +20,7 @@ from .reader import (
     ReadOnlyHistoryReader,
     open_invocation_reader,
 )
+from .reconciliation import reconcile_invocation_summaries
 from .redaction import compute_pattern_id, redact_argv
 from .store import EventRecord, HistoryStore, RunRecord
 
@@ -105,6 +106,7 @@ __all__ = [
     "list_invocations",
     "list_unique_commands",
     "open_invocation_reader",
+    "reconcile_invocation_summaries",
     "redact_argv",
     "resolve_invocation_db_path",
     "text_file_handler",
