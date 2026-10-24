@@ -171,7 +171,7 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     refreshTelemetry,
     startTelemetryPolling,
     stopTelemetryPolling,
-    isTelemetryInFlight: () => telemetryInFlight,
+    isTelemetryInFlight: () => telemetryInFlightId !== 0,
     getTelemetryTimer: () => telemetryTimer,
   };`, context);
   return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
@@ -1099,7 +1099,8 @@ async function testLiveTelemetryRenderingAndZeroVsUnavailableDistinction() {
   assert.equal(getElement("#card-cpu-val").textContent, "—");
   assert.equal(getElement("#card-cpu-sub").textContent, "Baseline pending (first sample)");
   assert.equal(getElement("#card-io-val").textContent, "—");
-  assert.equal(getElement("#card-gpu-proc-val").textContent, "None attributed");
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "Unavailable");
+  assert.equal(getElement("#card-gpu-proc-sub").textContent, "No GPU attribution data");
 
   // 4. Test Valid Zero Utilization (active process, 0% CPU, 0 B/s IO)
   const zeroWorkStats = {
@@ -1173,7 +1174,196 @@ async function testTelemetryPollingBoundsAndLifecycle() {
   assert.equal(h.context.__dashboard.getTelemetryTimer(), null);
 }
 
+
+async function testIsoSampledAtStaleDetection() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setOverviewMode("dashboard");
+
+  // 1. Fresh ISO 8601 string (e.g. 1 second ago)
+  const freshIso = new Date(Date.now() - 1000).toISOString();
+  db.renderTelemetry({
+    id: "run-fresh",
+    status: "running",
+    cpu_percent: 15.0,
+    rss_bytes: 1048576,
+    sampled_at: freshIso,
+  });
+  assert.equal(getElement("#telemetry-status-banner").hidden, true);
+
+  // 2. Stale ISO 8601 string (e.g. 12 seconds ago)
+  const staleIso = new Date(Date.now() - 12000).toISOString();
+  db.renderTelemetry({
+    id: "run-stale",
+    status: "running",
+    cpu_percent: 15.0,
+    rss_bytes: 1048576,
+    sampled_at: staleIso,
+  });
+  assert.equal(getElement("#telemetry-status-banner").hidden, false);
+  assert.match(getElement("#telemetry-status-banner").textContent, /Stale telemetry \(12s ago\)/);
+}
+
+async function testGpuNullVsZeroAttribution() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setOverviewMode("dashboard");
+
+  // 1. Null GPU measurement: must be "Unavailable", NOT "0 B" or "None attributed"
+  db.renderTelemetry({
+    id: "run-gpu-null",
+    status: "running",
+    gpu_memory_bytes: null,
+  });
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "Unavailable");
+  assert.equal(getElement("#card-gpu-proc-sub").textContent, "No GPU attribution data");
+
+  // 2. Verified zero GPU attribution (0 bytes)
+  db.renderTelemetry({
+    id: "run-gpu-zero",
+    status: "running",
+    gpu_memory_bytes: 0,
+  });
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "0 B");
+  assert.equal(getElement("#card-gpu-proc-sub").textContent, "Verified zero GPU memory");
+
+  // 3. Positive GPU attribution
+  db.renderTelemetry({
+    id: "run-gpu-active",
+    status: "running",
+    gpu_memory_bytes: 2147483648, // 2 GiB
+  });
+  assert.equal(getElement("#card-gpu-proc-val").textContent, "2.00 GiB");
+  assert.equal(getElement("#card-gpu-proc-sub").textContent, "Attributed compute VRAM");
+}
+
+async function testTerminalVsTemporaryUnavailablePolling() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setOverviewMode("inline");
+  db.setRuns([run("run-temp")]);
+  db.setSelectedId("run-temp");
+  db.startTelemetryPolling();
+  assert.notEqual(db.getTelemetryTimer(), null);
+
+  // 1. Temporary unavailable with running status: must NOT stop polling
+  db.renderTelemetry({
+    id: "run-temp",
+    status: "running",
+    unavailable: "unassigned pid",
+  });
+  assert.notEqual(db.getTelemetryTimer(), null, "Temporary unassigned pid should not stop telemetry timer");
+
+  // 2. Genuinely terminal run (finished): MUST stop polling
+  db.renderTelemetry({
+    id: "run-temp",
+    status: "finished",
+    unavailable: "run is finished",
+  });
+  assert.equal(db.getTelemetryTimer(), null, "Finished run must stop telemetry timer");
+}
+
+async function testDualCadencePollingOverhead() {
+  const h = dashboardHarness();
+  const db = h.context.__dashboard;
+  db.setOverviewMode("expanded");
+  db.setRuns([run("run-cadence")]);
+  db.setSelectedId("run-cadence");
+
+  let mockNow = 1000000;
+  vm.runInContext(`Date.now = () => ${mockNow}`, h.context);
+
+  // 1. Initial refresh in expanded mode: should fetch both run telemetry and host /api/telemetry
+  const p1 = db.refreshTelemetry();
+  assert.equal(h.requests.length, 2);
+  assert.ok(h.requests.some(r => r.url.includes("/api/runs/run-cadence/telemetry")));
+  assert.ok(h.requests.some(r => r.url.endsWith("/api/telemetry")));
+
+  // Resolve requests
+  h.requests[0].resolve(response({ id: "run-cadence", cpu_percent: 10 }));
+  h.requests[1].resolve(response({ host: { cpu_percent: 25 } }));
+  await p1;
+
+  // 2. Advance time by 1800ms (next process telemetry interval)
+  mockNow += 1800;
+  vm.runInContext(`Date.now = () => ${mockNow}`, h.context);
+  const reqCountBefore = h.requests.length;
+  const p2 = db.refreshTelemetry();
+  assert.equal(h.requests.length, reqCountBefore + 1, "Should only fetch process telemetry, not host overview");
+  assert.ok(h.requests[h.requests.length - 1].url.includes("/api/runs/run-cadence/telemetry"));
+
+  h.requests[h.requests.length - 1].resolve(response({ id: "run-cadence", cpu_percent: 12 }));
+  await p2;
+
+  // 3. Advance time by another 4000ms (total elapsed 5800ms > HOST_TELEMETRY_INTERVAL_MS of 5400ms)
+  mockNow += 4000;
+  vm.runInContext(`Date.now = () => ${mockNow}`, h.context);
+  const reqCountBefore3 = h.requests.length;
+  const p3 = db.refreshTelemetry();
+  assert.equal(h.requests.length, reqCountBefore3 + 2, "Should fetch both process telemetry and host overview after 5400ms");
+  assert.ok(h.requests[h.requests.length - 2].url.includes("/api/runs/run-cadence/telemetry"));
+  assert.ok(h.requests[h.requests.length - 1].url.endsWith("/api/telemetry"));
+
+  h.requests[h.requests.length - 2].resolve(response({ id: "run-cadence", cpu_percent: 15 }));
+  h.requests[h.requests.length - 1].resolve(response({ host: { cpu_percent: 30 } }));
+  await p3;
+}
+
+async function testRequestCancellationAndHiddenState() {
+  const h = dashboardHarness();
+  const db = h.context.__dashboard;
+  h.context.document.hidden = true;
+  db.setOverviewMode("inline");
+  db.setRuns([run("run-race-1"), run("run-race-2")]);
+  db.setSelectedId("run-race-1");
+
+  // 1. If document is hidden, refreshTelemetry should not initiate any request
+  await db.refreshTelemetry();
+  assert.equal(h.requests.length, 0, "Hidden document must not trigger telemetry requests");
+
+  // 2. If overviewMode is minimal, refreshTelemetry should not initiate requests even when document visible
+  h.context.document.hidden = false;
+  db.setOverviewMode("minimal");
+  await db.refreshTelemetry();
+  assert.equal(h.requests.length, 0, "Minimal mode must not trigger telemetry requests");
+
+  db.setOverviewMode("inline");
+  // setOverviewMode("inline") when visible triggered 1 request; let's use it as req1
+  assert.equal(h.requests.length, 1);
+  const req1 = h.requests[0];
+  assert.equal(db.isTelemetryInFlight(), true);
+
+  // User switches to run-race-2: stop telemetry cancels/increments requestId and clears in-flight
+  db.setSelectedId("run-race-2");
+  db.stopTelemetryPolling();
+  assert.equal(db.isTelemetryInFlight(), false);
+
+  const p2 = db.refreshTelemetry();
+  assert.equal(h.requests.length, 2);
+  const req2 = h.requests[1];
+  assert.equal(db.isTelemetryInFlight(), true);
+
+  // Now resolve req1 (the aborted/obsolete one)
+  req1.resolve(response({ id: "run-race-1", cpu_percent: 5 }));
+  await Promise.resolve();
+
+  // telemetryInFlight should STILL be true because req2 is currently active
+  assert.equal(db.isTelemetryInFlight(), true, "Obsolete request finishing must not reset inFlight state of active request");
+
+  // Resolve req2
+  req2.resolve(response({ id: "run-race-2", cpu_percent: 20 }));
+  await p2;
+
+  // Now inFlight should be false
+  assert.equal(db.isTelemetryInFlight(), false);
+}
+
 Promise.all([
+  testIsoSampledAtStaleDetection(),
+  testGpuNullVsZeroAttribution(),
+  testTerminalVsTemporaryUnavailablePolling(),
+  testDualCadencePollingOverhead(),
+  testRequestCancellationAndHiddenState(),
   testOverviewModeSelectionAndCycling(),
   testLiveTelemetryRenderingAndZeroVsUnavailableDistinction(),
   testTelemetryPollingBoundsAndLifecycle(),

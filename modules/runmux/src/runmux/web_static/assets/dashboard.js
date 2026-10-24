@@ -14,10 +14,14 @@ const VIEW_LIMIT = 512 * 1024;
 const OVERVIEW_MODE_STORAGE_KEY = "runmux-overview-mode-v1";
 const OVERVIEW_MODES = ["minimal", "inline", "dashboard", "expanded"];
 const TELEMETRY_INTERVAL_MS = 1800;
+const HOST_TELEMETRY_INTERVAL_MS = 5400;
 let overviewMode = "inline";
 let telemetryTimer = null;
-let telemetryInFlight = false;
+let telemetryRequestId = 0;
+let telemetryInFlightId = 0;
 let telemetryAbortController = null;
+let lastHostSampleTime = 0;
+let cachedHostStats = null;
 
 let runs = [];
 let selectedId = null;
@@ -749,17 +753,29 @@ function formatBytesRate(rate) {
   return `${(rate / (1024 * 1024)).toFixed(1)} MiB/s`;
 }
 
+function parseTelemetryTimestamp(val) {
+  if (!val) return null;
+  if (typeof val === "number" && !isNaN(val)) return val > 1e11 ? val : val * 1000;
+  if (typeof val === "string") {
+    const ms = Date.parse(val);
+    return isNaN(ms) ? null : ms;
+  }
+  return null;
+}
+
 function renderTelemetry(processStats, hostStats = null) {
   if (!processStats) return;
 
   const banner = $("#telemetry-status-banner");
   if (banner) {
+    const sampleMs = parseTelemetryTimestamp(processStats.sampled_at);
     if (processStats.unavailable) {
       banner.hidden = false;
       banner.textContent = `Process inactive: ${processStats.unavailable}`;
-    } else if (processStats.sampled_at && (Date.now() / 1000 - processStats.sampled_at > 6.0)) {
+    } else if (sampleMs !== null && (Date.now() - sampleMs > 6000)) {
+      const ageSec = Math.round((Date.now() - sampleMs) / 1000);
       banner.hidden = false;
-      banner.textContent = `Stale telemetry (${Math.round(Date.now() / 1000 - processStats.sampled_at)}s ago)`;
+      banner.textContent = `Stale telemetry (${ageSec}s ago)`;
     } else {
       banner.hidden = true;
     }
@@ -825,16 +841,24 @@ function renderTelemetry(processStats, hostStats = null) {
     }
   }
 
+  // 5. Correct GPU attribution distinction: null = Unavailable, 0 = 0 B, >0 = formatted
   const cardGpuProcVal = $("#card-gpu-proc-val");
+  const cardGpuProcSub = $("#card-gpu-proc-sub");
   if (cardGpuProcVal) {
-    if (!processStats.unavailable && processStats.gpu_memory_bytes != null && processStats.gpu_memory_bytes > 0) {
-      cardGpuProcVal.textContent = formatBytes(processStats.gpu_memory_bytes);
+    if (processStats.unavailable) {
+      cardGpuProcVal.textContent = "—";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Process inactive";
+    } else if (processStats.gpu_memory_bytes == null) {
+      cardGpuProcVal.textContent = "Unavailable";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "No GPU attribution data";
+    } else if (processStats.gpu_memory_bytes === 0) {
+      cardGpuProcVal.textContent = "0 B";
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Verified zero GPU memory";
     } else {
-      cardGpuProcVal.textContent = "None attributed";
+      cardGpuProcVal.textContent = formatBytes(processStats.gpu_memory_bytes);
+      if (cardGpuProcSub) cardGpuProcSub.textContent = "Attributed compute VRAM";
     }
   }
-  const cardGpuProcSub = $("#card-gpu-proc-sub");
-  if (cardGpuProcSub) cardGpuProcSub.textContent = "Attributed compute VRAM";
 
   // Mode D Host & Hardware Cards
   if (hostStats) {
@@ -861,20 +885,33 @@ function renderTelemetry(processStats, hostStats = null) {
 
     const cardGpuDevVal = $("#card-gpu-dev-val");
     const cardGpuDevSub = $("#card-gpu-dev-sub");
-    if (Array.isArray(hostStats.gpu_devices) && hostStats.gpu_devices.length > 0) {
+    if (hostStats.gpu_devices == null) {
+      if (cardGpuDevVal) cardGpuDevVal.textContent = "Unavailable";
+      if (cardGpuDevSub) cardGpuDevSub.textContent = "Host GPU metrics unavailable";
+    } else if (Array.isArray(hostStats.gpu_devices) && hostStats.gpu_devices.length > 0) {
       const dev = hostStats.gpu_devices[0];
-      if (cardGpuDevVal) cardGpuDevVal.textContent = `${dev.name || ("GPU " + dev.index)}: ${dev.load ?? "—"}% load`;
-      if (cardGpuDevSub) cardGpuDevSub.textContent = `${formatBytes(dev.memory_used)} / ${formatBytes(dev.memory_total)} · ${dev.temperature ?? "—"}°C`;
+      if (cardGpuDevVal) cardGpuDevVal.textContent = `${dev.name || ("GPU " + dev.index)}: ${dev.load != null ? dev.load + "% load" : "—"}`;
+      if (cardGpuDevSub) cardGpuDevSub.textContent = `${formatBytes(dev.memory_used)} / ${formatBytes(dev.memory_total)} · ${dev.temperature != null ? dev.temperature + "°C" : "—"}`;
     } else {
       if (cardGpuDevVal) cardGpuDevVal.textContent = "No GPU detected";
       if (cardGpuDevSub) cardGpuDevSub.textContent = "NVIDIA SMI or device unavailable";
     }
   }
+
+  // 4. Correct terminal state check: only stop polling if run is genuinely terminal
+  const isTerminalRun = processStats && (
+    ["finished", "failed", "killed", "lost"].includes(processStats.status) ||
+    processStats.unavailable === "run is finished" ||
+    processStats.unavailable === "process exited"
+  );
+  if (isTerminalRun) {
+    stopTelemetryPolling();
+  }
 }
 
 function startTelemetryPolling() {
   stopTelemetryPolling();
-  if (overviewMode === "minimal" || !selectedId) return;
+  if (overviewMode === "minimal" || !selectedId || (typeof document !== "undefined" && document.hidden)) return;
   telemetryTimer = setInterval(() => {
     if (!document.hidden && selectedId && overviewMode !== "minimal") {
       refreshTelemetry(selectionGeneration, selectedId);
@@ -883,6 +920,8 @@ function startTelemetryPolling() {
 }
 
 function stopTelemetryPolling() {
+  telemetryRequestId++;
+  telemetryInFlightId = 0;
   if (telemetryTimer) {
     clearInterval(telemetryTimer);
     telemetryTimer = null;
@@ -891,47 +930,51 @@ function stopTelemetryPolling() {
     try { telemetryAbortController.abort(); } catch {}
     telemetryAbortController = null;
   }
-  telemetryInFlight = false;
 }
 
 async function refreshTelemetry(generation = selectionGeneration, runId = selectedId) {
-  if (!runId || !isCurrentSelection(generation, runId) || overviewMode === "minimal") return;
-  if (telemetryInFlight) return;
-  telemetryInFlight = true;
+  if (!runId || !isCurrentSelection(generation, runId) || overviewMode === "minimal" || (typeof document !== "undefined" && document.hidden)) return;
+  if (telemetryInFlightId !== 0) return;
+
+  const currentRequestId = ++telemetryRequestId;
+  telemetryInFlightId = currentRequestId;
 
   if (telemetryAbortController) {
     try { telemetryAbortController.abort(); } catch {}
   }
-  telemetryAbortController = new AbortController();
-  const signal = telemetryAbortController.signal;
+  const controller = new AbortController();
+  telemetryAbortController = controller;
+  const signal = controller.signal;
 
   try {
     let procStats = null;
-    let hostStats = null;
+    let hostStats = cachedHostStats;
 
-    if (overviewMode === "expanded") {
+    // 2. Correct polling overhead: Only query /api/telemetry (all active runs) every 5.4s in Mode D
+    const now = Date.now();
+    const shouldFetchHost = overviewMode === "expanded" && (!cachedHostStats || (now - lastHostSampleTime >= HOST_TELEMETRY_INTERVAL_MS));
+
+    if (shouldFetchHost) {
       const [pRes, hRes] = await Promise.all([
         api(`/api/runs/${encodeURIComponent(runId)}/telemetry`, { signal }),
         api("/api/telemetry", { signal }),
       ]);
-      if (!isCurrentSelection(generation, runId)) return;
+      if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
       procStats = await pRes.json();
       const hData = await hRes.json();
       hostStats = hData?.host || null;
+      cachedHostStats = hostStats;
+      lastHostSampleTime = Date.now();
     } else {
       const pRes = await api(`/api/runs/${encodeURIComponent(runId)}/telemetry`, { signal });
-      if (!isCurrentSelection(generation, runId)) return;
+      if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
       procStats = await pRes.json();
     }
 
-    if (!isCurrentSelection(generation, runId)) return;
+    if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
     renderTelemetry(procStats, hostStats);
-
-    if (procStats && (procStats.unavailable || (procStats.status && ["finished", "failed", "killed", "lost"].includes(procStats.status)))) {
-      stopTelemetryPolling();
-    }
   } catch (error) {
-    if (!isCurrentSelection(generation, runId)) return;
+    if (!isCurrentSelection(generation, runId) || currentRequestId !== telemetryRequestId) return;
     if (error.name === "AbortError") return;
     if (error.message === "locked") {
       showLogin("Session expired. Enter the current terminal login code again.");
@@ -943,7 +986,10 @@ async function refreshTelemetry(generation = selectionGeneration, runId = select
       banner.textContent = "Telemetry temporarily unavailable.";
     }
   } finally {
-    telemetryInFlight = false;
+    // 3. Fix request cancellation races: only clear in-flight ID if this request is still the active one
+    if (telemetryInFlightId === currentRequestId) {
+      telemetryInFlightId = 0;
+    }
   }
 }
 

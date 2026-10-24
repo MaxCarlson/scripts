@@ -16,10 +16,11 @@
 - [x] Task 4: Responsive styling across viewports
 - [x] Task 5: Native Windows Chrome CDP validation and screenshots
 - [x] Task 6: Documentation and branch push
+- [x] Review corrections: ISO 8601 stale detection, decoupled dual-cadence host polling (5.4s), request cancellation race guards, terminal vs temporary state polling, GPU null vs 0 distinction
 
 ## Verification Summary
 
-- **Unit tests:** `node tests/dashboard_test.js` passed (25 test suites, 0 failures).
+- **Unit tests:** `node tests/dashboard_test.js` passed (30 test suites, 0 failures).
 - **Chrome CDP E2E tests:** `node tests/browser_e2e_test.js` passed (all 16 validation sections, 0 failures).
 - **Representative screenshots:** Mode A, Mode B, Mode C, Mode D captured with realistic metrics in `screenshots/`.
 - **Backend regressions:** `python -m pytest tests/web_test.py tests/telemetry_test.py tests/web_adapter_test.py -q` passed (37 tests, 0 failures).

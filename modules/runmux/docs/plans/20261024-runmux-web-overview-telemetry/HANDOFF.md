@@ -22,7 +22,7 @@ The implementation maintains the IDE-like developer desktop workspace, prioritiz
 | **Mode A — Minimal** | ~36px | Maximum space for Output/Terminal logs | Process name, status badge, compact command/ID inline. Symbol, eyebrow, and all telemetry hidden. | Polling suspended (0 network/CPU overhead). |
 | **Mode B — Inline** | ~48px (Default) | Compact live monitoring without losing log space | Essential process identity plus inline live CPU %, RSS memory, and process/thread count badges. | Polls `/api/runs/{id}/telemetry` at 1.8s interval. |
 | **Mode C — Dashboard** | ~130px | Balanced live process inspection | Full process header + 5 resource cards: Process CPU (including multicore normalization), Resident RAM (RSS), Process Tree (procs/threads), Disk I/O Rate (read/write throughput), Process GPU RAM. | Polls `/api/runs/{id}/telemetry` at 1.8s interval. |
-| **Mode D — Expanded** | ~240px | Full diagnostic presentation | All Mode C process-tree cards + 4 host/hardware cards: Host CPU Total, Host RAM (used/total), Host Network (System-wide), GPU Device (Hardware load, VRAM, temp). | Polls `/api/runs/{id}/telemetry` and `/api/telemetry` at 1.8s interval. |
+| **Mode D — Expanded** | ~240px | Full diagnostic presentation | All Mode C process-tree cards + 4 host/hardware cards: Host CPU Total, Host RAM (used/total), Host Network (System-wide), GPU Device (Hardware load, VRAM, temp). | Decoupled dual-cadence: polls selected run at 1.8s and host overview (`/api/telemetry`) at 5.4s. |
 
 ---
 
@@ -48,42 +48,50 @@ In accordance with `modules/runmux/docs/plans/20261024-runmux-telemetry-backend/
 1. **Zero vs. Unavailable Distinction:**
    - Valid zero work (`cpu_percent === 0.0`, `read_bytes_per_second === 0`) renders as `0.0%` and `0 B/s`.
    - Missing or unestablished data (`null` / `undefined`) renders as `—` (with informative subtext such as `Baseline pending (first sample)` or `I/O rate unavailable`), never masked as `0.0%` or `0 B/s`.
-2. **Strict Attribution & Scope Separation:**
+2. **GPU Memory Attribution Distinction:**
+   - `gpu_memory_bytes == null`: Renders as `Unavailable` with subtext `No GPU attribution data` (never masked as zero).
+   - `gpu_memory_bytes === 0`: Renders as `0 B` with subtext `Verified zero GPU memory`.
+   - `gpu_memory_bytes > 0`: Formatted bytes with subtext `Attributed compute VRAM`.
+3. **Strict Attribution & Scope Separation:**
    - Process tree cards are tagged `PROCESS TREE` (user+sys deltas summed across living descendant tree).
    - Host metrics are explicitly tagged `HOST & SYSTEM (NOT ATTRIBUTED TO PROCESS)`.
    - Host network throughput is explicitly labeled `HOST NETWORK (SYSTEM-WIDE)` to prevent operators from mistaking host-wide traffic for process traffic.
    - GPU device load and temperature are explicitly labeled `GPU DEVICE (HARDWARE)`.
-3. **Terminal and Exited Process Handling:**
-   - When a process completes, fails, is killed, or supervisor disconnects (`status` in terminal states or `unavailable` reported):
-     - Displays informative status banner: `Process inactive: <reason>`.
-     - Rates display `—`.
-     - Live polling automatically stops to avoid polling dead processes.
-4. **No Speculative Historical Series:**
+4. **Stale Telemetry and ISO Timestamp Parsing:**
+   - `sampled_at` ISO 8601 UTC strings parsed correctly via `parseTelemetryTimestamp()`.
+   - When sample age exceeds 6.0 seconds without updates, status banner displays `Stale telemetry (Xs ago)`.
+5. **Terminal and Exited Process Handling:**
+   - Live polling terminates only when the run is genuinely terminal (`finished`, `failed`, `killed`, `lost`, or `unavailable === "run is finished"` / `"process exited"`).
+   - Transient states (e.g. `unassigned pid` or momentary access error) display informational banners but do NOT terminate polling, allowing bounded retry on the regular interval.
+6. **No Speculative Historical Series:**
    - Live rates display instantaneous rates and total counters; no historical charts are fabricated from isolated live samples.
 
 ---
 
 ## 5. Efficient Polling Architecture
 
-- **Polling Cadence:** `TELEMETRY_INTERVAL_MS = 1800` (1.8s).
-  - *Rationale:* Selected to comfortably exceed the backend `nvidia-smi` 1.5s cache TTL, preventing GPU query thrashing while providing smooth ~2s monotonic deltas with negligible psutil overhead (<0.5% CPU).
-- **Concurrency Guard (`telemetryInFlight`):** Prevents overlapping requests when network latency spikes.
-- **Request Cancellation (`AbortController`):** When switching runs or closing selection, any in-flight telemetry fetch is aborted immediately.
-- **Page Visibility Suspension:** Listens to `document.visibilitychange`. Polling is suspended when the tab/window is hidden, and immediately resumes with a fresh sample when made visible.
-- **Selective Polling:** Polling only occurs for the currently selected run, and is completely halted when in Mode A (Minimal) or when selection is cleared.
+- **Dual-Cadence Polling:**
+  - Selected Process Telemetry (`/api/runs/{id}/telemetry`): 1.8s (`TELEMETRY_INTERVAL_MS = 1800`). Smooth rate deltas exceeding the 1.5s GPU cache window.
+  - Host Overview (`/api/telemetry`): 5.4s (`HOST_TELEMETRY_INTERVAL_MS = 5400`). Decoupling reduces `/api/telemetry` calls (which query all active processes across the fleet) by 66% (from 33 queries/min to 11 queries/min in Mode D) with cached host stats between cycles.
+- **Request Cancellation & Generation Guard (`telemetryRequestId` & `telemetryInFlightId`):**
+  - Concurrency guard prevents overlapping requests.
+  - Aborted/superseded requests cannot reset `telemetryInFlightId` when a newer request is active.
+- **Page Visibility & Mode A Suppression:**
+  - Listens to `document.visibilitychange`. Polling is suspended when hidden, and immediate requests are suppressed.
+  - Polling completely halted when in Mode A (Minimal) or when selection is cleared.
 
 ---
 
 ## 6. Verification and Evidence
 
 1. **Unit Tests (`tests/dashboard_test.js`):**
-   - 25 test suites passed (0 failures).
-   - Tests mode direct selection, mode cycling (`A → B → C → D → A`), `localStorage` persistence, rate formatters (zero vs unavailable), multicore CPU semantics, disk I/O totals, GPU device vs process VRAM separation, and polling lifecycle.
+   - 30 test suites passed (0 failures).
+   - Includes tests for ISO 8601 stale detection, GPU null vs zero attribution, temporary unavailable vs terminal run polling, dual-cadence overhead verification, request cancellation race guards, mode cycling, and rate formatters.
 2. **Headless Chrome CDP E2E Verification (`tests/browser_e2e_test.js`):**
    - Real headless Chrome launched via CDP against disposable Runmux web server and active Python worker.
    - Verified live telemetry update across Mode B, Mode A, Mode C, Mode D.
-   - Verified mode cycling via UI button.
-   - Verified persistence of overview mode across browser `Page.reload`.
+   - Verified real Chrome GPU attribution distinction: `Unavailable (No GPU attribution data)`.
+   - Verified mode cycling via UI button and persistence across `Page.reload`.
    - Verified responsive layouts across viewports: `390x844` (mobile), `768x1024` (tablet), `1366x768` (laptop), `1920x1080` (desktop), `2560x1080` (ultrawide). Zero horizontal overflow.
    - Verified run switching and finished run handling.
 3. **Representative Screenshots Generated:**

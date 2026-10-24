@@ -493,6 +493,13 @@ async function runBrowserE2E() {
     assert.equal(hostNetCard, "HOST NETWORK (SYSTEM-WIDE)");
     const gpuDevCard = await evaluate(`document.querySelector("#card-gpu-dev .card-label").textContent`);
     assert.equal(gpuDevCard, "GPU DEVICE (HARDWARE)");
+    const gpuProcVal = await evaluate(`document.querySelector("#card-gpu-proc-val").textContent`);
+    const gpuProcSub = await evaluate(`document.querySelector("#card-gpu-proc-sub").textContent`);
+    console.log(`Real Chrome GPU Attribution: ${gpuProcVal} (${gpuProcSub})`);
+    assert.ok(
+      gpuProcVal === "Unavailable" || gpuProcVal === "0 B" || gpuProcVal.includes("B"),
+      `GPU attribution should be Unavailable, 0 B, or formatted bytes, but was: ${gpuProcVal}`
+    );
     console.log("Verified scope labels and hardware separation in Mode D.");
 
     // Cycle Mode via button: D -> A -> B -> C -> D
