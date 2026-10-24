@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import codecs
+import concurrent.futures
 import hashlib
 import json
 import re
@@ -155,7 +156,16 @@ class ReadOnlyRunmux:
 
         records = self.list_runs()
         active = [r for r in records if r.status not in TERMINAL_STATUSES]
-        refreshed = [self.refresh_display_status(r)[0] for r in active]
+        if not active:
+            stats_list, host = self._telemetry_sampler.sample_active_runs([], psutil_module=psutil_module)
+            return {"runs": [], "host": serialize_host_telemetry(host)}
+
+        if len(active) == 1:
+            refreshed = [self.refresh_display_status(active[0])[0]]
+        else:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=min(16, len(active))) as executor:
+                refreshed = list(executor.map(lambda r: self.refresh_display_status(r)[0], active))
+
         stats_list, host = self._telemetry_sampler.sample_active_runs(refreshed, psutil_module=psutil_module)
         return {
             "runs": [serialize_process_telemetry(s) for s in stats_list],

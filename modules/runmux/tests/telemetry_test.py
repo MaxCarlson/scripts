@@ -3,16 +3,19 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
+import psutil
 from fastapi.testclient import TestClient
 
 from runmux.models import RunRecord, parse_iso_datetime
-from runmux.stats import TelemetrySampler, verify_run_process
+from runmux.stats import ProcessStats, TelemetrySampler, verify_run_process
 from runmux.store import RunStore
 from runmux.web import create_runmux_web_app
 from runmux.web_adapter import serialize_process_telemetry
@@ -71,7 +74,7 @@ class MockLiveProcess:
         self._read = read_bytes
         self._write = write_bytes
         self._threads = threads
-        self._created_at = created_at if created_at is not None else 1782259200.0
+        self._created_at = created_at if created_at is not None else 1792800000.0
 
     def is_running(self) -> bool:
         return True
@@ -246,7 +249,6 @@ def test_telemetry_network_isolation_and_provenance() -> None:
 
 
 def test_authenticated_api_telemetry_endpoints(tmp_path: Path) -> None:
-    import os
 
     state_dir = tmp_path / "state"
     store = RunStore(state_dir)
@@ -258,6 +260,8 @@ def test_authenticated_api_telemetry_endpoints(tmp_path: Path) -> None:
 
     # Use current test runner PID as a real living process
     current_pid = os.getpid()
+    proc_create = psutil.Process(current_pid).create_time()
+    started_iso = datetime.fromtimestamp(proc_create, tz=timezone.utc).isoformat()
 
     # Insert a managed run record in SQLite store
     store.create_run(
@@ -273,7 +277,7 @@ def test_authenticated_api_telemetry_endpoints(tmp_path: Path) -> None:
         command_line="python worker.py",
     )
     # Using existing current PID keeps status running and allows real process sampling
-    store.update_run(run_id, pid=current_pid, supervisor_pid=current_pid, port=9000)
+    store.update_run(run_id, pid=current_pid, supervisor_pid=current_pid, port=9000, started_at=started_iso)
 
     app = create_runmux_web_app(state_dir, login_code="test-login")
 
@@ -330,3 +334,159 @@ def test_sampling_latency_is_non_blocking() -> None:
 
     # 50 samples should execute well under 100ms total (< 2ms per sample), never sleeping 1000ms!
     assert total_elapsed < 0.2
+
+
+def test_verify_run_process_tight_pid_creation_bounds() -> None:
+    record = make_test_record(started_at="2026-10-24T00:00:00+00:00")
+    dt = parse_iso_datetime(record.started_at)
+    assert dt is not None
+    started_epoch = dt.timestamp()
+
+    # 1. Process created 1.0s after start => normal spawn, accepted
+    valid_proc = MockLiveProcess(12345, created_at=started_epoch + 1.0)
+    harness = MockPsutilHarness(processes={12345: valid_proc})
+    root, reason = verify_run_process(harness, record)
+    assert root is not None
+    assert reason is None
+
+    # 2. Process created 10.0s after start => beyond 5.0s tolerance, rejected as recycled PID
+    recycled_proc = MockLiveProcess(12345, created_at=started_epoch + 10.0)
+    harness = MockPsutilHarness(processes={12345: recycled_proc})
+    root, reason = verify_run_process(harness, record)
+    assert root is None
+    assert reason == "pid reused by another process"
+
+    # 3. Process created 10.0s before start => pre-existing unrelated process, rejected
+    older_proc = MockLiveProcess(12345, created_at=started_epoch - 10.0)
+    harness = MockPsutilHarness(processes={12345: older_proc})
+    root, reason = verify_run_process(harness, record)
+    assert root is None
+    assert reason == "pid reused by another process"
+
+
+def test_overview_telemetry_latency_with_numerous_disconnected_runs(tmp_path: Path) -> None:
+    state_dir = tmp_path / "state"
+    store = RunStore(state_dir)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    # Create 25 synthetic runs with non-existent supervisor PIDs
+    for i in range(25):
+        run_id = f"20261024-000000-{i:06d}"
+        run_dir = state_dir / "runs" / run_id
+        run_dir.mkdir(parents=True)
+        (run_dir / "output.ansi").write_bytes(b"")
+        store.create_run(
+            run_id=run_id,
+            name=f"worker-{i}",
+            status="running",
+            program="python",
+            argv_json="[]",
+            cwd=str(tmp_path),
+            env_overrides_json="{}",
+            auth_token="secret",
+            log_path=run_dir / "output.ansi",
+            command_line="python worker.py",
+        )
+        # supervisor_pid 999900+i does not exist in OS
+        store.update_run(run_id, pid=999900 + i, supervisor_pid=999900 + i, port=40000 + i)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+
+        start = time.perf_counter()
+        res = client.get("/api/telemetry", headers={"Origin": "http://localhost"})
+        elapsed = time.perf_counter() - start
+
+        assert res.status_code == 200
+        payload = res.json()
+        assert len(payload["runs"]) == 25
+        # All 25 runs should be identified as lost / unavailable immediately without waiting 25 * 0.25s = 6.25s!
+        assert elapsed < 1.0
+        for run_item in payload["runs"]:
+            assert run_item["status"] == "lost"
+            assert run_item["unavailable"] == "run is lost"
+            assert run_item["cpu_percent"] is None
+            assert run_item["rss_bytes"] is None
+
+
+def test_gpu_devices_caching_in_sampler(monkeypatch) -> None:
+    import runmux.stats as stats_mod
+
+    call_count = 0
+
+    def mock_gpu_devices(timeout: float = 1.0):
+        nonlocal call_count
+        call_count += 1
+        return [{"name": "MockGPU", "id": 0, "load": 25.0}]
+
+    monkeypatch.setattr(stats_mod, "gpu_devices", mock_gpu_devices)
+
+    clock_time = 500.0
+    sampler = stats_mod.TelemetrySampler(clock=lambda: clock_time)
+
+    # First call: invokes mock_gpu_devices
+    devs1 = sampler._get_gpu_devices()
+    assert len(devs1) == 1
+    assert devs1[0]["name"] == "MockGPU"
+    assert call_count == 1
+
+    # Second call 0.5s later: returns cached data without calling mock_gpu_devices again
+    clock_time = 500.5
+    devs2 = sampler._get_gpu_devices()
+    assert devs2 == devs1
+    assert call_count == 1
+
+    # Third call after 2.0s: cache expired, re-queries
+    clock_time = 502.5
+    devs3 = sampler._get_gpu_devices()
+    assert devs3 == devs1
+    assert call_count == 2
+
+
+def test_unavailable_versus_zero_behavior() -> None:
+    from runmux.stats import format_stats_table, stats_to_json
+
+    record = make_test_record()
+
+    # Case A: Active process genuinely using 0.0% CPU and 0 B/s I/O
+    active_zero = ProcessStats(
+        record=record,
+        process_count=1,
+        thread_count=1,
+        cpu_percent=0.0,
+        rss_bytes=1024,
+        read_bytes_per_second=0.0,
+        write_bytes_per_second=0.0,
+        unavailable=None,
+    )
+    table_zero = format_stats_table([active_zero], width=120, color=False)
+    json_zero = stats_to_json(active_zero)
+
+    assert "  0.0%" in table_zero
+    assert "R        0 B/s W        0 B/s" in table_zero
+    assert json_zero["cpu_percent"] == 0.0
+    assert json_zero["read_bytes_per_second"] == 0.0
+    assert json_zero["unavailable"] is None
+
+    # Case B: Unavailable process (e.g. exited or dead)
+    unavailable_proc = ProcessStats(
+        record=record,
+        process_count=0,
+        thread_count=0,
+        cpu_percent=None,
+        rss_bytes=None,
+        read_bytes_per_second=None,
+        write_bytes_per_second=None,
+        unavailable="process exited",
+    )
+    table_unavail = format_stats_table([unavailable_proc], width=120, color=False)
+    json_unavail = stats_to_json(unavailable_proc)
+
+    # In table, unavailable metrics show placeholders '--'
+    assert "--" in table_unavail
+    assert "process exited" in table_unavail
+    # In JSON, unavailable metrics are strictly null (None), not 0.0
+    assert json_unavail["cpu_percent"] is None
+    assert json_unavail["rss_bytes"] is None
+    assert json_unavail["read_bytes_per_second"] is None
+    assert json_unavail["unavailable"] == "process exited"

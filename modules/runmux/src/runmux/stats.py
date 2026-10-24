@@ -77,6 +77,9 @@ class ProcessStats:
     sample_interval_seconds: float | None = None
 
 
+PID_CREATION_TOLERANCE_SECONDS = 5.0
+
+
 def verify_run_process(psutil_module: Any, record: RunRecord) -> tuple[Any | None, str | None]:
     """Verify run status and PID identity to prevent false attribution and PID reuse."""
 
@@ -106,14 +109,18 @@ def verify_run_process(psutil_module: Any, record: RunRecord) -> tuple[Any | Non
         return None, "process unavailable"
 
     # PID reuse protection: compare process create_time with run record timestamps
-    if hasattr(root, "create_time") and record.started_at:
+    ref_iso = record.started_at or record.created_at
+    if hasattr(root, "create_time") and ref_iso:
         try:
-            started_dt = parse_iso_datetime(record.started_at)
-            if started_dt is not None:
-                started_epoch = started_dt.timestamp()
+            ref_dt = parse_iso_datetime(ref_iso)
+            if ref_dt is not None:
+                ref_epoch = ref_dt.timestamp()
                 proc_create = float(root.create_time())
                 # If process was created noticeably after run started, PID has been recycled
-                if proc_create > started_epoch + 60.0:
+                if proc_create > ref_epoch + PID_CREATION_TOLERANCE_SECONDS:
+                    return None, "pid reused by another process"
+                # If process was created noticeably before run started, PID belongs to older process
+                if proc_create < ref_epoch - PID_CREATION_TOLERANCE_SECONDS:
                     return None, "pid reused by another process"
                 if record.ended_at:
                     ended_dt = parse_iso_datetime(record.ended_at)
@@ -134,6 +141,7 @@ class TelemetrySampler:
         # run_id -> (timestamp, cpu_time, read_bytes, write_bytes, pid)
         self._snapshots: dict[str, tuple[float, float, int | None, int | None, int | None]] = {}
         self._cached_gpu: tuple[float, dict[int, tuple[int, float | None]]] | None = None
+        self._cached_gpu_devices: tuple[float, list[dict[str, Any]]] | None = None
         self._cached_host_net: tuple[float, tuple[int, int]] | None = None
 
     def clear(self) -> None:
@@ -141,6 +149,7 @@ class TelemetrySampler:
         with self._lock:
             self._snapshots.clear()
             self._cached_gpu = None
+            self._cached_gpu_devices = None
             self._cached_host_net = None
 
     def _get_gpu_usage(self) -> dict[int, tuple[int, float | None]]:
@@ -150,6 +159,14 @@ class TelemetrySampler:
         usage = query_gpu_usage_by_pid()
         self._cached_gpu = (now, usage)
         return usage
+
+    def _get_gpu_devices(self) -> list[dict[str, Any]]:
+        now = self._clock()
+        if self._cached_gpu_devices and (now - self._cached_gpu_devices[0]) < 1.5:
+            return self._cached_gpu_devices[1]
+        devices = gpu_devices(timeout=1.0)
+        self._cached_gpu_devices = (now, devices)
+        return devices
 
     def sample_run(
         self,
@@ -363,7 +380,7 @@ class TelemetrySampler:
         if curr_net:
             self._cached_host_net = (now, curr_net)
 
-        devices = gpu_devices(timeout=1.0)
+        devices = self._get_gpu_devices()
 
         host_telemetry = HostTelemetry(
             cpu_percent=host_cpu,
@@ -515,10 +532,10 @@ def build_process_stats(
             record=record,
             process_count=0,
             thread_count=0,
-            cpu_percent=0.0 if record.status not in TERMINAL_STATUSES else None,
-            rss_bytes=0 if record.status not in TERMINAL_STATUSES else None,
-            read_bytes_per_second=0.0 if record.status not in TERMINAL_STATUSES else None,
-            write_bytes_per_second=0.0 if record.status not in TERMINAL_STATUSES else None,
+            cpu_percent=None,
+            rss_bytes=None,
+            read_bytes_per_second=None,
+            write_bytes_per_second=None,
             unavailable=unavailable_reason,
             sampled_at=utc_now_iso(),
         )
@@ -529,10 +546,10 @@ def build_process_stats(
             record=record,
             process_count=0,
             thread_count=0,
-            cpu_percent=0.0,
-            rss_bytes=0,
-            read_bytes_per_second=0.0,
-            write_bytes_per_second=0.0,
+            cpu_percent=None,
+            rss_bytes=None,
+            read_bytes_per_second=None,
+            write_bytes_per_second=None,
             unavailable="process unavailable",
             sampled_at=utc_now_iso(),
         )
@@ -651,14 +668,19 @@ def format_stats_table(
     for item in stats:
         detail = item.unavailable or truncate(item.record.command_line, command_width)
         status = colorize(f"{item.record.status:<8}", status_color(item.record.status), enabled=color)
-        cpu_val = item.cpu_percent if item.cpu_percent is not None else 0.0
-        cpu = colorize(f"{cpu_val:>6.1f}%", metric_color(cpu_val, 30, 75), enabled=color)
-        rss_val = item.rss_bytes if item.rss_bytes is not None else 0
-        rss = colorize(f"{format_bytes(rss_val):>10}", "36", enabled=color)
-        read_rate = item.read_bytes_per_second if item.read_bytes_per_second is not None else 0.0
-        write_rate = item.write_bytes_per_second if item.write_bytes_per_second is not None else 0.0
-        disk_plain = f"R {format_bytes(read_rate):>10}/s W {format_bytes(write_rate):>10}/s"
-        disk = colorize(f"{disk_plain:<31}", "36", enabled=color)
+        if item.unavailable:
+            cpu = colorize("     --", "90", enabled=color)
+            rss = colorize("        --", "90", enabled=color)
+            disk = colorize(f"{'--':<31}", "90", enabled=color)
+        else:
+            cpu_val = item.cpu_percent if item.cpu_percent is not None else 0.0
+            cpu = colorize(f"{cpu_val:>6.1f}%", metric_color(cpu_val, 30, 75), enabled=color)
+            rss_val = item.rss_bytes if item.rss_bytes is not None else 0
+            rss = colorize(f"{format_bytes(rss_val):>10}", "36", enabled=color)
+            read_rate = item.read_bytes_per_second if item.read_bytes_per_second is not None else 0.0
+            write_rate = item.write_bytes_per_second if item.write_bytes_per_second is not None else 0.0
+            disk_plain = f"R {format_bytes(read_rate):>10}/s W {format_bytes(write_rate):>10}/s"
+            disk = colorize(f"{disk_plain:<31}", "36", enabled=color)
         gpu_plain = format_gpu_cell(item, color=False)
         gpu = colorize(f"{gpu_plain:<14}", "32" if gpu_plain != "--" else "90", enabled=color)
         procs_threads = colorize(f"{item.process_count}/{item.thread_count:<7}", "90", enabled=color)
@@ -729,13 +751,13 @@ def stats_to_json(item: ProcessStats) -> dict[str, Any]:
         "command_line": item.record.command_line,
         "process_count": item.process_count,
         "thread_count": item.thread_count,
-        "cpu_percent": item.cpu_percent if item.cpu_percent is not None else 0.0,
+        "cpu_percent": item.cpu_percent,
         "cpu_percent_normalized": item.cpu_percent_normalized,
         "cpu_count": item.cpu_count,
         "cpu_time_seconds": item.cpu_time_seconds,
-        "rss_bytes": item.rss_bytes if item.rss_bytes is not None else 0,
-        "read_bytes_per_second": item.read_bytes_per_second if item.read_bytes_per_second is not None else 0.0,
-        "write_bytes_per_second": item.write_bytes_per_second if item.write_bytes_per_second is not None else 0.0,
+        "rss_bytes": item.rss_bytes,
+        "read_bytes_per_second": item.read_bytes_per_second,
+        "write_bytes_per_second": item.write_bytes_per_second,
         "total_read_bytes": item.total_read_bytes,
         "total_write_bytes": item.total_write_bytes,
         "net_read_bytes_per_second": item.net_read_bytes_per_second,
