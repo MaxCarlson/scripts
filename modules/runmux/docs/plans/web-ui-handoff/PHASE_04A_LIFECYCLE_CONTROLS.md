@@ -1,6 +1,6 @@
 # Runmux Web UI — Phase 4A: Authorized Process Lifecycle Controls
 
-**Status:** Future separately assignable feature | **Priority:** P1 | **Backlog:** C02–C07, applicable S01–S12
+**Status:** Complete & Merged to origin/main (Backend & Frontend) | **Priority:** P1 | **Backlog:** C02–C07, applicable S01–S12
 
 ## Objective
 

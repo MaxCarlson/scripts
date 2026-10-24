@@ -1,10 +1,11 @@
 # Runmux Web UI — Phase 4A Lifecycle Frontend Status
 
-**Active Branch:** `codex/runmux-web-lifecycle-frontend-20261024`  
+**Active Branch:** `codex/runmux-web-lifecycle-frontend-20261024` (Merged into `main`)  
 **Base Commit:** `a0028473523f6208ea298218e0e666d56d083c9c`  
 **Published Initial SHA:** `fc26899ff041402a3edc97900ea604d96114b27e`  
-**Current Stage:** Final Acceptance Corrections (Resume Action & Platform Capability Awareness)  
-**Next Action:** Run full verification and push final corrections commit  
+**Final Corrections SHA:** `9e214877e83b2f0f7f9bb955694a3e384dfd01f0`  
+**Current Stage:** Complete & Merged to `origin/main` (Both Frontend and Backend)  
+**Next Action:** None (Phase 4A complete)  
 
 ## Stage Tracker
 
@@ -24,3 +25,5 @@
   - [x] Present Pause/Resume as unavailable when unsupported (e.g. Windows backend)
   - [x] Correct Run ID length description in documentation (22 characters)
   - [x] Update tests covering supported Pause → Resume transitions and unsupported Windows behavior
+  - [x] Feature branch updated and pushed (`9e214877`)
+- [x] Task 8: Integration into `main` authorized, tested, merged, and published to `origin/main`

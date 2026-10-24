@@ -43,4 +43,10 @@
 - [x] Correct Run ID length description in documentation (22 characters)
 - [x] Add unit tests in `dashboard_test.js` and `lifecycle_api_test.py` covering supported Pause → Resume transitions and unsupported Windows behavior
 - [x] Validate in headless Chrome CDP test (`browser_e2e_test.js`)
-- [ ] Commit and push corrections commit to `origin/codex/runmux-web-lifecycle-frontend-20261024`
+- [x] Commit and push corrections commit to `origin/codex/runmux-web-lifecycle-frontend-20261024` (`9e214877`)
+
+## Task 7: Integration and Merge
+- [x] Merge `codex/runmux-web-lifecycle-frontend-20261024` into `main` via clean isolated worktree
+- [x] Run full validation (frontend unit tests, headless Chrome CDP E2E, backend pytest suite, ruff check)
+- [x] Update Phase 4A documentation marking frontend and backend complete and merged
+- [x] Push integration merge to `origin/main`

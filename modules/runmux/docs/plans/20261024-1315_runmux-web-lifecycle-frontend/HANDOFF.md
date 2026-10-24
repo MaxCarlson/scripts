@@ -1,9 +1,9 @@
 # Runmux Web UI — Phase 4A Lifecycle Frontend Handoff
 
 **Phase:** RUNMUX-WEB-P4A-FRONTEND  
-**Branch:** `codex/runmux-web-lifecycle-frontend-20261024`  
+**Branch:** `codex/runmux-web-lifecycle-frontend-20261024` (Merged into `main`)  
 **Base:** `origin/main` at `a0028473523f6208ea298218e0e666d56d083c9c`  
-**Status:** Verification Complete & Ready for Review  
+**Status:** Complete & Merged to origin/main (Both Frontend and Backend)  
 
 ---
 
@@ -14,7 +14,7 @@ Phase 4A Lifecycle Frontend implements selected-process browser controls for:
 - **Kill:** Forced termination (`force: true` default) with confirmation naming process name and full immutable Run ID.
 - **Restart:** Terminated runs can be restarted as a **new immutable Run ID**, reconciling workspace tabs and explorer entries while preserving the original run.
 - **Duplicate:** Any run can be duplicated as a **new parallel Run ID**, opening a new tab and preserving the source run.
-- **Pause/Resume:** Accurately presented as unsupported on Windows hosts without OS process pause APIs (501 status); never simulates pausing by disconnecting terminal or suspending output follow.
+- **Pause/Resume:** Accurately presented as unsupported on Windows hosts without OS process pause APIs (backend returns 501 status and capabilities endpoint reports `supports_pause_resume: false`); never simulates pausing by disconnecting terminal or suspending output follow.
 
 ---
 
@@ -39,7 +39,7 @@ The following real headless Chrome screenshots were captured in `modules/runmux/
 
 ## 4. Verification Evidence
 
-- `node modules/runmux/tests/dashboard_test.js`: 36 suites passed (0 failures).
+- `node modules/runmux/tests/dashboard_test.js`: 37 suites passed (0 failures).
 - `node modules/runmux/tests/browser_e2e_test.js`: 17 sections passed in real headless Chrome via CDP.
-- `pytest tests/web_test.py tests/telemetry_test.py tests/web_adapter_test.py tests/lifecycle_api_test.py tests/lifecycle_test.py -q`: 74 passed (0 failures).
+- `pytest tests/web_test.py tests/telemetry_test.py tests/web_adapter_test.py tests/lifecycle_api_test.py tests/lifecycle_test.py -q`: 75 passed (0 failures).
 - `ruff check src/runmux/web.py src/runmux/lifecycle.py tests/lifecycle_api_test.py`: All checks passed.
