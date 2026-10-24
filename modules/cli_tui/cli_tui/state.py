@@ -120,7 +120,9 @@ class FormState:
             if val is not None and val != "":
                 if isinstance(val, (list, tuple)):
                     argv.extend(str(item) for item in val)
-                elif arg.nargs in ("+", "*") and isinstance(val, str):
+                elif arg.nargs in ("+", "*") or (
+                    isinstance(arg.nargs, int) and arg.nargs > 0
+                ):
                     argv.extend(_split_arg_tokens(val))
                 else:
                     argv.append(str(val))
@@ -161,10 +163,58 @@ class FormState:
                 except (ValueError, TypeError):
                     count_val = 0
                 base_default = arg.default if isinstance(arg.default, int) else 0
+                if count_val < base_default:
+                    raise ValueError(
+                        f"Cannot set argparse count '{arg.dest}' below its default ({base_default})"
+                    )
                 if count_val > base_default:
                     diff = count_val - base_default
                     argv.extend([short_flag] * diff)
-            elif arg.nargs in ("+", "*"):
+            elif arg.action_type == "append":
+                sequence_value = isinstance(val, (list, tuple))
+                values = list(val) if isinstance(val, (list, tuple)) else [val]
+                default_values = arg.default if isinstance(arg.default, list) else []
+                if default_values:
+                    if values[: len(default_values)] != default_values:
+                        raise ValueError(
+                            f"Cannot remove or change the argparse append default for '{arg.dest}'"
+                        )
+                    values = values[len(default_values) :]
+
+                if arg.nargs is None:
+                    for item in values:
+                        if item is None or str(item) == "":
+                            continue
+                        tokens = (
+                            [str(item)]
+                            if sequence_value
+                            else _split_arg_tokens(item)
+                            if isinstance(item, str)
+                            else [str(item)]
+                        )
+                        for token in tokens:
+                            argv.extend([short_flag, token])
+                else:
+                    if values and isinstance(values[0], (list, tuple)):
+                        groups = [list(group) for group in values]
+                    elif isinstance(arg.nargs, int):
+                        flattened = _split_arg_tokens(val) if isinstance(val, str) else values
+                        groups = [
+                            flattened[index : index + arg.nargs]
+                            for index in range(0, len(flattened), arg.nargs)
+                        ]
+                    else:
+                        groups = [
+                            _split_arg_tokens(val) if isinstance(val, str) else values
+                        ]
+                    for group in groups:
+                        tokens = [str(item) for item in group if item is not None and str(item) != ""]
+                        if tokens:
+                            argv.append(short_flag)
+                            argv.extend(tokens)
+            elif arg.nargs in ("+", "*") or (
+                isinstance(arg.nargs, int) and arg.nargs > 0
+            ):
                 if isinstance(val, (list, tuple)):
                     items = [str(x) for x in val if x is not None and str(x) != ""]
                 elif isinstance(val, str) and val.strip():
@@ -172,9 +222,14 @@ class FormState:
                 else:
                     items = []
                 if items:
-                    argv.append(short_flag)
-                    argv.extend(items)
-            elif arg.action_type in ("append", "extend"):
+                    if arg.action_type == "extend" and isinstance(arg.nargs, int):
+                        for index in range(0, len(items), arg.nargs):
+                            argv.append(short_flag)
+                            argv.extend(items[index : index + arg.nargs])
+                    else:
+                        argv.append(short_flag)
+                        argv.extend(items)
+            elif arg.action_type == "extend":
                 if isinstance(val, (list, tuple)):
                     for item in val:
                         if item is not None and str(item) != "":

@@ -46,7 +46,7 @@ def introspect_parser(
 
     for action in parser._actions:
         # Ignore help actions and suppressed actions
-        if isinstance(action, argparse._HelpAction) or action.help == argparse.SUPPRESS:
+        if isinstance(action, (argparse._HelpAction, argparse._VersionAction)) or action.help == argparse.SUPPRESS:
             continue
 
         if isinstance(action, argparse._SubParsersAction):
@@ -72,19 +72,26 @@ def introspect_parser(
         flags = tuple(action.option_strings)
         is_positional = len(flags) == 0
 
-        action_type = "store"
-        if isinstance(
-            action, getattr(argparse, "BooleanOptionalAction", type("dummy", (), {}))
-        ):
-            action_type = "boolean_optional"
-        elif isinstance(action, argparse._StoreTrueAction):
-            action_type = "store_true"
-        elif isinstance(action, argparse._StoreFalseAction):
-            action_type = "store_false"
-        elif isinstance(action, argparse._AppendAction):
-            action_type = "append"
-        elif isinstance(action, argparse._CountAction):
-            action_type = "count"
+        action_types = {
+            argparse._StoreAction: "store",
+            argparse._StoreTrueAction: "store_true",
+            argparse._StoreFalseAction: "store_false",
+            argparse._AppendAction: "append",
+            argparse._CountAction: "count",
+        }
+        boolean_optional_action = getattr(argparse, "BooleanOptionalAction", None)
+        if boolean_optional_action is not None:
+            action_types[boolean_optional_action] = "boolean_optional"
+        extend_action = getattr(argparse, "_ExtendAction", None)
+        if extend_action is not None:
+            action_types[extend_action] = "extend"
+
+        action_type = action_types.get(type(action))
+        if action_type is None:
+            raise ValueError(
+                f"Argument '{action.dest}' uses unsupported argparse action "
+                f"'{type(action).__name__}'"
+            )
 
         choices_tuple = tuple(action.choices) if action.choices is not None else None
 

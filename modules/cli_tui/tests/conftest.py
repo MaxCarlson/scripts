@@ -17,7 +17,8 @@ def _unique_base_temp() -> Path:
 
 @pytest.hookimpl(tryfirst=True)
 def pytest_configure(config: pytest.Config) -> None:
-    """Keep pytest temporary files isolated inside the module."""
+    """Keep pytest temporary files and saved layouts isolated inside the module."""
+    os.environ["CLI_TUI_LAYOUT_DIR"] = str(_BASE_TEMP_ROOT / "layouts")
     configured_base_temp = config.option.basetemp
     if configured_base_temp is None:
         configured_path = _unique_base_temp()

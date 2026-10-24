@@ -65,6 +65,9 @@ def test_universal_key_q_confirmation_and_cancellation():
     app.process_key(ord("q"))
     assert app.is_confirming_quit is True
     app.process_key(ord("y"))
+    assert app.is_confirming_layout_save is True
+    assert app.is_terminated is False
+    app.process_key(ord("n"))
     assert app.is_terminated is True
 
 
@@ -91,6 +94,24 @@ def test_form_footer_layout():
     assert "python -m" in screen
     assert "Command:" in screen
     assert "build" in screen
+
+
+def test_unrepresentable_append_default_is_reported_without_starting_runner():
+    parser = argparse.ArgumentParser(prog="sample")
+    subparsers = parser.add_subparsers(dest="command")
+    command = subparsers.add_parser("run")
+    command.add_argument("--tag", action="append", choices=("base", "extra"), default=["base"])
+    app = CliTuiApp(parser=parser)
+    app.process_key(10)
+    app.current_form.set_value("tag", ["extra"])
+
+    app._start_execution()
+
+    assert app.runner is None
+    assert "Cannot build command" in app.last_message
+    app.is_showing_preview = True
+    lines = app.render_virtual_screen(height=24, width=80)
+    assert any("Cannot build command" in line for line in lines)
 
 
 def test_preview_cli_dialog():

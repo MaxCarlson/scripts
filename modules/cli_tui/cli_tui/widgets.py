@@ -178,7 +178,8 @@ class CountWidget(BaseWidget):
         except (ValueError, TypeError):
             int_val = int(arg.default or 0)
         super().__init__(arg, int_val)
-        self.max_count = max_count
+        self.min_count = arg.default if isinstance(arg.default, int) else 0
+        self.max_count = max(max_count, self.min_count)
 
     def handle_key(self, key: int) -> bool:
         if key in (curses.KEY_RIGHT, ord("l"), ord("+")):
@@ -186,11 +187,15 @@ class CountWidget(BaseWidget):
                 self.value += 1
                 return True
         elif key in (curses.KEY_LEFT, ord("h"), ord("-")):
-            if self.value > 0:
+            if self.value > self.min_count:
                 self.value -= 1
                 return True
         elif key in (ord(" "), 10, 13):
-            self.value = (self.value + 1) % (self.max_count + 1)
+            self.value = (
+                self.min_count
+                if self.value >= self.max_count
+                else self.value + 1
+            )
             return True
         return False
 

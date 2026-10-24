@@ -3,7 +3,8 @@ from __future__ import annotations
 import curses
 import os
 import sys
-from typing import Any, List, Optional
+import threading
+from typing import Any, Callable, List, Optional
 
 from .process_runner import ProcessRunner
 
@@ -23,6 +24,12 @@ class ConsolePaneRunner:
         self.input_buffer: str = ""
         self.cursor_pos: int = 0
         self.is_terminated: bool = False
+        self._output_lock = threading.RLock()
+        self._output_listeners: set[Callable[[str], None]] = set()
+        self._subscribed_runners: set[ProcessRunner] = set()
+        self._runner_unsubscribers: dict[
+            ProcessRunner, dict[Callable[[str], None], Callable[[], None]]
+        ] = {}
 
     @property
     def is_running(self) -> bool:
@@ -42,6 +49,80 @@ class ConsolePaneRunner:
             return self.active_runner.pid
         return None
 
+    def subscribe_output(
+        self,
+        callback: Callable[[str], None],
+        *,
+        seed_callback: Optional[Callable[[List[str]], None]] = None,
+    ) -> Callable[[], None]:
+        """Subscribe to the full console transcript, including future commands."""
+        with self._output_lock:
+            if seed_callback:
+                seed_callback(self.lines)
+            self._output_listeners.add(callback)
+            self._subscribe_active_runner(callback)
+
+        def unsubscribe() -> None:
+            with self._output_lock:
+                self._output_listeners.discard(callback)
+                for runner in tuple(self._subscribed_runners):
+                    self._unsubscribe_runner_callback(runner, callback)
+
+        return unsubscribe
+
+    def snapshot_and_subscribe(
+        self, callback: Callable[[str], None]
+    ) -> tuple[list[str], Callable[[], None]]:
+        """Atomically snapshot the console and subscribe to its current and future output."""
+        with self._output_lock:
+            self._output_listeners.add(callback)
+            lines = list(self.history_lines)
+            runner = self.active_runner
+            if runner is not None:
+                runner_lines, unsubscribe_runner = runner.snapshot_and_subscribe(callback)
+                self._subscribed_runners.add(runner)
+                self._runner_unsubscribers.setdefault(runner, {})[
+                    callback
+                ] = unsubscribe_runner
+                lines.extend(runner_lines)
+
+        def unsubscribe() -> None:
+            with self._output_lock:
+                self._output_listeners.discard(callback)
+                for subscribed in tuple(self._subscribed_runners):
+                    self._unsubscribe_runner_callback(subscribed, callback)
+
+        return lines, unsubscribe
+
+    def _subscribe_active_runner(self, callback: Callable[[str], None]) -> None:
+        runner = self.active_runner
+        if runner is not None and callback not in self._runner_unsubscribers.get(runner, {}):
+            unsubscribe = runner.subscribe_output(callback)
+            self._runner_unsubscribers.setdefault(runner, {})[callback] = unsubscribe
+            self._subscribed_runners.add(runner)
+
+    def _unsubscribe_runner_callback(
+        self, runner: ProcessRunner, callback: Callable[[str], None]
+    ) -> None:
+        callbacks = self._runner_unsubscribers.get(runner)
+        unsubscribe = callbacks.pop(callback, None) if callbacks is not None else None
+        if unsubscribe is not None:
+            unsubscribe()
+        if not callbacks:
+            self._runner_unsubscribers.pop(runner, None)
+            self._subscribed_runners.discard(runner)
+
+    def _record_history(self, line: str) -> None:
+        with self._output_lock:
+            self.history_lines.append(line)
+            listeners = tuple(self._output_listeners)
+        for listener in listeners:
+            try:
+                listener(line + "\n")
+            except Exception:
+                with self._output_lock:
+                    self._output_listeners.discard(listener)
+
     @property
     def lines(self) -> List[str]:
         output = list(self.history_lines)
@@ -52,11 +133,12 @@ class ConsolePaneRunner:
     def execute_line(self, line: str) -> None:
         if self.active_runner:
             self.history_lines.extend(self.active_runner.lines)
-            self.history_lines.append("")
+            self._record_history("")
+            self._forget_runner(self.active_runner)
             self.active_runner = None
 
         cmd_str = line.strip()
-        self.history_lines.append(f"[{self.cwd}]> {line}")
+        self._record_history(f"[{self.cwd}]> {line}")
 
         if not cmd_str:
             return
@@ -90,15 +172,15 @@ class ConsolePaneRunner:
 
             if os.path.isdir(new_dir):
                 self.cwd = new_dir
-                self.history_lines.append(f"Directory changed to: {self.cwd}")
+                self._record_history(f"Directory changed to: {self.cwd}")
             else:
-                self.history_lines.append(f"Directory not found: {target}")
-            self.history_lines.append("")
+                self._record_history(f"Directory not found: {target}")
+            self._record_history("")
             return
 
         if cmd_str.lower() in ("exit", "quit"):
             self.is_terminated = True
-            self.history_lines.append("Console session terminated.")
+            self._record_history("Console session terminated.")
             return
 
         # Run via shell
@@ -108,16 +190,25 @@ class ConsolePaneRunner:
             argv = ["/bin/sh", "-c", cmd_str]
 
         self.active_runner = ProcessRunner(argv, cwd=self.cwd)
+        with self._output_lock:
+            for callback in self._output_listeners:
+                self._subscribe_active_runner(callback)
         self.active_runner.start()
 
     def wait(self, timeout: Optional[float] = None) -> Optional[int]:
         if self.active_runner:
             rc = self.active_runner.wait(timeout=timeout)
             self.history_lines.extend(self.active_runner.lines)
-            self.history_lines.append("")
+            self._record_history("")
+            self._forget_runner(self.active_runner)
             self.active_runner = None
             return rc
         return 0
+
+    def _forget_runner(self, runner: ProcessRunner) -> None:
+        with self._output_lock:
+            for callback in tuple(self._runner_unsubscribers.get(runner, {})):
+                self._unsubscribe_runner_callback(runner, callback)
 
     def stop(self) -> None:
         if self.active_runner and self.active_runner.is_running:

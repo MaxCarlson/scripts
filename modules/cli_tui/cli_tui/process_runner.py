@@ -6,7 +6,7 @@ import subprocess
 import textwrap
 import threading
 import time
-from typing import List, Optional, Sequence, Tuple
+from typing import Callable, List, Optional, Sequence, Tuple
 
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
@@ -228,6 +228,7 @@ class ProcessRunner:
         self._end_time: Optional[float] = None
         self._exit_code: Optional[int] = None
         self._cancelled: bool = False
+        self._output_listeners: set[Callable[[str], None]] = set()
 
     def start(self) -> None:
         """Start the background process."""
@@ -270,14 +271,10 @@ class ProcessRunner:
                     break
                 text = decoder.decode(chunk)
                 if text:
-                    with self._lock:
-                        buffer.feed(text)
-                        self._lines = deque(buffer.get_lines(), maxlen=self.max_lines)
+                    self._accept_output(text, buffer)
             final_text = decoder.decode(b"", final=True)
             if final_text:
-                with self._lock:
-                    buffer.feed(final_text)
-                    self._lines = deque(buffer.get_lines(), maxlen=self.max_lines)
+                self._accept_output(final_text, buffer)
         except Exception:
             pass
         finally:
@@ -285,6 +282,50 @@ class ProcessRunner:
                 self._process.wait()
                 self._exit_code = self._process.poll()
                 self._end_time = time.monotonic()
+
+    def _accept_output(self, text: str, buffer: VirtualTerminalBuffer) -> None:
+        with self._lock:
+            buffer.feed(text)
+            self._lines = deque(buffer.get_lines(), maxlen=self.max_lines)
+            listeners = tuple(self._output_listeners)
+        for listener in listeners:
+            try:
+                listener(text)
+            except Exception:
+                # Output subscribers are optional and must not break process reading.
+                continue
+
+    def subscribe_output(
+        self,
+        callback: Callable[[str], None],
+        *,
+        seed_callback: Optional[Callable[[List[str]], None]] = None,
+    ) -> Callable[[], None]:
+        """Subscribe to decoded output, optionally seeding from current scrollback."""
+        with self._lock:
+            if seed_callback is not None:
+                seed_callback(list(self._lines))
+            self._output_listeners.add(callback)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._output_listeners.discard(callback)
+
+        return unsubscribe
+
+    def snapshot_and_subscribe(
+        self, callback: Callable[[str], None]
+    ) -> Tuple[List[str], Callable[[], None]]:
+        """Atomically return retained lines and subscribe to later decoded output."""
+        with self._lock:
+            lines = list(self._lines)
+            self._output_listeners.add(callback)
+
+        def unsubscribe() -> None:
+            with self._lock:
+                self._output_listeners.discard(callback)
+
+        return lines, unsubscribe
 
     @property
     def is_running(self) -> bool:
