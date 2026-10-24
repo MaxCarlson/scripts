@@ -57,7 +57,7 @@ async function runBrowserE2E() {
     '    status="running",',
     '    program=r"C:\\tools\\worker.exe",',
     '    argv_json=json.dumps(["worker.exe"]),',
-    '    cwd=r"C:\\private\\folder",',
+    '    cwd=r"' + stateDir.replace(/\\/g, "/") + '",',
     "    env_overrides_json=json.dumps({}),",
     '    auth_token="ipc-secret",',
     `    log_path=Path(r"${logFile.replace(/\\/g, "/")}"),`,
@@ -70,7 +70,7 @@ async function runBrowserE2E() {
     '    status="finished",',
     '    program=r"C:\\tools\\finished.exe",',
     '    argv_json=json.dumps(["finished.exe"]),',
-    '    cwd=r"C:\\private\\folder",',
+    '    cwd=r"' + stateDir.replace(/\\/g, "/") + '",',
     "    env_overrides_json=json.dumps({}),",
     '    auth_token="ipc-secret",',
     `    log_path=Path(r"${logFile.replace(/\\/g, "/")}"),`,
@@ -86,9 +86,37 @@ async function runBrowserE2E() {
   const serverScript = [
     "import sys",
     `sys.path.insert(0, r"${srcDir}")`,
+    "import json",
     "from pathlib import Path",
-    "import uvicorn",
+    "from types import SimpleNamespace",
+    "import runmux.runner",
+    "import runmux.web",
+    "def mock_create_managed_run(target_store, **kwargs):",
+    "    runs = target_store.list_runs()",
+    "    new_id = f'20261024-09990{len(runs) + 1}-abcdef'",
+    "    new_dir = target_store.state_dir / 'runs' / new_id",
+    "    new_dir.mkdir(parents=True, exist_ok=True)",
+    "    log = new_dir / 'output.ansi'",
+    "    log.write_text('New run log output\\n', encoding='utf-8')",
+    "    new_rec = target_store.create_run(",
+    "        run_id=new_id,",
+    "        name=kwargs.get('name') or 'worker',",
+    "        status='running',",
+    "        program='python',",
+    "        argv_json=json.dumps(kwargs.get('program_args') or ['python']),",
+    "        cwd=str(kwargs.get('cwd') or target_store.state_dir),",
+    "        env_overrides_json='{}',",
+    "        auth_token='new-token',",
+    "        log_path=log,",
+    "        command_line='python',",
+    "        restart_of=kwargs.get('restart_of'),",
+    "        duplicate_of=kwargs.get('duplicate_of'),",
+    "    )",
+    "    return SimpleNamespace(record=new_rec, supervisor_process=None)",
+    "runmux.runner.create_managed_run = mock_create_managed_run",
+    "runmux.web.create_managed_run = mock_create_managed_run",
     "from runmux.web import create_runmux_web_app",
+    "import uvicorn",
     "app = create_runmux_web_app(Path(sys.argv[1]), login_code=sys.argv[2])",
     "uvicorn.run(app, host='127.0.0.1', port=int(sys.argv[3]), log_level='warning')",
   ].join("\n");
@@ -593,6 +621,243 @@ async function runBrowserE2E() {
     function selectedActiveOrFinished(name) {
       return name === "finished worker" || name === "e2e worker";
     }
+
+    // 17. Phase 4A: Selected-process Lifecycle Browser Controls
+    console.log("Testing Phase 4A lifecycle controls and confirmation modal in real Chrome...");
+    const lifecycleScreenshotsDir = path.join(__dirname, "../docs/plans/20261024-1315_runmux-web-lifecycle-frontend/screenshots");
+    fs.mkdirSync(lifecycleScreenshotsDir, { recursive: true });
+
+    // Select the active run ("e2e worker")
+    await evaluate(`(function() {
+      const rows = document.querySelectorAll(".process-row");
+      for (const row of rows) {
+        if (row.textContent.includes("e2e worker")) {
+          row.click();
+          break;
+        }
+      }
+    })()`);
+    await sleep(500);
+
+    // Verify initial button states on active run:
+    // Stop: enabled, Kill: enabled, Restart: disabled, Duplicate: enabled, Pause: enabled
+    const initialButtonStates = await evaluate(`({
+      stopDisabled: document.querySelector("#action-stop-btn").disabled,
+      killDisabled: document.querySelector("#action-kill-btn").disabled,
+      restartDisabled: document.querySelector("#action-restart-btn").disabled,
+      dupDisabled: document.querySelector("#action-duplicate-btn").disabled,
+      pauseDisabled: document.querySelector("#action-pause-btn").disabled,
+      feedbackHidden: document.querySelector("#lifecycle-feedback").hidden,
+      modalHidden: document.querySelector("#lifecycle-confirm-modal").hidden,
+    })`);
+    assert.equal(initialButtonStates.stopDisabled, false, "Stop button should be enabled on active run");
+    assert.equal(initialButtonStates.killDisabled, false, "Kill button should be enabled on active run");
+    assert.equal(initialButtonStates.restartDisabled, true, "Restart button must be disabled on active run");
+    assert.equal(initialButtonStates.dupDisabled, false, "Duplicate button should be enabled on active run");
+    assert.equal(initialButtonStates.pauseDisabled, false, "Pause button should be enabled on active run");
+    assert.equal(initialButtonStates.modalHidden, true, "Confirmation modal must be hidden initially");
+    console.log("Verified initial lifecycle button eligibility on active run.");
+
+    // A. Test Stop Confirmation Dialog & Cancel
+    console.log("Testing Stop confirmation modal open and cancellation...");
+    await evaluate(`document.querySelector("#action-stop-btn").click()`);
+    await sleep(200);
+
+    const stopModalState = await evaluate(`({
+      hidden: document.querySelector("#lifecycle-confirm-modal").hidden,
+      title: document.querySelector("#confirm-modal-title").textContent,
+      name: document.querySelector("#confirm-run-name").textContent,
+      runId: document.querySelector("#confirm-run-id").textContent,
+      submitLabel: document.querySelector("#confirm-submit-btn").textContent,
+    })`);
+    assert.equal(stopModalState.hidden, false, "Modal should open on Stop click");
+    assert.match(stopModalState.title, /Stop Process/);
+    assert.equal(stopModalState.name, "e2e worker");
+    assert.equal(stopModalState.runId, runId);
+    assert.equal(stopModalState.submitLabel, "Stop Process");
+
+    // Click Cancel
+    await evaluate(`document.querySelector("#confirm-cancel-btn").click()`);
+    await sleep(150);
+    const modalClosedAfterCancel = await evaluate(`document.querySelector("#lifecycle-confirm-modal").hidden`);
+    assert.equal(modalClosedAfterCancel, true, "Modal should close after cancel click");
+    console.log("Verified Stop confirmation modal cancellation.");
+
+    // B. Test Kill Confirmation Dialog & Capture Screenshot
+    console.log("Testing Kill confirmation modal and capturing screenshot...");
+    await evaluate(`document.querySelector("#action-kill-btn").click()`);
+    await sleep(200);
+
+    const killModalState = await evaluate(`({
+      hidden: document.querySelector("#lifecycle-confirm-modal").hidden,
+      title: document.querySelector("#confirm-modal-title").textContent,
+      name: document.querySelector("#confirm-run-name").textContent,
+      runId: document.querySelector("#confirm-run-id").textContent,
+      desc: document.querySelector("#confirm-modal-desc").textContent,
+      submitLabel: document.querySelector("#confirm-submit-btn").textContent,
+    })`);
+    assert.equal(killModalState.hidden, false, "Modal should open on Kill click");
+    assert.match(killModalState.title, /Kill Process/);
+    assert.equal(killModalState.name, "e2e worker");
+    assert.equal(killModalState.runId, runId);
+    assert.match(killModalState.desc, /force kill/);
+    assert.equal(killModalState.submitLabel, "Kill Process");
+
+    // Capture screenshot of confirmation modal
+    let confirmShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(lifecycleScreenshotsDir, "lifecycle_confirm_modal.png"), Buffer.from(confirmShot.data, "base64"));
+    console.log("Saved lifecycle_confirm_modal.png");
+
+    // C. Confirm Kill Execution & Capture Feedback Banner Screenshot
+    console.log("Submitting Kill confirmation and capturing feedback banner screenshot...");
+    await evaluate(`document.querySelector("#confirm-submit-btn").click()`);
+    await sleep(100);
+
+    // Feedback banner should be visible immediately with in-flight or status message
+    const feedbackImmediately = await evaluate(`({
+      hidden: document.querySelector("#lifecycle-feedback").hidden,
+      className: document.querySelector("#lifecycle-feedback").className,
+      text: document.querySelector("#lifecycle-feedback span") ? document.querySelector("#lifecycle-feedback span").textContent : "",
+    })`);
+    assert.equal(feedbackImmediately.hidden, false, "Feedback banner must be visible during/after action");
+
+    let feedbackShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(lifecycleScreenshotsDir, "lifecycle_feedback_banner.png"), Buffer.from(feedbackShot.data, "base64"));
+    console.log("Saved lifecycle_feedback_banner.png");
+
+    // Wait up to 4s for process termination to reflect in status
+    let killedConfirmed = false;
+    for (let i = 0; i < 20; i++) {
+      await sleep(200);
+      const currentStatus = await evaluate(`document.querySelector("#selected-status").textContent.trim().toLowerCase()`);
+      if (currentStatus === "killed") {
+        killedConfirmed = true;
+        break;
+      }
+    }
+    assert.equal(killedConfirmed, true, "Process status should transition to 'killed'");
+
+    // Verify updated button states on killed run:
+    // Stop: disabled, Kill: disabled, Restart: ENABLED, Duplicate: enabled, Pause: disabled
+    const killedButtonStates = await evaluate(`({
+      stopDisabled: document.querySelector("#action-stop-btn").disabled,
+      killDisabled: document.querySelector("#action-kill-btn").disabled,
+      restartDisabled: document.querySelector("#action-restart-btn").disabled,
+      dupDisabled: document.querySelector("#action-duplicate-btn").disabled,
+      pauseDisabled: document.querySelector("#action-pause-btn").disabled,
+    })`);
+    assert.equal(killedButtonStates.stopDisabled, true, "Stop button should be disabled on killed run");
+    assert.equal(killedButtonStates.killDisabled, true, "Kill button should be disabled on killed run");
+    assert.equal(killedButtonStates.restartDisabled, false, "Restart button must be ENABLED on killed run");
+    assert.equal(killedButtonStates.dupDisabled, false, "Duplicate button should be enabled on killed run");
+    assert.equal(killedButtonStates.pauseDisabled, true, "Pause button should be disabled on killed run");
+    console.log("Verified button states transition on killed process.");
+
+    // D. Test Restart on Killed Process
+    console.log("Testing Restart action on killed process...");
+    const initialTabsCount = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    await evaluate(`document.querySelector("#action-restart-btn").click()`);
+
+    let restartedRunId = null;
+    for (let i = 0; i < 25; i++) {
+      await sleep(200);
+      const selectedText = await evaluate(`document.querySelector("#selected-identity").textContent.trim()`);
+      const match = selectedText.match(/RUN\s+(2026\d{4}-\d{6}-[0-9a-f]{6})/);
+      if (match && match[1] !== runId) {
+        restartedRunId = match[1];
+        break;
+      }
+    }
+    assert.ok(restartedRunId, "Restart did not switch selection to a new Run ID");
+    assert.notEqual(restartedRunId, runId, "Restart must create a new immutable Run ID");
+
+    // Verify tab bar reconciled: tab count incremented, new run tab is active
+    const newTabsCount = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    assert.equal(newTabsCount, initialTabsCount + 1, "Restart should add a new tab");
+
+    // Verify original run is still preserved in tabs and explorer
+    const originalTabPresent = await evaluate(`Boolean(document.querySelector('.workspace-tab .workspace-tab-select[title*="${runId}"]'))`);
+    assert.equal(originalTabPresent, true, "Original run tab must be preserved");
+    const originalExplorerPresent = await evaluate(`(function() {
+      const rows = document.querySelectorAll(".process-row");
+      for (const row of rows) {
+        if (row.textContent.includes("e2e worker")) return true;
+      }
+      return false;
+    })()`);
+    assert.equal(originalExplorerPresent, true, "Original run must remain in explorer");
+    console.log("Verified restart reconciliation: new run created, tabs updated, historical identity preserved.");
+
+    // E. Test Duplicate Action
+    console.log("Testing Duplicate action on restarted run...");
+    const preDupTabsCount = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    await evaluate(`document.querySelector("#action-duplicate-btn").click()`);
+
+    let duplicatedRunId = null;
+    for (let i = 0; i < 25; i++) {
+      await sleep(200);
+      const selectedText = await evaluate(`document.querySelector("#selected-identity").textContent.trim()`);
+      const match = selectedText.match(/RUN\s+(2026\d{4}-\d{6}-[0-9a-f]{6})/);
+      if (match && match[1] !== restartedRunId && match[1] !== runId) {
+        duplicatedRunId = match[1];
+        break;
+      }
+    }
+    assert.ok(duplicatedRunId, "Duplicate did not switch selection to a new Run ID");
+    const postDupTabsCount = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    assert.equal(postDupTabsCount, preDupTabsCount + 1, "Duplicate should add another tab");
+    console.log("Verified duplicate reconciliation: new run created and selected.");
+
+    // F. Test Pause Button on Active Run (Windows 501 Unsupported)
+    console.log("Testing Pause button platform error handling (Windows 501)...");
+    await evaluate(`document.querySelector("#action-pause-btn").click()`);
+    await sleep(400);
+
+    const pauseFeedback = await evaluate(`({
+      hidden: document.querySelector("#lifecycle-feedback").hidden,
+      isError: document.querySelector("#lifecycle-feedback").classList.contains("feedback-error"),
+      message: document.querySelector("#lifecycle-feedback span") ? document.querySelector("#lifecycle-feedback span").textContent : "",
+    })`);
+    assert.equal(pauseFeedback.hidden, false, "Pause feedback must be visible");
+    assert.equal(pauseFeedback.isError, true, "Pause on Windows should show feedback-error class");
+    assert.match(pauseFeedback.message, /not supported on Windows|501/i, "Message must mention Windows lack of pause support");
+
+    // Verify terminal follow / output follow was not simulated or suspended
+    const outputFollowChecked = await evaluate(`document.querySelector("#follow-output") ? document.querySelector("#follow-output").checked : true`);
+    assert.equal(outputFollowChecked, true, "Output follow state must not be simulated or altered by pause");
+    console.log("Verified 501 Not Implemented handling for Pause without simulated freezing.");
+
+    // G. Test View-Only Tab Close
+    console.log("Testing view-only tab close behavior...");
+    const preCloseTabs = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    // Click close on the active tab's close button
+    await evaluate(`(function() {
+      const activeTab = document.querySelector(".workspace-tab.active");
+      if (activeTab) {
+        const closeBtn = activeTab.querySelector(".workspace-tab-close");
+        if (closeBtn) closeBtn.click();
+      }
+    })()`);
+    await sleep(300);
+
+    const postCloseTabs = await evaluate(`document.querySelectorAll(".workspace-tab").length`);
+    assert.equal(postCloseTabs, preCloseTabs - 1, "Tab close should remove tab from tab bar");
+
+    // Verify the duplicated run is STILL present in explorer!
+    const runStillInExplorer = await evaluate(`(function() {
+      const rows = document.querySelectorAll(".process-row");
+      for (const row of rows) {
+        if (row.title.includes("${duplicatedRunId}") || row.textContent.includes("${duplicatedRunId.slice(-6)}")) return true;
+      }
+      return false;
+    })()`);
+    assert.equal(runStillInExplorer, true, "Closed run must still exist in explorer");
+
+    // Capture overall lifecycle overview screenshot
+    let overviewShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(lifecycleScreenshotsDir, "lifecycle_controls_overview.png"), Buffer.from(overviewShot.data, "base64"));
+    console.log("Saved lifecycle_controls_overview.png");
+    console.log("Verified view-only tab close: tab closed without terminating the process.");
 
     console.log("\n==========================================");
     console.log("ALL REAL HEADLESS BROWSER E2E TESTS PASSED!");

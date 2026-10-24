@@ -71,6 +71,7 @@ function element(tagName = "div") {
     select() {},
     scrollIntoView() {},
     closest() { return null; },
+    click() { this.dispatch("click"); },
   };
 }
 
@@ -173,12 +174,21 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     stopTelemetryPolling,
     isTelemetryInFlight: () => telemetryInFlightId !== 0,
     getTelemetryTimer: () => telemetryTimer,
+    updateLifecycleControls,
+    showLifecycleConfirm,
+    closeLifecycleConfirm,
+    submitLifecycleConfirm,
+    executeLifecycleAction,
+    showLifecycleFeedback,
+    clearLifecycleFeedback,
+    getLifecycleInFlightRunId: () => lifecycleInFlightRunId,
+    getPendingConfirmAction: () => pendingConfirmAction,
   };`, context);
   return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
 }
 
-function response(payload) {
-  return { ok: true, status: 200, json: async () => payload };
+function response(payload, status = 200) {
+  return { ok: status >= 200 && status < 300, status, json: async () => payload };
 }
 
 function run(id, name = id) {
@@ -1358,7 +1368,347 @@ async function testRequestCancellationAndHiddenState() {
   assert.equal(db.isTelemetryInFlight(), false);
 }
 
+async function testLifecycleButtonEligibilityByStatus() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const activeRun = {
+    ...run("20261024-051200-abcdef", "active worker"),
+    status: "running",
+  };
+  const terminalRun = {
+    ...run("20261024-051201-123456", "terminal worker"),
+    status: "finished",
+  };
+
+  db.setRuns([activeRun, terminalRun]);
+
+  // 1. When an active run is selected
+  db.setSelectedId(activeRun.id);
+  db.updateLifecycleControls(activeRun);
+
+  const stopBtn = getElement("#action-stop-btn");
+  const killBtn = getElement("#action-kill-btn");
+  const restartBtn = getElement("#action-restart-btn");
+  const duplicateBtn = getElement("#action-duplicate-btn");
+  const pauseBtn = getElement("#action-pause-btn");
+
+  assert.equal(stopBtn.disabled, false, "Stop button should be enabled for active run");
+  assert.equal(killBtn.disabled, false, "Kill button should be enabled for active run");
+  assert.equal(restartBtn.disabled, true, "Restart button must be disabled for active run");
+  assert.match(restartBtn.title, /Cannot restart an active process/);
+  assert.equal(duplicateBtn.disabled, false, "Duplicate button should be enabled for active run");
+  assert.equal(pauseBtn.disabled, false, "Pause button should be present");
+  assert.match(pauseBtn.title, /unsupported on Windows/);
+
+  // 2. When a terminal run is selected
+  db.setSelectedId(terminalRun.id);
+  db.updateLifecycleControls(terminalRun);
+
+  assert.equal(stopBtn.disabled, true, "Stop button must be disabled for finished run");
+  assert.match(stopBtn.title, /already terminated/);
+  assert.equal(killBtn.disabled, true, "Kill button must be disabled for finished run");
+  assert.match(killBtn.title, /already terminated/);
+  assert.equal(restartBtn.disabled, false, "Restart button should be enabled for terminal run");
+  assert.equal(duplicateBtn.disabled, false, "Duplicate button should be enabled for terminal run");
+  assert.equal(pauseBtn.disabled, true, "Pause button must be disabled for finished run");
+  assert.match(pauseBtn.title, /already terminated/);
+
+  // 3. When selection is cleared
+  db.clearSelection();
+  assert.equal(stopBtn.disabled, true);
+  assert.equal(killBtn.disabled, true);
+  assert.equal(restartBtn.disabled, true);
+  assert.equal(duplicateBtn.disabled, true);
+}
+
+async function testLifecycleDestructiveConfirmationModal() {
+  const { context, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const targetRun = {
+    ...run("20261024-051200-abcdef", "data-cruncher"),
+    status: "running",
+  };
+  db.setRuns([targetRun]);
+  db.setSelectedId(targetRun.id);
+
+  const modal = getElement("#lifecycle-confirm-modal");
+  const modalTitle = getElement("#confirm-modal-title");
+  const runName = getElement("#confirm-run-name");
+  const runId = getElement("#confirm-run-id");
+  const warningNote = getElement("#confirm-warning-note");
+  const submitBtn = getElement("#confirm-submit-btn");
+
+  // 1. Trigger Stop confirmation
+  db.showLifecycleConfirm("stop", targetRun);
+
+  assert.equal(modal.hidden, false, "Modal should be shown");
+  assert.equal(modalTitle.textContent, "Confirm Stop Process");
+  assert.equal(runName.textContent, "data-cruncher");
+  assert.equal(runId.textContent, "20261024-051200-abcdef");
+  assert.match(warningNote.textContent, /graceful termination/i);
+  assert.equal(submitBtn.textContent, "Stop Process");
+
+  // Cancel closes modal
+  db.closeLifecycleConfirm();
+  assert.equal(modal.hidden, true, "Modal should be hidden on cancel");
+  assert.equal(db.getPendingConfirmAction(), null);
+
+  // 2. Trigger Kill confirmation
+  db.showLifecycleConfirm("kill", targetRun);
+
+  assert.equal(modal.hidden, false);
+  assert.equal(modalTitle.textContent, "Confirm Force Kill Process");
+  assert.equal(runName.textContent, "data-cruncher");
+  assert.equal(runId.textContent, "20261024-051200-abcdef");
+  assert.match(warningNote.textContent, /forced termination/i);
+  assert.equal(submitBtn.textContent, "Kill Process");
+  assert.ok(submitBtn.className.includes("modal-btn-danger"));
+
+  // Close via button
+  getElement("#confirm-modal-close").click();
+  assert.equal(modal.hidden, true);
+}
+
+async function testLifecycleStopAndKillExecution() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const targetRun = {
+    ...run("20261024-051200-abcdef", "worker-proc"),
+    status: "running",
+  };
+  db.setRuns([targetRun]);
+  db.setSelectedId(targetRun.id);
+
+  // 1. Submit graceful stop via confirmation
+  db.showLifecycleConfirm("stop", targetRun);
+  const pStop = db.submitLifecycleConfirm();
+
+  const stopReq = requests.find((r) => r.url.endsWith("/api/runs/20261024-051200-abcdef/stop"));
+  assert.ok(stopReq, "Stop request should be made to /api/runs/.../stop");
+
+  // In-flight feedback displayed
+  const feedback = getElement("#lifecycle-feedback");
+  assert.equal(feedback.hidden, false);
+  assert.match(feedback.textContent, /Stopping process worker-proc/);
+
+  // Resolve with terminating status
+  stopReq.resolve(response({
+    action: "stop",
+    status: "terminating",
+    message: "Termination requested for run '20261024-051200-abcdef'; process shutdown is in progress.",
+    run: { ...targetRun, status: "running" },
+  }));
+  await pStop;
+
+  assert.match(feedback.textContent, /Termination requested/);
+  assert.ok(feedback.className.includes("feedback-pending"));
+
+  // 2. Submit forced kill via confirmation
+  db.showLifecycleConfirm("kill", targetRun);
+  const pKill = db.submitLifecycleConfirm();
+
+  const killReq = requests.find((r) => r.url.endsWith("/api/runs/20261024-051200-abcdef/kill"));
+  assert.ok(killReq, "Kill request should be made to /api/runs/.../kill");
+
+  // Resolve with completed ok status
+  killReq.resolve(response({
+    action: "kill",
+    status: "ok",
+    message: "Run '20261024-051200-abcdef' killed successfully.",
+    run: { ...targetRun, status: "killed" },
+  }));
+  await pKill;
+
+  assert.match(feedback.textContent, /killed successfully/);
+  assert.ok(feedback.className.includes("feedback-success"));
+}
+
+async function testLifecycleRestartAndDuplicateReconciliation() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const sourceRun = {
+    ...run("20261024-051200-abcdef", "batch job"),
+    status: "finished",
+  };
+  db.setRuns([sourceRun]);
+  db.openRunIds().push(sourceRun.id);
+  db.setSelectedId(sourceRun.id);
+  assert.deepEqual([...db.openRunIds()], ["20261024-051200-abcdef"]);
+
+  // 1. Restart run
+  const pRestart = db.executeLifecycleAction("restart", sourceRun.id);
+
+  const restartReq = requests.find((r) => r.url.endsWith("/api/runs/20261024-051200-abcdef/restart"));
+  assert.ok(restartReq);
+
+  const newRunId = "20261024-051530-987654";
+  const newRun = {
+    ...run(newRunId, "batch job"),
+    restart_of: sourceRun.id,
+    status: "running",
+  };
+
+  restartReq.resolve(response({
+    action: "restart",
+    status: "ok",
+    new_run_id: newRunId,
+    old_run_id: sourceRun.id,
+    message: `Run '${sourceRun.id}' restarted as '${newRunId}'.`,
+    run: newRun,
+  }, 201));
+
+  // The refreshRuns call inside restart will request /api/runs
+  await Promise.resolve();
+  const listReq = requests.find((r) => r.url === "/api/runs");
+  if (listReq) listReq.resolve(response([sourceRun, newRun]));
+
+  await pRestart;
+
+  // Verify new run is added to open tabs while original run is preserved
+  assert.ok(db.openRunIds().includes(newRunId), "New run ID should be added to open tabs");
+  assert.ok(db.openRunIds().includes(sourceRun.id), "Original run ID should remain in open tabs");
+  assert.equal(db.getSelectedId(), newRunId, "Selection should transition to new run");
+
+  // 2. Duplicate run
+  const pDup = db.executeLifecycleAction("duplicate", newRunId);
+  const dupReq = requests.find((r) => r.url.endsWith(`/api/runs/${newRunId}/duplicate`));
+  assert.ok(dupReq);
+
+  const dupRunId = "20261024-051600-112233";
+  const dupRun = {
+    ...run(dupRunId, "batch job"),
+    duplicate_of: newRunId,
+    status: "running",
+  };
+
+  dupReq.resolve(response({
+    action: "duplicate",
+    status: "ok",
+    new_run_id: dupRunId,
+    source_run_id: newRunId,
+    message: `Run '${newRunId}' duplicated as '${dupRunId}'.`,
+    run: dupRun,
+  }, 201));
+
+  await Promise.resolve();
+  const listReq2 = requests.filter((r) => r.url === "/api/runs").pop();
+  if (listReq2) listReq2.resolve(response([sourceRun, newRun, dupRun]));
+
+  await pDup;
+
+  assert.ok(db.openRunIds().includes(dupRunId));
+  assert.ok(db.openRunIds().includes(sourceRun.id));
+  assert.ok(db.openRunIds().includes(newRunId));
+  assert.equal(db.getSelectedId(), dupRunId);
+}
+
+async function testLifecycleErrorHandling() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const targetRun = {
+    ...run("20261024-051200-abcdef", "worker-proc"),
+    status: "running",
+  };
+  db.setRuns([targetRun]);
+  db.setSelectedId(targetRun.id);
+  const feedback = getElement("#lifecycle-feedback");
+
+  // 1. 404 Not Found
+  const p404 = db.executeLifecycleAction("stop", targetRun.id, { force: false });
+  const req404 = requests.find((r) => r.url.endsWith("/stop"));
+  req404.resolve(response({ detail: "Run not found" }, 404));
+  await p404;
+
+  assert.match(feedback.textContent, /not found in registry/i);
+  assert.ok(feedback.className.includes("feedback-error"));
+
+  // 2. 409 Conflict (e.g. restart active run)
+  const p409 = db.executeLifecycleAction("restart", targetRun.id);
+  const req409 = requests.find((r) => r.url.endsWith("/restart"));
+  req409.resolve(response({ detail: "Cannot restart active run: stop the run first." }, 409));
+  await p409;
+
+  assert.match(feedback.textContent, /Cannot restart active run/);
+  assert.ok(feedback.className.includes("feedback-error"));
+
+  // 3. 501 Unsupported (Pause on Windows)
+  const p501 = db.executeLifecycleAction("pause", targetRun.id);
+  const req501 = requests.find((r) => r.url.endsWith("/pause"));
+  req501.resolve(response({ detail: "Pause is not supported on Windows without an external process API." }, 501));
+  await p501;
+
+  assert.match(feedback.textContent, /not supported on Windows/);
+  assert.ok(feedback.className.includes("feedback-error"));
+
+  // 4. 503 Supervisor Offline
+  const p503 = db.executeLifecycleAction("kill", targetRun.id, { force: true });
+  const req503 = requests.find((r) => r.url.endsWith("/kill"));
+  req503.resolve(response({ detail: "Supervisor is offline or unreachable." }, 503));
+  await p503;
+
+  assert.match(feedback.textContent, /Supervisor unreachable/);
+  assert.ok(feedback.className.includes("feedback-error"));
+}
+
+async function testLifecycleConcurrencyAndStaleSelectionGuards() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+
+  const run1 = { ...run("20261024-051200-111111", "worker 1"), status: "running" };
+  const run2 = { ...run("20261024-051200-222222", "worker 2"), status: "running" };
+  db.setRuns([run1, run2]);
+  db.setSelectedId(run1.id);
+
+  // 1. Concurrency double-click guard
+  const p1 = db.executeLifecycleAction("stop", run1.id, { force: false });
+  assert.equal(db.getLifecycleInFlightRunId(), run1.id);
+
+  const initialReqCount = requests.length;
+  // A second rapid click must be ignored
+  const p2 = db.executeLifecycleAction("stop", run1.id, { force: false });
+  assert.equal(requests.length, initialReqCount, "Rapid duplicate click must not issue a second request");
+
+  const req1 = requests[requests.length - 1];
+  req1.resolve(response({ action: "stop", status: "ok", message: "stopped", run: { ...run1, status: "killed" } }));
+  await p1;
+  assert.equal(db.getLifecycleInFlightRunId(), null);
+
+  // 2. Stale selection guard in confirmation modal:
+  // User opens confirmation modal for run1
+  db.showLifecycleConfirm("kill", run1);
+  assert.equal(db.getPendingConfirmAction().runId, run1.id);
+
+  // User changes selection to run2 before confirming
+  db.setSelectedId(run2.id);
+
+  // Submitting confirm must abort because selection changed
+  const reqCountBefore = requests.length;
+  await db.submitLifecycleConfirm();
+  assert.equal(requests.length, reqCountBefore, "Confirmation modal must abort if selected run changed");
+
+  // 3. View-only tab closing invariant:
+  // Closing a tab MUST NOT issue any /stop or /kill requests
+  db.setSelectedId(run1.id);
+  db.openRunIds().push(run1.id, run2.id);
+  const requestsBeforeClose = requests.length;
+  db.closeWorkspaceTab(run1.id);
+
+  const destructiveRequests = requests.slice(requestsBeforeClose).filter((r) => r.url.includes("/stop") || r.url.includes("/kill"));
+  assert.equal(destructiveRequests.length, 0, "Closing a workspace tab must remain strictly view-only");
+}
+
 Promise.all([
+  testLifecycleButtonEligibilityByStatus(),
+  testLifecycleDestructiveConfirmationModal(),
+  testLifecycleStopAndKillExecution(),
+  testLifecycleRestartAndDuplicateReconciliation(),
+  testLifecycleErrorHandling(),
+  testLifecycleConcurrencyAndStaleSelectionGuards(),
   testIsoSampledAtStaleDetection(),
   testGpuNullVsZeroAttribution(),
   testTerminalVsTemporaryUnavailablePolling(),

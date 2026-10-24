@@ -22,6 +22,8 @@ let telemetryInFlightId = 0;
 let telemetryAbortController = null;
 let lastHostSampleTime = 0;
 let cachedHostStats = null;
+let lifecycleInFlightRunId = null;
+let pendingConfirmAction = null;
 
 let runs = [];
 let selectedId = null;
@@ -200,7 +202,9 @@ async function api(path, options = {}) {
         message = detail.map((item) => `${(item.loc || []).slice(1).join(".") || "request"}: ${item.msg}`).join("; ");
       }
     } catch { /* Keep the generic message. */ }
-    throw new Error(message);
+    const err = new Error(message);
+    err.status = response.status;
+    throw err;
   }
   return response;
 }
@@ -311,6 +315,7 @@ applyExplorerLayout();
 applyOverviewModeUI();
 setupModeListeners();
 setupOutputSearchListeners();
+setupLifecycleListeners();
 
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", () => {
@@ -1070,6 +1075,7 @@ async function refreshSelected(generation = selectionGeneration, runId = selecte
     $("#copy-run-pid").disabled = run.pid == null;
     $("#copy-run-command").disabled = !run.command;
     reconcileRunSummary(run);
+    updateLifecycleControls(run);
     const warning = $("#run-warning");
     warning.hidden = run.connection !== "disconnected";
     warning.textContent = run.connection === "disconnected" ? "Supervisor is unreachable. Showing the last recorded status and available log output." : "";
@@ -1629,6 +1635,9 @@ function clearSelection() {
   computeOutputSearchAndFilter();
   $("#run-inspector").hidden = true;
   $("#empty-inspector").hidden = false;
+  updateLifecycleControls(null);
+  closeLifecycleConfirm();
+  clearLifecycleFeedback();
   renderRuns();
   renderWorkspaceTabs();
   persistWorkspaceState();
@@ -1858,4 +1867,322 @@ function closeTerminal() {
   terminalStatus = null;
   updateTerminalControls();
   if (socket && (socket.readyState === 0 || socket.readyState === 1)) socket.close(1000, "terminal view closed");
+}
+
+function getRun(id) {
+  if (!id) return null;
+  return runs.find((r) => r.id === id) || null;
+}
+
+function updateLifecycleControls(run) {
+  const stopBtn = $("#action-stop-btn");
+  const killBtn = $("#action-kill-btn");
+  const restartBtn = $("#action-restart-btn");
+  const duplicateBtn = $("#action-duplicate-btn");
+  const pauseBtn = $("#action-pause-btn");
+
+  if (!stopBtn || !killBtn || !restartBtn || !duplicateBtn) return;
+
+  if (!run || !run.id) {
+    stopBtn.disabled = true;
+    killBtn.disabled = true;
+    restartBtn.disabled = true;
+    duplicateBtn.disabled = true;
+    if (pauseBtn) pauseBtn.disabled = true;
+    return;
+  }
+
+  const isTerminal = ["finished", "failed", "killed", "lost"].includes(run.status);
+  const isInFlight = lifecycleInFlightRunId === run.id;
+
+  if (isInFlight) {
+    stopBtn.disabled = true;
+    killBtn.disabled = true;
+    restartBtn.disabled = true;
+    duplicateBtn.disabled = true;
+    if (pauseBtn) pauseBtn.disabled = true;
+    return;
+  }
+
+  // Stop & Kill
+  if (isTerminal) {
+    stopBtn.disabled = true;
+    stopBtn.title = "Process is already terminated";
+    killBtn.disabled = true;
+    killBtn.title = "Process is already terminated";
+  } else {
+    stopBtn.disabled = false;
+    stopBtn.title = `Gracefully stop ${run.name || run.command} (${run.id})`;
+    killBtn.disabled = false;
+    killBtn.title = `Force kill ${run.name || run.command} (${run.id})`;
+  }
+
+  // Restart: allowed only for terminal processes
+  if (isTerminal) {
+    restartBtn.disabled = false;
+    restartBtn.title = `Restart ${run.name || run.command} as a new process`;
+  } else {
+    restartBtn.disabled = true;
+    restartBtn.title = "Cannot restart an active process. Stop the run first before restarting, or duplicate it.";
+  }
+
+  // Duplicate: allowed for both active and terminal processes
+  duplicateBtn.disabled = false;
+  duplicateBtn.title = `Duplicate ${run.name || run.command} as a new parallel process`;
+
+  // Pause: allowed only for active processes (though returns 501 on Windows)
+  if (pauseBtn) {
+    if (isTerminal) {
+      pauseBtn.disabled = true;
+      pauseBtn.title = "Process is already terminated";
+    } else {
+      pauseBtn.disabled = false;
+      pauseBtn.title = "Pause process (unsupported on Windows)";
+    }
+  }
+}
+
+function showLifecycleConfirm(action, run) {
+  if (!run || !run.id) return;
+  pendingConfirmAction = {
+    action,
+    runId: run.id,
+    force: action === "kill",
+    displayName: run.name || run.command || "Unnamed process",
+    generation: selectionGeneration,
+  };
+
+  const modal = $("#lifecycle-confirm-modal");
+  const title = $("#confirm-modal-title");
+  const desc = $("#confirm-modal-desc");
+  const nameEl = $("#confirm-run-name");
+  const idEl = $("#confirm-run-id");
+  const noteEl = $("#confirm-warning-note");
+  const submitBtn = $("#confirm-submit-btn");
+
+  if (!modal) return;
+
+  if (nameEl) nameEl.textContent = run.name || run.command || "Unnamed process";
+  if (idEl) idEl.textContent = run.id;
+
+  if (action === "kill") {
+    if (title) title.textContent = "Confirm Force Kill Process";
+    if (desc) desc.textContent = "Are you sure you want to force kill this process? Any unsaved in-memory state will be lost immediately.";
+    if (noteEl) noteEl.textContent = "Kill defaults to forced termination (taskkill /F on Windows, SIGKILL on POSIX).";
+    if (submitBtn) {
+      submitBtn.textContent = "Kill Process";
+      submitBtn.className = "modal-btn modal-btn-danger";
+    }
+  } else {
+    if (title) title.textContent = "Confirm Stop Process";
+    if (desc) desc.textContent = "Are you sure you want to stop this process? A graceful shutdown signal will be sent to the process.";
+    if (noteEl) noteEl.textContent = "Stop defaults to graceful termination (Ctrl-Break/close on Windows, SIGTERM on POSIX).";
+    if (submitBtn) {
+      submitBtn.textContent = "Stop Process";
+      submitBtn.className = "modal-btn modal-btn-warning";
+    }
+  }
+
+  modal.hidden = false;
+  const cancelBtn = $("#confirm-cancel-btn");
+  if (cancelBtn && typeof cancelBtn.focus === "function") {
+    cancelBtn.focus();
+  }
+}
+
+function closeLifecycleConfirm() {
+  pendingConfirmAction = null;
+  const modal = $("#lifecycle-confirm-modal");
+  if (modal) modal.hidden = true;
+}
+
+async function submitLifecycleConfirm() {
+  if (!pendingConfirmAction) return;
+  const target = pendingConfirmAction;
+  closeLifecycleConfirm();
+
+  // Guard against stale selection changes while modal was open
+  if (target.runId !== selectedId || target.generation !== selectionGeneration) {
+    return;
+  }
+
+  await executeLifecycleAction(target.action, target.runId, { force: target.force });
+}
+
+function showLifecycleFeedback(type, message) {
+  const banner = $("#lifecycle-feedback");
+  if (!banner) return;
+  banner.className = `lifecycle-feedback feedback-${type}`;
+  banner.replaceChildren();
+
+  const msgSpan = document.createElement("span");
+  msgSpan.textContent = message;
+
+  const closeBtn = document.createElement("button");
+  closeBtn.type = "button";
+  closeBtn.className = "lifecycle-feedback-close";
+  closeBtn.setAttribute("aria-label", "Dismiss feedback");
+  closeBtn.textContent = "×";
+  closeBtn.addEventListener("click", () => {
+    banner.hidden = true;
+  });
+
+  banner.append(msgSpan, closeBtn);
+  banner.hidden = false;
+}
+
+function clearLifecycleFeedback() {
+  const banner = $("#lifecycle-feedback");
+  if (banner) {
+    banner.hidden = true;
+    banner.replaceChildren();
+  }
+}
+
+async function executeLifecycleAction(action, runId, options = {}) {
+  if (!runId || lifecycleInFlightRunId) return;
+
+  lifecycleInFlightRunId = runId;
+  const generation = selectionGeneration;
+  const currentRun = getRun(runId);
+  const displayName = currentRun?.name || currentRun?.command || runId;
+
+  updateLifecycleControls(currentRun);
+
+  const actionVerb = action === "stop" ? "Stopping"
+    : action === "kill" ? "Killing"
+    : action === "restart" ? "Restarting"
+    : action === "duplicate" ? "Duplicating"
+    : "Pausing";
+
+  showLifecycleFeedback("in-flight", `${actionVerb} process ${displayName} (${runId})…`);
+
+  try {
+    let payload = null;
+    if (action === "stop") {
+      payload = { force: options.force === true };
+    } else if (action === "kill") {
+      payload = { force: options.force !== false };
+    } else if (action === "restart" || action === "duplicate") {
+      payload = { force_color: null };
+    }
+
+    const fetchOptions = {
+      method: "POST",
+    };
+    if (payload !== null) {
+      fetchOptions.headers = { "Content-Type": "application/json" };
+      fetchOptions.body = JSON.stringify(payload);
+    }
+
+    const response = await api(`/api/runs/${encodeURIComponent(runId)}/${action}`, fetchOptions);
+    const data = await response.json();
+
+    if (data.status === "terminating") {
+      showLifecycleFeedback("pending", `Termination requested for ${displayName} (${runId}); process shutdown is in progress.`);
+    } else if (data.status === "already_terminated") {
+      showLifecycleFeedback("pending", data.message || `Process ${displayName} (${runId}) is already terminated.`);
+    } else {
+      showLifecycleFeedback("success", data.message || `${displayName} ${action} completed successfully.`);
+    }
+
+    if (action === "restart" || action === "duplicate") {
+      const newRunId = data.new_run_id;
+      await refreshRuns();
+      if (newRunId) {
+        if (!openRunIds.includes(newRunId)) {
+          openRunIds.push(newRunId);
+        }
+        if (isCurrentSelection(generation, runId)) {
+          await selectRun(newRunId);
+        } else {
+          renderWorkspaceTabs();
+        }
+      }
+    } else {
+      await refreshRuns();
+      if (isCurrentSelection(generation, runId)) {
+        await refreshSelected(generation, runId);
+      }
+    }
+  } catch (error) {
+    if (error.message === "locked") {
+      showLogin("Session expired. Enter the current terminal login code again.");
+      return;
+    }
+    const status = error.status;
+    let errorMsg = error.message;
+    if (status === 404) {
+      errorMsg = `Process '${runId}' not found in registry (may have been deleted or invalid Run ID).`;
+    } else if (status === 501) {
+      errorMsg = error.message || "Pause/resume is not supported on Windows.";
+    } else if (status === 503) {
+      errorMsg = `Supervisor unreachable: ${error.message}`;
+    }
+    showLifecycleFeedback("error", errorMsg);
+  } finally {
+    lifecycleInFlightRunId = null;
+    if (isCurrentSelection(generation, runId)) {
+      updateLifecycleControls(getRun(selectedId));
+    }
+  }
+}
+
+function setupLifecycleListeners() {
+  const stopBtn = $("#action-stop-btn");
+  if (stopBtn) {
+    stopBtn.addEventListener("click", () => {
+      const run = getRun(selectedId);
+      if (run) showLifecycleConfirm("stop", run);
+    });
+  }
+
+  const killBtn = $("#action-kill-btn");
+  if (killBtn) {
+    killBtn.addEventListener("click", () => {
+      const run = getRun(selectedId);
+      if (run) showLifecycleConfirm("kill", run);
+    });
+  }
+
+  const restartBtn = $("#action-restart-btn");
+  if (restartBtn) {
+    restartBtn.addEventListener("click", () => {
+      const run = getRun(selectedId);
+      if (run) executeLifecycleAction("restart", run.id);
+    });
+  }
+
+  const duplicateBtn = $("#action-duplicate-btn");
+  if (duplicateBtn) {
+    duplicateBtn.addEventListener("click", () => {
+      const run = getRun(selectedId);
+      if (run) executeLifecycleAction("duplicate", run.id);
+    });
+  }
+
+  const pauseBtn = $("#action-pause-btn");
+  if (pauseBtn) {
+    pauseBtn.addEventListener("click", () => {
+      const run = getRun(selectedId);
+      if (run) executeLifecycleAction("pause", run.id);
+    });
+  }
+
+  const confirmCancel = $("#confirm-cancel-btn");
+  if (confirmCancel) confirmCancel.addEventListener("click", closeLifecycleConfirm);
+
+  const confirmClose = $("#confirm-modal-close");
+  if (confirmClose) confirmClose.addEventListener("click", closeLifecycleConfirm);
+
+  const confirmSubmit = $("#confirm-submit-btn");
+  if (confirmSubmit) confirmSubmit.addEventListener("click", submitLifecycleConfirm);
+
+  if (typeof document !== "undefined" && document.addEventListener) {
+    document.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && !$("#lifecycle-confirm-modal")?.hidden) {
+        closeLifecycleConfirm();
+      }
+    });
+  }
 }
