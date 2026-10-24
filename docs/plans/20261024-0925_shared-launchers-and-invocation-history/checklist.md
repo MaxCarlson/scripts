@@ -27,30 +27,30 @@
   - [x] 1.4.5: Commit Task 1.4
 
 ## Stage 2: Read-Only Query API, Reader, and Reconciliation
-- [ ] Task 2.1: ReadOnlyHistoryReader (`script_logging.reader`)
-  - [ ] 2.1.1: Write failing tests for read-only invariants (`test_reader.py`)
-  - [ ] 2.1.2: Run test to verify it fails
-  - [ ] 2.1.3: Implement `ReadOnlyHistoryReader`
-  - [ ] 2.1.4: Run test to verify it passes
-  - [ ] 2.1.5: Commit Task 2.1
-- [ ] Task 2.2: Public Query API and Cursor Pagination
-  - [ ] 2.2.1: Write failing tests for queries and cursor pagination (`test_queries.py`)
-  - [ ] 2.2.2: Run test to verify it fails
-  - [ ] 2.2.3: Implement query methods and cursor serialization in `reader.py` and `__init__.py`
-  - [ ] 2.2.4: Run test to verify it passes
-  - [ ] 2.2.5: Commit Task 2.2
-- [ ] Task 2.3: Reconciliation Tooling (`script_logging.reconciliation`)
-  - [ ] 2.3.1: Write failing test for counter reconciliation (`test_reconciliation.py`)
-  - [ ] 2.3.2: Run test to verify it fails
-  - [ ] 2.3.3: Implement `reconciliation.py`
-  - [ ] 2.3.4: Run test to verify it passes
-  - [ ] 2.3.5: Commit Task 2.3
-- [ ] Task 2.4: Synthetic Fixture for Consumer Integration
-  - [ ] 2.4.1: Write consumer contract test using synthetic fixture (`test_consumer_contract.py`)
-  - [ ] 2.4.2: Run test to verify it fails
-  - [ ] 2.4.3: Implement `synthetic_history.py` fixture
-  - [ ] 2.4.4: Run test to verify it passes
-  - [ ] 2.4.5: Commit Task 2.4
+- [x] Task 2.1: ReadOnlyHistoryReader (`script_logging.reader`)
+  - [x] 2.1.1: Write failing tests for read-only invariants (`test_reader.py`)
+  - [x] 2.1.2: Run test to verify it fails
+  - [x] 2.1.3: Implement `ReadOnlyHistoryReader`
+  - [x] 2.1.4: Run test to verify it passes
+  - [x] 2.1.5: Commit Task 2.1
+- [x] Task 2.2: Public Query API and Cursor Pagination
+  - [x] 2.2.1: Write failing tests for queries and cursor pagination (`test_queries.py`)
+  - [x] 2.2.2: Run test to verify it fails
+  - [x] 2.2.3: Implement query methods and cursor serialization in `reader.py` and `__init__.py`
+  - [x] 2.2.4: Run test to verify it passes
+  - [x] 2.2.5: Commit Task 2.2
+- [x] Task 2.3: Reconciliation Tooling (`script_logging.reconciliation`)
+  - [x] 2.3.1: Write failing test for counter reconciliation (`test_reconciliation.py`)
+  - [x] 2.3.2: Run test to verify it fails
+  - [x] 2.3.3: Implement `reconciliation.py`
+  - [x] 2.3.4: Run test to verify it passes
+  - [x] 2.3.5: Commit Task 2.3
+- [x] Task 2.4: Synthetic Fixture for Consumer Integration
+  - [x] 2.4.1: Write consumer contract test using synthetic fixture (`test_consumer_contract.py`)
+  - [x] 2.4.2: Run test to verify it fails
+  - [x] 2.4.3: Implement `synthetic_history.py` fixture
+  - [x] 2.4.4: Run test to verify it passes
+  - [x] 2.4.5: Commit Task 2.4
 
 ## Stage 3: Launcher Execution Engine & Diagnostic Argv-Echo
 - [ ] Task 3.1: Launcher Execution Engine (`script_logging.launcher`)

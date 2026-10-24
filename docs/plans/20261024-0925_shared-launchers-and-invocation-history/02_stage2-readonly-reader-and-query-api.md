@@ -16,7 +16,7 @@
   - `ReadOnlyHistoryReader` class in `script_logging.reader`.
   - `open_invocation_reader(path: Path | None = None) -> ReadOnlyHistoryReader`.
 
-- [ ] **Step 1: Write failing tests for read-only invariants**
+- [x] **Step 1: Write failing tests for read-only invariants**
 
 ```python
 # modules/script_logging/tests/test_reader.py
@@ -44,12 +44,12 @@ def test_reader_cannot_write(tmp_path):
             conn.execute("INSERT INTO schema_meta VALUES ('test', 'fail')")
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_reader.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `ModuleNotFoundError: No module named 'script_logging.reader'`
 
-- [ ] **Step 3: Implement `ReadOnlyHistoryReader`**
+- [x] **Step 3: Implement `ReadOnlyHistoryReader`**
 
 In `script_logging/reader.py`:
 - `open_invocation_reader(path: Path | None = None) -> ReadOnlyHistoryReader`:
@@ -61,12 +61,12 @@ In `script_logging/reader.py`:
   - Sets `PRAGMA busy_timeout = 15000;`.
   - Sets `row_factory = sqlite3.Row`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_reader.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 2.1**
+- [x] **Step 5: Commit Task 2.1**
 
 ```bash
 git add modules/script_logging/script_logging/reader.py modules/script_logging/tests/test_reader.py
@@ -91,7 +91,7 @@ git commit -m "feat(script_logging): implement ReadOnlyHistoryReader with URI mo
   - `get_command_statistics(...) -> CommandStatistics`
   - Exported through `script_logging/__init__.py`.
 
-- [ ] **Step 1: Write failing tests for queries and cursor pagination**
+- [x] **Step 1: Write failing tests for queries and cursor pagination**
 
 ```python
 # modules/script_logging/tests/test_queries.py
@@ -133,12 +133,12 @@ def test_query_pagination_and_deterministic_order(tmp_path):
     assert stats.failure_count == 7
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_queries.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `AttributeError: 'ReadOnlyHistoryReader' object has no attribute 'list_invocations'`
 
-- [ ] **Step 3: Implement query methods and cursor serialization**
+- [x] **Step 3: Implement query methods and cursor serialization**
 
 In `reader.py`:
 - Deterministic order: `ORDER BY started_epoch_ms DESC, invocation_id DESC`.
@@ -149,12 +149,12 @@ In `reader.py`:
 - Implement `get_command_statistics`: queries pattern-level statistics.
 - Export public helper wrappers in `script_logging/__init__.py`.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_queries.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 2.2**
+- [x] **Step 5: Commit Task 2.2**
 
 ```bash
 git add modules/script_logging/script_logging/reader.py modules/script_logging/script_logging/__init__.py modules/script_logging/tests/test_queries.py
@@ -174,7 +174,7 @@ git commit -m "feat(script_logging): implement cursor pagination and statistics 
 - Produces:
   - `reconcile_invocation_summaries(path: Path | None = None, *, dry_run: bool = True) -> ReconciliationReport`.
 
-- [ ] **Step 1: Write failing test for counter reconciliation**
+- [x] **Step 1: Write failing test for counter reconciliation**
 
 ```python
 # modules/script_logging/tests/test_reconciliation.py
@@ -214,12 +214,12 @@ def test_reconciliation_detects_and_fixes_drift(tmp_path):
         assert count == 1
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_reconciliation.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `ModuleNotFoundError: No module named 'script_logging.reconciliation'`
 
-- [ ] **Step 3: Implement `reconciliation.py`**
+- [x] **Step 3: Implement `reconciliation.py`**
 
 In `reconciliation.py`:
 - Scan `invocations` table: recompute aggregate totals for `command_patterns`, `program_usage`, `alias_usage`.
@@ -227,12 +227,12 @@ In `reconciliation.py`:
 - Record any discrepancy in `ReconciliationReport`.
 - If `dry_run=False`, execute `UPDATE` / `INSERT` in a single transaction to restore consistency.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_reconciliation.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 2.3**
+- [x] **Step 5: Commit Task 2.3**
 
 ```bash
 git add modules/script_logging/script_logging/reconciliation.py modules/script_logging/tests/test_reconciliation.py
@@ -252,7 +252,7 @@ git commit -m "feat(script_logging): implement summary counter reconciliation to
 - Produces:
   - `generate_synthetic_database(path: Path) -> dict[str, Any]`: Reproducible synthetic test database fixture.
 
-- [ ] **Step 1: Write consumer contract test using synthetic fixture**
+- [x] **Step 1: Write consumer contract test using synthetic fixture**
 
 ```python
 # modules/script_logging/tests/test_consumer_contract.py
@@ -278,21 +278,21 @@ def test_consumer_query_contract_against_synthetic_data(tmp_path):
     assert len(patterns_page.items) == expected["pattern_count"]
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_consumer_contract.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: FAIL with `ModuleNotFoundError`
 
-- [ ] **Step 3: Implement `synthetic_history.py`**
+- [x] **Step 3: Implement `synthetic_history.py`**
 
 Implement deterministic fixture population with predictable distributions across multiple programs (`module:mangadl`, `module:compresser`, `pyscript:pyscripts/run_history_process.py`), including varied exit codes, durations, origins, and redacted argument patterns.
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe -m pytest modules/script_logging/tests/test_consumer_contract.py --basetemp=modules/script_logging/.pytest_tmp_root`
 Expected: PASS
 
-- [ ] **Step 5: Commit Task 2.4**
+- [x] **Step 5: Commit Task 2.4**
 
 ```bash
 git add modules/script_logging/tests/fixtures/synthetic_history.py modules/script_logging/tests/test_consumer_contract.py
