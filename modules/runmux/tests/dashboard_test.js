@@ -61,7 +61,10 @@ function element(tagName = "div") {
     },
     addEventListener(name, handler) { listeners.set(name, handler); },
     dispatch(name, ...args) { listeners.get(name)?.(...args); },
-    setAttribute(name, value) { this.attributes[name] = String(value); },
+    setAttribute(name, value) {
+      this.attributes[name] = String(value);
+      if (name === "class") this.className = `${value}`;
+    },
     getAttribute(name) { return this.attributes[name] ?? null; },
     append(...children) { this._textContent = undefined; this.children.push(...children); },
     appendChild(child) { this._textContent = undefined; this.children.push(child); },
@@ -89,12 +92,13 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     },
     querySelectorAll() { return []; },
     createElement(tagName) { return element(tagName); },
+    createElementNS(_namespace, tagName) { return element(tagName); },
     createTextNode(text) { return { textContent: text, nodeType: 3 }; },
     addEventListener() {},
   };
-  const fetch = (url) => {
+  const fetch = (url, options = {}) => {
     const pending = deferred();
-    requests.push({ url: `${url}`, ...pending });
+    requests.push({ url: `${url}`, options, ...pending });
     return pending.promise;
   };
   const context = {
@@ -169,6 +173,12 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     formatBytes,
     formatBytesRate,
     renderTelemetry,
+    renderTimeSeriesChart,
+    refreshHistoryTelemetry,
+    setHistoryRange,
+    setHistoryLineage,
+    startHistoryPolling,
+    stopHistoryPolling,
     refreshTelemetry,
     startTelemetryPolling,
     stopTelemetryPolling,
@@ -1064,6 +1074,169 @@ async function testOverviewModeSelectionAndCycling() {
   assert.equal(reloadHarness.getElement("#mode-btn-c").getAttribute("aria-pressed"), "true");
 }
 
+async function testHistoricalChartBreaksAtGapsAndScalesMultiCoreCpu() {
+  const { context } = dashboardHarness();
+  const container = element("div");
+  const now = Date.now() / 1000;
+  context.__dashboard.renderTimeSeriesChart(container, {
+    title: "Process CPU",
+    unit: "%",
+    series: [{
+      label: "CPU",
+      color: "#57a6ff",
+      values: [
+        { epoch: now - 30, cpu_percent: 50 },
+        { epoch: now - 20, cpu_percent: 250 },
+        { epoch: now - 10, is_gap: true, cpu_percent: null },
+        { epoch: now, cpu_percent: 100 },
+      ],
+      field: "cpu_percent",
+    }],
+  });
+
+  const svg = container.children[0];
+  assert.equal(svg.tagName, "svg");
+  assert.ok(Number(svg.getAttribute("data-y-max")) >= 250, "multi-core CPU must not clip above 100%");
+  const paths = svg.children.filter((child) => child.tagName === "path" && child.classList.contains("chart-series"));
+  assert.equal(paths.length, 2, "explicit gap must create separate SVG line segments");
+  assert.ok(paths.every((path) => !/NaN|undefined/.test(path.getAttribute("d"))));
+}
+
+async function testHistoricalChartTreatsNullAndStaleMeasurementsAsBreaks() {
+  const { context } = dashboardHarness();
+  const container = element("div");
+  const now = Date.now() / 1000;
+  context.__dashboard.renderTimeSeriesChart(container, {
+    title: "Process RSS",
+    unit: "bytes",
+    staleAfterSeconds: 20,
+    series: [{
+      label: "RSS",
+      color: "#4ec9b0",
+      field: "rss_bytes",
+      values: [
+        { epoch: now - 50, rss_bytes: 1024, sample_interval_seconds: 5 },
+        { epoch: now - 40, rss_bytes: null, sample_interval_seconds: 5 },
+        { epoch: now - 10, rss_bytes: 8192, sample_interval_seconds: 60 },
+        { epoch: now, rss_bytes: 4096, sample_interval_seconds: 5 },
+      ],
+    }],
+  });
+  const paths = container.children[0].children.filter((child) => child.tagName === "path" && child.classList.contains("chart-series"));
+  assert.equal(paths.length, 2, "null and stale points must not be bridged into fabricated continuity");
+}
+
+async function testHistoryRangeQueriesAreBoundedAndModeGated() {
+  const h = dashboardHarness();
+  const db = h.context.__dashboard;
+  db.setSelectedId("run-history");
+  db.setOverviewMode("minimal");
+  await db.refreshHistoryTelemetry();
+  assert.equal(h.requests.filter((item) => item.url.includes("/telemetry/history")).length, 0, "Minimal mode must not query history");
+  db.setOverviewMode("inline");
+  await db.refreshHistoryTelemetry();
+  assert.equal(h.requests.filter((item) => item.url.includes("/telemetry/history")).length, 0, "Minimal and Inline must not query history");
+
+  db.setSelectedId(null);
+  db.setOverviewMode("dashboard");
+  db.setSelectedId("run-history");
+  const processRequest = db.refreshHistoryTelemetry();
+  const processHistory = h.requests.filter((item) => item.url.includes("/telemetry/history"));
+  assert.equal(processHistory.length, 1, "Dashboard mode requests only process history");
+  const processUrl = new URL(processHistory[0].url, "http://localhost");
+  assert.equal(processUrl.pathname, "/api/runs/run-history/telemetry/history");
+  assert.equal(processUrl.searchParams.get("max_points"), "300");
+  processHistory[0].resolve(response({ run_id: "run-history", status: "finished", provenance: {}, series: [], events: [] }));
+  await processRequest;
+
+  db.setSelectedId(null);
+  db.setOverviewMode("expanded");
+  db.setSelectedId("run-history");
+  const hostAndProcess = db.refreshHistoryTelemetry();
+  const expandedHistory = h.requests.filter((item) => item.url.includes("/telemetry/history")).slice(1);
+  assert.equal(expandedHistory.length, 2, "Expanded mode also requests host history");
+  assert.ok(expandedHistory[0].url.includes("include_lineage=false"));
+  assert.ok(expandedHistory[1].url.includes("/api/telemetry/history?"));
+  expandedHistory[0].resolve(response({ run_id: "run-history", status: "finished", provenance: {}, series: [], events: [] }));
+  expandedHistory[1].resolve(response({ provenance: { scope: "host" }, series: [] }));
+  await hostAndProcess;
+
+  db.setHistoryLineage(true);
+  const lineageRequests = h.requests.filter((item) => item.url.includes("/telemetry/history")).slice(-2);
+  assert.ok(lineageRequests[0].url.includes("include_lineage=true"), "Expanded lineage toggle must query restart ancestry");
+  lineageRequests[0].resolve(response({ run_id: "run-history", status: "finished", provenance: {}, series: [], events: [] }));
+  lineageRequests[1].resolve(response({ provenance: { scope: "host" }, series: [] }));
+  await Promise.resolve();
+
+  for (const [range, seconds] of [["6h", 21600], ["24h", 86400], ["7d", 604800]]) {
+    db.setHistoryRange(range);
+    const rangeRequests = h.requests.filter((item) => item.url.includes("/telemetry/history")).slice(-2);
+    const processUrl = new URL(rangeRequests[0].url, "http://localhost");
+    assert.equal(processUrl.searchParams.get("max_points"), "300");
+    const since = Number(processUrl.searchParams.get("since"));
+    const until = Number(processUrl.searchParams.get("until"));
+    assert.ok(Math.abs((until - since) - seconds) < 2, `${range} range should use the requested time window`);
+    rangeRequests[0].resolve(response({ provenance: {}, series: [] }));
+    rangeRequests[1].resolve(response({ provenance: { scope: "host" }, series: [] }));
+    await Promise.resolve();
+  }
+}
+
+async function testHistoryRefreshCancelsAndDiscardsObsoleteRunResponse() {
+  const h = dashboardHarness();
+  const db = h.context.__dashboard;
+  db.setOverviewMode("dashboard");
+  db.setSelectedId("run-old");
+  const oldRefresh = db.refreshHistoryTelemetry();
+  const oldRequest = h.requests.find((item) => item.url.includes("/runs/run-old/telemetry/history"));
+  assert.ok(oldRequest);
+
+  db.stopHistoryPolling();
+  assert.equal(oldRequest.options.signal.aborted, true, "selection change must abort the obsolete history request");
+  db.setSelectedId("run-new");
+  const newRefresh = db.refreshHistoryTelemetry();
+  const newRequest = h.requests.find((item) => item.url.includes("/runs/run-new/telemetry/history"));
+  newRequest.resolve(response({
+    run_id: "run-new", provenance: { returned_points: 1, resolution: "raw" },
+    series: [{ epoch: Date.now() / 1000 - 10, cpu_percent: 20 }], events: [],
+  }));
+  await newRefresh;
+  oldRequest.resolve(response({
+    run_id: "run-old", provenance: { returned_points: 2, resolution: "raw" },
+    series: [{ epoch: Date.now() / 1000 - 20, cpu_percent: 90 }], events: [],
+  }));
+  await oldRefresh;
+  assert.match(h.getElement("#history-coverage-note").textContent, /1 points/);
+  assert.doesNotMatch(h.getElement("#history-coverage-note").textContent, /2 points/);
+}
+
+async function testHistoryChartShowsUnavailableForNullMetrics() {
+  const { context } = dashboardHarness();
+  const container = element("div");
+  const now = Date.now() / 1000;
+  context.__dashboard.renderTimeSeriesChart(container, {
+    title: "Process I/O", unit: "bytes/s", startEpoch: now - 60, endEpoch: now,
+    series: [{ label: "Read", field: "read_bytes_per_second", values: [{ epoch: now - 10, read_bytes_per_second: null }] }],
+  });
+  assert.equal(container.children[1].textContent, "Unavailable — no supported samples in this range");
+  assert.equal(container.children[0].getAttribute("data-y-max"), "1", "null metrics must not create a false zero sample");
+}
+
+async function testHistoryPollingOnlyRunsForActiveSelections() {
+  const h = dashboardHarness();
+  const db = h.context.__dashboard;
+  db.setOverviewMode("dashboard");
+  db.setRuns([run("run-active"), { ...run("run-finished"), status: "finished" }]);
+  db.setSelectedId("run-active");
+  db.startHistoryPolling();
+  assert.ok([...h.intervals.values()].some((timer) => timer.delay === 30000), "active run history should refresh at a bounded cadence");
+
+  db.stopHistoryPolling();
+  db.setSelectedId("run-finished");
+  db.startHistoryPolling();
+  assert.equal([...h.intervals.values()].some((timer) => timer.delay === 30000), false, "terminal runs should fetch history once without a timer");
+}
+
 
 async function testLiveTelemetryRenderingAndZeroVsUnavailableDistinction() {
   const { context, getElement } = dashboardHarness();
@@ -1885,6 +2058,12 @@ Promise.all([
   testDualCadencePollingOverhead(),
   testRequestCancellationAndHiddenState(),
   testOverviewModeSelectionAndCycling(),
+  testHistoricalChartBreaksAtGapsAndScalesMultiCoreCpu(),
+  testHistoricalChartTreatsNullAndStaleMeasurementsAsBreaks(),
+  testHistoryRangeQueriesAreBoundedAndModeGated(),
+  testHistoryRefreshCancelsAndDiscardsObsoleteRunResponse(),
+  testHistoryChartShowsUnavailableForNullMetrics(),
+  testHistoryPollingOnlyRunsForActiveSelections(),
   testLiveTelemetryRenderingAndZeroVsUnavailableDistinction(),
   testTelemetryPollingBoundsAndLifecycle(),
   testRapidSelection(),
