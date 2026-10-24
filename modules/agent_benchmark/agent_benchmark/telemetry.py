@@ -6,12 +6,11 @@ import csv
 from dataclasses import dataclass
 import logging
 import math
-import shutil
-import subprocess
 import threading
+
 from typing import Callable
 
-import psutil
+from resource_metrics import memory_stats, nvidia_gpus, top_process_memory
 from termdash.utils import color_text
 
 MIB = 1024**2
@@ -37,17 +36,7 @@ class ResourceLimitExceeded(RuntimeError):
 
 def process_memory_snapshot(limit: int = 8) -> list[dict[str, int | str]]:
     """Attribute resident memory without collecting command lines or credentials."""
-    processes = []
-    for process in psutil.process_iter(["pid", "name", "memory_info"], ad_value=None):
-        try:
-            info = process.info
-            memory = info.get("memory_info")
-            if memory is not None:
-                processes.append({"pid": info["pid"], "name": info.get("name") or "unknown",
-                                  "rss_bytes": int(memory.rss)})
-        except (psutil.Error, OSError):
-            continue
-    return sorted(processes, key=lambda item: item["rss_bytes"], reverse=True)[:limit]
+    return top_process_memory(limit)
 
 
 class RuntimeMemoryGuard:
@@ -63,26 +52,25 @@ class RuntimeMemoryGuard:
     def __call__(self) -> None:
         import time
 
-        try:
-            memory = psutil.virtual_memory()
-        except (OSError, RuntimeError) as error:
-            raise ResourceLimitExceeded(f"Cannot measure host RAM during local inference: {error}") from error
+        memory = memory_stats()
+        if memory is None:
+            raise ResourceLimitExceeded("Cannot measure host RAM during local inference: counters unavailable")
         percent_limit_enabled = self.max_ram_pct < 100
-        exceeded = (percent_limit_enabled and memory.percent >= self.max_ram_pct) or (
-            memory.available < self.min_available_bytes
+        exceeded = (percent_limit_enabled and memory["percent"] >= self.max_ram_pct) or (
+            memory["available"] < self.min_available_bytes
         )
         now = time.monotonic()
         if exceeded or now >= self._next_process_sample:
             self._next_process_sample = now + 5.0
             logger.info("Runtime RAM percent=%.1f available_bytes=%s top_processes=%s",
-                        memory.percent, memory.available, process_memory_snapshot(),
+                        memory["percent"], memory["available"], process_memory_snapshot(),
                         extra={"event_type": "RUNTIME_MEMORY"})
         if exceeded:
             percent_limit = (
                 f"<{self.max_ram_pct:.0f}% used" if percent_limit_enabled else "percentage limit off"
             )
-            message = (f"Host RAM safety stop: {memory.percent:.1f}% used, "
-                       f"{memory.available / 1024**3:.1f} GiB available "
+            message = (f"Host RAM safety stop: {memory['percent']:.1f}% used, "
+                       f"{memory['available'] / 1024**3:.1f} GiB available "
                        f"(limits: {percent_limit}, >={self.min_available_bytes / 1024**3:g} GiB available). "
                        "Cancelling the benchmark worker; no further model loads will be attempted.")
             logger.error(message, extra={"event_type": "RUNTIME_MEMORY_LIMIT"})
@@ -118,40 +106,26 @@ def parse_nvidia_smi_row(row: str) -> ResourceSnapshot:
 
 
 def _read_gpu() -> ResourceSnapshot:
-    command = shutil.which("nvidia-smi")
-    if not command:
-        return ResourceSnapshot()
-    try:
-        result = subprocess.run(
-            [
-                command,
-                "--query-gpu=name,index,utilization.gpu,utilization.memory,memory.used,memory.total",
-                "--format=csv,noheader,nounits",
-            ],
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=1.5,
-            check=False,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return ResourceSnapshot()
-    if result.returncode != 0:
-        return ResourceSnapshot()
-    for line in result.stdout.splitlines():
-        snapshot = parse_nvidia_smi_row(line)
-        if snapshot.gpu_name:
-            return snapshot
+    devices = nvidia_gpus()
+    for device in devices:
+        if device.get("name"):
+            return ResourceSnapshot(
+                gpu_name=device["name"],
+                gpu_utilization_pct=device.get("load"),
+                gpu_memory_utilization_pct=device.get("memory_utilization"),
+                gpu_memory_used_bytes=device.get("mem_used"),
+                gpu_memory_total_bytes=device.get("mem_total"),
+            )
     return ResourceSnapshot()
 
 
 def collect_resource_snapshot() -> ResourceSnapshot:
     """Read machine RAM and the first available NVIDIA GPU."""
     try:
-        memory = psutil.virtual_memory()
-        ram = (int(memory.used), int(memory.total), float(memory.percent),
-               int(memory.available) if getattr(memory, "available", None) is not None else None)
+        memory = memory_stats()
+        if memory is None:
+            raise OSError("memory counters unavailable")
+        ram = (memory["used"], memory["total"], memory["percent"], memory["available"])
     except (OSError, RuntimeError):
         ram = (None, None, None, None)
     gpu = _read_gpu()

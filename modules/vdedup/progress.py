@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 import select
-import subprocess
 import sys
 import threading
 import time
@@ -24,6 +23,7 @@ from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
+from resource_metrics import nvidia_gpus
 
 
 def _format_bytes(amount: int) -> str:
@@ -1268,32 +1268,21 @@ class ProgressReporter:
             self._gpu_last_probe_ts = now
             device_id = self._gpu_device_id
         try:
-            result = subprocess.run(
-                [
-                    "nvidia-smi",
-                    f"--id={device_id}",
-                    "--query-gpu=utilization.gpu,memory.used,memory.total",
-                    "--format=csv,noheader,nounits",
-                ],
-                capture_output=True,
-                text=True,
-                check=False,
-                encoding="utf-8",
-                errors="ignore",
-                timeout=1.0,
+            device = next(
+                (gpu for gpu in nvidia_gpus(timeout=1.0) if str(gpu.get("id")) == str(device_id)),
+                None,
             )
-            if result.returncode != 0 or not result.stdout.strip():
+            if device is None:
                 return
-            parts = [part.strip() for part in result.stdout.strip().split(",", 2)]
-            if len(parts) != 3:
+            util = device.get("load")
+            total_bytes = device.get("mem_total")
+            free_bytes = device.get("mem_free")
+            if util is None or total_bytes is None or free_bytes is None:
                 return
-            util = int(float(parts[0]))
-            used_bytes = int(float(parts[1]) * 1024 * 1024)
-            total_bytes = int(float(parts[2]) * 1024 * 1024)
             with self.lock:
-                self.gpu_util_percent = util
-                self.gpu_total_vram_bytes = total_bytes
-                self.gpu_free_vram_bytes = max(0, total_bytes - used_bytes)
+                self.gpu_util_percent = int(float(util))
+                self.gpu_total_vram_bytes = int(total_bytes)
+                self.gpu_free_vram_bytes = int(free_bytes)
         except Exception:
             return
 

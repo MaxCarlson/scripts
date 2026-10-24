@@ -20,6 +20,7 @@ from typing import List, Dict, Optional, Any, Tuple
 
 import psutil
 import requests
+from resource_metrics import cpu_count, cpu_percent, memory_stats, net_io_counters
 from rich.console import Console
 from rich.table import Table
 from rich.panel import Panel
@@ -150,21 +151,28 @@ class SystemManager:
     def cpu_info():
         """Show CPU details."""
         freq = psutil.cpu_freq()
+        current_load = cpu_percent(interval=0.5)
         return {
-            "physical_cores": psutil.cpu_count(logical=False),
-            "logical_cores": psutil.cpu_count(logical=True),
+            "physical_cores": cpu_count(logical=False),
+            "logical_cores": cpu_count(logical=True),
             "max_freq": f"{freq.max:.2f} MHz" if freq else "N/A",
             "current_freq": f"{freq.current:.2f} MHz" if freq else "N/A",
-            "current_load": f"{psutil.cpu_percent(interval=0.5)}%"
+            "current_load": f"{current_load}%" if current_load is not None else "N/A",
         }
 
     @staticmethod
     def mem_info():
         """Show memory usage summary."""
-        mem = psutil.virtual_memory()
+        mem = memory_stats() or {}
         swap = psutil.swap_memory()
         return [
-            {"type": "RAM", "total": mem.total, "used": mem.used, "free": mem.available, "percent": f"{mem.percent}%"},
+            {
+                "type": "RAM",
+                "total": mem.get("total"),
+                "used": mem.get("used"),
+                "free": mem.get("available"),
+                "percent": f"{mem['percent']}%" if mem.get("percent") is not None else "N/A",
+            },
             {"type": "Swap", "total": swap.total, "used": swap.used, "free": swap.free, "percent": f"{swap.percent}%"}
         ]
 
@@ -331,16 +339,18 @@ class SystemManager:
     @staticmethod
     def sys_monitor():
         """One-shot machine dashboard summary."""
-        cpu = psutil.cpu_percent(interval=0.5)
-        mem = psutil.virtual_memory()
+        from cross_platform.size_utils import format_bytes_binary
+
+        cpu = cpu_percent(interval=0.5)
+        mem = memory_stats()
         disk = psutil.disk_usage('/')
-        net = psutil.net_io_counters()
+        net = net_io_counters()
         return {
-            "cpu_load": f"{cpu}%",
-            "memory_usage": f"{mem.percent}%",
+            "cpu_load": f"{cpu}%" if cpu is not None else "N/A",
+            "memory_usage": f"{mem['percent']}%" if mem is not None and mem.get("percent") is not None else "N/A",
             "disk_usage": f"{disk.percent}%",
-            "net_sent": format_bytes_binary(net.bytes_sent),
-            "net_recv": format_bytes_binary(net.bytes_recv)
+            "net_sent": format_bytes_binary(net.bytes_sent) if net is not None else "N/A",
+            "net_recv": format_bytes_binary(net.bytes_recv) if net is not None else "N/A",
         }
 
     # PKG Category

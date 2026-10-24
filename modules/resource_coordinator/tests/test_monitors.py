@@ -28,3 +28,18 @@ async def test_gpu_monitor():
 
     monitor.set_utilization("gpu-0", 85.5)
     assert await monitor.get_max_utilization() == 85.5
+
+
+@pytest.mark.asyncio
+async def test_nvidia_monitor_uses_shared_gpu_metrics(monkeypatch):
+    import resource_coordinator.monitors.gpu as gpu_module
+
+    monkeypatch.setattr(gpu_module, "nvidia_gpus", lambda **kwargs: [{
+        "id": 2, "load": 40.0, "mem_used": 2 * 1024**2,
+        "mem_total": 8 * 1024**2, "power_w": 150.0,
+    }])
+    metrics = await gpu_module.NvidiaGpuMonitor().get_metrics()
+    assert metrics == [gpu_module.GpuDeviceMetrics(
+        device_id="gpu-2", utilization_pct=40.0, memory_used_mb=2.0,
+        memory_total_mb=8.0, power_draw_w=150.0,
+    )]

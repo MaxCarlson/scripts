@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import subprocess
 import threading
 import time
 from dataclasses import dataclass
@@ -8,6 +7,13 @@ from enum import Enum
 from typing import List, Optional, Tuple
 
 import psutil
+from resource_metrics import (
+    cpu_count,
+    cpu_percent,
+    gpu_devices,
+    memory_stats,
+    process_tree,
+)
 
 
 class TelemetryDisplayMode(Enum):
@@ -45,53 +51,9 @@ class ProcessStats:
 
 
 def _gpu_info_safe() -> Tuple[List[dict], Optional[str]]:
-    """Query available GPUs via GPUtil or nvidia-smi with safe fallback."""
-    try:
-        import GPUtil  # type: ignore
-
-        return [
-            {
-                "name": g.name,
-                "id": g.id,
-                "load": g.load * 100.0,
-                "mem_used": float(g.memoryUsed) * 1024 * 1024,
-                "mem_total": float(g.memoryTotal) * 1024 * 1024,
-                "temp": g.temperature,
-            }
-            for g in GPUtil.getGPUs()
-        ], None
-    except Exception:
-        pass
-
-    try:
-        out = subprocess.check_output(
-            [
-                "nvidia-smi",
-                "--query-gpu=name,index,utilization.gpu,memory.used,memory.total,temperature.gpu",
-                "--format=csv,noheader,nounits",
-            ],
-            stderr=subprocess.DEVNULL,
-            text=True,
-            timeout=1.5,
-        )
-        rows = []
-        for line in out.strip().splitlines():
-            parts = [s.strip() for s in line.split(",")]
-            if len(parts) >= 6:
-                name, idx, util, mu, mt, temp = parts[:6]
-                rows.append(
-                    {
-                        "name": name,
-                        "id": int(idx),
-                        "load": float(util),
-                        "mem_used": float(mu) * 1024 * 1024,  # MiB to bytes
-                        "mem_total": float(mt) * 1024 * 1024,  # MiB to bytes
-                        "temp": float(temp),
-                    }
-                )
-        return rows, None
-    except Exception:
-        return [], "GPU info unavailable"
+    """Query NVIDIA devices through the shared best-effort collector."""
+    rows = gpu_devices()
+    return rows, None if rows else "GPU info unavailable"
 
 
 class HardwareSampler:
@@ -113,7 +75,7 @@ class HardwareSampler:
         self._gpu_min_interval = 1.5
 
         # Initialize psutil cpu percent baseline
-        psutil.cpu_percent(interval=None)
+        cpu_percent()  # establish the first non-blocking CPU baseline
 
     def __enter__(self) -> HardwareSampler:
         self.start()
@@ -165,8 +127,8 @@ class HardwareSampler:
     def _sample_tick(self) -> None:
         """Perform one synchronous measurement sample."""
         # 1. System CPU & Memory
-        cpu_pct = float(psutil.cpu_percent(interval=None))
-        vm = psutil.virtual_memory()
+        cpu_pct = float(cpu_percent() or 0.0)
+        vm = memory_stats() or {"used": 0, "total": 0, "percent": 0.0}
 
         # 2. System GPU (throttled to >=1.5s interval to minimize overhead)
         now = time.monotonic()
@@ -189,9 +151,9 @@ class HardwareSampler:
 
         sys_snap = SystemStats(
             cpu_pct=cpu_pct,
-            ram_used_bytes=vm.used,
-            ram_total_bytes=vm.total,
-            ram_pct=float(vm.percent),
+            ram_used_bytes=vm["used"],
+            ram_total_bytes=vm["total"],
+            ram_pct=float(vm["percent"]),
             gpu_name=gpu_name,
             gpu_load_pct=gpu_load,
             gpu_mem_used_bytes=gpu_mem_used,
@@ -207,11 +169,7 @@ class HardwareSampler:
                 root_proc = psutil.Process(target_pid)
                 zombie_status = getattr(psutil, "STATUS_ZOMBIE", "zombie")
                 if root_proc.is_running() and root_proc.status() != zombie_status:
-                    procs = [root_proc]
-                    try:
-                        procs.extend(root_proc.children(recursive=True))
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        pass
+                    procs = process_tree(target_pid)
 
                     current_pids = {p.pid for p in procs}
                     for cached_pid in list(self._proc_cache.keys()):
@@ -240,11 +198,11 @@ class HardwareSampler:
                             self._proc_cache.pop(p.pid, None)
                             continue
 
-                    logical_cores = psutil.cpu_count(logical=True) or 1
+                    logical_cores = cpu_count(logical=True) or 1
                     norm_cpu = min(100.0, max(0.0, total_raw_cpu / logical_cores))
                     mem_pct = (
-                        min(100.0, max(0.0, (total_rss / vm.total) * 100.0))
-                        if vm.total
+                        min(100.0, max(0.0, (total_rss / vm["total"]) * 100.0))
+                        if vm["total"]
                         else 0.0
                     )
 

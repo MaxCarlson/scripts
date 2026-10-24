@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rrbackup"
-version = "2.0.1"
+version = "2.1.0"
 description = "Unified cross-platform Restic backup management and viewer CLI"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -12,6 +12,7 @@ authors = [{ name = "Max", email = "max@example.com" }]
 license = { text = "MIT" }
 dependencies = [
     "psutil>=5.9",
+    "resource-metrics>=0.1.0",
     "termdash>=0.5.0",
     "tomli; python_version < '3.11'",
     "tomli-w",

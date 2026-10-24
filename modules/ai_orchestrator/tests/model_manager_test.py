@@ -1,6 +1,6 @@
 """Tests for Model Manager."""
 
-import pytest
+import ai_orchestrator.model_manager as model_manager_module
 from ai_orchestrator.model_manager import ModelManager, ModelCapability
 
 
@@ -9,6 +9,20 @@ def test_model_manager_init():
     manager = ModelManager()
     assert manager is not None
     assert len(manager.models) > 0
+
+
+def test_model_manager_uses_shared_exact_gpu_memory_fields(monkeypatch):
+    monkeypatch.setattr(
+        model_manager_module,
+        "nvidia_gpus",
+        lambda **kwargs: [{"name": "RTX", "mem_total": 16 * 1024**3, "mem_free": 6 * 1024**3}],
+    )
+
+    manager = ModelManager()
+
+    assert manager.gpu_info is not None
+    assert manager.gpu_info.vram_total_gb == 16
+    assert manager.gpu_info.vram_available_gb == 6
 
 
 def test_get_best_model_for_code_generation():

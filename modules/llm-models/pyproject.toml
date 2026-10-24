@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-models"
-version = "0.1.0"
+version = "0.2.0"
 description = "Registry and downloader utilities for high-quality quantized coding models."
 readme = "README.md"
 license = { text = "MIT" }
@@ -13,7 +13,8 @@ authors = [
 ]
 requires-python = ">=3.10"
 dependencies = [
-    "huggingface_hub>=0.25.2"
+    "huggingface_hub>=0.25.2",
+    "resource-metrics>=0.2.0",
 ]
 
 [project.optional-dependencies]

@@ -4,11 +4,11 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "local-agent-bridge"
-version = "3.0.0"
+version = "3.1.0"
 description = "Manage the LM Studio model and OpenCode bridge for Codex and Antigravity"
 readme = "README.md"
 requires-python = ">=3.11"
-dependencies = ["tomlkit>=0.13,<1"]
+dependencies = ["tomlkit>=0.13,<1", "resource-metrics>=0.2.0"]
 
 [project.scripts]
 local_agent = "local_agent_bridge.commands:main"

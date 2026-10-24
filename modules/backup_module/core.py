@@ -12,6 +12,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional, Sequence
 
+from resource_metrics import cpu_percent
+
 try:
     import psutil
 except ImportError as exc:  # pragma: no cover
@@ -447,7 +449,10 @@ def days_since(
 
 
 def measure_cpu_percent(sample_seconds: float) -> float:
-    return float(psutil.cpu_percent(interval=sample_seconds))
+    sample = cpu_percent(interval=sample_seconds)
+    if sample is None:
+        raise RuntimeError("System CPU telemetry unavailable")
+    return float(sample)
 
 
 def evaluate_run_decision(
