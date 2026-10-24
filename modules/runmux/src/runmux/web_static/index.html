@@ -43,18 +43,56 @@
         </div>
       </header>
 
-      <section class="workspace">
-        <aside class="process-panel panel">
+      <section class="workspace" id="workspace">
+        <aside class="process-panel panel" id="process-panel">
           <div class="panel-heading process-heading">
             <div><h2>Processes</h2><span id="process-count" class="count-pill">0</span></div>
-            <button id="clear-search" class="text-button" type="button" hidden>Clear</button>
+            <div class="process-heading-actions">
+              <button id="clear-search" class="text-button" type="button" hidden>Clear</button>
+              <button id="explorer-toggle" class="icon-button explorer-toggle" type="button" aria-label="Collapse process explorer" aria-expanded="true" title="Collapse process explorer">‹</button>
+            </div>
           </div>
-          <label class="search-box" for="process-search"><span aria-hidden="true">⌕</span><input id="process-search" type="search" placeholder="Search processes" autocomplete="off"><kbd>/</kbd></label>
+          <label class="search-box" for="process-search"><span aria-hidden="true">⌕</span><input id="process-search" type="search" maxlength="512" placeholder="Search processes" autocomplete="off"><kbd>/</kbd></label>
+          <div class="process-controls" aria-label="Process list controls">
+            <label>Group
+              <select id="process-grouping" aria-label="Group processes">
+                <option value="status">Status</option>
+                <option value="none">Ungrouped</option>
+              </select>
+            </label>
+            <label>Status
+              <select id="process-status-filter" aria-label="Filter by process status">
+                <option value="">All</option>
+                <option value="pending">Waiting</option>
+                <option value="running">Running</option>
+                <option value="paused">Paused</option>
+                <option value="finished">Completed</option>
+                <option value="failed">Failed</option>
+                <option value="killed">Killed</option>
+                <option value="lost">Disconnected</option>
+              </select>
+            </label>
+            <label class="sort-control">Sort
+              <select id="process-sort" aria-label="Sort processes">
+                <option value="recent">Newest created</option>
+                <option value="started">Start time</option>
+                <option value="name">Name</option>
+                <option value="duration">Duration</option>
+                <option value="status">Status</option>
+              </select>
+            </label>
+          </div>
           <div id="process-list" class="process-list" aria-label="Managed processes"></div>
+          <nav id="process-pagination" class="process-pagination" aria-label="Process list pages" hidden>
+            <button id="process-previous-page" class="text-button" type="button" aria-label="Previous process page">‹ Previous</button>
+            <span id="process-page-state" aria-live="polite">1 / 1</span>
+            <button id="process-next-page" class="text-button" type="button" aria-label="Next process page">Next ›</button>
+          </nav>
           <div id="list-state" class="list-state" aria-live="polite"></div>
           <button id="new-process-empty-button" class="text-button new-process-empty-button" type="button" hidden>+ New Process</button>
           <div class="panel-foot">Local process desk <span>·</span> Full run IDs</div>
         </aside>
+        <div id="explorer-splitter" class="explorer-splitter" role="separator" aria-orientation="vertical" aria-label="Resize process explorer" aria-valuemin="220" aria-valuemax="480" aria-valuenow="300" tabindex="0"></div>
 
         <section class="workspace-shell" aria-label="Process workspace">
           <nav id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Open process views"></nav>
@@ -88,6 +126,7 @@
                   <div class="eyebrow">RUN INSPECTOR</div>
                   <h2 id="selected-name">—</h2>
                   <div id="selected-command" class="command-label">—</div>
+                  <div id="selected-identity" class="run-identity">RUN —</div>
                 </div>
                 <span id="selected-status" class="status-badge">—</span>
               </div>
@@ -116,13 +155,16 @@
               </div>
               <div id="details-pane" class="tab-pane details-pane" role="tabpanel" aria-labelledby="tab-details" hidden>
                 <div class="detail-grid">
-                  <div class="detail-item"><span>RUN ID</span><code id="detail-id">—</code></div>
-                  <div class="detail-item"><span>PID</span><code id="detail-pid">—</code></div>
+                  <div class="detail-item"><span>RUN ID</span><div class="detail-value-row"><code id="detail-id">—</code><button id="copy-run-id" class="copy-button" type="button" aria-label="Copy Run ID">Copy</button></div></div>
+                  <div class="detail-item"><span>PID</span><div class="detail-value-row"><code id="detail-pid">—</code><button id="copy-run-pid" class="copy-button" type="button" aria-label="Copy process ID">Copy</button></div></div>
                   <div class="detail-item"><span>EXIT CODE</span><code id="detail-exit">—</code></div>
+                  <div class="detail-item"><span>EXECUTABLE NAME</span><div class="detail-value-row"><code id="detail-command">—</code><button id="copy-run-command" class="copy-button" type="button" aria-label="Copy executable name">Copy</button></div></div>
+                  <div class="detail-item"><span>SUPERVISOR</span><code id="detail-connection">—</code></div>
                   <div class="detail-item"><span>RUNTIME</span><code id="detail-runtime">—</code></div>
                   <div class="detail-item"><span>STARTED</span><code id="detail-started">—</code></div>
                   <div class="detail-item"><span>ENDED</span><code id="detail-ended">—</code></div>
                 </div>
+                <p id="details-copy-status" class="details-copy-status" role="status" aria-live="polite"></p>
                 <p class="disclosure-note">Command arguments and working directory are hidden in this browser view because they may contain private values.</p>
               </div>
               </div>

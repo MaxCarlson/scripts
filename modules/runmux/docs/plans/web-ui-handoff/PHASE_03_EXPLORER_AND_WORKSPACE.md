@@ -82,14 +82,14 @@ All tests must run on disposable registries and synthetic processes. Check keybo
 
 ## 7. Acceptance criteria
 
-- [ ] Grouping is switchable, with status as default and no invented groups.
-- [ ] Search/filter/sort works on supported fields and preserves UI usability at scale.
-- [ ] Tabs and process selection uniquely identify **runs**, not names.
-- [ ] Closing a tab never mutates process state.
-- [ ] Workspace preferences restore safely with no sensitive data persisted.
-- [ ] Metadata presentation is richer yet honors existing privacy policy.
-- [ ] Lifecycle/registry state is accurately reflected across UI components.
-- [ ] Representative responsive, accessibility and regression checks are recorded.
+- [x] Grouping is switchable, with status as default and no invented groups.
+- [x] Search/filter/sort works on supported fields and preserves UI usability at scale.
+- [x] Tabs and process selection uniquely identify **runs**, not names.
+- [x] Closing a tab never mutates process state.
+- [x] Workspace preferences restore safely with no sensitive data persisted.
+- [x] Metadata presentation is richer yet honors existing privacy policy; full argv/cwd disclosure remains deferred.
+- [x] Lifecycle/registry state is accurately reflected across UI components.
+- [x] Representative responsive, accessibility and regression checks are recorded in the Phase 3 status report.
 
 ## 8. Agent handoff instruction
 

@@ -1,6 +1,6 @@
 # Runmux Plans Index Handoff
 
-Last updated: 2026-10-23
+Last updated: 2026-10-24
 
 This folder contains dated, self-contained implementation plans for runmux.
 
@@ -17,15 +17,16 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The active feature branch plan is:
+The latest completed Runmux Web UI phase plan is:
 
-`20261024-runmux-web-terminal-log-correctness/`
+`20261024-runmux-web-explorer-workspace/`
 
-Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
-`00-implementation-plan.md` for Phase 2 terminal and log correctness.
+Phase 3 is integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. Read its `HANDOFF.md`,
+`STATUS.md`, and `checklist.md` for verified results and limitations.
 
-Phase 1 browser process launching is complete and merged to `origin/main` at
-`97515f0905aa2cdc194cabd9c06a250d503256a3`; its evidence is retained in
+Phase 2 terminal/log correctness and Phase 5B telemetry are included in the
+integrated baseline; Phase 2 evidence is retained in
+`20261024-runmux-web-terminal-log-correctness/`. Phase 1 launch evidence is in
 `20261024-runmux-web-process-launching/`.
 
 The previously active native TUI integration plan is:
