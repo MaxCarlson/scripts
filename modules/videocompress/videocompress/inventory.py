@@ -266,6 +266,12 @@ class InventoryStore:
             cur = conn.execute("SELECT asset_json FROM assets ORDER BY relative_path ASC")
             return [VideoAsset.from_dict(json.loads(r["asset_json"])) for r in cur.fetchall()]
 
+    def get_canonical_paths(self) -> dict[str, str]:
+        """Return a mapping of source_id -> canonical_path for all stored assets."""
+        with self._conn() as conn:
+            cur = conn.execute("SELECT source_id, canonical_path FROM assets")
+            return {r["source_id"]: r["canonical_path"] for r in cur.fetchall()}
+
     def prune_stale(self, current_canonical_paths: set[str]) -> int:
         """Delete records for files that no longer exist in the discovered set."""
         norm_current = {p.lower() if os.name == "nt" else p for p in current_canonical_paths}

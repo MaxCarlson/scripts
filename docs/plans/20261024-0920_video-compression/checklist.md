@@ -38,10 +38,13 @@
 - [x] Verify reporting of unknown fields and explicit decision states
 
 ## Stage 4: Controlled Encoder & Measurement Backend
-- [ ] Implement `videocompress.adapters.ffmpeg`: robust FFmpeg subprocess runner with `-nostdin` and `-progress`
-- [ ] Implement `videocompress.sampling`: deterministic temporal window selection across playable duration
-- [ ] Implement `videocompress.trials`: bounded sample trial jobs, trial SQLite cache (`trials.sqlite3`), quota scheduler
-- [ ] Implement cancellation and orphan process cleanup tests
+- [x] Implement `videocompress.sampling`: deterministic temporal window selection (`s3`, `s5`, `s8`) with boundary guards
+- [x] Implement `videocompress.adapters.ffmpeg`: safe FFmpeg subprocess runner with `-nostdin`, `-hide_banner`, source immutability assertions, timeouts, and process-tree cleanup
+- [x] Implement `videocompress.trials`: SQLite cache (`trials.sqlite3`), trial key hashing, output probe validation, and quota enforcement (`--max-trials`, `--max-time`)
+- [x] Implement sample estimation aggregator: combine measured sample bitrates with container decomposition
+- [x] Connect CLI commands: `vcompress estimate --tier sampled`
+- [x] Unit & integration tests for sampling geometry, source immutability, process cancellation, trial cache hit/miss, and quota exhaustion
+- [x] Verify zero full-file encoding and zero source mutations
 
 ## Stage 5: Quality, Compare & Preview
 - [ ] Implement `videocompress.adapters.quality`: VMAF / metric calculation with aligned frames

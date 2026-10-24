@@ -126,3 +126,88 @@ def test_main_inventory_dispatch(tmp_path, capsys):
     captured = capsys.readouterr()
     assert '"total_sources": 1' in captured.out
     assert '"inventory_depth": "files"' in captured.out
+
+
+def test_cli_estimate_sampled_tier(tmp_path, capsys):
+    from unittest.mock import patch
+    from videocompress.adapters.ffmpeg import SampleEncodeResult
+    from videocompress.contracts import VideoAsset, VideoStream
+    from videocompress.inventory import InventoryStore
+    from videocompress.workspace import resolve_workspace
+
+    media = tmp_path / "media"
+    media.mkdir()
+    v1 = media / "v1.mp4"
+    v1.write_bytes(b"content" * 100)
+
+    ws = resolve_workspace(media)
+    store = InventoryStore(ws.inventory_db)
+
+    vstream = VideoStream(stream_index=0, stream_type="video", codec_name="h264", width=1920, height=1080, bit_rate_bps=6_000_000)
+    asset = VideoAsset(
+        source_id="asset-cli-sample",
+        relative_path="v1.mp4",
+        file_bytes=100_000_000,
+        container_format="mp4",
+        duration_seconds=300.0,
+        streams=(vstream,),
+    )
+    st = v1.stat()
+    stat_fp = f"{st.st_mtime_ns}:{st.st_size}"
+    store.save_asset(asset, canonical_path=str(v1), stat_fingerprint=stat_fp)
+
+    mock_result = SampleEncodeResult(
+        sample_path=tmp_path / "mock.mp4",
+        source_path=v1,
+        recipe_id="av1_nvenc_cq30",
+        window_index=0,
+        window_start=0.0,
+        window_duration=10.0,
+        actual_duration=10.0,
+        sample_file_bytes=2_000_000,
+        sample_video_bytes=1_998_000,
+        sample_video_bps=1_598_400,
+        encode_seconds=0.5,
+        fps_throughput=480.0,
+        encoder="av1_nvenc",
+    )
+
+    with patch("videocompress.adapters.ffmpeg.FFmpegAdapter.encode_sample_clip", return_value=mock_result):
+        # 1. JSON output
+        rc_json = main([
+            "-N",
+            "-J",
+            "estimate",
+            "-i",
+            str(media),
+            "-I",
+            str(ws.root.parent),
+            "--tier",
+            "sampled",
+            "-T",
+            "3",
+        ])
+        assert rc_json == 0
+        cap_json = capsys.readouterr()
+        assert '"tier": "sampled"' in cap_json.out
+        assert '"trials_recorded": 3' in cap_json.out
+        assert '"measured_promising"' in cap_json.out
+
+        # 2. Human-readable output
+        rc_human = main([
+            "-N",
+            "estimate",
+            "-i",
+            str(media),
+            "-I",
+            str(ws.root.parent),
+            "-E",
+            "sampled",
+            "-T",
+            "3",
+        ])
+        assert rc_human == 0
+        cap_human = capsys.readouterr()
+        assert "Empirical Trial & Measurement Report (Tier 3 Sampled)" in cap_human.out
+        assert "Trials Completed: 3" in cap_human.out
+

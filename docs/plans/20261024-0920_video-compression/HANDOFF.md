@@ -27,20 +27,30 @@
    - Resolved process-tree orphan risk: implemented non-forced `taskkill /PID <pid> /T` in `ProcessRunner.terminate()` and forced `taskkill /F /T /PID <pid>` in `kill()`.
    - Connected `compresser tui`, `compresser -T`, and `compresser --tui` CLI routing *before* image-only argument normalization.
    - Implemented `modules/compresser/compresser/tui.py`: introspected `compresser` parser into interactive forms, filtered `tui` to prevent recursion, and connected post-run preview viewer for `preview` operation.
-4. **Stage 3 Cheap Predictor & Feasibility Screening**:
-   - Zero-encode guarantee verified: pure mathematical predictor (`videocompress.predictor`), zero FFmpeg/subprocess calls, tested with monkeypatched process rejection.
-   - Container byte decomposition: separate accounting for audio elementary streams (probed or codec/channel fallback), bitmap vs text subtitles, font attachments, and container mux overhead.
-   - Missing video bitrate handled conservatively: never substituted silently; explicitly labeled as `container_derived_approximation` when derived.
-   - Hard impossibility checks: non-video budget overflows and bitrate quality floor violations trigger `infeasible` with explicit rejection reasons.
-   - Prior-based plausible ranges: `[p10, p50, p90]` intervals across H.264, HEVC, and AV1 with adjustments for HDR10/10-bit color, low bpppf, and rate control CQ deltas.
-   - Honest calibration status: labeled as `uncalibrated_metadata_prior` with explicit warnings that CRF/CQ quality-to-size claims require empirical calibration.
-   - CLI operations `vcompress plan` and `vcompress estimate --tier metadata` connected with human-readable tables and structured JSON (`-J`).
-5. **Verification & Testing Evidence**:
-   - `modules/videocompress/tests`: **51/51 passed** in 1.34s.
+4. **Stage 3 Cheap Predictor & Feasibility Screening (Corrected & Verified)**:
+   - Quantile consistency corrected: strictly enforced and verified $\text{Output}(q) + \text{Savings}(q) = \text{Source}$ across all quantiles ($p_{10}, p_{50}, p_{90}$) with monotonic ordering.
+   - Container size reconciliation: tracks probed stream bitrate vs container size, recording unaccounted container bytes and issuing discrepancy warnings.
+   - Heuristic non-video decomposition: explicitly labeled as `estimated_stream_heuristics`, `estimated_fallback`, and `estimated_container_model`.
+   - Quality floor re-classification: bitrate floors treated as heuristic screening signals (`quality_floor_violation`, `is_hard_infeasible = False`), reserving `infeasible` strictly for physical budget overflow ($V_{\max} \le 0$).
+   - Honest calibration status: labeled as `uncalibrated_scenario_assumptions` with capped confidence.
+   - Parameterized property-based consistency tests added and verified.
+5. **Stage 4 Controlled Encoder & Measurement Backend**:
+   - `videocompress.adapters.ffmpeg`: robust FFmpeg subprocess wrapper with `-nostdin`, `-hide_banner`, `-nostats`.
+   - Strict Media Safety: verified source immutability guard (`mtime_ns:size`), isolated scratch execution (`<workspace>/scratch/trial_<id>/`), and automatic scratch cleanup.
+   - Subprocess Management & Cancellation: Windows process tree termination (`taskkill /PID <pid> /T` followed by forced `/F` if needed) preventing orphan `ffmpeg.exe` processes on timeout or abort.
+   - `videocompress.sampling`: deterministic temporal window selection (`s3`, `s5`, `s8`) across playable duration with short-asset boundaries.
+   - Output Validation: all sample outputs probed via FFprobe, verifying non-empty container, video stream existence, target codec match, and elementary stream bitrate.
+   - `videocompress.trials`: SQLite cache (`trials.sqlite3`) with WAL mode and `(source_id, stat_fingerprint, recipe_id, window_index)` key deduplication.
+   - Quota Scheduling: `--max-trials` and `--max-time` limits enforced.
+   - Empirical Sample Aggregator: combines measured sample bitrates with Stage 3 stream breakdown to produce empirical `estimate --tier sampled` predictions.
+   - CLI integration: connected `vcompress estimate --tier sampled` with budget controls.
+   - Zero full-file encoding: verified zero full-file encoding and zero source mutations in Stage 4.
+6. **Verification & Testing Evidence**:
+   - `modules/videocompress/tests`: **74/74 passed** in 2.49s.
    - `modules/cli_tui/tests`: **107/107 passed** in 6.32s.
-   - `modules/compresser/tests`: **523 passed, 1 skipped** in 39.68s.
+   - `modules/compresser/tests`: **523 passed, 1 skipped** in 40.0s.
    - `modules/scripts_help/tests`: **55/55 passed** in 0.76s.
 
 ## Next Step
 
-Present Stage 3 deliverables and findings to user for review and sign-off before committing and advancing to Stage 4 (Controlled Encoder & Measurement Backend).
+Present Stage 4 deliverables, sample-encoding safety contracts, prediction examples, tests, and commit SHA to user for review and sign-off before advancing to Stage 5 (Quality, Compare & Preview).

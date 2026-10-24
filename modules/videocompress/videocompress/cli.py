@@ -30,6 +30,13 @@ from .inventory import InventoryReport, InventoryStore, scan_inventory
 from .plan import build_estimation_plan
 from .predictor import FeasibilityAssessment, evaluate_feasibility
 from .recipes import DEFAULT_RECIPE_ID, STANDARD_RECIPES, get_recipe, list_standard_recipes
+from .trials import (
+    SamplePrediction,
+    TrialRecord,
+    TrialStore,
+    aggregate_sample_estimate,
+    run_sample_trials,
+)
 from .workspace import resolve_workspace
 
 
@@ -259,12 +266,30 @@ def build_parser() -> argparse.ArgumentParser:
         help=f"Target standard recipe ID (default: {DEFAULT_RECIPE_ID}).",
     )
     est_parser.add_argument(
+        "-t",
         "-E",
+        "--tier",
         "--estimate-tier",
         dest="estimate_tier",
         choices=["metadata", "features", "sampled", "calibrated"],
         default="metadata",
         help="Estimation tier: 'metadata' (zero-encode prior, default), 'sampled' (bounded trial encodes), etc.",
+    )
+    est_parser.add_argument(
+        "-u",
+        "--sample-schedule",
+        dest="sample_schedule",
+        choices=["s3", "s5", "s8"],
+        default="s3",
+        help="Sampling schedule for trial encodes: 's3' (3 clips), 's5' (5 clips), 's8' (8 clips).",
+    )
+    est_parser.add_argument(
+        "-d",
+        "--sample-duration",
+        dest="sample_duration",
+        type=float,
+        default=10.0,
+        help="Nominal duration in seconds for each sample clip (default: 10.0).",
     )
     est_parser.add_argument(
         "-P",
@@ -541,7 +566,118 @@ def run_estimate(args: argparse.Namespace) -> int:
         all_stored = store.list_assets()
         assets_to_assess = [a for a in all_stored if a.source_id in eligible_sids]
 
-    # 2. Evaluate feasibility for each asset
+    # Check if Tier 3 Sampled estimation is requested
+    if getattr(args, "estimate_tier", "metadata") == "sampled":
+        max_trials = getattr(args, "max_trials", None)
+        max_time_raw = getattr(args, "max_time", None)
+        max_time_sec = parse_duration(max_time_raw) if max_time_raw else None
+        schedule = getattr(args, "sample_schedule", "s3")
+        window_duration = float(getattr(args, "sample_duration", 10.0))
+        force_refresh = getattr(args, "force_refresh", False)
+
+        canonical_paths = store.get_canonical_paths()
+        trial_records, stopped_reason = run_sample_trials(
+            assets=assets_to_assess,
+            canonical_paths=canonical_paths,
+            recipe=recipe,
+            workspace=ws,
+            schedule=schedule,
+            window_duration_seconds=window_duration,
+            max_trials=max_trials,
+            max_time_seconds=max_time_sec,
+            force_refresh=force_refresh,
+        )
+
+        trial_store = TrialStore(ws.trials_db)
+        sample_preds: list[SamplePrediction] = []
+        for asset in assets_to_assess:
+            cpath = canonical_paths.get(asset.source_id)
+            st = Path(cpath).stat() if cpath and Path(cpath).exists() else None
+            stat_fp = f"{st.st_mtime_ns}:{st.st_size}" if st else ""
+            trials_for_asset = trial_store.get_trials_for_asset(asset.source_id, stat_fp, recipe.recipe_id)
+            sp = aggregate_sample_estimate(
+                asset=asset,
+                recipe=recipe,
+                trials=trials_for_asset,
+                min_savings_pct=min_savings_pct,
+                min_savings_bytes=min_savings_bytes,
+                savings_policy=savings_policy,
+            )
+            sample_preds.append(sp)
+
+        total_sources = len(sample_preds)
+        promising_count = sum(1 for p in sample_preds if p.decision == "measured_promising")
+        unfavorable_count = sum(1 for p in sample_preds if p.decision == "measured_unfavorable")
+        quality_risk_count = sum(1 for p in sample_preds if p.decision == "quality_risk")
+        insufficient_count = sum(1 for p in sample_preds if p.decision == "insufficient_samples")
+
+        total_source_bytes = sum(p.source_container_bytes for p in sample_preds)
+        total_saved_bytes = sum(p.predicted_gross_saved_bytes for p in sample_preds)
+
+        if is_json:
+            out_dict = {
+                "schema_version": 1,
+                "operation": "estimate",
+                "tier": "sampled",
+                "recipe": recipe.to_dict(),
+                "target": str(args.input_target),
+                "budget": {
+                    "max_trials": max_trials,
+                    "max_time_seconds": max_time_sec,
+                    "sample_schedule": schedule,
+                    "sample_duration": window_duration,
+                },
+                "execution": {
+                    "trials_recorded": len(trial_records),
+                    "stopped_reason": stopped_reason,
+                },
+                "summary": {
+                    "total_evaluated_sources": total_sources,
+                    "measured_promising_sources": promising_count,
+                    "measured_unfavorable_sources": unfavorable_count,
+                    "quality_risk_sources": quality_risk_count,
+                    "insufficient_samples_sources": insufficient_count,
+                    "total_source_bytes": total_source_bytes,
+                    "predicted_savings_bytes": total_saved_bytes,
+                    "predicted_savings_pct": round((total_saved_bytes / total_source_bytes * 100.0) if total_source_bytes > 0 else 0.0, 2),
+                },
+                "per_source_predictions": [p.to_dict() for p in sample_preds],
+                "calibration_caveat": (
+                    "Empirical sample predictions are measured across short temporal windows. "
+                    "Actual full-file compression may vary based on whole-file motion and complexity."
+                ),
+            }
+            print(json.dumps(out_dict, indent=2))
+        else:
+            print("=== videocompress Empirical Trial & Measurement Report (Tier 3 Sampled) ===")
+            print(f"Target: {args.input_target}")
+            print(f"Target Recipe: {recipe.recipe_id} ({recipe.encoder}, cq={recipe.rate_control_value})")
+            print(f"Budget: max {max_trials or 'unlimited'} trials | max {max_time_sec or 'unlimited'}s wall-time | schedule: {schedule.upper()} ({window_duration}s/clip)")
+            print(f"Trials Completed: {len(trial_records)} (status: {stopped_reason})")
+            if min_savings_pct or min_savings_bytes:
+                print(f"Savings Criteria: min {min_savings_pct or 0}% {savings_policy.upper()} {_format_bytes(min_savings_bytes or 0)}")
+            print(f"Evaluated Assets: {total_sources} ({_format_bytes(total_source_bytes)})")
+            print(f"  Promising: {promising_count} | Unfavorable: {unfavorable_count} | Quality Risks: {quality_risk_count}")
+            print(f"Predicted Library Savings: {_format_bytes(total_saved_bytes)}")
+            print("-" * 88)
+
+            for p in sample_preds:
+                mean_bps_str = _format_bps(p.measured_mean_video_bps)
+                print(f"Asset [{p.source_id[:8]}]: {_format_bytes(p.source_container_bytes)} -> {_format_bytes(p.predicted_output_container_bytes)} [{p.predicted_savings_pct:.1f}% savings]")
+                print(f"  Measured Video: {mean_bps_str} ({p.trials_count} trials) | Non-Video: {_format_bytes(p.predicted_nonvideo_bytes + p.predicted_mux_overhead_bytes)}")
+                print(f"  Decision: [{p.decision.upper()}] (conf: {p.confidence}) | Interval: {_format_bytes(p.prediction_interval[0])} .. {_format_bytes(p.prediction_interval[1])}")
+                if p.rejection_reasons:
+                    for r in p.rejection_reasons:
+                        print(f"  * Rejection: {r}")
+                if p.warnings:
+                    for w in p.warnings:
+                        print(f"  ! Warning: {w}")
+
+            print("-" * 88)
+            print("Notice: Source media untouched (read-only verification passed). Intermediate sample clips deleted from scratch space.")
+        return 0
+
+    # 2. Evaluate feasibility for each asset (Tier 1 Metadata)
     assessments: list[FeasibilityAssessment] = []
     for asset in assets_to_assess:
         fa = evaluate_feasibility(

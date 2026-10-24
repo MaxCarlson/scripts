@@ -2,6 +2,21 @@
 
 ## Operational Ledger
 
+- **2026-10-24 14:24 (Stage 4 Completed — Controlled Encoder & Measurement Backend)**
+  - Stage 4 implementation complete: `videocompress/sampling.py`, `videocompress/adapters/ffmpeg.py`, `videocompress/trials.py`, and `videocompress/cli.py`.
+  - Media safety contracts verified:
+    - Source immutability guard: initial stat fingerprint (`mtime_ns:size`) strictly checked before/after execution; raises `SourceMutationError` if violated.
+    - Isolated scratch execution: intermediate clips written to `<workspace>/scratch/trial_<id>/`, isolated from source media, and deleted upon measurement.
+    - Zero full-file encoding: Stage 4 encodes only short bounded sample clips (10s/20s) across playable duration.
+  - Subprocess cancellation: implemented clean Windows process-tree cleanup (`taskkill /PID <pid> /T` followed by forced `/F` if needed) preventing orphan `ffmpeg.exe` processes on timeout or abort.
+  - Deterministic sampling geometry: `s3`, `s5`, `s8` schedules generate monotonically spaced windows with boundary handling for short assets.
+  - Output validation: every encoded clip is probed via FFprobe, asserting non-empty container, stream presence, target codec matching, and bitrate measurement.
+  - SQLite trial caching: `trials.sqlite3` with `(source_id, stat_fingerprint, recipe_id, window_index)` unique key, WAL mode, and cache-hit deduplication.
+  - Quota scheduling: `--max-trials` and `--max-time` limits enforced.
+  - Empirical sample aggregation: combined measured sample video bitrates with Stage 3 non-video stream decomposition for calibrated `estimate --tier sampled` predictions.
+  - Unit & integration tests expanded to 74 tests (`74/74 passed` in 2.49s).
+  - Next Action: Present Stage 4 report with commit SHAs and test evidence to user before advancing to Stage 5 (Quality, Compare & Preview).
+
 - **2026-10-24 14:15 (Stage 3 Corrections Completed & Verified)**
   - Reconciled quantile consistency: verified identity $\text{Output}(q) + \text{Savings}(q) = \text{Source}$ strictly for all quantiles ($p_{10}, p_{50}, p_{90}$).
   - Monotonic ordering verified: $p_{10} \le p_{50} \le p_{90}$ for output size, and $p_{10} \ge p_{50} \ge p_{90}$ for savings.
