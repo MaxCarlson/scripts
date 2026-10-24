@@ -1,11 +1,19 @@
 # Runmux Current Handoff
 
-## Runmux Web UI — Phase 4A integrated
+## Runmux Web UI — Phase 4A integrated (Backend and Frontend)
 
-Phase 4A (Lifecycle Controls Backend) was merged into `main` from `codex/runmux-lifecycle-backend-20261024` with no conflicts.
-It provides authenticated, same-origin REST lifecycle endpoints (`POST /api/runs/{run_id}/stop`, `POST /api/runs/{run_id}/kill`, `POST /api/runs/{run_id}/restart`, `POST /api/runs/{run_id}/pause`, `POST /api/runs/{run_id}/resume`) with state machine validation, supervisor PID reuse protection, and inconclusive process identity fallback safety.
-Verified with Python test suites (`lifecycle_test.py`, `lifecycle_api_test.py`).
-See `plans/20261024-runmux-lifecycle-backend/HANDOFF.md`, `STATUS.md`, and `LIFECYCLE_API_SPEC.md`.
+Phase 4A (Lifecycle Controls Backend and Frontend) is fully integrated and merged into `main` from `codex/runmux-lifecycle-backend-20261024` and `codex/runmux-web-lifecycle-frontend-20261024` with no conflicts.
+It provides authenticated, same-origin REST lifecycle endpoints (`POST /api/runs/{run_id}/stop`, `POST /api/runs/{run_id}/kill`, `POST /api/runs/{run_id}/restart`, `POST /api/runs/{run_id}/duplicate`, `POST /api/runs/{run_id}/pause`, `POST /api/runs/{run_id}/resume`, `GET /api/capabilities`) with state machine validation, supervisor PID reuse protection, and inconclusive process identity fallback safety.
+In the browser, it provides selected-process controls for graceful Stop (`force: false`), forced Kill (`force: true`), Restart (creating a new immutable Run ID, reconciling tabs), Duplicate, and capability-aware Pause/Resume (disabled on Windows with descriptive tooltip; dynamic Resume action for paused processes). Destructive actions require modal confirmation displaying the process name and full immutable 22-character Run ID.
+Verified with Python test suites (`lifecycle_test.py`, `lifecycle_api_test.py`, `web_test.py`), Node unit suite (`dashboard_test.js`), and headless Chrome CDP E2E testing (`browser_e2e_test.js`).
+See `plans/20261024-1315_runmux-web-lifecycle-frontend/HANDOFF.md`, `STATUS.md`, and `plans/20261024-runmux-lifecycle-backend/HANDOFF.md`.
+
+## Runmux Web UI — Phase 5A+ integrated
+
+Phase 5A+ (Overview Modes & Live Telemetry Frontend) was merged into `main` from `codex/runmux-web-overview-telemetry-20261024` with no conflicts.
+It provides four selectable overview densities (Mode A Minimal, Mode B Inline, Mode C Dashboard, Mode D Expanded) with keyboard/button cycling and browser persistence, consumes Phase 5B live telemetry endpoints, correctly handles stale ISO 8601 timestamps, separates hardware vs per-process GPU attribution, and respects request cancellation and background throttling.
+Verified with headless Chrome CDP, Node unit tests, and Python test suites.
+See `plans/20261024-runmux-web-overview-telemetry/HANDOFF.md` and `STATUS.md`.
 
 ## Runmux Web UI — Phase 4B integrated
 
