@@ -6,4 +6,4 @@
 - [x] Update README and handoffs with launch behavior and validation evidence.
 - [x] Verify addendum regressions for immediate exit, missing executable, duplicate names, and process-start readiness.
 - [x] Import the reconciled phase handoff bundle into `docs/plans/web-ui-handoff/`.
-- [ ] Commit and push the dedicated branch, then merge into `main` as authorized.
+- [x] Commit and push the dedicated branch, then merge into `main` as authorized (`97515f0905aa2cdc194cabd9c06a250d503256a3`).

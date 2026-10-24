@@ -244,6 +244,28 @@ def test_terminal_output_reader_preserves_ansi_and_enforces_byte_limit(tmp_path:
     assert second.reset is False
 
 
+def test_truncated_terminal_replay_can_begin_inside_control_sequence(tmp_path: Path) -> None:
+    run_id = "20261023-123456-a1b2c3"
+    state_dir = tmp_path / "state"
+    run_dir = state_dir / "runs" / run_id
+    run_dir.mkdir(parents=True)
+    log_path = run_dir / "output.ansi"
+    log_path.write_bytes(b"A" * 99 + b"\x1b[31mRED" + b"B" * 100)
+
+    chunk = read_terminal_chunk(
+        log_path,
+        state_dir=state_dir,
+        run_id=run_id,
+        max_bytes=64,
+        initial_tail_bytes=107,
+    )
+
+    assert chunk.reset is True
+    assert chunk.truncated is True
+    assert chunk.data.startswith(b"[31mRED")
+    assert chunk.offset == 164
+
+
 def test_terminal_output_reader_rejects_paths_outside_selected_run(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="selected run"):
         read_terminal_chunk(

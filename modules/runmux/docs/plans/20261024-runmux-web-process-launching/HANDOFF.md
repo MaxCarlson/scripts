@@ -14,7 +14,7 @@
 - Verification: see `STATUS.md` for focused test results, browser smoke, package
   metadata checks, the reproduced origin/main suite failures, and the missing
   Hatchling build dependency.
-- Remaining work: final diff/status check, commit and push this branch, then
-  merge into `main` as authorized. After confirming the merge, create a fresh
-  Phase 2 feature branch and follow
-  `docs/plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md`.
+- Delivered as commit `97515f0905aa2cdc194cabd9c06a250d503256a3`, pushed to the
+  feature branch and fast-forwarded into `origin/main`. The original main
+  checkout is clean at the same SHA. Phase 2 continues on fresh branch
+  `codex/runmux-web-phase2-20261024`.

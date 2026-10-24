@@ -19,10 +19,14 @@ YYYYMMDD-HHMM_<descriptive-plan-name>/
 
 The active feature branch plan is:
 
-`20261024-runmux-web-process-launching/`
+`20261024-runmux-web-terminal-log-correctness/`
 
 Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
-`00-implementation-plan.md` for the authenticated browser process launch work.
+`00-implementation-plan.md` for Phase 2 terminal and log correctness.
+
+Phase 1 browser process launching is complete and merged to `origin/main` at
+`97515f0905aa2cdc194cabd9c06a250d503256a3`; its evidence is retained in
+`20261024-runmux-web-process-launching/`.
 
 The previously active native TUI integration plan is:
 

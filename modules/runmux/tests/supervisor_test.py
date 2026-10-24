@@ -2,10 +2,15 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 import types
 from pathlib import Path
 
+import pytest
+
 from runmux import supervisor
+from runmux.ipc import request_json
+from runmux.runner import create_managed_run, kill_run
 from runmux.store import RunStore
 
 
@@ -259,6 +264,51 @@ def test_supervisor_state_resizes_only_for_current_input_lock_holder(tmp_path: P
     state.resize_for_session("first", 45, 120)
 
     assert resize_calls == [(45, 120)]
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX PTY resize signal integration test")
+def test_posix_pty_resize_notifies_foreground_child(tmp_path: Path) -> None:
+    store = RunStore(tmp_path / "state")
+    child_code = (
+        "import os, signal, time; "
+        "signal.signal(signal.SIGWINCH, lambda *_: print("
+        "f'RESIZE:{os.get_terminal_size(1).columns}x{os.get_terminal_size(1).lines}', flush=True)); "
+        "print(f'READY:{os.get_terminal_size(1).columns}x{os.get_terminal_size(1).lines}', flush=True); "
+        "time.sleep(60)"
+    )
+    started = create_managed_run(
+        store,
+        program_args=[sys.executable, "-u", "-c", child_code],
+        cwd=tmp_path,
+        name="synthetic PTY resize",
+        force_color=True,
+        rows=24,
+        columns=80,
+        record_history=False,
+    )
+    session_id = "resize-regression-session"
+    try:
+        request_json(started.record, op="attach", payload={"session_id": session_id, "mode": "interact"})
+        lock = request_json(started.record, op="lock", payload={"session_id": session_id})
+        assert lock["session_holds_lock"] is True
+        request_json(
+            started.record,
+            op="resize",
+            payload={"session_id": session_id, "rows": 41, "columns": 131},
+        )
+
+        deadline = time.monotonic() + 5
+        output = ""
+        while time.monotonic() < deadline:
+            output = Path(started.record.log_path).read_bytes().decode("utf-8", errors="replace")
+            if "RESIZE:131x41" in output:
+                break
+            time.sleep(0.05)
+
+        assert "READY:80x24" in output
+        assert "RESIZE:131x41" in output
+    finally:
+        kill_run(store, run_id=started.record.id, force=True)
 
 
 def test_supervisor_state_expires_stale_lock_holder(tmp_path: Path) -> None:

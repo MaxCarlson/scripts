@@ -46,6 +46,7 @@ def create_app(
     static_dir: str | Path,
     login_code: str,
     allowed_hosts: Sequence[str] = LOOPBACK_HOSTS,
+    allow_inline_styles: bool = False,
 ) -> FastAPI:
     """Create an application with explicit routes, static assets, and local session authentication.
 
@@ -55,6 +56,13 @@ def create_app(
 
     if not login_code:
         raise ValueError("login_code must not be empty")
+    security_headers = SECURITY_HEADERS
+    if allow_inline_styles:
+        policy = SECURITY_HEADERS["Content-Security-Policy"].replace(
+            "style-src 'self';",
+            "style-src 'self' 'unsafe-inline';",
+        )
+        security_headers = {**SECURITY_HEADERS, "Content-Security-Policy": policy}
     root = Path(static_dir).expanduser().resolve()
     index_file = root / "index.html"
     assets_dir = root / "assets"
@@ -79,22 +87,22 @@ def create_app(
     @app.middleware("http")
     async def secure_local_requests(request: Request, call_next: Any) -> Response:
         if not _trusted_host(request, allowed_hosts):
-            return Response(status_code=400, headers=SECURITY_HEADERS)
+            return Response(status_code=400, headers=security_headers)
         path = request.url.path
         protected = path == "/api" or path.startswith("/api/") or path == "/auth/logout"
         auth_route = path.startswith("/auth/")
         if (protected or auth_route) and not _same_origin(request):
-            return Response(status_code=403, headers={**SECURITY_HEADERS, "Cache-Control": "no-store"})
+            return Response(status_code=403, headers={**security_headers, "Cache-Control": "no-store"})
         if protected:
             session_id = request.cookies.get(SESSION_COOKIE)
             expires_at = app.state.sessions.get(session_id)
             if expires_at is None or expires_at <= time.time():
                 if session_id:
                     app.state.sessions.pop(session_id, None)
-                return Response(status_code=401, headers={**SECURITY_HEADERS, "Cache-Control": "no-store"})
+                return Response(status_code=401, headers={**security_headers, "Cache-Control": "no-store"})
 
         response = await call_next(request)
-        response.headers.update(SECURITY_HEADERS)
+        response.headers.update(security_headers)
         if protected or auth_route:
             response.headers["Cache-Control"] = "no-store"
         return response
@@ -124,7 +132,7 @@ def create_app(
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
-        return FileResponse(index_file, headers=SECURITY_HEADERS)
+        return FileResponse(index_file, headers=security_headers)
 
     app.mount("/assets", StaticFiles(directory=assets_dir, check_dir=True), name="assets")
     return app

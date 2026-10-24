@@ -192,3 +192,21 @@ def test_app_serves_static_ui_without_importing_runmux(monkeypatch) -> None:
         policy = response.headers["content-security-policy"]
         assert "ws://127.0.0.1:*" in policy
         assert "ws://localhost:*" in policy
+        assert "style-src-attr" not in policy
+
+
+def test_app_can_allow_inline_styles_without_allowing_inline_scripts() -> None:
+    app = create_app(
+        api_router=make_router(),
+        static_dir=Path(__file__).resolve().parents[1] / "src" / "web_ui_tools" / "static",
+        login_code="test-login",
+        allowed_hosts=["testserver"],
+        allow_inline_styles=True,
+    )
+
+    with TestClient(app) as client:
+        policy = client.get("/").headers["content-security-policy"]
+
+    assert "style-src 'self' 'unsafe-inline'" in policy
+    assert "script-src 'self'" in policy
+    assert "script-src 'unsafe-inline'" not in policy

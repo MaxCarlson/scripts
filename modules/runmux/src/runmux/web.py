@@ -370,7 +370,13 @@ def create_runmux_web_app(
                         timeout=1.0,
                     )
 
-    return create_app(api_router=api, static_dir=STATIC_DIR, login_code=login_code, allowed_hosts=allowed_hosts)
+    return create_app(
+        api_router=api,
+        static_dir=STATIC_DIR,
+        login_code=login_code,
+        allowed_hosts=allowed_hosts,
+        allow_inline_styles=True,
+    )
 
 
 def _terminal_status(value: dict[str, Any], *, mode: str, finished: bool = False) -> dict[str, Any]:

@@ -445,6 +445,9 @@ def test_terminal_websocket_streams_raw_output_and_routes_input_through_supervis
     assert input_bytes == [b"synthetic input\n"]
     assert input_closed == [True]
     assert [op for op, _payload in operations if op == "attach"] == ["attach"]
+    detach_deadline = time.monotonic() + 1
+    while not any(op == "detach" for op, _payload in operations) and time.monotonic() < detach_deadline:
+        time.sleep(0.01)
     assert any(op == "detach" for op, _payload in operations)
     assert store.get_run(run_id).status == "running"
     assert record.status == "running"
@@ -469,6 +472,32 @@ def test_finished_terminal_websocket_replays_output_without_supervisor_attachmen
             assert status["finished"] is True
             assert websocket.receive_json()["type"] == "output_reset"
             assert websocket.receive_bytes() == b"\x1b[31mline <script>alert(1)</script>\x1b[0m\n"
+
+    assert store.attachment_summary(run_id).current_viewers == 0
+
+
+def test_terminal_websocket_preserves_tui_cursor_and_screen_sequences(tmp_path: Path) -> None:
+    state_dir = tmp_path / "synthetic-state"
+    store = RunStore(state_dir)
+    run_id = "20261023-123456-a1b2c3"
+    make_run(store, state_dir, run_id)
+    record = store.get_run(run_id)
+    tui_bytes = b"\x1b[?1049h\x1b[2J\x1b[HMenu\r\n\x1b[2;1HChoice: \x1b[?1049l"
+    Path(record.log_path).write_bytes(tui_bytes)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        session_cookie = f"web_ui_session={client.cookies.get('web_ui_session')}"
+        with client.websocket_connect(
+            f"/api/runs/{run_id}/terminal",
+            headers={"Host": "localhost", "Origin": "http://localhost", "Cookie": session_cookie},
+        ) as websocket:
+            assert websocket.receive_json()["finished"] is True
+            assert websocket.receive_json() == {
+                "type": "output_reset", "truncated": False, "state": "available"
+            }
+            assert websocket.receive_bytes() == tui_bytes
 
     assert store.attachment_summary(run_id).current_viewers == 0
 

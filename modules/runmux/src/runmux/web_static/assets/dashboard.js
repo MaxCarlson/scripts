@@ -18,6 +18,7 @@ let outputTimer = null;
 let outputRequestGeneration = null;
 let lastOutput = "";
 let outputFinished = false;
+let outputPendingCarriageReturn = false;
 let terminalSocket = null;
 let terminalStatus = null;
 let terminalInstance = null;
@@ -426,8 +427,13 @@ async function refreshOutput(generation = selectionGeneration, runId = selectedI
     const chunk = await response.json();
     if (!isCurrentSelection(generation, runId)) return;
     outputFinished = Boolean(chunk.finished && chunk.at_end);
-    if (chunk.reset) { lastOutput = chunk.text; outputCursor = chunk.cursor; }
-    else { lastOutput += chunk.text; outputCursor = chunk.cursor; }
+    if (chunk.reset) {
+      lastOutput = "";
+      outputPendingCarriageReturn = false;
+      outputCursor = chunk.cursor;
+    }
+    lastOutput += normalizeOutputLineBreaks(chunk.text, Boolean(chunk.finished && chunk.at_end));
+    outputCursor = chunk.cursor;
     if (lastOutput.length > VIEW_LIMIT) {
       const characters = Array.from(lastOutput);
       if (characters.length > VIEW_LIMIT) lastOutput = characters.slice(-VIEW_LIMIT).join("");
@@ -455,6 +461,39 @@ async function refreshOutput(generation = selectionGeneration, runId = selectedI
   } finally {
     if (outputRequestGeneration === generation) outputRequestGeneration = null;
   }
+}
+
+function normalizeOutputLineBreaks(text, flushPendingCarriageReturn = false) {
+  let normalized = "";
+  if (outputPendingCarriageReturn) {
+    normalized += "\n";
+    if (text.startsWith("\n")) text = text.slice(1);
+    outputPendingCarriageReturn = false;
+  }
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index];
+    if (character !== "\r") {
+      normalized += character;
+      continue;
+    }
+    if (index + 1 < text.length) {
+      if (text[index + 1] === "\n") index += 1;
+      normalized += "\n";
+    } else if (flushPendingCarriageReturn) {
+      normalized += "\n";
+    } else {
+      outputPendingCarriageReturn = true;
+    }
+  }
+  if (flushPendingCarriageReturn && outputPendingCarriageReturn) {
+    normalized += "\n";
+    outputPendingCarriageReturn = false;
+  }
+  return normalized;
+}
+
+function terminalReplayMessage(truncated) {
+  return truncated ? "Earlier terminal output was truncated; this screen may be incomplete." : "";
 }
 
 function selectTab(tab) {
@@ -500,6 +539,7 @@ function isCurrentSelection(generation, runId) {
 
 function scrollOutputToEnd() {
   const node = $("#output-text");
+  $("#follow-output").checked = true;
   node.scrollTop = node.scrollHeight;
 }
 
@@ -601,8 +641,9 @@ function connectTerminal(generation = selectionGeneration, runId = selectedId) {
       renderTerminalStatus(message);
     } else if (message.type === "output_reset") {
       terminalInstance.reset();
-      $("#terminal-message").hidden = !message.truncated;
-      $("#terminal-message").textContent = message.truncated ? "Showing the latest bounded terminal history." : "";
+      const replayMessage = terminalReplayMessage(message.truncated);
+      $("#terminal-message").hidden = !replayMessage;
+      $("#terminal-message").textContent = replayMessage;
     } else if (message.type === "output_state") {
       $("#terminal-message").hidden = false;
       $("#terminal-message").textContent = message.message || "Terminal output is unavailable.";

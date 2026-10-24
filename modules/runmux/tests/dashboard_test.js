@@ -79,6 +79,7 @@ function dashboardHarness() {
     selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
     renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch,
     updateTerminalControls,
+    terminalReplayMessage,
     setRuns(value) { runs = value; },
     setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
   };`, context);
@@ -293,11 +294,75 @@ async function testNewProcessTabShowsOnEmptyRegistryAndLaunchSubmitsOnce() {
   assert.equal(getElement("#launch-submit").disabled, false);
 }
 
+async function testOutputNormalizesCarriageReturnsAcrossChunks() {
+  const { context, requests, getElement } = dashboardHarness();
+  const selected = context.__dashboard.selectRun("A");
+  await Promise.resolve();
+  requests.find((item) => !item.url.includes("/output")).resolve(response(run("A")));
+  requests.find((item) => item.url.includes("/output")).resolve(response({
+    state: "available", text: "plain one\rplain two\r", cursor: "first", reset: true,
+    at_end: false, finished: false,
+  }));
+  await selected;
+
+  context.__dashboard.refreshOutput();
+  await Promise.resolve();
+  requests.filter((item) => item.url.includes("/output"))[1].resolve(response({
+    state: "available", text: "\nprogress 1\rprogress 2\r\nwide: 界🙂\n", cursor: "last",
+    reset: false, at_end: true, finished: true,
+  }));
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(getElement("#output-text").textContent, "plain one\nplain two\nprogress 1\nprogress 2\nwide: 界🙂\n");
+}
+
+async function testFollowOutputSuspendsOnScrollAndJumpResumesIt() {
+  const { context, getElement } = dashboardHarness();
+  const output = getElement("#output-text");
+  const follow = getElement("#follow-output");
+  output.scrollHeight = 1000;
+  output.clientHeight = 100;
+  output.scrollTop = 0;
+
+  output.dispatch("scroll");
+  assert.equal(follow.checked, false);
+
+  getElement("#scroll-output").dispatch("click");
+  assert.equal(output.scrollTop, output.scrollHeight);
+  assert.equal(follow.checked, true);
+}
+
+async function testOutputHistoryStaysWithinConfiguredViewLimit() {
+  const { context, requests, getElement } = dashboardHarness();
+  const selected = context.__dashboard.selectRun("A");
+  await Promise.resolve();
+  requests.find((item) => !item.url.includes("/output")).resolve(response(run("A")));
+  requests.find((item) => item.url.includes("/output")).resolve(response({
+    state: "available", text: "x".repeat(600 * 1024), cursor: "large", reset: true,
+    at_end: false, finished: false,
+  }));
+  await selected;
+
+  const outputText = getElement("#output-text").textContent;
+  assert.equal(outputText.length, 512 * 1024);
+  assert.equal(outputText, "x".repeat(512 * 1024));
+}
+
+async function testTruncatedTerminalReplayWarnsThatScreenMayBeIncomplete() {
+  const { context } = dashboardHarness();
+  assert.match(context.__dashboard.terminalReplayMessage(true), /screen may be incomplete/i);
+  assert.equal(context.__dashboard.terminalReplayMessage(false), "");
+}
+
 Promise.all([
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
   testStatusGroupsAndBrowserOnlyWorkspaceTabs(),
   testNewProcessTabShowsOnEmptyRegistryAndLaunchSubmitsOnce(),
+  testOutputNormalizesCarriageReturnsAcrossChunks(),
+  testFollowOutputSuspendsOnScrollAndJumpResumesIt(),
+  testOutputHistoryStaysWithinConfiguredViewLimit(),
+  testTruncatedTerminalReplayWarnsThatScreenMayBeIncomplete(),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
 ]).catch((error) => {
   console.error(error);

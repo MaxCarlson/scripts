@@ -1,19 +1,20 @@
 # Runmux Current Handoff
 
-## Current feature branch — browser process launching
+## Current feature branch — Web terminal and log correctness (Phase 2)
 
-As of 2026-10-24, work is in `.worktrees/runmux-web-launch-20261024` on
-`codex/runmux-web-launch-20261024`, based on `origin/main` at
-`6cbf599a8c5e51839f742c02876d035efefbca36`. The supplied gap analysis, UI
-reference image, and `RUNMUX_WEB_UI_MASTER_ROADMAP.md` are present in this
-branch. Scope is Phase 1 / L01–L09 only. The API reuses `create_managed_run`,
-and the authenticated frontend launches structured argv values with one
-argument per line. Details and current validation are tracked in
-`plans/20261024-runmux-web-process-launching/`.
-
-Before commit/push: run the complete focused web tests and package checks,
-review the final diff, update the plan and master roadmap with evidence, then
-commit and push the dedicated branch. Do not merge.
+As of 2026-10-24, Phase 1 browser process launching is merged to `main` at
+`97515f0905aa2cdc194cabd9c06a250d503256a3`. Phase 2 work is in
+`.worktrees/runmux-web-launch-20261024` on
+`codex/runmux-web-phase2-20261024`, based on that merged `origin/main` commit.
+Phase 2 diagnosis and focused validation are complete. Read
+`plans/20261024-runmux-web-terminal-log-correctness/` for evidence and explicit
+limits, and `plans/web-ui-handoff/PHASE_02_TERMINAL_AND_LOG_CORRECTNESS.md` for
+scope. Output CR progress normalization, Runmux-scoped xterm CSP styling, and
+POSIX PTY SIGWINCH delivery are covered by tests and synthetic browser checks.
+WSL validates 39 Runmux tests and 8 shared web UI tests. Windows focused tests
+stall in Proactor self-pipe creation; Windows ConPTY resize is not claimed.
+Bounded replay cannot reconstruct omitted screen history. Phase 2 is committed;
+push the branch without merging.
 
 Last updated: 2026-10-24
 

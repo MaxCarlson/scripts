@@ -147,11 +147,16 @@ constraints:
   assumptions are insufficient.
 - `Ctrl+Shift+X` is not portable because terminals generally encode it the same
   as `Ctrl+X`.
+- The browser Terminal fits xterm.js to the visible panel, but the supervised
+  PTY keeps its startup dimensions while the browser attachment is read-only.
+  The browser sends resize requests only while that attachment holds the input
+  lock; a TUI can therefore wrap or clip when its PTY size differs from the
+  browser viewport.
 
 ## Active Implementation Plan
 
-The latest feature branch work is tracked in
-[`plans/20261023-runmux-web-interactive-terminal/00-implementation-plan.md`](plans/20261023-runmux-web-interactive-terminal/00-implementation-plan.md).
+The active Web UI correctness work is tracked in
+[`plans/20261024-runmux-web-terminal-log-correctness/00-implementation-plan.md`](plans/20261024-runmux-web-terminal-log-correctness/00-implementation-plan.md).
 The prior multi-attach and input-lock implementation plan remains the source
 history for supervisor ownership behavior.
 

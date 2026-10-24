@@ -378,6 +378,14 @@ class SupervisorState:
             return
         packed_size = struct.pack("HHHH", rows, columns, 0, 0)
         fcntl.ioctl(self.master_fd, termios.TIOCSWINSZ, packed_size)
+        process = self.process
+        if process is not None and process.poll() is None:
+            # The detached child has the PTY on stdin/out/err but no controlling
+            # terminal, so TIOCSWINSZ alone does not signal its foreground job.
+            # Each managed child owns a new session/process group; notify that
+            # group so full-screen programs redraw using the new PTY dimensions.
+            with suppress(ProcessLookupError):
+                os.killpg(process.pid, signal.SIGWINCH)
         self.store.update_run(self.record.id, rows=rows, columns=columns)
 
     def resize_for_session(self, session_id: str, rows: int, columns: int) -> None:
