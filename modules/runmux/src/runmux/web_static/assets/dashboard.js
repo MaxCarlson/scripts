@@ -25,13 +25,22 @@ let terminalFitAddon = null;
 let terminalResizeObserver = null;
 let terminalReconnectTimer = null;
 const TERMINAL_SCROLLBACK = 5000;
+let newProcessOpen = false;
+let launchPending = false;
+let launchDefaultCwd = "";
 
 async function api(path, options = {}) {
   const response = await fetch(path, { credentials: "same-origin", cache: "no-store", ...options });
   if (response.status === 401) throw new Error("locked");
   if (!response.ok) {
     let message = `Request failed (${response.status})`;
-    try { message = (await response.json()).detail || message; } catch { /* Keep the generic message. */ }
+    try {
+      const detail = (await response.json()).detail;
+      if (typeof detail === "string") message = detail;
+      else if (Array.isArray(detail)) {
+        message = detail.map((item) => `${(item.loc || []).slice(1).join(".") || "request"}: ${item.msg}`).join("; ");
+      }
+    } catch { /* Keep the generic message. */ }
     throw new Error(message);
   }
   return response;
@@ -84,6 +93,10 @@ $("#logout-button").addEventListener("click", async () => {
   finally { showLogin("This browser session is locked."); }
 });
 $("#refresh-button").addEventListener("click", refreshRuns);
+$("#new-process-empty-button").addEventListener("click", openNewProcess);
+$("#new-process-empty-workspace").addEventListener("click", openNewProcess);
+$("#cancel-launch").addEventListener("click", closeNewProcess);
+$("#launch-form").addEventListener("submit", submitLaunch);
 $("#process-search").addEventListener("input", renderRuns);
 $("#clear-search").addEventListener("click", () => { $("#process-search").value = ""; renderRuns(); });
 $("#scroll-output").addEventListener("click", scrollOutputToEnd);
@@ -122,6 +135,7 @@ async function refreshRuns() {
     }
     renderRuns();
     renderWorkspaceTabs();
+    renderWorkspaceView();
     if (selectedId) await refreshSelected(selectionGeneration, selectedId);
   } catch (error) {
     if (requestGeneration !== authGeneration) return;
@@ -139,7 +153,8 @@ function renderRuns() {
   list.replaceChildren();
   $("#process-count").textContent = `${filtered.length}`;
   $("#clear-search").hidden = !query;
-  $("#list-state").textContent = filtered.length ? "" : query ? "No process matches this search." : "No managed processes yet. Start one with runmux run.";
+  $("#list-state").textContent = filtered.length ? "" : query ? "No process matches this search." : "No managed processes yet.";
+  $("#new-process-empty-button").hidden = Boolean(query) || runs.length > 0;
   const statuses = [...new Set(filtered.map((run) => run.status))].sort((left, right) => {
     const leftIndex = STATUS_ORDER.indexOf(left);
     const rightIndex = STATUS_ORDER.indexOf(right);
@@ -200,7 +215,7 @@ function renderWorkspaceTabs() {
   const tabs = $("#workspace-tabs");
   tabs.replaceChildren();
   const openedRuns = openRunIds.map((runId) => runs.find((run) => run.id === runId)).filter(Boolean);
-  tabs.hidden = openedRuns.length === 0;
+  tabs.hidden = false;
   for (const run of openedRuns) {
     const tab = document.createElement("div");
     tab.className = `workspace-tab${run.id === selectedId ? " active" : ""}`;
@@ -227,6 +242,105 @@ function renderWorkspaceTabs() {
     tab.append(activate, close);
     tabs.append(tab);
   }
+  const addTab = document.createElement("button");
+  addTab.type = "button";
+  addTab.className = `workspace-add-tab${newProcessOpen ? " active" : ""}`;
+  addTab.setAttribute("role", "tab");
+  addTab.setAttribute("aria-label", "New Process");
+  addTab.setAttribute("aria-selected", `${newProcessOpen}`);
+  addTab.title = "New Process";
+  addTab.textContent = "+";
+  addTab.addEventListener("click", openNewProcess);
+  tabs.append(addTab);
+}
+
+function renderWorkspaceView() {
+  $("#new-process-view").hidden = !newProcessOpen;
+  $("#empty-inspector").hidden = newProcessOpen || Boolean(selectedId);
+  $("#run-inspector").hidden = newProcessOpen || !selectedId;
+}
+
+async function openNewProcess() {
+  newProcessOpen = true;
+  closeTerminal();
+  selectTab("output");
+  renderWorkspaceTabs();
+  renderWorkspaceView();
+  $("#launch-error").hidden = true;
+  if (!launchDefaultCwd) {
+    try {
+      const response = await api("/api/launch-defaults");
+      const defaults = await response.json();
+      launchDefaultCwd = defaults.cwd;
+      if (!$("#launch-cwd").value) $("#launch-cwd").value = launchDefaultCwd;
+      $("#launch-default-note").textContent = `Defaults to ${launchDefaultCwd}`;
+    } catch (error) {
+      $("#launch-default-note").textContent = "Could not load the default directory. Enter a working directory to continue.";
+      if (error.message === "locked") showLogin("Session expired. Enter the current terminal login code again.");
+    }
+  } else {
+    if (!$("#launch-cwd").value) $("#launch-cwd").value = launchDefaultCwd;
+    $("#launch-default-note").textContent = `Defaults to ${launchDefaultCwd}`;
+  }
+  $("#launch-program").focus();
+}
+
+function closeNewProcess() {
+  if (launchPending) return;
+  newProcessOpen = false;
+  renderWorkspaceTabs();
+  renderWorkspaceView();
+}
+
+async function submitLaunch(event) {
+  event.preventDefault();
+  if (launchPending) return;
+  const program = $("#launch-program").value.trim();
+  if (!program) {
+    $("#launch-error").textContent = "Enter a command to launch.";
+    $("#launch-error").hidden = false;
+    $("#launch-program").focus();
+    return;
+  }
+  const argumentText = $("#launch-arguments").value;
+  const argumentsList = argumentText === "" ? [] : argumentText.split("\n").map((value) => value.replace(/\r$/, ""));
+  launchPending = true;
+  $("#launch-submit").disabled = true;
+  $("#cancel-launch").disabled = true;
+  $("#launch-pending").hidden = false;
+  $("#launch-error").hidden = true;
+  try {
+    const response = await api("/api/runs", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        program,
+        arguments: argumentsList,
+        name: $("#launch-name").value.trim() || null,
+        cwd: $("#launch-cwd").value.trim() || null,
+      }),
+    });
+    const run = await response.json();
+    newProcessOpen = false;
+    runs = runs.filter((item) => item.id !== run.id).concat(run);
+    selectedId = null;
+    renderRuns();
+    await selectRun(run.id);
+  } catch (error) {
+    if (error.message === "locked") {
+      showLogin("Session expired. Enter the current terminal login code again.");
+    } else {
+      $("#launch-error").textContent = error.message || "Could not launch this process. Check the command and working directory.";
+      $("#launch-error").hidden = false;
+    }
+  } finally {
+    launchPending = false;
+    $("#launch-submit").disabled = false;
+    $("#cancel-launch").disabled = false;
+    $("#launch-pending").hidden = true;
+    renderWorkspaceTabs();
+    renderWorkspaceView();
+  }
 }
 
 function closeWorkspaceTab(runId) {
@@ -248,7 +362,12 @@ function closeWorkspaceTab(runId) {
 }
 
 async function selectRun(runId) {
-  if (selectedId === runId) return;
+  newProcessOpen = false;
+  if (selectedId === runId) {
+    renderWorkspaceTabs();
+    renderWorkspaceView();
+    return;
+  }
   if (!openRunIds.includes(runId)) openRunIds.push(runId);
   invalidateSelection();
   const generation = selectionGeneration;
@@ -357,6 +476,7 @@ function selectTab(tab) {
 
 function clearSelection() {
   invalidateSelection();
+  newProcessOpen = false;
   selectedId = null;
   openRunIds = [];
   outputCursor = null;

@@ -52,16 +52,34 @@
           <label class="search-box" for="process-search"><span aria-hidden="true">⌕</span><input id="process-search" type="search" placeholder="Search processes" autocomplete="off"><kbd>/</kbd></label>
           <div id="process-list" class="process-list" aria-label="Managed processes"></div>
           <div id="list-state" class="list-state" aria-live="polite"></div>
-          <div class="panel-foot">Read-only browser <span>·</span> Full run IDs</div>
+          <button id="new-process-empty-button" class="text-button new-process-empty-button" type="button" hidden>+ New Process</button>
+          <div class="panel-foot">Local process desk <span>·</span> Full run IDs</div>
         </aside>
 
         <section class="workspace-shell" aria-label="Process workspace">
-          <nav id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Open process views" hidden></nav>
+          <nav id="workspace-tabs" class="workspace-tabs" role="tablist" aria-label="Open process views"></nav>
           <section class="inspector panel" aria-label="Selected process">
+            <section id="new-process-view" class="new-process-view" hidden>
+              <header class="new-process-header"><div><div class="eyebrow">SUPERVISED PROCESS</div><h2>New Process</h2></div><button id="cancel-launch" class="quiet-button" type="button">Cancel</button></header>
+              <form id="launch-form" class="launch-form">
+                <label for="launch-program">Command</label>
+                <input id="launch-program" name="program" type="text" maxlength="4096" autocomplete="off" spellcheck="false" required placeholder="python">
+                <label for="launch-arguments">Arguments <span class="muted">· one argument per line; spaces are kept</span></label>
+                <textarea id="launch-arguments" name="arguments" rows="5" spellcheck="false" placeholder="-m&#10;your_module&#10;--option&#10;value with spaces"></textarea>
+                <label for="launch-name">Process name <span class="muted">· optional</span></label>
+                <input id="launch-name" name="name" type="text" maxlength="120" autocomplete="off" placeholder="Generated from command">
+                <label for="launch-cwd">Working directory</label>
+                <input id="launch-cwd" name="cwd" type="text" maxlength="4096" autocomplete="off" spellcheck="false">
+                <p id="launch-default-note" class="launch-help">Loading default working directory…</p>
+                <div id="launch-error" class="launch-error" role="alert" hidden></div>
+                <div class="launch-actions"><button id="launch-submit" class="primary-button" type="submit">Launch Process <span aria-hidden="true">→</span></button><span id="launch-pending" class="muted" role="status" hidden>Starting supervised process…</span></div>
+              </form>
+            </section>
             <div id="empty-inspector" class="empty-inspector">
               <div class="empty-icon" aria-hidden="true">▤</div>
               <h2>Select a process</h2>
               <p class="muted">Choose a run to inspect its status and follow output.</p>
+              <button id="new-process-empty-workspace" class="primary-button" type="button">+ New Process</button>
             </div>
             <div id="run-inspector" class="run-inspector" hidden>
               <div class="inspector-head">

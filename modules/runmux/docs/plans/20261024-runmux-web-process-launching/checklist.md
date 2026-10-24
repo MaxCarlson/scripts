@@ -1,0 +1,7 @@
+- [x] Add API launch contract and security tests using disposable state.
+- [x] Add frontend launch-tab and submission-flow tests.
+- [x] Implement validated launch API using the shared runner.
+- [x] Implement New Process tab, form, validation, pending, success, and errors.
+- [x] Run focused tests, syntax/style/package checks, and synthetic browser smoke.
+- [x] Update README and handoffs with launch behavior and validation evidence.
+- [ ] Commit and push the dedicated branch; do not merge.

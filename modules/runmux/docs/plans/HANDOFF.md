@@ -19,10 +19,10 @@ YYYYMMDD-HHMM_<descriptive-plan-name>/
 
 The active feature branch plan is:
 
-`20261023-runmux-web-interactive-terminal/`
+`20261024-runmux-web-process-launching/`
 
 Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and
-`00-implementation-plan.md` for the authenticated browser terminal work.
+`00-implementation-plan.md` for the authenticated browser process launch work.
 
 The previously active native TUI integration plan is:
 

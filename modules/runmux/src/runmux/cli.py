@@ -1041,11 +1041,11 @@ def handle_tui(args: argparse.Namespace) -> int:
 
 
 def handle_web(args: argparse.Namespace) -> int:
-    """Start the optional read-only local browser service."""
+    """Start the optional authenticated local browser service."""
 
     try:
-        from web_ui_tools import create_server
         from runmux.web import create_runmux_web_app
+        from web_ui_tools import create_server
     except ImportError:
         print(
             "runmux: web view dependencies are not installed; install the optional runmux web extra "
@@ -1070,7 +1070,7 @@ def handle_web(args: argparse.Namespace) -> int:
         print(f"runmux: web: {error}", file=sys.stderr)
         return 2
     browser_host = f"[{args.host}]" if ":" in args.host else args.host
-    print(f"Runmux read-only browser: http://{browser_host}:{args.port}")
+    print(f"Runmux browser: http://{browser_host}:{args.port}")
     print(f"Startup login code (valid until server exit): {login_code}")
     print("Press Ctrl+C to close the browser service; managed processes keep running.")
     try:

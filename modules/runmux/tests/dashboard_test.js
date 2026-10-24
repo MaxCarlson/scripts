@@ -29,7 +29,7 @@ function element(tagName = "div") {
     lastElementChild: { textContent: "" },
     classList: { add() {}, remove() {}, toggle() {} },
     addEventListener(name, handler) { listeners.set(name, handler); },
-    dispatch(name) { listeners.get(name)?.(); },
+    dispatch(name, ...args) { listeners.get(name)?.(...args); },
     setAttribute(name, value) { this.attributes[name] = value; },
     append(...children) { this.children.push(...children); },
     replaceChildren(...children) { this.children = [...children]; },
@@ -77,7 +77,7 @@ function dashboardHarness() {
   const source = fs.readFileSync(path.join(__dirname, "../src/runmux/web_static/assets/dashboard.js"), "utf8");
   vm.runInNewContext(`${source}\nglobalThis.__dashboard = {
     selectRun, clearSelection, refreshOutput, showLogin, terminalInputAllowed, sendTerminalInput, closeTerminal,
-    renderRuns, renderWorkspaceTabs, closeWorkspaceTab,
+    renderRuns, renderWorkspaceTabs, closeWorkspaceTab, openNewProcess, submitLaunch,
     updateTerminalControls,
     setRuns(value) { runs = value; },
     setTerminalTestState(socket, status) { terminalSocket = socket; terminalStatus = status; },
@@ -229,7 +229,7 @@ async function testStatusGroupsAndBrowserOnlyWorkspaceTabs() {
       : run("A", "active worker")));
   }
   await first;
-  assert.equal(getElement("#workspace-tabs").children.length, 1);
+  assert.equal(getElement("#workspace-tabs").children.length, 2);
   assert.equal(getElement("#workspace-tabs").children[0].children[0].children[1].textContent, "active worker");
 
   const second = context.__dashboard.selectRun("B");
@@ -240,7 +240,7 @@ async function testStatusGroupsAndBrowserOnlyWorkspaceTabs() {
       : run("B", "failed worker")));
   }
   await second;
-  assert.equal(getElement("#workspace-tabs").children.length, 2);
+  assert.equal(getElement("#workspace-tabs").children.length, 3);
 
   const closeSelected = context.__dashboard.closeWorkspaceTab("B");
   await Promise.resolve();
@@ -250,15 +250,54 @@ async function testStatusGroupsAndBrowserOnlyWorkspaceTabs() {
       : run("A", "active worker")));
   }
   await closeSelected;
-  assert.equal(getElement("#workspace-tabs").children.length, 1);
+  assert.equal(getElement("#workspace-tabs").children.length, 2);
   assert.equal(getElement("#workspace-tabs").children[0].children[0].attributes["aria-selected"], "true");
   assert.equal(getElement("#process-list").children[1].children.length, 2);
+}
+
+async function testNewProcessTabShowsOnEmptyRegistryAndLaunchSubmitsOnce() {
+  const { context, requests, getElement } = dashboardHarness();
+  context.__dashboard.setRuns([]);
+  context.__dashboard.renderRuns();
+  context.__dashboard.renderWorkspaceTabs();
+  assert.equal(getElement("#new-process-empty-button").hidden, false);
+  assert.equal(getElement("#workspace-tabs").children.length, 1);
+  assert.equal(getElement("#workspace-tabs").children[0].textContent, "+");
+
+  const opening = context.__dashboard.openNewProcess();
+  await Promise.resolve();
+  assert.equal(requests[0].url, "/api/launch-defaults");
+  requests[0].resolve(response({ cwd: "C:/synthetic" }));
+  await opening;
+  getElement("#launch-program").value = "python.exe";
+  getElement("#launch-arguments").value = "-c\nprint('two words')\nvalue with spaces";
+  getElement("#launch-name").value = "synthetic job";
+  getElement("#launch-cwd").value = "C:/synthetic";
+  const submission = context.__dashboard.submitLaunch({ preventDefault() {} });
+  await Promise.resolve();
+  const launchRequest = requests[1];
+  assert.equal(getElement("#launch-submit").disabled, true);
+  await context.__dashboard.submitLaunch({ preventDefault() {} });
+  assert.equal(requests.filter((item) => item.url === "/api/runs").length, 1);
+  launchRequest.resolve(response(run("new-run", "synthetic job")));
+  await Promise.resolve();
+  for (const item of requests.slice(2)) {
+    item.resolve(response(item.url.includes("/output")
+      ? { state: "available", text: "started", cursor: "c1", reset: true, at_end: false, finished: false }
+      : run("new-run", "synthetic job")));
+  }
+  await submission;
+  assert.equal(getElement("#workspace-tabs").children.length, 2);
+  assert.equal(getElement("#selected-name").textContent, "synthetic job");
+  assert.equal(getElement("#output-text").textContent, "started");
+  assert.equal(getElement("#launch-submit").disabled, false);
 }
 
 Promise.all([
   testRapidSelection(),
   testClearInvalidatesPendingSelection(),
   testStatusGroupsAndBrowserOnlyWorkspaceTabs(),
+  testNewProcessTabShowsOnEmptyRegistryAndLaunchSubmitsOnce(),
   testTerminalInputRequiresSupervisorLockAndCleanupClosesOnlySocket(),
 ]).catch((error) => {
   console.error(error);

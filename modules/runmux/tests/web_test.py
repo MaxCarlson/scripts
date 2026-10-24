@@ -12,6 +12,118 @@ from runmux.store import RunStore
 from runmux.web import create_runmux_web_app
 
 
+def test_launch_requires_authenticated_same_origin_session(tmp_path: Path) -> None:
+    app = create_runmux_web_app(tmp_path / "state", login_code="test-login")
+    payload = {"program": sys.executable, "arguments": ["-c", "print('ok')"]}
+
+    with TestClient(app, base_url="http://localhost") as client:
+        unauthenticated = client.post("/api/runs", json=payload, headers={"Origin": "http://localhost"})
+        assert unauthenticated.status_code == 401
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        cross_origin = client.post("/api/runs", json=payload, headers={"Origin": "http://attacker.invalid"})
+
+    assert cross_origin.status_code == 403
+    assert not (tmp_path / "state").exists()
+
+
+def test_launch_validates_request_and_forwards_literal_argv_and_cwd(tmp_path: Path, monkeypatch) -> None:
+    import runmux.web as web_module
+
+    state_dir = tmp_path / "state"
+    working_dir = tmp_path / "work dir"
+    working_dir.mkdir()
+    calls = []
+
+    class Started:
+        def __init__(self, record):
+            self.record = record
+
+    def fake_create_managed_run(store, **kwargs):
+        calls.append((store.state_dir, kwargs))
+        make_run(store, state_dir, "synthetic-run-id")
+        return Started(store.get_run("synthetic-run-id"))
+
+    monkeypatch.setattr(web_module, "create_managed_run", fake_create_managed_run)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        bad = client.post(
+            "/api/runs",
+            json={"program": " ", "arguments": []},
+            headers={"Origin": "http://localhost"},
+        )
+        invalid_directory = client.post(
+            "/api/runs",
+            json={"program": sys.executable, "arguments": [], "cwd": str(working_dir / "missing")},
+            headers={"Origin": "http://localhost"},
+        )
+        launched = client.post(
+            "/api/runs",
+            json={
+                "program": sys.executable,
+                "arguments": ["-c", "print('literal spaces')", "a b", '"quoted"'],
+                "name": "synthetic launch",
+                "cwd": str(working_dir),
+            },
+            headers={"Origin": "http://localhost"},
+        )
+
+    assert bad.status_code == 422
+    assert invalid_directory.status_code == 400
+    assert "Working directory" in invalid_directory.json()["detail"]
+    assert launched.status_code == 201
+    assert launched.json()["id"] == "synthetic-run-id"
+    assert calls == [
+        (
+            state_dir,
+            {
+                "program_args": [sys.executable, "-c", "print('literal spaces')", "a b", '"quoted"'],
+                "cwd": working_dir,
+                "name": "synthetic launch",
+                "force_color": True,
+            },
+        )
+    ]
+
+
+def test_browser_launch_registers_supervised_synthetic_run_and_captures_output(tmp_path: Path) -> None:
+    state_dir = tmp_path / "synthetic-state"
+    store = RunStore(state_dir)
+    app = create_runmux_web_app(state_dir, login_code="test-login")
+    run_id = None
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.post(
+            "/api/runs",
+            json={
+                "program": sys.executable,
+                "arguments": ["-u", "-c", "print('BROWSER_LAUNCH_OK', flush=True); import time; time.sleep(30)"],
+                "name": "synthetic browser launch",
+                "cwd": str(tmp_path),
+            },
+            headers={"Origin": "http://localhost"},
+        )
+        assert response.status_code == 201, response.text
+        run_id = response.json()["id"]
+        assert response.json()["name"] == "synthetic browser launch"
+        assert client.get("/api/runs", headers={"Origin": "http://localhost"}).json()[0]["id"] == run_id
+
+        deadline = time.monotonic() + 5
+        output = None
+        while time.monotonic() < deadline:
+            output = client.get(f"/api/runs/{run_id}/output", headers={"Origin": "http://localhost"})
+            if "BROWSER_LAUNCH_OK" in output.json().get("text", ""):
+                break
+            time.sleep(0.05)
+        assert output is not None
+        assert "BROWSER_LAUNCH_OK" in output.json()["text"]
+
+    assert run_id is not None
+    assert store.get_run(run_id).status in {"running", "finished"}
+    kill_run(store, run_id=run_id, force=True)
+
+
 def make_run(store: RunStore, state_dir: Path, run_id: str) -> None:
     run_dir = state_dir / "runs" / run_id
     run_dir.mkdir(parents=True)

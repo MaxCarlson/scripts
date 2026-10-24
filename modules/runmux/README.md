@@ -14,7 +14,7 @@ Then start the workspace with `runmux tui`. The base Runmux CLI does not need
 these terminal UI dependencies; if they are missing, the command prints these
 installation steps and exits without opening the registry.
 
-## Read-only browser view
+## Authenticated browser view and process launch
 
 Install the reusable browser service and Runmux's optional web extra:
 
@@ -23,15 +23,15 @@ python -m pip install -e .\modules\web_ui_tools
 python -m pip install -e ".\modules\runmux[web]"
 ```
 
-Start the dashboard with `runmux web`. The service binds to `127.0.0.1:8787` by default and prints a startup login code in the launching terminal. Open the printed local URL and enter that code. It remains valid until the server exits; the browser receives a short-lived opaque `HttpOnly`, `SameSite=Strict` cookie, and neither code nor session value is placed in a URL or returned to page JavaScript. Access logs are disabled to keep request details out of logs. Only loopback IP bind addresses are accepted, and API calls require the matching local browser origin or a browser same-origin fetch marker, plus an authenticated session.
+Start the dashboard with `runmux web`. The service binds to `127.0.0.1:8787` by default and prints a startup login code in the launching terminal. Open the printed local URL and enter that code. It remains valid until the server exits; the browser receives a short-lived opaque `HttpOnly`, `SameSite=Strict` cookie, and neither code nor session value is placed in a URL or returned to page JavaScript. Treat this code as process-execution access: an authenticated browser session can launch commands under the account running `runmux web`. Access logs are disabled to keep request details out of logs. Only loopback IP bind addresses are accepted, and API calls require the matching local browser origin or a browser same-origin fetch marker, plus an authenticated session.
 
 Use `runmux web -H 127.0.0.1 -p 8787 -s <state-directory>` to choose the bind address, port, and existing registry. `-H/--host`, `-p/--port`, and `-s/--state-dir` are available in short and long forms. The default state directory follows Runmux's existing `RUNMUX_HOME`, `LOCALAPPDATA`, and XDG rules.
 
-The browser shows the full stable run ID, optional user name, executable basename, status, PID, exit code, runtime, and timestamps. Names and executable basenames may themselves identify private projects or tools, so anyone with the local browser session can see them. The view hides command arguments, working directories, environment overrides, log paths, IPC ports, and credentials. User-provided names and process output are treated as untrusted text. Output is decoded incrementally as UTF-8 (invalid bytes become replacement characters), ANSI/control sequences are stripped across chunk boundaries, each response is limited to 64 KiB, and the visible transcript is capped at 512 Ki characters.
+The browser shows the full stable run ID, optional user name, executable basename, status, PID, exit code, runtime, and timestamps. Names and executable basenames may themselves identify private projects or tools, so anyone with the local browser session can see them. The view hides existing-run command arguments, working directories, environment overrides, log paths, IPC ports, and credentials. User-provided names and process output are treated as untrusted text. Output is decoded incrementally as UTF-8 (invalid bytes become replacement characters), ANSI/control sequences are stripped across chunk boundaries, each response is limited to 64 KiB, and the visible transcript is capped at 512 Ki characters.
 
 The explorer groups runs by their recorded status and supports searching by name, executable, status, or full run ID. Selecting a run opens a browser-only workspace tab; switching or closing a tab changes only the browser view. Each process workspace keeps the Output, Terminal, and Details views together, and the process tab strip scrolls horizontally when needed.
 
-The browser opens the existing SQLite registry with `mode=ro`; missing registries display as empty without initialization. Selected active-run details may request the existing supervisor's authenticated `status` operation and project the response without persisting it. Log reads are restricted to that run's `output.ansi` file. Registry pruning, process control, and lifecycle operations are not available from the browser. Closing the web server does not stop managed processes.
+The browser opens the existing SQLite registry with `mode=ro`; missing registries display as empty without initialization. The authenticated New Process tab is the explicit write operation: it launches through the same `create_managed_run` path as `runmux run`, registering and supervising the process. Enter the executable in Command and put each argument on its own line; each line is passed literally as one argv element, so shell quoting and shell expansion are not applied. The working-directory field defaults to the directory from which `runmux web` was started. A successful launch opens the new run tab and its output. Invalid commands, names, and directories keep the form available with an actionable error. Existing-run lifecycle controls are not exposed from the browser. Closing a process view or the web server does not stop managed processes.
 
 The **Terminal** process view uses locally packaged xterm.js assets to render the original ANSI output. Its same-origin WebSocket requires the authenticated browser session cookie and trusted loopback host/origin checks. Opening the view creates a normal Runmux viewer attachment; requesting control creates an interact attachment through the supervisor. Keystrokes are sent only when that session holds the supervisor's FIFO input lock, and the supervisor remains authoritative if ownership changes. Resizing is sent only while the browser session reports the input lock. Reconnecting creates a fresh viewer attachment and replays at most the latest 128 KiB before following output in bounded chunks. Terminal scrollback is capped at 5,000 lines.
 
@@ -91,8 +91,9 @@ runmux load
   and process operations. Closing a view or the TUI never stops a managed
   process. Workspace state is scoped to the canonical directory where Runmux
   starts and the selected Runmux state directory.
-- `runmux web` starts the local browser interface. Its process browsing and
-  lifecycle controls remain read-only; the Terminal view can send program input
+- `runmux web` starts the authenticated local browser interface. The New Process
+  tab can launch supervised commands; other lifecycle controls remain unavailable.
+  The Terminal view can send program input
   only while its authenticated attachment owns the supervisor input lock. It
   prints a one-time startup login code that remains valid until the web server
   exits. Closing the browser or stopping the web server only detaches browser

@@ -12,13 +12,15 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 from web_ui_tools import LOOPBACK_HOSTS, create_app
 
 from runmux.constants import TERMINAL_STATUSES
 from runmux.ipc import IpcError, open_input_socket, request_json
 from runmux.platform_paths import get_state_dir
-from runmux.store import RunNotFoundError
+from runmux.runner import RunnerError, create_managed_run
+from runmux.store import RunNotFoundError, RunStore
 from runmux.web_adapter import (
     DEFAULT_LOG_CHUNK_BYTES,
     MAX_LOG_CHUNK_BYTES,
@@ -30,6 +32,18 @@ from runmux.web_adapter import (
 )
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
+MAX_LAUNCH_ARGUMENTS = 256
+MAX_LAUNCH_VALUE_LENGTH = 4096
+MAX_LAUNCH_TOTAL_LENGTH = 65536
+
+
+class LaunchRequest(BaseModel):
+    """Validated argv-based request for creating one supervised run."""
+
+    program: str = Field(min_length=1, max_length=MAX_LAUNCH_VALUE_LENGTH)
+    arguments: list[str] = Field(default_factory=list, max_length=MAX_LAUNCH_ARGUMENTS)
+    name: str | None = Field(default=None, max_length=120)
+    cwd: str | None = Field(default=None, max_length=MAX_LAUNCH_VALUE_LENGTH)
 
 
 def create_runmux_web_app(
@@ -38,9 +52,11 @@ def create_runmux_web_app(
     login_code: str,
     allowed_hosts: tuple[str, ...] = LOOPBACK_HOSTS,
 ) -> FastAPI:
-    """Create an authenticated, read-only browser view of an existing Runmux registry."""
+    """Create an authenticated browser view and process-launch API for Runmux."""
 
-    backend = ReadOnlyRunmux(state_dir or get_state_dir())
+    resolved_state_dir = state_dir or get_state_dir()
+    backend = ReadOnlyRunmux(resolved_state_dir)
+    default_cwd = Path.cwd().resolve()
     api = APIRouter(prefix="/api")
 
     @api.get("/runs")
@@ -49,6 +65,57 @@ def create_runmux_web_app(
             return [serialize_run(record) for record in backend.list_runs()]
         except RegistryReadError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.get("/launch-defaults")
+    def launch_defaults() -> dict[str, str]:
+        return {"cwd": str(default_cwd)}
+
+    @api.post("/runs", status_code=201)
+    async def launch_run(payload: LaunchRequest) -> dict[str, Any]:
+        program = payload.program.strip()
+        arguments = payload.arguments
+        name = payload.name.strip() if payload.name and payload.name.strip() else None
+        cwd_text = payload.cwd.strip() if payload.cwd and payload.cwd.strip() else None
+        values = [program, *arguments, *(value for value in (name, cwd_text) if value is not None)]
+        if not program:
+            raise HTTPException(status_code=422, detail="Enter a program to launch.")
+        if any(len(value) > MAX_LAUNCH_VALUE_LENGTH for value in values):
+            raise HTTPException(
+                status_code=422,
+                detail="Each command, argument, name, and directory must be at most 4096 characters.",
+            )
+        if sum(len(value) for value in values) > MAX_LAUNCH_TOTAL_LENGTH:
+            raise HTTPException(status_code=422, detail="The complete launch request must be at most 65536 characters.")
+        if any("\x00" in value for value in values):
+            raise HTTPException(
+                status_code=422,
+                detail="Program, arguments, name, and directory cannot contain NUL characters.",
+            )
+        try:
+            cwd = Path(cwd_text).expanduser().resolve() if cwd_text else default_cwd
+        except (OSError, RuntimeError, ValueError) as error:
+            raise HTTPException(status_code=400, detail=f"Working directory is invalid: {error}") from error
+        if not cwd.exists() or not cwd.is_dir():
+            raise HTTPException(
+                status_code=400,
+                detail=f"Working directory does not exist or is not a directory: {cwd}",
+            )
+        try:
+            started = await run_in_threadpool(
+                create_managed_run,
+                RunStore(resolved_state_dir),
+                program_args=[program, *arguments],
+                cwd=cwd,
+                name=name,
+                force_color=True,
+            )
+            record = started.record
+            record, connection = backend.refresh_display_status(record)
+            return serialize_run(record, connection=connection)
+        except RunnerError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except OSError as error:
+            raise HTTPException(status_code=400, detail=f"Could not launch the process: {error}") from error
 
     @api.get("/runs/{run_id}")
     def run_detail(run_id: str) -> dict[str, Any]:
