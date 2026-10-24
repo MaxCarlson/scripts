@@ -1,0 +1,36 @@
+# Checklist — Runmux Live Telemetry Backend (Phase 5B)
+
+- [x] Stage 1: Mandatory Correctness Audit & Documentation
+  - [x] Create implementation plan, checklist, status, and telemetry provenance documents.
+  - [x] Audit CPU denominator, process-tree aggregation, RSS semantics, IO counters, and GPU scopes.
+- [x] Stage 2: `modules/resource_metrics` Improvements
+  - [x] Enhance `process.process_tree` with robust error handling for permissions and exited children.
+  - [x] Enhance `process.process_tree_snapshot` with multi-core CPU normalization, I/O counters, and PID validation.
+  - [x] Enhance `gpu` with process attribution helper and clear device-vs-process scope separation.
+  - [x] Add/update tests in `modules/resource_metrics/tests/`.
+- [x] Stage 3: `runmux/stats.py` Remediation & Non-blocking Sampler
+  - [x] Fix network attribution bug: do not assign system network deltas to per-process metrics.
+  - [x] Implement `TelemetrySampler` for non-blocking monotonic delta sampling without `sleep()`.
+  - [x] Implement verified run identity binding: detect PID reuse, terminated runs, missing processes, and permission denial.
+  - [x] Tighten PID creation tolerance to 5.0 seconds with two-sided bounds.
+  - [x] Provide explicit `unavailable` reasons rather than false zero values across CLI and JSON.
+  - [x] Maintain backward compatibility for CLI `runmux stats`.
+  - [x] Update `modules/runmux/tests/stats_test.py`.
+- [x] Stage 4: Web Telemetry Adapter & Read API Endpoints
+  - [x] Add `read_run_telemetry` and `read_active_telemetry` to `runmux/web_adapter.py`.
+  - [x] Parallelize overview status probing via threadpool for disconnected runs.
+  - [x] Cache GPU device queries with 1.5s TTL.
+  - [x] Add `GET /api/runs/{run_id}/telemetry` and `GET /api/telemetry` to `runmux/web.py`.
+  - [x] Ensure non-blocking execution via threadpool / async adapter.
+  - [x] Enforce session authentication.
+- [x] Stage 5: Comprehensive Validation & Tests
+  - [x] Create `modules/runmux/tests/telemetry_test.py` covering attribution, stale states, ended runs, permission denial, CPU multi-core, disconnected run latency, GPU cache, and API endpoints.
+  - [x] Run full test suites (`resource_metrics` and `runmux`).
+  - [x] Benchmark and record latency/sampling overhead.
+  - [x] Run `ruff check .`.
+- [x] Stage 6: Finalization & Push
+  - [x] Review git status and unstaged/staged diffs.
+  - [x] Update status, handoff, and provenance documents.
+  - [x] Commit with descriptive message.
+  - [x] Push branch `codex/runmux-telemetry-backend-20261024` to remote (do not merge).
+  - [x] Report Phase 2 overlap and dependency analysis.

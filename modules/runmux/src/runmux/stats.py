@@ -1,4 +1,4 @@
-"""Runtime statistics for runmux-managed processes."""
+"""Runtime statistics and verified resource telemetry for runmux-managed processes."""
 
 from __future__ import annotations
 
@@ -6,37 +6,396 @@ import json
 import select
 import shutil
 import sys
+import threading
 import time
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 
-from resource_metrics import gpu_process_memory, process_tree
+from resource_metrics import gpu_devices, gpu_process_memory, process_tree
 from resource_metrics.process import process_io
-from resource_metrics.system import net_io_counters, rate
+from resource_metrics.system import memory_stats, net_io_counters, rate
 
 from runmux.client import refresh_active_statuses
 from runmux.constants import TERMINAL_STATUSES
-from runmux.models import RunRecord
+from runmux.models import RunRecord, parse_iso_datetime, utc_now_iso
 from runmux.store import RunStore
 
 
 @dataclass(frozen=True)
+class HostTelemetry:
+    """Sampled host-level resource telemetry."""
+
+    cpu_percent: float | None
+    cpu_count: int
+    memory_used_bytes: int | None
+    memory_available_bytes: int | None
+    memory_total_bytes: int | None
+    memory_percent: float | None
+    net_read_bytes_per_second: float | None
+    net_write_bytes_per_second: float | None
+    gpu_devices: list[dict[str, Any]]
+    sampled_at: str
+
+
+@dataclass(frozen=True)
 class ProcessStats:
-    """Sampled resource usage for one managed run."""
+    """Sampled resource usage for one managed run.
+
+    Provides verified metrics with clear attribution scope:
+    - cpu_percent: raw multi-core sum (100% per core)
+    - cpu_percent_normalized: normalized by logical CPU count (0-100%)
+    - rss_bytes: aggregate resident memory across process tree
+    - read_bytes_per_second / write_bytes_per_second: disk I/O rate
+    - net_read_bytes_per_second / net_write_bytes_per_second: per-process network
+      (None unless per-socket OS attribution exists)
+    - host_net_read_bytes_per_second / host_net_write_bytes_per_second: host-level
+      network delta explicitly scoped to the machine
+    - unavailable: explicit reason when metrics cannot be gathered
+    """
 
     record: RunRecord
     process_count: int
     thread_count: int
-    cpu_percent: float
-    rss_bytes: int
-    read_bytes_per_second: float
-    write_bytes_per_second: float
-    net_read_bytes_per_second: float = 0.0
-    net_write_bytes_per_second: float = 0.0
+    cpu_percent: float | None
+    rss_bytes: int | None
+    read_bytes_per_second: float | None
+    write_bytes_per_second: float | None
+    net_read_bytes_per_second: float | None = None
+    net_write_bytes_per_second: float | None = None
+    host_net_read_bytes_per_second: float | None = None
+    host_net_write_bytes_per_second: float | None = None
+    cpu_percent_normalized: float | None = None
+    cpu_count: int = 1
+    cpu_time_seconds: float | None = None
+    total_read_bytes: int | None = None
+    total_write_bytes: int | None = None
     gpu_memory_bytes: int | None = None
     gpu_util_percent: float | None = None
     unavailable: str | None = None
+    sampled_at: str | None = None
+    sample_interval_seconds: float | None = None
+
+
+PID_CREATION_TOLERANCE_SECONDS = 5.0
+
+
+def verify_run_process(psutil_module: Any, record: RunRecord) -> tuple[Any | None, str | None]:
+    """Verify run status and PID identity to prevent false attribution and PID reuse."""
+
+    if record.status in TERMINAL_STATUSES:
+        return None, f"run is {record.status}"
+    if record.pid is None:
+        return None, "no pid assigned"
+
+    if not hasattr(psutil_module, "Process"):
+        return None, None
+
+    no_such_error = getattr(psutil_module, "NoSuchProcess", psutil_module.Error)
+    access_error = getattr(psutil_module, "AccessDenied", psutil_module.Error)
+    zombie_error = getattr(psutil_module, "ZombieProcess", psutil_module.Error)
+
+    try:
+        root = psutil_module.Process(record.pid)
+        if hasattr(root, "is_running") and not root.is_running():
+            return None, "process exited"
+    except no_such_error:
+        return None, "process exited"
+    except access_error:
+        return None, "permission denied"
+    except zombie_error:
+        return None, "zombie process"
+    except (psutil_module.Error, OSError, ValueError):
+        return None, "process unavailable"
+
+    # PID reuse protection: compare process create_time with run record timestamps
+    ref_iso = record.started_at or record.created_at
+    if hasattr(root, "create_time") and ref_iso:
+        try:
+            ref_dt = parse_iso_datetime(ref_iso)
+            if ref_dt is not None:
+                ref_epoch = ref_dt.timestamp()
+                proc_create = float(root.create_time())
+                # If process was created noticeably after run started, PID has been recycled
+                if proc_create > ref_epoch + PID_CREATION_TOLERANCE_SECONDS:
+                    return None, "pid reused by another process"
+                # If process was created noticeably before run started, PID belongs to older process
+                if proc_create < ref_epoch - PID_CREATION_TOLERANCE_SECONDS:
+                    return None, "pid reused by another process"
+                if record.ended_at:
+                    ended_dt = parse_iso_datetime(record.ended_at)
+                    if ended_dt and proc_create > ended_dt.timestamp():
+                        return None, "pid reused by another process"
+        except (ValueError, OSError, OverflowError):
+            pass
+
+    return root, None
+
+
+class TelemetrySampler:
+    """Non-blocking, thread-safe monotonic resource telemetry sampler for Runmux."""
+
+    def __init__(self, *, clock: Any = time.monotonic) -> None:
+        self._clock = clock
+        self._lock = threading.Lock()
+        # run_id -> (timestamp, cpu_time, read_bytes, write_bytes, pid)
+        self._snapshots: dict[str, tuple[float, float, int | None, int | None, int | None]] = {}
+        self._cached_gpu: tuple[float, dict[int, tuple[int, float | None]]] | None = None
+        self._cached_gpu_devices: tuple[float, list[dict[str, Any]]] | None = None
+        self._cached_host_net: tuple[float, tuple[int, int]] | None = None
+
+    def clear(self) -> None:
+        """Clear all cached sample baselines."""
+        with self._lock:
+            self._snapshots.clear()
+            self._cached_gpu = None
+            self._cached_gpu_devices = None
+            self._cached_host_net = None
+
+    def _get_gpu_usage(self) -> dict[int, tuple[int, float | None]]:
+        now = self._clock()
+        if self._cached_gpu and (now - self._cached_gpu[0]) < 1.5:
+            return self._cached_gpu[1]
+        usage = query_gpu_usage_by_pid()
+        self._cached_gpu = (now, usage)
+        return usage
+
+    def _get_gpu_devices(self) -> list[dict[str, Any]]:
+        now = self._clock()
+        if self._cached_gpu_devices and (now - self._cached_gpu_devices[0]) < 1.5:
+            return self._cached_gpu_devices[1]
+        devices = gpu_devices(timeout=1.0)
+        self._cached_gpu_devices = (now, devices)
+        return devices
+
+    def sample_run(
+        self,
+        record: RunRecord,
+        *,
+        psutil_module: Any = None,
+        gpu_usage: dict[int, tuple[int, float | None]] | None = None,
+    ) -> ProcessStats:
+        """Sample single run metrics instantaneously using monotonic state deltas."""
+
+        if psutil_module is None:
+            try:
+                import psutil as psutil_module
+            except ImportError:
+                return ProcessStats(
+                    record=record,
+                    process_count=0,
+                    thread_count=0,
+                    cpu_percent=None,
+                    rss_bytes=None,
+                    read_bytes_per_second=None,
+                    write_bytes_per_second=None,
+                    unavailable="psutil unavailable",
+                    sampled_at=utc_now_iso(),
+                )
+
+        root, unavailable_reason = verify_run_process(psutil_module, record)
+        now = self._clock()
+        sampled_at = utc_now_iso()
+
+        if unavailable_reason is not None:
+            with self._lock:
+                self._snapshots.pop(record.id, None)
+            return ProcessStats(
+                record=record,
+                process_count=0,
+                thread_count=0,
+                cpu_percent=None,
+                rss_bytes=None,
+                read_bytes_per_second=None,
+                write_bytes_per_second=None,
+                unavailable=unavailable_reason,
+                sampled_at=sampled_at,
+            )
+
+        processes = get_process_tree(psutil_module, record.pid)
+        if not processes:
+            with self._lock:
+                self._snapshots.pop(record.id, None)
+            return ProcessStats(
+                record=record,
+                process_count=0,
+                thread_count=0,
+                cpu_percent=None,
+                rss_bytes=None,
+                read_bytes_per_second=None,
+                write_bytes_per_second=None,
+                unavailable="process unavailable",
+                sampled_at=sampled_at,
+            )
+
+        process_count = len(processes)
+        thread_count = 0
+        rss_bytes = 0
+        cpu_time = 0.0
+        read_bytes: int | None = None
+        write_bytes: int | None = None
+        io_supported = False
+        pids: set[int] = set()
+
+        for process in processes:
+            pids.add(int(process.pid))
+            with suppress(psutil_module.Error, OSError):
+                thread_count += int(process.num_threads())
+            with suppress(psutil_module.Error, OSError):
+                times = process.cpu_times()
+                cpu_time += float(times.user) + float(times.system)
+            with suppress(psutil_module.Error, OSError):
+                rss_bytes += int(process.memory_info().rss)
+            counters = process_io(process, psutil_module=psutil_module)
+            if counters is not None:
+                r_val = getattr(counters, "read_bytes", None)
+                w_val = getattr(counters, "write_bytes", None)
+                if r_val is not None:
+                    read_bytes = (read_bytes or 0) + int(r_val)
+                    io_supported = True
+                if w_val is not None:
+                    write_bytes = (write_bytes or 0) + int(w_val)
+                    io_supported = True
+
+        try:
+            cores = psutil_module.cpu_count(logical=True)
+        except (psutil_module.Error, OSError, AttributeError):
+            cores = None
+        cores = max(1, int(cores or 1))
+
+        cpu_percent: float | None = None
+        read_rate: float | None = None
+        write_rate: float | None = None
+        elapsed: float | None = None
+
+        with self._lock:
+            prev = self._snapshots.get(record.id)
+            if prev is not None and prev[4] == record.pid:
+                prev_time, prev_cpu, prev_read, prev_write, _ = prev
+                delta_t = now - prev_time
+                if delta_t > 0:
+                    elapsed = delta_t
+                    cpu_percent = max(0.0, (cpu_time - prev_cpu) / delta_t * 100.0)
+                    if prev_read is not None and read_bytes is not None:
+                        read_rate = rate(prev_read, read_bytes, delta_t)
+                    if prev_write is not None and write_bytes is not None:
+                        write_rate = rate(prev_write, write_bytes, delta_t)
+            self._snapshots[record.id] = (
+                now,
+                cpu_time,
+                read_bytes if io_supported else None,
+                write_bytes if io_supported else None,
+                record.pid,
+            )
+
+        cpu_percent_normalized = (cpu_percent / cores) if cpu_percent is not None else None
+
+        active_gpu_usage = gpu_usage if gpu_usage is not None else self._get_gpu_usage()
+        gpu_memory = 0
+        for pid in pids:
+            if pid in active_gpu_usage:
+                mem, _ = active_gpu_usage[pid]
+                gpu_memory += mem
+
+        return ProcessStats(
+            record=record,
+            process_count=process_count,
+            thread_count=thread_count,
+            cpu_percent=cpu_percent,
+            cpu_percent_normalized=cpu_percent_normalized,
+            cpu_count=cores,
+            cpu_time_seconds=cpu_time,
+            rss_bytes=rss_bytes,
+            read_bytes_per_second=read_rate,
+            write_bytes_per_second=write_rate,
+            total_read_bytes=read_bytes if io_supported else None,
+            total_write_bytes=write_bytes if io_supported else None,
+            net_read_bytes_per_second=None,
+            net_write_bytes_per_second=None,
+            gpu_memory_bytes=gpu_memory or None,
+            gpu_util_percent=None,
+            sampled_at=sampled_at,
+            sample_interval_seconds=elapsed,
+        )
+
+    def sample_active_runs(
+        self,
+        records: list[RunRecord],
+        *,
+        psutil_module: Any = None,
+    ) -> tuple[list[ProcessStats], HostTelemetry]:
+        """Sample all active runs non-blockingly and collect host telemetry."""
+
+        if psutil_module is None:
+            try:
+                import psutil as psutil_module
+            except ImportError:
+                psutil_module = None
+
+        active_records = [r for r in records if r.status not in TERMINAL_STATUSES]
+        active_ids = {r.id for r in active_records}
+
+        with self._lock:
+            for saved_id in list(self._snapshots):
+                if saved_id not in active_ids:
+                    self._snapshots.pop(saved_id, None)
+
+        gpu_usage = self._get_gpu_usage()
+        stats = [
+            self.sample_run(record, psutil_module=psutil_module, gpu_usage=gpu_usage)
+            for record in records
+        ]
+
+        # Host telemetry
+        host_cpu = None
+        cores = 1
+        mem_used = None
+        mem_avail = None
+        mem_total = None
+        mem_pct = None
+        host_net_read = None
+        host_net_write = None
+
+        if psutil_module:
+            with suppress(psutil_module.Error, OSError):
+                host_cpu = float(psutil_module.cpu_percent(interval=None))
+            with suppress(psutil_module.Error, OSError, AttributeError):
+                cores = int(psutil_module.cpu_count(logical=True) or 1)
+
+        mem = memory_stats()
+        if mem:
+            mem_used = mem.get("used")
+            mem_avail = mem.get("available")
+            mem_total = mem.get("total")
+            mem_pct = mem.get("percent")
+
+        now = self._clock()
+        curr_net = snapshot_system_net(psutil_module)
+        if curr_net and self._cached_host_net:
+            prev_net_time, prev_net_counters = self._cached_host_net
+            net_elapsed = now - prev_net_time
+            if net_elapsed > 0:
+                host_net_read = rate(prev_net_counters[0], curr_net[0], net_elapsed)
+                host_net_write = rate(prev_net_counters[1], curr_net[1], net_elapsed)
+        if curr_net:
+            self._cached_host_net = (now, curr_net)
+
+        devices = self._get_gpu_devices()
+
+        host_telemetry = HostTelemetry(
+            cpu_percent=host_cpu,
+            cpu_count=cores,
+            memory_used_bytes=mem_used,
+            memory_available_bytes=mem_avail,
+            memory_total_bytes=mem_total,
+            memory_percent=mem_pct,
+            net_read_bytes_per_second=host_net_read,
+            net_write_bytes_per_second=host_net_write,
+            gpu_devices=devices,
+            sampled_at=utc_now_iso(),
+        )
+
+        return stats, host_telemetry
 
 
 def show_stats(
@@ -70,7 +429,8 @@ def show_stats(
                 stats,
                 width=shutil.get_terminal_size(fallback=(140, 30)).columns,
                 title=(
-                    f"runmux stats - {time.strftime('%Y-%m-%d %H:%M:%S')} - " "q quit, Ctrl-Q quit now, Ctrl-C exit"
+                    f"runmux stats - {time.strftime('%Y-%m-%d %H:%M:%S')} - "
+                    "q quit, Ctrl-Q quit now, Ctrl-C exit"
                 ),
                 color=sys.stdout.isatty(),
             ).replace("\n", "\r\n")
@@ -89,7 +449,7 @@ def show_stats(
 
 
 def sample_active_stats(store: RunStore, *, interval_seconds: float) -> list[ProcessStats]:
-    """Sample active process stats over an interval."""
+    """Sample active process stats over an interval for CLI commands."""
 
     try:
         import psutil
@@ -106,6 +466,7 @@ def sample_active_stats(store: RunStore, *, interval_seconds: float) -> list[Pro
     after_net = snapshot_system_net(psutil)
     gpu_usage = query_gpu_usage_by_pid()
     stats: list[ProcessStats] = []
+    host_net = net_delta(before_net, after_net, interval_seconds)
     for record in records:
         if record.status in TERMINAL_STATUSES:
             continue
@@ -115,7 +476,7 @@ def sample_active_stats(store: RunStore, *, interval_seconds: float) -> list[Pro
                 record,
                 before.get(record.id),
                 interval_seconds,
-                system_net_delta=net_delta(before_net, after_net, interval_seconds),
+                system_net_delta=host_net,
                 gpu_usage=gpu_usage,
             )
         )
@@ -127,7 +488,7 @@ def prime_cpu_percent(psutil_module: Any, records: list[RunRecord]) -> None:
 
     for record in records:
         for process in get_process_tree(psutil_module, record.pid):
-            with suppress(psutil_module.Error):
+            with suppress(psutil_module.Error, OSError):
                 process.cpu_percent(interval=None)
 
 
@@ -139,13 +500,20 @@ def snapshot_record_io(psutil_module: Any, record: RunRecord) -> tuple[int, int]
         return None
     read_bytes = 0
     write_bytes = 0
+    io_found = False
     for process in processes:
         counters = process_io(process, psutil_module=psutil_module)
         if counters is None:
             continue
-        read_bytes += int(getattr(counters, "read_bytes", 0))
-        write_bytes += int(getattr(counters, "write_bytes", 0))
-    return read_bytes, write_bytes
+        r = getattr(counters, "read_bytes", None)
+        w = getattr(counters, "write_bytes", None)
+        if r is not None:
+            read_bytes += int(r)
+            io_found = True
+        if w is not None:
+            write_bytes += int(w)
+            io_found = True
+    return (read_bytes, write_bytes) if io_found else None
 
 
 def build_process_stats(
@@ -156,7 +524,21 @@ def build_process_stats(
     system_net_delta: tuple[float, float] | None = None,
     gpu_usage: dict[int, tuple[int, float | None]] | None = None,
 ) -> ProcessStats:
-    """Build sampled stats for one run."""
+    """Build sampled stats for one run with verified attribution and PID validation."""
+
+    root, unavailable_reason = verify_run_process(psutil_module, record)
+    if unavailable_reason is not None:
+        return ProcessStats(
+            record=record,
+            process_count=0,
+            thread_count=0,
+            cpu_percent=None,
+            rss_bytes=None,
+            read_bytes_per_second=None,
+            write_bytes_per_second=None,
+            unavailable=unavailable_reason,
+            sampled_at=utc_now_iso(),
+        )
 
     processes = get_process_tree(psutil_module, record.pid)
     if not processes:
@@ -164,13 +546,12 @@ def build_process_stats(
             record=record,
             process_count=0,
             thread_count=0,
-            cpu_percent=0.0,
-            rss_bytes=0,
-            read_bytes_per_second=0.0,
-            write_bytes_per_second=0.0,
-            net_read_bytes_per_second=0.0,
-            net_write_bytes_per_second=0.0,
+            cpu_percent=None,
+            rss_bytes=None,
+            read_bytes_per_second=None,
+            write_bytes_per_second=None,
             unavailable="process unavailable",
+            sampled_at=utc_now_iso(),
         )
 
     process_count = len(processes)
@@ -179,21 +560,29 @@ def build_process_stats(
     rss_bytes = 0
     read_bytes = 0
     write_bytes = 0
+    io_supported = False
     pids: set[int] = set()
+
     for process in processes:
         pids.add(int(process.pid))
-        with suppress(psutil_module.Error):
+        with suppress(psutil_module.Error, OSError):
             thread_count += int(process.num_threads())
-        with suppress(psutil_module.Error):
+        with suppress(psutil_module.Error, OSError):
             cpu_percent += float(process.cpu_percent(interval=None))
-        with suppress(psutil_module.Error):
+        with suppress(psutil_module.Error, OSError):
             rss_bytes += int(process.memory_info().rss)
         counters = process_io(process, psutil_module=psutil_module)
         if counters is not None:
-            read_bytes += int(getattr(counters, "read_bytes", 0))
-            write_bytes += int(getattr(counters, "write_bytes", 0))
+            r = getattr(counters, "read_bytes", None)
+            w = getattr(counters, "write_bytes", None)
+            if r is not None:
+                read_bytes += int(r)
+                io_supported = True
+            if w is not None:
+                write_bytes += int(w)
+                io_supported = True
 
-    elapsed = max(0.1, interval_seconds)
+    elapsed = max(0.001, interval_seconds)
     if previous_io is None:
         read_rate = 0.0
         write_rate = 0.0
@@ -201,44 +590,58 @@ def build_process_stats(
         read_rate = rate(previous_io[0], read_bytes, elapsed) or 0.0
         write_rate = rate(previous_io[1], write_bytes, elapsed) or 0.0
 
+    try:
+        cores = psutil_module.cpu_count(logical=True)
+    except (psutil_module.Error, OSError, AttributeError):
+        cores = None
+    cores = max(1, int(cores or 1))
+    cpu_percent_normalized = cpu_percent / cores
+
     gpu_memory = 0
-    gpu_util_values: list[float] = []
     for pid in pids:
         if gpu_usage and pid in gpu_usage:
-            memory, util = gpu_usage[pid]
+            memory, _ = gpu_usage[pid]
             gpu_memory += memory
-            if util is not None:
-                gpu_util_values.append(util)
-    gpu_util = sum(gpu_util_values) if gpu_util_values else None
-    net_read_rate, net_write_rate = system_net_delta or (0.0, 0.0)
+
+    # Notice: system_net_delta is host-scoped. It is placed in host_net_*, NOT
+    # in net_read_bytes_per_second / net_write_bytes_per_second!
+    host_net_read, host_net_write = system_net_delta if system_net_delta else (None, None)
 
     return ProcessStats(
         record=record,
         process_count=process_count,
         thread_count=thread_count,
         cpu_percent=cpu_percent,
+        cpu_percent_normalized=cpu_percent_normalized,
+        cpu_count=cores,
         rss_bytes=rss_bytes,
         read_bytes_per_second=read_rate,
         write_bytes_per_second=write_rate,
-        net_read_bytes_per_second=net_read_rate,
-        net_write_bytes_per_second=net_write_rate,
+        total_read_bytes=read_bytes if io_supported else None,
+        total_write_bytes=write_bytes if io_supported else None,
+        net_read_bytes_per_second=None,
+        net_write_bytes_per_second=None,
+        host_net_read_bytes_per_second=host_net_read,
+        host_net_write_bytes_per_second=host_net_write,
         gpu_memory_bytes=gpu_memory or None,
-        gpu_util_percent=gpu_util,
+        gpu_util_percent=None,
+        sampled_at=utc_now_iso(),
+        sample_interval_seconds=elapsed,
     )
 
 
 def get_process_tree(psutil_module: Any, pid: int | None) -> list[Any]:
     """Return the root process and live child processes."""
 
-    if pid is None:
+    if pid is None or pid <= 0:
         return []
     processes = process_tree(pid, psutil_module=psutil_module)
     if not processes:
         return []
     live = [processes[0]]
     for process in processes[1:]:
-        with suppress(psutil_module.Error):
-            if process.is_running():
+        with suppress(psutil_module.Error, OSError):
+            if not hasattr(process, "is_running") or process.is_running():
                 live.append(process)
     return live
 
@@ -265,13 +668,19 @@ def format_stats_table(
     for item in stats:
         detail = item.unavailable or truncate(item.record.command_line, command_width)
         status = colorize(f"{item.record.status:<8}", status_color(item.record.status), enabled=color)
-        cpu = colorize(f"{item.cpu_percent:>6.1f}%", metric_color(item.cpu_percent, 30, 75), enabled=color)
-        rss = colorize(f"{format_bytes(item.rss_bytes):>10}", "36", enabled=color)
-        disk_plain = (
-            f"R {format_bytes(item.read_bytes_per_second):>10}/s "
-            f"W {format_bytes(item.write_bytes_per_second):>10}/s"
-        )
-        disk = colorize(f"{disk_plain:<31}", "36", enabled=color)
+        if item.unavailable:
+            cpu = colorize("     --", "90", enabled=color)
+            rss = colorize("        --", "90", enabled=color)
+            disk = colorize(f"{'--':<31}", "90", enabled=color)
+        else:
+            cpu_val = item.cpu_percent if item.cpu_percent is not None else 0.0
+            cpu = colorize(f"{cpu_val:>6.1f}%", metric_color(cpu_val, 30, 75), enabled=color)
+            rss_val = item.rss_bytes if item.rss_bytes is not None else 0
+            rss = colorize(f"{format_bytes(rss_val):>10}", "36", enabled=color)
+            read_rate = item.read_bytes_per_second if item.read_bytes_per_second is not None else 0.0
+            write_rate = item.write_bytes_per_second if item.write_bytes_per_second is not None else 0.0
+            disk_plain = f"R {format_bytes(read_rate):>10}/s W {format_bytes(write_rate):>10}/s"
+            disk = colorize(f"{disk_plain:<31}", "36", enabled=color)
         gpu_plain = format_gpu_cell(item, color=False)
         gpu = colorize(f"{gpu_plain:<14}", "32" if gpu_plain != "--" else "90", enabled=color)
         procs_threads = colorize(f"{item.process_count}/{item.thread_count:<7}", "90", enabled=color)
@@ -287,12 +696,21 @@ def format_stats_table(
 def format_stats_summary(stats: list[ProcessStats], *, color: bool) -> str:
     """Format a compact summary line for global counters."""
 
-    total_cpu = sum(item.cpu_percent for item in stats)
-    total_rss = sum(item.rss_bytes for item in stats)
-    total_disk_read = sum(item.read_bytes_per_second for item in stats)
-    total_disk_write = sum(item.write_bytes_per_second for item in stats)
-    net_read = stats[0].net_read_bytes_per_second if stats else 0.0
-    net_write = stats[0].net_write_bytes_per_second if stats else 0.0
+    total_cpu = sum(item.cpu_percent or 0.0 for item in stats)
+    total_rss = sum(item.rss_bytes or 0 for item in stats)
+    total_disk_read = sum(item.read_bytes_per_second or 0.0 for item in stats)
+    total_disk_write = sum(item.write_bytes_per_second or 0.0 for item in stats)
+    first = stats[0] if stats else None
+    net_read = (
+        first.host_net_read_bytes_per_second
+        if first and first.host_net_read_bytes_per_second is not None
+        else 0.0
+    )
+    net_write = (
+        first.host_net_write_bytes_per_second
+        if first and first.host_net_write_bytes_per_second is not None
+        else 0.0
+    )
     parts = [
         colorize(f"runs {len(stats)}", "1;37", enabled=color),
         colorize(f"cpu {total_cpu:.1f}%", metric_color(total_cpu, 50, 90), enabled=color),
@@ -308,7 +726,7 @@ def format_stats_summary(stats: list[ProcessStats], *, color: bool) -> str:
 def format_stats_header(*, color: bool) -> str:
     """Format the stats table header."""
 
-    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<31} " f"{'GPU':<14} {'P/T':<7} COMMAND"
+    header = f"{'ID':<4} {'STATE':<8} {'CPU':>7} {'RAM':>10} {'DISK I/O':<31} {'GPU':<14} {'P/T':<7} COMMAND"
     return colorize(header, "1;37", enabled=color)
 
 
@@ -323,7 +741,7 @@ def format_gpu_cell(item: ProcessStats, *, color: bool) -> str:
 
 
 def stats_to_json(item: ProcessStats) -> dict[str, Any]:
-    """Convert process stats to JSON output."""
+    """Convert process stats to JSON output with clear scope attribution."""
 
     return {
         "id": item.record.id,
@@ -334,24 +752,28 @@ def stats_to_json(item: ProcessStats) -> dict[str, Any]:
         "process_count": item.process_count,
         "thread_count": item.thread_count,
         "cpu_percent": item.cpu_percent,
+        "cpu_percent_normalized": item.cpu_percent_normalized,
+        "cpu_count": item.cpu_count,
+        "cpu_time_seconds": item.cpu_time_seconds,
         "rss_bytes": item.rss_bytes,
         "read_bytes_per_second": item.read_bytes_per_second,
         "write_bytes_per_second": item.write_bytes_per_second,
+        "total_read_bytes": item.total_read_bytes,
+        "total_write_bytes": item.total_write_bytes,
         "net_read_bytes_per_second": item.net_read_bytes_per_second,
         "net_write_bytes_per_second": item.net_write_bytes_per_second,
+        "host_net_read_bytes_per_second": item.host_net_read_bytes_per_second,
+        "host_net_write_bytes_per_second": item.host_net_write_bytes_per_second,
         "gpu_memory_bytes": item.gpu_memory_bytes,
         "gpu_util_percent": item.gpu_util_percent,
         "unavailable": item.unavailable,
+        "sampled_at": item.sampled_at,
+        "sample_interval_seconds": item.sample_interval_seconds,
     }
 
 
 def snapshot_system_net(psutil_module: Any) -> tuple[int, int] | None:
-    """Capture system network counters.
-
-    Most common desktop OS APIs do not expose per-process network throughput.
-    This gives a live system delta so runmux still surfaces network activity
-    while keeping JSON fields explicit.
-    """
+    """Capture system network counters."""
 
     counters = net_io_counters()
     if counters is not None:
@@ -368,9 +790,11 @@ def net_delta(
 
     if before is None or after is None:
         return None
-    elapsed = max(0.1, interval_seconds)
-    return (rate(before[0], after[0], elapsed) or 0.0,
-            rate(before[1], after[1], elapsed) or 0.0)
+    elapsed = max(0.001, interval_seconds)
+    return (
+        rate(before[0], after[0], elapsed) or 0.0,
+        rate(before[1], after[1], elapsed) or 0.0,
+    )
 
 
 def query_gpu_usage_by_pid() -> dict[int, tuple[int, float | None]]:

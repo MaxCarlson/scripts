@@ -128,6 +128,22 @@ def create_runmux_web_app(
         except RegistryReadError as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
+    @api.get("/runs/{run_id}/telemetry")
+    async def run_telemetry(run_id: str) -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(backend.get_run_telemetry, run_id)
+        except RunNotFoundError as error:
+            raise HTTPException(status_code=404, detail="Run not found") from error
+        except RegistryReadError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @api.get("/telemetry")
+    async def overview_telemetry() -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(backend.get_overview_telemetry)
+        except RegistryReadError as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
     @api.get("/runs/{run_id}/output")
     def run_output(
         run_id: str,
