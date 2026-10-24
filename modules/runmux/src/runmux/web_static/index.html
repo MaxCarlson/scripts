@@ -163,6 +163,19 @@
               <div id="lifecycle-feedback" class="lifecycle-feedback" role="status" aria-live="polite" hidden></div>
               <div id="telemetry-panel" class="telemetry-panel" hidden>
                 <div id="telemetry-status-banner" class="telemetry-status-banner" role="status" hidden></div>
+                <div id="history-controls-toolbar" class="history-controls-toolbar" aria-label="Historical telemetry controls">
+                  <div id="history-range-controls" class="history-range-controls" role="group" aria-label="History time range">
+                    <button class="history-range-button active" id="history-range-1h" type="button" data-history-range="1h" aria-pressed="true">1h</button>
+                    <button class="history-range-button" id="history-range-6h" type="button" data-history-range="6h" aria-pressed="false">6h</button>
+                    <button class="history-range-button" id="history-range-24h" type="button" data-history-range="24h" aria-pressed="false">24h</button>
+                    <button class="history-range-button" id="history-range-7d" type="button" data-history-range="7d" aria-pressed="false">7d</button>
+                  </div>
+                  <label id="history-lineage-control" class="history-lineage-control" hidden>
+                    <input id="history-lineage-toggle" type="checkbox">
+                    Include restarted runs
+                  </label>
+                  <span id="history-coverage-note" class="history-coverage-note" role="status">Historical metrics</span>
+                </div>
                 <div class="telemetry-section" id="process-telemetry-section">
                   <div class="telemetry-section-header">
                     <span class="scope-tag process-scope">PROCESS TREE</span>
@@ -195,6 +208,11 @@
                       <div class="card-subtext" id="card-gpu-proc-sub">Attributed compute VRAM</div>
                     </div>
                   </div>
+                  <div class="history-chart-grid" id="process-history-charts" aria-label="Process history charts">
+                    <article class="history-chart-card"><div class="history-chart-title">PROCESS CPU</div><div class="history-chart-subtitle">Process tree · 100% = one logical core</div><div id="chart-proc-cpu" class="history-chart" role="img" aria-label="Process CPU history"></div></article>
+                    <article class="history-chart-card"><div class="history-chart-title">RESIDENT MEMORY</div><div class="history-chart-subtitle">Process tree RSS</div><div id="chart-proc-rss" class="history-chart" role="img" aria-label="Process resident memory history"></div></article>
+                    <article class="history-chart-card"><div class="history-chart-title">DISK I/O</div><div class="history-chart-subtitle">Process tree read and write throughput</div><div id="chart-proc-io" class="history-chart" role="img" aria-label="Process disk I/O history"></div></article>
+                  </div>
                 </div>
                 <div class="telemetry-section" id="host-telemetry-section" hidden>
                   <div class="telemetry-section-header">
@@ -222,6 +240,11 @@
                       <div class="card-value" id="card-gpu-dev-val">—</div>
                       <div class="card-subtext" id="card-gpu-dev-sub">Device load &amp; VRAM</div>
                     </div>
+                  </div>
+                  <div class="history-chart-grid host-history-chart-grid" id="host-history-charts" aria-label="Host history charts">
+                    <article class="history-chart-card"><div class="history-chart-title">HOST CPU</div><div class="history-chart-subtitle">System-wide utilization</div><div id="chart-host-cpu" class="history-chart" role="img" aria-label="Host CPU history"></div></article>
+                    <article class="history-chart-card"><div class="history-chart-title">HOST MEMORY</div><div class="history-chart-subtitle">System-wide used memory</div><div id="chart-host-ram" class="history-chart" role="img" aria-label="Host memory history"></div></article>
+                    <article class="history-chart-card"><div class="history-chart-title">HOST NETWORK</div><div class="history-chart-subtitle">System-wide aggregate · not process-attributed</div><div id="chart-host-net" class="history-chart" role="img" aria-label="Host network history"></div></article>
                   </div>
                 </div>
               </div>

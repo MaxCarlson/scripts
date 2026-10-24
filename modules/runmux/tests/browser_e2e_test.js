@@ -47,6 +47,8 @@ async function runBrowserE2E() {
     "import sys",
     `sys.path.insert(0, r"${srcDir}")`,
     "import json",
+    "import time",
+    "from datetime import datetime, timezone",
     "from pathlib import Path",
     "from runmux.store import RunStore",
     `state = Path(r"${stateDir.replace(/\\/g, "/")}")`,
@@ -77,6 +79,45 @@ async function runBrowserE2E() {
     '    command_line="finished.exe",',
     ")",
     `store.update_run("${runId2}", exit_code=0)`,
+    `store.update_run("${runId2}", ended_at=datetime.fromtimestamp(time.time() - 690, timezone.utc).isoformat())`,
+    `store.update_run("${runId}", restart_of="${runId2}")`,
+    "from runmux.telemetry_store import TelemetryStore",
+    "from runmux.stats import HostTelemetry, ProcessStats",
+    `record = store.get_run("${runId}")`,
+    "telemetry = TelemetryStore(state)",
+    "history_now = time.time()",
+    `parent_record = store.get_run("${runId2}")`,
+    "for index in range(51):",
+    "    epoch = history_now - 1200 + index * 10",
+    "    sampled_at = datetime.fromtimestamp(epoch, timezone.utc).isoformat()",
+    "    parent_cpu = 72 + (index % 5) * 4",
+    "    telemetry.insert_process_samples([ProcessStats(",
+    "        record=parent_record, process_count=1, thread_count=3, cpu_percent=parent_cpu,",
+    "        rss_bytes=64 * 1024 * 1024 + index * 128 * 1024, read_bytes_per_second=1024 + index * 32,",
+    "        write_bytes_per_second=512 + index * 16, cpu_percent_normalized=parent_cpu / 8, cpu_count=8,",
+    "        sampled_at=sampled_at, sample_interval_seconds=10, sampled_epoch=epoch,",
+    "    )])",
+    "for index in range(61):",
+    "    if 23 <= index < 29:",
+    "        continue",
+    "    epoch = history_now - 600 + index * 10",
+    "    sampled_at = datetime.fromtimestamp(epoch, timezone.utc).isoformat()",
+    "    cpu_value = 105 + (index % 8) * 5",
+    "    process_sample = ProcessStats(",
+    "        record=record, process_count=2, thread_count=6, cpu_percent=cpu_value,",
+    "        rss_bytes=96 * 1024 * 1024 + index * 256 * 1024, read_bytes_per_second=2048 + index * 128,",
+    "        write_bytes_per_second=1024 + index * 64, cpu_percent_normalized=cpu_value / 8, cpu_count=8,",
+    "        sampled_at=sampled_at, sample_interval_seconds=10, sampled_epoch=epoch,",
+    "    )",
+    "    telemetry.insert_process_samples([process_sample])",
+    "    telemetry.insert_host_sample(HostTelemetry(",
+    "        cpu_percent=22 + (index % 6) * 5, cpu_count=8, memory_used_bytes=8 * 1024**3 + index * 1024**2,",
+    "        memory_available_bytes=24 * 1024**3 - index * 1024**2, memory_total_bytes=32 * 1024**3,",
+    "        memory_percent=25, net_read_bytes_per_second=32 * 1024 + index * 512,",
+    "        net_write_bytes_per_second=16 * 1024 + index * 256, gpu_devices=[], sampled_at=sampled_at, sampled_epoch=epoch,",
+    "    ))",
+    `telemetry.record_event("${runId}", "pause", timestamp=history_now - 240, reason="synthetic E2E pause")`,
+    `telemetry.record_event("${runId}", "resume", timestamp=history_now - 180, reason="synthetic E2E resume")`,
   ].join("\n");
   fs.writeFileSync(setupScript, pyCode, "utf8");
   execSync(`python "${setupScript}"`, { env: { ...process.env, PYTHONPATH: path.join(__dirname, "../src") } });
@@ -127,11 +168,17 @@ async function runBrowserE2E() {
     "python",
     [serverPyFile, stateDir, loginCode, `${webPort}`],
     {
-      stdio: "inherit",
+      stdio: ["ignore", "pipe", "pipe"],
       cwd: path.join(__dirname, ".."),
       env: { ...process.env, PYTHONPATH: path.join(__dirname, "../src") }
     }
   );
+  let serverExit = null;
+  let serverOutput = "";
+  server.on("exit", (code, signal) => { serverExit = { code, signal }; });
+  for (const stream of [server.stdout, server.stderr]) {
+    stream?.on("data", (chunk) => { serverOutput = `${serverOutput}${chunk}`.slice(-6000); });
+  }
 
   let chrome = null;
   let ws = null;
@@ -139,6 +186,7 @@ async function runBrowserE2E() {
   try {
     // Wait for server to respond
     let serverReady = false;
+    let lastServerResponse = "no response";
     for (let i = 0; i < 40; i++) {
       await sleep(250);
       try {
@@ -147,9 +195,13 @@ async function runBrowserE2E() {
           serverReady = true;
           break;
         }
-      } catch {}
+        lastServerResponse = `HTTP ${res.status}: ${(await res.text()).slice(0, 500)}`;
+      } catch (error) {
+        lastServerResponse = error.message;
+      }
+      if (serverExit) break;
     }
-    if (!serverReady) throw new Error("Disposable web server did not start in time");
+    if (!serverReady) throw new Error(`Disposable web server did not start in time (${lastServerResponse}; exit=${JSON.stringify(serverExit)}; output=${serverOutput})`);
     console.log("Web server is ready.");
 
     // 3. Launch headless Chrome
@@ -248,6 +300,16 @@ async function runBrowserE2E() {
     }
     assert.equal(loggedIn, true, "Dashboard failed to become visible after login");
     console.log("Dashboard loaded successfully.");
+
+    await evaluate(`(function() {
+      window.__historyRequestUrls = [];
+      const originalFetch = window.fetch.bind(window);
+      window.fetch = (input, options) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("/telemetry/history")) window.__historyRequestUrls.push(url);
+        return originalFetch(input, options);
+      };
+    })()`);
 
     // Wait for process row in explorer and click it
     await sleep(500);
@@ -529,6 +591,97 @@ async function runBrowserE2E() {
       `GPU attribution should be Unavailable, 0 B, or formatted bytes, but was: ${gpuProcVal}`
     );
     console.log("Verified scope labels and hardware separation in Mode D.");
+
+    // 18. Phase 5C: Historical chart data, ranges, lineage, and screenshots
+    console.log("Testing Phase 5C history charts with disposable seeded telemetry...");
+    const historyScreenshotsDir = path.join(__dirname, "../docs/plans/20261024-1530_runmux-web-historical-telemetry-frontend/screenshots");
+    fs.mkdirSync(historyScreenshotsDir, { recursive: true });
+
+    await evaluate(`window.setOverviewMode("dashboard")`);
+    let processChartReady = false;
+    for (let i = 0; i < 30; i++) {
+      await sleep(200);
+      const chartState = await evaluate(`({
+        paths: document.querySelectorAll("#chart-proc-cpu path.chart-series").length,
+        empty: document.querySelector("#chart-proc-cpu .history-chart-empty")?.textContent || "",
+        yMax: Number(document.querySelector("#chart-proc-cpu svg")?.getAttribute("data-y-max") || 0),
+        mode: document.querySelector("#run-inspector").classList.contains("mode-dashboard"),
+      })`);
+      if (chartState.paths > 0 && chartState.mode) {
+        processChartReady = true;
+        assert.ok(chartState.yMax > 100, `Multi-core CPU range was clipped: ${chartState.yMax}`);
+        break;
+      }
+    }
+    assert.equal(processChartReady, true, "Dashboard process CPU chart did not render seeded history");
+    const dashboardChartState = await evaluate(`({
+      cpu: document.querySelectorAll("#chart-proc-cpu path.chart-series").length,
+      rss: document.querySelectorAll("#chart-proc-rss path.chart-series").length,
+      io: document.querySelectorAll("#chart-proc-io path.chart-series").length,
+      hostVisible: !document.querySelector("#host-telemetry-section").hidden,
+      events: document.querySelectorAll("#chart-proc-cpu .chart-event-marker").length,
+    })`);
+    assert.ok(dashboardChartState.cpu > 0 && dashboardChartState.rss > 0 && dashboardChartState.io > 0, "Dashboard must show process CPU, RSS, and disk I/O history");
+    assert.equal(dashboardChartState.hostVisible, false, "Dashboard mode must keep host history hidden");
+    assert.ok(dashboardChartState.events >= 2, "Lifecycle events should appear on the process history timeline");
+    await sendCommand("Emulation.setDeviceMetricsOverride", { width: 1366, height: 768, deviceScaleFactor: 1, mobile: false });
+    await sleep(300);
+    const dashboardHistoryShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(historyScreenshotsDir, "mode_c_dashboard_charts.png"), Buffer.from(dashboardHistoryShot.data, "base64"));
+
+    await evaluate(`window.setOverviewMode("expanded")`);
+    let hostChartReady = false;
+    for (let i = 0; i < 30; i++) {
+      await sleep(200);
+      const chartCount = await evaluate(`document.querySelectorAll("#chart-host-cpu path.chart-series").length`);
+      if (chartCount > 0) { hostChartReady = true; break; }
+    }
+    assert.equal(hostChartReady, true, "Expanded host CPU chart did not render seeded host history");
+    assert.ok(await evaluate(`document.querySelectorAll("#chart-host-ram path.chart-series").length > 0`), "Expanded host memory history missing");
+    assert.ok(await evaluate(`document.querySelectorAll("#chart-host-net path.chart-series").length > 0`), "Expanded host network history missing");
+    const workspaceStateBeforeHistoryControls = await evaluate(`({
+      selected: document.querySelector("#selected-name").textContent,
+      view: document.querySelector(".tab-button.active")?.dataset.tab,
+      follow: document.querySelector("#follow-output").checked,
+      terminalHidden: document.querySelector("#terminal-pane").hidden,
+    })`);
+    const rangeButtons = ["6h", "24h", "7d", "1h"];
+    for (const range of rangeButtons) {
+      await evaluate(`document.querySelector("#history-range-${range}").click()`);
+      await sleep(250);
+      const selected = await evaluate(`document.querySelector("#history-range-${range}").getAttribute("aria-pressed")`);
+      assert.equal(selected, "true", `${range} history range was not selected`);
+    }
+    await evaluate(`document.querySelector("#history-lineage-toggle").click()`);
+    await sleep(250);
+    const lineageRequestSeen = await evaluate(`window.__historyRequestUrls.some((url) => url.includes("include_lineage=true"))`);
+    assert.equal(lineageRequestSeen, true, "Expanded lineage toggle must issue a lineage history query");
+    const lineageChartState = await evaluate(`({
+      runIds: [...new Set(Array.from(document.querySelectorAll("#chart-proc-cpu path.chart-series"), (path) => path.getAttribute("data-run-id")))],
+      restartMarker: Array.from(document.querySelectorAll("#chart-proc-cpu .chart-event-marker title"), (title) => title.textContent).some((text) => /restart/i.test(text)),
+    })`);
+    assert.ok(lineageChartState.runIds.length > 1, "Lineage chart must preserve separate parent and child run attribution");
+    assert.equal(lineageChartState.restartMarker, true, "Lineage chart must mark the restart boundary");
+    const workspaceStateAfterHistoryControls = await evaluate(`({
+      selected: document.querySelector("#selected-name").textContent,
+      view: document.querySelector(".tab-button.active")?.dataset.tab,
+      follow: document.querySelector("#follow-output").checked,
+      terminalHidden: document.querySelector("#terminal-pane").hidden,
+    })`);
+    assert.deepEqual(workspaceStateAfterHistoryControls, workspaceStateBeforeHistoryControls, "History controls must preserve selected run, view tab, follow state, and terminal visibility");
+    await sendCommand("Emulation.setDeviceMetricsOverride", { width: 1366, height: 1024, deviceScaleFactor: 1, mobile: false });
+    await evaluate(`window.scrollTo(0, 0)`);
+    await sleep(300);
+    const expandedHistoryShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(historyScreenshotsDir, "mode_d_expanded_charts.png"), Buffer.from(expandedHistoryShot.data, "base64"));
+
+    await evaluate(`document.querySelector("#history-range-7d").click()`);
+    await sleep(250);
+    const coverageText = await evaluate(`document.querySelector("#history-coverage-note").textContent`);
+    assert.match(coverageText, /available since/i, "7d query should show the actual earliest available sample");
+    const limitedHistoryShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(historyScreenshotsDir, "limited_retention_charts.png"), Buffer.from(limitedHistoryShot.data, "base64"));
+    console.log("Verified history ranges, lineage query, process/host attribution, and saved three Phase 5C screenshots.");
 
     // Cycle Mode via button: D -> A -> B -> C -> D
     await evaluate(`document.querySelector("#mode-cycle-btn").click()`);

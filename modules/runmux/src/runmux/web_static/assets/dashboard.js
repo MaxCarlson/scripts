@@ -15,6 +15,9 @@ const OVERVIEW_MODE_STORAGE_KEY = "runmux-overview-mode-v1";
 const OVERVIEW_MODES = ["minimal", "inline", "dashboard", "expanded"];
 const TELEMETRY_INTERVAL_MS = 1800;
 const HOST_TELEMETRY_INTERVAL_MS = 5400;
+const HISTORY_POLL_INTERVAL_MS = 30000;
+const HISTORY_POINT_LIMIT = 300;
+const HISTORY_RANGES_SECONDS = { "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800 };
 let overviewMode = "inline";
 let telemetryTimer = null;
 let telemetryRequestId = 0;
@@ -22,6 +25,11 @@ let telemetryInFlightId = 0;
 let telemetryAbortController = null;
 let lastHostSampleTime = 0;
 let cachedHostStats = null;
+let historyRange = "1h";
+let historyIncludeLineage = false;
+let historyTimer = null;
+let historyRequestId = 0;
+let historyAbortController = null;
 let lifecycleInFlightRunId = null;
 let pendingConfirmAction = null;
 let systemCapabilities = null;
@@ -340,6 +348,7 @@ applyWorkspacePreferencesToControls();
 applyExplorerLayout();
 applyOverviewModeUI();
 setupModeListeners();
+setupHistoryListeners();
 setupOutputSearchListeners();
 setupLifecycleListeners();
 
@@ -347,9 +356,14 @@ if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopTelemetryPolling();
+      stopHistoryPolling();
     } else if (selectedId && overviewMode !== "minimal") {
       startTelemetryPolling();
       refreshTelemetry(selectionGeneration, selectedId);
+      if (overviewMode === "dashboard" || overviewMode === "expanded") {
+        startHistoryPolling();
+        refreshHistoryTelemetry(selectionGeneration, selectedId);
+      }
     }
   });
 }
@@ -727,10 +741,13 @@ function applyOverviewModeUI() {
   const inlineEl = $("#inline-telemetry");
   const panelEl = $("#telemetry-panel");
   const hostSection = $("#host-telemetry-section");
+  const lineageControl = $("#history-lineage-control");
 
   if (inlineEl) inlineEl.hidden = overviewMode !== "inline";
   if (panelEl) panelEl.hidden = overviewMode !== "dashboard" && overviewMode !== "expanded";
   if (hostSection) hostSection.hidden = overviewMode !== "expanded";
+  if (lineageControl) lineageControl.hidden = overviewMode !== "expanded";
+  updateHistoryRangeButtons();
 }
 
 function setOverviewMode(mode) {
@@ -747,9 +764,16 @@ function setOverviewMode(mode) {
   if (selectedId) {
     if (overviewMode === "minimal") {
       stopTelemetryPolling();
+      stopHistoryPolling();
     } else {
       startTelemetryPolling();
       refreshTelemetry(selectionGeneration, selectedId);
+      if (overviewMode === "dashboard" || overviewMode === "expanded") {
+        startHistoryPolling();
+        refreshHistoryTelemetry(selectionGeneration, selectedId);
+      } else {
+        stopHistoryPolling();
+      }
     }
   }
 }
@@ -941,6 +965,273 @@ function renderTelemetry(processStats, hostStats = null) {
   }
 }
 
+const SVG_NS = "http://www.w3.org/2000/svg";
+
+function svgElement(name, attributes = {}) {
+  const node = document.createElementNS(SVG_NS, name);
+  for (const [key, value] of Object.entries(attributes)) node.setAttribute(key, `${value}`);
+  return node;
+}
+
+function renderTimeSeriesChart(container, options) {
+  if (!container) return;
+  const width = 640;
+  const height = 174;
+  const left = 48;
+  const right = 12;
+  const top = 12;
+  const bottom = 28;
+  const plotWidth = width - left - right;
+  const plotHeight = height - top - bottom;
+  const allPoints = (options.series || []).flatMap((item) => item.values || []);
+  const epochs = allPoints.map((point) => Number(point.epoch)).filter(Number.isFinite);
+  const start = Number.isFinite(options.startEpoch) ? options.startEpoch : (epochs.length ? Math.min(...epochs) : Date.now() / 1000 - 3600);
+  const end = Number.isFinite(options.endEpoch) ? options.endEpoch : (epochs.length ? Math.max(...epochs) : Date.now() / 1000);
+  const span = Math.max(1, end - start);
+  const validValues = [];
+  for (const item of options.series || []) {
+    for (const point of item.values || []) {
+      const rawValue = point[item.field];
+      const value = typeof rawValue === "number" ? rawValue : NaN;
+      if (!point.is_gap && Number.isFinite(value)) validValues.push(value);
+    }
+  }
+  const maxValue = validValues.length ? Math.max(...validValues) : 0;
+  const requestedMax = Number.isFinite(options.yMax) ? options.yMax : 0;
+  const yMax = Math.max(1, requestedMax, Math.ceil(maxValue * 1.1 / 10) * 10);
+  const xFor = (epoch) => left + ((epoch - start) / span) * plotWidth;
+  const yFor = (value) => top + plotHeight - (value / yMax) * plotHeight;
+  container.replaceChildren();
+
+  const svg = svgElement("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", "aria-label": options.title || "Historical metric chart", "data-y-max": yMax, preserveAspectRatio: "none" });
+  for (let i = 0; i <= 3; i += 1) {
+    const y = top + (plotHeight * i) / 3;
+    svg.appendChild(svgElement("line", { x1: left, x2: width - right, y1: y, y2: y, class: "chart-gridline" }));
+    const label = svgElement("text", { x: left - 7, y: y + 3, "text-anchor": "end", class: "chart-axis-label" });
+    const tickValue = yMax * (1 - i / 3);
+    label.textContent = options.unit === "bytes" ? formatBytes(tickValue) : (options.unit === "bytes/s" ? formatBytesRate(tickValue) : `${tickValue.toFixed(0)}${options.unit === "%" ? "%" : ""}`);
+    svg.appendChild(label);
+  }
+  const expectedIntervals = allPoints.filter((point) => !point.is_gap).map((point) => Number(point.sample_interval_seconds)).filter((value) => Number.isFinite(value) && value > 0).sort((a, b) => a - b);
+  const medianInterval = expectedIntervals.length ? expectedIntervals[Math.floor((expectedIntervals.length - 1) / 2)] : 5;
+  const staleAfter = Number.isFinite(options.staleAfterSeconds) ? options.staleAfterSeconds : Math.max(15, medianInterval * 3);
+
+  for (const item of options.series || []) {
+    let segment = [];
+    let previous = null;
+    const flush = () => {
+      if (!segment.length) return;
+      const pathData = segment.map((point, index) => `${index === 0 ? "M" : "L"}${xFor(point.epoch).toFixed(2)},${yFor(Number(point[item.field])).toFixed(2)}`).join(" ");
+      const path = svgElement("path", { d: pathData, class: "chart-series", stroke: item.color || "#57a6ff", "data-series": item.label || "metric", "data-run-id": segment[0].run_id || "" });
+      const title = svgElement("title");
+      title.textContent = item.label || options.title || "Metric";
+      path.appendChild(title);
+      svg.appendChild(path);
+      if (segment.length === 1) {
+        svg.appendChild(svgElement("circle", { cx: xFor(segment[0].epoch), cy: yFor(Number(segment[0][item.field])), r: 2.5, class: "chart-point", fill: item.color || "#57a6ff" }));
+      }
+      segment = [];
+    };
+    for (const point of item.values || []) {
+      const epoch = Number(point.epoch);
+      const rawValue = point[item.field];
+      const value = typeof rawValue === "number" ? rawValue : NaN;
+      const stale = point.is_stale === true || (Number.isFinite(Number(point.sample_interval_seconds)) && Number(point.sample_interval_seconds) > staleAfter);
+      const valid = Number.isFinite(epoch) && Number.isFinite(value) && !point.is_gap && !stale;
+      const discontinuity = previous && (epoch - previous.epoch > Math.max(15, medianInterval * 3) || (point.run_id && previous.run_id && point.run_id !== previous.run_id));
+      if (!valid || discontinuity) flush();
+      if (valid) segment.push({ ...point, epoch });
+      previous = Number.isFinite(epoch) ? { epoch, run_id: point.run_id } : previous;
+    }
+    flush();
+  }
+
+  for (let i = 0; i <= 3; i += 1) {
+    const epoch = start + (span * i) / 3;
+    const tick = svgElement("text", { x: xFor(epoch), y: height - 7, "text-anchor": i === 0 ? "start" : (i === 3 ? "end" : "middle"), class: "chart-axis-label" });
+    const date = new Date(epoch * 1000);
+    tick.textContent = span >= 21600
+      ? date.toLocaleString([], { month: "short", day: "numeric", hour: "numeric" })
+      : date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+    svg.appendChild(tick);
+  }
+  for (const event of (options.events || []).slice(-200)) {
+    const epoch = Number(event.epoch);
+    if (!Number.isFinite(epoch) || epoch < start || epoch > end) continue;
+    const marker = svgElement("line", { x1: xFor(epoch), x2: xFor(epoch), y1: top, y2: top + plotHeight, class: "chart-event-marker" });
+    const title = svgElement("title");
+    title.textContent = `${event.event || "event"}${event.reason ? `: ${event.reason}` : ""}`;
+    marker.appendChild(title);
+    svg.appendChild(marker);
+  }
+  container.appendChild(svg);
+  if ((options.series || []).length > 1) {
+    const legend = document.createElement("div");
+    legend.className = "history-chart-legend";
+    for (const item of options.series) {
+      const hasValues = (item.values || []).some((point) => !point.is_gap && typeof point[item.field] === "number" && Number.isFinite(point[item.field]));
+      const entry = document.createElement("span");
+      entry.className = hasValues ? "history-chart-legend-item" : "history-chart-legend-item unavailable";
+      const swatch = document.createElement("i");
+      swatch.style.backgroundColor = item.color || "#57a6ff";
+      entry.appendChild(swatch);
+      const text = document.createElement("span");
+      text.textContent = hasValues ? (item.label || "Metric") : `${item.label || "Metric"} unavailable`;
+      entry.appendChild(text);
+      legend.appendChild(entry);
+    }
+    container.appendChild(legend);
+  }
+  if (!validValues.length) {
+    const empty = document.createElement("div");
+    empty.className = "history-chart-empty";
+    empty.textContent = options.emptyMessage || "Unavailable — no supported samples in this range";
+    container.appendChild(empty);
+  }
+}
+
+function historyQueryUrl(path, { lineage = false } = {}) {
+  const until = Date.now() / 1000;
+  const since = until - HISTORY_RANGES_SECONDS[historyRange];
+  const params = new URLSearchParams({ since: `${since}`, until: `${until}`, max_points: `${HISTORY_POINT_LIMIT}` });
+  if (lineage) {
+    params.set("include_lineage", `${historyIncludeLineage}`);
+    params.set("include_events", "true");
+  }
+  return `${path}?${params.toString()}`;
+}
+
+function renderHistoryData(processData, hostData, runId) {
+  const processPoints = processData?.series || [];
+  const processEvents = processData?.events || [];
+  const rangeEnd = Date.now() / 1000;
+  const rangeStart = rangeEnd - HISTORY_RANGES_SECONDS[historyRange];
+  const processCharts = [
+    ["#chart-proc-cpu", "Process CPU", "%", [{ label: "CPU", field: "cpu_percent", color: "#57a6ff", values: processPoints }]],
+    ["#chart-proc-rss", "Process RSS", "bytes", [{ label: "RSS", field: "rss_bytes", color: "#4ec9b0", values: processPoints }]],
+    ["#chart-proc-io", "Process disk I/O", "bytes/s", [
+      { label: "Read", field: "read_bytes_per_second", color: "#57a6ff", values: processPoints },
+      { label: "Write", field: "write_bytes_per_second", color: "#e2a65a", values: processPoints },
+    ]],
+  ];
+  const noProcessHistory = !processData ? "Unavailable — history request failed" : (processPoints.length ? undefined : "No historical samples in this range");
+  for (const [selector, title, unit, series] of processCharts) {
+    renderTimeSeriesChart($(selector), { title, unit, series, events: processEvents, startEpoch: rangeStart, endEpoch: rangeEnd, emptyMessage: noProcessHistory });
+  }
+
+  const hostPoints = hostData?.series || [];
+  const hostCharts = [
+    ["#chart-host-cpu", "Host CPU", "%", [{ label: "Host CPU", field: "cpu_percent", color: "#a5b4fc", values: hostPoints }]],
+    ["#chart-host-ram", "Host memory", "bytes", [{ label: "Host memory used", field: "memory_used_bytes", color: "#9a8cff", values: hostPoints }]],
+    ["#chart-host-net", "Host network", "bytes/s", [
+      { label: "Received", field: "net_read_bytes_per_second", color: "#a5b4fc", values: hostPoints },
+      { label: "Sent", field: "net_write_bytes_per_second", color: "#e2a65a", values: hostPoints },
+    ]],
+  ];
+  const noHostHistory = !hostData ? "Unavailable — host history could not be loaded" : (hostPoints.length ? undefined : "No host samples in this range");
+  for (const [selector, title, unit, series] of hostCharts) {
+    renderTimeSeriesChart($(selector), { title, unit, series, startEpoch: rangeStart, endEpoch: rangeEnd, emptyMessage: noHostHistory });
+  }
+  const note = $("#history-coverage-note");
+  if (note) {
+    const provenance = processData?.provenance || {};
+    const firstObservation = processPoints.filter((point) => !point.is_gap && Number.isFinite(Number(point.epoch))).reduce((earliest, point) => Math.min(earliest, Number(point.epoch)), Infinity);
+    const actualStart = Number.isFinite(firstObservation) ? new Date(firstObservation * 1000).toLocaleString() : null;
+    const resolution = provenance.resolution || "resolution unavailable";
+    const samples = Number.isFinite(provenance.returned_points) ? provenance.returned_points : processPoints.length;
+    const attribution = processData?.run_id === runId ? "process tree" : "run attribution unavailable";
+    note.textContent = `${attribution} · ${resolution} · ${samples} points${actualStart ? ` · available since ${actualStart}` : ""} · gaps and stale samples break lines`;
+  }
+}
+
+function updateHistoryRangeButtons() {
+  for (const range of Object.keys(HISTORY_RANGES_SECONDS)) {
+    const button = $(`#history-range-${range}`);
+    if (button) {
+      button.setAttribute("aria-pressed", `${range === historyRange}`);
+      button.classList.toggle("active", range === historyRange);
+    }
+  }
+  const lineage = $("#history-lineage-toggle");
+  if (lineage) lineage.checked = historyIncludeLineage;
+}
+
+function setHistoryRange(range) {
+  if (!Object.hasOwn(HISTORY_RANGES_SECONDS, range) || historyRange === range) return;
+  historyRange = range;
+  updateHistoryRangeButtons();
+  if (selectedId && (overviewMode === "dashboard" || overviewMode === "expanded")) refreshHistoryTelemetry(selectionGeneration, selectedId);
+}
+
+function setHistoryLineage(enabled) {
+  const next = Boolean(enabled);
+  if (historyIncludeLineage === next) return;
+  historyIncludeLineage = next;
+  updateHistoryRangeButtons();
+  if (selectedId && overviewMode === "expanded") refreshHistoryTelemetry(selectionGeneration, selectedId);
+}
+
+function setupHistoryListeners() {
+  for (const range of Object.keys(HISTORY_RANGES_SECONDS)) {
+    $(`#history-range-${range}`)?.addEventListener("click", () => setHistoryRange(range));
+  }
+  $("#history-lineage-toggle")?.addEventListener("change", (event) => setHistoryLineage(event.target.checked));
+}
+
+function startHistoryPolling() {
+  stopHistoryPolling();
+  if (!selectedId || (overviewMode !== "dashboard" && overviewMode !== "expanded") || document.hidden) return;
+  const selectedRun = runs.find((run) => run.id === selectedId);
+  if (!selectedRun || !["running", "pending", "paused"].includes(selectedRun.status)) return;
+  historyTimer = setInterval(() => {
+    if (!document.hidden && selectedId && (overviewMode === "dashboard" || overviewMode === "expanded")) {
+      refreshHistoryTelemetry(selectionGeneration, selectedId);
+    }
+  }, HISTORY_POLL_INTERVAL_MS);
+}
+
+function stopHistoryPolling() {
+  historyRequestId += 1;
+  if (historyTimer) {
+    clearInterval(historyTimer);
+    historyTimer = null;
+  }
+  if (historyAbortController) {
+    try { historyAbortController.abort(); } catch {}
+    historyAbortController = null;
+  }
+}
+
+async function refreshHistoryTelemetry(generation = selectionGeneration, runId = selectedId) {
+  if (!runId || !isCurrentSelection(generation, runId) || !["dashboard", "expanded"].includes(overviewMode) || document.hidden) return;
+  const requestId = ++historyRequestId;
+  if (historyAbortController) {
+    try { historyAbortController.abort(); } catch {}
+  }
+  const controller = new AbortController();
+  historyAbortController = controller;
+  const processPath = `/api/runs/${encodeURIComponent(runId)}/telemetry/history`;
+  const wantsHost = overviewMode === "expanded";
+  const tasks = [api(historyQueryUrl(processPath, { lineage: true }), { signal: controller.signal }).then((res) => res.json())];
+  if (wantsHost) tasks.push(api(historyQueryUrl("/api/telemetry/history"), { signal: controller.signal }).then((res) => res.json()));
+  const results = await Promise.allSettled(tasks);
+  if (requestId !== historyRequestId || !isCurrentSelection(generation, runId) || !["dashboard", "expanded"].includes(overviewMode)) return;
+  const processData = results[0]?.status === "fulfilled" ? results[0].value : null;
+  const hostData = wantsHost && results[1]?.status === "fulfilled" ? results[1].value : null;
+  if (results[0]?.status === "rejected" && results[0].reason?.message === "locked") {
+    showLogin("Session expired. Enter the current terminal login code again.");
+    return;
+  }
+  renderHistoryData(processData, hostData, runId);
+  if (!processData) {
+    const note = $("#history-coverage-note");
+    if (note) note.textContent = "Historical process telemetry is temporarily unavailable";
+  }
+  if (historyAbortController === controller) historyAbortController = null;
+  const resolvedStatus = processData?.status || runs.find((run) => run.id === runId)?.status;
+  if (["finished", "failed", "killed", "lost"].includes(resolvedStatus)) stopHistoryPolling();
+}
+
 function startTelemetryPolling() {
   stopTelemetryPolling();
   if (overviewMode === "minimal" || !selectedId || (typeof document !== "undefined" && document.hidden)) return;
@@ -1062,10 +1353,12 @@ async function selectRun(runId) {
   renderWorkspaceTabs();
   persistWorkspaceState();
   applyOverviewModeUI();
+  if (["dashboard", "expanded"].includes(overviewMode)) startHistoryPolling();
   await Promise.all([
     refreshSelected(generation, runId),
     refreshOutput(generation, runId),
     overviewMode !== "minimal" ? refreshTelemetry(generation, runId) : Promise.resolve(),
+    ["dashboard", "expanded"].includes(overviewMode) ? refreshHistoryTelemetry(generation, runId) : Promise.resolve(),
   ]);
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
@@ -1677,6 +1970,7 @@ function invalidateSelection() {
   outputRequestGeneration = null;
   closeTerminal();
   stopTelemetryPolling();
+  stopHistoryPolling();
 }
 
 function isCurrentSelection(generation, runId) {
