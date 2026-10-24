@@ -35,6 +35,7 @@ Refine the integrated dashboard to follow the minimal dark process-workspace ref
 ## Status
 
 Implementation is complete on `codex/runmux-web-ux-20261024`, based on `origin/main` at `3e84e8c9a5de3c83b268c7988944e34da716fb2b`.
+The implementation commit `479323a7` is pushed to `origin/codex/runmux-web-ux-20261024`; the branch is not merged.
 
 ## Validation evidence
 

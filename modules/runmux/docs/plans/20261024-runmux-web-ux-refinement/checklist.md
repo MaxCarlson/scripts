@@ -7,4 +7,4 @@
 - [x] Preserve terminal input-lock behavior and metadata privacy boundaries.
 - [x] Validate frontend behavior, Runmux web APIs, and common viewport sizes.
 - [x] Update Runmux README and handoff documentation.
-- [ ] Commit and push the dedicated review branch; do not merge.
+- [x] Commit and push the dedicated review branch; do not merge.

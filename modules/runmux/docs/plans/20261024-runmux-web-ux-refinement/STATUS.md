@@ -28,5 +28,5 @@ Implementation and focused validation are complete on
 
 ## Delivery state
 
-Commit and push to the dedicated review branch are the remaining steps.
-Do not merge into `main`.
+Implementation commit `479323a7` is pushed to
+`origin/codex/runmux-web-ux-20261024`. The branch is not merged into `main`.
