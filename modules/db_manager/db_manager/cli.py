@@ -120,6 +120,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_query.add_argument("-i", "--input-file", required=True, help="Path to SQLite database file.")
     p_query.add_argument("-Q", "--sql-query", required=True, help="Read-only SQL query to execute.")
     p_query.add_argument("-l", "--limit", type=int, default=100, help="Row limit (default: 100).")
+    p_query.add_argument(
+        "-t", "--timeout", type=float, default=10.0, help="Query execution timeout in seconds (default: 10.0)."
+    )
     p_query.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     # 7. export
@@ -236,6 +239,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_compare.add_argument("-1", "--db1", required=True, help="First database file.")
     p_compare.add_argument("-2", "--db2", required=True, help="Second database file.")
     p_compare.add_argument("-l", "--limit", type=int, default=50, help="Row comparison sample limit (default: 50).")
+    p_compare.add_argument(
+        "-F", "--full", action="store_true", default=False, help="Perform full deterministic row comparison."
+    )
     p_compare.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     # 18. recover
@@ -417,7 +423,9 @@ def handle_search(args: argparse.Namespace) -> int:
 def handle_query(args: argparse.Namespace) -> int:
     path = Path(args.input_file).resolve()
     with get_readonly_connection(path) as conn:
-        res = execute_readonly_query(conn=conn, sql=args.sql_query, limit=args.limit)
+        res = execute_readonly_query(
+            conn=conn, sql=args.sql_query, limit=args.limit, timeout_sec=getattr(args, "timeout", 10.0)
+        )
 
     if args.json:
         print(json.dumps(asdict(res), indent=2, ensure_ascii=False))
@@ -725,19 +733,31 @@ def handle_sql(args: argparse.Namespace) -> int:
 
 
 def handle_compare(args: argparse.Namespace) -> int:
-    cmp = compare_databases(args.db1, args.db2, row_limit=args.limit)
+    cmp = compare_databases(args.db1, args.db2, row_limit=args.limit, full=getattr(args, "full", False))
     if args.json:
         print(json.dumps(cmp.to_dict(), indent=2))
         return 0 if cmp.identical else 1
 
-    status_str = "IDENTICAL" if cmp.identical else "DIFFERENCES FOUND"
+    if cmp.identical:
+        status_str = "IDENTICAL"
+    elif cmp.is_partial:
+        status_str = "INCONCLUSIVE (PARTIAL SAMPLE MATCH)"
+    else:
+        status_str = "DIFFERENCES FOUND"
+
     pairs = [
         ("Status", status_str),
         ("Database 1", cmp.db1_path),
         ("Database 2", cmp.db2_path),
         ("Differences Count", len(cmp.schema_differences)),
+        ("Sample Limit", "None (full)" if getattr(args, "full", False) else str(args.limit)),
     ]
     print(format_key_values(pairs, title="Database Comparison"))
+
+    if cmp.notes:
+        print("\nNotice:")
+        for n in cmp.notes:
+            print(f"  * {n}")
 
     if cmp.schema_differences:
         print("\nDifferences:")

@@ -234,7 +234,7 @@ def test_compare_databases(tmp_path: Path):
     _setup_test_db(db1)
     _setup_test_db(db2)
 
-    # Identical
+    # Identical (both under default row_limit of 50)
     cmp_same = compare_databases(db1, db2)
     assert cmp_same.identical
     assert len(cmp_same.schema_differences) == 0
@@ -246,3 +246,138 @@ def test_compare_databases(tmp_path: Path):
     cmp_diff = compare_databases(db1, db2)
     assert not cmp_diff.identical
     assert any("row count mismatch" in d for d in cmp_diff.schema_differences)
+
+
+def test_init_database_forced_safe_replacement_and_rollback(tmp_path: Path):
+    target = tmp_path / "target_wal.db"
+    # Create WAL database with existing data
+    conn = sqlite3.connect(target)
+    try:
+        conn.execute("PRAGMA journal_mode = WAL;")
+        conn.execute("CREATE TABLE original (key TEXT PRIMARY KEY, value TEXT);")
+        conn.execute("INSERT INTO original VALUES ('k1', 'val1');")
+        conn.commit()
+    finally:
+        conn.close()
+
+    # 1. Force init with invalid SQL must fail, NOT delete target, and preserve data
+    with pytest.raises(RuntimeError, match="Initialization failed: .* safely rolled back"):
+        init_database(target, schema_sql="SYNTAX ERROR INVALID SQL;", force=True, dry_run=False)
+
+    assert target.exists()
+    with get_readonly_connection(target) as conn:
+        row = conn.execute("SELECT value FROM original WHERE key = 'k1';").fetchone()
+        assert row["value"] == "val1"
+
+    # 2. Force init with valid schema replaces target safely and creates pre-init backup
+    plan = init_database(target, schema_sql="CREATE TABLE replaced (id INT PRIMARY KEY);", force=True, dry_run=False)
+    assert not plan.is_dry_run
+    assert plan.backup_path is not None
+    assert Path(plan.backup_path).exists()
+
+    with get_readonly_connection(target) as conn:
+        master = conn.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+        tables = [r["name"] for r in master]
+        assert "replaced" in tables
+        assert "original" not in tables
+
+    # Verify pre-init backup contains the original data
+    with get_readonly_connection(plan.backup_path) as bak_conn:
+        val = bak_conn.execute("SELECT value FROM original WHERE key = 'k1';").fetchone()["value"]
+        assert val == "val1"
+
+
+def test_optimistic_concurrency_subset_keys_and_cross_row_collision(tmp_path: Path):
+    db_file = tmp_path / "cross_row_collision.db"
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("CREATE TABLE items (id INT PRIMARY KEY, name TEXT, category TEXT, status TEXT);")
+        conn.execute("INSERT INTO items VALUES (1, 'ItemA', 'cat1', 'pending');")
+        conn.execute("INSERT INTO items VALUES (2, 'ItemB', 'cat2', 'approved');")
+
+    # Secret concurrent modification:
+    # Row 1 changes status to 'in_progress'
+    # Row 2 changes to category='cat1', status='pending' (matches Row 1's old non-PK values!)
+    with sqlite3.connect(db_file) as conn:
+        conn.execute("UPDATE items SET status = 'in_progress' WHERE id = 1;")
+        conn.execute("UPDATE items SET category = 'cat1', status = 'pending' WHERE id = 2;")
+
+    # Attempt to update Row 1 with expected_old_values specifying only subset {"status": "pending"}:
+    # Because PK predicate id=1 is ALWAYS combined, Row 2 MUST NOT be matched or updated,
+    # and because Row 1's status changed, it must trigger Optimistic concurrency violation!
+    with pytest.raises(RuntimeError, match="Optimistic concurrency violation"):
+        plan_and_apply_edit(
+            db_file,
+            table="items",
+            pk_values={"id": 1},
+            new_values={"name": "ItemA-Modified"},
+            expected_old_values={"status": "pending"},
+            dry_run=False,
+        )
+
+    # Verify Row 2 is completely UNTOUCHED
+    with get_readonly_connection(db_file) as conn:
+        r2 = conn.execute("SELECT * FROM items WHERE id = 2;").fetchone()
+        assert r2["name"] == "ItemB"
+        assert r2["category"] == "cat1"
+        assert r2["status"] == "pending"
+
+        # Verify Row 1 was not modified either
+        r1 = conn.execute("SELECT * FROM items WHERE id = 1;").fetchone()
+        assert r1["name"] == "ItemA"
+        assert r1["status"] == "in_progress"
+
+    # Now attempt delete on Row 1 with expected_old_values specifying subset {"status": "pending"}:
+    with pytest.raises(RuntimeError, match="Optimistic concurrency violation"):
+        plan_and_apply_delete(
+            db_file,
+            table="items",
+            pk_values={"id": 1},
+            expected_old_values={"status": "pending"},
+            dry_run=False,
+        )
+
+    # Verify both rows remain intact
+    with get_readonly_connection(db_file) as conn:
+        assert conn.execute("SELECT count(*) FROM items;").fetchone()[0] == 2
+
+
+def test_compare_databases_partial_inconclusive_and_full(tmp_path: Path):
+    db1 = tmp_path / "large1.db"
+    db2 = tmp_path / "large2.db"
+
+    with sqlite3.connect(db1) as c1, sqlite3.connect(db2) as c2:
+        c1.execute("CREATE TABLE records (id INT PRIMARY KEY, payload TEXT);")
+        c2.execute("CREATE TABLE records (id INT PRIMARY KEY, payload TEXT);")
+        for i in range(1, 101):
+            c1.execute("INSERT INTO records VALUES (?, ?);", (i, f"record-{i}"))
+            # Make row 75 differ in db2
+            payload2 = f"record-{i}" if i != 75 else "record-75-DIFFERENT"
+            c2.execute("INSERT INTO records VALUES (?, ?);", (i, payload2))
+
+    # 1. Sample comparison with row_limit=10 (sampling rows 1-10 which match):
+    # Must report identical=False, is_partial=True, and provide inconclusive note!
+    cmp_sampled = compare_databases(db1, db2, row_limit=10, full=False)
+    assert cmp_sampled.identical is False
+    assert cmp_sampled.is_partial is True
+    assert any("Comparison is partial and inconclusive" in n for n in cmp_sampled.notes)
+
+    # 2. Full deterministic comparison:
+    # Must detect difference at row 75
+    cmp_full = compare_databases(db1, db2, row_limit=10, full=True)
+    assert cmp_full.identical is False
+    assert cmp_full.is_partial is False
+    assert any("PK=(75,)" in d or "75" in d for d in cmp_full.schema_differences)
+
+    # 3. Make db2 fully identical to db1
+    with sqlite3.connect(db2) as c2:
+        c2.execute("UPDATE records SET payload = 'record-75' WHERE id = 75;")
+
+    # Sample comparison still reports is_partial=True, identical=False because rows 11-100 weren't checked!
+    cmp_sampled2 = compare_databases(db1, db2, row_limit=10, full=False)
+    assert cmp_sampled2.identical is False
+    assert cmp_sampled2.is_partial is True
+
+    # Full comparison reports identical=True, is_partial=False
+    cmp_full2 = compare_databases(db1, db2, full=True)
+    assert cmp_full2.identical is True
+    assert cmp_full2.is_partial is False

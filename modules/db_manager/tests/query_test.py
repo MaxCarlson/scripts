@@ -136,3 +136,14 @@ def test_execute_readonly_query(tmp_path: Path):
         # Unsafe query fails via authorizer
         with pytest.raises(sqlite3.DatabaseError):
             execute_readonly_query(conn, sql="DELETE FROM products WHERE id = 1")
+
+
+def test_execute_readonly_query_timeout_progress_handler(tmp_path: Path):
+    db_file = tmp_path / "test_timeout.db"
+    _setup_query_db(db_file)
+
+    runaway_sql = "WITH RECURSIVE cnt(x) AS (SELECT 1 UNION ALL SELECT x+1 FROM cnt) SELECT count(*) FROM cnt;"
+
+    with get_readonly_connection(db_file) as conn:
+        with pytest.raises(TimeoutError, match="Query execution exceeded resource limits"):
+            execute_readonly_query(conn, sql=runaway_sql, timeout_sec=0.2, max_vm_steps=50_000)

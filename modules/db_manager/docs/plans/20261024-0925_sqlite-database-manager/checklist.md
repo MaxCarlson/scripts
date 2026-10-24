@@ -40,6 +40,13 @@
   - [x] P2 CLI subcommand integration (`recover`)
   - [x] Registry update in `modules/scripts_help/scripts_help/registry/registry.py`
   - [x] `modules/db_manager/tests/recovery_test.py`
-  - [x] Full suite test & lint verification (`pytest`, `ruff check`, `ruff format` — 44 tests passing)
-  - [x] Pre-commit gates verified: NULL-safe optimistic concurrency, restore WAL exclusivity & rollback, dry-run defaults, bounded read-only query safeguards
+  - [x] Full suite test & lint verification (`pytest`, `ruff check`, `ruff format` — 50 tests passing)
+  - [x] Critical source-review corrections addressed:
+    - [x] Restore exclusivity holds active connection & locks throughout; supported backup-based restore without manual unlinking
+    - [x] Restore rollback tracks target_preexisted; never deletes existing database when create_backup_of_target=False
+    - [x] Forced initialization safe non-destructive replacement with preflight check and rollback
+    - [x] Optimistic concurrency unconditionally combines PK predicate with snapshot checks
+    - [x] Bounded SQL with SQLite progress handler limits
+    - [x] Database comparison with deterministic ordering and explicit partial/inconclusive handling
+    - [x] Audit manifest distinguishes raw source file sha256 from WAL-consistent backup snapshot sha256
   - [x] Update documentation, freeze handoffs, and prepare stage report

@@ -4,15 +4,16 @@ changes.py — Conservative, transactional editing, schema initialization, and d
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 import json
 import logging
 from pathlib import Path
 import re
+import sqlite3
 from typing import Any
 
-from db_manager.backup import backup_database
+from db_manager.backup import backup_database, restore_database
 from db_manager.connections import get_readonly_connection, get_write_connection
 from db_manager.inspector import get_schema
 from db_manager.query import get_table_columns, quote_identifier
@@ -26,6 +27,7 @@ class InitPlan:
     schema_sql: str | None
     statements: list[str]
     is_dry_run: bool
+    backup_path: str | None = None
 
 
 @dataclass(frozen=True)
@@ -76,6 +78,8 @@ class DatabaseComparison:
     schema_differences: list[str]
     table_comparisons: list[dict[str, Any]]
     identical: bool
+    is_partial: bool = False
+    notes: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -132,6 +136,9 @@ def init_database(
     """
     Initializes a new empty SQLite database or applies user-supplied schema SQL.
     Does not initialize or migrate application-specific schemas (e.g. script_logging).
+    When force=True against an existing database, executes safe non-destructive replacement:
+    preflight validation, automated pre-init backup, isolated temporary schema execution,
+    and rollback protection. Never blindly deletes live databases or orphans WAL files.
     """
     path = Path(db_path).resolve()
     if path.exists() and not force:
@@ -139,7 +146,6 @@ def init_database(
 
     statements: list[str] = []
     if schema_sql:
-        # Split statements cleanly on semicolon followed by whitespace/end
         raw_stmts = [s.strip() for s in schema_sql.split(";") if s.strip()]
         statements = raw_stmts
 
@@ -151,20 +157,96 @@ def init_database(
             is_dry_run=True,
         )
 
-    # Perform creation
-    if path.exists() and force:
-        path.unlink()
-
     path.parent.mkdir(parents=True, exist_ok=True)
-    with get_write_connection(path, create_if_missing=True) as conn:
-        for stmt in statements:
-            conn.execute(stmt)
+    backup_file: str | None = None
+
+    if path.exists() and force:
+        # Preflight validation: ensure exclusive ownership and checkpoint WAL
+        try:
+            excl_conn = sqlite3.connect(str(path), timeout=1.0)
+            try:
+                excl_conn.execute("PRAGMA locking_mode = EXCLUSIVE;")
+                cur = excl_conn.execute("PRAGMA journal_mode;")
+                j_mode = (cur.fetchone() or [""])[0].lower()
+                if j_mode == "wal":
+                    cp = excl_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchone()
+                    if cp and cp[0] != 0:
+                        raise sqlite3.OperationalError(
+                            f"Active WAL transactions present (wal_checkpoint returned {cp}). "
+                            "Cannot safely establish exclusive database ownership."
+                        )
+                excl_conn.execute("BEGIN EXCLUSIVE;")
+                excl_conn.commit()
+            finally:
+                excl_conn.close()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError) as exc:
+            raise RuntimeError(
+                f"Cannot establish exclusive ownership of target database '{path}' for initialization: {exc}. "
+                "The database appears to be locked or in active use by another process."
+            ) from exc
+
+        # Create pre-init backup before modifying target
+        ts = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        bak_path = path.parent / f"{path.name}.pre-init-{ts}.bak"
+        backup_database(path, bak_path, force=True, write_manifest=True)
+        backup_file = str(bak_path)
+
+        # Build new database in isolated temporary file to validate schema statements and integrity
+        temp_path = path.parent / f"{path.name}.tmp-init-{ts}"
+        try:
+            with get_write_connection(temp_path, create_if_missing=True) as temp_conn:
+                for stmt in statements:
+                    temp_conn.execute(stmt)
+                check = temp_conn.execute("PRAGMA quick_check;").fetchone()
+                if not check or check[0] != "ok":
+                    raise RuntimeError(f"Initialized database failed integrity check: {check[0] if check else 'empty'}")
+
+            # Safely replace target contents using SQLite backup API without deleting files or orphaning WAL
+            path_conn = sqlite3.connect(str(path), timeout=1.0)
+            try:
+                path_conn.execute("PRAGMA locking_mode = EXCLUSIVE;")
+                with get_readonly_connection(temp_path) as temp_ro:
+                    temp_ro.backup(path_conn)
+            finally:
+                path_conn.close()
+        except Exception as exc:
+            # Rollback to pre-init backup if replacement failed
+            logger.error("Initialization replacement failed: %s. Initiating rollback...", exc)
+            if bak_path.exists():
+                try:
+                    restore_database(bak_path, path, force=True, create_backup_of_target=False)
+                    logger.info("Successfully rolled back target database to pre-init state.")
+                except Exception as rb_exc:
+                    raise RuntimeError(
+                        f"Initialization failed ({exc}) and rollback to pre-init backup failed: {rb_exc}. "
+                        f"Pre-init backup preserved at {bak_path}"
+                    ) from exc
+            raise RuntimeError(
+                f"Initialization failed: {exc}. Target database was safely rolled back to pre-init state ({bak_path})."
+            ) from exc
+        finally:
+            temp_path.unlink(missing_ok=True)
+            for ext in ("-wal", "-shm"):
+                (path.parent / f"{temp_path.name}{ext}").unlink(missing_ok=True)
+
+    else:
+        # Brand new database file
+        try:
+            with get_write_connection(path, create_if_missing=True) as conn:
+                for stmt in statements:
+                    conn.execute(stmt)
+        except Exception:
+            path.unlink(missing_ok=True)
+            for ext in ("-wal", "-shm"):
+                (path.parent / f"{path.name}{ext}").unlink(missing_ok=True)
+            raise
 
     return InitPlan(
         target_path=str(path),
         schema_sql=schema_sql,
         statements=statements,
         is_dry_run=False,
+        backup_path=backup_file,
     )
 
 
@@ -207,33 +289,48 @@ def plan_and_apply_edit(
 
         old_row = dict(rows[0])
 
+    # If caller provided snapshot expectations, verify them against observed state
     if expected_old_values is not None:
         for k, exp_val in expected_old_values.items():
+            if k not in valid_cols:
+                raise ValueError(f"Unknown expected column '{k}' in table '{table}'")
             if old_row.get(k) != exp_val:
                 raise RuntimeError(
                     f"Optimistic concurrency violation: column '{k}' has changed from '{exp_val}' to '{old_row.get(k)}'. "
                     "Transaction aborted."
                 )
 
-    target_values = expected_old_values if expected_old_values is not None else old_row
-
-    # Build optimistic concurrency UPDATE query requiring all observed columns to match
+    # Build SET clause
     set_clause = ", ".join(f"{quote_identifier(k)} = ?" for k in new_values.keys())
     set_params = list(new_values.values())
 
-    concurrency_clauses = []
-    concurrency_params: list[Any] = []
-    for k, old_val in target_values.items():
-        quoted_col = quote_identifier(k)
-        if old_val is None:
-            concurrency_clauses.append(f"{quoted_col} IS NULL")
-        else:
-            concurrency_clauses.append(f"{quoted_col} = ?")
-            concurrency_params.append(old_val)
+    # Build snapshot clauses for ALL non-PK columns from observed row
+    # combined with expected_old_values
+    snapshot_clauses = []
+    snapshot_params: list[Any] = []
 
-    concurrency_where = " AND ".join(concurrency_clauses)
+    columns_to_check = dict(old_row)
+    if expected_old_values is not None:
+        columns_to_check.update(expected_old_values)
+
+    for k, val in columns_to_check.items():
+        if k in pk_values:
+            continue  # Primary key is unconditionally enforced in pk_where
+        quoted_col = quote_identifier(k)
+        if val is None:
+            snapshot_clauses.append(f"{quoted_col} IS NULL")
+        else:
+            snapshot_clauses.append(f"{quoted_col} = ?")
+            snapshot_params.append(val)
+
+    # ALWAYS combine primary-key predicate AND snapshot checks
+    if snapshot_clauses:
+        concurrency_where = f"({pk_where}) AND ({' AND '.join(snapshot_clauses)})"
+    else:
+        concurrency_where = f"({pk_where})"
+
     update_sql = f"UPDATE {quoted_table} SET {set_clause} WHERE {concurrency_where}"
-    total_params = set_params + concurrency_params
+    total_params = set_params + pk_params + snapshot_params
 
     backup_file: str | None = None
 
@@ -372,27 +469,41 @@ def plan_and_apply_delete(
 
     if expected_old_values is not None:
         for k, exp_val in expected_old_values.items():
+            if k not in valid_cols:
+                raise ValueError(f"Unknown expected column '{k}' in table '{table}'")
             if deleted_row.get(k) != exp_val:
                 raise RuntimeError(
                     f"Optimistic concurrency violation: column '{k}' has changed from '{exp_val}' to '{deleted_row.get(k)}'. "
                     "Transaction aborted."
                 )
 
-    target_values = expected_old_values if expected_old_values is not None else deleted_row
+    # Build snapshot clauses for ALL non-PK columns from observed row
+    # combined with expected_old_values
+    snapshot_clauses = []
+    snapshot_params: list[Any] = []
 
-    # Build optimistic concurrency DELETE query requiring all observed columns to match
-    concurrency_clauses = []
-    concurrency_params: list[Any] = []
-    for k, old_val in target_values.items():
+    columns_to_check = dict(deleted_row)
+    if expected_old_values is not None:
+        columns_to_check.update(expected_old_values)
+
+    for k, val in columns_to_check.items():
+        if k in pk_values:
+            continue  # Primary key is unconditionally enforced in pk_where
         quoted_col = quote_identifier(k)
-        if old_val is None:
-            concurrency_clauses.append(f"{quoted_col} IS NULL")
+        if val is None:
+            snapshot_clauses.append(f"{quoted_col} IS NULL")
         else:
-            concurrency_clauses.append(f"{quoted_col} = ?")
-            concurrency_params.append(old_val)
+            snapshot_clauses.append(f"{quoted_col} = ?")
+            snapshot_params.append(val)
 
-    concurrency_where = " AND ".join(concurrency_clauses)
+    # ALWAYS combine primary-key predicate AND snapshot checks
+    if snapshot_clauses:
+        concurrency_where = f"({pk_where}) AND ({' AND '.join(snapshot_clauses)})"
+    else:
+        concurrency_where = f"({pk_where})"
+
     delete_sql = f"DELETE FROM {quoted_table} WHERE {concurrency_where}"
+    total_params = pk_params + snapshot_params
     backup_file: str | None = None
 
     if dry_run:
@@ -401,7 +512,7 @@ def plan_and_apply_delete(
             pk_values=pk_values,
             deleted_row=deleted_row,
             sql=delete_sql,
-            params=concurrency_params,
+            params=total_params,
             is_dry_run=True,
         )
 
@@ -412,7 +523,7 @@ def plan_and_apply_delete(
         backup_file = str(bak_path)
 
     with get_write_connection(path, enforce_foreign_keys=True) as w_conn:
-        cur = w_conn.execute(delete_sql, concurrency_params)
+        cur = w_conn.execute(delete_sql, total_params)
         if cur.rowcount != 1:
             raise RuntimeError(
                 f"Optimistic concurrency violation: expected to delete 1 row, but affected {cur.rowcount}. "
@@ -424,7 +535,7 @@ def plan_and_apply_delete(
         pk_values=pk_values,
         deleted_row=deleted_row,
         sql=delete_sql,
-        params=concurrency_params,
+        params=total_params,
         is_dry_run=False,
         backup_path=backup_file,
     )
@@ -476,9 +587,17 @@ def execute_mutation_sql(
     )
 
 
-def compare_databases(db1_path: str | Path, db2_path: str | Path, row_limit: int = 50) -> DatabaseComparison:
+def compare_databases(
+    db1_path: str | Path,
+    db2_path: str | Path,
+    row_limit: int | None = 50,
+    full: bool = False,
+) -> DatabaseComparison:
     """
-    Compares schema definitions and table row counts/keys between two independent SQLite databases.
+    Compares schema definitions, table row counts, and deterministic rows between two independent SQLite databases.
+    If full=True or row_limit is None/0, performs a complete deterministic row comparison.
+    If row_limit is specified and datasets exceed the limit, returns an explicit partial/inconclusive
+    result (is_partial=True, identical=False) rather than falsely reporting identical=True.
     """
     p1 = Path(db1_path).resolve()
     p2 = Path(db2_path).resolve()
@@ -488,12 +607,16 @@ def compare_databases(db1_path: str | Path, db2_path: str | Path, row_limit: int
     if not p2.exists():
         raise FileNotFoundError(f"Second database not found: {p2}")
 
+    effective_limit = None if (full or row_limit is None or row_limit <= 0) else int(row_limit)
+
+    diffs: list[str] = []
+    notes: list[str] = []
+    table_reports: list[dict[str, Any]] = []
+    is_partial = False
+
     with get_readonly_connection(p1) as conn1, get_readonly_connection(p2) as conn2:
         schema1 = {s.name: s for s in get_schema(conn1)}
         schema2 = {s.name: s for s in get_schema(conn2)}
-
-        diffs: list[str] = []
-        table_reports: list[dict[str, Any]] = []
 
         all_tables = sorted(set(schema1.keys()) | set(schema2.keys()))
 
@@ -537,32 +660,39 @@ def compare_databases(db1_path: str | Path, db2_path: str | Path, row_limit: int
             if not count_match:
                 diffs.append(f"Table '{tbl}' row count mismatch: {cnt1} vs {cnt2}")
 
-            # Keyed row comparison when primary key exists
-            pk_cols = [c.name for c in s1.columns if c.pk > 0]
             row_diffs: list[str] = []
-            if pk_cols and not col_diffs:
-                rows1 = {
-                    tuple(r[k] for k in pk_cols): dict(r)
-                    for r in conn1.execute(f"SELECT * FROM {quote_identifier(tbl)} LIMIT ?", (row_limit,)).fetchall()
-                }
-                rows2 = {
-                    tuple(r[k] for k in pk_cols): dict(r)
-                    for r in conn2.execute(f"SELECT * FROM {quote_identifier(tbl)} LIMIT ?", (row_limit,)).fetchall()
-                }
-                for pk, r1_data in rows1.items():
-                    if pk in rows2:
-                        r2_data = rows2[pk]
-                        field_diffs = [f for f in r1_data if f in r2_data and r1_data[f] != r2_data[f]]
-                        if field_diffs:
-                            row_diffs.append(f"Table '{tbl}' row PK={pk} differs in: {', '.join(field_diffs)}")
-                    else:
-                        row_diffs.append(f"Table '{tbl}' row PK={pk} in db1 missing in db2")
-                for pk in rows2:
-                    if pk not in rows1:
-                        row_diffs.append(f"Table '{tbl}' row PK={pk} in db2 missing in db1")
+            if not col_diffs and count_match and cnt1 > 0:
+                pk_cols = [c.name for c in s1.columns if c.pk > 0]
+                if pk_cols:
+                    order_clause = ", ".join(quote_identifier(k) for k in pk_cols)
+                else:
+                    order_clause = ", ".join(quote_identifier(c.name) for c in s1.columns)
+
+                query = f"SELECT * FROM {quote_identifier(tbl)} ORDER BY {order_clause}"
+                if effective_limit is not None:
+                    query += f" LIMIT {effective_limit}"
+
+                rows1 = [dict(r) for r in conn1.execute(query).fetchall()]
+                rows2 = [dict(r) for r in conn2.execute(query).fetchall()]
+
+                for idx, (r1, r2) in enumerate(zip(rows1, rows2)):
+                    differing_fields = [k for k in r1 if r1[k] != r2.get(k)]
+                    if differing_fields:
+                        pk_ident = f"row #{idx + 1}" if not pk_cols else f"PK={tuple(r1[k] for k in pk_cols)}"
+                        row_diffs.append(f"Table '{tbl}' {pk_ident} differs in: {', '.join(differing_fields)}")
+
+                if len(rows1) != len(rows2):
+                    row_diffs.append(f"Table '{tbl}' sampled rows count mismatch: {len(rows1)} vs {len(rows2)}")
 
                 if row_diffs:
                     diffs.extend(row_diffs[:20])
+                elif effective_limit is not None and cnt1 > effective_limit:
+                    # Dataset was larger than sample limit and sample matched; result is inconclusive for remaining rows
+                    is_partial = True
+                    notes.append(
+                        f"Table '{tbl}' has {cnt1} rows; only first {effective_limit} deterministic rows were sampled. "
+                        "Comparison is partial and inconclusive for remaining rows."
+                    )
 
             table_reports.append(
                 {
@@ -575,7 +705,12 @@ def compare_databases(db1_path: str | Path, db2_path: str | Path, row_limit: int
                 }
             )
 
-    identical = len(diffs) == 0
+    if diffs:
+        identical = False
+    elif is_partial:
+        identical = False
+    else:
+        identical = True
 
     return DatabaseComparison(
         db1_path=str(p1),
@@ -583,4 +718,6 @@ def compare_databases(db1_path: str | Path, db2_path: str | Path, row_limit: int
         schema_differences=diffs,
         table_comparisons=table_reports,
         identical=identical,
+        is_partial=is_partial,
+        notes=notes,
     )

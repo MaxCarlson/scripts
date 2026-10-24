@@ -34,6 +34,16 @@
   - Restore exclusivity and active WAL safeguards in `backup.py`: verified database exclusivity with `BEGIN EXCLUSIVE` and `PRAGMA wal_checkpoint(TRUNCATE)` before unlinking WAL/SHM artifacts; added automatic rollback to `pre_restore_backup` on any restore failure.
   - Test suite expanded to 44 tests, all passing cleanly.
   - scripts_help test suite verified passing (55 tests).
+- **2026-10-24 14:15**: Critical source-review corrections addressed:
+  1. Restore exclusivity: redesign maintains active target connection with `PRAGMA locking_mode = EXCLUSIVE;` throughout the operation without race condition windows; uses native SQLite backup API without manual WAL/SHM unlinking.
+  2. Restore rollback: separate tracking of `target_preexisted` ensures that if `create_backup_of_target=False` and restore fails, existing database files are never deleted and are left intact.
+  3. Forced initialization: `init_database(force=True)` redesigned as non-destructive safe replacement with preflight lock verification, pre-init backup, temporary isolated schema execution, and rollback.
+  4. Optimistic concurrency: UPDATE and DELETE always combine the primary-key predicate with snapshot checks, preventing cross-row collisions even with subset expectations.
+  5. Bounded SQL: added SQLite progress handler step/time limit to `execute_readonly_query` to terminate runaway queries.
+  6. Database comparison: deterministic `ORDER BY` comparison; reports `is_partial=True` and `identical=False` when sampling larger datasets; full comparison supported with `--full`.
+  7. Audit manifest: distinguishes raw physical `source_file_sha256` from logical, WAL-consistent `backup_snapshot_sha256`.
+  - Reconciled cleanly with updated `origin/main`.
+  - Full suite expanded to 50 tests, all passing cleanly.
 
 ## Verification Commands & Evidence
 
@@ -41,7 +51,7 @@
   ```powershell
   cd C:\Users\mcarls\src\scripts\.worktrees\sqlite-db-manager-20261024-0925\modules\db_manager
   & "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest -v
-  # 44 passed in 1.78s
+  # 50 passed in 1.88s
   ```
 - **Linter execution**:
   ```powershell

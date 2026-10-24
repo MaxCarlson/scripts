@@ -29,3 +29,7 @@ include = ["db_manager*"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q --basetemp=.pytest_tmp_root"
+
+[tool.ruff]
+line-length = 120
+

@@ -260,23 +260,49 @@ def execute_readonly_query(
     sql: str,
     params: tuple[Any, ...] | dict[str, Any] = (),
     limit: int = 100,
+    timeout_sec: float = 10.0,
+    max_vm_steps: int = 10_000_000,
 ) -> QueryResult:
     """
     Executes a bounded read-only query (SELECT, EXPLAIN).
     Guaranteed by read-only authorizer and PRAGMA query_only = ON;.
+    Installs a progress handler to prevent runaway queries or infinite recursive CTEs
+    from blocking indefinitely.
     """
     cleaned = sql.strip()
     if not cleaned:
         raise ValueError("SQL query cannot be empty")
 
     start_time = time.perf_counter()
-    cur = conn.execute(cleaned, params)
-    fetch_limit = max(1, min(limit, 10000))
+    steps_invoked = 0
+    step_frequency = 1000
 
-    # Fetch rows up to limit + 1 to detect truncation
-    rows_raw = cur.fetchmany(fetch_limit + 1)
+    def progress_callback() -> int:
+        nonlocal steps_invoked
+        steps_invoked += step_frequency
+        if (time.perf_counter() - start_time) > timeout_sec:
+            return 1  # Interrupts virtual machine execution
+        if steps_invoked > max_vm_steps:
+            return 1  # Interrupts virtual machine execution
+        return 0
+
+    try:
+        conn.set_progress_handler(progress_callback, step_frequency)
+        try:
+            cur = conn.execute(cleaned, params)
+            fetch_limit = max(1, min(limit, 10000))
+            rows_raw = cur.fetchmany(fetch_limit + 1)
+        except sqlite3.OperationalError as exc:
+            if "interrupted" in str(exc).lower():
+                raise TimeoutError(
+                    f"Query execution exceeded resource limits ({timeout_sec:.1f}s or {max_vm_steps:,} VM steps). "
+                    "Statement was safely interrupted."
+                ) from exc
+            raise
+    finally:
+        conn.set_progress_handler(None, 0)
+
     elapsed_ms = (time.perf_counter() - start_time) * 1000.0
-
     truncated = len(rows_raw) > fetch_limit
     effective_rows = rows_raw[:fetch_limit]
 
