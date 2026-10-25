@@ -107,6 +107,12 @@ How to inspect or attach to an existing OpenCode server:
                 default=None,
                 help="Opt in to receipt-managed OpenCode code_locate/code_context tools",
             )
+            action.add_argument(
+                "--checkpoint-compaction",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Opt in to the OpenCode compaction checkpoint plugin",
+            )
         if name == "plan":
             action.add_argument(
                 "-o",
@@ -261,6 +267,13 @@ How to inspect or attach to an existing OpenCode server:
         action.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
         action.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
         action.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    recover_session = checkpoint_actions.add_parser(
+        "recover-session", help="Build a stale-aware recovery packet by OpenCode session ID"
+    )
+    recover_session.add_argument("session_id", help="Exact OpenCode session identifier")
+    recover_session.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+    recover_session.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+    recover_session.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
     groups.add_parser(
         "run",
         help="Configure/load the model and start the foreground bridge",
@@ -646,7 +659,7 @@ def _handle_code(args: argparse.Namespace) -> int:
 
 
 def _handle_checkpoint(args: argparse.Namespace) -> int:
-    from .context.checkpoint import CheckpointError, load_checkpoint, recovery_packet, save_checkpoint
+    from .context.checkpoint import CheckpointError, load_checkpoint, recover_session, recovery_packet, save_checkpoint
 
     try:
         if args.action == "save":
@@ -673,6 +686,8 @@ def _handle_checkpoint(args: argparse.Namespace) -> int:
                 pending_checks=payload.get("pending_checks"),
                 blockers=payload.get("blockers"),
             )
+        elif args.action == "recover-session":
+            result = recover_session(args.workspace, args.session_id, state_dir=args.state_dir)
         else:
             result = load_checkpoint(args.workspace, args.task_id, state_dir=args.state_dir)
             if args.action == "recover":
@@ -778,6 +793,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.adopt,
                         args.mode,
                         args.code_retrieval,
+                        args.checkpoint_compaction,
                         args.state_dir,
                         args.home,
                     ]
@@ -789,6 +805,7 @@ def main(argv: list[str] | None = None) -> int:
                 if saved.get("schema_version") != 1:
                     raise ValueError("Unsupported saved plan schema")
                 saved.setdefault("code_retrieval", False)
+                saved.setdefault("checkpoint_compaction", False)
                 home, clients, strategy, mode, adopt, state = (
                     Path(saved["home"]),
                     tuple(saved["clients"]),
@@ -807,6 +824,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.state_dir,
                 )
                 code_retrieval = args.code_retrieval
+                checkpoint_compaction = args.checkpoint_compaction
                 if args.action == "status" and args.mode is None:
                     from .setup.manifest import Layout
                     from .setup.planner import load_receipt
@@ -826,6 +844,7 @@ def main(argv: list[str] | None = None) -> int:
                 mode=mode,
                 state_dir=state,
                 code_retrieval=(saved["code_retrieval"] if saved is not None else code_retrieval),
+                checkpoint_compaction=(saved["checkpoint_compaction"] if saved is not None else checkpoint_compaction),
             )
             if args.action == "apply":
                 result = apply_plan(plan, expected=saved)

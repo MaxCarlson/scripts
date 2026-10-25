@@ -381,3 +381,21 @@ def test_opencode_retrieval_tools_are_opt_in_and_receipt_managed(tmp_path):
                for op in remove_feature.operations)
     apply_plan(remove_feature)
     assert not installed.exists()
+
+
+def test_opencode_checkpoint_compaction_plugin_is_opt_in_and_receipt_managed(tmp_path):
+    home = tmp_path / "home"
+    opt_in = build_plan(home, strategy="copy", environ={}, checkpoint_compaction=True)
+    resource = next(op for op in opt_in.operations if op.resource_id == "shared.checkpoint-compaction.plugin")
+    assert resource.path == home / ".config/opencode/plugins/local_agent_checkpoint.js"
+    apply_plan(opt_in)
+    assert resource.path.is_file()
+
+    preserved = build_plan(home, strategy="copy", environ={})
+    assert preserved.checkpoint_compaction is True
+    assert next(op for op in preserved.operations if op.resource_id == resource.resource_id).action == "unchanged"
+
+    remove = build_plan(home, strategy="copy", environ={}, checkpoint_compaction=False)
+    assert any(op.resource_id == resource.resource_id and op.details.get("retire") for op in remove.operations)
+    apply_plan(remove)
+    assert not resource.path.exists()

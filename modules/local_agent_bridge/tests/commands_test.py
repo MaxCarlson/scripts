@@ -587,3 +587,34 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
         main(["run", "--help"])
     assert help_result.value.code == 0
     assert "local-agent run" in capsys.readouterr().out
+
+
+def test_checkpoint_recover_session_cli_is_additive_and_json(tmp_path, capsys):
+    import json
+    from local_agent_bridge.context.checkpoint import save_checkpoint
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = tmp_path / "state"
+    save_checkpoint(workspace, "task-session", "Continue the checkpoint", state_dir=state,
+                    authorized_scope=[], next_action="Check the existing job first.",
+                    identities={"session_id": "ses-cli-recover", "job_id": "job-cli"})
+    assert main(["checkpoint", "recover-session", "ses-cli-recover", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    packet = json.loads(capsys.readouterr().out)
+    assert packet["task_id"] == "task-session"
+    assert packet["identities"]["job_id"] == "job-cli"
+    assert packet["automatic_resubmission"] is False
+
+
+def test_checkpoint_compaction_setup_flag_survives_saved_plan_replay(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    plan_path = tmp_path / "compaction-plan.json"
+    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+                 "--checkpoint-compaction", "-o", str(plan_path), "-j"]) == 0
+    assert json.loads(plan_path.read_text())["checkpoint_compaction"] is True
+    capsys.readouterr()
+    assert main(["setup", "apply", "-i", str(plan_path)]) == 0
+    assert (home / ".config/opencode/plugins/local_agent_checkpoint.js").is_file()
+    capsys.readouterr()

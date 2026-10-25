@@ -18,6 +18,7 @@ MAX_CHECKPOINT_BYTES = 256 * 1024
 MAX_SOURCE_BYTES = 8 * 1024 * 1024
 MAX_ITEMS = 200
 MAX_TEXT_LENGTH = 16 * 1024
+MAX_SESSION_CHECKPOINTS = 2000
 IDENTITY_FIELDS = {
     "session_id", "job_id", "message_id", "directory", "provider_id", "model_id", "worker_agent",
 }
@@ -266,7 +267,7 @@ def save_checkpoint(
     sources = confirmed_sources or []
     if not isinstance(sources, list) or len(sources) > MAX_ITEMS:
         raise CheckpointError(f"confirmed_sources must contain at most {MAX_ITEMS} entries")
-    now = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+    now = datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
     checkpoint: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "checkpoint_id": str(uuid.uuid4()),
@@ -405,3 +406,55 @@ def recovery_packet(workspace: str | os.PathLike[str], checkpoint: dict[str, Any
             "Review stale evidence and changed paths before using prior conclusions.",
         ],
     }
+
+
+def recover_session(
+    workspace: str | os.PathLike[str],
+    session_id: str,
+    *,
+    state_dir: str | os.PathLike[str] | None = None,
+) -> dict[str, Any]:
+    """Find the latest checkpoint for a session and revalidate all evidence."""
+    if not isinstance(session_id, str) or not session_id.strip() or len(session_id) > MAX_TEXT_LENGTH:
+        raise CheckpointError("session_id must be non-empty text within the checkpoint text limit")
+    root = _workspace(workspace)
+    project_root = _project_root(root)
+    project_key = _project_key(project_root)
+    directory = _state_dir(project_root, state_dir) / project_key
+    if directory.is_symlink() or _is_junction(directory):
+        raise CheckpointError("Checkpoint project directory must not be a symlink or junction")
+    try:
+        files = sorted(directory.glob("*.json"), key=lambda path: path.name)
+    except OSError as exc:
+        raise CheckpointError(f"Unable to list session checkpoints: {exc}") from exc
+    if len(files) > MAX_SESSION_CHECKPOINTS:
+        raise CheckpointError(f"Session recovery is limited to {MAX_SESSION_CHECKPOINTS} project checkpoints")
+    matches: list[dict[str, Any]] = []
+    for path in files:
+        if path.is_symlink() or _is_junction(path):
+            continue
+        try:
+            if path.stat().st_size > MAX_CHECKPOINT_BYTES:
+                continue
+            value = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(value, dict) or value.get("identities", {}).get("session_id") != session_id:
+                continue
+            task_id = value.get("task_id")
+            if not isinstance(task_id, str) or _checkpoint_path(directory.parent, project_key, task_id) != path:
+                continue
+            _validate_checkpoint_shape(value, root)
+            if value.get("project_identity", {}).get("workspace") != str(root):
+                continue
+            matches.append(value)
+        except (OSError, UnicodeError, json.JSONDecodeError, CheckpointError, AttributeError, TypeError):
+            continue
+    if not matches:
+        return {
+            "schema_version": SCHEMA_VERSION,
+            "status": "missing",
+            "session_id": session_id,
+            "automatic_resubmission": False,
+        }
+    latest = max(matches, key=lambda item: (item["updated_at"], item["task_id"]))
+    loaded = load_checkpoint(root, latest["task_id"], state_dir=state_dir)
+    return recovery_packet(root, loaded)

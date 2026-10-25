@@ -111,6 +111,7 @@ a recovery packet after an interruption:
 local-agent checkpoint save -C "C:\src\my project" -i task.json -j
 local-agent checkpoint show task-42 -C "C:\src\my project" -j
 local-agent checkpoint recover task-42 -C "C:\src\my project" -j
+local-agent checkpoint recover-session ses_01example -C "C:\src\my project" -j
 ```
 
 The JSON input contains `task_id`, `objective`, `authorized_scope`, and
@@ -121,6 +122,31 @@ default state is stored under `~/.local/share/local-agent/checkpoints`; use
 Checkpoints store hashes and line ranges for confirmed sources, not source
 contents. Recovery marks changed or unavailable revisions and source evidence
 stale, retains session/job/message identities, and never resubmits work.
+
+### Optional OpenCode compaction context
+
+OpenCode 1.19.3 exposes the experimental
+`experimental.session.compacting` plugin hook. The optional bridge plugin adds
+a fresh recovery packet for the matching session to the default compaction
+context; it does not replace the summary prompt or change auto-continue. The
+task checkpoint must include the exact `identities.session_id` for lookup. The
+hook only runs the local `local-agent checkpoint recover-session` CLI with
+direct argv and a five-second timeout; absent or invalid local state leaves
+normal compaction unchanged. Its context is capped below 4 KiB and preserves
+the no-resubmission rule.
+
+Install it through the receipt-managed setup planner:
+
+```powershell
+local-agent setup plan --checkpoint-compaction -o compaction-plan.json
+local-agent setup apply -i compaction-plan.json
+```
+
+The plugin is off by default and can be planned for removal with
+`--no-checkpoint-compaction`. OpenCode must be using version 1.19.3-compatible
+plugin APIs, and its server process must have `local-agent` on `PATH`. This
+experimental hook is version-specific; no live OpenCode session was used to
+validate runtime loading.
 
 ## Optional OpenCode retrieval tools
 

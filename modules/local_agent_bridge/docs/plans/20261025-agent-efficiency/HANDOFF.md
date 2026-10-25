@@ -4,7 +4,7 @@
 **Repository:** `MaxCarlson/scripts`
 **Canonical plan:** `./plan.md`
 **Progress tracker:** `./STATUS.md`
-**Execution status:** Release A, P3, P4, and P5 implementations are committed in stages on `codex/local-agent-efficiency-20261025`; P6 compaction-hook verification is next
+**Execution status:** Release A, P3, P4, and P5 are committed in stages on `codex/local-agent-efficiency-20261025`; P6's optional pinned-version compaction adapter is in progress
 
 ## 1. Your assignment
 
@@ -393,7 +393,11 @@ P5 adds standard-library Python AST outlines (`symbols`) and task-ranked fresh r
 
 P5 verification: **140 passed, 2 skipped, 1 deselected** for the complete bridge suite; symlink-related skips require unavailable Windows privileges, and the deselected Windows app-execution-alias test is the known sandbox limitation. Targeted Ruff and `git diff --check` passed. One bounded worktree measurement parsed at most 80 Python files in **617.31 ms**, peak traced allocation **7,320,819 bytes**, returning 5 ranked results in **2,678 bytes**; top entries were `checkpoint.py:236 save_checkpoint` and `checkpoint.py:352 recovery_packet`. This is one smoke measurement, not comparative evidence. See `STATUS.md` for exact commands.
 
-Next: stage only P5 paths and commit/push the authorized branch. Then inspect official OpenCode v1.19.3 sources for compaction hook support before considering an optional adapter. No inference, local-model request, OpenCode server operation, or live benchmark has occurred. Controlled evaluation and exact provider-token counts remain unmeasured; no efficiency gain is claimed.
+P6's upstream API check is complete. OpenCode v1.19.3's `experimental.session.compacting` hook receives the session ID and allows context strings to be appended to the default summary prompt. The bridge adds a receipt-managed optional plugin plus a session-ID checkpoint lookup CLI; it does not override the prompt, alter auto-continue, execute a worker, or change permissions. The plugin calls `local-agent checkpoint recover-session` through direct argv with a 5-second timeout and injects at most 4 KiB. Setup leaves this option disabled by default. See the source links and test evidence in `STATUS.md`.
+
+P6 focused tests: **6 passed** including Node dynamic import and mocked hook execution. Full bridge suite: **146 passed, 2 skipped, 1 deselected**; targeted Ruff and `git diff --check` passed. The two symlink-related tests require unavailable Windows privileges; the deselected test is the known Git Bash/MSYS app-execution-alias failure. The plugin asset is included by the existing `resources/**/*` packaging rule. Use `C:/Windows/Temp` as pytest `--basetemp` for checkpoint tests. No live OpenCode server session validated runtime loading, and no inference, model request, or live benchmark occurred.
+
+Next: stage only P6 paths and commit/push the authorized branch. Avoid advanced framework work absent a measured limitation. Controlled B0/B2/B3/B4 evaluation remains pending separate authorization; no efficiency gain is claimed.
 
 ## P0/P1 reconciliation — 2026-10-25
 

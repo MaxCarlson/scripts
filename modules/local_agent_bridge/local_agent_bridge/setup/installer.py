@@ -249,7 +249,8 @@ def apply_plan(plan: Plan, expected: dict | None = None) -> dict:
     # Regenerate from trusted code; never execute arbitrary saved JSON operations.
     fresh = build_plan(plan.layout.home, plan.clients, strategy=plan.strategy, adopt=plan.adopt,
                        state_dir=plan.layout.state, mode=plan.mode,
-                       code_retrieval=plan.code_retrieval)
+                       code_retrieval=plan.code_retrieval,
+                       checkpoint_compaction=plan.checkpoint_compaction)
     if fresh.summary() != (expected or plan.summary()):
         raise ValueError('stale plan: targets or sources changed; regenerate the plan')
     receipt = load_receipt(plan.layout)

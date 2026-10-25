@@ -189,3 +189,32 @@ def test_unavailable_base_revision_is_reported_as_uncertain(project, tmp_path, m
     packet = recovery_packet(project, checkpoint)
     assert packet["status"] == "stale"
     assert "base_revision_unavailable" in packet["stale_reasons"]
+
+
+def test_recover_session_selects_latest_matching_checkpoint_and_revalidates_sources(project, tmp_path):
+    from local_agent_bridge.context.checkpoint import recover_session
+
+    first = save_checkpoint(
+        project, "task-old", "Old task", state_dir=tmp_path / "state", authorized_scope=[],
+        next_action="Old next step.", identities={"session_id": "ses-shared"},
+    )
+    latest = save_checkpoint(
+        project, "task-latest", "Latest task", state_dir=tmp_path / "state", authorized_scope=[],
+        next_action="Inspect the latest confirmed state.", identities={"session_id": "ses-shared"},
+        confirmed_sources=[{"path": "src/worker.py", "start_line": 1, "end_line": 2}],
+    )
+    assert first["task_id"] != latest["task_id"]
+    (project / "src/worker.py").write_text("def run():\n    return 9\n", encoding="utf-8")
+    packet = recover_session(project, "ses-shared", state_dir=tmp_path / "state")
+    assert packet["task_id"] == "task-latest"
+    assert packet["next_action"] == "Inspect the latest confirmed state."
+    assert packet["status"] == "stale"
+    assert packet["automatic_resubmission"] is False
+
+
+def test_recover_session_without_matching_identity_is_explicit(project, tmp_path):
+    from local_agent_bridge.context.checkpoint import recover_session
+
+    packet = recover_session(project, "ses-unknown", state_dir=tmp_path / "state")
+    assert packet["status"] == "missing"
+    assert packet["automatic_resubmission"] is False

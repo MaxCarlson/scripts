@@ -17,6 +17,7 @@ def test_opencode_tools_call_bounded_cli_with_argv_and_session_directory():
     script = r"""
 const assert = require("node:assert/strict")
 const childProcess = require("node:child_process")
+const { pathToFileURL } = require("node:url")
 const calls = []
 childProcess.spawnSync = (executable, args, options) => {
   calls.push({ executable, args, options })
@@ -44,4 +45,51 @@ const contextTool = require(process.argv[2])
         timeout=10,
         check=False,
     )
+    assert result.returncode == 0, result.stderr
+
+
+def test_checkpoint_compaction_plugin_uses_pinned_hook_and_bounded_cli_packet():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable for OpenCode plugin contract test")
+    plugin = Path(__file__).resolve().parents[1] / "local_agent_bridge/resources/opencode-plugins/local_agent_checkpoint.js"
+    script = r"""
+const assert = require("node:assert/strict")
+const childProcess = require("node:child_process")
+const { pathToFileURL } = require("node:url")
+const calls = []
+let response
+childProcess.execFile = (executable, args, options, callback) => {
+  calls.push({ executable, args, options })
+  callback(null, JSON.stringify(response), "")
+}
+;(async () => {
+  const plugin = (await import(pathToFileURL(process.argv[1]).href)).default
+  const hooks = await plugin.server({ directory: "C:/sample project" })
+  const output = { context: [] }
+  response = { status: "stale", task_id: "task-8", identities: { session_id: "ses-8", job_id: "job-8" },
+    objective: "Continue the task", next_action: "Inspect stale evidence", automatic_resubmission: false }
+  await hooks["experimental.session.compacting"]({ sessionID: "ses-8" }, output)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].executable, "local-agent")
+  assert.deepEqual(calls[0].args, ["checkpoint", "recover-session", "ses-8", "-C", "C:/sample project", "-j"])
+  assert.equal(calls[0].options.cwd, "C:/sample project")
+  assert.equal(calls[0].options.shell, false)
+  assert.equal(calls[0].options.timeout, 5000)
+  assert.equal(output.context.length, 1)
+  assert.match(output.context[0], /task-8/)
+  assert.match(output.context[0], /never resubmit/)
+  response = { status: "current", task_id: "task-large", identities: { session_id: "ses-8", job_id: "j".repeat(1000) },
+    objective: "o".repeat(16000), next_action: "n".repeat(16000),
+    decisions: Array(200).fill("d".repeat(1000)), pending_checks: Array(200).fill("p".repeat(1000)),
+    recovery_rules: Array(200).fill("r".repeat(1000)), automatic_resubmission: false }
+  await hooks["experimental.session.compacting"]({ sessionID: "ses-8" }, output)
+  assert.equal(output.context.length, 2)
+  assert.ok(Buffer.byteLength(output.context[1], "utf8") < 4000)
+  response = { status: "missing" }
+  await hooks["experimental.session.compacting"]({ sessionID: "ses-unknown" }, output)
+  assert.equal(output.context.length, 2)
+})().catch(error => { console.error(error); process.exitCode = 1 })
+"""
+    result = subprocess.run([node, "-e", script, str(plugin)], capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 0, result.stderr
