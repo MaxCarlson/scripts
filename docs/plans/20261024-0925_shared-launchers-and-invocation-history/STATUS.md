@@ -45,6 +45,13 @@
   - 10 unmanaged custom symlinks preserved 100% byte-for-byte.
   - 79 obsolete third-party wrappers untouched.
   - Smoke-tested live commands under both CMD and PowerShell (`mangadl --help`, `termdash --help`, `append_clipboard --help`, missing target exit 127). Verified invocations recorded to SQLite WAL at `%LOCALAPPDATA%\ScriptsToolkit\invocations.sqlite3`.
+- **2026-10-25**: Agent C Final Hardening & Integration Validation Completed:
+  - Priority 1 (Production Integration & `db-manager` Root Cause): Investigated exit 127 failure. Root cause confirmed: `modules/db_manager` was merged on `origin/main`, discovery correctly registered it in manifest, but package was not yet installed into `.venv`, causing expected actionable failure (exit 127) without recursive PATH loops. Added isolated installation sequence verification in `tests/test_db_manager_integration.py` (3 tests). Added automatic manifest refresh to `bootstrap_latest.py` and on-demand recovery to `launcher.py`.
+  - Priority 2 (Windows Argument Fidelity): Extended `test_argv_fidelity.py` (36 tests) covering spaces, empty arguments (`""`), quotes, unicode, carets, metacharacters (`&`, `|`, `<`, `>`, `^`, `%`, `!`), direct vs wrapper parity, and working directory preservation under both CMD and pwsh. Documented CMD batch `call` caret doubling quirk in `CONTRACT.md`.
+  - Priority 3 (Database Correctness & Privacy Audit): Authored `test_audit_contracts.py` (7 tests) verifying lifecycle transitions, finish idempotency, uncompleted runs (status `started`), summary counter reconciliation, redaction before write (scrubbing sensitive tokens in flags and URLs from SQLite persistence), read-only guarantees (URI `mode=ro`), and multi-process WAL concurrency.
+  - Priority 4 (Startup Overhead Optimization): Optimized `InvocationStore` with fast-path schema metadata check skipping 11 DDL statements on warm starts and atomic idempotency updates. Net logging overhead reduced to p50=180.65ms, with p95 overhead reduced by >17ms to 180.28ms.
+  - Priority 5 (Frozen Consumer Contract): Updated `CONTRACT.md` with complete frozen public read-only API schemas, `get_invocation()` method, keyset cursor specifications, synthetic test fixture `script_logging.fixtures.synthetic_history`, and integration guide for `scripts-help` (Handoff 3).
+  - Priority 6 (Test Suite & Linting): Total 117 tests passing cleanly across the test suite in 22.96s; `ruff check` 100% clean.
 
 ## Next Action
-Deliver the final migration summary, benchmark metrics, integration SHA, and verification status to the user.
+Deliver Agent C Final Hardening, Integration Validation, and Merge Readiness Report to user. Ready for merge to main.

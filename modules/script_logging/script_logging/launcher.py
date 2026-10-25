@@ -65,6 +65,14 @@ def launch_target(
     manifest_file = Path(manifest_path).resolve()
 
     if not manifest_file.is_file():
+        # Attempt on-demand regeneration if launcher generator is available
+        try:
+            from scripts_setup.launcher_generator import generate_manifest
+            generate_manifest(manifest_file.parent, manifest_file)
+        except Exception:
+            pass
+
+    if not manifest_file.is_file():
         sys.stderr.write(
             f"[script_logging.launcher] Manifest file not found: {manifest_file}\n"
         )
@@ -80,6 +88,17 @@ def launch_target(
         return 127
 
     commands = manifest_data.get("commands", {})
+    if command_name not in commands:
+        # Check if manifest can be refreshed for recently added commands
+        try:
+            from scripts_setup.launcher_generator import generate_manifest
+            generate_manifest(manifest_file.parent, manifest_file)
+            with open(manifest_file, "r", encoding="utf-8") as f:
+                manifest_data = json.load(f)
+            commands = manifest_data.get("commands", {})
+        except Exception:
+            pass
+
     if command_name not in commands:
         sys.stderr.write(
             f"[script_logging.launcher] Command '{command_name}' not found in manifest: {manifest_file}\n"
@@ -213,6 +232,11 @@ def launch_target(
                     sys.stderr.write(
                         f"[script_logging.launcher] finish_invocation failed (fail-open): {err}\n"
                     )
+        if inv_store is not None:
+            try:
+                inv_store.close()
+            except Exception:
+                pass
 
     return exit_code
 

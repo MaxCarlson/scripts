@@ -151,11 +151,17 @@ def redact_argv(
 
         # Check for --flag=value
         if "=" in arg and (arg.startswith("-") or arg.startswith("/")):
-            flag_part, eq, _ = arg.partition("=")
+            flag_part, eq, val_part = arg.partition("=")
             if _is_sensitive_flag(flag_part):
                 redacted.append(f"{flag_part}{eq}[REDACTED]")
                 is_redacted = True
                 continue
+            if "://" in val_part:
+                url_scrubbed, url_modified = _redact_url(val_part)
+                if url_modified:
+                    redacted.append(f"{flag_part}{eq}{url_scrubbed}")
+                    is_redacted = True
+                    continue
 
         # Check for --flag value (spaced)
         if _is_sensitive_flag(arg):

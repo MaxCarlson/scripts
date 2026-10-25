@@ -264,6 +264,33 @@ class ReadOnlyHistoryReader:
 
         return Page(items=items, next_cursor=next_cursor, has_more=has_more)
 
+    def get_invocation(self, invocation_id: str) -> Optional[InvocationRecord]:
+        """Fetch a single invocation record by ID."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT * FROM invocations WHERE invocation_id = ?",
+                (invocation_id,),
+            ).fetchone()
+            if not row:
+                return None
+            return InvocationRecord(
+                invocation_id=row["invocation_id"],
+                program_id=row["program_id"],
+                invoked_name=row["invoked_name"],
+                origin=row["origin"],
+                pattern_id=row["pattern_id"],
+                raw_argv=tuple(json.loads(row["raw_argv_json"])),
+                redacted_argv=tuple(json.loads(row["redacted_argv_json"])),
+                is_redacted=bool(row["is_redacted"]),
+                cwd=row["cwd"],
+                started_at_utc=row["started_at_utc"],
+                started_epoch_ms=row["started_epoch_ms"],
+                status=row["status"],
+                exit_code=row["exit_code"],
+                finished_at_utc=row["finished_at_utc"],
+                duration_ms=row["duration_ms"],
+            )
+
     def get_program_statistics(self, program_id: str) -> ProgramStatistics:
         """Fetch cumulative execution statistics for a program ID."""
         with self._connect() as conn:

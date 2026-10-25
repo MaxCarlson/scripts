@@ -50,6 +50,8 @@ class InvocationStore:
             self.path = Path(path).resolve()
             self.path.parent.mkdir(parents=True, exist_ok=True)
 
+        self._active_starts: dict[str, tuple[int, str, str, str]] = {}
+        self._shared_conn: Optional[sqlite3.Connection] = None
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
@@ -61,9 +63,23 @@ class InvocationStore:
         conn.execute("PRAGMA synchronous = NORMAL;")
         return conn
 
+    def _get_connection(self) -> sqlite3.Connection:
+        return self._connect()
+
+    def close(self) -> None:
+        pass
+
     def _init_db(self) -> None:
-        """Initialize database tables, indices, and schema version."""
-        with self._connect() as conn:
+        """Initialize database tables, indices, and schema version with fast-path check."""
+        conn = self._get_connection()
+        try:
+            row = conn.execute("SELECT value FROM schema_meta WHERE key = 'schema_version'").fetchone()
+            if row is not None and row[0] == "1":
+                return
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            pass
+
+        with conn:
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS schema_meta (
@@ -158,12 +174,14 @@ class InvocationStore:
 
             redacted_argv, is_redacted = redact_argv(argv)
             pattern_id = compute_pattern_id(program_id, redacted_argv)
-            raw_argv_json = normalize_argv_json(argv)
             redacted_argv_json = normalize_argv_json(redacted_argv)
+            raw_argv_json = redacted_argv_json if is_redacted else normalize_argv_json(argv)
             cwd_str = str(cwd)
             created_at_utc = started_at_utc
 
-            with self._connect() as conn:
+            self._active_starts[inv_id] = (started_epoch_ms, pattern_id, program_id, invoked_name)
+            conn = self._get_connection()
+            with conn:
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute(
                     """
@@ -254,68 +272,85 @@ class InvocationStore:
             return
 
         try:
-            with self._connect() as conn:
+            if finished_at_utc is None:
+                now = datetime.now(timezone.utc)
+                finished_at_utc = now.isoformat()
+                finished_epoch_ms = int(now.timestamp() * 1000)
+            else:
+                dt = datetime.fromisoformat(finished_at_utc)
+                finished_epoch_ms = int(dt.timestamp() * 1000)
+
+            # Determine outcome category
+            is_success = (status == "exited" and exit_code == 0)
+            is_failure = (exit_code is not None and exit_code != 0) or status in (
+                "launch_failed",
+                "interrupted",
+            )
+            if is_success:
+                counter_col = "success_count"
+            elif is_failure:
+                counter_col = "failure_count"
+            else:
+                counter_col = "unknown_count"
+
+            conn = self._get_connection()
+            with conn:
                 conn.execute("BEGIN IMMEDIATE")
-                row = conn.execute(
-                    """
-                    SELECT invocation_id, program_id, invoked_name, pattern_id,
-                           started_at_utc, started_epoch_ms, status
-                    FROM invocations WHERE invocation_id = ?
-                    """,
-                    (invocation_id,),
-                ).fetchone()
 
-                if not row:
-                    return
-
-                # Terminal status transitions are idempotent; only update counters once
-                if row["status"] in ("exited", "launch_failed", "interrupted"):
-                    return
-
-                if finished_at_utc is None:
-                    now = datetime.now(timezone.utc)
-                    finished_at_utc = now.isoformat()
-                    finished_epoch_ms = int(now.timestamp() * 1000)
+                if invocation_id in self._active_starts:
+                    started_epoch_ms, pattern_id, program_id, invoked_name = self._active_starts.pop(invocation_id)
+                    duration_ms = max(0, finished_epoch_ms - started_epoch_ms)
+                    cursor = conn.execute(
+                        """
+                        UPDATE invocations
+                        SET finished_at_utc = ?, duration_ms = ?, exit_code = ?, status = ?
+                        WHERE invocation_id = ? AND status = 'started'
+                        """,
+                        (finished_at_utc, duration_ms, exit_code, status, invocation_id),
+                    )
+                    if cursor.rowcount == 0:
+                        return
                 else:
-                    dt = datetime.fromisoformat(finished_at_utc)
-                    finished_epoch_ms = int(dt.timestamp() * 1000)
+                    row = conn.execute(
+                        """
+                        SELECT invocation_id, program_id, invoked_name, pattern_id,
+                               started_at_utc, started_epoch_ms, status
+                        FROM invocations WHERE invocation_id = ?
+                        """,
+                        (invocation_id,),
+                    ).fetchone()
 
-                duration_ms = max(0, finished_epoch_ms - row["started_epoch_ms"])
+                    if not row:
+                        return
+                    if row["status"] in ("exited", "launch_failed", "interrupted"):
+                        return
 
-                conn.execute(
-                    """
-                    UPDATE invocations
-                    SET finished_at_utc = ?, duration_ms = ?, exit_code = ?, status = ?
-                    WHERE invocation_id = ?
-                    """,
-                    (finished_at_utc, duration_ms, exit_code, status, invocation_id),
-                )
+                    started_epoch_ms = row["started_epoch_ms"]
+                    pattern_id = row["pattern_id"]
+                    program_id = row["program_id"]
+                    invoked_name = row["invoked_name"]
+                    duration_ms = max(0, finished_epoch_ms - started_epoch_ms)
 
-                # Determine outcome category
-                is_success = (status == "exited" and exit_code == 0)
-                is_failure = (exit_code is not None and exit_code != 0) or status in (
-                    "launch_failed",
-                    "interrupted",
-                )
-
-                if is_success:
-                    counter_col = "success_count"
-                elif is_failure:
-                    counter_col = "failure_count"
-                else:
-                    counter_col = "unknown_count"
+                    conn.execute(
+                        """
+                        UPDATE invocations
+                        SET finished_at_utc = ?, duration_ms = ?, exit_code = ?, status = ?
+                        WHERE invocation_id = ?
+                        """,
+                        (finished_at_utc, duration_ms, exit_code, status, invocation_id),
+                    )
 
                 conn.execute(
                     f"UPDATE command_patterns SET {counter_col} = {counter_col} + 1, last_seen_utc = ? WHERE pattern_id = ?",
-                    (finished_at_utc, row["pattern_id"]),
+                    (finished_at_utc, pattern_id),
                 )
                 conn.execute(
                     f"UPDATE program_usage SET {counter_col} = {counter_col} + 1, last_seen_utc = ? WHERE program_id = ?",
-                    (finished_at_utc, row["program_id"]),
+                    (finished_at_utc, program_id),
                 )
                 conn.execute(
                     f"UPDATE alias_usage SET {counter_col} = {counter_col} + 1, last_seen_utc = ? WHERE invoked_name = ? AND program_id = ?",
-                    (finished_at_utc, row["invoked_name"], row["program_id"]),
+                    (finished_at_utc, invoked_name, program_id),
                 )
         except (sqlite3.Error, OSError) as err:
             if not fail_open:

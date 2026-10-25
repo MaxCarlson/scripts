@@ -311,3 +311,142 @@ class TestWindowsWrapperFidelity:
         )
         received = json.loads(res.stdout)
         assert received == ["direct1", "direct with space", ""]
+
+
+    def test_cmd_exe_metacharacters_and_parentheses(self, cmd_wrapper):
+        # Direct execution of .cmd wrapper preserves metacharacters and carets without double-parsing
+        test_args = [
+            "param=(value)",
+            "arg_with_caret: ^",
+            "metas: & | < > % ! ( )",
+            "long_array_" * 20,
+            "--custom-flag=test",
+        ]
+        res = subprocess.run([str(cmd_wrapper)] + test_args, capture_output=True, text=True, encoding="utf-8", check=True)
+        received = json.loads(res.stdout)
+        assert received == test_args
+
+    def test_cmd_exe_call_doubling_limitation_documented(self, cmd_wrapper):
+        # Under cmd.exe 'call', carets are doubled due to cmd.exe internal second parse pass
+        cmd = ["cmd.exe", "/c", "call", str(cmd_wrapper), "arg_with_caret: ^"]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+        received = json.loads(res.stdout)
+        assert received == ["arg_with_caret: ^^"]
+
+    def test_pwsh_metacharacters_and_parentheses(self, cmd_wrapper):
+        ps_cmd = f'& "{cmd_wrapper}" "param=(value)" "metas: & | < >" "long_arg_" '
+        cmd = ["pwsh", "-NoProfile", "-Command", ps_cmd]
+        res = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", check=True)
+        received = json.loads(res.stdout)
+        assert received == ["param=(value)", "metas: & | < >", "long_arg_"]
+
+    def test_direct_vs_wrapper_argv_parity_cmd(self, cmd_wrapper):
+        target_py = Path(__file__).parent / "argv_echo_target.py"
+        test_cases = [
+            ["simple", "args"],
+            ["with spaces", "and-dashes", "--key=value"],
+            ["unicode_日本語_🚀", "C:\\Toolkit\\bin"],
+            ["(parentheses)", "arg_with_caret"],
+        ]
+        for args in test_cases:
+            direct_res = subprocess.run(
+                [sys.executable, str(target_py)] + args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            direct_argv = json.loads(direct_res.stdout)
+
+            wrapper_res = subprocess.run(
+                ["cmd.exe", "/c", "call", str(cmd_wrapper)] + args,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                check=True,
+            )
+            wrapper_argv = json.loads(wrapper_res.stdout)
+            assert direct_argv == wrapper_argv, f"Parity mismatch for args: {args}"
+
+    def test_working_directory_preservation(self, tmp_path, echo_manifest):
+        cwd_target = tmp_path / "cwd_target.py"
+        cwd_target.write_text(
+            "import os, pathlib, sys\nprint(pathlib.Path.cwd().resolve())\n",
+            encoding="utf-8",
+        )
+        sub_dir = tmp_path / "nested_sub_dir"
+        sub_dir.mkdir(parents=True)
+
+        manifest_file = tmp_path / "manifest_cwd.json"
+        manifest_file.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "commands": {
+                    "cwd_cmd": {
+                        "program_id": "pyscript:cwd_target.py",
+                        "kind": "python_file",
+                        "target": str(cwd_target),
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        wrapper_path = tmp_path / "cwd_cmd.cmd"
+        wrapper_content = (
+            "@echo off\n"
+            f'"{sys.executable}" -m script_logging.launcher --manifest "{manifest_file}" --command cwd_cmd --wrapper "%~f0" -- %*\n'
+            "exit /b %ERRORLEVEL%\n"
+        )
+        wrapper_path.write_text(wrapper_content, encoding="utf-8")
+
+        res = subprocess.run(
+            ["cmd.exe", "/c", "call", str(wrapper_path)],
+            cwd=sub_dir,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            check=True,
+        )
+        assert res.stdout.strip() == str(sub_dir.resolve())
+
+    def test_nested_launcher_execution(self, tmp_path, echo_manifest):
+        # Wrapper 1 invokes Wrapper 2 which invokes target
+        target_py = Path(__file__).parent / "argv_echo_target.py"
+        manifest2 = tmp_path / "manifest2.json"
+        manifest2.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "commands": {
+                    "echo2": {
+                        "program_id": "pyscript:argv_echo_target.py",
+                        "kind": "python_file",
+                        "target": str(target_py),
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        wrapper2 = tmp_path / "wrapper2.cmd"
+        wrapper2.write_text(
+            "@echo off\n"
+            f'"{sys.executable}" -m script_logging.launcher --manifest "{manifest2}" --command echo2 --wrapper "%~f0" -- %*\n'
+            "exit /b %ERRORLEVEL%\n",
+            encoding="utf-8",
+        )
+
+        manifest1 = tmp_path / "manifest1.json"
+        manifest1.write_text(
+            json.dumps({
+                "schema_version": 1,
+                "commands": {
+                    "wrap1": {
+                        "program_id": "command:wrap2",
+                        "kind": "console_script",
+                        "target": str(wrapper2),
+                    }
+                }
+            }),
+            encoding="utf-8",
+        )
+        # Note: launcher proxy detection correctly flags wrapper2 as another launcher proxy if target is proxy
+        # but launching via subprocess command allows nested execution when explicitly intended

@@ -336,6 +336,16 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
                 continue
         created += 1
 
+    if not dry_run and created > 0:
+        try:
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from scripts_setup.launcher_generator import generate_manifest
+            generate_manifest(root)
+        except Exception as exc:
+            if verbose:
+                print(f"[WARN] Failed to regenerate manifest: {exc}", file=sys.stderr)
+
     print(f"Summary: {len(missing)} missing package(s), {created} missing launcher(s), {existing} existing launcher(s), {failures} failure(s)")
     return 1 if failures or unknown else 0
 
