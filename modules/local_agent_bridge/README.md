@@ -73,7 +73,57 @@ existing configure/load/foreground-server workflow and options. Runtime config
 writers preserve comments, unrelated fields, extra bridge options and file links.
 Setup never starts servers, calls models or installs external runtime tools.
 
-Version 3.0.0 standardizes on `local-agent`, retains `local_agent` as an alias,
+## OpenCode server status and TUI attachment
+
+These commands inspect or connect to an OpenCode server that is already running;
+they never start or restart it:
+
+```powershell
+local-agent opencode status
+local-agent opencode ping
+local-agent opencode status -j
+local-agent opencode attach
+local-agent opencode attach -s ses_example
+local-agent opencode attach -d "C:\src\my project"
+```
+
+`status` and its `ping` alias request OpenCode's `/global/health` endpoint.
+They report whether OpenCode itself is healthy; they do not check LM Studio or
+claim that a model is loaded. `setup status` is different: it checks the files
+and settings managed by the local-agent installer and does not contact the
+OpenCode server.
+
+The default endpoint is `http://127.0.0.1:4096`. `-p/--port` selects another
+localhost port, `-u/--url` supplies an explicit `http` or `https` endpoint, and
+`-t/--timeout` sets the health-check timeout (default 3 seconds, maximum 60).
+Resolution order is explicit URL, explicit port, `OPENCODE_BASE_URL`, then the
+default. URL and port cannot be supplied together. MCP config files are not
+searched because Codex and agy can contain different worker endpoints. A custom
+remote URL must be explicit; local OpenCode server authentication variables are
+used only for loopback endpoints and are removed from the child environment for
+remote attachment.
+
+`attach` starts the installed OpenCode CLI's interactive TUI after a healthy
+server check. It is not a read-only viewer: the command only connects and does
+not submit prompts, cancel work, change models, or select a session for you, but
+you can perform interactive actions in the TUI. Without `-s`, OpenCode shows its
+normal session experience. Use `-s/--session SESSION_ID` to continue a specific
+session and `-d/--dir DIRECTORY` to pass the project directory. For example,
+copy the `sessionId` returned by an `opencode_fire` call, then run:
+
+```powershell
+local-agent opencode attach -s ses_01example -d "C:\src\delegated project"
+```
+
+If `status` reports `NOT RUNNING`, confirm the server is already running and
+check the port it reports; `local-agent` will not install or restart it. An
+authentication response means the server requires Basic auth; for a local
+server, set `OPENCODE_SERVER_PASSWORD` and optionally
+`OPENCODE_SERVER_USERNAME` in the environment before retrying. Connection
+timeouts can be adjusted with `-t`. Install OpenCode and ensure `opencode` is on
+`PATH` if `attach` reports that its executable is missing.
+
+Version 3.0.0 standardized on `local-agent`, retains `local_agent` as an alias,
 and removes the `local-agent-bridge` entry point. Reinstall the package and refresh
 repository wrappers when upgrading; the entry point change requires a major version.
 `python -m local_agent_bridge` retains the original loader interface. The package

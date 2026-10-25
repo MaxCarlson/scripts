@@ -1,5 +1,33 @@
 # Local agent setup handoff
 
+## OpenCode status and TUI attachment CLI: 2026-10-24
+
+Branch: `codex/local-agent-opencode-cli-20261024`, based on fetched
+`origin/main` at `4591b3247bdfafe82f0b8d1a73f40002152a6c2b`.
+
+Implemented `local-agent opencode status|ping|attach` with endpoint and timeout
+options, structured health diagnostics, and guarded interactive TUI launch.
+Package version is 3.2.0. Attachment uses the installed CLI with inherited
+terminal streams; it does not start services or submit/cancel work. Server auth
+environment variables are used for loopback endpoints and are not sent to
+unrelated remote URLs. See the [README](../README.md) and
+[implementation plan](plans/20261024_opencode_cli/plan.md).
+
+Validation so far: focused command tests pass (19 passed), ruff passes, and
+CLI regression smokes covered version, isolated setup status, mocked model list,
+and run help. The full module suite has 61 passed, 2 failed, and 1 skipped; both
+failures are shell-hook tests blocked by Git Bash `NtCreateDirectoryObject`
+access denied in this sandbox. Live status against localhost:4096 was blocked by
+Windows `WinError 10013` socket policy and returned the local execution error
+with exit 2. No live TUI attach was attempted: no genuine session ID was supplied
+and this session did not dispatch work to OpenCode.
+
+Feature commit `de07b264` has been pushed to
+`origin/codex/local-agent-opencode-cli-20261024`; no merge was performed. Remote
+server credentials are not forwarded unless the target is loopback; forwarding
+them to remote endpoints remains intentionally unsupported pending explicit
+authorization. The final plan/handoff update remains to be committed and pushed.
+
 ## Live Codex dispatch acceptance update: 2026-10-24
 
 The current run verified the installed package/setup status, healthy OpenCode
