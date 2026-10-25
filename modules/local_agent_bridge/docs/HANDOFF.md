@@ -45,6 +45,8 @@ separate Deep Research recommendations. `modules/llm_monitor/` remains outside
 this branch's changes.
 
 Implementation plan: [reliability hardening plan](plans/20261025_local-agent-bridge-reliability/plan.md).
+Implementation commit `b17f948340d76f4be4c7fcb736b1895971e35540` was pushed to
+`origin/codex/local-agent-bridge-reliability-20261025`; no merge was performed.
 
 ## OpenCode status and TUI attachment CLI: 2026-10-24
 

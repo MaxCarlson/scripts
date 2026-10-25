@@ -20,4 +20,4 @@
 - [x] Update README, SETTINGS, INTEGRATION, VALIDATION, HANDOFF.
 - [x] Keep enabled Codex CLI tool discovery marked unresolved pending live acceptance.
 - [x] Run module tests and wheel/package/resource checks; record counts and skips.
-- [ ] Review changed paths, diff, and final Git status; commit and push branch only.
+- [x] Review changed paths, diff, and final Git status; commit and push branch only.
