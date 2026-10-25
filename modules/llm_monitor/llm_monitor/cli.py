@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -14,10 +17,12 @@ from .diagnostics import diagnose_events
 from .mcp import correlate_job, load_job_snapshot
 from .opencode import HistoryCoverage, OpenCodeClient
 from .providers import LMStudioClient, extract_opencode_model_limits
+from .recording import Recorder
+from .storage import TelemetryStore, TelemetryStoreError, default_database_path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="llm-monitor", description="Read-only local OpenCode and GPU status.")
+    parser = argparse.ArgumentParser(prog="llm-monitor", description="Local LLM monitoring and historical telemetry.")
     sub = parser.add_subparsers(dest="command", required=True)
     for name in ("status", "sessions", "gpu"):
         command = sub.add_parser(name)
@@ -33,6 +38,43 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("-s", "--session")
     watch.add_argument("-a", "--all", action="store_true")
     watch.add_argument("-i", "--interval", type=float, default=2.0)
+    record = sub.add_parser("record", help="Persist read-only monitoring observations")
+    selector = record.add_mutually_exclusive_group(required=True)
+    selector.add_argument("-s", "--session")
+    selector.add_argument("-a", "--all", action="store_true")
+    record.add_argument("-i", "--interval", type=float, default=2.0)
+    record.add_argument("-d", "--database", type=Path)
+    record.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    record.add_argument("-v", "--verbose", action="store_true")
+    record.add_argument("-u", "--url", default="http://127.0.0.1:4096")
+    record.add_argument("-p", "--project-directory")
+    record.add_argument("-l", "--lmstudio-url", default="http://127.0.0.1:1234")
+    record.add_argument("-m", "--mcp-jobs", help="Optional read-only JSON snapshot of MCP jobs")
+    record.add_argument("-g", "--hardware", action="store_true", help="Sample optional GPU telemetry per cycle")
+
+    history = sub.add_parser("history", help="Query recorded telemetry without provider access")
+    history.add_argument("-s", "--session")
+    history.add_argument("-d", "--database", type=Path)
+    history.add_argument("-u", "--url", help="Disambiguate a session recorded from another OpenCode endpoint")
+    history.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    history.add_argument("-v", "--verbose", action="store_true")
+
+    database = sub.add_parser("db", help="Inspect or safely prune the local telemetry database")
+    db_sub = database.add_subparsers(dest="db_command", required=True)
+    for name in ("info", "check"):
+        command = db_sub.add_parser(name)
+        command.add_argument("-d", "--database", type=Path)
+        command.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    prune = db_sub.add_parser("prune")
+    prune.add_argument("-d", "--database", type=Path)
+    prune.add_argument("-r", "--older-than-days", required=True, type=int)
+    prune.add_argument("-w", "--write", action="store_true", help="Apply the previewed deletions")
+    prune.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    prune.add_argument("-v", "--verbose", action="store_true")
+
+    for command in (sub.choices["report"],):
+        command.add_argument("-D", "--database", type=Path)
+        command.add_argument("-H", "--history", action="store_true", help="Use persisted telemetry only")
     return parser
 
 
@@ -48,6 +90,14 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "gpu":
             return _gpu(args)
+        if args.command == "db":
+            return _database_command(args)
+        if args.command == "history":
+            return _history_command(args)
+        if args.command == "record":
+            return _record(args)
+        if args.command == "report" and args.history:
+            return _historical_report(args)
         client = OpenCodeClient(args.url)
         if args.command == "status":
             return _status(client, args)
@@ -60,6 +110,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
+    except (TelemetryStoreError, sqlite3.Error, OSError) as exc:
+        print(f"llm-monitor: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
 
 
 def _status(client: OpenCodeClient, args: argparse.Namespace) -> int:
@@ -212,6 +265,291 @@ def _gpu(args: argparse.Namespace) -> int:
         }
     _emit(result, args.format)
     return 0 if "error" not in result else 1
+
+
+def _selected_database(args: argparse.Namespace) -> Path:
+    selected = getattr(args, "database", None)
+    return Path(selected) if selected is not None else default_database_path()
+
+
+def _database_command(args: argparse.Namespace) -> int:
+    path = _selected_database(args)
+    if args.db_command == "prune" and not path.is_file():
+        raise TelemetryStoreError(f"telemetry database does not exist: {path}")
+    writable_prune = args.db_command == "prune" and args.write
+    with TelemetryStore(path, readonly=not writable_prune) as store:
+        if args.db_command == "info":
+            result = store.database_info()
+        elif args.db_command == "check":
+            result = store.check_integrity()
+        else:
+            if args.older_than_days <= 0:
+                print("--older-than-days must be greater than zero", file=sys.stderr)
+                return 2
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=args.older_than_days)).isoformat()
+            result = store.prune_before(cutoff, write=args.write)
+    _emit(result, args.format)
+    return 0 if result.get("ok", True) else 1
+
+
+def _public_session(row: dict[str, Any]) -> dict[str, Any]:
+    coverage = row.get("coverage_json")
+    if isinstance(coverage, str):
+        try:
+            coverage = json.loads(coverage)
+        except json.JSONDecodeError:
+            coverage = None
+    return {key: row.get(key) for key in (
+        "session_id", "provider_type", "endpoint", "first_seen", "last_seen", "state", "agent", "model"
+    )} | {"coverage": coverage}
+
+
+def _history_command(args: argparse.Namespace) -> int:
+    with TelemetryStore(_selected_database(args), readonly=True) as store:
+        if not args.session:
+            result = {"schema_version": 1, "sessions": [_public_session(row) for row in store.list_sessions()]}
+        else:
+            bundle = store.history_bundle(args.session, endpoint=args.url, limit=1000)
+            if bundle is None:
+                _emit({"session_id": args.session, "found": False}, args.format)
+                return 1
+            result = {
+                "schema_version": 1,
+                "session": _public_session(bundle["session"]),
+                "coverage": bundle["coverage"],
+                "page": bundle["page"],
+                "gaps": bundle["gaps"],
+                "jobs": bundle["jobs"],
+                "model_configurations": bundle["model_configurations"],
+            }
+            if args.verbose:
+                result["timeline"] = bundle["event_records"]
+                result["hardware_samples"] = bundle["hardware_samples"]
+    if args.format == "json":
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    elif "sessions" in result:
+        for row in result["sessions"]:
+            print(f"{row['session_id']} {row.get('provider_type')} {row.get('last_seen')} "
+                  f"model={row.get('model') or 'unknown'} state={row.get('state') or 'unknown'}")
+    else:
+        session = result["session"]
+        print(f"Session {session['session_id']} provider={session.get('endpoint')} model={session.get('model') or 'unknown'}")
+        print(f"Observed {result['page']['total']} events; coverage={result['coverage'].get('status')}; "
+              f"gaps={len(result['gaps'])}; jobs={len(result['jobs'])}")
+    return 0
+
+
+def _model_metadata(client: OpenCodeClient, lmstudio: LMStudioClient, session_id: str,
+                    snapshot: dict[str, Any], directory: str | None,
+                    loaded_cache: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    info = snapshot.get("session_info") if isinstance(snapshot.get("session_info"), dict) else {}
+    model_id = info.get("model") if isinstance(info.get("model"), str) else None
+    provider_id = info.get("provider") if isinstance(info.get("provider"), str) else None
+    limits_response = client.get_json("/config/providers", directory)
+    limits = extract_opencode_model_limits(limits_response.data, model_id, provider_id=provider_id) if model_id else None
+    now = time.monotonic()
+    if now - loaded_cache.get("checked_at", 0) >= 300:
+        try:
+            loaded_cache["models"] = lmstudio.list_models()
+        except (OSError, RuntimeError, ValueError):
+            loaded_cache["models"] = []
+        loaded_cache["checked_at"] = now
+    loaded = next((model for model in loaded_cache.get("models", [])
+                   if model.get("id") == model_id and model.get("state") == "loaded"), None)
+    return limits, loaded
+
+
+def _hardware_snapshot() -> dict[str, Any]:
+    try:
+        from resource_metrics.gpu import gpu_devices, gpu_process_memory
+    except ImportError:
+        return {"available": False, "reason_code": "not_installed", "devices": [], "process_memory": []}
+    devices = gpu_devices()
+    process_memory = gpu_process_memory()
+    return {"available": bool(devices or process_memory), "devices": devices,
+            "process_memory": process_memory, "scope": "point_in_time"}
+
+
+def _record(args: argparse.Namespace) -> int:
+    if args.interval <= 0:
+        print("--interval must be greater than zero", file=sys.stderr)
+        return 2
+    path = _selected_database(args)
+    client = OpenCodeClient(args.url)
+    lmstudio = LMStudioClient(args.lmstudio_url)
+    loaded_cache: dict[str, Any] = {}
+    model_provider = lambda sid, snapshot: _model_metadata(
+        client, lmstudio, sid, snapshot, args.project_directory, loaded_cache
+    )
+    job_provider = lambda: load_job_snapshot(args.mcp_jobs) if args.mcp_jobs else None
+    with TelemetryStore(path) as store:
+        recorder = Recorder(
+            client, store, endpoint=args.url, interval=args.interval, directory=args.project_directory,
+            model_metadata_provider=model_provider, mcp_snapshot_provider=job_provider if args.mcp_jobs else None,
+            hardware_provider=_hardware_snapshot if args.hardware else None,
+        )
+        while True:
+            discovery_error = None
+            if args.session:
+                session_ids = [args.session]
+            else:
+                sessions = client.sessions(args.project_directory)
+                if sessions.error:
+                    session_ids = [row["session_id"] for row in store.list_sessions(
+                        provider_type="opencode", endpoint=args.url
+                    )]
+                    discovery_error = "session_discovery_unavailable"
+                elif not isinstance(sessions.data, list):
+                    session_ids = [row["session_id"] for row in store.list_sessions(
+                        provider_type="opencode", endpoint=args.url
+                    )]
+                    discovery_error = "unsupported_session_list"
+                else:
+                    session_ids = [item["id"] for item in sessions.data
+                                   if isinstance(item, dict) and isinstance(item.get("id"), str)]
+            progress = recorder.collect_cycle(session_ids)
+            if args.hardware:
+                progress["hardware_samples"] += recorder.sample_hardware()
+            record = {"schema_version": 1, "command": "record", "database": str(path), **progress}
+            if discovery_error:
+                record["discovery_error"] = discovery_error
+            if args.format == "json":
+                print(json.dumps(record, ensure_ascii=False), flush=True)
+            else:
+                print(f"Recording {len(session_ids)} sessions to {path}: "
+                      f"new={progress['inserted']} updated={progress['updated']} "
+                      f"duplicates={progress['duplicates']} unavailable={progress['unavailable']} "
+                      f"gaps/errors={progress['errors']} hardware_samples={progress['hardware_samples']}"
+                      + (f" discovery={discovery_error}" if discovery_error else ""), flush=True)
+            time.sleep(args.interval)
+
+
+def _historical_report(args: argparse.Namespace) -> int:
+    path = _selected_database(args)
+    with TelemetryStore(path, readonly=True) as store:
+        initial = store.history_bundle(args.session, endpoint=args.url, limit=1)
+        if initial is None:
+            _emit({"session_id": args.session, "history_available": False}, args.format)
+            return 1
+        offset = max(0, initial["page"]["total"] - 10000)
+        bundle = store.history_bundle(args.session, endpoint=args.url, limit=10000, offset=offset)
+    return _emit_historical_report(bundle, args)
+
+
+def _emit_historical_report(bundle: dict[str, Any], args: argparse.Namespace) -> int:
+    source_coverage = bundle["coverage"]
+    gaps = bundle["gaps"]
+    has_more = bundle["page"]["has_more"] or bundle["page"]["offset"] > 0
+    incomplete_gaps = [gap for gap in gaps if gap["category"] in
+                       {"provider_error", "coverage", "monitor_offline", "retention_pruned"}]
+    coverage_status = "partial" if source_coverage.get("status") != "complete" or has_more or incomplete_gaps else "complete"
+    coverage = HistoryCoverage(
+        status=coverage_status,
+        source=source_coverage.get("source", "persisted"),
+        pages=source_coverage.get("pages") or 0,
+        limit=source_coverage.get("limit") or 0,
+        suspected_gap=bool(source_coverage.get("suspected_gap") or has_more or incomplete_gaps),
+        reason="persisted_history_gaps" if incomplete_gaps else "report_event_window_limited" if has_more else None,
+    )
+    events = bundle["analysis_events"]
+    completed = [event for event in events if event.category == "inference" and event.outcome == "completed"]
+    latest = completed[-1] if completed else None
+    applicable = None
+    if latest:
+        candidates = [row for row in bundle["model_configurations"]
+                      if row.get("model_id") == latest.model and row.get("observed_at")
+                      and latest.timestamp and row["observed_at"] <= latest.timestamp
+                      and row.get("loaded_state") == "loaded" and row.get("loaded_context")]
+        if candidates:
+            applicable = candidates[-1]
+    limits = {"context": applicable.get("configured_context"), "output": applicable.get("configured_output")} \
+        if applicable else None
+    loaded = {"id": applicable.get("model_id"), "context_length": applicable.get("loaded_context"),
+              "state": applicable.get("loaded_state")} if applicable else None
+    analysis = analyze_events(args.session, events, coverage=coverage, limits=limits, loaded_model=loaded,
+                              session_state=bundle["session"].get("state"))
+    inference_totals: dict[str, float] = {}
+    for event in completed:
+        for token_name, value in (event.tokens or {}).items():
+            if token_name in {"input", "output", "reasoning"}:
+                inference_totals[token_name] = inference_totals.get(token_name, 0) + value
+    context_trend = _context_trend(completed, bundle["model_configurations"])
+    analysis["context"]["trend"] = context_trend
+    analysis["observed_token_totals"] = {
+        "scope": "sum_of_recorded_completed_inferences",
+        "input": inference_totals.get("input"),
+        "output": inference_totals.get("output"),
+        "reasoning": inference_totals.get("reasoning"),
+    }
+    findings = diagnose_events(args.session, events, analysis, coverage=coverage)
+    session_row = bundle["session"]
+    result = {
+        "schema_version": 1,
+        "source": "persisted_telemetry",
+        "history_coverage": {**coverage.__dict__, "event_total": bundle["page"]["total"],
+                              "reported_window": bundle["page"], "gaps": gaps},
+        "session": {"session_id": args.session, "provider": session_row.get("endpoint"),
+                    "first_observed": session_row.get("first_seen"), "last_observed": session_row.get("last_seen"),
+                    "monitoring_span_seconds": _elapsed_between(session_row.get("first_seen"), session_row.get("last_seen")),
+                    "last_state": session_row.get("state"), "model": session_row.get("model"),
+                    "agent": session_row.get("agent"), "session_completion": "unknown",
+                    "work_product_completion": "unverified", "task_acceptance": "unverified"},
+        "analysis": analysis,
+        "findings": findings,
+        "jobs": bundle["jobs"],
+        "model_configurations": bundle["model_configurations"],
+        "hardware_samples": bundle["hardware_samples"],
+        "timeline": [row["payload"] for row in bundle["event_records"]],
+    }
+    if args.format == "json":
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        print(_format_analysis({"session": {"session_id": args.session, "state": session_row.get("state"),
+                                             "provider_id": None, "model_id": session_row.get("model"),
+                                             "agent": session_row.get("agent")},
+                               "analysis": analysis, "findings": findings,
+                               "source_errors": {}, "mcp_correlation": None}, include_timeline=True))
+        print(f"Persisted coverage: {coverage_status}; observed {bundle['page']['returned']} of "
+              f"{bundle['page']['total']} events across {len(gaps)} collection gaps.")
+        print(f"Hardware samples: {len(bundle['hardware_samples'])} device/process observations; "
+              "not attributed to this session.")
+    return 0
+
+
+def _context_trend(inferences: list[Any], configurations: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    trend = []
+    for event in inferences:
+        candidates = [row for row in configurations if row.get("model_id") == event.model
+                      and row.get("observed_at") and event.timestamp and row["observed_at"] <= event.timestamp
+                      and row.get("loaded_state") == "loaded" and row.get("loaded_context")]
+        config = candidates[-1] if candidates else None
+        capacity = None
+        utilization = None
+        tokens = (event.tokens or {}).get("input")
+        if config and config.get("configured_context"):
+            effective = min(config["configured_context"], config["loaded_context"])
+            capacity = max(0, effective - (config.get("configured_output") or 0))
+            if isinstance(tokens, (int, float)) and capacity > 0:
+                utilization = round(tokens / capacity * 100, 1)
+        trend.append({"event_id": event.event_id, "timestamp": event.timestamp, "model": event.model,
+                      "input_tokens": tokens, "usable_input_capacity": capacity,
+                      "utilization_percent": utilization, "status": "observed" if utilization is not None else "unknown"})
+    return trend
+
+
+def _elapsed_between(start: str | None, end: str | None) -> float | None:
+    if not start or not end:
+        return None
+    try:
+        left = datetime.fromisoformat(start.replace("Z", "+00:00"))
+        right = datetime.fromisoformat(end.replace("Z", "+00:00"))
+        if left.tzinfo is None:
+            left = left.replace(tzinfo=timezone.utc)
+        if right.tzinfo is None:
+            right = right.replace(tzinfo=timezone.utc)
+        return max(0.0, round((right - left).total_seconds(), 3))
+    except ValueError:
+        return None
 
 
 def _analyze_session(client: OpenCodeClient, args: argparse.Namespace, *, report: bool) -> int:

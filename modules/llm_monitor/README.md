@@ -1,6 +1,6 @@
 # llm_monitor
 
-Read-only diagnostics for locally hosted LLM coding sessions. Python 3.11+; install with `python -m pip install -e .` and run `llm-monitor --help`.
+Read-only diagnostics and optional local telemetry recording for locally hosted LLM coding sessions. Python 3.11+; install with `python -m pip install -e .` and run `llm-monitor --help`.
 
 ## Commands
 
@@ -11,24 +11,53 @@ llm-monitor watch -s SESSION_ID [-i SECONDS] [-v] [-f text|json]
 llm-monitor watch --all [-i SECONDS] [-v] [-f text|json]
 llm-monitor diagnose -s SESSION_ID [-u URL] [-l LM_STUDIO_URL] [--mcp-jobs JSON] [-f text|json]
 llm-monitor report -s SESSION_ID [-u URL] [-l LM_STUDIO_URL] [--mcp-jobs JSON] [-f text|json]
+llm-monitor record -s SESSION_ID [-i SECONDS] [-d DATABASE] [-f text|json]
+llm-monitor record --all [-i SECONDS] [-d DATABASE] [-g] [-f text|json]
+llm-monitor history [-s SESSION_ID] [-d DATABASE] [-f text|json]
+llm-monitor report -s SESSION_ID --history [-D DATABASE] [-f text|json]
+llm-monitor db info [-d DATABASE] [-f text|json]
+llm-monitor db check [-d DATABASE] [-f text|json]
+llm-monitor db prune -r DAYS [-d DATABASE] [-w] [-f text|json]
 llm-monitor gpu [-f text|json]
 ```
 
-OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. The optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations. Its records are field-whitelisted, and directory-only matches are labeled hypotheses.
+OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. `-d/--directory` remains the OpenCode project-directory option on existing live commands; database commands use `-d/--database`. The historical `report` uses `-D/--database` to preserve that existing directory flag. Optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations.
 
-## Evidence and limits
+## Persistent collection
 
-The collector probes the documented cursor message endpoint once and uses it when the server returns its cursor envelope. Otherwise it polls the legacy bounded message endpoint with overlap and provider-ID deduplication. Polling retains a bounded metadata-only event cache. Full-history analysis labels a full legacy window partial; a short legacy response only describes the records returned and cannot prove older database history was never pruned.
+Recording is opt-in. `watch` remains an in-memory live view and does not write the telemetry database.
 
-Events retain IDs, timestamps, token categories, tool names and safe target metadata. Prompt text, source contents, tool output, and arbitrary MCP error text are not retained. Counts are `null` when a source is unavailable and scoped to observed history when coverage is partial.
+```powershell
+llm-monitor record --all --interval 2 --hardware
+llm-monitor history
+llm-monitor report --session SESSION_ID --history --format json
+llm-monitor db info
+llm-monitor db check
+llm-monitor db prune --older-than-days 90   # preview only
+llm-monitor db prune --older-than-days 90 --write
+```
 
-Context utilization is only computed when the OpenCode model ID exactly matches a loaded LM Studio model and both configured and loaded context values are available. The estimate uses the smaller capacity minus the OpenCode output reservation. Cache read/write counts remain separate from input counts. Cumulative session token totals never stand in for a single request's context use.
+```sh
+llm-monitor record --session SESSION_ID --interval 2 --database ./telemetry.sqlite3
+llm-monitor history --session SESSION_ID --database ./telemetry.sqlite3 --format json
+llm-monitor report --session SESSION_ID --history --database ./telemetry.sqlite3
+```
 
-Compaction counts are unique normalized operations; raw compaction parts are reported separately. Duration is shown only when both boundaries exist. Repeated-read findings are hypotheses based on recognizable tool metadata and exact normalized paths. Tool-reported edit success is not independent proof of file contents, tests, ownership, or task acceptance. `finish=stop` only describes one inference.
+By default, the database is outside the current directory: `%LOCALAPPDATA%\\llm-monitor\\telemetry.sqlite3` on Windows, `~/Library/Application Support/llm-monitor/telemetry.sqlite3` on macOS, and `$XDG_DATA_HOME/llm-monitor/telemetry.sqlite3` on Linux, WSL2, and Termux (falling back to `~/.local/share`). Set `-d/--database` to choose a different file. The current schema is version 1. New databases use SQLite WAL; event batches and their checkpoints commit in one transaction. SQLite serializes writers and unique event keys make repeated polling idempotent. Multiple sessions can be recorded by one `record --all` process; independent processes can share the database through SQLite locking.
 
-GPU output is a point-in-time device sample. Process memory is shown only where `resource_metrics` supports it. Device utilization and power are not attributed to a monitored session; the command does not create an inference peak sample.
+New sessions receive one initial history collection. Later cycles use the existing bounded/cursor-aware OpenCode poller. A restart replays the available overlap and records an offline gap; older events outside a provider's bounded window cannot be reconstructed. Partial and unavailable intervals remain represented as gaps. A historical report reads only stored telemetry, so it works without OpenCode but can only cover monitoring observations.
 
-`report` summarizes the history currently retrievable from OpenCode. It is not a persistent post-run forensic report. Phase 3 history storage and raw evidence export are out of scope.
+## Privacy, retention, and integrity
+
+The store keeps normalized metadata, timestamps, identifiers, token/timing data, tool names/outcomes, model configuration, safe coverage metadata, and optional hardware samples. It excludes prompt/response text, source contents, tool outputs, raw provider responses, MCP error bodies, working directories, session titles, and tool arguments. Recognized file targets are stored as SHA-256 identifiers. Process names in hardware attribution are hashed; device metrics remain device-level and are not assigned to a session. On POSIX, the database and newly created parent directory are restricted to the current user.
+
+Automatic retention is disabled. `db prune` previews event and hardware rows older than the requested age; only `--write` deletes them. A coverage gap is retained for sessions whose events were pruned. Back up the database with SQLite's backup API or while the monitor is stopped; WAL databases may have uncheckpointed data in sidecar files. Do not copy or point the tool at OpenCode's own database. `db check` runs SQLite integrity and foreign-key checks. Unsupported future schema versions and incomplete databases are rejected without replacement.
+
+## Evidence and metric limits
+
+The collector probes a cursor message endpoint when supported, otherwise uses bounded recent-message polling with overlap and provider-ID deduplication. A monitor starting late reports its observable window; it does not claim complete earlier history. Session cumulative token totals remain distinct from per-inference counts. Context utilization is computed only when stored OpenCode limits and a matching loaded LM Studio context are available. Compactions are unique normalized operations; raw parts remain separate and durations require both boundaries.
+
+`finish=stop` ends one inference only. Provider/session completion, work-product completion, and task acceptance remain distinct. Edit-tool success is not independent proof of file contents, tests, ownership, or acceptance. Optional MCP correlation uses an explicit supplied JSON snapshot and is not a live MCP transport. GPU readings are timestamped device or process measurements; point-in-time utilization/power are not attributable to a session and do not establish inference peaks. Missing observations are not treated as zero activity.
 
 ## Development checks
 
