@@ -1,0 +1,25 @@
+{
+  "source": "Runmux D5 Phase 2B 64K replay",
+  "outcome": "accepted",
+  "duration_sec": 671.78,
+  "model_limits": {"context": 65536, "output": 8192},
+  "run_cumulative_tokens": {"input": 2146292, "output": 17154, "reasoning": 44374, "total": 2207820},
+  "read_calls": 23,
+  "expected_poll": {
+    "total_messages": 62,
+    "assistant_messages": 55,
+    "compaction_count": 3,
+    "pending_permissions": 0,
+    "pending_questions": 0,
+    "last_assistant_id": "msg_1727f43c6001RCoR2DB4aQWLVF",
+    "last_assistant_finish": "stop",
+    "last_assistant_completed": 1792922322509,
+    "last_assistant_tokens": {
+      "total": 35268,
+      "input": 33616,
+      "output": 761,
+      "reasoning": 891,
+      "cache": {"read": 0, "write": 0}
+    }
+  }
+}
