@@ -44,13 +44,27 @@ def _write_text_if_changed(path: Path, content: str, verbose: bool) -> bool:
 def _make_posix_wrapper(bin_dir: Path, script_path: Path, verbose: bool) -> None:
     name = script_path.stem
     wrapper = bin_dir / name
-    # Replace symlink if it exists to ensure we control interpreter
-    if wrapper.exists() or wrapper.is_symlink():
-        try:
-            wrapper.unlink()
-        except Exception:
-            pass
-    content = f"""#!/usr/bin/env bash
+    repo_root = bin_dir.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from scripts_setup.launcher_generator import write_wrapper, is_managed_wrapper
+        if wrapper.exists() and not is_managed_wrapper(wrapper):
+            if verbose:
+                log_info(f"Preserving unmanaged wrapper: {wrapper}")
+            return
+        changed = write_wrapper(wrapper, name, is_windows=False)
+        if changed and verbose:
+            log_success(f"Wrote wrapper: {wrapper}")
+        elif not changed and verbose:
+            log_info(f"No changes for wrapper: {wrapper}")
+    except ImportError:
+        if wrapper.exists() or wrapper.is_symlink():
+            try:
+                wrapper.unlink()
+            except Exception:
+                pass
+        content = f"""#!/usr/bin/env bash
 set -euo pipefail
 DIR="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
 VENV_PY="$DIR/../.venv/bin/python"
@@ -59,7 +73,7 @@ if [ -x "$VENV_PY" ]; then
   if "$VENV_PY" - <<'PY'
 import sys
 try:
-    import rich  # sanity check common dependency
+    import rich
 except Exception:
     sys.exit(1)
 sys.exit(0)
@@ -70,34 +84,48 @@ PY
 fi
 exec python3 "$TARGET" "$@"
 """
-    _write_text_if_changed(wrapper, content, verbose)
+        _write_text_if_changed(wrapper, content, verbose)
 
 
 def _make_windows_wrapper(bin_dir: Path, script_path: Path, verbose: bool) -> None:
     name = script_path.stem
     wrapper = bin_dir / f"{name}.cmd"
-    # Best-effort overwrite
-    if wrapper.exists() or wrapper.is_symlink():
-        try:
-            wrapper.unlink()
-        except Exception:
-            pass
-    py_abs = (bin_dir.parent / ".venv" / "Scripts" / "python.exe").resolve()
-    script_abs = script_path.resolve()
-    content = (
-        "@echo off\r\n"
-        "setlocal\r\n"
-        f"set \"_VENV_PY={str(py_abs).replace('/', '\\')}\"\r\n"
-        f"set \"_SCRIPT={str(script_abs).replace('/', '\\')}\"\r\n"
-        "if exist \"%_VENV_PY%\" ( \r\n"
-        "  \"%_VENV_PY%\" \"%_SCRIPT%\" %*\r\n"
-        "  exit /b %ERRORLEVEL%\r\n"
-        ")\r\n"
-        "python \"%_SCRIPT%\" %*\r\n"
-    )
-    wrapper.write_text(content, encoding="utf-8", newline="\r\n")
-    if verbose:
-        log_success(f"Wrote wrapper: {wrapper}")
+    repo_root = bin_dir.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from scripts_setup.launcher_generator import write_wrapper, is_managed_wrapper
+        if wrapper.exists() and not is_managed_wrapper(wrapper):
+            if verbose:
+                log_info(f"Preserving unmanaged wrapper: {wrapper}")
+            return
+        changed = write_wrapper(wrapper, name, is_windows=True)
+        if changed and verbose:
+            log_success(f"Wrote wrapper: {wrapper}")
+        elif not changed and verbose:
+            log_info(f"No changes for wrapper: {wrapper}")
+    except ImportError:
+        if wrapper.exists() or wrapper.is_symlink():
+            try:
+                wrapper.unlink()
+            except Exception:
+                pass
+        py_abs = (bin_dir.parent / ".venv" / "Scripts" / "python.exe").resolve()
+        script_abs = script_path.resolve()
+        content = (
+            "@echo off\r\n"
+            "setlocal\r\n"
+            f'set "_VENV_PY={str(py_abs).replace("/", "\\")}"\r\n'
+            f'set "_SCRIPT={str(script_abs).replace("/", "\\")}"\r\n'
+            'if exist "%_VENV_PY%" ( \r\n'
+            '  "%_VENV_PY%" "%_SCRIPT%" %*\r\n'
+            '  exit /b %ERRORLEVEL%\r\n'
+            ')\r\n'
+            'python "%_SCRIPT%" %*\r\n'
+        )
+        wrapper.write_text(content, encoding="utf-8", newline="\r\n")
+        if verbose:
+            log_success(f"Wrote wrapper: {wrapper}")
 
 
 def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
@@ -126,6 +154,11 @@ def ensure_symlinks(scripts_dir: Path, bin_dir: Path, verbose: bool) -> None:
                 # Ensure we replace any existing symlink with a file wrapper
                 _make_posix_wrapper(bin_dir, file_path, verbose)
                 created += 1
+        try:
+            from scripts_setup.launcher_generator import generate_manifest
+            generate_manifest(scripts_dir)
+        except Exception:
+            pass
         log_info(f"Python script wrappers: {created} created/updated, {unchanged} unchanged.")
 
 

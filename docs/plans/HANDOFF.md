@@ -1,5 +1,12 @@
 # Repository-Wide Plans Handoff
 
+2026-10-24 active plan: Shared Launchers and Invocation-History Infrastructure
+Location: docs/plans/20261024-0925_shared-launchers-and-invocation-history/
+Branch: shared-launchers-20261024-0925
+Worktree: C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925
+Status: Plan created and thoroughly designed; awaiting user review and approval before Stage 1 execution.
+Scope: Cross-platform native wrappers, centralized invocation recording, SQLite WAL persistence, stable read-only consumer API in script_logging, manifest generator, and non-destructive migration tooling.
+
 2026-10-19 active plan: MangaDL CLI TUI & Side-by-Side Image Comparison Viewer
 Location: docs/plans/20261019-0358_mangadl-cli-tui-and-preview-viewer/
 Branch: mangadl-cli-tui-20261019-0358

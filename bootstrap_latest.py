@@ -190,13 +190,31 @@ def write_console_proxy(destination: Path, name: str, windows: bool, venv_dir: P
     target = venv_dir / ("Scripts" if windows else "bin") / (name + ".exe" if windows else name)
     if not target.is_file():
         raise FileNotFoundError(f"console entry point missing: {target}")
-    if windows:
-        destination.write_text(f'@echo off\n"{target}" %*\nexit /b %ERRORLEVEL%\n', encoding="utf-8")
-    else:
-        import shlex
 
-        destination.write_text(f'#!/usr/bin/env bash\nexec {shlex.quote(str(target))} "$@"\n', encoding="utf-8")
-        destination.chmod(0o755)
+    repo_root = destination.parent.parent
+    if str(repo_root) not in sys.path:
+        sys.path.insert(0, str(repo_root))
+    try:
+        from scripts_setup.launcher_generator import generate_windows_wrapper, generate_posix_wrapper
+        if windows:
+            destination.write_text(generate_windows_wrapper(name), encoding="utf-8", newline="\r\n")
+        else:
+            destination.write_text(generate_posix_wrapper(name), encoding="utf-8", newline="\n")
+            try:
+                destination.chmod(0o755)
+            except Exception:
+                pass
+    except ImportError:
+        if windows:
+            destination.write_text(f'@echo off\n"{target}" %*\nexit /b %ERRORLEVEL%\n', encoding="utf-8")
+        else:
+            import shlex
+
+            destination.write_text(f'#!/usr/bin/env bash\nexec {shlex.quote(str(target))} "$@"\n', encoding="utf-8")
+            try:
+                destination.chmod(0o755)
+            except Exception:
+                pass
 
 
 def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
@@ -317,6 +335,16 @@ def run(root: Path, *, dry_run: bool = False, verbose: bool = False) -> int:
                 print(f"[ERROR] {destination}: {exc}", file=sys.stderr)
                 continue
         created += 1
+
+    if not dry_run and created > 0:
+        try:
+            if str(root) not in sys.path:
+                sys.path.insert(0, str(root))
+            from scripts_setup.launcher_generator import generate_manifest
+            generate_manifest(root)
+        except Exception as exc:
+            if verbose:
+                print(f"[WARN] Failed to regenerate manifest: {exc}", file=sys.stderr)
 
     print(f"Summary: {len(missing)} missing package(s), {created} missing launcher(s), {existing} existing launcher(s), {failures} failure(s)")
     return 1 if failures or unknown else 0
