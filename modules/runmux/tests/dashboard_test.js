@@ -82,7 +82,28 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
   const elements = new Map();
   const intervals = new Map();
   const requests = [];
+  const historyPresetButtons = ["recent", "completed", "failed", "lost"].map((preset) => {
+    const button = element("button");
+    button.dataset.historyPreset = preset;
+    if (preset === "recent") button.classList.add("active");
+    return button;
+  });
   let nextInterval = 1;
+  for (const [selector, value] of Object.entries({
+    "#history-time-field": "created_at",
+    "#history-sort-by": "created_at",
+    "#history-sort-dir": "desc",
+    "#history-page-size": "50",
+  })) {
+    const control = element();
+    control.value = value;
+    elements.set(selector, control);
+  }
+  for (const selector of ["#history-name-exact", "#history-has-restarts"]) {
+    const control = element("input");
+    control.checked = false;
+    elements.set(selector, control);
+  }
   const document = {
     visibilityState: "visible",
     activeElement: { tagName: "BODY" },
@@ -90,7 +111,7 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
       if (!elements.has(selector)) elements.set(selector, element());
       return elements.get(selector);
     },
-    querySelectorAll() { return []; },
+    querySelectorAll(selector) { return selector === ".history-preset" ? historyPresetButtons : []; },
     createElement(tagName) { return element(tagName); },
     createElementNS(_namespace, tagName) { return element(tagName); },
     createTextNode(text) { return { textContent: text, nodeType: 3 }; },
@@ -166,6 +187,21 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     getOutputTruncated: () => outputTruncated,
     setSelectedId: (id) => { selectedId = id; },
     getSelectedId: () => selectedId,
+    openHistoryView,
+    closeHistoryView,
+    refreshRunHistory,
+    applyHistoryFilters,
+    applyHistoryPreset,
+    historyFilters: () => ({ ...runHistoryFilters }),
+    goHistoryPage,
+    setHistoryFilter,
+    historyState: () => ({ items: [...runHistoryItems], pageIndex: runHistoryPageIndex, hasMore: runHistoryHasMore, busy: runHistoryBusy, error: runHistoryError }),
+    refreshRunHistoryDetails,
+    loadRunEventsPage,
+    loadRunLineage,
+    goRunEventsPage,
+    getRunEvents: () => [...runEventsItems],
+    getRunLineage: () => runLineageData,
     getOverviewMode: () => overviewMode,
     setOverviewMode,
     cycleOverviewMode,
@@ -198,7 +234,7 @@ function dashboardHarness(storageData = new Map(), localData = new Map()) {
     refreshCapabilities,
     isPauseResumeSupported,
   };`, context);
-  return { context, elements, intervals, requests, storageData, getElement: (selector) => document.querySelector(selector) };
+  return { context, elements, intervals, requests, storageData, historyPresetButtons, getElement: (selector) => document.querySelector(selector) };
 }
 
 function response(payload, status = 200) {
@@ -2044,6 +2080,479 @@ async function testLifecyclePauseAndResumeExecution() {
   assert.match(feedbackBanner.textContent, /not supported on Windows/i);
 }
 
+async function testHistoricalExplorerUsesBoundedCursorPages() {
+  const { context, requests } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  const firstPage = requests.find((request) => request.url.includes("/api/runs/history"));
+  assert.ok(firstPage, `History view must use the dedicated history API; requests: ${requests.map((request) => request.url).join(", ")}`);
+  assert.match(firstPage.url, /limit=50/);
+  assert.match(firstPage.url, /sort_by=created_at/);
+  assert.doesNotMatch(firstPage.url, /include_total=true/);
+  assert.doesNotMatch(firstPage.url, /\/api\/runs(?:\?|$)/, "History must not retrieve the full registry");
+  firstPage.resolve(response({
+    items: [{ id: "run-a", name: "duplicate name", status: "finished", created_at: "2026-10-24T10:00:00Z" }],
+    next_cursor: "opaque-next", has_more: true, page_size: 1, total_count: null,
+  }));
+  await opening;
+  assert.equal(db.historyState().items[0].id, "run-a");
+  assert.equal(db.historyState().hasMore, true);
+
+  const next = db.goHistoryPage("next");
+  await Promise.resolve();
+  const nextPage = requests.filter((request) => request.url.includes("/api/runs/history")).at(-1);
+  assert.match(nextPage.url, /cursor=opaque-next/);
+  nextPage.resolve(response({ items: [], next_cursor: null, has_more: false, page_size: 0, total_count: null }));
+  await next;
+  assert.equal(db.historyState().pageIndex, 1);
+  assert.equal(db.historyState().items.length, 0);
+  const beforeClose = requests.length;
+  db.closeHistoryView();
+  assert.equal(requests.length, beforeClose, "Closing the history view must not dispatch any process lifecycle request");
+}
+
+async function testHistoricalExplorerSendsSupportedDateAndSortFilters() {
+  const { context, requests } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests.find((request) => request.url.includes("/api/runs/history")).resolve(response({ items: [], has_more: false }));
+  await opening;
+  const filtered = db.setHistoryFilter("since", "2026-10-24");
+  await Promise.resolve();
+  const request = requests.filter((item) => item.url.includes("/api/runs/history")).at(-1);
+  assert.match(request.url, /since=2026-10-24T/);
+  assert.match(request.url, /time_field=created_at/);
+  request.resolve(response({ items: [], has_more: false }));
+  await filtered;
+  const sorted = db.setHistoryFilter("sort_by", "ended_at");
+  await Promise.resolve();
+  const sortRequest = requests.filter((item) => item.url.includes("/api/runs/history")).at(-1);
+  assert.match(sortRequest.url, /sort_by=ended_at/);
+  sortRequest.resolve(response({ items: [], has_more: false }));
+  await sorted;
+}
+
+async function testHistoricalExplorerSerializesAdvancedFilters() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests.find((request) => request.url.includes("/api/runs/history")).resolve(response({ items: [], has_more: false }));
+  await opening;
+
+  getElement("#history-name-filter").value = "  worker alpha  ";
+  getElement("#history-name-exact").checked = true;
+  getElement("#history-state-filter").value = "terminal";
+  getElement("#history-exit-code-filter").value = "0";
+  getElement("#history-restart-parent-filter").value = " run_parent_001 ";
+  getElement("#history-duplicate-parent-filter").value = "run_parent_002";
+  getElement("#history-has-restarts").checked = true;
+  getElement("#history-status-filter").value = "finished";
+  getElement("#history-since").value = "2026-10-24";
+  getElement("#history-sort-by").value = "name";
+  getElement("#history-sort-dir").value = "asc";
+  getElement("#history-page-size").value = "100";
+  getElement("#history-time-field").value = "created_at";
+
+  const filtering = db.applyHistoryFilters();
+  await Promise.resolve();
+  const request = requests.filter((item) => item.url.includes("/api/runs/history")).at(-1);
+  const params = new URL(request.url, "http://runmux.invalid").searchParams;
+  assert.equal(params.get("state"), "terminal");
+  assert.equal(params.get("name"), "worker alpha");
+  assert.equal(params.get("name_exact"), "true");
+  assert.equal(params.get("exit_code"), "0");
+  assert.equal(params.get("restart_of"), "run_parent_001");
+  assert.equal(params.get("duplicate_of"), "run_parent_002");
+  assert.equal(params.get("has_restarts"), "true");
+  assert.equal(params.get("status"), "finished");
+  assert.match(params.get("since"), /^2026-10-24T/);
+  assert.equal(params.get("sort_by"), "name");
+  assert.equal(params.get("sort_dir"), "asc");
+  assert.equal(params.get("limit"), "100");
+  assert.equal(params.has("include_total"), false);
+  request.resolve(response({ items: [], has_more: false }));
+  await filtering;
+}
+
+async function testHistoricalExplorerRejectsInvalidExitCodesWithoutChangingCursorOrFilters() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests[0].resolve(response({ items: [{ id: "page-one" }], next_cursor: "cursor-two", has_more: true }));
+  await opening;
+  const nextPage = db.goHistoryPage("next");
+  await Promise.resolve();
+  requests[1].resolve(response({ items: [{ id: "page-two" }], has_more: false }));
+  await nextPage;
+  const beforeFilters = db.historyFilters();
+  const beforePage = db.historyState().pageIndex;
+
+  for (const invalid of ["1.5", "not-an-integer", "9223372036854775808", "-9223372036854775809"]) {
+    getElement("#history-exit-code-filter").value = invalid;
+    await db.applyHistoryFilters();
+    assert.equal(requests.length, 2, `Invalid exit code ${invalid} must not dispatch a request`);
+    assert.deepEqual(db.historyFilters(), beforeFilters);
+    assert.equal(db.historyState().pageIndex, beforePage);
+    assert.match(getElement("#history-state").textContent, /exit code must be a whole number/i);
+  }
+  getElement("#history-exit-code-filter").value = "";
+  getElement("#history-state-filter").value = "unknown";
+  await db.applyHistoryFilters();
+  assert.equal(requests.length, 2, "Invalid state values must not dispatch a request");
+  assert.deepEqual(db.historyFilters(), beforeFilters);
+  assert.equal(db.historyState().pageIndex, beforePage);
+  assert.match(getElement("#history-state").textContent, /choose active or terminal/i);
+  getElement("#history-state-filter").value = "";
+  await db.applyHistoryFilters();
+  assert.equal(requests.length, 2, "Restoring the current normalized filters should not dispatch a request");
+  assert.doesNotMatch(getElement("#history-state").textContent, /choose active or terminal/i);
+
+  for (const valid of ["9223372036854775807", "-9223372036854775808"]) {
+    getElement("#history-exit-code-filter").value = valid;
+    const filtering = db.applyHistoryFilters();
+    await Promise.resolve();
+    const request = requests.at(-1);
+    const params = new URL(request.url, "http://runmux.invalid").searchParams;
+    assert.equal(params.get("exit_code"), valid);
+    assert.equal(params.has("cursor"), false, "An effective filter change must restart from the first page");
+    assert.equal(db.historyState().pageIndex, 0);
+    request.resolve(response({ items: [], has_more: false }));
+    await filtering;
+  }
+}
+
+async function testHistoricalExplorerNormalizesFiltersAndClearsPresetControls() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests[0].resolve(response({ items: [], has_more: false }));
+  await opening;
+
+  getElement("#history-name-filter").value = "  worker  ";
+  const filtered = db.applyHistoryFilters();
+  await Promise.resolve();
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await filtered;
+  const requestCount = requests.length;
+  getElement("#history-name-filter").value = "worker";
+  await db.applyHistoryFilters();
+  assert.equal(requests.length, requestCount, "Equivalent normalized filters should not trigger another request");
+
+  getElement("#history-name-filter").value = "";
+  getElement("#history-name-exact").checked = true;
+  getElement("#history-state-filter").value = "active";
+  getElement("#history-exit-code-filter").value = "-1";
+  getElement("#history-restart-parent-filter").value = "  parent-run  ";
+  getElement("#history-duplicate-parent-filter").value = "  ";
+  getElement("#history-has-restarts").checked = true;
+  const changed = db.applyHistoryFilters();
+  await Promise.resolve();
+  const changedParams = new URL(requests.at(-1).url, "http://runmux.invalid").searchParams;
+  assert.equal(changedParams.has("name_exact"), false, "Exact-name mode without a name must be omitted");
+  assert.equal(getElement("#history-name-exact").checked, false);
+  assert.equal(changedParams.get("state"), "active");
+  assert.equal(changedParams.get("exit_code"), "-1");
+  assert.equal(changedParams.get("restart_of"), "parent-run");
+  assert.equal(changedParams.has("duplicate_of"), false);
+  assert.equal(changedParams.get("has_restarts"), "true");
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await changed;
+
+  getElement("#history-name-filter").value = "run";
+  getElement("#history-name-exact").checked = true;
+  getElement("#history-state-filter").value = "terminal";
+  getElement("#history-exit-code-filter").value = "0";
+  getElement("#history-restart-parent-filter").value = "parent";
+  getElement("#history-duplicate-parent-filter").value = "duplicate";
+  getElement("#history-has-restarts").checked = true;
+  const clearing = db.applyHistoryPreset("recent");
+  await Promise.resolve();
+  const clearRequest = requests.at(-1);
+  const clearParams = new URL(clearRequest.url, "http://runmux.invalid").searchParams;
+  for (const key of ["name", "name_exact", "state", "exit_code", "restart_of", "duplicate_of", "has_restarts"]) {
+    assert.equal(clearParams.has(key), false, `Clear must omit ${key}`);
+  }
+  assert.equal(getElement("#history-name-filter").value, "");
+  assert.equal(getElement("#history-name-exact").checked, false);
+  assert.equal(getElement("#history-state-filter").value, "");
+  assert.equal(getElement("#history-exit-code-filter").value, "");
+  assert.equal(getElement("#history-restart-parent-filter").value, "");
+  assert.equal(getElement("#history-duplicate-parent-filter").value, "");
+  assert.equal(getElement("#history-has-restarts").checked, false);
+  clearRequest.resolve(response({ items: [], has_more: false }));
+  await clearing;
+}
+
+async function testHistoryFailurePresetReconcilesCompatibleAndConflictingManualFilters() {
+  const { context, requests, historyPresetButtons, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests[0].resolve(response({ items: [], has_more: false }));
+  await opening;
+
+  const failures = db.applyHistoryPreset("failed");
+  await Promise.resolve();
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await failures;
+  assert.equal(db.historyFilters().failed_only, true);
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), ["failed"]);
+
+  getElement("#history-name-filter").value = "worker";
+  getElement("#history-name-exact").checked = true;
+  getElement("#history-state-filter").value = "terminal";
+  const compatible = db.applyHistoryFilters();
+  await Promise.resolve();
+  const compatibleParams = new URL(requests.at(-1).url, "http://runmux.invalid").searchParams;
+  assert.equal(compatibleParams.get("failed_only"), "true");
+  assert.equal(compatibleParams.get("name_exact"), "true");
+  assert.equal(compatibleParams.get("state"), "terminal");
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), ["failed"]);
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await compatible;
+
+  getElement("#history-status-filter").value = "lost";
+  const conflicting = db.applyHistoryFilters();
+  await Promise.resolve();
+  const conflictingParams = new URL(requests.at(-1).url, "http://runmux.invalid").searchParams;
+  assert.equal(conflictingParams.get("status"), "lost");
+  assert.equal(conflictingParams.has("failed_only"), false);
+  assert.equal(db.historyFilters().failed_only, false);
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), []);
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await conflicting;
+
+  getElement("#history-status-filter").value = "finished";
+  const completed = db.applyHistoryFilters();
+  await Promise.resolve();
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), ["completed"]);
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await completed;
+  getElement("#history-status-filter").value = "running";
+  const manualStatus = db.applyHistoryFilters();
+  await Promise.resolve();
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), []);
+  requests.at(-1).resolve(response({ items: [], has_more: false }));
+  await manualStatus;
+}
+
+async function testHistoryLostPresetConflictingStateInvalidatesCursorAndClearRemovesBooleans() {
+  const { context, requests, historyPresetButtons, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  const opening = db.openHistoryView();
+  await Promise.resolve();
+  requests[0].resolve(response({ items: [{ id: "lost-one" }], next_cursor: "lost-cursor", has_more: true }));
+  await opening;
+
+  const lost = db.applyHistoryPreset("lost");
+  await Promise.resolve();
+  requests.at(-1).resolve(response({ items: [{ id: "lost-one" }], next_cursor: "lost-cursor", has_more: true }));
+  await lost;
+  assert.equal(db.historyFilters().lost_only, true);
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), ["lost"]);
+
+  const pageTwo = db.goHistoryPage("next");
+  await Promise.resolve();
+  const obsolete = requests.at(-1);
+  getElement("#history-state-filter").value = "active";
+  const filtering = db.applyHistoryFilters();
+  await Promise.resolve();
+  const fresh = requests.at(-1);
+  const params = new URL(fresh.url, "http://runmux.invalid").searchParams;
+  assert.equal(obsolete.options.signal.aborted, true);
+  assert.equal(params.has("cursor"), false);
+  assert.equal(params.get("state"), "active");
+  assert.equal(params.has("lost_only"), false);
+  assert.equal(db.historyFilters().lost_only, false);
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), []);
+  fresh.resolve(response({ items: [{ id: "active-one" }], has_more: false }));
+  await filtering;
+  obsolete.resolve(response({ items: [{ id: "stale-lost" }], has_more: false }));
+  await pageTwo;
+  assert.equal(db.historyState().items[0].id, "active-one");
+
+  const clearing = db.applyHistoryPreset("recent");
+  await Promise.resolve();
+  const clearRequest = requests.at(-1);
+  const clearParams = new URL(clearRequest.url, "http://runmux.invalid").searchParams;
+  assert.equal(clearParams.has("failed_only"), false);
+  assert.equal(clearParams.has("lost_only"), false);
+  assert.equal(db.historyFilters().failed_only, false);
+  assert.equal(db.historyFilters().lost_only, false);
+  assert.deepEqual(historyPresetButtons.filter((button) => button.classList.contains("active")).map((button) => button.dataset.historyPreset), ["recent"]);
+  clearRequest.resolve(response({ items: [], has_more: false }));
+  await clearing;
+}
+
+async function testHistoricalExplorerIgnoresObsoleteFilterResponses() {
+  const { context, requests } = dashboardHarness();
+  const db = context.__dashboard;
+  const initial = db.openHistoryView();
+  await Promise.resolve();
+  const first = requests.find((request) => request.url.includes("/api/runs/history"));
+  const filtered = db.setHistoryFilter("name", "new query");
+  await Promise.resolve();
+  const second = requests.filter((request) => request.url.includes("/api/runs/history")).at(-1);
+  assert.notEqual(first, second);
+  assert.equal(first.options.signal.aborted, true, "Changing filters should abort an obsolete history request");
+  assert.match(second.url, /name=new\+query|name=new%20query/);
+  second.resolve(response({ items: [{ id: "fresh-id", name: "fresh", status: "lost" }], next_cursor: null, has_more: false, page_size: 1 }));
+  await filtered;
+  first.resolve(response({ items: [{ id: "stale-id", name: "stale", status: "finished" }], next_cursor: null, has_more: false, page_size: 1 }));
+  await initial;
+  assert.equal(db.historyState().items[0].id, "fresh-id");
+}
+
+async function testHistoricalExplorerReportsApiErrorsAndUnauthorizedSessions() {
+  const failed = dashboardHarness();
+  const failedDb = failed.context.__dashboard;
+  const failureLoad = failedDb.openHistoryView();
+  await Promise.resolve();
+  failed.requests.find((request) => request.url.includes("/api/runs/history")).resolve(response({ detail: "bad sort key" }, 400));
+  await failureLoad;
+  assert.match(failed.getElement("#history-state").textContent, /filters were rejected/i);
+
+  const unauthorized = dashboardHarness();
+  const unauthorizedLoad = unauthorized.context.__dashboard.openHistoryView();
+  await Promise.resolve();
+  unauthorized.requests.find((request) => request.url.includes("/api/runs/history")).resolve(response({ detail: "expired" }, 401));
+  await unauthorizedLoad;
+  assert.equal(unauthorized.getElement("#dashboard").hidden, true);
+  assert.match(unauthorized.getElement("#login-error").textContent, /session expired/i);
+}
+
+async function testRunDetailsShowEventProvenanceAndExplicitLineage() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("run-current");
+  const details = db.refreshRunHistoryDetails("run-current");
+  await Promise.resolve();
+  const eventsRequest = requests.find((request) => request.url.includes("/events?"));
+  const lineageRequest = requests.find((request) => request.url.includes("/lineage?"));
+  assert.match(eventsRequest.url, /limit=100/);
+  assert.match(lineageRequest.url, /limit=200/);
+  eventsRequest.resolve(response({ run_id: "run-current", has_more: false, events: [
+    { event_type: "pause", timestamp: "2026-10-24T10:00:00Z", provenance: "telemetry_store", reason: "private reason" },
+    { event_type: "registered", timestamp: "2026-10-24T09:00:00Z", provenance: "registry_record", related_run_id: "run-parent" },
+  ] }));
+  lineageRequest.resolve(response({ run_id: "run-current", root_run_id: "run-parent", ancestors: [
+    { id: "run-parent", name: "same name", status: "finished", created_at: "2026-10-24T08:00:00Z", relationship: "parent_restart" },
+  ], descendants: [{ id: "run-child", name: "same name", status: "failed", created_at: "2026-10-24T11:00:00Z", relationship: "child_duplicate" }], truncated: false }));
+  await details;
+  const eventsText = getElement("#run-events-list").textContent;
+  assert.match(eventsText, /Recorded event/);
+  assert.match(eventsText, /Registry timestamp/);
+  assert.doesNotMatch(eventsText, /private reason/);
+  assert.match(getElement("#run-lineage-list").textContent, /Restarted from: same name · run-parent/);
+  assert.match(getElement("#run-lineage-list").textContent, /Duplicated by: same name · run-child/);
+}
+
+async function testRunDetailsRepresentMissingEventsAndLineageHonestly() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("orphan-run");
+  const details = db.refreshRunHistoryDetails("orphan-run");
+  await Promise.resolve();
+  requests.find((request) => request.url.includes("/events?")).resolve(response({ events: [], has_more: false }));
+  requests.find((request) => request.url.includes("/lineage?")).resolve(response({ ancestors: [], descendants: [], truncated: false }));
+  await details;
+  assert.match(getElement("#run-events-state").textContent, /no lifecycle events or registry timestamp markers/i);
+  assert.match(getElement("#run-lineage-state").textContent, /no recorded restart or duplicate relationships/i);
+}
+
+async function testRunDetailsReportMissingRunsAndApiFailures() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("removed-run");
+  const details = db.refreshRunHistoryDetails("removed-run");
+  await Promise.resolve();
+  requests.find((request) => request.url.includes("/events?")).resolve(response({ detail: "Run not found" }, 404));
+  requests.find((request) => request.url.includes("/lineage?")).resolve(response({ detail: "registry unavailable" }, 503));
+  await details;
+  assert.match(getElement("#run-events-state").textContent, /no longer present in the registry/i);
+  assert.match(getElement("#run-lineage-state").textContent, /temporarily unavailable/i);
+}
+
+async function testRunDetailsExpiredEventAuthenticationInvalidatesAndReloadsCache() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("auth-event-run");
+  const details = db.refreshRunHistoryDetails("auth-event-run");
+  await Promise.resolve();
+  const eventRequest = requests.find((request) => request.url.includes("/events?"));
+  const lineageRequest = requests.find((request) => request.url.includes("/lineage?"));
+  eventRequest.resolve(response({ detail: "expired" }, 401));
+  await Promise.resolve();
+  lineageRequest.resolve(response({ run_id: "auth-event-run", ancestors: [], descendants: [] }));
+  await details;
+  assert.equal(getElement("#dashboard").hidden, true);
+  assert.match(getElement("#login-error").textContent, /session expired/i);
+  assert.equal(db.getRunEvents().length, 0);
+  assert.equal(db.getRunLineage(), null, "A stale paired lineage response must not populate the post-auth cache");
+
+  const reauthRequests = [];
+  context.fetch = (url, options = {}) => {
+    const pending = deferred();
+    reauthRequests.push({ url: `${url}`, options, ...pending });
+    return pending.promise;
+  };
+  const reloaded = db.refreshRunHistoryDetails("auth-event-run");
+  await Promise.resolve();
+  assert.equal(reauthRequests.length, 2, "Auth invalidation must reload both datasets for the same Run ID");
+  reauthRequests.find((request) => request.url.includes("/events?")).resolve(response({ events: [], has_more: false }));
+  reauthRequests.find((request) => request.url.includes("/lineage?")).resolve(response({ run_id: "auth-event-run", ancestors: [], descendants: [] }));
+  await reloaded;
+}
+
+async function testRunDetailsExpiredLineageAuthenticationDoesNotFabricateLineage() {
+  const { context, requests, getElement } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("auth-lineage-run");
+  const details = db.refreshRunHistoryDetails("auth-lineage-run");
+  await Promise.resolve();
+  const eventRequest = requests.find((request) => request.url.includes("/events?"));
+  const lineageRequest = requests.find((request) => request.url.includes("/lineage?"));
+  lineageRequest.resolve(response({ detail: "expired" }, 401));
+  await Promise.resolve();
+  eventRequest.resolve(response({ run_id: "auth-lineage-run", events: [], has_more: false }));
+  await details;
+  assert.equal(getElement("#dashboard").hidden, true);
+  assert.match(getElement("#login-error").textContent, /session expired/i);
+  assert.equal(db.getRunLineage(), null);
+}
+
+async function testRunDetailsReuseSameRunCacheAndReloadOnRunIdChange() {
+  const { context, requests } = dashboardHarness();
+  const db = context.__dashboard;
+  db.setSelectedId("same-name-run-a");
+  const first = db.refreshRunHistoryDetails("same-name-run-a");
+  await Promise.resolve();
+  assert.equal(requests.length, 2);
+  requests.find((request) => request.url.includes("/events?")).resolve(response({ events: [], has_more: false }));
+  requests.find((request) => request.url.includes("/lineage?")).resolve(response({ run_id: "same-name-run-a", ancestors: [], descendants: [] }));
+  await first;
+
+  await db.refreshRunHistoryDetails("same-name-run-a");
+  assert.equal(requests.length, 2, "Repeated Details visits for one Run ID must reuse successful event and lineage results");
+
+  db.setSelectedId("same-name-run-b");
+  const changedRun = db.refreshRunHistoryDetails("same-name-run-b");
+  await Promise.resolve();
+  assert.equal(requests.length, 4, "A distinct Run ID must load its own event and lineage history");
+  const newEvent = requests.filter((request) => request.url.includes("/events?")).at(-1);
+  const newLineage = requests.filter((request) => request.url.includes("/lineage?")).at(-1);
+  assert.match(newEvent.url, /\/api\/runs\/same-name-run-b\/events/);
+  assert.match(newLineage.url, /\/api\/runs\/same-name-run-b\/lineage/);
+  newEvent.resolve(response({ run_id: "same-name-run-b", events: [], has_more: false }));
+  newLineage.resolve(response({ run_id: "same-name-run-b", ancestors: [], descendants: [] }));
+  await changedRun;
+}
+
 Promise.all([
   testLifecycleButtonEligibilityByStatus(),
   testLifecyclePauseAndResumeExecution(),
@@ -2088,6 +2597,21 @@ Promise.all([
   Promise.resolve().then(testOutputSearchAndFilterAccurateScopeLabeling),
   testOutputLiveStreamingUpdatesSearchAndFilter(),
   Promise.resolve().then(testOutputTextSecurityAndXssImmunity),
+  testHistoricalExplorerUsesBoundedCursorPages(),
+  testHistoricalExplorerSendsSupportedDateAndSortFilters(),
+  testHistoricalExplorerSerializesAdvancedFilters(),
+  testHistoricalExplorerRejectsInvalidExitCodesWithoutChangingCursorOrFilters(),
+  testHistoricalExplorerNormalizesFiltersAndClearsPresetControls(),
+  testHistoryFailurePresetReconcilesCompatibleAndConflictingManualFilters(),
+  testHistoryLostPresetConflictingStateInvalidatesCursorAndClearRemovesBooleans(),
+  testHistoricalExplorerIgnoresObsoleteFilterResponses(),
+  testHistoricalExplorerReportsApiErrorsAndUnauthorizedSessions(),
+  testRunDetailsShowEventProvenanceAndExplicitLineage(),
+  testRunDetailsRepresentMissingEventsAndLineageHonestly(),
+  testRunDetailsReportMissingRunsAndApiFailures(),
+  testRunDetailsExpiredEventAuthenticationInvalidatesAndReloadsCache(),
+  testRunDetailsExpiredLineageAuthenticationDoesNotFabricateLineage(),
+  testRunDetailsReuseSameRunCacheAndReloadOnRunIdChange(),
 ]).catch((error) => {
   console.error(error);
   process.exitCode = 1;

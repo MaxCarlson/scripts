@@ -1,5 +1,24 @@
 # Runmux Current Handoff
 
+## Runmux Web UI — Phase 6C historical explorer frontend
+
+The historical explorer frontend is complete pending independent audit on branch
+`codex/runmux-6c-history-frontend-local-pilot-20261024`, based on the pinned
+`4591b3247bdfafe82f0b8d1a73f40002152a6c2b`. It uses the integrated history API
+with bounded cursor pages and supported filters/sorts, and presents recorded
+events separately from registry-derived markers plus explicit Run ID lineage.
+The UI exposes the supported state, exact name, exit code, restart/duplicate
+parent, and `has_restarts` filters. Focused Node/Python tests and the full real
+headless Chrome suite pass, including History-open responsive checks at five
+widths. The three Phase 6C screenshots and local-dispatch/routing ledger are in
+`docs/plans/20261024-1805_runmux-history-frontend-local-pilot/`. Gate B passed;
+the table-renderer, D1, D2, and D5 local implementation/test assignments are
+recorded with their actual outcomes. No feature implementation or test changes
+from these assignments were accepted; the coordinator-owned fallbacks and
+tests passed. This branch is not merged. Windows Chrome was validated here;
+other platforms were not exercised. The feature branch is committed and pushed
+for independent GPT-6.1 Sol Medium audit.
+
 ## Runmux Web UI — Phase 4A integrated (Backend and Frontend)
 
 Phase 4A (Lifecycle Controls Backend and Frontend) is fully integrated and merged into `main` from `codex/runmux-lifecycle-backend-20261024` and `codex/runmux-web-lifecycle-frontend-20261024` with no conflicts.

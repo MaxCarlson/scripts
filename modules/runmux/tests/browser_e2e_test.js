@@ -81,6 +81,17 @@ async function runBrowserE2E() {
     `store.update_run("${runId2}", exit_code=0)`,
     `store.update_run("${runId2}", ended_at=datetime.fromtimestamp(time.time() - 690, timezone.utc).isoformat())`,
     `store.update_run("${runId}", restart_of="${runId2}")`,
+    "for index in range(60):",
+    "    history_id = f'20261024-071000-{index:06x}'",
+    "    history_status = 'failed' if index == 2 else 'lost' if index == 3 else 'finished'",
+    "    history_name = 'same historical name' if index < 2 else f'history run {index}'",
+    "    store.create_run(",
+    "        run_id=history_id, name=history_name, status=history_status, program='synthetic-worker.exe',",
+    "        argv_json=json.dumps(['synthetic-worker.exe', 'private-argument']), cwd=r'C:\\private',",
+    "        env_overrides_json=json.dumps({'TOKEN': 'private-value'}), auth_token='private-auth',",
+    "        log_path=Path(r'C:\\private\\run.log'), command_line='synthetic-worker.exe --private-value',",
+    "    )",
+    "    if history_status == 'failed': store.update_run(history_id, exit_code=2, ended_at=datetime.now(timezone.utc).isoformat())",
     "from runmux.telemetry_store import TelemetryStore",
     "from runmux.stats import HostTelemetry, ProcessStats",
     `record = store.get_run("${runId}")`,
@@ -134,7 +145,7 @@ async function runBrowserE2E() {
     "import runmux.web",
     "def mock_create_managed_run(target_store, **kwargs):",
     "    runs = target_store.list_runs()",
-    "    new_id = f'20261024-09990{len(runs) + 1}-abcdef'",
+    "    new_id = f'20261024-0999{len(runs) + 1:02d}-abcdef'",
     "    new_dir = target_store.state_dir / 'runs' / new_id",
     "    new_dir.mkdir(parents=True, exist_ok=True)",
     "    log = new_dir / 'output.ansi'",
@@ -303,10 +314,12 @@ async function runBrowserE2E() {
 
     await evaluate(`(function() {
       window.__historyRequestUrls = [];
+      window.__phase6RequestUrls = [];
       const originalFetch = window.fetch.bind(window);
       window.fetch = (input, options) => {
         const url = typeof input === "string" ? input : input.url;
         if (url.includes("/telemetry/history")) window.__historyRequestUrls.push(url);
+        if (url.includes("/api/runs/history") || url.includes("/events?") || url.includes("/lineage?")) window.__phase6RequestUrls.push(url);
         return originalFetch(input, options);
       };
     })()`);
@@ -513,6 +526,105 @@ async function runBrowserE2E() {
     const navCount = await evaluate(`document.querySelector("#output-search-count").textContent`);
     assert.match(navCount, /^3 of [\d,]+/);
     console.log("Verified DOM bounding (2,000 max nodes) and accurate labels in real Chrome engine.");
+
+    // 12A. Phase 6C: bounded historical explorer, server-side filters, events, and lineage
+    console.log("Testing Phase 6C historical run explorer in real Chrome...");
+    const phase6ScreenshotsDir = path.join(__dirname, "../docs/plans/20261024-1805_runmux-history-frontend-local-pilot/screenshots");
+    fs.mkdirSync(phase6ScreenshotsDir, { recursive: true });
+    await evaluate(`document.querySelector("#open-history-button").click()`);
+    let historyLoaded = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(150);
+      historyLoaded = await evaluate(`document.querySelectorAll("#history-run-rows tr").length > 0 && !document.querySelector("#history-state").textContent.includes("Loading")`);
+      if (historyLoaded) break;
+    }
+    assert.equal(historyLoaded, true, "Historical runs did not load");
+    const historyPageState = await evaluate(`({ rows: document.querySelectorAll("#history-run-rows tr").length, text: document.querySelector("#history-page-state").textContent, body: document.body.innerText })`);
+    assert.equal(historyPageState.rows, 50, "Initial history page must stay bounded at the requested size");
+    assert.match(historyPageState.text, /more results/);
+    assert.doesNotMatch(historyPageState.body, /private-argument|private-value|C:\\\\private|private-auth/i, "History view must not disclose protected command or environment fields");
+    let phase6Requests = await evaluate(`window.__phase6RequestUrls.slice()`);
+    assert.ok(phase6Requests.some((url) => url.includes("/api/runs/history?limit=50") && url.includes("sort_by=created_at")));
+    assert.ok(phase6Requests.every((url) => !url.includes("include_total=true")));
+    assert.ok(phase6Requests.every((url) => !url.startsWith("/api/runs?")), "History view must not fetch the entire registry");
+    await sendCommand("Emulation.setDeviceMetricsOverride", { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false });
+    await sleep(150);
+    const historyListShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(phase6ScreenshotsDir, "historical_runs_table.png"), Buffer.from(historyListShot.data, "base64"));
+
+    await evaluate(`document.querySelector("#history-next-page").click()`);
+    await sleep(250);
+    const secondHistoryPage = await evaluate(`({ rows: document.querySelectorAll("#history-run-rows tr").length, text: document.querySelector("#history-page-state").textContent })`);
+    assert.equal(secondHistoryPage.rows, 12, "Second history page should contain only remaining synthetic runs");
+    assert.match(secondHistoryPage.text, /Page 2/);
+    phase6Requests = await evaluate(`window.__phase6RequestUrls.slice()`);
+    assert.ok(phase6Requests.some((url) => url.includes("/api/runs/history?") && url.includes("cursor=")), "Next page must use the opaque server cursor");
+    await evaluate(`document.querySelector("#history-previous-page").click()`);
+    await sleep(180);
+
+    await evaluate(`(function() { const input = document.querySelector("#history-name-filter"); input.value = "same historical name"; document.querySelector("#history-filter-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); })()`);
+    await sleep(250);
+    const duplicateNames = await evaluate(`Array.from(document.querySelectorAll("#history-run-rows tr"), row => Array.from(row.querySelectorAll("button"), button => button.textContent).find(Boolean)).filter(Boolean)`);
+    assert.equal(duplicateNames.length, 2, "Both same-named historical runs must remain separately addressable");
+    assert.equal(new Set(duplicateNames).size, 2, "Same-named runs must have distinct immutable Run IDs");
+    phase6Requests = await evaluate(`window.__phase6RequestUrls.slice()`);
+    assert.ok(phase6Requests.some((url) => url.includes("name=same+historical+name") || url.includes("name=same%20historical%20name")), "Name filter must be sent to the server");
+
+    await evaluate(`document.querySelector('[data-history-preset="failed"]').click()`);
+    await sleep(200);
+    const failureRows = await evaluate(`Array.from(document.querySelectorAll("#history-run-rows .history-status"), badge => badge.textContent.toLowerCase())`);
+    assert.deepEqual(failureRows, ["failed"], "Failures preset must show only API-matched failures");
+    await evaluate(`document.querySelector('[data-history-preset="lost"]').click()`);
+    await sleep(200);
+    const lostRows = await evaluate(`Array.from(document.querySelectorAll("#history-run-rows .history-status"), badge => badge.textContent.toLowerCase())`);
+    assert.deepEqual(lostRows, ["lost"], "LOST preset must show only LOST runs");
+    phase6Requests = await evaluate(`window.__phase6RequestUrls.slice()`);
+    assert.ok(phase6Requests.some((url) => url.includes("failed_only=true")));
+    assert.ok(phase6Requests.some((url) => url.includes("lost_only=true")));
+
+    await evaluate(`document.querySelector('[data-history-preset="recent"]').click()`);
+    await sleep(180);
+    await evaluate(`(function() { const input = document.querySelector("#history-name-filter"); input.value = "e2e worker"; document.querySelector("#history-filter-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })); })()`);
+    await sleep(220);
+    await evaluate(`(function() { const button = Array.from(document.querySelectorAll("#history-run-rows button")).find((candidate) => candidate.textContent === "${runId}"); if (!button) throw new Error("Run ID not found in historical results"); button.click(); })()`);
+    let historyDetailsLoaded = false;
+    for (let i = 0; i < 40; i++) {
+      await sleep(150);
+      historyDetailsLoaded = await evaluate(`document.querySelector("#detail-id").textContent === "${runId}" && document.querySelectorAll("#run-events-list .run-event").length >= 4 && document.querySelectorAll("#run-lineage-list .history-lineage-link").length > 0`);
+      if (historyDetailsLoaded) break;
+    }
+    assert.equal(historyDetailsLoaded, true, "Historical run events and explicit lineage did not load");
+    const historyDetailState = await evaluate(`({ events: document.querySelector("#run-events-list").innerText, lineage: document.querySelector("#run-lineage-list").innerText })`);
+    assert.match(historyDetailState.events, /Recorded event/i);
+    assert.match(historyDetailState.events, /Registry timestamp/i);
+    assert.match(historyDetailState.events, /pause|resume/);
+    assert.match(historyDetailState.lineage, /Restarted from/);
+    assert.ok(historyDetailState.lineage.includes(runId2));
+    phase6Requests = await evaluate(`window.__phase6RequestUrls.slice()`);
+    assert.ok(phase6Requests.some((url) => url.includes(`/api/runs/${runId}/events?limit=100`)));
+    assert.ok(phase6Requests.some((url) => url.includes(`/api/runs/${runId}/lineage?limit=200`)));
+    await evaluate(`document.querySelector(".run-history-details").scrollIntoView({ block: "start" })`);
+    await sleep(100);
+    const detailsShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+    fs.writeFileSync(path.join(phase6ScreenshotsDir, "historical_run_events_lineage.png"), Buffer.from(detailsShot.data, "base64"));
+
+    await evaluate(`document.querySelector("#run-lineage-list .history-lineage-link").click()`);
+    await sleep(350);
+    const navigatedRunId = await evaluate(`document.querySelector("#detail-id").textContent`);
+    assert.equal(navigatedRunId, runId2, "Lineage navigation must open the linked immutable Run ID");
+    await evaluate(`document.querySelector(".history-workspace-tab").click()`);
+    await sleep(100);
+    const runTabsBeforeHistoryClose = await evaluate(`document.querySelectorAll(".workspace-tab-select[aria-controls='run-inspector']").length`);
+    await evaluate(`document.querySelector(".history-workspace-tab").closest(".workspace-tab").querySelector(".workspace-tab-close").click()`);
+    await sleep(120);
+    const closeHistoryState = await evaluate(`({ historyHidden: document.querySelector("#history-view").hidden, selectedRunId: document.querySelector("#detail-id").textContent, runTabs: document.querySelectorAll(".workspace-tab-select[aria-controls='run-inspector']").length })`);
+    assert.equal(closeHistoryState.historyHidden, true, "Closing history should only close its view");
+    assert.equal(closeHistoryState.selectedRunId, runId2, "The selected run should remain available after closing history");
+    assert.ok(runTabsBeforeHistoryClose > 0 && closeHistoryState.runTabs > 0, "Existing process tabs must survive the history view");
+    await evaluate(`Array.from(document.querySelectorAll(".workspace-tab-select[aria-controls='run-inspector']")).find((button) => button.title.endsWith("· ${runId}"))?.click()`);
+    await sleep(150);
+    assert.equal(await evaluate(`document.querySelector("#detail-id").textContent`), runId, "Restore the running fixture before existing telemetry checks");
+    console.log("Verified bounded server pagination, duplicate Run IDs, failure/LOST filters, provenance, lineage navigation, privacy, and view-only close in Chrome.");
 
     // 13. Phase 5A: Mode Switching & Direct Selection
     console.log("Testing Phase 5A overview modes and switching in real Chrome...");
@@ -735,7 +847,11 @@ async function runBrowserE2E() {
     console.log("Verified persistence of mode across browser reloads.");
 
     // 15. Responsive Viewports Testing
-    console.log("Testing responsive viewports (390, 768, 1366, 1920, 2560px)...");
+    console.log("Testing responsive viewports with History open (390, 768, 1366, 1920, 2560px)...");
+    await evaluate(`document.querySelector("#open-history-button").click()`);
+    await sleep(250);
+    const responsiveHistoryScreenshots = path.join(__dirname, "../docs/plans/20261024-1805_runmux-history-frontend-local-pilot/screenshots");
+    fs.mkdirSync(responsiveHistoryScreenshots, { recursive: true });
     const viewports = [
       { width: 390, height: 844, mobile: true },
       { width: 768, height: 1024, mobile: false },
@@ -746,34 +862,77 @@ async function runBrowserE2E() {
     for (const vp of viewports) {
       await sendCommand("Emulation.setDeviceMetricsOverride", { width: vp.width, height: vp.height, deviceScaleFactor: 1, mobile: vp.mobile });
       await sleep(200);
-      const scrollWidth = await evaluate(`document.documentElement.scrollWidth`);
-      const clientWidth = await evaluate(`document.documentElement.clientWidth`);
-      assert.ok(scrollWidth <= clientWidth + 2, `Horizontal overflow at ${vp.width}px: scrollWidth=${scrollWidth}, clientWidth=${clientWidth}`);
+      const historyLayout = await evaluate(`(() => {
+        const history = document.querySelector("#history-view");
+        const form = document.querySelector("#history-filter-form");
+        const tableScroll = document.querySelector(".history-table-scroll");
+        const apply = document.querySelector(".history-apply-button");
+        const viewRect = history.getBoundingClientRect();
+        const applyRect = apply.getBoundingClientRect();
+        if (applyRect.bottom > viewRect.bottom) history.scrollTop += applyRect.bottom - viewRect.bottom;
+        const reachableApply = apply.getBoundingClientRect();
+        return {
+          open: !history.hidden,
+          width: window.innerWidth,
+          pageWidth: document.documentElement.scrollWidth,
+          clientWidth: document.documentElement.clientWidth,
+          tableClientWidth: tableScroll.clientWidth,
+          tableScrollWidth: tableScroll.scrollWidth,
+          tableOverflowX: getComputedStyle(tableScroll).overflowX,
+          filterCount: form.querySelectorAll("input, select").length,
+          actionCount: form.querySelectorAll("button").length,
+          applyReachable: reachableApply.width > 0 && reachableApply.top >= viewRect.top - 1 && reachableApply.bottom <= viewRect.bottom + 1,
+          historyWidth: history.clientWidth,
+        };
+      })()`);
+      assert.equal(historyLayout.open, true, `History must remain open at ${vp.width}px`);
+      assert.ok(historyLayout.pageWidth <= historyLayout.clientWidth + 2, `Page overflow at ${vp.width}px: ${JSON.stringify(historyLayout)}`);
+      assert.equal(historyLayout.filterCount, 14, `All History filters must remain present at ${vp.width}px`);
+      assert.equal(historyLayout.actionCount, 2, `Apply and Clear must remain reachable at ${vp.width}px`);
+      assert.equal(historyLayout.applyReachable, true, `Apply must be reachable in the History scroll area at ${vp.width}px`);
+      assert.equal(historyLayout.tableOverflowX, "auto");
+      if (vp.width === 390) {
+        assert.ok(historyLayout.tableScrollWidth > historyLayout.tableClientWidth, "Narrow History table must scroll inside its own container");
+        await evaluate(`document.querySelector("#history-view").scrollTop = 0`);
+        const narrowHistoryShot = await sendCommand("Page.captureScreenshot", { format: "png" });
+        fs.writeFileSync(path.join(responsiveHistoryScreenshots, "historical_runs_responsive_390.png"), Buffer.from(narrowHistoryShot.data, "base64"));
+      }
+
     }
+    await evaluate(`document.querySelector("#close-history-button").click()`);
+    await sleep(100);
+    await evaluate(`document.querySelector("#tab-output").click()`);
+    const outputAfterHistory = await evaluate(`({ historyHidden: document.querySelector("#history-view").hidden, runInspectorVisible: !document.querySelector("#run-inspector").hidden, outputVisible: !document.querySelector("#output-pane").hidden, outputTab: document.querySelector("#tab-output").getAttribute("aria-selected") })`);
+    assert.equal(outputAfterHistory.historyHidden, true);
+    assert.equal(outputAfterHistory.runInspectorVisible, true);
+    assert.equal(outputAfterHistory.outputVisible, true, "Existing Output tab must remain usable after closing History");
+    assert.equal(outputAfterHistory.outputTab, "true");
+    await evaluate(`document.querySelector("#tab-details").click()`);
     await sendCommand("Emulation.clearDeviceMetricsOverride");
-    console.log("Verified responsive stability across all viewports without horizontal overflow.");
+    console.log("Verified responsive History controls, bounded page width, internal table scrolling, and existing run tabs across all viewports.");
 
     // 16. Run switching and terminal run handling
     console.log("Testing run switching and terminal run handling...");
-    // Switch to finished run
+    // Switch to the explicit finished Run ID; synthetic history fixtures also appear in the explorer.
     await evaluate(`(function() {
-      const rows = document.querySelectorAll(".process-row");
-      if (rows.length > 1) rows[1].click();
+      const row = Array.from(document.querySelectorAll(".process-row")).find((candidate) => candidate.title.endsWith("· ${runId2}"));
+      if (!row) throw new Error("Finished fixture run is missing from the explorer");
+      row.click();
     })()`);
     await sleep(800);
     const selectedFinished = await evaluate(`document.querySelector("#selected-name").textContent`);
-    assert.equal(selectedActiveOrFinished(selectedFinished), true);
+    assert.equal(selectedFinished, "finished worker");
 
     // Switch back to active run
-    await evaluate(`document.querySelectorAll(".process-row")[0].click()`);
+    await evaluate(`(function() {
+      const row = Array.from(document.querySelectorAll(".process-row")).find((candidate) => candidate.title.endsWith("· ${runId}"));
+      if (!row) throw new Error("Active fixture run is missing from the explorer");
+      row.click();
+    })()`);
     await sleep(800);
     const selectedActive = await evaluate(`document.querySelector("#selected-name").textContent`);
     assert.equal(selectedActive, "e2e worker");
     console.log("Verified run switching while telemetry is active.");
-
-    function selectedActiveOrFinished(name) {
-      return name === "finished worker" || name === "e2e worker";
-    }
 
     // 17. Phase 4A: Selected-process Lifecycle Browser Controls
     console.log("Testing Phase 4A lifecycle controls and confirmation modal in real Chrome...");
@@ -894,6 +1053,23 @@ async function runBrowserE2E() {
       }
     }
     assert.equal(killedConfirmed, true, "Process status should transition to 'killed'");
+
+    // The selected status can update before the lifecycle request's finally block
+    // releases its in-flight guard. Wait for controls to reflect the settled state.
+    let killedControlsSettled = false;
+    for (let i = 0; i < 20; i++) {
+      const controlsSettled = await evaluate(`({
+        restartEnabled: !document.querySelector("#action-restart-btn").disabled,
+        duplicateEnabled: !document.querySelector("#action-duplicate-btn").disabled,
+        pauseDisabled: document.querySelector("#action-pause-btn").disabled,
+      })`);
+      if (controlsSettled.restartEnabled && controlsSettled.duplicateEnabled && controlsSettled.pauseDisabled) {
+        killedControlsSettled = true;
+        break;
+      }
+      await sleep(100);
+    }
+    assert.equal(killedControlsSettled, true, "Lifecycle controls should settle after the killed status is shown");
 
     // Verify updated button states on killed run:
     // Stop: disabled, Kill: disabled, Restart: ENABLED, Duplicate: enabled, Pause: disabled

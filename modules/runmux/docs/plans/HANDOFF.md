@@ -19,6 +19,8 @@ YYYYMMDD-HHMM_<descriptive-plan-name>/
 
 The latest active Runmux Web UI phase plan is:
 
+- `20261024-1805_runmux-history-frontend-local-pilot/`: Phase 6C historical explorer frontend and controlled local-model dispatch evaluation. Read its `00_implementation-plan.md`, `STATUS.md`, `checklist.md`, and `LOCAL_DISPATCH_LEDGER.md`. Current branch is `codex/runmux-6c-history-frontend-local-pilot-20261024`; D0–D7 are complete, and the pushed branch remains unmerged for independent audit.
+
 - `20261024-1530_runmux-historical-runs-backend/`: Phase 6C historical run discovery, filtering, keyset pagination, and lifecycle events backend. Read its `00_implementation-plan.md`, `01_existing_capabilities_matrix.md`, `STATUS.md`, and `HANDOFF.md` for architecture, contracts, and verification evidence.
 
 The completed Runmux Web UI Phase 5C historical telemetry plan is:

@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import pytest
+from fastapi.testclient import TestClient
 
 from runmux.store import RunNotFoundError, RunStore
 from runmux.telemetry_store import TelemetryStore
@@ -249,3 +250,88 @@ def test_ten_thousand_run_registry_queries_remain_page_bounded(tmp_path: Path) -
     assert len(first.items) == len(middle.items) == len(filtered.items) == 50
     assert all(record.status == "failed" and "worker-2" in (record.name or "") for record in filtered.items)
     print(f"10k registry query benchmark: first={first_ms:.2f}ms next={next_ms:.2f}ms filtered={filtered_ms:.2f}ms")
+
+    app = create_runmux_web_app(tmp_path, login_code="history-test-login", enable_telemetry_history=False)
+    query = {
+        "limit": 50,
+        "sort_by": "created_at",
+        "sort_dir": "desc",
+        "state": "terminal",
+        "name": "worker-0",
+        "name_exact": "true",
+        "exit_code": 1,
+        "failed_only": "true",
+    }
+    with TestClient(app, base_url="http://localhost") as client:
+        client.headers.update({"Origin": "http://localhost"})
+        unauthorized = client.get("/api/runs/history", params=query)
+        assert unauthorized.status_code == 401
+        login = client.post(
+            "/auth/login",
+            json={"code": "history-test-login"},
+            headers={"Origin": "http://localhost"},
+        )
+        assert login.status_code == 204
+
+        first_http = client.get("/api/runs/history", params=query)
+        assert first_http.status_code == 200
+        first_payload = first_http.json()
+        first_items = first_payload["items"]
+        assert first_payload["page_size"] == len(first_items) == 50
+        assert first_payload["has_more"] is True
+        assert first_payload["total_count"] is None
+        assert all(item["status"] == "failed" and item["name"] == "worker-0" for item in first_items)
+        assert len({item["id"] for item in first_items}) == 50
+        assert not {"argv_json", "cwd", "env_overrides_json", "auth_token", "log_path", "command_line"} & set(
+            first_items[0]
+        )
+
+        cursor = first_payload["next_cursor"]
+        mismatched = client.get("/api/runs/history", params={**query, "cursor": cursor, "status": "failed"})
+        assert mismatched.status_code == 400
+
+        # A newer insert is beyond the first page's captured upper boundary.
+        inserted_id = "20261025-000000-ffffff"
+        _insert_run(
+            store,
+            inserted_id,
+            created_at="2026-10-25T00:00:00+00:00",
+            status="failed",
+            name="worker-0",
+            exit_code=1,
+        )
+        second_http = client.get("/api/runs/history", params={**query, "cursor": cursor})
+        assert second_http.status_code == 200
+        second_payload = second_http.json()
+        second_ids = {item["id"] for item in second_payload["items"]}
+        assert len(second_ids) == 50
+        assert inserted_id not in second_ids
+        assert not ({item["id"] for item in first_items} & second_ids)
+
+        # Membership changes are not snapshot-isolated: a later matching row can disappear.
+        fresh_first = client.get("/api/runs/history", params=query)
+        assert fresh_first.status_code == 200
+        mutation_cursor = fresh_first.json()["next_cursor"]
+        before_mutation = client.get("/api/runs/history", params={**query, "cursor": mutation_cursor})
+        assert before_mutation.status_code == 200
+        before_items = before_mutation.json()["items"]
+        assert len(before_items) == 50
+        removed_from_filter = before_items[0]["id"]
+        with sqlite3.connect(store.db_path) as connection:
+            connection.execute("UPDATE runs SET status = 'lost' WHERE id = ?", (removed_from_filter,))
+        after_mutation = client.get("/api/runs/history", params={**query, "cursor": mutation_cursor})
+        assert after_mutation.status_code == 200
+        after_payload = after_mutation.json()
+        after_ids = {item["id"] for item in after_payload["items"]}
+        before_ids = {item["id"] for item in before_items}
+        assert removed_from_filter not in after_ids
+        assert len(after_ids) == 50
+        assert len(before_ids - after_ids) == 1
+        assert len(after_ids - before_ids) == 1, "A later record shifts into the page after a matching run leaves the filter"
+        assert after_payload["has_more"] is False
+
+        maximum = client.get("/api/runs/history", params={"limit": 200})
+        assert maximum.status_code == 200
+        assert maximum.json()["page_size"] <= 200
+        too_large = client.get("/api/runs/history", params={"limit": 201})
+        assert too_large.status_code == 400
