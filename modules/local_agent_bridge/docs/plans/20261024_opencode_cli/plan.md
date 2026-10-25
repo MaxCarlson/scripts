@@ -64,4 +64,4 @@
 - [x] Bump compatible feature version to 3.2.0.
 - [x] Run focused pytest, lint, and CLI regression smokes; review the changed paths and diff.
 - [x] Attempt live status/attach only if a suitable authorized OpenCode server/session is already available; never start one for acceptance. Live status was blocked by sandbox socket policy, and no session ID was supplied for live TUI attachment.
-- [ ] Commit and push the feature branch only.
+- [x] Commit and push the feature branch only (`de07b264`); no merge was performed.

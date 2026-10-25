@@ -22,10 +22,11 @@ Windows `WinError 10013` socket policy and returned the local execution error
 with exit 2. No live TUI attach was attempted: no genuine session ID was supplied
 and this session did not dispatch work to OpenCode.
 
-Next: finish diff review, then commit and push this feature branch only. Remote
+Feature commit `de07b264` has been pushed to
+`origin/codex/local-agent-opencode-cli-20261024`; no merge was performed. Remote
 server credentials are not forwarded unless the target is loopback; forwarding
 them to remote endpoints remains intentionally unsupported pending explicit
-authorization.
+authorization. The final plan/handoff update remains to be committed and pushed.
 
 ## Live Codex dispatch acceptance update: 2026-10-24
 
