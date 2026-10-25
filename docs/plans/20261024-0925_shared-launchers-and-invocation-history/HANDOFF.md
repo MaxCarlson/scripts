@@ -3,7 +3,7 @@
 **Plan Location:** `docs/plans/20261024-0925_shared-launchers-and-invocation-history/`
 **Branch:** `shared-launchers-20261024-0925`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\shared-launchers-20261024-0925`
-**Baseline:** `origin/main` at `1618996cd8573ebe25ed9810ab333e6456b7ddf0`
+**Baseline:** `origin/main` at `4591b3247bdfafe82f0b8d1a73f40002152a6c2b`
 **Status:** All Stages 1–5 Complete; Production Migration Applied to `bin/`; Agent C Final Hardening & Integration Complete; 117 Tests Passing; Ready for PR Merge to `main`.
 
 ## Objective & Scope
