@@ -399,3 +399,29 @@ def test_opencode_checkpoint_compaction_plugin_is_opt_in_and_receipt_managed(tmp
     assert any(op.resource_id == resource.resource_id and op.details.get("retire") for op in remove.operations)
     apply_plan(remove)
     assert not resource.path.exists()
+
+
+def test_opencode_structural_tools_install_with_lexical_tools_and_retire_separately(tmp_path):
+    home = tmp_path / "home"
+    opt_in = build_plan(home, strategy="copy", environ={}, structural_retrieval=True)
+    assert opt_in.code_retrieval is True
+    assert opt_in.structural_retrieval is True
+    structural = [op for op in opt_in.operations if op.resource_id.startswith("shared.structural-retrieval.")]
+    assert {op.path.name for op in structural} == {"code_symbols.js", "code_map.js"}
+    apply_plan(opt_in)
+    assert (home / ".config/opencode/tools/code_locate.js").is_file()
+    assert (home / ".config/opencode/tools/code_symbols.js").is_file()
+
+    remove_structural = build_plan(home, strategy="copy", environ={}, structural_retrieval=False)
+    assert remove_structural.code_retrieval is True
+    assert any(op.resource_id == "shared.structural-retrieval.code_map" and op.details.get("retire")
+               for op in remove_structural.operations)
+    apply_plan(remove_structural)
+    assert (home / ".config/opencode/tools/code_locate.js").is_file()
+    assert not (home / ".config/opencode/tools/code_map.js").exists()
+
+    remove_all = build_plan(home, strategy="copy", environ={},
+                            code_retrieval=False, structural_retrieval=False)
+    apply_plan(remove_all)
+    assert not (home / ".config/opencode/tools/code_locate.js").exists()
+    assert not (home / ".config/opencode/tools/code_symbols.js").exists()

@@ -93,3 +93,35 @@ childProcess.execFile = (executable, args, options, callback) => {
 """
     result = subprocess.run([node, "-e", script, str(plugin)], capture_output=True, text=True, timeout=10, check=False)
     assert result.returncode == 0, result.stderr
+
+
+def test_structural_tools_use_bounded_cli_argv_without_shell():
+    node = shutil.which("node")
+    if not node:
+        pytest.skip("Node.js is unavailable for OpenCode adapter contract test")
+    tools = Path(__file__).resolve().parents[1] / "local_agent_bridge/resources/opencode-tools"
+    script = r"""
+const assert = require("node:assert/strict")
+const childProcess = require("node:child_process")
+const calls = []
+childProcess.spawnSync = (executable, args, options) => {
+  calls.push({ executable, args, options })
+  return { status: 0, stdout: '{"status":"ok"}', stderr: "", error: null }
+}
+const symbols = require(process.argv[1])
+const map = require(process.argv[2])
+;(async () => {
+  const context = { directory: "C:/project" }
+  await symbols.execute({ path: "src/a.py" }, context)
+  await map.execute({ task_query: "reconcile checkpoints" }, context)
+  assert.equal(calls.length, 2)
+  assert.equal(calls[0].options.shell, false)
+  assert.deepEqual(calls[0].args, ["code", "symbols", "-C", "C:/project", "-b", "8192", "-j", "--", "src/a.py"])
+  assert.deepEqual(calls[1].args, ["code", "map", "-C", "C:/project", "-f", "80", "-l", "40",
+    "-t", "1800", "-b", "8192", "-j", "--", "reconcile checkpoints"])
+  assert.ok(calls.every(call => call.options.cwd === context.directory))
+})().catch(error => { console.error(error); process.exitCode = 1 })
+"""
+    result = subprocess.run([node, "-e", script, str(tools / "code_symbols.js"), str(tools / "code_map.js")],
+                            capture_output=True, text=True, timeout=10, check=False)
+    assert result.returncode == 0, result.stderr

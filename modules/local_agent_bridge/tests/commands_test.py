@@ -618,3 +618,19 @@ def test_checkpoint_compaction_setup_flag_survives_saved_plan_replay(tmp_path, c
     assert main(["setup", "apply", "-i", str(plan_path)]) == 0
     assert (home / ".config/opencode/plugins/local_agent_checkpoint.js").is_file()
     capsys.readouterr()
+
+
+def test_structural_setup_flag_is_saved_and_installs_optional_tools(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    plan_path = tmp_path / "structural-plan.json"
+    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+                 "--structural-retrieval", "-o", str(plan_path), "-j"]) == 0
+    plan = json.loads(plan_path.read_text())
+    assert plan["structural_retrieval"] is True
+    assert plan["code_retrieval"] is True
+    capsys.readouterr()
+    assert main(["setup", "apply", "-i", str(plan_path)]) == 0
+    assert (home / ".config/opencode/tools/code_map.js").is_file()
+    capsys.readouterr()

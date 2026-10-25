@@ -205,3 +205,44 @@ def test_sandbox_manifest_is_not_silently_downgraded(tmp_path):
     manifest.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="sandboxed-shell-v1"):
         load_task(copy)
+
+
+def test_structural_retrieval_profile_is_distinct_and_default_deny(tmp_path):
+    from agent_benchmark.tool_profile import (
+        STRUCTURAL_AGENT, STRUCTURAL_PROFILE, STRUCTURAL_PROMPT, validate_execution_profile,
+    )
+
+    configure_file_agent(tmp_path, structural=True)
+    role = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))["agent"][STRUCTURAL_AGENT]
+    assert role["permission"]["*"] == "deny"
+    for tool in ("code_locate", "code_context", "code_symbols", "code_map"):
+        assert role["permission"][tool] == "allow"
+    assert "bash" not in role["permission"]
+    rules = [{"permission": "*", "pattern": "*", "action": "deny"}]
+    rules.extend({"permission": name, "pattern": "*", "action": "allow"}
+                 for name in ("read", "edit", "code_locate", "code_context", "code_symbols", "code_map"))
+    validate_file_agent({**role, "name": STRUCTURAL_AGENT, "permission": rules}, structural=True)
+    with pytest.raises(ValueError, match="bash"):
+        validate_file_agent({**role, "name": STRUCTURAL_AGENT, "permission": rules + [
+            {"permission": "bash", "pattern": "*", "action": "allow"},
+        ]}, structural=True)
+    assert STRUCTURAL_PROFILE == "retrieval-structural-v1"
+    assert "code_map" in STRUCTURAL_PROMPT and "code_symbols" in STRUCTURAL_PROMPT
+    validate_execution_profile(STRUCTURAL_PROFILE)
+
+
+def test_structural_profile_manifest_and_prompt_are_identifiable(tmp_path):
+    import shutil
+    from agent_benchmark.tool_profile import STRUCTURAL_PROFILE
+
+    copy = tmp_path / "task"
+    shutil.copytree(TASK, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = copy / "task.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["opencode_tool_profile"] = STRUCTURAL_PROFILE
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    task = load_task(copy)
+    prompt = build_prompt(replace(task, opencode_tool_profile=STRUCTURAL_PROFILE), Path("C:/trial"))
+    assert task.opencode_tool_profile == STRUCTURAL_PROFILE
+    assert "code_symbols" in prompt and "code_map" in prompt
+    assert "Tool profile: retrieval-structural-v1" in prompt

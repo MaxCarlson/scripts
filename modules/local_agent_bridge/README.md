@@ -167,6 +167,26 @@ executable is on the OpenCode server's `PATH`. To remove the optional tools,
 review and apply a plan made with `--no-code-retrieval`. No server is started
 and no model is requested by setup.
 
+### Optional structural tools
+
+For Python work, `code_symbols` returns a bounded AST outline for one file and
+`code_map` ranks relevant symbols across the active workspace. Both include
+source hashes and line provenance, and both reuse the same retrieval CLI and
+receipt-managed installer. Structural retrieval includes the lexical tools;
+enable all four with:
+
+```powershell
+local-agent setup plan --structural-retrieval -o structural-plan.json
+local-agent setup apply -i structural-plan.json
+```
+
+The map is capped at 80 files and 40 symbols, and its `--max-tokens` option
+uses serialized UTF-8 bytes as a conservative upper bound rather than claiming
+provider-tokenizer accuracy. To retire the structural tools, apply a plan made
+with `--no-structural-retrieval`. The lexical pair has separate receipt entries
+and can also be retired with `--no-code-retrieval`. No OpenCode server or model
+is started.
+
 
 ## Models and bridge
 

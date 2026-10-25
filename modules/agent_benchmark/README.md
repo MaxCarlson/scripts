@@ -106,6 +106,18 @@ which keeps default deny and allows only the existing file tools plus `code_loca
 role prompt hash and effective permissions are retained for comparison. No live retrieval-profile
 evaluation is implied by this implementation.
 
+The distinct `retrieval-structural-v1` condition is for Python structural
+retrieval experiments. Set that exact value in a task's `opencode_tool_profile`
+manifest field and install the optional tools with
+`local-agent setup plan --structural-retrieval` followed by reviewing and
+applying the saved plan. Its `benchmark-structural` role allows the usual safe
+file tools plus `code_locate`, `code_context`, `code_symbols`, and `code_map`;
+default deny remains in force and shell, MCP, skills and web remain denied.
+The exact profile, prompt identity and effective permissions remain part of
+the trial evidence. This is an auditable B3 variant, not evidence of a quality
+or efficiency improvement; controlled comparison with matching context and
+runtime conditions is still required.
+
 ### Explicit judgments and comparison conditions (1.13.0)
 
 Trial details expose functional correctness, final-artifact compliance, execution compliance, budget

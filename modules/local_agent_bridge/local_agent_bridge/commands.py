@@ -108,6 +108,12 @@ How to inspect or attach to an existing OpenCode server:
                 help="Opt in to receipt-managed OpenCode code_locate/code_context tools",
             )
             action.add_argument(
+                "--structural-retrieval",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Opt in to receipt-managed code_symbols/code_map tools (includes lexical tools)",
+            )
+            action.add_argument(
                 "--checkpoint-compaction",
                 action=argparse.BooleanOptionalAction,
                 default=None,
@@ -794,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
                         args.mode,
                         args.code_retrieval,
                         args.checkpoint_compaction,
+                        args.structural_retrieval,
                         args.state_dir,
                         args.home,
                     ]
@@ -806,6 +813,7 @@ def main(argv: list[str] | None = None) -> int:
                     raise ValueError("Unsupported saved plan schema")
                 saved.setdefault("code_retrieval", False)
                 saved.setdefault("checkpoint_compaction", False)
+                saved.setdefault("structural_retrieval", False)
                 home, clients, strategy, mode, adopt, state = (
                     Path(saved["home"]),
                     tuple(saved["clients"]),
@@ -825,6 +833,7 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 code_retrieval = args.code_retrieval
                 checkpoint_compaction = args.checkpoint_compaction
+                structural_retrieval = args.structural_retrieval
                 if args.action == "status" and args.mode is None:
                     from .setup.manifest import Layout
                     from .setup.planner import load_receipt
@@ -845,6 +854,7 @@ def main(argv: list[str] | None = None) -> int:
                 state_dir=state,
                 code_retrieval=(saved["code_retrieval"] if saved is not None else code_retrieval),
                 checkpoint_compaction=(saved["checkpoint_compaction"] if saved is not None else checkpoint_compaction),
+                structural_retrieval=(saved["structural_retrieval"] if saved is not None else structural_retrieval),
             )
             if args.action == "apply":
                 result = apply_plan(plan, expected=saved)

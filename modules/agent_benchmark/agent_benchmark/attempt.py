@@ -28,6 +28,9 @@ from .tool_profile import (
     RETRIEVAL_AGENT,
     RETRIEVAL_PROFILE,
     RETRIEVAL_PROMPT,
+    STRUCTURAL_AGENT,
+    STRUCTURAL_PROFILE,
+    STRUCTURAL_PROMPT,
     validate_execution_profile,
 )
 from .identity import ModelIdentity, ModelIdentityError, discover_lmstudio_identity
@@ -238,6 +241,12 @@ def build_prompt(task: Task, workspace: Path, *, file_tools: bool | None = None)
                 "Do not create status or completion files. For edit tools, newString is literal replacement text; "
                 "leading `+` characters are literal source, not diff markers."
                 + "\nTool profile: retrieval-files-v1. Return your completion report; do not claim to have run checks.")
+    if file_tools is None and task.opencode_tool_profile == STRUCTURAL_PROFILE:
+        return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + STRUCTURAL_PROMPT
+                + "\ncompletion reports belong in your final response or StructuredOutput. "
+                "Do not create status or completion files. For edit tools, newString is literal replacement text; "
+                "leading `+` characters are literal source, not diff markers."
+                + "\nTool profile: retrieval-structural-v1. Return your completion report; do not claim to have run checks.")
     if file_tools is True or (file_tools is None and task.opencode_tool_profile == FILE_PROFILE):
         return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + FILE_PROMPT
                 + "\ncompletion reports belong in your final response or StructuredOutput. "
@@ -310,10 +319,11 @@ async def run_attempt(
         raise ModelIdentityError(
             f"Resolved model identity does not match requested runtime model '{provider}/{model}'"
         )
-    if provider == "lmstudio" and task.opencode_tool_profile in {FILE_PROFILE, RETRIEVAL_PROFILE}:
+    if provider == "lmstudio" and task.opencode_tool_profile in {FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
         if agent != "local-worker":
             raise ValueError("The file-tools task profile requires the default worker role")
-        agent = RETRIEVAL_AGENT if task.opencode_tool_profile == RETRIEVAL_PROFILE else FILE_AGENT
+        agent = (STRUCTURAL_AGENT if task.opencode_tool_profile == STRUCTURAL_PROFILE else
+                 RETRIEVAL_AGENT if task.opencode_tool_profile == RETRIEVAL_PROFILE else FILE_AGENT)
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)

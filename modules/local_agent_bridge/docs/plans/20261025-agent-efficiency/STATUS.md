@@ -1,7 +1,7 @@
 # Local Coding-Agent Efficiency — Status
 
 **Last updated:** 2026-10-25
-**Overall state:** P0/P1 reconciled; Release A complete; P3 optional OpenCode adapter and auditable benchmark profile implemented and offline-verified; P4 review is next
+**Overall state:** P0/P1 reconciled; Release A and P3–P6 implemented and offline-verified; B3 structural tool/profile wiring is implemented and offline-verified; controlled evaluation remains pending authorization
 **Verified baseline:** remote `main` merge commit `92c5f068fe2d0c8c99ca4a14991388b1819a3764`
 **Performance branch:** `codex/local-agent-efficiency-20261025`
 **Canonical plan:** `./plan.md`
@@ -13,9 +13,9 @@
 - [x] P1 — Worker instructions and task-envelope acceptance (satisfied by existing v3.3.0 implementation)
 - [x] P2 — Bounded lexical retrieval core and CLI
 - [x] P3 — OpenCode retrieval-tool integration (offline implementation; no live worker evaluation)
-- [ ] P4 — Durable task checkpoints
-- [ ] P5 — Structural outlines and repository maps
-- [ ] P6 — Compaction-aware recovery
+- [x] P4 — Durable task checkpoints
+- [x] P5 — Structural outlines and repository maps
+- [x] P6 — Compaction-aware recovery
 - [ ] P7 — Advanced retrieval evaluation
 - [ ] Controlled benchmark comparisons
 - [ ] Final documentation and regression validation
@@ -151,4 +151,20 @@ P6 validation:
 
 ## Next action
 
-P6 implementation and offline validation are complete. Commit/push this optional adapter. Do not add frameworks or speculative compaction behavior absent a measured retrieval limitation. Next useful milestone is a controlled efficiency evaluation, which remains separately authorized.
+P6 implementation and offline validation were completed and pushed. B3 structural tool/profile wiring is now the active stage; see the validation and next-action details below. Do not add frameworks or speculative compaction behavior absent a measured retrieval limitation. Controlled efficiency evaluation remains separately authorized.
+
+## B3 structural retrieval profile wiring — offline implementation complete
+
+The optional structural retrieval tools are receipt-managed separately from the lexical pair. `local-agent setup plan --structural-retrieval` enables `code_symbols` and `code_map` and includes their lexical dependencies; both groups can be retired with `--no-structural-retrieval --no-code-retrieval`. The OpenCode adapters reuse the existing `local-agent code` commands and `runLocalAgent` helper with direct argv, no shell, active-workspace directory, per-command JSON limits, and a 16 KiB adapter output cap.
+
+`agent_benchmark` recognizes `retrieval-structural-v1` as its distinct B3 condition and prepares a `benchmark-structural` role with default deny plus safe file tools and exactly `code_locate`, `code_context`, `code_symbols`, and `code_map`. Bridge preflight rejects shell grants and missing structural tools before session submission. Prompt/profile identity and effective permissions are retained in trial evidence. B0 remains the verified reliability v3.3.0 baseline; no B3 performance or quality gain is claimed.
+
+Validation:
+
+- Local-agent bridge full suite: **149 passed, 2 skipped, 1 deselected** in 16.53s. The skips require unavailable Windows symlink privileges; the deselected test is the known Git Bash/MSYS app-execution-alias case. Command: `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'local_agent_bridge' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/local_agent_bridge'); import pytest; raise SystemExit(pytest.main(['modules/local_agent_bridge/tests', '-q', '-rs', '--basetemp=C:/Windows/Temp/local-agent-b3-final', '--tb=short', '--deselect=modules/local_agent_bridge/tests/audit_test.py::test_shell_mode_comes_from_receipt_modes_only']))"`.
+- Benchmark tests directly covering profile, bridge, attempts, evidence, and comparison conditions: **117 passed, 1 skipped**; the skip is Windows symlink privilege. Command: `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge']; import pytest; raise SystemExit(pytest.main(['modules/agent_benchmark/tests/tool_profile_test.py', 'modules/agent_benchmark/tests/bridge_test.py', 'modules/agent_benchmark/tests/attempt_test.py', 'modules/agent_benchmark/tests/evidence_test.py', 'modules/agent_benchmark/tests/comparison_conditions_test.py', '-q', '-rs', '--basetemp=C:/Windows/Temp/agent-benchmark-b3-focused-final', '--tb=short']))"`.
+- Remaining benchmark unit suite, excluding `diagnostic_test.py` and `runner_test.py` because these exercise installed OpenCode/MCP runtime integration on this host: **327 passed, 3 skipped**; all three skips are Windows symlink privileges. Exact command: `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge']; import pytest; raise SystemExit(pytest.main(['modules/agent_benchmark/tests', '--ignore=modules/agent_benchmark/tests/diagnostic_test.py', '--ignore=modules/agent_benchmark/tests/runner_test.py', '-q', '-rs', '--basetemp=C:/Windows/Temp/agent-benchmark-b3-unit-final', '--tb=short']))"`.
+- The first broad benchmark run exposed and then verified the fix for a regression where file-only and lexical-only profiles were incorrectly required to have structural tools. `validate_file_agent` now enforces only the exact profile's required tools. Broad diagnostic/runner tests were not rerun because they launch subprocesses that contact the already-running OpenCode/MCP path; their first captured outputs showed refusal before model transition/dispatch. The integration behavior is therefore not verified here.
+- `ruff check` across all changed Python files: **All checks passed**. `git diff --check`: **passed**.
+- Static serialized module-export JSON for `[ {name, description, args}, ... ]` measured **442 UTF-8 bytes** for the two structural tool definitions together and **1,157 bytes** for all four lexical plus structural definitions. This is definition-shape byte sizing, not tokenizer tokens or the complete provider request.
+- Setup, saved-plan replay, adapter argv/output bounds, structural profile identity and default-deny checks are included in the suites above. No model request, inference, OpenCode server operation, or live benchmark was performed. Controlled B0/B2/B3/B4 comparisons remain unmeasured; no efficiency gain is claimed.

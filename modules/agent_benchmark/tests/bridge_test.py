@@ -465,3 +465,51 @@ def test_retrieval_role_preflight_preserves_default_deny_and_named_tools(tmp_pat
 
     asyncio.run(run())
     assert "POST" not in requests
+
+
+@pytest.mark.parametrize("grant_shell, omit_tool, expected_error", [
+    (True, None, "bash"),
+    (False, "code_map", "code_map"),
+])
+def test_structural_role_preflight_requires_named_retrieval_tools_and_rejects_shell(
+    tmp_path, grant_shell, omit_tool, expected_error
+):
+    from agent_benchmark.bridge import ModelConfigurationError
+    from agent_benchmark.tool_profile import STRUCTURAL_AGENT, STRUCTURAL_PROMPT
+
+    requests = []
+    rules = [
+        {"permission": "*", "pattern": "*", "action": "deny"},
+        *({"permission": name, "pattern": "*", "action": "allow"}
+          for name in ("read", "edit", "code_locate", "code_context", "code_symbols", "code_map")
+          if name != omit_tool),
+    ]
+    if grant_shell:
+        rules.append({"permission": "bash", "pattern": "*", "action": "allow"})
+
+    def remote(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path == "/path":
+            return httpx.Response(200, json={"directory": str(tmp_path), "worktree": str(tmp_path)})
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": STRUCTURAL_AGENT, "mode": "primary",
+                                              "prompt": STRUCTURAL_PROMPT, "permission": rules}])
+        return project_remote(tmp_path)(request)
+
+    async def unused(*args):
+        pytest.fail("Invalid structural preflight must never submit inference")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            with pytest.raises(ModelConfigurationError, match=expected_error):
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a",
+                                       agent=STRUCTURAL_AGENT)
+
+    asyncio.run(run())
+    assert not any(method == "POST" for method, _ in requests)

@@ -4,7 +4,7 @@
 **Repository:** `MaxCarlson/scripts`
 **Canonical plan:** `./plan.md`
 **Progress tracker:** `./STATUS.md`
-**Execution status:** Release A, P3, P4, and P5 are committed in stages on `codex/local-agent-efficiency-20261025`; P6's optional pinned-version compaction adapter is in progress
+**Execution status:** Release A and P3–P6 are committed in stages on `codex/local-agent-efficiency-20261025`; B3 optional structural tool/profile wiring is implemented and offline-verified, pending stage commit/push
 
 ## 1. Your assignment
 
@@ -397,7 +397,7 @@ P6's upstream API check is complete. OpenCode v1.19.3's `experimental.session.co
 
 P6 focused tests: **6 passed** including Node dynamic import and mocked hook execution. Full bridge suite: **146 passed, 2 skipped, 1 deselected**; targeted Ruff and `git diff --check` passed. The two symlink-related tests require unavailable Windows privileges; the deselected test is the known Git Bash/MSYS app-execution-alias failure. The plugin asset is included by the existing `resources/**/*` packaging rule. Use `C:/Windows/Temp` as pytest `--basetemp` for checkpoint tests. No live OpenCode server session validated runtime loading, and no inference, model request, or live benchmark occurred.
 
-Next: stage only P6 paths and commit/push the authorized branch. Avoid advanced framework work absent a measured limitation. Controlled B0/B2/B3/B4 evaluation remains pending separate authorization; no efficiency gain is claimed.
+P6 was committed and pushed before the current B3 continuation. Avoid advanced framework work absent a measured limitation. Controlled B0/B2/B3/B4 evaluation remains pending separate authorization; no efficiency gain is claimed.
 
 ## P0/P1 reconciliation — 2026-10-25
 
@@ -407,6 +407,12 @@ P0 is reconciled. The `local_agent_bridge` 3.3.0 suite baseline is 92 passed, 1 
 
 P1 is satisfied by existing implementation. Reuse the v3.3.0 worker and task-envelope resources; do not create a B1 instruction variant or rewrite canonical prompts without new evidence. Existing search-first, bounded-read, identity, permission, recovery, verification, and result-schema guarantees remain in force.
 
-P2 interface/design is reconciled: additive `local-agent code locate|search|context` commands backed by reusable read-only APIs, Git-aware discovery, optional `rg`, bounded JSON, explicit truncation/errors, and workspace containment. Python `>=3.11`; no new mandatory dependency. Bump package and `__version__` in sync when implementation begins.
+P2 interface/design is reconciled and implemented: additive `local-agent code locate|search|context` commands backed by reusable read-only APIs, Git-aware discovery, optional `rg`, bounded JSON, explicit truncation/errors, and workspace containment. Python `>=3.11`; no new mandatory dependency. The package and `__version__` were advanced together to 3.4.0.
 
-No inference, model, service, profile, or live benchmark operation was performed. The miner is running, so do not issue local-model requests. Next action: after the user switches to the lower-cost model, write focused retrieval tests first in the isolated branch, then implement P2.
+No inference, model, service, profile, or live benchmark operation was performed during P0/P1/P2 implementation. The obsolete initial P2 next step is superseded by the current B3 resume state below.
+
+## Resume state — B3 structural retrieval profile wiring
+
+The branch includes optional OpenCode tools `code_symbols` and `code_map`, receipt-managed independently from lexical retrieval. Structural setup implies lexical setup as a dependency and can be disabled without retiring lexical files still owned by their separate receipt. The `agent_benchmark` condition is named `retrieval-structural-v1`; its `benchmark-structural` role stays default-deny and permits safe file tools plus `code_locate`, `code_context`, `code_symbols`, and `code_map`. Bridge preflight rejects a shell grant and missing structural tools.
+
+The README and benchmark README describe opt-in installation, exact profile identity, and the lack of measured efficacy claims. Final validation and known runtime-dependent exclusions are recorded in `STATUS.md`. The focused benchmark profile/bridge/attempt/evidence/comparison tests passed **117 tests with 1 symlink skip**; the other benchmark unit tests passed **327 with 3 symlink skips** when excluding runtime-facing diagnostic and runner suites; the local-agent bridge suite passed **149 with 2 symlink skips and 1 known launcher deselection**. Ruff and `git diff --check` passed. The raw JSON export shape for both structural tool definitions measures 442 bytes; exact tokenizer and full provider-request overhead remain unmeasured. Next: stage only B3 paths, commit and push this stage, then decide on further structural mapping work or a separately authorized controlled evaluation. No local model request, inference, OpenCode server operation, or live benchmark has been performed.
