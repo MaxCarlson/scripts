@@ -18,7 +18,7 @@ from urllib.parse import quote
 
 import httpx
 
-from .tool_profile import FILE_AGENT, runtime_output_evidence, validate_file_agent
+from .tool_profile import FILE_AGENT, RETRIEVAL_AGENT, runtime_output_evidence, validate_file_agent
 from .lifecycle import Observation, WorkerHandle
 
 ToolCaller = Callable[[str, dict], Awaitable[dict]]
@@ -294,21 +294,23 @@ class OpenCodeBridge:
         if not isinstance(agents, list):
             raise RuntimeError("Malformed runtime/model/role preflight response")
         role = next((a for a in agents if a.get("name") == agent), None)
-        if role is None or agent not in ("local-worker", "local-reviewer", FILE_AGENT):
+        if role is None or agent not in ("local-worker", "local-reviewer", FILE_AGENT, RETRIEVAL_AGENT):
             raise ModelConfigurationError(f"Requested bounded local role '{agent}' is unavailable in this trial project")
-        if agent == FILE_AGENT:
+        if agent in (FILE_AGENT, RETRIEVAL_AGENT):
             try:
                 output_trust = runtime_output_evidence(await self._get("/path", directory), health.get("version"), str(self.http.base_url))
                 output_directory = Path(output_trust["directory"]) if output_trust else None
-                validate_file_agent(role, trusted_output_directory=output_directory)
+                validate_file_agent(role, trusted_output_directory=output_directory,
+                                    retrieval=agent == RETRIEVAL_AGENT)
             except ValueError as error:
-                raise ModelConfigurationError(f"OpenCode file-tools-v1 preflight failed: {error}") from error
+                profile = "retrieval-files-v1" if agent == RETRIEVAL_AGENT else "file-tools-v1"
+                raise ModelConfigurationError(f"OpenCode {profile} preflight failed: {error}") from error
         project = await self._validate_project(directory, project_id)
         self.project_context = project
         # Preserve permissions/configuration as observations, not a sandbox claim.
         return {"opencode_version": health.get("version"), "provider": provider, "model": model,
                 "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0",
-                "tool_output_trust": output_trust if agent == FILE_AGENT else None,
+                "tool_output_trust": output_trust if agent in (FILE_AGENT, RETRIEVAL_AGENT) else None,
                 "project": project,
                 "agent_configuration": {"name": role.get("name"), "mode": role.get("mode"),
                                         "model": role.get("model"),

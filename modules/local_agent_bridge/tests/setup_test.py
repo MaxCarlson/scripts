@@ -1,6 +1,5 @@
 """Installer contracts exercised only in isolated profile trees."""
 import json
-from pathlib import Path
 
 import pytest
 
@@ -360,3 +359,25 @@ def test_atomic_replace_retries_windows_denial_without_overwriting_changes(tmp_p
     with pytest.raises(ValueError, match='Concurrent change'):
         files.atomic_write(target, b'do not apply')
     assert target.read_text() == 'new user content'
+
+
+def test_opencode_retrieval_tools_are_opt_in_and_receipt_managed(tmp_path):
+    home = tmp_path / 'home'
+    opt_in = build_plan(home, strategy='copy', environ={}, code_retrieval=True)
+    resource = next(op for op in opt_in.operations if op.resource_id == 'shared.code-retrieval.code_locate')
+    assert resource.path == home / '.config/opencode/tools/code_locate.js'
+    assert resource.kind == 'file'
+    apply_plan(opt_in)
+    installed = resource.path
+    assert installed.is_file()
+
+    preserved = build_plan(home, strategy='copy', environ={})
+    assert preserved.code_retrieval is True
+    assert next(op for op in preserved.operations
+                if op.resource_id == 'shared.code-retrieval.code_locate').action == 'unchanged'
+
+    remove_feature = build_plan(home, strategy='copy', environ={}, code_retrieval=False)
+    assert any(op.resource_id == 'shared.code-retrieval.code_locate' and op.details.get('retire')
+               for op in remove_feature.operations)
+    apply_plan(remove_feature)
+    assert not installed.exists()

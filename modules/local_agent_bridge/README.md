@@ -57,6 +57,56 @@ Stale plans fail before application. A receipt, private backups and a recovery
 journal live under `~/.local/share/local-agent/`. Remove refuses changed resources
 and preserves unrelated config keys. Do not delete that state before removal.
 
+## Read-only source retrieval
+
+Use the additive **local-agent code** commands to find paths, search source, and fetch
+an exact line range without starting OpenCode or LM Studio:
+
+    local-agent code locate retrieval -C "C:\src\my project" -j
+    local-agent code search "def build_parser" -p local_agent_bridge/commands.py -C "C:\src\my project" -j
+    local-agent code search "build_parser\(" -r -p local_agent_bridge/commands.py -C "C:\src\my project" -j
+    local-agent code context modules/local_agent_bridge/local_agent_bridge/commands.py 37 80 -C "C:\src\my project" -j
+
+By default, path discovery uses Git tracked files and nonignored untracked files.
+Repeat **-p/--path** to explicitly include selected ignored or untracked files.
+Outside a Git worktree, discovery uses a sorted filesystem scan. Generated,
+cache, dependency, and VCS directories are excluded. Paths supplied to **context**
+are workspace-relative; absolute paths, traversal, and resolved paths outside
+the workspace are rejected.
+
+Literal search is the default. **-r/--regex** opts into Python regular-expression
+syntax. Search examines at most 200 candidate files by default; repeat **-p/--path**
+or raise **-f/--max-files** to focus it. Responses preserve workspace-relative path and line provenance. JSON
+includes the discovery/search engine, status, truncation state, and any errors.
+The default budgets are 200 returned paths / 8 KiB, 80 matches across up to 200
+files / 12 KiB, and 200 context lines / 16 KiB. Match and excerpt lines are
+limited to 4 KiB. Search skips files larger than 2 MiB and stops scanning at
+32 MiB per request. **-b/--max-bytes** and the operation-specific limit flags
+adjust these bounds; truncation is explicit.
+
+This retrieval interface is read-only and has no dependency on a model server.
+The CLI alone adds no setup-managed files or configuration.
+
+## Optional OpenCode retrieval tools
+
+OpenCode can expose the same bounded retrieval API through two read-only custom
+tools: `code_locate` and `code_context`. They are opt-in and are not installed by
+default. Review a plan, then apply the exact saved plan:
+
+```powershell
+local-agent setup plan --code-retrieval -o retrieval-plan.json
+local-agent setup apply -i retrieval-plan.json
+```
+
+The planner receipt owns the helper and each tool file separately under
+`~/.config/opencode/tools/`, preserving other tools and OpenCode configuration.
+The adapter calls the installed `local-agent` executable through a direct argv
+process invocation and uses the active OpenCode project directory. Ensure that
+executable is on the OpenCode server's `PATH`. To remove the optional tools,
+review and apply a plan made with `--no-code-retrieval`. No server is started
+and no model is requested by setup.
+
+
 ## Models and bridge
 
 ```powershell

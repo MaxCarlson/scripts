@@ -426,3 +426,42 @@ def test_file_role_readiness_failure_is_actionable_before_session_creation(tmp_p
 
     asyncio.run(run())
     assert not any(method == "POST" for method, _ in requests)
+
+
+def test_retrieval_role_preflight_preserves_default_deny_and_named_tools(tmp_path):
+    from agent_benchmark.tool_profile import RETRIEVAL_AGENT, RETRIEVAL_PROMPT
+
+    requests = []
+    rules = [
+        {"permission": "*", "pattern": "*", "action": "deny"},
+        *({"permission": name, "pattern": "*", "action": "allow"}
+          for name in ("read", "edit", "code_locate", "code_context")),
+    ]
+
+    def remote(request):
+        requests.append(request.method)
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path == "/path":
+            return httpx.Response(200, json={"directory": str(tmp_path), "worktree": str(tmp_path)})
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": RETRIEVAL_AGENT, "mode": "primary",
+                                              "prompt": RETRIEVAL_PROMPT, "permission": rules}])
+        return project_remote(tmp_path)(request)
+
+    async def unused(*args):
+        pytest.fail("Read-only preflight must not dispatch")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio",
+                                           model="model-a", agent=RETRIEVAL_AGENT)
+            assert facts["agent"] == RETRIEVAL_AGENT
+            assert facts["permissions"] == rules
+
+    asyncio.run(run())
+    assert "POST" not in requests

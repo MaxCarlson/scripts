@@ -97,6 +97,15 @@ Other trusted task manifests default to `shell-v1`; unknown profiles fail valida
 CLI workers retain their separate existing behavior. Historical scores, scope uncertainty, timeouts,
 and memory guardrails are unchanged. Compare runs with matching task/tool profile provenance.
 
+The opt-in `retrieval-files-v1` profile is a separate experimental condition. Before using it,
+install the optional local-agent OpenCode tools by reviewing
+`local-agent setup plan --code-retrieval -o retrieval-plan.json` and applying it with
+`local-agent setup apply -i retrieval-plan.json`. A retrieval task receives the `benchmark-retrieval` role,
+which keeps default deny and allows only the existing file tools plus `code_locate` and
+`code_context`; shell, MCP, skills and web tools remain denied. The task manifest's exact profile,
+role prompt hash and effective permissions are retained for comparison. No live retrieval-profile
+evaluation is implied by this implementation.
+
 ### Explicit judgments and comparison conditions (1.13.0)
 
 Trial details expose functional correctness, final-artifact compliance, execution compliance, budget

@@ -45,6 +45,37 @@ def test_saved_plan_roundtrip_and_tampering(tmp_path, capsys):
     capsys.readouterr()
 
 
+def test_setup_retrieval_opt_in_is_saved_and_can_be_disabled(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    saved = tmp_path / "retrieval-plan.json"
+    assert main([
+        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+        "--code-retrieval", "-o", str(saved),
+    ]) == 0
+    assert json.loads(saved.read_text())["code_retrieval"] is True
+    assert main(["setup", "apply", "-i", str(saved)]) == 0
+    installed = home / ".config/opencode/tools/code_locate.js"
+    assert installed.is_file()
+    capsys.readouterr()
+
+    assert main([
+        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+        "--no-code-retrieval", "-j",
+    ]) == 0
+    output = capsys.readouterr().out
+    plan = json.loads(output[output.index("{\n"):])
+    assert plan["code_retrieval"] is False
+    assert any(op["resource_id"] == "shared.code-retrieval.code_locate" and op["retire"]
+               for op in plan["operations"])
+    assert main([
+        "setup", "apply", "-H", str(home), "-s", "copy", "-m", "generic", "--no-code-retrieval",
+    ]) == 0
+    assert not installed.exists()
+    capsys.readouterr()
+
+
 def test_run_parser_keeps_management_in_model_group():
     from local_agent_bridge.cli import build_parser
 
@@ -509,7 +540,7 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit) as version:
         main(["--version"])
     assert version.value.code == 0
-    assert "3.3.0" in capsys.readouterr().out
+    assert "3.4.0" in capsys.readouterr().out
 
     # A temporary target keeps this regression check independent of the user's installed profiles.
     assert main(["setup", "status", "-H", str(tmp_path / "empty-home"), "-j"]) in {0, 3}

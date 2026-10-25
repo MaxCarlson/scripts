@@ -21,7 +21,15 @@ from typing import Any
 import httpx
 
 from .bridge import ModelConfigurationError, OpenCodeBridge
-from .tool_profile import FILE_AGENT, FILE_PROFILE, FILE_PROMPT, validate_execution_profile
+from .tool_profile import (
+    FILE_AGENT,
+    FILE_PROFILE,
+    FILE_PROMPT,
+    RETRIEVAL_AGENT,
+    RETRIEVAL_PROFILE,
+    RETRIEVAL_PROMPT,
+    validate_execution_profile,
+)
 from .identity import ModelIdentity, ModelIdentityError, discover_lmstudio_identity
 from .evidence import (EVIDENCE_LIMITS, EvidenceLimitExceeded, ScopeAudit, Snapshot, Task, Verification, audit_scope,
                        capture, changed_paths, prepare_workspace, verify)
@@ -224,6 +232,12 @@ def _patch(before: Snapshot, after: Snapshot, *, max_bytes: int = 256 * 1024,
 
 def build_prompt(task: Task, workspace: Path, *, file_tools: bool | None = None) -> str:
     """Deterministic user prompt; not a claim about provider system/tool schemas."""
+    if file_tools is None and task.opencode_tool_profile == RETRIEVAL_PROFILE:
+        return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + RETRIEVAL_PROMPT
+                + "\ncompletion reports belong in your final response or StructuredOutput. "
+                "Do not create status or completion files. For edit tools, newString is literal replacement text; "
+                "leading `+` characters are literal source, not diff markers."
+                + "\nTool profile: retrieval-files-v1. Return your completion report; do not claim to have run checks.")
     if file_tools is True or (file_tools is None and task.opencode_tool_profile == FILE_PROFILE):
         return (task.instruction + "\n\nWorkspace: " + str(workspace) + "\n" + FILE_PROMPT
                 + "\ncompletion reports belong in your final response or StructuredOutput. "
@@ -296,10 +310,10 @@ async def run_attempt(
         raise ModelIdentityError(
             f"Resolved model identity does not match requested runtime model '{provider}/{model}'"
         )
-    if provider == "lmstudio" and task.opencode_tool_profile == FILE_PROFILE:
+    if provider == "lmstudio" and task.opencode_tool_profile in {FILE_PROFILE, RETRIEVAL_PROFILE}:
         if agent != "local-worker":
             raise ValueError("The file-tools task profile requires the default worker role")
-        agent = FILE_AGENT
+        agent = RETRIEVAL_AGENT if task.opencode_tool_profile == RETRIEVAL_PROFILE else FILE_AGENT
     # Reserve evidence first; refuse to reuse old trial directories before creating resources.
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
