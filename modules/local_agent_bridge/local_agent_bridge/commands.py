@@ -234,6 +234,19 @@ How to inspect or attach to an existing OpenCode server:
     context.add_argument("-m", "--max-line-bytes", type=int, default=4096, help="Maximum bytes per returned line")
     context.add_argument("-b", "--max-bytes", type=int, default=16 * 1024, help="Maximum compact JSON bytes")
     context.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    symbols = code_actions.add_parser("symbols", help="Show Python AST symbols with exact line ranges")
+    symbols.add_argument("path", help="Workspace-relative Python file")
+    symbols.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    symbols.add_argument("-b", "--max-bytes", type=int, default=12 * 1024, help="Maximum compact JSON bytes")
+    symbols.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    repo_map = code_actions.add_parser("map", help="Build a bounded task-specific Python symbol map")
+    repo_map.add_argument("task_query", help="Task text used to rank relevant Python symbols")
+    repo_map.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    repo_map.add_argument("-f", "--max-files", type=int, default=80, help="Maximum Python files to parse")
+    repo_map.add_argument("-l", "--max-results", type=int, default=80, help="Maximum ranked symbols")
+    repo_map.add_argument("-t", "--max-tokens", type=int, default=3000, help="Conservative serialized-byte token upper bound")
+    repo_map.add_argument("-b", "--max-bytes", type=int, default=12 * 1024, help="Maximum compact JSON bytes")
+    repo_map.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
     checkpoint = groups.add_parser("checkpoint", help="Save, inspect, or recover durable task context")
     checkpoint_actions = checkpoint.add_subparsers(dest="action")
     checkpoint_save = checkpoint_actions.add_parser("save", help="Validate and atomically save a task checkpoint")
@@ -563,7 +576,7 @@ def _output(value: dict, as_json: bool) -> None:
 
 
 def _handle_code(args: argparse.Namespace) -> int:
-    from .retrieval import RetrievalError, context, locate, search
+    from .retrieval import RetrievalError, context, locate, repository_map, search, symbols
 
     try:
         if args.action == "locate":
@@ -577,10 +590,18 @@ def _handle_code(args: argparse.Namespace) -> int:
                 limit=args.limit, max_files=args.max_files, max_output_bytes=args.max_bytes,
                 max_line_bytes=args.max_line_bytes,
             )
-        else:
+        elif args.action == "context":
             result = context(
                 args.workspace, args.path, args.start_line, args.end_line,
                 max_output_bytes=args.max_bytes, max_line_bytes=args.max_line_bytes,
+            )
+        elif args.action == "symbols":
+            result = symbols(args.workspace, args.path, max_output_bytes=args.max_bytes)
+        else:
+            result = repository_map(
+                args.workspace, args.task_query, max_files=args.max_files,
+                max_results=args.max_results, max_tokens=args.max_tokens,
+                max_output_bytes=args.max_bytes,
             )
     except (RetrievalError, OSError, ValueError) as exc:
         result = {
@@ -605,8 +626,13 @@ def _handle_code(args: argparse.Namespace) -> int:
                 print(item["path"])
             elif args.action == "search":
                 print(f'{item["path"]}:{item["line"]}: {item["text"]}')
-            else:
+            elif args.action == "context":
                 print(f'{item["line"]:>5}: {item["text"]}')
+            elif args.action == "symbols":
+                for symbol in item.get("symbols", []):
+                    print(f'{item["path"]}:{symbol["start_line"]}: {symbol["kind"]} {symbol["qualified_name"]}')
+            else:
+                print(f'{item["path"]}:{item["start_line"]}: {item["qualified_name"]} ({item["relevance"]})')
         if args.action == "context" and result["results"]:
             print(f'Next line: {result["next_line"]}')
         if not result["results"]:

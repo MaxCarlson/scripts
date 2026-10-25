@@ -118,6 +118,22 @@ P4 validation is complete:
 - Changed files: `README.md`; `docs/plans/20261025-agent-efficiency/{HANDOFF.md,STATUS.md}`; `local_agent_bridge/commands.py`; new `local_agent_bridge/context/{__init__.py,checkpoint.py}`; `tests/commands_test.py`; new `tests/checkpoint_test.py`.
 - No inference, model request, OpenCode server operation, or live benchmark was performed.
 
+## P5 structural retrieval
+
+P5 adds `local_agent_bridge.retrieval.symbols` for exact Python AST outlines (imports, classes, functions, methods, signatures, line ranges, and raw source SHA-256) and `repository_map` for task-ranked symbols. New additive CLI actions are `local-agent code symbols` and `local-agent code map`. Both reuse the existing Git-aware discovery, workspace containment, and response budgeting. Maps prioritize path-relevant Python files, rank qualified names/signatures by task-word overlap, and are deterministic for a fixed workspace/query.
+
+Every map is rebuilt from current source; there is no persistent cache to invalidate. Source hashes make result identity explicit. Python file count, per-file bytes, total scan bytes, symbol count, result count, serialized bytes, and a conservative token upper-bound are capped. `--max-tokens` caps serialized UTF-8 bytes; it is a tokenizer-independent worst-case upper-bound proxy, not a provider tokenizer measurement. Non-Python work continues through the lexical API. Structural results remain optional; no representative controlled task comparison has yet established an improvement over lexical-only retrieval.
+
+P5 validation:
+
+- Focused structural tests: **11 passed**. They cover AST provenance, import/class/function/method outlines, malformed and binary source errors, fresh hashes, Git ignored paths, relevance ranking, result/file/output bounds, unsafe paths, CLI JSON output, and handling Git-listed non-Python entries.
+- Full bridge suite: **140 passed, 2 skipped, 1 deselected** using the P4 full-suite command with `--basetemp=C:/Windows/Temp/local-agent-p5-final`. The symlink skips are `checkpoint_test.py` (symlink creation unavailable) and `setup_test.py` (Windows privilege required); the deselected Git Bash/MSYS app-execution-alias test is the known environment failure.
+- Targeted Ruff across `retrieval/structure.py`, retrieval exports, `commands.py`, and `structure_test.py`: **All checks passed**. `git diff --check` passed.
+- Manual bounded measurement on this worktree: `repository_map("checkpoint recovery session next action", max_files=80, max_results=40, max_tokens=3000)` returned 5 ranked symbols, partial/truncated, in **617.31 ms**, with **7,320,819 bytes** peak Python traced allocation and a **2,678-byte** serialized upper bound. Top-ranked results included `context/checkpoint.py:236 save_checkpoint` (score 14) and `context/checkpoint.py:352 recovery_packet` (score 10). A separate 4 KiB AST outline returned 25 of 33 symbols with source path/hash and explicit internal truncation. These are single-run implementation measurements, not a lexical baseline comparison or proof of coding-quality improvement.
+- No inference, model request, OpenCode server operation, or live benchmark was performed.
+
+Changed files: `README.md`; `commands.py`; `retrieval/__init__.py`; new `retrieval/structure.py`; new `tests/structure_test.py`.
+
 ## Next action
 
-P4 implementation and offline validation are complete. Commit/push this stage, then begin P5 with bounded Python AST symbol outlines and task-specific repository maps. B0/B2 controlled evaluation and exact tokenizer/context overhead remain unmeasured; no performance gain is claimed.
+Commit/push P5, then inspect the pinned OpenCode 1.19.3 compaction lifecycle and hook contract for P6. Keep compaction optional and use validated checkpoint data only if the pinned API supports it. B0/B2 comparisons and exact provider-token counts remain unmeasured; no efficiency gain is claimed.

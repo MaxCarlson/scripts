@@ -4,7 +4,7 @@
 **Repository:** `MaxCarlson/scripts`
 **Canonical plan:** `./plan.md`
 **Progress tracker:** `./STATUS.md`
-**Execution status:** Release A and offline P3 implementation are committed; P4 checkpoint implementation is in progress on `codex/local-agent-efficiency-20261025`
+**Execution status:** Release A, P3, P4, and P5 implementations are committed in stages on `codex/local-agent-efficiency-20261025`; P6 compaction-hook verification is next
 
 ## 1. Your assignment
 
@@ -389,7 +389,11 @@ The P4 audit is complete: v3.3.0 recovery owns job/session/message identity and 
 
 P4 adds atomic versioned storage in `local_agent_bridge.context.checkpoint`, an additive `local-agent checkpoint save|show|recover` CLI, offline tests, and README usage. Checkpoint files are external to the canonical Git worktree; recovery flags changed/unavailable revision and source evidence stale and sets `automatic_resubmission: false`. Verification: focused suite **12 passed, 1 skipped**; full bridge suite **129 passed, 2 skipped, 1 deselected**; targeted Ruff passed; CLI help and `git diff --check` passed. The deselected case is the previously documented Git Bash/MSYS Windows app-execution-alias failure. Use `C:/Windows/Temp` as pytest `--basetemp` on this host: its default temporary root is within a broad `C:/Users/mcarls` Git worktree, and P4 correctly rejects checkpoint state inside that worktree.
 
-Next: stage only P4 paths and commit/push the authorized branch, then begin P5 Python AST outlines/task maps. No inference, local-model request, OpenCode server operation, or live benchmark has occurred. Controlled evaluation and exact tokenizer/context overhead remain unmeasured; no efficiency gain is claimed.
+P5 adds standard-library Python AST outlines (`symbols`) and task-ranked fresh repository maps (`repository_map`), available from `local-agent code symbols|map`. It reuses Git-aware containment/discovery and bounds parsed files, bytes, symbols, results, and serialized output. Map output uses UTF-8 bytes as a conservative token-count upper bound because a provider tokenizer is not specified; it does not claim an exact token count. No persistent cache is retained; every request reparses current source and returns a source hash. Structural retrieval stays optional because no controlled task-quality comparison against lexical-only retrieval has been run.
+
+P5 verification: **140 passed, 2 skipped, 1 deselected** for the complete bridge suite; symlink-related skips require unavailable Windows privileges, and the deselected Windows app-execution-alias test is the known sandbox limitation. Targeted Ruff and `git diff --check` passed. One bounded worktree measurement parsed at most 80 Python files in **617.31 ms**, peak traced allocation **7,320,819 bytes**, returning 5 ranked results in **2,678 bytes**; top entries were `checkpoint.py:236 save_checkpoint` and `checkpoint.py:352 recovery_packet`. This is one smoke measurement, not comparative evidence. See `STATUS.md` for exact commands.
+
+Next: stage only P5 paths and commit/push the authorized branch. Then inspect official OpenCode v1.19.3 sources for compaction hook support before considering an optional adapter. No inference, local-model request, OpenCode server operation, or live benchmark has occurred. Controlled evaluation and exact provider-token counts remain unmeasured; no efficiency gain is claimed.
 
 ## P0/P1 reconciliation — 2026-10-25
 

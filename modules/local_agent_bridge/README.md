@@ -87,6 +87,21 @@ adjust these bounds; truncation is explicit.
 This retrieval interface is read-only and has no dependency on a model server.
 The CLI alone adds no setup-managed files or configuration.
 
+For Python repositories, `symbols` returns imports, definitions, classes,
+methods, signatures, exact line ranges, and a source SHA-256. `map` ranks
+symbols against a task description and builds a fresh bounded map:
+
+```powershell
+local-agent code symbols modules/local_agent_bridge/local_agent_bridge/commands.py -C "C:\src\scripts" -j
+local-agent code map "add checkpoint CLI command" -C "C:\src\scripts" --max-files 80 --max-results 80 --max-tokens 3000 -j
+```
+
+AST maps are rebuilt on each request, so there is no persistent index to go
+stale. Each result includes its file hash for provenance. `--max-tokens` is a
+conservative UTF-8 byte upper bound, not a provider tokenizer measurement; the
+serialized output is also constrained by `--max-bytes`. Non-Python files remain
+available through lexical retrieval.
+
 ## Durable task checkpoints
 
 Save a validated task envelope to an atomic, versioned checkpoint, then build
