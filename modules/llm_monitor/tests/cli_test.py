@@ -156,7 +156,7 @@ def test_database_prune_cli_is_dry_run_without_write(tmp_path, capsys):
     preview = json.loads(capsys.readouterr().out)
     assert preview["written"] is False
     with TelemetryStore(database, readonly=True) as store:
-        assert store.database_info()["counts"]["events"] == len(event) + 1
+        assert store.database_info()["counts"]["events"] == len(event) + 2
 
 
 def test_record_command_commits_before_clean_interrupt(tmp_path, monkeypatch, capsys):

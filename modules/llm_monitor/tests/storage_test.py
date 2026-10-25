@@ -123,8 +123,8 @@ def test_ingest_is_idempotent_and_does_not_persist_raw_file_paths(tmp_path):
         second = store.ingest_poll("opencode", "http://localhost:4096", "session-1", snapshot, events)
         bundle = store.history_bundle("session-1", provider_type="opencode", endpoint="http://localhost:4096")
 
-    assert first["inserted"] == len(events) + 1
-    assert second["inserted"] == 0
+    assert first["inserted"] == len(events) + 2
+    assert second["inserted"] == 0  # identical timestamp and contents deduplicate
     assert second["duplicates"] == len(events)
     encoded = json.dumps({**bundle, "analysis_events": [event.to_dict() for event in bundle["analysis_events"]]})
     assert "C:/secret/project" not in encoded
@@ -170,10 +170,10 @@ def test_two_writers_serialize_and_deduplicate_same_event(tmp_path):
     with ThreadPoolExecutor(max_workers=2) as pool:
         results = list(pool.map(lambda _index: ingest(), range(2)))
 
-    assert sum(result["inserted"] for result in results) == len(events) + 1
+    assert sum(result["inserted"] for result in results) == len(events) + 2
     assert sum(result["duplicates"] for result in results) == len(events)
     with TelemetryStore(path, readonly=True) as store:
-        assert store.database_info()["counts"]["events"] == len(events) + 1
+        assert store.database_info()["counts"]["events"] == len(events) + 2
 
 
 def test_out_of_order_poll_keeps_latest_state_and_checkpoint(tmp_path):
@@ -274,13 +274,34 @@ def test_prune_previews_by_default_and_write_leaves_a_coverage_gap(tmp_path):
         preview = store.prune_before("1971-01-01T00:00:00+00:00")
         assert preview["written"] is False
         assert preview["events"] == len(events)
-        assert store.database_info()["counts"]["events"] == len(events) + 1
+        assert store.database_info()["counts"]["events"] == len(events) + 2
         applied = store.prune_before("1971-01-01T00:00:00+00:00", write=True)
         bundle = store.history_bundle("session-1", provider_type="opencode")
 
     assert applied["written"] is True
     assert bundle["analysis_events"] == []
     assert any(gap["category"] == "retention_pruned" for gap in bundle["gaps"])
+
+
+def test_poll_state_observations_are_private_and_stream_in_order(tmp_path):
+    path = tmp_path / "state-observations.sqlite3"
+    with TelemetryStore(path) as store:
+        store.ingest_poll(
+            "opencode", "http://localhost:4096", "session-1",
+            {"polled_at": "2026-01-01T00:00:02+00:00", "normalized_state": "waiting_question",
+             "pending_permissions": 0, "pending_questions": 1,
+             "history_coverage": {"status": "partial", "source": "legacy", "pages": 1, "limit": 100},
+             "errors": {"messages": "private provider error detail"}}, [],
+        )
+        rows = list(store.iter_session_records("session-1", endpoint="http://localhost:4096", batch_size=1))
+        context = store.session_context("session-1", endpoint="http://localhost:4096")
+
+    sample = next(row["payload"] for row in rows if row["subtype"] == "state_observation")
+    assert sample["state"] == "waiting_question"
+    assert sample["pending_questions"] == 1
+    assert sample["error_sources"] == ["messages"]
+    assert "private provider error detail" not in json.dumps(rows)
+    assert context["event_count"] == len(rows)
 
 
 def test_large_event_batch_is_paginated_and_idempotent(tmp_path):
@@ -302,7 +323,7 @@ def test_large_event_batch_is_paginated_and_idempotent(tmp_path):
         page = store.events_for_session(store.list_sessions()[0]["session_key"], limit=100, offset=5000)
         elapsed = perf_counter() - started
 
-    assert outcome["inserted"] == 10000
+    assert outcome["inserted"] == 10001  # includes the persisted state observation
     assert len(page) == 100
-    assert page[0]["provider_event_id"] == "message-5000"
+    assert page[0]["provider_event_id"] == "message-4999"
     assert elapsed > 0

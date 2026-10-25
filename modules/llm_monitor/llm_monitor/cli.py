@@ -14,6 +14,7 @@ from urllib.parse import quote
 
 from .analysis import analyze_events
 from .diagnostics import diagnose_events
+from .history_analysis import analyze_stored_session, compare_stored_sessions
 from .mcp import correlate_job, load_job_snapshot
 from .opencode import HistoryCoverage, OpenCodeClient
 from .providers import LMStudioClient, extract_opencode_model_limits
@@ -75,6 +76,31 @@ def build_parser() -> argparse.ArgumentParser:
     for command in (sub.choices["report"],):
         command.add_argument("-D", "--database", type=Path)
         command.add_argument("-H", "--history", action="store_true", help="Use persisted telemetry only")
+    compare = sub.add_parser("compare", help="Compare two or more stored sessions offline")
+    compare.add_argument("-s", "--session", action="append", required=True)
+    compare.add_argument("-e", "--endpoint", action="append", help="Provider endpoint; repeat in session order")
+    compare.add_argument("-d", "--database", type=Path)
+    compare.add_argument("-f", "--format", choices=("text", "json"), default="text")
+
+    export = sub.add_parser("export", help="Create or verify a sanitized evidence package")
+    export.add_argument("-a", "--action", choices=("create", "verify"), default="create")
+    export.add_argument("-s", "--session", action="append")
+    export.add_argument("-d", "--database", type=Path)
+    export.add_argument("-e", "--endpoint", action="append", help="Provider endpoint; repeat in session order")
+    export.add_argument("-o", "--output", type=Path, required=True)
+    export.add_argument("-w", "--write", action="store_true", help="Write the package")
+    export.add_argument("-F", "--events-format", choices=("jsonl", "json", "csv"), default="jsonl")
+    export.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    export.add_argument("-v", "--verbose", action="store_true")
+
+    visualize = sub.add_parser("visualize", help="Preview or write a static historical visualization")
+    visualize.add_argument("-s", "--session", action="append", required=True)
+    visualize.add_argument("-d", "--database", type=Path)
+    visualize.add_argument("-e", "--endpoint", action="append", help="Provider endpoint; repeat in session order")
+    visualize.add_argument("-o", "--output", type=Path, required=True)
+    visualize.add_argument("-w", "--write", action="store_true", help="Write the visualization")
+    visualize.add_argument("-f", "--format", choices=("svg", "html"), default="svg")
+    visualize.add_argument("-v", "--verbose", action="store_true")
     return parser
 
 
@@ -96,6 +122,12 @@ def main(argv: list[str] | None = None) -> int:
             return _history_command(args)
         if args.command == "record":
             return _record(args)
+        if args.command == "compare":
+            return _compare(args)
+        if args.command == "export":
+            return _export_command(args)
+        if args.command == "visualize":
+            return _visualize_command(args)
         if args.command == "report" and args.history:
             return _historical_report(args)
         client = OpenCodeClient(args.url)
@@ -110,7 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
-    except (TelemetryStoreError, sqlite3.Error, OSError) as exc:
+    except (TelemetryStoreError, sqlite3.Error, OSError, ValueError) as exc:
         print(f"llm-monitor: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -270,6 +302,119 @@ def _gpu(args: argparse.Namespace) -> int:
 def _selected_database(args: argparse.Namespace) -> Path:
     selected = getattr(args, "database", None)
     return Path(selected) if selected is not None else default_database_path()
+
+
+def _compare(args: argparse.Namespace) -> int:
+    with TelemetryStore(_selected_database(args), readonly=True) as store:
+        comparison = compare_stored_sessions(
+            store, args.session, endpoints=args.endpoint
+        )
+    if args.format == "json":
+        print(json.dumps(comparison, ensure_ascii=False, indent=2))
+    else:
+        print(f"Comparison baseline: {comparison['baseline_session_id']}")
+        metric_names = list(comparison["differences"])
+        for name in metric_names:
+            values = [entry["baseline"] for entry in comparison["differences"][name][:1]]
+            values.extend(entry["value"] for entry in comparison["differences"][name])
+            display = " | ".join("unknown" if value is None else str(round(value, 3) if isinstance(value, float) else value)
+                                 for value in values)
+            deltas = ", ".join(
+                "unknown" if item["percent"] is None else f"{item['percent']:+.2f}%"
+                for item in comparison["differences"][name]
+            )
+            print(f"{name}: {display}" + (f" | delta {deltas}" if deltas else ""))
+        print("Warnings:")
+        for warning in comparison["warnings"]:
+            print(f"- [{warning['classification']}] {warning['code']}: {warning['summary']}")
+    return 0
+
+
+def _format_history_analytics(analysis: dict[str, Any]) -> str:
+    metrics = analysis.get("metrics", {})
+    execution = metrics.get("execution", {})
+    inference = metrics.get("inference", {})
+    tokens = metrics.get("tokens", {})
+    context = metrics.get("context", {})
+    compactions = metrics.get("compactions", {})
+    tools = metrics.get("tools", {})
+    def value(item: Any) -> str:
+        if item is None:
+            return "unknown"
+        if isinstance(item, dict):
+            result = item.get("value")
+            return "unknown" if result is None else str(result)
+        return str(item)
+    rows = [
+        "Historical analytics:",
+        f"  Observed duration: {value(execution.get('observed_wall_seconds'))} s",
+        f"  Inferences: {inference.get('count', 'unknown')} (completed {inference.get('completed_count', 'unknown')})",
+        f"  Context peak: {value(context.get('maximum_observed_utilization_percent'))}%",
+        f"  Unique compactions: {compactions.get('unique_cycles', 'unknown')} "
+        f"(raw parts {compactions.get('raw_parts', 'unknown')})",
+        f"  Tool calls: {tools.get('invocations', 'unknown')}; reads {tools.get('read_calls', 'unknown')}; "
+        f"edits {tools.get('edit_attempts', 'unknown')}",
+        f"  Token totals: {json.dumps(tokens.get('observed_completed_totals', {}), sort_keys=True)}",
+        f"  History coverage: {analysis.get('coverage', {}).get('status', 'unknown')}",
+    ]
+    findings = analysis.get("findings", [])
+    if findings:
+        rows.append("  Historical findings:")
+        rows.extend(f"    [{item.get('classification')}] {item.get('code')}: {item.get('summary')}" for item in findings)
+    return "\n".join(rows)
+
+
+def _export_command(args: argparse.Namespace) -> int:
+    from .evidence_export import preview_evidence_package, verify_evidence_package, write_evidence_package
+
+    if args.action == "verify":
+        result = verify_evidence_package(args.output)
+    else:
+        if not args.session:
+            print("export create requires at least one --session", file=sys.stderr)
+            return 2
+        with TelemetryStore(_selected_database(args), readonly=True) as store:
+            options = {"store": store, "session_ids": args.session, "endpoints": args.endpoint,
+                       "output_path": args.output, "events_format": args.events_format}
+            result = (write_evidence_package(**options) if args.write else preview_evidence_package(**options))
+    if args.format == "json":
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+    else:
+        if args.action == "verify":
+            print(f"Verification: {'valid' if result['ok'] else 'invalid'}; files checked={result['files_checked']}")
+            if result.get("errors"):
+                for error in result["errors"]:
+                    print(f"- {error}")
+        else:
+            action = "Wrote" if args.write else "Preview"
+            print(f"{action} sanitized package: {args.output}; sessions={len(args.session)}; "
+                  f"records={result.get('record_count', 'unknown')}; bytes={result.get('size_bytes')}")
+    return 0 if result.get("ok", True) else 1
+
+
+def _visualize_command(args: argparse.Namespace) -> int:
+    from .visualization import render_comparison, render_session, write_visualization
+
+    with TelemetryStore(_selected_database(args), readonly=True) as store:
+        if len(args.session) == 1:
+            analysis = analyze_stored_session(store, args.session[0], endpoint=(args.endpoint or [None])[0])
+            content = render_session(analysis, output_format=args.format)
+        else:
+            comparison = compare_stored_sessions(store, args.session, endpoints=args.endpoint)
+            content = render_comparison(comparison, output_format=args.format)
+    if args.write:
+        write_visualization(args.output, content)
+        result = {"written": True, "output": str(args.output), "format": args.format,
+                  "characters": len(content), "sessions": args.session}
+    else:
+        result = {"written": False, "output": str(args.output), "format": args.format,
+                  "characters": len(content), "sessions": args.session}
+    if args.verbose:
+        result["preview"] = content if not args.write else None
+    _emit(result, "json" if args.verbose else "text")
+    if not args.verbose and not args.write:
+        print("No file written; pass --write to create the visualization.")
+    return 0
 
 
 def _database_command(args: argparse.Namespace) -> int:
@@ -433,10 +578,12 @@ def _historical_report(args: argparse.Namespace) -> int:
             return 1
         offset = max(0, initial["page"]["total"] - 10000)
         bundle = store.history_bundle(args.session, endpoint=args.url, limit=10000, offset=offset)
-    return _emit_historical_report(bundle, args)
+        advanced = analyze_stored_session(store, args.session, endpoint=args.url)
+    return _emit_historical_report(bundle, args, advanced=advanced)
 
 
-def _emit_historical_report(bundle: dict[str, Any], args: argparse.Namespace) -> int:
+def _emit_historical_report(bundle: dict[str, Any], args: argparse.Namespace,
+                            *, advanced: dict[str, Any] | None = None) -> int:
     source_coverage = bundle["coverage"]
     gaps = bundle["gaps"]
     has_more = bundle["page"]["has_more"] or bundle["page"]["offset"] > 0
@@ -500,6 +647,7 @@ def _emit_historical_report(bundle: dict[str, Any], args: argparse.Namespace) ->
         "model_configurations": bundle["model_configurations"],
         "hardware_samples": bundle["hardware_samples"],
         "timeline": [row["payload"] for row in bundle["event_records"]],
+        "historical_analytics": advanced,
     }
     if args.format == "json":
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -513,6 +661,8 @@ def _emit_historical_report(bundle: dict[str, Any], args: argparse.Namespace) ->
               f"{bundle['page']['total']} events across {len(gaps)} collection gaps.")
         print(f"Hardware samples: {len(bundle['hardware_samples'])} device/process observations; "
               "not attributed to this session.")
+        if advanced:
+            print(_format_history_analytics(advanced))
     return 0
 
 

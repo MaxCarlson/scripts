@@ -41,7 +41,7 @@ def test_recorder_seeds_once_then_replays_idempotently_and_marks_restart_gap(tmp
 
     assert client.history_calls == ["ses-1"]
     assert first["inserted"] > 0
-    assert second["inserted"] == 0
+    assert second["inserted"] == 1  # a new state sample; provider events are deduplicated
     assert second["duplicates"] > 0
 
     with TelemetryStore(path) as store:

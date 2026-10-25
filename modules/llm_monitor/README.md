@@ -59,6 +59,28 @@ The collector probes a cursor message endpoint when supported, otherwise uses bo
 
 `finish=stop` ends one inference only. Provider/session completion, work-product completion, and task acceptance remain distinct. Edit-tool success is not independent proof of file contents, tests, ownership, or acceptance. Optional MCP correlation uses an explicit supplied JSON snapshot and is not a live MCP transport. GPU readings are timestamped device or process measurements; point-in-time utilization/power are not attributable to a session and do not establish inference peaks. Missing observations are not treated as zero activity.
 
+## Historical comparison, export, and visualization
+
+`compare` analyzes two or more stored sessions offline. It presents deltas against the first session and reports coverage, model, context, hardware-sampling, and task-equivalence caveats. Percentage differences are omitted when the baseline is unknown or zero. These are descriptive comparisons, not statistical significance or causal claims; absent task/acceptance metadata means outcomes cannot be assumed equivalent.
+
+```powershell
+llm-monitor compare -s SESSION_A -s SESSION_B -d "$env:LOCALAPPDATA\llm-monitor\telemetry.sqlite3" -f json
+llm-monitor export -s SESSION_A -s SESSION_B -o .\runs.zip                 # preview; no file written
+llm-monitor export -s SESSION_A -s SESSION_B -o .\runs.zip --write -F csv
+llm-monitor export --action verify -o .\runs.zip
+llm-monitor visualize -s SESSION_A -o .\timeline.svg --write
+```
+
+```sh
+llm-monitor compare -s SESSION_A -s SESSION_B --database ./telemetry.sqlite3
+llm-monitor export -s SESSION_A -o ./evidence.zip --write
+llm-monitor visualize -s SESSION_A -o ./timeline.html --format html --write
+```
+
+Export creation previews unless `--write` is supplied. The ZIP contains session metadata, normalized event rows, analysis, coverage gaps, configuration, optional sampled hardware observations, and a manifest with per-file SHA-256 checksums. It serializes only the privacy-safe telemetry already stored: prompts, responses, source content, tool output, and raw arguments are not reconstructed. CSV cells are guarded against spreadsheet formula interpretation. Verification checks package structure and checksums; a valid checksum proves package integrity, not provider authenticity. Export schema is version 1; source telemetry remains schema version 1 and requires no migration.
+
+`visualize` produces a static SVG timeline or self-contained HTML wrapper. It previews metadata by default and writes only with `--write`. The current view marks known inference, tool, compaction, lifecycle, and hardware events; it does not interpolate missing intervals or fabricate continuous hardware samples. Comparison visualization shows observed wall-duration bars. Large event histories use the analyzer's bounded marker sampling. Percentiles require at least five samples. Message-boundary throughput is approximate and is not decode throughput. Time categories are interval unions; unclassified wall time is not called idle. Sampled state durations are limited to their observed coverage and may be unavailable for older transition-only histories.
+
 ## Development checks
 
 Run `python -m pytest tests -q --basetemp=.pytest_tmp_root`. Tests use synthetic data and do not require a live model, server, MCP connection, or GPU.

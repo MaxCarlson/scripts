@@ -340,6 +340,9 @@ class TelemetryStore:
             if is_latest_observation and state and state != previous_state:
                 self._insert_lifecycle(connection, session_key, session_id, observed_at, previous_state, state)
                 inserted += 1
+            inserted += self._insert_state_observation(
+                connection, session_key, session_id, observed_at, state, snapshot, coverage, errors
+            )
             for event in event_list:
                 uid, identity_quality = _event_uid(instance_key, session_id, event)
                 payload = _safe_event(event)
@@ -396,6 +399,37 @@ class TelemetryStore:
             "provider_event_id, identity_quality, payload_json) VALUES(?, ?, ?, ?, 'monitor', 'lifecycle', 'state_change', NULL, 'observed_state_transition', ?)",
             (uid, session_key, observed_at, observed_at, _json(payload)),
         )
+
+    @staticmethod
+    def _insert_state_observation(
+        connection: sqlite3.Connection, session_key: str, session_id: str, observed_at: str,
+        state: str | None, snapshot: dict[str, Any], coverage: dict[str, Any], errors: dict[str, Any],
+    ) -> int:
+        permissions = snapshot.get("pending_permissions")
+        questions = snapshot.get("pending_questions")
+        payload = {
+            "timestamp": observed_at,
+            "observed_at": observed_at,
+            "source": "monitor",
+            "category": "lifecycle",
+            "subtype": "state_observation",
+            "session_id": session_id,
+            "state": state,
+            "pending_permissions": permissions if isinstance(permissions, int) and permissions >= 0 else None,
+            "pending_questions": questions if isinstance(questions, int) and questions >= 0 else None,
+            "coverage_status": coverage.get("status"),
+            "error_sources": sorted(errors.keys()),
+            "provenance": "opencode_poll_observation",
+        }
+        uid = _digest([session_key, "state_observation", observed_at, state,
+                       payload["pending_permissions"], payload["pending_questions"]])
+        cursor = connection.execute(
+            "INSERT OR IGNORE INTO events(event_uid, session_key, timestamp, observed_at, source, category, subtype, "
+            "provider_event_id, identity_quality, payload_json) "
+            "VALUES(?, ?, ?, ?, 'monitor', 'lifecycle', 'state_observation', NULL, 'poll_observation', ?)",
+            (uid, session_key, observed_at, observed_at, _json(payload)),
+        )
+        return max(0, cursor.rowcount)
 
     @staticmethod
     def _upsert_detail(
@@ -635,6 +669,70 @@ class TelemetryStore:
                 (session_key, page_size, start),
             ).fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
+
+    def session_context(
+        self, session_id: str, *, provider_type: str = "opencode", endpoint: str | None = None,
+    ) -> dict[str, Any] | None:
+        session = self._resolve_session(session_id, provider_type=provider_type, endpoint=endpoint)
+        if not session:
+            return None
+        with closing(self._connect()) as connection:
+            checkpoint = connection.execute(
+                "SELECT * FROM collection_checkpoints WHERE session_key=?", (session["session_key"],)
+            ).fetchone()
+            gaps = connection.execute(
+                "SELECT category, started_at, ended_at, status, reason_code, detail_json FROM collection_gaps "
+                "WHERE session_key=? ORDER BY started_at", (session["session_key"],)
+            ).fetchall()
+            model_configs = connection.execute(
+                "SELECT observed_at, model_id, provider_id, configured_context, configured_output, loaded_context, "
+                "loaded_state, source_json FROM model_configurations WHERE session_key=? ORDER BY observed_at",
+                (session["session_key"],),
+            ).fetchall()
+            jobs = connection.execute(
+                "SELECT job_id, message_id, status, started_at, updated_at, completed_at, agent, model, correlation "
+                "FROM jobs WHERE session_key=? ORDER BY updated_at", (session["session_key"],)
+            ).fetchall()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM events WHERE session_key=?", (session["session_key"],)
+            ).fetchone()[0]
+            hardware_count = connection.execute(
+                "SELECT COUNT(*) FROM hardware_samples WHERE observed_at >= ? AND observed_at <= ?",
+                (session["first_seen"], session["last_seen"]),
+            ).fetchone()[0]
+        return {
+            "session": dict(session),
+            "coverage": json.loads(checkpoint["coverage_json"]) if checkpoint else json.loads(session["coverage_json"]),
+            "checkpoint": dict(checkpoint) if checkpoint else None,
+            "gaps": [dict(row) | {"detail": json.loads(row["detail_json"])} for row in gaps],
+            "jobs": [dict(row) for row in jobs],
+            "model_configurations": [dict(row) | {"sources": json.loads(row["source_json"])} for row in model_configs],
+            "hardware_samples": self.hardware_samples(
+                start_at=session["first_seen"], end_at=session["last_seen"], limit=10000
+            ),
+            "hardware_sample_total": hardware_count,
+            "hardware_samples_truncated": hardware_count > 10000,
+            "event_count": event_count,
+        }
+
+    def iter_session_records(
+        self, session_id: str, *, provider_type: str = "opencode", endpoint: str | None = None,
+        batch_size: int = 512,
+    ) -> Iterator[dict[str, Any]]:
+        """Stream chronological persisted event rows for one unambiguous session."""
+        session = self._resolve_session(session_id, provider_type=provider_type, endpoint=endpoint)
+        if not session:
+            return
+        size = min(max(1, batch_size), 10000)
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                "SELECT event_uid, session_key, timestamp, observed_at, source, category, subtype, provider_event_id, "
+                "identity_quality, payload_json FROM events WHERE session_key=? "
+                "ORDER BY timestamp IS NULL, timestamp, event_uid", (session["session_key"],)
+            )
+            while rows := cursor.fetchmany(size):
+                for row in rows:
+                    yield dict(row) | {"payload": json.loads(row["payload_json"])}
 
     def hardware_samples(
         self, *, start_at: str | None = None, end_at: str | None = None,
