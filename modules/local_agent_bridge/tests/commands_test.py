@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from local_agent_bridge.commands import main
 import local_agent_bridge.commands as commands_module
 import local_agent_bridge.cli as cli_module
@@ -59,7 +61,6 @@ def test_setup_retrieval_opt_in_is_saved_and_can_be_disabled(tmp_path, capsys):
     installed = home / ".config/opencode/tools/code_locate.js"
     assert installed.is_file()
     capsys.readouterr()
-
     assert main([
         "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
         "--no-code-retrieval", "-j",
@@ -74,6 +75,37 @@ def test_setup_retrieval_opt_in_is_saved_and_can_be_disabled(tmp_path, capsys):
     ]) == 0
     assert not installed.exists()
     capsys.readouterr()
+
+
+def test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware(tmp_path, capsys):
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / "module.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    payload = tmp_path / "task.json"
+    payload.write_text(json.dumps({
+        "task_id": "task-cli",
+        "objective": "Inspect the module",
+        "authorized_scope": ["module.py"],
+        "next_action": "Check the existing session before continuing.",
+        "identities": {"session_id": "ses-cli", "job_id": "job-cli", "message_id": "msg-cli",
+                        "provider_id": "local", "model_id": "model-cli", "worker_agent": "local-worker"},
+        "confirmed_sources": [{"path": "module.py", "start_line": 1, "end_line": 1}],
+    }), encoding="utf-8")
+    state = tmp_path / "outside-state"
+    assert main(["checkpoint", "save", "-C", str(workspace), "-S", str(state), "-i", str(payload), "-j"]) == 0
+    saved = json.loads(capsys.readouterr().out)
+    assert saved["identities"]["message_id"] == "msg-cli"
+    assert not Path(saved["checkpoint_path"]).is_relative_to(workspace)
+    assert main(["checkpoint", "show", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    assert json.loads(capsys.readouterr().out)["task_id"] == "task-cli"
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    assert main(["checkpoint", "recover", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 1
+    packet = json.loads(capsys.readouterr().out)
+    assert packet["status"] == "stale"
+    assert packet["automatic_resubmission"] is False
 
 
 def test_run_parser_keeps_management_in_model_group():

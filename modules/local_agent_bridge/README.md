@@ -87,6 +87,26 @@ adjust these bounds; truncation is explicit.
 This retrieval interface is read-only and has no dependency on a model server.
 The CLI alone adds no setup-managed files or configuration.
 
+## Durable task checkpoints
+
+Save a validated task envelope to an atomic, versioned checkpoint, then build
+a recovery packet after an interruption:
+
+```powershell
+local-agent checkpoint save -C "C:\src\my project" -i task.json -j
+local-agent checkpoint show task-42 -C "C:\src\my project" -j
+local-agent checkpoint recover task-42 -C "C:\src\my project" -j
+```
+
+The JSON input contains `task_id`, `objective`, `authorized_scope`, and
+`next_action`, with optional `identities`, `confirmed_sources`, decisions,
+assumptions, modified paths, verification, pending checks, and blockers. By
+default state is stored under `~/.local/share/local-agent/checkpoints`; use
+`-S/--state-dir` to select another directory outside the Git working tree.
+Checkpoints store hashes and line ranges for confirmed sources, not source
+contents. Recovery marks changed or unavailable revisions and source evidence
+stale, retains session/job/message identities, and never resubmits work.
+
 ## Optional OpenCode retrieval tools
 
 OpenCode can expose the same bounded retrieval API through two read-only custom

@@ -234,6 +234,20 @@ How to inspect or attach to an existing OpenCode server:
     context.add_argument("-m", "--max-line-bytes", type=int, default=4096, help="Maximum bytes per returned line")
     context.add_argument("-b", "--max-bytes", type=int, default=16 * 1024, help="Maximum compact JSON bytes")
     context.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    checkpoint = groups.add_parser("checkpoint", help="Save, inspect, or recover durable task context")
+    checkpoint_actions = checkpoint.add_subparsers(dest="action")
+    checkpoint_save = checkpoint_actions.add_parser("save", help="Validate and atomically save a task checkpoint")
+    checkpoint_save.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+    checkpoint_save.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+    checkpoint_save.add_argument("-i", "--input", type=Path, required=True, help="JSON checkpoint fields")
+    checkpoint_save.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    for name in ("show", "recover"):
+        action = checkpoint_actions.add_parser(name, help={"show": "Show the saved task state",
+                                                            "recover": "Build a stale-aware recovery packet"}[name])
+        action.add_argument("task_id", help="Stable task identifier")
+        action.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+        action.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+        action.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
     groups.add_parser(
         "run",
         help="Configure/load the model and start the foreground bridge",
@@ -605,6 +619,56 @@ def _handle_code(args: argparse.Namespace) -> int:
     return 1 if result["status"] == "partial" else 0
 
 
+def _handle_checkpoint(args: argparse.Namespace) -> int:
+    from .context.checkpoint import CheckpointError, load_checkpoint, recovery_packet, save_checkpoint
+
+    try:
+        if args.action == "save":
+            payload = json.loads(args.input.read_text(encoding="utf-8"))
+            allowed = {
+                "task_id", "objective", "authorized_scope", "next_action", "base_revision", "identities",
+                "confirmed_sources", "decisions", "assumptions", "modified_paths", "completed_verification",
+                "pending_checks", "blockers",
+            }
+            if not isinstance(payload, dict) or set(payload) - allowed:
+                raise CheckpointError("Checkpoint input must be an object with only supported task fields")
+            result = save_checkpoint(
+                args.workspace, payload.get("task_id"), payload.get("objective"),
+                state_dir=args.state_dir,
+                authorized_scope=payload.get("authorized_scope"),
+                next_action=payload.get("next_action"),
+                base_revision=payload.get("base_revision"),
+                identities=payload.get("identities"),
+                confirmed_sources=payload.get("confirmed_sources"),
+                decisions=payload.get("decisions"),
+                assumptions=payload.get("assumptions"),
+                modified_paths=payload.get("modified_paths"),
+                completed_verification=payload.get("completed_verification"),
+                pending_checks=payload.get("pending_checks"),
+                blockers=payload.get("blockers"),
+            )
+        else:
+            result = load_checkpoint(args.workspace, args.task_id, state_dir=args.state_dir)
+            if args.action == "recover":
+                result = recovery_packet(args.workspace, result)
+    except (CheckpointError, OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        result = {"status": "error", "errors": [{"code": "checkpoint_error", "message": str(exc)}]}
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(f"Checkpoint {result.get('task_id')}: {result.get('status', 'saved')}")
+        if result.get("next_action"):
+            print("Next action: " + result["next_action"])
+        for reason in result.get("stale_reasons", []):
+            print("Stale evidence: " + reason)
+    return 1 if result.get("status") == "stale" else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
@@ -627,6 +691,8 @@ def main(argv: list[str] | None = None) -> int:
         return _handle_opencode(args)
     if args.group == "code":
         return _handle_code(args)
+    if args.group == "checkpoint":
+        return _handle_checkpoint(args)
     try:
         if args.group == "model":
             from . import cli

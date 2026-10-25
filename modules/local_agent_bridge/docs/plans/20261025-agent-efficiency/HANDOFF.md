@@ -4,7 +4,7 @@
 **Repository:** `MaxCarlson/scripts`
 **Canonical plan:** `./plan.md`
 **Progress tracker:** `./STATUS.md`
-**Execution status:** Release A and offline P3 implementation complete on `codex/local-agent-efficiency-20261025`; P4 persistence/recovery audit is next
+**Execution status:** Release A and offline P3 implementation are committed; P4 checkpoint implementation is in progress on `codex/local-agent-efficiency-20261025`
 
 ## 1. Your assignment
 
@@ -382,6 +382,14 @@ Do not claim the overall optimization is complete until the relevant implementat
 ---
 
 **Start now:** inspect the repository and working tree, run baseline offline checks, implement P1, and build the bounded retrieval core for P2. Continue into P3 if the prerequisites are satisfied.
+
+## Resume state — P4 checkpoint implementation
+
+The P4 audit is complete: v3.3.0 recovery owns job/session/message identity and duplicate-submission safeguards; `agent_memory` owns semantic notes; `development_ledger` owns project plans and validation history. The new checkpoint stores the distinct task objective/scope, source hashes, decisions, paths, checks, blockers, and next action. It does not dispatch work.
+
+P4 adds atomic versioned storage in `local_agent_bridge.context.checkpoint`, an additive `local-agent checkpoint save|show|recover` CLI, offline tests, and README usage. Checkpoint files are external to the canonical Git worktree; recovery flags changed/unavailable revision and source evidence stale and sets `automatic_resubmission: false`. Verification: focused suite **12 passed, 1 skipped**; full bridge suite **129 passed, 2 skipped, 1 deselected**; targeted Ruff passed; CLI help and `git diff --check` passed. The deselected case is the previously documented Git Bash/MSYS Windows app-execution-alias failure. Use `C:/Windows/Temp` as pytest `--basetemp` on this host: its default temporary root is within a broad `C:/Users/mcarls` Git worktree, and P4 correctly rejects checkpoint state inside that worktree.
+
+Next: stage only P4 paths and commit/push the authorized branch, then begin P5 Python AST outlines/task maps. No inference, local-model request, OpenCode server operation, or live benchmark has occurred. Controlled evaluation and exact tokenizer/context overhead remain unmeasured; no efficiency gain is claimed.
 
 ## P0/P1 reconciliation — 2026-10-25
 

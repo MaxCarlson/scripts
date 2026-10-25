@@ -95,6 +95,29 @@ P3 offline validation:
 - Targeted `ruff check` across all changed Python code: **All checks passed**; `git diff --check` passed.
 - No model request, inference, OpenCode server request, global profile/config write, live worker evaluation, or benchmark trial was performed.
 
+## P4 checkpoint implementation
+
+The pre-implementation audit found that v3.3.0 recovery guidance preserves coordinator-owned session/job/message identities and forbids uncertain resubmission, while `agent_memory` stores long-lived semantic notes and `development_ledger` stores project plan/stage/validation history. Neither is an authoritative store for task objective, authorized scope, exact source hashes, pending checks, blockers, and next action. P4 therefore adds a distinct worker task-state checkpoint without duplicating job lifecycle status.
+
+`local_agent_bridge.context.checkpoint` now provides `save_checkpoint`, `load_checkpoint`, and `recovery_packet`. The versioned schema is capped at 256 KiB; saves use atomic replace and keep data outside the canonical Git worktree by default (`~/.local/share/local-agent/checkpoints`, overrideable with `LOCAL_AGENT_CHECKPOINT_ROOT` or `--state-dir`). It records only hashes/ranges for confirmed UTF-8 text references, enforces path containment and source-size limits, validates project/workspace identity, and flags changed or unavailable revisions/source evidence as stale. Recovery preserves session, job, initiating message, provider/model, and worker-agent identity; it never dispatches or resubmits a job.
+
+The additive CLI is `local-agent checkpoint save|show|recover`. Save accepts a bounded JSON task envelope; show returns the stored state; recover adds stale-evidence and no-resubmission guidance. README examples document the workflow.
+
+P4 focused offline validation:
+
+- Red phase: the Git-worktree containment and unavailable-revision tests failed against the initial implementation for the expected reasons.
+- Focused green command: `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'local_agent_bridge' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/local_agent_bridge'); import pytest; raise SystemExit(pytest.main(['modules/local_agent_bridge/tests/checkpoint_test.py', 'modules/local_agent_bridge/tests/commands_test.py::test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware', 'modules/local_agent_bridge/tests/commands_test.py::test_setup_retrieval_opt_in_is_saved_and_can_be_disabled', '-q', '--basetemp=C:/Windows/Temp/local-agent-p4-checks']))` — **12 passed, 1 skipped** (symlink creation unavailable on this host).
+- A focused run inside the Git worktree initially failed the new external-state invariant because pytest placed fixtures inside the repository; rerunning under `C:/Windows/Temp` respected the invariant. The test runner's default temp directory is within a broader `C:/Users/mcarls` Git worktree on this host.
+
+P4 validation is complete:
+
+- Full bridge suite: **129 passed, 2 skipped, 1 deselected** using `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'local_agent_bridge' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/local_agent_bridge'); import pytest; raise SystemExit(pytest.main(['modules/local_agent_bridge/tests', '-q', '-rs', '--basetemp=C:/Windows/Temp/local-agent-p4-full-rs', '--tb=short', '--deselect=modules/local_agent_bridge/tests/audit_test.py::test_shell_mode_comes_from_receipt_modes_only']))`. The deselected test is the previously documented Git Bash/MSYS Windows app-execution-alias failure; the other baseline MSYS shell-hook test passed. Skips: checkpoint source symlink creation is unavailable and setup file symlinks require Windows privilege.
+- Focused checkpoint/CLI/setup tests: **12 passed, 1 skipped**. The skipped case is symlink creation unavailable on this host.
+- `ruff check modules/local_agent_bridge/local_agent_bridge/context/checkpoint.py modules/local_agent_bridge/local_agent_bridge/commands.py modules/local_agent_bridge/tests/checkpoint_test.py modules/local_agent_bridge/tests/commands_test.py`: **All checks passed**.
+- `local-agent checkpoint --help` lists `save`, `show`, and `recover`; the checkpoint CLI test exercises save/show/recover and stale-source detection. `git diff --check` passed.
+- Changed files: `README.md`; `docs/plans/20261025-agent-efficiency/{HANDOFF.md,STATUS.md}`; `local_agent_bridge/commands.py`; new `local_agent_bridge/context/{__init__.py,checkpoint.py}`; `tests/commands_test.py`; new `tests/checkpoint_test.py`.
+- No inference, model request, OpenCode server operation, or live benchmark was performed.
+
 ## Next action
 
-Begin P4 with a read-only audit of v3.3.0 session/job recovery rules, `agent_memory`, `development_ledger`, and related persistence. Decide whether a project-scoped checkpoint adds authoritative task state that those components cannot preserve before implementing any new store. Keep checkpoint recovery from resubmitting uncertain work. Controlled evaluation of B0/B2 and actual tokenizer/context overhead remains pending separate live-evaluation authorization; current evidence is implementation and offline correctness only.
+P4 implementation and offline validation are complete. Commit/push this stage, then begin P5 with bounded Python AST symbol outlines and task-specific repository maps. B0/B2 controlled evaluation and exact tokenizer/context overhead remain unmeasured; no performance gain is claimed.
