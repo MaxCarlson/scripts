@@ -41,9 +41,16 @@ edits or shell execution, after confirming the chosen agent exists. Both can use
 [worker prompt](resources/local-worker.md); its presence in this folder does not
 make it active in OpenCode.
 
+Every `opencode_fire` call starts a distinct turn, including a follow-up in the
+same session. Pass the explicit agent (`local-worker` or `local-reviewer`) on
+every call. Record its returned `jobId`, `sessionId`, initiating `messageId`,
+absolute `directory`, provider ID and model ID together; do not rely on a prior
+turn's agent selection or default model.
+
 For coding work, prefer `opencode_fire` followed by `opencode_check` or bounded
-`opencode_wait` calls. Keep the returned `jobId`, `sessionId`, `messageId` and
-directory. Observe by job ID so an earlier session response cannot satisfy a new task.
+`opencode_wait` calls. Keep the returned `jobId`, `sessionId`, initiating
+`messageId`, directory, provider/model and explicit agent. Observe by job ID so
+an earlier session response cannot satisfy a new task.
 Keep waits shorter than the client's tool timeout. Codex documents a 60-second
 default; the pinned bridge's `opencode_run` defaults to a 600-second observation.
 For a short synchronous run, set `maxDurationSeconds` explicitly within that budget.

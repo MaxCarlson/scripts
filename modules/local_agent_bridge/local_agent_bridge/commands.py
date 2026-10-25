@@ -45,7 +45,8 @@ def build_parser() -> argparse.ArgumentParser:
   local-agent setup status -j
 
 How to run the local model setup & codex/agy integration:
-  local-agent run -m qwen/qwen3.8-27b@q6_k -c 32768
+  local-agent run -M qwen38_23GB -c 32768 -o 8192
+  local-agent model verify qwen38_23GB -j
   local-agent run -M qwen38_23GB
   local-agent model list
 
@@ -125,6 +126,14 @@ How to inspect or attach to an existing OpenCode server:
     actions.add_parser(
         "list", help="List model variants, loaded models and configured aliases"
     )
+    verify = actions.add_parser("verify", help="Read-only verification of OpenCode and LM Studio model limits")
+    verify.add_argument("nickname", help="Configured OpenCode model alias")
+    verify.add_argument("-j", "--json", action="store_true", help="Print structured verification results")
+    verify.add_argument("-p", "--opencode-port", type=int, default=4096, help="OpenCode HTTP server port")
+    verify.add_argument("-l", "--lms-port", type=int, default=1234, help="LM Studio HTTP port")
+    verify.add_argument("-d", "--directory", type=Path, help="Project directory whose effective OpenCode config is checked")
+    verify.add_argument("-c", "--context-length", type=int, help="Expected context limit")
+    verify.add_argument("-o", "--output-tokens", type=int, help="Expected output limit")
     for name in ["rename", "remove"]:
         action = actions.add_parser(name)
         action.add_argument("nickname", help="Existing model alias")
@@ -532,6 +541,26 @@ def main(argv: list[str] | None = None) -> int:
 
             if args.action == "list":
                 cli.handle_ls_command()
+            elif args.action == "verify":
+                if (args.context_length is None) != (args.output_tokens is None):
+                    raise ValueError("--context-length and --output-tokens must be supplied together.")
+                result = cli.verify_model_configuration(
+                    args.nickname,
+                    opencode_port=args.opencode_port,
+                    lms_port=args.lms_port,
+                    directory=str(args.directory) if args.directory else None,
+                    expected_context=args.context_length,
+                    expected_output=args.output_tokens,
+                )
+                if args.json:
+                    print(json.dumps(result, indent=2))
+                else:
+                    print(f"Model verification: {result['status']} ({args.nickname})")
+                    for issue in result["diagnostics"]:
+                        print(f"Mismatch: {issue}")
+                    for warning in result["warnings"]:
+                        print(f"Notice: {warning}")
+                return 1 if result["diagnostics"] else 0
             elif not args.apply:
                 print(
                     f"Preview: {args.action} alias {args.nickname}; add -a/--apply to execute."
@@ -629,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
         return result.get("code", 0)
     except (ValueError, OSError, RuntimeError, KeyError) as exc:
         message = str(exc)
+        if args.group == "model" and args.action == "verify":
+            if getattr(args, "json", False):
+                print(json.dumps({"status": "error", "diagnostics": [message], "warnings": []}, indent=2))
+            else:
+                print(message, file=sys.stderr)
+            return 2
         result = {
             "schema_version": 1,
             "code": 4

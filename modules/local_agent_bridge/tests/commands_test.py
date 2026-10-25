@@ -509,7 +509,7 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit) as version:
         main(["--version"])
     assert version.value.code == 0
-    assert "3.2.0" in capsys.readouterr().out
+    assert "3.3.0" in capsys.readouterr().out
 
     # A temporary target keeps this regression check independent of the user's installed profiles.
     assert main(["setup", "status", "-H", str(tmp_path / "empty-home"), "-j"]) in {0, 3}

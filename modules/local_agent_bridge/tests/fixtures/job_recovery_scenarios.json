@@ -1,0 +1,46 @@
+[
+  {
+    "id": "compaction-stale-job-live-session",
+    "job_status": "unknown",
+    "session_status": "busy",
+    "initiating_message_present": true,
+    "expected": "active_same_turn"
+  },
+  {
+    "id": "same-session-follow-up-agent",
+    "job_status": "new_follow_up",
+    "requested_agent": "local-worker",
+    "expected": "explicit_agent_each_turn"
+  },
+  {
+    "id": "false-zero-file-summary",
+    "summary_files": 0,
+    "baseline_diff_paths": ["src/retry.py"],
+    "expected": "inspect_actual_diff"
+  },
+  {
+    "id": "observation-timeout-not-cancelled",
+    "job_status": "running",
+    "timed_out": true,
+    "expected": "observe_same_job"
+  },
+  {
+    "id": "uncertain-turn-correlation",
+    "job_status": "unknown",
+    "session_status": "idle",
+    "initiating_message_present": false,
+    "expected": "ambiguous_operator_review"
+  },
+  {
+    "id": "no-worktree-diff",
+    "baseline_diff_paths": [],
+    "expected": "no_change_evidence"
+  },
+  {
+    "id": "permitted-edit-and-test-success",
+    "baseline_diff_paths": ["src/retry.py"],
+    "allowed_paths": ["src/retry.py"],
+    "focused_tests_exit_code": 0,
+    "expected": "accept_after_independent_review"
+  }
+]
