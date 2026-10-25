@@ -155,6 +155,8 @@ P6 implementation and offline validation were completed and pushed. B3 structura
 
 ## B3 structural retrieval profile wiring — offline implementation complete
 
+Stage commit: `0f1f3f1bcd7a6b6fcb0845dd8257263bca0a8403`, pushed to `origin/codex/local-agent-efficiency-20261025`.
+
 The optional structural retrieval tools are receipt-managed separately from the lexical pair. `local-agent setup plan --structural-retrieval` enables `code_symbols` and `code_map` and includes their lexical dependencies; both groups can be retired with `--no-structural-retrieval --no-code-retrieval`. The OpenCode adapters reuse the existing `local-agent code` commands and `runLocalAgent` helper with direct argv, no shell, active-workspace directory, per-command JSON limits, and a 16 KiB adapter output cap.
 
 `agent_benchmark` recognizes `retrieval-structural-v1` as its distinct B3 condition and prepares a `benchmark-structural` role with default deny plus safe file tools and exactly `code_locate`, `code_context`, `code_symbols`, and `code_map`. Bridge preflight rejects shell grants and missing structural tools before session submission. Prompt/profile identity and effective permissions are retained in trial evidence. B0 remains the verified reliability v3.3.0 baseline; no B3 performance or quality gain is claimed.
