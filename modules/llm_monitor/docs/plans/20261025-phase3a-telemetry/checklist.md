@@ -34,4 +34,4 @@
 - [x] CLI compatibility and database commands
 - [x] README, schema, privacy, retention, and recovery documentation
 - [x] Full tests, isolated packaging, help, compile, and diff verification
-- [ ] Commit and push Phase 3A branch; do not merge
+- [x] Commit and push Phase 3A branch; do not merge

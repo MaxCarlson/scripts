@@ -12,4 +12,4 @@
 - Final module validation: 49 passed, 1 skipped (POSIX-only permission assertion, unavailable on Windows); Scripts Help registry tests: 42 passed. `compileall`, CLI help, package install, and `git diff --check` passed.
 - Synthetic workload on Python 3.12.10, Windows 11, SQLite 3.49.1: 10,000 inference events ingested in one transaction (10,001 event rows including the lifecycle state event) in 0.2385 s; a 100-event page at offset 5,000 took 0.0265 s. The database plus WAL sidecars measured 17,047,552 bytes. This is a local synthetic microbenchmark, not a production performance guarantee.
 - No live OpenCode or LM Studio endpoint was available. MCP remains explicit-snapshot only. The resource_metrics snapshot was device-level and point-in-time; no session attribution was available.
-- Final source and packaging checks complete. Next action: stage only the Phase 3A module, plan, and Scripts Help registry changes, commit, and push the isolated branch; do not merge.
+- Phase 3A implementation and checklist are complete. Commits `a4b992da` (implementation) and the documentation closeout are on `origin/codex/llm-monitor-phase3a-20261025`; the branch is not merged.
