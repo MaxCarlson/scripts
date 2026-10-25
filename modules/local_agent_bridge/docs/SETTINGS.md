@@ -13,13 +13,40 @@ Those are point-in-time observations, not a fresh health/performance check.
 | --- | --- |
 | Load: model, GPU, context, TTL | Keep the user's current values and existing CLI options |
 | Inference: thinking and effort | Keep current behavior; verify parameter forwarding before changing it |
-| Inference: sampling/output limits | Record effective values; use upstream settings only as comparison points |
+| Inference: sampling/output limits | Set explicit OpenCode `limit.output` per alias; 8192 is the tested `qwen38_23GB` Q4_K_M recommendation only |
 | Handoff: context and task size | Supply relevant source; leave room for tool output, reasoning and response |
 | Concurrency | Preserve current model configuration; begin evaluation with one worker task at a time |
 | KV cache / flash attention | No changes required for skill setup or the module port |
 
 The downloaded model key, registered GGUF variant and loaded API alias are distinct.
 Use the alias OpenCode advertises for the handoff's model ID, not a guessed filename.
+
+## OpenCode context and output limits
+
+`local-agent run -c/--context-length` and `-o/--output-tokens` configure a
+positive context/output pair on the selected OpenCode model alias. Output must be
+smaller than context. The existing 32,768 default remains. For the measured
+Q4_K_M `qwen38_23GB` profile, output defaults to the tested 8,192 allowance when
+the alias has no output value; other model aliases do not receive a universal
+output default. To select the measured 64K pair explicitly:
+
+```powershell
+local-agent run -M qwen38_23GB -c 65536 -o 8192 --update-model-limits
+```
+
+`--update-model-limits` is required only when current context/output values conflict.
+Explicit provider `npm` or `baseURL` conflicts are preserved and require the
+separate `--update-opencode-provider` correction option. Display names, extra
+model fields such as `limit.input`, quantization/runtime options, comments, and
+other providers remain intact.
+
+Run `local-agent model verify qwen38_23GB -c 65536 -o 8192 -d C:\\src\\project -j`
+to compare the requested pair, static OpenCode alias, effective OpenCode provider
+resolution for that project directory, and the context LM Studio reports as
+loaded. This check performs no load, unload, server start, or configuration write.
+If an API is offline or LM Studio does not report the loaded context, the result
+states which value is unknown instead of inferring it. Static config alone cannot
+prove a different project resolves the same limits.
 
 ## Upstream comparison points
 
@@ -36,8 +63,10 @@ Support varies by inference framework. Transformers/vLLM examples do not prove
 that LM Studio's installed GGUF runtime or the OpenCode provider forwards an option.
 Do not copy unsupported request keys into the loader or force xhigh automatically.
 
-Larger advertised context does not establish that a larger loaded context is useful
-or fits available memory. Quantization size does not establish task accuracy.
+The reported 64K Q4_K_M run measured about 25.1 GiB total VRAM use on one RTX 5090
+without reported CPU offload. Larger advertised context does not establish that
+the load fits another model/device or improves task quality. Quantization size
+does not establish task accuracy.
 Keep sampling/GPU configuration outside the prose worker prompt.
 
 ## Tool use and coordinator settings

@@ -63,15 +63,39 @@ and preserves unrelated config keys. Do not delete that state before removal.
 local-agent model list
 local-agent model rename old-alias new-alias -a
 local-agent model remove old-alias -a
-local-agent run -M qwen38_23GB
-local-agent run -m qwen/qwen3.8-27b@q6_k -c 32768
+local-agent model verify qwen38_23GB -j
+local-agent run -M qwen38_23GB -c 32768 -o 8192
+local-agent run -M qwen38_23GB -c 65536 -o 8192 --update-model-limits
 ```
 
 `rename` and `remove` preview unless `-a/--apply` is supplied. Remove unregisters
 and unloads an alias; it does not delete downloaded weights. `run` retains the
-existing configure/load/foreground-server workflow and options. Runtime config
-writers preserve comments, unrelated fields, extra bridge options and file links.
-Setup never starts servers, calls models or installs external runtime tools.
+existing configure/load/foreground-server workflow and options. `-c/--context-length`
+sets both the LM Studio requested load context and the OpenCode alias context.
+`-o/--output-tokens` sets OpenCode's output allowance; both limits must be positive
+integers and output must be smaller than context. Existing incompatible limits
+require `--update-model-limits`. Incompatible explicit LM Studio provider settings
+require `--update-opencode-provider`. Unrelated model fields, provider options,
+comments, other providers and file links are preserved.
+
+The tested Q4_K_M `qwen38_23GB` profile uses 8,192 output tokens. That is a
+profile-specific recommendation, not a universal default. Other aliases keep the
+32,768 context default and need `-o` when an explicit context is configured. A
+legacy alias without complete limits stays unchanged and is warned about.
+
+`model verify` is read-only. It reports requested limits when supplied, static
+alias metadata, OpenCode's effective `/config` and `/config/providers` resolution,
+and LM Studio's `lms ps` loaded context separately. Use `-d/--directory` to check
+project-level overrides. If OpenCode is offline, it reports static-only confidence;
+if LM Studio cannot report the loaded context, that capacity is `null`/unknown.
+Exit code 0 means no mismatch was found, 1 means a mismatch, and 2 means invalid
+verification input. It never loads or unloads a model or starts a server.
+
+The measured 64K run used Q4_K_M on an RTX 5090 and reported about 25.1 GiB total
+device VRAM use with no CPU offload on that host. This does not establish that
+64K fits other models or devices. No 64K profile is applied to user configuration
+by this change. Setup never starts servers, calls models or installs external
+runtime tools.
 
 ## OpenCode server status and TUI attachment
 

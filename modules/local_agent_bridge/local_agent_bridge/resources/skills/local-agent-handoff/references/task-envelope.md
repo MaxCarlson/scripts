@@ -6,6 +6,8 @@ Use these fields for the task, adapting detail to its size:
 Objective:
 Workspace: absolute project path
 Context: relevant paths, established facts and applicable project instructions
+Dispatch record: jobId, sessionId, initiating messageId, absolute directory,
+provider ID, model ID, and explicit agent (record returned IDs immediately)
 Allowed work: inspect, propose a patch, or edit the named paths
 Constraints: exclusions and authority limits
 Checks: acceptance criteria and permitted validation commands
@@ -48,6 +50,10 @@ Here `qwen-local` is an example loaded API identifier, not the GGUF download key
 Use the actual configured alias. Select the named agent only after verifying it
 is configured; otherwise resolve the missing prompt setup before dispatch.
 An authorized coding task uses `local-worker` with exact writable paths and checks.
+Copy the returned `jobId`, `sessionId`, initiating `messageId`, directory,
+provider/model IDs, and agent into the dispatch record. These values are
+task-specific; paths and symbols supplied in `Context` are optional starting
+points and must be verified in the current workspace.
 
 Observe the returned job with the same directory. A bounded wait example is:
 

@@ -34,12 +34,12 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import threading
 import time
 import tomllib
 import urllib.error
 import urllib.request
+from urllib.parse import urlencode
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -51,6 +51,7 @@ from resource_metrics import nvidia_gpus
 DEFAULT_NICKNAME = "qwen-local"
 DEFAULT_MODEL = "qwen/qwen3.8-27b@q6_k"
 DEFAULT_CONTEXT = 32768
+QWEN38_23GB_OUTPUT_TOKENS = 8192
 DEFAULT_GPU = "max"
 DEFAULT_LMS_PORT = 1234
 DEFAULT_OPENCODE_PORT = 4096
@@ -662,7 +663,6 @@ def is_same_model_loaded(
 
     if (
         requested_context is not None
-        and loaded.context_length is not None
         and loaded.context_length != requested_context
     ):
         return False
@@ -700,11 +700,34 @@ def is_same_model_loaded(
 # OpenCode (`opencode.json`), Codex (`config.toml`), & Gemini `agy` Configs
 # ---------------------------------------------------------------------------
 def load_opencode_config() -> dict[str, Any]:
-    return load_json_file(OPENCODE_CONFIG_PATH)
+    from .setup.jsonc import loads
+
+    if not OPENCODE_CONFIG_PATH.is_file():
+        return {}
+    try:
+        return loads(OPENCODE_CONFIG_PATH.read_text(encoding="utf-8-sig"))
+    except Exception as exc:
+        raise RuntimeError(f"Failed to parse {OPENCODE_CONFIG_PATH}: {exc}") from exc
 
 
 def save_opencode_config(data: dict[str, Any]) -> bool:
-    return save_json_file_atomic(OPENCODE_CONFIG_PATH, data)
+    from .setup.files import atomic_write
+    from .setup.installer import install_lock
+    from .setup.jsonc import loads, update
+    from .setup.manifest import Layout
+    from .setup.runtime_config import refresh_receipt
+
+    path = OPENCODE_CONFIG_PATH
+    layout = Layout.discover(HOME_DIR, None, {})
+    with install_lock(layout):
+        before_text = path.read_text(encoding="utf-8-sig") if path.is_file() else "{}\n"
+        before = loads(before_text)
+        if before == data:
+            return False
+        after_text = update(before_text, before, data)
+        atomic_write(path, after_text.encode("utf-8"))
+        refresh_receipt(path, HOME_DIR, before_text)
+        return True
 
 
 def get_configured_models_map(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
@@ -718,6 +741,122 @@ def get_configured_models_map(cfg: dict[str, Any]) -> dict[str, dict[str, Any]]:
     if not isinstance(models, dict):
         return {}
     return models
+
+
+def validate_model_limits(context: Any, output: Any) -> tuple[int, int]:
+    """Validate the integer token limits OpenCode needs to resolve a model."""
+    for label, value in (("context", context), ("output", output)):
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ValueError(f"Model {label} limit must be a positive integer.")
+    if output >= context:
+        raise ValueError("Model output limit must be less than its context limit.")
+    return context, output
+
+
+def get_model_limits(cfg: dict[str, Any], nickname: str) -> tuple[int | None, int | None]:
+    model = get_configured_models_map(cfg).get(nickname)
+    limit = model.get("limit") if isinstance(model, dict) else None
+    if not isinstance(limit, dict):
+        return None, None
+    context, output = limit.get("context"), limit.get("output")
+    return (
+        context if isinstance(context, int) and not isinstance(context, bool) and context > 0 else None,
+        output if isinstance(output, int) and not isinstance(output, bool) and output > 0 else None,
+    )
+
+
+def resolve_run_limits(
+    cfg: dict[str, Any],
+    nickname: str,
+    requested_context: int | None,
+    requested_output: int | None,
+    *,
+    overwrite: bool = False,
+) -> tuple[int, int | None]:
+    """Resolve run limits from CLI, existing alias metadata, and the named Qwen profile."""
+    if requested_context is not None and (
+        isinstance(requested_context, bool)
+        or not isinstance(requested_context, int)
+        or requested_context <= 0
+    ):
+        raise ValueError("Context limit must be a positive integer.")
+    if requested_output is not None and (
+        isinstance(requested_output, bool)
+        or not isinstance(requested_output, int)
+        or requested_output <= 0
+    ):
+        raise ValueError("Output limit must be a positive integer.")
+    existing_context, existing_output = get_model_limits(cfg, nickname)
+    context = requested_context or existing_context or DEFAULT_CONTEXT
+    output = requested_output or existing_output
+    if output is None and nickname == "qwen38_23GB":
+        output = QWEN38_23GB_OUTPUT_TOKENS
+
+    configured = get_configured_models_map(cfg).get(nickname)
+    existing_limit = configured.get("limit") if isinstance(configured, dict) else None
+    if existing_limit is not None and not isinstance(existing_limit, dict) and not overwrite:
+        raise RuntimeError(f"Model '{nickname}' has incompatible OpenCode limit metadata.")
+    if isinstance(existing_limit, dict):
+        for key, requested in (("context", context), ("output", output)):
+            current = existing_limit.get(key)
+            if requested is not None and current is not None and current != requested and not overwrite:
+                raise RuntimeError(
+                    f"OpenCode model limit conflict for '{nickname}.{key}': configured {current}, "
+                    f"requested {requested}. Pass --update-model-limits to correct it explicitly."
+                )
+            if key in existing_limit and (
+                isinstance(current, bool) or not isinstance(current, int) or current <= 0
+            ):
+                if not overwrite:
+                    raise RuntimeError(
+                        f"OpenCode model '{nickname}' has an invalid {key} limit; "
+                        "pass --update-model-limits with valid limits to correct it."
+                    )
+
+    if output is not None:
+        validate_model_limits(context, output)
+    elif requested_context is not None:
+        raise RuntimeError(
+            f"Setting context for '{nickname}' also requires --output-tokens so OpenCode receives a complete limit pair."
+        )
+    return context, output
+
+
+def validate_opencode_provider_config(
+    cfg: dict[str, Any], nickname: str, lms_port: int, *, overwrite: bool = False
+) -> None:
+    """Reject incompatible explicit provider data before a run changes runtime state."""
+    providers = cfg.get("provider")
+    if providers is not None and not isinstance(providers, dict):
+        raise RuntimeError("OpenCode provider configuration is not an object; reconcile it before running.")
+    provider = providers.get(PROVIDER_ID) if isinstance(providers, dict) else None
+    if provider is not None and not isinstance(provider, dict):
+        raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' is not an object; reconcile it before running.")
+    if isinstance(provider, dict):
+        options = provider.get("options")
+        if options is not None and not isinstance(options, dict):
+            raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' options are not an object; reconcile them first.")
+        expected = {
+            "npm": "@ai-sdk/openai-compatible",
+            "baseURL": f"http://127.0.0.1:{lms_port}/v1",
+        }
+        values = {"npm": provider.get("npm")}
+        if isinstance(options, dict):
+            values["baseURL"] = options.get("baseURL")
+        for key, wanted in expected.items():
+            current = values.get(key)
+            is_explicit = key in provider if key == "npm" else isinstance(options, dict) and key in options
+            if is_explicit and current != wanted and not overwrite:
+                raise RuntimeError(
+                    f"OpenCode provider '{PROVIDER_ID}' {key} conflicts with LM Studio setup; "
+                    "pass --update-opencode-provider to correct it explicitly."
+                )
+        models = provider.get("models")
+        if models is not None and not isinstance(models, dict):
+            raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' models are not an object; reconcile them first.")
+        alias = models.get(nickname) if isinstance(models, dict) else None
+        if alias is not None and not isinstance(alias, dict):
+            raise RuntimeError(f"OpenCode alias '{nickname}' is not an object; reconcile it before running.")
 
 
 def extract_model_spec_from_opencode(cfg: dict[str, Any], nickname: str) -> str | None:
@@ -737,9 +876,19 @@ def extract_model_spec_from_opencode(cfg: dict[str, Any], nickname: str) -> str 
 
 
 def update_opencode_for_model(
-    nickname: str, display_spec: str, lms_port: int
+    nickname: str,
+    display_spec: str,
+    lms_port: int,
+    context_limit: int | None = None,
+    output_limit: int | None = None,
+    *,
+    overwrite_limits: bool = False,
+    overwrite_provider: bool = False,
 ) -> bool:
     cfg = load_opencode_config()
+    if context_limit is not None and output_limit is not None:
+        validate_model_limits(context_limit, output_limit)
+    validate_opencode_provider_config(cfg, nickname, lms_port, overwrite=overwrite_provider)
     if "$schema" not in cfg:
         cfg["$schema"] = "https://opencode.ai/config.json"
     if not isinstance(cfg.get("provider"), dict):
@@ -748,20 +897,204 @@ def update_opencode_for_model(
     if not isinstance(providers.get(PROVIDER_ID), dict):
         providers[PROVIDER_ID] = {}
     lms_prov = providers[PROVIDER_ID]
-    lms_prov["npm"] = "@ai-sdk/openai-compatible"
-    lms_prov["name"] = "LM Studio Local"
+    if overwrite_provider:
+        lms_prov["npm"] = "@ai-sdk/openai-compatible"
+    else:
+        lms_prov.setdefault("npm", "@ai-sdk/openai-compatible")
+    lms_prov.setdefault("name", "LM Studio Local")
     if not isinstance(lms_prov.get("options"), dict):
         lms_prov["options"] = {}
-    lms_prov["options"]["baseURL"] = f"http://127.0.0.1:{lms_port}/v1"
+    if overwrite_provider:
+        lms_prov["options"]["baseURL"] = f"http://127.0.0.1:{lms_port}/v1"
+    else:
+        lms_prov["options"].setdefault("baseURL", f"http://127.0.0.1:{lms_port}/v1")
 
     if not isinstance(lms_prov.get("models"), dict):
         lms_prov["models"] = {}
     if not isinstance(lms_prov["models"].get(nickname), dict):
         lms_prov["models"][nickname] = {}
 
-    lms_prov["models"][nickname]["name"] = f"Local worker: {display_spec}"
+    model = lms_prov["models"][nickname]
+    model.setdefault("name", f"Local worker: {display_spec}")
+    if context_limit is not None and output_limit is not None:
+        requested_limit = {"context": context_limit, "output": output_limit}
+        current_limit = model.get("limit")
+        if current_limit is not None and not isinstance(current_limit, dict):
+            if not overwrite_limits:
+                raise RuntimeError(
+                    f"OpenCode model limit conflict for '{nickname}': limit metadata is not an object. "
+                    "Pass --update-model-limits to replace it explicitly."
+                )
+            current_limit = None
+        next_limit = dict(current_limit or {})
+        conflicts = {
+            key: next_limit[key]
+            for key, value in requested_limit.items()
+            if key in next_limit and next_limit[key] != value
+        }
+        if conflicts and not overwrite_limits:
+            raise RuntimeError(
+                f"OpenCode model limit conflict for '{nickname}': configured {conflicts}, "
+                f"requested {requested_limit}. Pass --update-model-limits to correct it explicitly."
+            )
+        next_limit.update(requested_limit)
+        if next_limit != current_limit:
+            model["limit"] = next_limit
+    elif not isinstance(model.get("limit"), dict) or not model["limit"].get("context") or not model["limit"].get("output"):
+        print_warn(
+            f"OpenCode model '{nickname}' has no complete positive context/output limits; "
+            "use --output-tokens to configure them."
+        )
     cfg["model"] = f"{PROVIDER_ID}/{nickname}"
     return save_opencode_config(cfg)
+
+
+def verify_model_configuration(
+    nickname: str,
+    *,
+    opencode_port: int = DEFAULT_OPENCODE_PORT,
+    lms_port: int = DEFAULT_LMS_PORT,
+    directory: str | None = None,
+    expected_context: int | None = None,
+    expected_output: int | None = None,
+) -> dict[str, Any]:
+    """Compare static OpenCode config, effective server resolution, and loaded LM Studio state."""
+    if expected_context is not None and expected_output is not None:
+        validate_model_limits(expected_context, expected_output)
+    cfg = load_opencode_config()
+    model = get_configured_models_map(cfg).get(nickname)
+    configured_context, configured_output = get_model_limits(cfg, nickname)
+    expected_model = f"{PROVIDER_ID}/{nickname}"
+    active_model = cfg.get("model")
+    diagnostics: list[str] = []
+    warnings: list[str] = []
+    if not isinstance(model, dict):
+        diagnostics.append(f"OpenCode alias '{nickname}' is not configured under provider.{PROVIDER_ID}.models.")
+    if active_model != expected_model:
+        diagnostics.append(f"Configured active model is '{active_model or 'unset'}', expected '{expected_model}'.")
+    provider = cfg.get("provider", {}).get(PROVIDER_ID, {}) if isinstance(cfg.get("provider"), dict) else {}
+    options = provider.get("options", {}) if isinstance(provider, dict) else {}
+    base_url = options.get("baseURL") if isinstance(options, dict) else None
+    provider_npm = provider.get("npm") if isinstance(provider, dict) else None
+    expected_base = f"http://127.0.0.1:{lms_port}/v1"
+    if base_url != expected_base:
+        diagnostics.append(f"Configured LM Studio baseURL is '{base_url or 'unset'}', expected '{expected_base}'.")
+    if provider_npm != "@ai-sdk/openai-compatible":
+        diagnostics.append(
+            f"Configured LM Studio provider package is '{provider_npm or 'unset'}', expected '@ai-sdk/openai-compatible'."
+        )
+
+    if configured_context is None or configured_output is None:
+        diagnostics.append(
+            f"OpenCode alias '{nickname}' has absent or invalid limit.context/limit.output metadata."
+        )
+    elif configured_output >= configured_context:
+        diagnostics.append("Configured OpenCode output limit is not less than context limit.")
+
+    target_context = expected_context if expected_context is not None else configured_context
+    target_output = expected_output if expected_output is not None else configured_output
+    if expected_context is not None and configured_context != expected_context:
+        diagnostics.append(f"Configured context {configured_context} does not match requested {expected_context}.")
+    if expected_output is not None and configured_output != expected_output:
+        diagnostics.append(f"Configured output {configured_output} does not match requested {expected_output}.")
+
+    query = f"?{urlencode({'directory': directory})}" if directory else ""
+    opencode_url = f"http://127.0.0.1:{opencode_port}"
+    effective_config = http_get_json(f"{opencode_url}/config{query}")
+    effective_catalog = http_get_json(f"{opencode_url}/config/providers{query}")
+    effective_model = effective_config.get("model") if isinstance(effective_config, dict) else None
+    effective_provider = None
+    effective_entry = None
+    if isinstance(effective_catalog, dict):
+        providers = effective_catalog.get("providers") or []
+        effective_provider = next(
+            (item for item in providers if isinstance(item, dict) and item.get("id") == PROVIDER_ID), None
+        )
+        models = effective_provider.get("models", {}) if isinstance(effective_provider, dict) else {}
+        effective_entry = models.get(nickname) if isinstance(models, dict) else None
+    api_reachable = isinstance(effective_config, dict) and isinstance(effective_catalog, dict)
+    effective_limit = effective_entry.get("limit") if isinstance(effective_entry, dict) else None
+    effective_context = effective_limit.get("context") if isinstance(effective_limit, dict) else None
+    effective_output = effective_limit.get("output") if isinstance(effective_limit, dict) else None
+    effective_context = effective_context if isinstance(effective_context, int) and not isinstance(effective_context, bool) else None
+    effective_output = effective_output if isinstance(effective_output, int) and not isinstance(effective_output, bool) else None
+    if api_reachable:
+        if effective_model != expected_model:
+            diagnostics.append(f"Effective OpenCode model is '{effective_model or 'unset'}', expected '{expected_model}'.")
+        if effective_provider is None or effective_entry is None:
+            diagnostics.append(f"Effective OpenCode provider/model '{expected_model}' is not resolved.")
+        if effective_context is None or effective_output is None:
+            diagnostics.append("Effective OpenCode limit.context/limit.output metadata is absent or invalid.")
+        else:
+            if target_context is not None and effective_context != target_context:
+                diagnostics.append(
+                    f"Effective OpenCode context {effective_context} does not match expected {target_context}."
+                )
+            if target_output is not None and effective_output != target_output:
+                diagnostics.append(
+                    f"Effective OpenCode output {effective_output} does not match expected {target_output}."
+                )
+        effective_options = effective_provider.get("options", {}) if isinstance(effective_provider, dict) else {}
+        effective_base = effective_options.get("baseURL") if isinstance(effective_options, dict) else None
+        if effective_base and effective_base != expected_base:
+            diagnostics.append(f"Effective OpenCode provider baseURL is '{effective_base}', expected '{expected_base}'.")
+        if effective_context != configured_context or effective_output != configured_output:
+            diagnostics.append(
+                "Effective OpenCode limits do not match the static alias metadata "
+                f"(effective {effective_context}/{effective_output}, configured {configured_context}/{configured_output})."
+            )
+        if expected_context is not None and effective_context != expected_context:
+            diagnostics.append(f"Effective OpenCode context {effective_context} does not match requested {expected_context}.")
+        if expected_output is not None and effective_output != expected_output:
+            diagnostics.append(f"Effective OpenCode output {effective_output} does not match requested {expected_output}.")
+    else:
+        warnings.append("OpenCode API is offline or unavailable; effective limits are unknown, static verification only.")
+
+    loaded: LoadedInstance | None = None
+    try:
+        loaded, _ = get_loaded_instance(nickname)
+    except (OSError, RuntimeError, ValueError):
+        warnings.append("LM Studio loaded state could not be queried; loaded capacity is unknown.")
+    loaded_context = loaded.context_length if loaded is not None else None
+    if loaded is None:
+        warnings.append(f"LM Studio does not report alias '{nickname}' as loaded; loaded capacity is unknown.")
+    elif loaded_context is None:
+        warnings.append(f"LM Studio reports '{nickname}' loaded but does not report its context; loaded capacity is unknown.")
+    elif target_context is not None and loaded_context != target_context:
+        diagnostics.append(f"LM Studio loaded context {loaded_context} does not match requested/configured context {target_context}.")
+
+    return {
+        "status": "mismatch" if diagnostics else "ok",
+        "nickname": nickname,
+        "directory": directory,
+        "requested": {"context": expected_context, "output": expected_output},
+        "configured": {
+            "model": active_model,
+            "provider": PROVIDER_ID if isinstance(model, dict) else None,
+            "alias": nickname if isinstance(model, dict) else None,
+            "context": configured_context,
+            "output": configured_output,
+            "npm": provider_npm,
+            "base_url": base_url,
+        },
+        "effective_opencode": {
+            "reachable": api_reachable,
+            "model": effective_model,
+            "provider": effective_provider.get("id") if isinstance(effective_provider, dict) else None,
+            "alias": nickname if isinstance(effective_entry, dict) else None,
+            "context": effective_context,
+            "output": effective_output,
+            "base_url": effective_base if api_reachable else None,
+        },
+        "loaded_lm_studio": {
+            "identifier": loaded.identifier if loaded else None,
+            "model": loaded.model_Or_path if loaded else None,
+            "context": loaded_context,
+            "status": loaded.status if loaded else "unknown",
+        },
+        "diagnostics": diagnostics,
+        "warnings": warnings,
+    }
 
 
 def build_bridge_env(nickname: str, opencode_port: int) -> dict[str, str]:
@@ -998,6 +1331,13 @@ def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_po
     if new_nick in models_map:
         raise RuntimeError(f"Nickname '{new_nick}' already exists; choose an unused nickname.")
 
+    loaded, _ = get_loaded_instance(old_nick)
+    if loaded is not None and loaded.context_length is None:
+        raise RuntimeError(
+            f"LM Studio did not report the loaded context for '{old_nick}'; refusing to rename and reload it "
+            "with a guessed default. Verify the loaded state or unload it explicitly first."
+        )
+
     entry = models_map.pop(old_nick)
     models_map[new_nick] = entry
     was_active = cfg.get("model") == f"{PROVIDER_ID}/{old_nick}"
@@ -1013,10 +1353,9 @@ def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_po
         update_agy_mcp_configs(new_nick, opencode_port)
         print_ok(f"Updated Gemini `agy` MCP '{BRIDGE_NAME}' default model to '{new_nick}'")
 
-    loaded, _ = get_loaded_instance(old_nick)
     if loaded is not None:
         spec = extract_model_spec_from_opencode(cfg, new_nick) or loaded.model_Or_path
-        ctx = loaded.context_length or DEFAULT_CONTEXT
+        ctx = loaded.context_length
         print_work(f"Unloading old identifier '{old_nick}' and reloading as '{new_nick}'...")
         run_cmd(["lms", "unload", old_nick], check=False)
         sel = resolve_model_selection(spec)
@@ -1204,7 +1543,12 @@ def ensure_lms_http_server(lms_port: int, nickname: str) -> str:
     return state_label
 
 
-def verify_opencode_provider(opencode_url: str, nickname: str) -> tuple[bool, str]:
+def verify_opencode_provider(
+    opencode_url: str,
+    nickname: str,
+    context_limit: int | None = None,
+    output_limit: int | None = None,
+) -> tuple[bool, str]:
     cfg = http_get_json(f"{opencode_url}/config")
     if not cfg:
         return False, "/config endpoint unavailable"
@@ -1222,6 +1566,15 @@ def verify_opencode_provider(opencode_url: str, nickname: str) -> tuple[bool, st
     models = lm_prov.get("models") or {}
     if nickname not in models:
         return False, f"nickname '{nickname}' not listed in OpenCode provider models"
+    if context_limit is not None and output_limit is not None:
+        limit = models[nickname].get("limit") if isinstance(models[nickname], dict) else None
+        if not isinstance(limit, dict):
+            return False, f"OpenCode provider model '{nickname}' has no resolved limits"
+        if limit.get("context") != context_limit or limit.get("output") != output_limit:
+            return False, (
+                f"resolved model limits are {limit.get('context')}/{limit.get('output')}, "
+                f"expected {context_limit}/{output_limit}"
+            )
     return True, "ok"
 
 
@@ -1247,6 +1600,8 @@ def run_opencode_server_foreground(
     lms_state: str,
     enable_codex: bool,
     enable_agy: bool,
+    context_limit: int | None = None,
+    output_limit: int | None = None,
 ) -> None:
     opencode_url = f"http://127.0.0.1:{opencode_port}"
     print_header(f"Starting/verifying OpenCode HTTP server on 127.0.0.1:{opencode_port}...")
@@ -1259,7 +1614,7 @@ def run_opencode_server_foreground(
         raise RuntimeError(f'Existing OpenCode service is unhealthy at {opencode_url}; inspect it before restarting.')
 
     if health and health.get("healthy"):
-        ok, reason = verify_opencode_provider(opencode_url, nickname)
+        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit)
         if ok:
             opencode_state = f"Already running (v{health.get('version', 'unknown')})"
             print_ok(
@@ -1299,7 +1654,7 @@ def run_opencode_server_foreground(
             raise RuntimeError(
                 f"OpenCode server failed health check at {opencode_url}/global/health."
             )
-        ok, reason = verify_opencode_provider(opencode_url, nickname)
+        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit)
         if not ok:
             if proc:
                 proc.terminate()
@@ -1452,6 +1807,23 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
         type=int,
         default=None,
         help=f"Context length in tokens for `lms load` (default: {DEFAULT_CONTEXT}).",
+    )
+    parser.add_argument(
+        "-o",
+        "--output-tokens",
+        type=int,
+        default=None,
+        help="OpenCode model output token limit; 8192 is recommended only for the tested qwen38_23GB profile.",
+    )
+    parser.add_argument(
+        "--update-model-limits",
+        action="store_true",
+        help="Explicitly replace conflicting OpenCode context/output metadata for the selected alias.",
+    )
+    parser.add_argument(
+        "--update-opencode-provider",
+        action="store_true",
+        help="Explicitly replace conflicting LM Studio provider npm/baseURL values in OpenCode config.",
     )
     parser.add_argument(
         "-g",
@@ -1658,13 +2030,31 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
         )
 
         # 5. Check if already loaded in LM Studio (`lms ps`) & free inactive nicknames
-        effective_context = args.context_length if args.context_length is not None else DEFAULT_CONTEXT
+        cfg_before_run = load_opencode_config()
+        validate_opencode_provider_config(
+            cfg_before_run,
+            nickname,
+            args.lms_port,
+            overwrite=args.update_opencode_provider,
+        )
+        effective_context, effective_output = resolve_run_limits(
+            cfg_before_run,
+            nickname,
+            args.context_length,
+            args.output_tokens,
+            overwrite=args.update_model_limits,
+        )
+        if effective_output is None:
+            print_warn(
+                f"OpenCode limits for '{nickname}' are incomplete; context/output metadata will remain absent. "
+                "Set --output-tokens to configure a complete pair."
+            )
         print_header(f"Checking if identifier '{nickname}' is already loaded (lms ps)...")
         if not args.no_unload:
             unload_other_loaded_llms(nickname)
 
         loaded, _ = get_loaded_instance(nickname)
-        already_loaded = is_same_model_loaded(loaded, selection, args.context_length)
+        already_loaded = is_same_model_loaded(loaded, selection, effective_context)
 
         if already_loaded and not args.reload:
             print_ok(
@@ -1715,11 +2105,17 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             print(ps_table)
 
         print_header("Inspecting machine-readable instance metadata (lms ps --json)...")
-        if loaded is None or not is_same_model_loaded(loaded, selection, args.context_length):
+        if loaded is None or not is_same_model_loaded(loaded, selection, effective_context):
             obs = loaded.model_Or_path if loaded else "<not loaded>"
             raise RuntimeError(
                 f"Verification failed: LM Studio reports '{obs}' for '{nickname}', "
                 f"which does not match requested '{selection.display}'."
+            )
+        if loaded.context_length is None:
+            print_warn("LM Studio did not report the loaded context; effective loaded capacity is unknown.")
+        elif loaded.context_length != effective_context:
+            raise RuntimeError(
+                f"LM Studio loaded context {loaded.context_length} does not match requested {effective_context}."
             )
         print_ok(f"Verified API Identifier : {loaded.identifier}")
         print_ok(f"Underlying GGUF Path    : {loaded.model_Or_path}")
@@ -1736,7 +2132,15 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
 
         # 9. Update OpenCode, Codex MCP, and Gemini `agy` MCP configuration files
         print_header("Synchronizing OpenCode, Codex MCP, and Gemini `agy` Configuration Files...")
-        oc_changed = update_opencode_for_model(nickname, selection.display, args.lms_port)
+        oc_changed = update_opencode_for_model(
+            nickname,
+            selection.display,
+            args.lms_port,
+            effective_context,
+            effective_output,
+            overwrite_limits=args.update_model_limits,
+            overwrite_provider=args.update_opencode_provider,
+        )
         print_ok(
             f"OpenCode config ({OPENCODE_CONFIG_PATH}): "
             + (
@@ -1789,6 +2193,8 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             lms_state,
             enable_codex,
             enable_agy,
+            effective_context,
+            effective_output,
         )
         return 0
 

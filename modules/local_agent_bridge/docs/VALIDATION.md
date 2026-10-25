@@ -1,5 +1,64 @@
 # Current installer validation
 
+## Offline reliability hardening checks - 2026-10-25
+
+The reliability hardening adds offline coverage for context/output validation,
+32K defaults, the named 64K Qwen profile, explicit conflict correction, JSONC
+comment preservation, alias rename context preservation, and read-only model
+verification. Fake HTTP payloads cover effective provider/model limits, project
+directory query encoding, offline OpenCode, absent metadata and known loaded
+context mismatches. Tests do not invoke LM Studio inference, load/unload models,
+start OpenCode, or write actual user profiles.
+
+The canonical worker prompt now prefers search-first navigation and bounded reads.
+Coordinator guidance records job/session/message IDs, directory, provider/model,
+and explicit agent; stale-handle recovery and independent diff checks are tested
+as deterministic synthetic resource scenarios. These tests validate the
+instruction contract, not the pinned `opencode-mcp` runtime polling behavior.
+
+The implementation uses the OpenCode provider API when reachable. Static-only
+results are lower confidence and show effective values as unknown when the API is
+offline. LM Studio capacity is taken from `lms ps`; a missing report is unknown.
+The production enabled Codex CLI `opencode_worker` discovery blocker remains
+unresolved: no enabled live CLI acceptance probe was run for this change.
+
+### Exact local validation results
+
+The branch-specific Python runner was isolated from the parent checkout's
+editable package pointer; all pytest commands ran from `modules/local_agent_bridge`.
+
+```powershell
+& .pytest_tmp_root/reliability-venv/Scripts/python.exe -m pytest -c pyproject.toml tests/model_limits_test.py tests/resources_test.py -q --basetemp .pytest_tmp_root/focused-strict --tb=short
+```
+
+Result: exit 0, 31 passed. The complete module suite command was:
+
+```powershell
+& .pytest_tmp_root/reliability-venv/Scripts/python.exe -m pytest -c pyproject.toml tests -q --basetemp .pytest_tmp_root/full-release --tb=short
+```
+
+Result: exit 1, 92 passed, 1 skipped, 2 failed. Both failures were
+`tests/audit_test.py::test_shell_hook_preserves_paths_with_spaces` and
+`tests/audit_test.py::test_shell_mode_comes_from_receipt_modes_only`; Git Bash
+failed before bridge assertions with `NtCreateDirectoryObject` access denied
+(`0xC0000022`). Excluding just those environment-blocked cases returned exit 0,
+92 passed, 1 skipped, 2 deselected. The initial version assertion failure was
+updated to 3.3.0 and did not recur in this final full run.
+
+Focused lint command returned exit 0:
+
+```powershell
+ruff check local_agent_bridge/cli.py local_agent_bridge/commands.py local_agent_bridge/setup/jsonc.py tests/model_limits_test.py tests/resources_test.py tests/commands_test.py
+```
+
+The wheel built as `local_agent_bridge-3.3.0-py3-none-any.whl`; the build's
+temporary directory had to be redirected into `.pytest_tmp_root` due sandbox
+denial in the default Windows temp path. An archive check confirmed the JSONC
+editor and updated canonical skill, task-envelope, recovery and top-level skill
+resources are included. CLI `--version`, `model verify --help` and `run --help`
+returned exit 0. No live service, model load, inference, host config, or enabled
+Codex CLI probe was used.
+
 ## Live Codex dispatch acceptance - 2026-10-24
 
 **Status: blocked for production Codex CLI dispatch.** OpenCode and LM Studio

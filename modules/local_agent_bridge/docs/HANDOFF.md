@@ -1,5 +1,51 @@
 # Local agent setup handoff
 
+## Reliability hardening implementation - 2026-10-25
+
+Branch: `codex/local-agent-bridge-reliability-20261025`, based on
+`origin/main` at `b2ef5fb96ec1ef8cacb51962932f24b5069d49dc`. Package version is
+3.3.0. This work adds positive context/output metadata, explicit conflict
+correction flags, JSONC-preserving OpenCode updates, and read-only
+`local-agent model verify`. The default context remains 32768. The named
+`qwen38_23GB` profile uses 8192 output tokens when context is requested; 65536
+context remains an opt-in, measured profile for one RTX 5090 configuration,
+not a general device/model guarantee. No production profile or user config was
+applied.
+
+Model verification reports requested CLI expectations, static OpenCode values,
+effective OpenCode API resolution (including a project directory when supplied),
+and LM Studio's reported loaded context. Offline OpenCode results are marked
+static-only, and absent loaded data is unknown. Use
+`local-agent model verify qwen38_23GB -j -d <project-directory>` for a read-only
+check. Run-time metadata conflicts require `--update-model-limits`; a conflicting
+LM Studio provider endpoint/package requires `--update-opencode-provider`.
+
+The canonical worker guidance now prefers search-first navigation and bounded
+reads. Coordinator recovery records job/session/message/directory/provider/model
+and explicit agent; stale job handles are reconciled against the original
+session and initiating turn. Completion requires owned-baseline diff/hash
+inspection plus focused tests. The scenarios are synthetic resource tests; the
+pinned third-party MCP does not expose enough lifecycle controls here to claim
+automated job/session reconciliation. No duplicate retry or cancellation is
+recommended from an unknown job ID alone.
+
+Offline verification on this branch:
+
+- `python -m pytest -c pyproject.toml tests/model_limits_test.py tests/resources_test.py -q --basetemp .pytest_tmp_root/focused-strict --tb=short` — 31 passed.
+- Full run — 92 passed, 1 skipped, 2 failed. Both failures are Git Bash shell-hook tests that fail before exercising bridge logic with Windows sandbox `NtCreateDirectoryObject` access denied. Excluding those two tests: 92 passed, 1 skipped, 2 deselected.
+- Focused Ruff on changed Python sources/tests passed. Whole-module Ruff still reports two pre-existing unused imports in `setup/planner.py`.
+- Wheel `local_agent_bridge-3.3.0-py3-none-any.whl` built successfully with `TEMP`/`TMP` redirected to `.pytest_tmp_root`; verified the JSONC editor and all four changed skill resources are included.
+- CLI version, `model verify --help`, and `run --help` smoke checks passed. No live inference, model load, profile write, Codex CLI probe, or shared-service operation was performed.
+
+The production Codex CLI MCP-discovery blocker recorded below remains open:
+this work did not run a separately authorized enabled live CLI acceptance
+probe. The 64K profile has not been applied to the host. Advanced retrieval,
+indexing, alternative harnesses, and compaction work remain deferred to the
+separate Deep Research recommendations. `modules/llm_monitor/` remains outside
+this branch's changes.
+
+Implementation plan: [reliability hardening plan](plans/20261025_local-agent-bridge-reliability/plan.md).
+
 ## OpenCode status and TUI attachment CLI: 2026-10-24
 
 Branch: `codex/local-agent-opencode-cli-20261024`, based on fetched
