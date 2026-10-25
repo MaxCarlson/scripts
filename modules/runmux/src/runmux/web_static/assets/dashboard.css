@@ -661,3 +661,75 @@ code.confirm-value {
     gap: 8px;
   }
 }
+
+/* Phase 6C historical run explorer */
+.history-open-button { padding: 5px 8px; border: 1px solid var(--border); border-radius: 5px; color: var(--text); }
+.history-open-button:hover { border-color: rgba(0,212,170,.4); }
+.history-workspace-tab { width: auto; padding-inline: 10px; color: var(--text); font-size: 11px; }
+.history-view { display: flex; min-width: 0; min-height: 0; flex: 1; flex-direction: column; gap: 12px; overflow: auto; padding: 20px; }
+.history-view-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
+.history-view-header h2 { margin: 3px 0 4px; font-size: 18px; }
+.history-view-header p { margin: 0; color: var(--muted); font-size: 11px; }
+.history-presets { display: flex; flex-wrap: wrap; gap: 6px; }
+.history-preset { padding: 6px 10px; border: 1px solid var(--border); border-radius: 5px; background: rgba(255,255,255,.02); color: var(--muted); font-size: 10px; }
+.history-preset:hover, .history-preset.active { border-color: rgba(0,212,170,.35); background: rgba(0,212,170,.08); color: var(--text); }
+.history-filters { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); align-items: end; gap: 8px; }
+.history-filters .history-name-filter-label { grid-column: span 2; }
+.history-filters label { display: grid; min-width: 0; gap: 4px; color: var(--muted); font-size: 9px; letter-spacing: .04em; text-transform: uppercase; }
+.history-filters input, .history-filters select { width: 100%; min-width: 0; height: 32px; padding: 0 8px; border: 1px solid var(--border); border-radius: 4px; outline: none; background: var(--input); color: var(--text); font: 10px var(--mono); text-transform: none; }
+.history-filters input:focus, .history-filters select:focus { border-color: rgba(0,212,170,.55); box-shadow: 0 0 0 2px rgba(0,212,170,.12); }
+.history-filters .history-checkbox-filter { display: flex; align-items: center; align-self: end; gap: 6px; min-height: 32px; }
+.history-filters .history-checkbox-filter input { width: 14px; height: 14px; margin: 0; padding: 0; accent-color: var(--accent); }
+.history-apply-button { min-height: 32px; padding: 0 10px; font-size: 10px; }
+.history-filters .quiet-button { height: 32px; padding-inline: 10px; border: 1px solid var(--border); }
+.history-state, .history-detail-state { min-height: 20px; color: var(--muted); font-size: 10px; }
+.history-table-scroll { min-height: 0; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.history-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+.history-table th { position: sticky; top: 0; z-index: 1; padding: 9px 10px; background: #141b25; color: var(--faint); font-size: 9px; font-weight: 600; letter-spacing: .06em; text-align: left; text-transform: uppercase; }
+.history-table td { overflow: hidden; padding: 8px 10px; border-top: 1px solid rgba(255,255,255,.035); color: var(--text); font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.history-table tbody tr:nth-child(even) { background: rgba(255,255,255,.018); }
+.history-table tbody tr:hover { background: rgba(0,212,170,.055); }
+.history-table th:nth-child(1) { width: 20%; }
+.history-table th:nth-child(2) { width: 12%; }
+.history-table th:nth-child(3) { width: 25%; }
+.history-table th:nth-child(4), .history-table th:nth-child(5) { width: 19%; }
+.history-table th:nth-child(6) { width: 5%; text-align: right; }
+.history-table td:last-child { font-family: var(--mono); text-align: right; }
+.history-run-id-button, .history-lineage-link, .history-relation-link { max-width: 100%; overflow: hidden; padding: 0; border: 0; background: transparent; color: var(--accent); font: 10px var(--mono); text-align: left; text-overflow: ellipsis; white-space: nowrap; }
+.history-run-id-button:hover, .history-lineage-link:hover, .history-relation-link:hover { text-decoration: underline; }
+.history-status { display: inline-flex; padding: 2px 6px; border: 1px solid rgba(255,255,255,.08); border-radius: 4px; color: var(--muted); font-size: 8px; font-weight: 700; letter-spacing: .05em; text-transform: uppercase; }
+.history-status.failed, .history-status.lost, .history-status.killed { border-color: rgba(239,68,68,.2); background: rgba(239,68,68,.1); color: #ff8585; }
+.history-status.finished { border-color: rgba(16,185,129,.2); background: rgba(16,185,129,.08); color: #54d1a1; }
+.history-status.running, .history-status.pending, .history-status.paused { border-color: rgba(245,158,11,.2); background: rgba(245,158,11,.08); color: #f7bd52; }
+.history-pagination { display: flex; align-items: center; justify-content: center; gap: 14px; min-height: 32px; color: var(--muted); font: 10px var(--mono); }
+.history-pagination button:disabled { opacity: .4; cursor: default; }
+.run-history-details { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, .85fr); gap: 12px; margin-top: 18px; }
+.run-history-section { min-width: 0; padding: 12px; border: 1px solid var(--border); border-radius: 6px; background: rgba(255,255,255,.015); }
+.history-section-heading { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.history-section-heading h3 { margin: 0; color: var(--text); font-size: 12px; }
+.history-provenance-note { color: var(--faint); font-size: 9px; }
+.run-events-list { display: grid; gap: 5px; margin: 0; padding: 0; list-style: none; }
+.run-event { display: grid; grid-template-columns: 100px minmax(80px, 1fr) minmax(120px, auto); align-items: baseline; gap: 8px; padding: 6px 0; border-top: 1px solid rgba(255,255,255,.035); font-size: 10px; }
+.event-provenance { color: var(--faint); font-size: 8px; text-transform: uppercase; }
+.recorded-event .event-provenance { color: #66cdb5; }
+.registry-event .event-provenance { color: #9aa6ba; }
+.event-description { overflow-wrap: anywhere; color: var(--text); font-family: var(--mono); }
+.event-timestamp { color: var(--muted); font: 9px var(--mono); text-align: right; }
+.run-lineage-list h4 { margin: 10px 0 4px; color: var(--faint); font-size: 9px; text-transform: uppercase; }
+.run-lineage-list ul { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.run-lineage-list li { display: grid; min-width: 0; gap: 2px; }
+.history-lineage-status { color: var(--faint); font-size: 9px; }
+
+@media (max-width: 1100px) {
+  .history-filters { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .run-history-details { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 700px) {
+  .history-view { padding: 12px; }
+  .history-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .history-filters .history-name-filter-label { grid-column: span 2; }
+  .history-table { min-width: 640px; }
+  .run-event { grid-template-columns: minmax(75px, auto) 1fr; }
+  .event-timestamp { grid-column: 2; text-align: left; }
+}

@@ -17,6 +17,11 @@ const TELEMETRY_INTERVAL_MS = 1800;
 const HOST_TELEMETRY_INTERVAL_MS = 5400;
 const HISTORY_POLL_INTERVAL_MS = 30000;
 const HISTORY_POINT_LIMIT = 300;
+const RUN_HISTORY_PAGE_MAX = 200;
+const RUN_HISTORY_EVENT_LIMIT = 100;
+const RUN_HISTORY_LINEAGE_LIMIT = 200;
+const RUN_HISTORY_EXIT_CODE_MIN = -(2n ** 63n);
+const RUN_HISTORY_EXIT_CODE_MAX = (2n ** 63n) - 1n;
 const HISTORY_RANGES_SECONDS = { "1h": 3600, "6h": 21600, "24h": 86400, "7d": 604800 };
 let overviewMode = "inline";
 let telemetryTimer = null;
@@ -30,6 +35,34 @@ let historyIncludeLineage = false;
 let historyTimer = null;
 let historyRequestId = 0;
 let historyAbortController = null;
+let activeWorkspaceView = "run";
+let historyViewOpen = false;
+let runHistoryFilters = { name: "", status: "", since: "", until: "", time_field: "created_at", sort_by: "created_at", sort_dir: "desc", limit: 50, failed_only: false, lost_only: false, state: "", name_exact: false, exit_code: "", restart_of: "", duplicate_of: "", has_restarts: false };
+let runHistoryItems = [];
+let runHistoryPageCursors = [null];
+let runHistoryPageIndex = 0;
+let runHistoryHasMore = false;
+let runHistoryBusy = false;
+let runHistoryError = "";
+let runHistoryValidationError = "";
+let runHistoryRequestGeneration = 0;
+let runHistoryAbortController = null;
+let runEventsRunId = null;
+let runEventsPages = [null];
+let runEventsPageIndex = 0;
+let runEventsItems = [];
+let runEventsLoaded = false;
+let runEventsHasMore = false;
+let runEventsBusy = false;
+let runEventsError = "";
+let runEventsRequestGeneration = 0;
+let runEventsAbortController = null;
+let runLineageRunId = null;
+let runLineageData = null;
+let runLineageBusy = false;
+let runLineageError = "";
+let runLineageRequestGeneration = 0;
+let runLineageAbortController = null;
 let lifecycleInFlightRunId = null;
 let pendingConfirmAction = null;
 let systemCapabilities = null;
@@ -83,6 +116,441 @@ let outputTruncated = false;
 
 function clampExplorerWidth(value) {
   return Math.max(EXPLORER_MIN_WIDTH, Math.min(EXPLORER_MAX_WIDTH, Math.round(value)));
+}
+
+function historyDateBound(value, endOfDay = false) {
+  if (!value) return "";
+  const date = new Date(`${value}T${endOfDay ? "23:59:59.999" : "00:00:00"}`);
+  return Number.isFinite(date.getTime()) ? date.toISOString() : "";
+}
+
+function normalizeHistoryExitCode(value) {
+  const text = `${value ?? ""}`.trim();
+  if (!text) return "";
+  if (!/^-?\d+$/.test(text)) return null;
+  try {
+    const number = BigInt(text);
+    if (number < RUN_HISTORY_EXIT_CODE_MIN || number > RUN_HISTORY_EXIT_CODE_MAX) return null;
+    return number.toString();
+  } catch {
+    return null;
+  }
+}
+
+function runHistoryQueryUrl(cursor = runHistoryPageCursors[runHistoryPageIndex] || null) {
+  const params = new URLSearchParams();
+  params.set("limit", `${Math.max(1, Math.min(RUN_HISTORY_PAGE_MAX, Number(runHistoryFilters.limit) || 50))}`);
+  params.set("sort_by", runHistoryFilters.sort_by);
+  params.set("sort_dir", runHistoryFilters.sort_dir);
+  if (runHistoryFilters.name) params.set("name", runHistoryFilters.name);
+  if (runHistoryFilters.name && runHistoryFilters.name_exact) params.set("name_exact", "true");
+  if (runHistoryFilters.status) params.set("status", runHistoryFilters.status);
+  if (runHistoryFilters.state) params.set("state", runHistoryFilters.state);
+  if (runHistoryFilters.exit_code !== "") params.set("exit_code", `${runHistoryFilters.exit_code}`);
+  if (runHistoryFilters.restart_of) params.set("restart_of", runHistoryFilters.restart_of);
+  if (runHistoryFilters.duplicate_of) params.set("duplicate_of", runHistoryFilters.duplicate_of);
+  if (runHistoryFilters.has_restarts) params.set("has_restarts", "true");
+  if (runHistoryFilters.since) params.set("since", historyDateBound(runHistoryFilters.since));
+  if (runHistoryFilters.until) params.set("until", historyDateBound(runHistoryFilters.until, true));
+  if (runHistoryFilters.time_field) params.set("time_field", runHistoryFilters.time_field);
+  if (runHistoryFilters.failed_only) params.set("failed_only", "true");
+  if (runHistoryFilters.lost_only) params.set("lost_only", "true");
+  if (cursor) params.set("cursor", cursor);
+  return `/api/runs/history?${params.toString()}`;
+}
+
+function renderHistoryPage() {
+  const body = $("#history-run-rows");
+  const helper = globalThis.RunmuxHistoryView;
+  if (body && typeof helper?.renderRunRows === "function") {
+    helper.renderRunRows(body, runHistoryItems.slice(0, RUN_HISTORY_PAGE_MAX), openHistoricalRun);
+  }
+  const state = $("#history-state");
+  if (state) {
+    if (runHistoryError) state.textContent = runHistoryError;
+    else if (runHistoryValidationError) state.textContent = runHistoryValidationError;
+    else if (runHistoryBusy) state.textContent = "Loading historical runs…";
+    else if (!runHistoryItems.length) state.textContent = "No historical runs match these filters.";
+    else state.textContent = `Showing ${runHistoryItems.length} runs on page ${runHistoryPageIndex + 1}.`;
+  }
+  const pagination = $("#history-pagination");
+  if (pagination) pagination.hidden = runHistoryBusy || (!runHistoryItems.length && runHistoryPageIndex === 0);
+  const previous = $("#history-previous-page");
+  if (previous) previous.disabled = runHistoryBusy || runHistoryPageIndex === 0;
+  const next = $("#history-next-page");
+  if (next) next.disabled = runHistoryBusy || !runHistoryHasMore || !runHistoryPageCursors[runHistoryPageIndex + 1];
+  const pageState = $("#history-page-state");
+  if (pageState) pageState.textContent = `Page ${runHistoryPageIndex + 1}${runHistoryHasMore ? " · more results" : " · end of results"}`;
+}
+
+function resetRunHistoryPages() {
+  runHistoryPageCursors = [null];
+  runHistoryPageIndex = 0;
+  runHistoryItems = [];
+  runHistoryHasMore = false;
+}
+
+async function refreshRunHistory() {
+  const generation = ++runHistoryRequestGeneration;
+  runHistoryAbortController?.abort();
+  runHistoryAbortController = new AbortController();
+  runHistoryBusy = true;
+  runHistoryError = "";
+  runHistoryValidationError = "";
+  renderHistoryPage();
+  try {
+    const response = await api(runHistoryQueryUrl(), { signal: runHistoryAbortController.signal });
+    const result = await response.json();
+    if (generation !== runHistoryRequestGeneration || !historyViewOpen) return;
+    runHistoryItems = Array.isArray(result.items) ? result.items.slice(0, RUN_HISTORY_PAGE_MAX) : [];
+    runHistoryHasMore = result.has_more === true;
+    if (runHistoryHasMore && typeof result.next_cursor === "string" && result.next_cursor) {
+      runHistoryPageCursors[runHistoryPageIndex + 1] = result.next_cursor;
+    } else {
+      runHistoryPageCursors.length = runHistoryPageIndex + 1;
+      runHistoryHasMore = false;
+    }
+  } catch (error) {
+    if (generation !== runHistoryRequestGeneration || error.name === "AbortError") return;
+    if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
+    runHistoryError = error.status === 400
+      ? `History filters were rejected: ${error.message}`
+      : error.status === 503
+        ? "Historical registry is temporarily unavailable. Try again."
+        : "Could not load historical runs. Try again.";
+  } finally {
+    if (generation === runHistoryRequestGeneration) {
+      runHistoryBusy = false;
+      renderHistoryPage();
+    }
+  }
+}
+
+function setHistoryFilter(name, value) {
+  if (!Object.hasOwn(runHistoryFilters, name)) return Promise.resolve();
+  if (name === "limit") value = [50, 100, 200].includes(Number(value)) ? Number(value) : 50;
+  if (name === "sort_by" && !["created_at", "started_at", "ended_at", "name", "numeric_id"].includes(value)) return Promise.resolve();
+  if (name === "sort_dir" && !["asc", "desc"].includes(value)) return Promise.resolve();
+  if (name === "time_field" && !["created_at", "started_at", "ended_at"].includes(value)) return Promise.resolve();
+  if (name === "state" && value && !["active", "terminal"].includes(value)) return Promise.resolve();
+  if (name === "exit_code") {
+    value = normalizeHistoryExitCode(value);
+    if (value === null) return Promise.resolve();
+  }
+  if (["restart_of", "duplicate_of"].includes(name)) value = `${value ?? ""}`.trim();
+  if (name === "has_restarts" || name === "name_exact") value = value === true;
+  if (runHistoryFilters[name] === value) return Promise.resolve();
+  runHistoryFilters[name] = value;
+  resetRunHistoryPages();
+  return refreshRunHistory();
+}
+
+async function goHistoryPage(direction) {
+  if (runHistoryBusy) return;
+  if (direction === "next") {
+    const cursor = runHistoryPageCursors[runHistoryPageIndex + 1];
+    if (!runHistoryHasMore || !cursor) return;
+    runHistoryPageIndex += 1;
+  } else if (direction === "previous" && runHistoryPageIndex > 0) {
+    runHistoryPageIndex -= 1;
+  } else return;
+  return refreshRunHistory();
+}
+
+async function openHistoryView() {
+  historyViewOpen = true;
+  activeWorkspaceView = "history";
+  newProcessOpen = false;
+  renderWorkspaceTabs();
+  renderWorkspaceView();
+  return refreshRunHistory();
+}
+
+function closeHistoryView() {
+  historyViewOpen = false;
+  runHistoryRequestGeneration += 1;
+  runHistoryAbortController?.abort();
+  runHistoryAbortController = null;
+  if (activeWorkspaceView === "history") activeWorkspaceView = "run";
+  renderWorkspaceTabs();
+  renderWorkspaceView();
+}
+
+function renderRunEvents() {
+  const list = $("#run-events-list");
+  if (!list) return;
+  list.replaceChildren();
+  for (const event of runEventsItems.slice(0, RUN_HISTORY_EVENT_LIMIT)) {
+    const item = document.createElement("li");
+    item.className = `run-event ${event.provenance === "telemetry_store" ? "recorded-event" : "registry-event"}`;
+    const provenance = document.createElement("span");
+    provenance.className = "event-provenance";
+    provenance.textContent = event.provenance === "telemetry_store" ? "Recorded event" : "Registry timestamp";
+    const description = document.createElement("span");
+    description.className = "event-description";
+    description.textContent = `${event.event_type || "Event"}${event.status ? ` · ${event.status}` : ""}${event.exit_code == null ? "" : ` · exit ${event.exit_code}`}`;
+    const timestamp = document.createElement("time");
+    timestamp.className = "event-timestamp";
+    timestamp.textContent = formatDate(event.timestamp);
+    if (event.timestamp) timestamp.dateTime = event.timestamp;
+    item.append(provenance, description, timestamp);
+    if (typeof event.related_run_id === "string" && event.related_run_id) {
+      const relation = document.createElement("button");
+      relation.type = "button";
+      relation.className = "history-relation-link";
+      relation.textContent = `Open related run ${event.related_run_id}`;
+      relation.setAttribute("aria-label", `Open related run ${event.related_run_id}`);
+      relation.addEventListener("click", () => openHistoricalRun(event.related_run_id));
+      item.append(relation);
+    }
+    list.append(item);
+  }
+  const state = $("#run-events-state");
+  if (state) state.textContent = runEventsBusy ? "Loading lifecycle history…" : runEventsError || (runEventsItems.length ? `Showing ${runEventsItems.length} lifecycle records.` : "No lifecycle events or registry timestamp markers are available for this run.");
+  const pagination = $("#run-events-pagination");
+  if (pagination) pagination.hidden = runEventsBusy || (!runEventsItems.length && runEventsPageIndex === 0 && !runEventsHasMore);
+  $("#run-events-previous").disabled = runEventsBusy || runEventsPageIndex === 0;
+  $("#run-events-next").disabled = runEventsBusy || !runEventsHasMore || !runEventsPages[runEventsPageIndex + 1];
+  $("#run-events-page-state").textContent = `Page ${runEventsPageIndex + 1}${runEventsHasMore ? " · more events" : " · end of events"}`;
+}
+
+function renderRunLineage() {
+  const list = $("#run-lineage-list");
+  if (!list) return;
+  list.replaceChildren();
+  const ancestors = Array.isArray(runLineageData?.ancestors) ? runLineageData.ancestors.slice(0, RUN_HISTORY_LINEAGE_LIMIT) : [];
+  const descendants = Array.isArray(runLineageData?.descendants) ? runLineageData.descendants.slice(0, RUN_HISTORY_LINEAGE_LIMIT) : [];
+  for (const [label, nodes] of [["Ancestors", ancestors], ["Descendants", descendants]]) {
+    if (!nodes.length) continue;
+    const heading = document.createElement("h4");
+    heading.textContent = label;
+    const group = document.createElement("ul");
+    for (const node of nodes) {
+      const item = document.createElement("li");
+      const link = document.createElement("button");
+      link.type = "button";
+      link.className = "history-lineage-link";
+      const relationship = node.relationship === "parent_restart" ? "Restarted from" : node.relationship === "parent_duplicate" ? "Duplicated from" : node.relationship === "child_restart" ? "Restarted by" : node.relationship === "child_duplicate" ? "Duplicated by" : "Related run";
+      link.textContent = `${relationship}: ${node.name || "Unnamed run"} · ${node.id}`;
+      link.setAttribute("aria-label", `${relationship}, run ${node.id}`);
+      link.addEventListener("click", () => openHistoricalRun(node.id));
+      const status = document.createElement("span");
+      status.className = "history-lineage-status";
+      status.textContent = node.status ? `${node.status} · ${formatDate(node.created_at)}` : formatDate(node.created_at);
+      item.append(link, status);
+      group.append(item);
+    }
+    list.append(heading, group);
+  }
+  const state = $("#run-lineage-state");
+  if (state) state.textContent = runLineageBusy ? "Loading restart and duplicate relationships…" : runLineageError || (!ancestors.length && !descendants.length ? "No recorded restart or duplicate relationships." : runLineageData?.truncated ? "Showing the bounded lineage; additional related runs were omitted by the API." : "Relationships come from explicit Run ID links.");
+}
+
+async function loadRunEventsPage(cursor = runEventsPages[runEventsPageIndex] || null) {
+  if (!selectedId) return;
+  const runId = selectedId;
+  const generation = ++runEventsRequestGeneration;
+  runEventsAbortController?.abort();
+  runEventsAbortController = new AbortController();
+  runEventsBusy = true;
+  runEventsError = "";
+  renderRunEvents();
+  try {
+    const params = new URLSearchParams({ limit: `${RUN_HISTORY_EVENT_LIMIT}` });
+    if (cursor) params.set("cursor", cursor);
+    const response = await api(`/api/runs/${encodeURIComponent(runId)}/events?${params}`, { signal: runEventsAbortController.signal });
+    const data = await response.json();
+    if (generation !== runEventsRequestGeneration || runId !== selectedId) return;
+    runEventsItems = Array.isArray(data.events) ? data.events.slice(0, RUN_HISTORY_EVENT_LIMIT) : [];
+    runEventsLoaded = true;
+    runEventsHasMore = data.has_more === true;
+    if (runEventsHasMore && typeof data.next_cursor === "string" && data.next_cursor) runEventsPages[runEventsPageIndex + 1] = data.next_cursor;
+    else { runEventsPages.length = runEventsPageIndex + 1; runEventsHasMore = false; }
+  } catch (error) {
+    if (generation !== runEventsRequestGeneration || error.name === "AbortError") return;
+    if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
+    runEventsError = error.status === 404 ? "This run is no longer present in the registry." : "Lifecycle history is temporarily unavailable. Try again.";
+    runEventsLoaded = true;
+  } finally {
+    if (generation === runEventsRequestGeneration) { runEventsBusy = false; renderRunEvents(); }
+  }
+}
+
+async function loadRunLineage(runId = selectedId) {
+  if (!runId) return;
+  const generation = ++runLineageRequestGeneration;
+  runLineageAbortController?.abort();
+  runLineageAbortController = new AbortController();
+  runLineageBusy = true;
+  runLineageError = "";
+  renderRunLineage();
+  try {
+    const params = new URLSearchParams({ limit: `${RUN_HISTORY_LINEAGE_LIMIT}` });
+    const response = await api(`/api/runs/${encodeURIComponent(runId)}/lineage?${params}`, { signal: runLineageAbortController.signal });
+    const data = await response.json();
+    if (generation !== runLineageRequestGeneration || runId !== selectedId) return;
+    runLineageData = data;
+    runLineageRunId = runId;
+  } catch (error) {
+    if (generation !== runLineageRequestGeneration || error.name === "AbortError") return;
+    if (error.message === "locked") { showLogin("Session expired. Enter the current terminal login code again."); return; }
+    runLineageError = error.status === 404 ? "This run is no longer present in the registry." : "Run relationships are temporarily unavailable. Try again.";
+  } finally {
+    if (generation === runLineageRequestGeneration) { runLineageBusy = false; renderRunLineage(); }
+  }
+}
+
+async function refreshRunHistoryDetails(runId = selectedId) {
+  if (!runId || runId !== selectedId) return;
+  if (runEventsRunId !== runId) {
+    runEventsAbortController?.abort();
+    runLineageAbortController?.abort();
+    runEventsRequestGeneration += 1;
+    runLineageRequestGeneration += 1;
+    runEventsRunId = runId;
+    runEventsPages = [null];
+    runEventsPageIndex = 0;
+    runEventsItems = [];
+    runEventsLoaded = false;
+    runEventsHasMore = false;
+    runEventsError = "";
+    runLineageRunId = null;
+    runLineageData = null;
+    runLineageError = "";
+  }
+  const tasks = [];
+  if (!runEventsLoaded && !runEventsBusy && !runEventsError) tasks.push(loadRunEventsPage());
+  if (runLineageRunId !== runId && !runLineageBusy && !runLineageError) tasks.push(loadRunLineage(runId));
+  return Promise.all(tasks);
+}
+
+async function goRunEventsPage(direction) {
+  if (runEventsBusy) return;
+  if (direction === "next") {
+    const cursor = runEventsPages[runEventsPageIndex + 1];
+    if (!runEventsHasMore || !cursor) return;
+    runEventsPageIndex += 1;
+  } else if (direction === "previous" && runEventsPageIndex > 0) runEventsPageIndex -= 1;
+  else return;
+  return loadRunEventsPage();
+}
+
+async function openHistoricalRun(runId) {
+  if (typeof runId !== "string" || !runId) return;
+  await selectRun(runId);
+  selectTab("details");
+}
+
+function readHistoryFiltersFromControls() {
+  const name = $("#history-name-filter").value.trim().slice(0, 256);
+  const state = $("#history-state-filter").value;
+  if (state && !["active", "terminal"].includes(state)) return { error: "Choose Active or Terminal for the run state filter." };
+  const exitCode = normalizeHistoryExitCode($("#history-exit-code-filter").value);
+  if (exitCode === null) return { error: "Exit code must be a whole number from -9223372036854775808 to 9223372036854775807." };
+  return { filters: {
+    name,
+    name_exact: Boolean(name && $("#history-name-exact").checked),
+    status: $("#history-status-filter").value,
+    state,
+    exit_code: exitCode,
+    restart_of: $("#history-restart-parent-filter").value.trim(),
+    duplicate_of: $("#history-duplicate-parent-filter").value.trim(),
+    has_restarts: $("#history-has-restarts").checked === true,
+    since: $("#history-since").value,
+    until: $("#history-until").value,
+    time_field: $("#history-time-field").value,
+    sort_by: $("#history-sort-by").value,
+    sort_dir: $("#history-sort-dir").value,
+    limit: [50, 100, 200].includes(Number($("#history-page-size").value)) ? Number($("#history-page-size").value) : 50,
+    failed_only: runHistoryFilters.failed_only,
+    lost_only: runHistoryFilters.lost_only,
+  } };
+}
+
+function reconcileHistoryPresetFilters(filters) {
+  const next = { ...filters };
+  if (next.failed_only && (next.status === "lost" || next.state === "active")) next.failed_only = false;
+  if (next.lost_only && ((next.status && next.status !== "lost") || next.state === "active")) next.lost_only = false;
+  if (next.failed_only && next.lost_only) {
+    next.failed_only = false;
+    next.lost_only = false;
+  }
+  return next;
+}
+
+function activeHistoryPreset(filters) {
+  if (filters.failed_only) return "failed";
+  if (filters.lost_only) return "lost";
+  if (filters.status === "finished") return "completed";
+  const isRecent = !filters.name && !filters.name_exact && !filters.status && !filters.state
+    && !filters.since && !filters.until && !filters.exit_code && !filters.restart_of && !filters.duplicate_of
+    && !filters.has_restarts && filters.time_field === "created_at" && filters.sort_by === "created_at"
+    && filters.sort_dir === "desc" && filters.limit === 50;
+  return isRecent ? "recent" : "";
+}
+
+function syncHistoryPresetButtons(filters) {
+  const activePreset = activeHistoryPreset(filters);
+  document.querySelectorAll(".history-preset").forEach((button) => {
+    button.classList.toggle("active", button.dataset.historyPreset === activePreset);
+  });
+}
+
+function applyHistoryFilters() {
+  const result = readHistoryFiltersFromControls();
+  if (result.error) {
+    runHistoryValidationError = result.error;
+    renderHistoryPage();
+    return Promise.resolve();
+  }
+  const nextFilters = reconcileHistoryPresetFilters(result.filters);
+  $("#history-name-exact").checked = nextFilters.name_exact;
+  syncHistoryPresetButtons(nextFilters);
+  if (Object.keys(nextFilters).every((key) => nextFilters[key] === runHistoryFilters[key])) {
+    runHistoryValidationError = "";
+    renderHistoryPage();
+    return Promise.resolve();
+  }
+  runHistoryValidationError = "";
+  runHistoryFilters = nextFilters;
+  resetRunHistoryPages();
+  return refreshRunHistory();
+}
+
+function applyHistoryPreset(preset) {
+  runHistoryValidationError = "";
+  runHistoryFilters = { ...runHistoryFilters, name: "", status: "", since: "", until: "", time_field: "created_at", sort_by: "created_at", sort_dir: "desc", failed_only: false, lost_only: false, state: "", name_exact: false, exit_code: "", restart_of: "", duplicate_of: "", has_restarts: false };
+  if (preset === "completed") runHistoryFilters.status = "finished";
+  if (preset === "failed") runHistoryFilters.failed_only = true;
+  if (preset === "lost") runHistoryFilters.lost_only = true;
+  $("#history-name-filter").value = runHistoryFilters.name;
+  $("#history-name-exact").checked = false;
+  $("#history-status-filter").value = runHistoryFilters.status;
+  $("#history-state-filter").value = "";
+  $("#history-exit-code-filter").value = "";
+  $("#history-restart-parent-filter").value = "";
+  $("#history-duplicate-parent-filter").value = "";
+  $("#history-has-restarts").checked = false;
+  $("#history-since").value = "";
+  $("#history-until").value = "";
+  $("#history-time-field").value = runHistoryFilters.time_field;
+  $("#history-sort-by").value = runHistoryFilters.sort_by;
+  $("#history-sort-dir").value = runHistoryFilters.sort_dir;
+  syncHistoryPresetButtons(runHistoryFilters);
+  resetRunHistoryPages();
+  return refreshRunHistory();
+}
+
+function setupRunHistoryListeners() {
+  $("#open-history-button")?.addEventListener("click", openHistoryView);
+  $("#close-history-button")?.addEventListener("click", closeHistoryView);
+  $("#history-filter-form")?.addEventListener("submit", (event) => { event.preventDefault(); applyHistoryFilters(); });
+  $("#history-clear-filters")?.addEventListener("click", () => applyHistoryPreset("recent"));
+  $("#history-previous-page")?.addEventListener("click", () => goHistoryPage("previous"));
+  $("#history-next-page")?.addEventListener("click", () => goHistoryPage("next"));
+  $("#run-events-previous")?.addEventListener("click", () => goRunEventsPage("previous"));
+  $("#run-events-next")?.addEventListener("click", () => goRunEventsPage("next"));
+  document.querySelectorAll(".history-preset").forEach((button) => button.addEventListener("click", () => applyHistoryPreset(button.dataset.historyPreset)));
 }
 
 function loadWorkspacePreferences() {
@@ -348,6 +816,7 @@ applyWorkspacePreferencesToControls();
 applyExplorerLayout();
 applyOverviewModeUI();
 setupModeListeners();
+setupRunHistoryListeners();
 setupHistoryListeners();
 setupOutputSearchListeners();
 setupLifecycleListeners();
@@ -541,6 +1010,28 @@ function renderWorkspaceTabs() {
   const openedRuns = openRunIds.map((runId) => runs.find((run) => run.id === runId)).filter(Boolean);
   let scrollTargetElement = null;
   tabs.hidden = false;
+  if (historyViewOpen) {
+    const tab = document.createElement("div");
+    tab.className = `workspace-tab${activeWorkspaceView === "history" ? " active" : ""}`;
+    const activate = document.createElement("button");
+    activate.type = "button";
+    activate.className = "workspace-tab-select history-workspace-tab";
+    activate.setAttribute("role", "tab");
+    activate.setAttribute("aria-selected", `${activeWorkspaceView === "history"}`);
+    activate.setAttribute("aria-label", "Open historical runs view");
+    activate.setAttribute("aria-controls", "history-view");
+    activate.textContent = "History";
+    activate.addEventListener("click", openHistoryView);
+    const close = document.createElement("button");
+    close.type = "button";
+    close.className = "workspace-tab-close";
+    close.setAttribute("aria-label", "Close history view");
+    close.title = "Close view";
+    close.textContent = "×";
+    close.addEventListener("click", closeHistoryView);
+    tab.append(activate, close);
+    tabs.append(tab);
+  }
   for (const run of openedRuns) {
     const tab = document.createElement("div");
     tab.className = `workspace-tab${run.id === selectedId ? " active" : ""}`;
@@ -592,13 +1083,18 @@ function renderWorkspaceTabs() {
 }
 
 function renderWorkspaceView() {
-  $("#new-process-view").hidden = !newProcessOpen;
-  $("#empty-inspector").hidden = newProcessOpen || Boolean(selectedId);
-  $("#run-inspector").hidden = newProcessOpen || !selectedId;
+  const historyActive = activeWorkspaceView === "history" && historyViewOpen;
+  const newProcessActive = activeWorkspaceView === "new" && newProcessOpen;
+  const runActive = activeWorkspaceView === "run";
+  $("#new-process-view").hidden = !newProcessActive;
+  $("#history-view").hidden = !historyActive;
+  $("#empty-inspector").hidden = historyActive || newProcessActive || (runActive && Boolean(selectedId));
+  $("#run-inspector").hidden = !runActive || !selectedId;
 }
 
 async function openNewProcess() {
   newProcessOpen = true;
+  activeWorkspaceView = "new";
   tabScrollTarget = "new-process";
   closeTerminal();
   selectTab("output");
@@ -687,6 +1183,14 @@ function closeWorkspaceTab(runId) {
   openRunIds.splice(index, 1);
   if (selectedId === runId) {
     const nextId = openRunIds[Math.min(index, openRunIds.length - 1)];
+    if (activeWorkspaceView === "history") {
+      selectedId = nextId || null;
+      renderRuns();
+      renderWorkspaceTabs();
+      renderWorkspaceView();
+      persistWorkspaceState();
+      return;
+    }
     if (nextId) {
       selectedId = null;
       return selectRun(nextId);
@@ -1326,9 +1830,11 @@ function setupModeListeners() {
 
 async function selectRun(runId) {
   newProcessOpen = false;
+  activeWorkspaceView = "run";
   if (selectedId === runId) {
     renderWorkspaceTabs();
     renderWorkspaceView();
+    if (!$("#details-pane").hidden) refreshRunHistoryDetails(runId);
     return;
   }
   if (!openRunIds.includes(runId)) openRunIds.push(runId);
@@ -1360,6 +1866,7 @@ async function selectRun(runId) {
     overviewMode !== "minimal" ? refreshTelemetry(generation, runId) : Promise.resolve(),
     ["dashboard", "expanded"].includes(overviewMode) ? refreshHistoryTelemetry(generation, runId) : Promise.resolve(),
   ]);
+  if (isCurrentSelection(generation, runId) && !$("#details-pane").hidden) refreshRunHistoryDetails(runId);
   if (isCurrentSelection(generation, runId) && !outputFinished) {
     outputTimer = setInterval(() => refreshOutput(generation, runId), 900);
   }
@@ -1939,12 +2446,14 @@ function selectTab(tab) {
   $(".follow-toggle").hidden = !outputSelected;
   if (terminalSelected && selectedId) connectTerminal(selectionGeneration, selectedId);
   else closeTerminal();
+  if (!outputSelected && !terminalSelected && selectedId) refreshRunHistoryDetails(selectedId);
 }
 
 function clearSelection() {
   invalidateSelection();
   newProcessOpen = false;
   selectedId = null;
+  if (activeWorkspaceView !== "history" && activeWorkspaceView !== "new") activeWorkspaceView = "run";
   openRunIds = [];
   outputCursor = null;
   lastOutput = "";
@@ -1953,8 +2462,7 @@ function clearSelection() {
   outputActiveMatchIndex = -1;
   outputSearchError = null;
   computeOutputSearchAndFilter();
-  $("#run-inspector").hidden = true;
-  $("#empty-inspector").hidden = false;
+  renderWorkspaceView();
   updateLifecycleControls(null);
   closeLifecycleConfirm();
   clearLifecycleFeedback();
@@ -1971,6 +2479,16 @@ function invalidateSelection() {
   closeTerminal();
   stopTelemetryPolling();
   stopHistoryPolling();
+  runEventsRequestGeneration += 1;
+  runLineageRequestGeneration += 1;
+  runEventsAbortController?.abort();
+  runLineageAbortController?.abort();
+  runEventsAbortController = null;
+  runLineageAbortController = null;
+  runEventsBusy = false;
+  runLineageBusy = false;
+  runEventsRunId = null;
+  runLineageRunId = null;
 }
 
 function isCurrentSelection(generation, runId) {

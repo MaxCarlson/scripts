@@ -9,6 +9,7 @@
     <link rel="stylesheet" href="/assets/dashboard.css">
     <script src="/assets/vendor/xterm.js" defer></script>
     <script src="/assets/vendor/addon-fit.js" defer></script>
+    <script src="/assets/history_view.js" defer></script>
     <script src="/assets/dashboard.js" defer></script>
   </head>
   <body>
@@ -48,6 +49,7 @@
           <div class="panel-heading process-heading">
             <div><h2>Processes</h2><span id="process-count" class="count-pill">0</span></div>
             <div class="process-heading-actions">
+              <button id="open-history-button" class="text-button history-open-button" type="button">History</button>
               <button id="clear-search" class="text-button" type="button" hidden>Clear</button>
               <button id="explorer-toggle" class="icon-button explorer-toggle" type="button" aria-label="Collapse process explorer" aria-expanded="true" title="Collapse process explorer">‹</button>
             </div>
@@ -112,6 +114,48 @@
                 <div id="launch-error" class="launch-error" role="alert" hidden></div>
                 <div class="launch-actions"><button id="launch-submit" class="primary-button" type="submit">Launch Process <span aria-hidden="true">→</span></button><span id="launch-pending" class="muted" role="status" hidden>Starting supervised process…</span></div>
               </form>
+            </section>
+            <section id="history-view" class="history-view" aria-label="Historical runs" hidden>
+              <header class="history-view-header">
+                <div><div class="eyebrow">RUN REGISTRY</div><h2>Historical Runs</h2><p>Browse completed, failed, and disconnected runs using server-side filters.</p></div>
+                <button id="close-history-button" class="quiet-button" type="button" aria-label="Close history view">Close</button>
+              </header>
+              <div class="history-presets" role="group" aria-label="Common history filters">
+                <button class="history-preset active" type="button" data-history-preset="recent">Recent</button>
+                <button class="history-preset" type="button" data-history-preset="completed">Completed</button>
+                <button class="history-preset" type="button" data-history-preset="failed">Failures</button>
+                <button class="history-preset" type="button" data-history-preset="lost">LOST</button>
+              </div>
+              <form id="history-filter-form" class="history-filters" role="search" aria-label="Filter historical runs">
+                <label class="history-name-filter-label">Run name<input id="history-name-filter" type="search" maxlength="256" placeholder="Search names" autocomplete="off"></label>
+                <label class="history-checkbox-filter"><input id="history-name-exact" type="checkbox"> Exact name</label>
+                <label>Status<select id="history-status-filter"><option value="">Any status</option><option value="pending">Waiting</option><option value="running">Running</option><option value="paused">Paused</option><option value="finished">Completed</option><option value="failed">Failed</option><option value="killed">Killed</option><option value="lost">LOST</option></select></label>
+                <label>State<select id="history-state-filter"><option value="">Any state</option><option value="active">Active</option><option value="terminal">Terminal</option></select></label>
+                <label>Time field<select id="history-time-field"><option value="created_at">Created</option><option value="started_at">Started</option><option value="ended_at">Ended</option></select></label>
+                <label>From<input id="history-since" type="date"></label>
+                <label>Through<input id="history-until" type="date"></label>
+                <label>Sort by<select id="history-sort-by"><option value="created_at">Created</option><option value="started_at">Started</option><option value="ended_at">Ended</option><option value="name">Name</option><option value="numeric_id">Numeric ID</option></select></label>
+                <label>Order<select id="history-sort-dir"><option value="desc">Newest first</option><option value="asc">Oldest first</option></select></label>
+                <label>Rows<select id="history-page-size"><option value="50">50</option><option value="100">100</option><option value="200">200</option></select></label>
+                <label>Exit code<input id="history-exit-code-filter" type="number" step="1" inputmode="numeric"></label>
+                <label>Restart parent Run ID<input id="history-restart-parent-filter" type="text" autocomplete="off" spellcheck="false"></label>
+                <label>Duplicate parent Run ID<input id="history-duplicate-parent-filter" type="text" autocomplete="off" spellcheck="false"></label>
+                <label class="history-checkbox-filter"><input id="history-has-restarts" type="checkbox"> Has restarts</label>
+                <button class="primary-button history-apply-button" type="submit">Apply filters</button>
+                <button id="history-clear-filters" class="quiet-button" type="button">Clear</button>
+              </form>
+              <div id="history-state" class="history-state" role="status" aria-live="polite">Open History to load saved runs.</div>
+              <div class="history-table-scroll">
+                <table class="history-table" aria-label="Historical process runs">
+                  <thead><tr><th scope="col">Run name</th><th scope="col">Status</th><th scope="col">Run ID</th><th scope="col">Created</th><th scope="col">Ended</th><th scope="col">Exit</th></tr></thead>
+                  <tbody id="history-run-rows"></tbody>
+                </table>
+              </div>
+              <nav id="history-pagination" class="history-pagination" aria-label="Historical runs pages" hidden>
+                <button id="history-previous-page" class="text-button" type="button">‹ Previous</button>
+                <span id="history-page-state" aria-live="polite">Page 1</span>
+                <button id="history-next-page" class="text-button" type="button">Next ›</button>
+              </nav>
             </section>
             <div id="empty-inspector" class="empty-inspector">
               <div class="empty-icon" aria-hidden="true">▤</div>
@@ -312,6 +356,21 @@
                 </div>
                 <p id="details-copy-status" class="details-copy-status" role="status" aria-live="polite"></p>
                 <p class="disclosure-note">Command arguments and working directory are hidden in this browser view because they may contain private values.</p>
+                <section class="run-history-details" aria-label="Run history details">
+                  <div class="run-history-section">
+                    <div class="history-section-heading"><h3>Lifecycle events</h3><span id="run-events-provenance-note" class="history-provenance-note">Recorded events and registry markers</span></div>
+                    <div id="run-events-state" class="history-detail-state" role="status" aria-live="polite">Open Details to load lifecycle history.</div>
+                    <ol id="run-events-list" class="run-events-list"></ol>
+                    <nav id="run-events-pagination" class="history-pagination compact" aria-label="Lifecycle event pages" hidden>
+                      <button id="run-events-previous" class="text-button" type="button">‹ Previous</button><span id="run-events-page-state" aria-live="polite">Page 1</span><button id="run-events-next" class="text-button" type="button">Next ›</button>
+                    </nav>
+                  </div>
+                  <div class="run-history-section">
+                    <div class="history-section-heading"><h3>Restart and duplicate lineage</h3><span class="history-provenance-note">Explicit Run ID relationships</span></div>
+                    <div id="run-lineage-state" class="history-detail-state" role="status" aria-live="polite">Open Details to load run relationships.</div>
+                    <div id="run-lineage-list" class="run-lineage-list"></div>
+                  </div>
+                </section>
               </div>
               </div>
           </section>
