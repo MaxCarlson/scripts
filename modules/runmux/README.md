@@ -172,3 +172,34 @@ runmux load
   ANSI bytes are still preserved, but programs that require a real console/TTY may
   fall back or exit.
 - `Ctrl-X` is the default interact prefix. Press `Ctrl-X` then `q` to detach.
+
+
+## Optional LLM Monitor Integration
+
+Runmux Web optionally integrates the read-only observability and diagnostics API from the `llm_monitor` module.
+
+### Configuration & Activation
+
+The integration is disabled by default and requires explicit server-side opt-in:
+
+```powershell
+$env:RUNMUX_LLM_MONITOR_ENABLED = "1"
+$env:RUNMUX_LLM_MONITOR_OPENCODE_URL = "http://127.0.0.1:4096"
+$env:RUNMUX_LLM_MONITOR_LMSTUDIO_URL = "http://127.0.0.1:1234"
+# Optional existing telemetry database (never created if missing):
+# $env:RUNMUX_LLM_MONITOR_DATABASE = "C:\path\to\existing_telemetry.db"
+runmux web
+```
+
+### Safety & Architecture
+
+- **Read-Only Invariant:** Monitoring endpoints never trigger recording, model inference, parameter mutation, job recovery, or Runmux process termination.
+- **Python Compatibility:** Ordinary Runmux runs on Python 3.10+. Monitoring capabilities require Python 3.11+ and the optional `llm_monitor` package; when running on Python 3.10 or without `llm_monitor`, Runmux starts normally and reports the integration status as `unavailable`.
+- **Existing-Only Database:** If a telemetry database is configured, Runmux verifies it is an existing file before opening it in read-only mode. It will never create a database or start a background recorder.
+- **Authenticated REST Endpoints:**
+  - `GET /api/llm-monitor/v1/status`: Capability availability and configuration (no provider I/O).
+  - `GET /api/llm-monitor/v1/snapshot`: In-process cached system and session snapshot.
+  - `GET /api/llm-monitor/v1/sessions/detail`: Detailed session diagnostics and MCP correlations.
+  - `GET /api/llm-monitor/v1/sessions/timeline`: Keyset-paginated historical events page.
+  - `GET /api/llm-monitor/v1/alerts`: Persisted alerts filterable by status (`active`, `acknowledged`, `resolved`).
+  - `GET /api/llm-monitor/v1/hardware`: Point-in-time GPU metrics.
