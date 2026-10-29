@@ -98,7 +98,7 @@ Export creation previews unless `--write` is supplied. The ZIP contains session 
 
 Alerts are local diagnostic state, not external notifications. `alerts test` evaluates stored session evidence without writing; `alerts list` reads existing alert state; `alerts acknowledge` explicitly changes local telemetry state. `tui --persist-alerts` opts into persisting alert state and migrates a v1 database to schema v2 if needed. Rules distinguish observation from confidence; missing metrics do not trigger numerical alerts. Sustained hardware-pressure and recorder/database-error alerts are not emitted because this release has no shared sampled hardware alert stream or recorder error feed. No external notification destinations are configured by this module.
 
-The reusable snapshot/detail envelope and the proposed authenticated Runmux HTTP mapping are documented in [docs/API.md](docs/API.md). The contract preserves provider-instance/session identity and requires the host's existing authentication, origin, and no-store protections. This release provides the consumer API contract; it does not modify Runmux or expose an HTTP server.
+The reusable snapshot/detail envelope and authenticated-host mapping are documented in [docs/API.md](docs/API.md). `llm_monitor.runmux_adapter.RunmuxMonitoringAdapter` provides framework-neutral snapshot, detail, persisted timeline, and stored-alert reads over the existing service and store. It does not implement HTTP routes or authentication. The host must preserve provider-instance/session identity and enforce its existing authentication, origin, and no-store protections. See [the Runmux implementation handoff](docs/RUNMUX_INTEGRATION_HANDOFF.md). This module does not modify Runmux or expose an HTTP server.
 
 ## Development checks
 

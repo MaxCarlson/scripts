@@ -28,7 +28,7 @@ The initial service supports bounded refresh polling; it does not expose a push 
 
 ## Future HTTP mapping
 
-This is a contract for a future authenticated host, not an HTTP server implemented by this module. A Runmux adapter may map these envelopes to bounded, versioned routes such as:
+This is a contract for an authenticated host, not an HTTP server implemented by this module. `llm_monitor.runmux_adapter.RunmuxMonitoringAdapter` provides a framework-neutral read-only adapter over the existing `ObservabilityService` and `TelemetryStore`. It does not create a collector, recorder, database, route, or authentication boundary. A Runmux host may map its methods to bounded, versioned routes such as:
 
 | Method/path | Result |
 |---|---|
@@ -37,7 +37,11 @@ This is a contract for a future authenticated host, not an HTTP server implement
 | `GET /api/llm-monitor/v1/sessions/{provider}/{session}/timeline?limit=100&cursor=...` | Bounded chronological events |
 | `GET /api/llm-monitor/v1/alerts` | Locally evaluated alert states |
 
-The host must apply the same authentication/session, origin, local-bind, and cache-control boundaries as its existing protected UI APIs. Responses must be private/no-store. Route parameters must be encoded and validated, errors must not reveal filesystem paths or credentials, and untrusted strings must be escaped by the browser renderer. Do not add permissive CORS or direct browser access to OpenCode or telemetry SQLite files.
+The adapter methods are `snapshot(force_refresh=False)`, `session_detail(provider_instance_id, session_id)`, `timeline(provider_instance_id, session_id, limit=100, cursor=None)`, and `alerts(status=None, limit=100)`. A snapshot refresh is shared and serialized within the adapter, with a one-second in-process cache by default. Timeline cursors are opaque provider/session-bound keyset positions over the stored chronological event order. Pages are capped at 500 records. Stored tool targets are hashed at ingestion and remain hashed in responses. Provider URLs are reduced to scheme, host, and port; local database paths and known sensitive payload fields are omitted. Timeline and alerts return explicit `availability` values when the store or session is unavailable. Snapshot/detail objects retain ObservabilityService schema version 1; adapter-owned timeline/alerts envelopes use schema version 1.
+
+Runmux should construct one adapter and one `ObservabilityService` per configured OpenCode endpoint and share them across browser clients. Refresh the service from a single bounded host update loop, then serve cached snapshots to requests; do not create a service or poll providers for every browser component. The adapter's `snapshot()` performs a refresh, so the host must coordinate calls to avoid duplicated polling. Persisted timeline and alert queries are read-only. Alert states are listed only when already stored; the adapter does not evaluate, acknowledge, or save alerts.
+
+The host must apply the same authentication/session, origin, local-bind, and cache-control boundaries as its existing protected UI APIs. Responses must be private/no-store. Route parameters must be encoded and validated, errors must not reveal filesystem paths or credentials, and untrusted strings must be escaped by the browser renderer. Do not add permissive CORS or direct browser access to OpenCode or telemetry SQLite files. See [the Runmux implementation handoff](RUNMUX_INTEGRATION_HANDOFF.md) for the scoped host-side work request.
 
 The Python contract contains no process start/stop, inference, model configuration, job recovery, or provider mutation method. Runmux process/session/job associations require explicit identifiers; directory/time matches remain qualified hypotheses. This phase does not add a Runmux backend route because its UI/backend work is concurrently active; the integration can implement this mapping after its owners review the contract.
 
