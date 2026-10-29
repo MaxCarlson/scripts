@@ -19,7 +19,8 @@ from types import MappingProxyType
 from typing import Any, Mapping
 
 from .git_workspace import GitIdentity, initialize_git
-from .tool_profile import FILE_PROFILE, configure_file_agent, validate_execution_profile
+from .tool_profile import (FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE, configure_file_agent,
+                           validate_execution_profile)
 from .identity import ModelIdentity, write_project_model_registration
 from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
@@ -203,8 +204,9 @@ def prepare_workspace(
         (workspace / SCRATCH_NAME).mkdir()
     if model_identity is not None:
         write_project_model_registration(workspace, model_identity)
-        if task.opencode_tool_profile == FILE_PROFILE:
-            configure_file_agent(workspace)
+        if task.opencode_tool_profile in {FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
+            configure_file_agent(workspace, retrieval=task.opencode_tool_profile == RETRIEVAL_PROFILE,
+                                 structural=task.opencode_tool_profile == STRUCTURAL_PROFILE)
     return initialize_git(workspace)
 
 

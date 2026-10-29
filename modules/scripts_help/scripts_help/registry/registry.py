@@ -296,9 +296,9 @@ REGISTRY: dict = {
             {
                 "name": "local-agent (module)",
                 "path": "modules/local_agent_bridge",
-                "desc": "Set up Codex/Antigravity profiles and manage the local LM Studio/OpenCode bridge",
+                "desc": "Set up Codex/Antigravity profiles, manage the local bridge, and retrieve bounded source context",
                 "help_cmd": ["local-agent", "--help"],
-                "version": "3.0.0",
+                "version": "3.4.0",
             },
             {
                 "name": "run_tests.py",

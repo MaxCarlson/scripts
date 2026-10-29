@@ -1,17 +1,38 @@
 """Auditable smoke-task execution; shell auditing is never relaxed."""
 import json
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
 
-from agent_benchmark.tool_profile import FILE_AGENT, FILE_PROMPT, configure_file_agent, validate_file_agent
+from agent_benchmark.tool_profile import (
+    FILE_AGENT,
+    FILE_PROMPT,
+    RETRIEVAL_AGENT,
+    RETRIEVAL_PROFILE,
+    configure_file_agent,
+    validate_file_agent,
+)
 from agent_benchmark.evidence import load_task
+from agent_benchmark.attempt import build_prompt
 
 TASK = Path(__file__).resolve().parents[1] / "agent_benchmark/tasks/py-grep-smoke"
 
 
 def test_smoke_task_declares_file_tools_profile():
     assert load_task(TASK).opencode_tool_profile == "file-tools-v1"
+
+
+def test_task_manifest_accepts_distinct_retrieval_profile(tmp_path):
+    import shutil
+
+    copy = tmp_path / "task"
+    shutil.copytree(TASK, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = copy / "task.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["opencode_tool_profile"] = RETRIEVAL_PROFILE
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    assert load_task(copy).opencode_tool_profile == RETRIEVAL_PROFILE
 
 
 def test_file_agent_is_local_and_preserves_provider_configuration(tmp_path):
@@ -44,6 +65,47 @@ def test_file_agent_preflight_rejects_missing_or_broadened_effective_permissions
         validate_file_agent({**role_identity, "permission": rules + [{"permission": "bash", "pattern": "*", "action": "allow"}]})
     with pytest.raises(ValueError):
         validate_file_agent({**role_identity, "permission": rules + [{"permission": "mcp_*", "pattern": "*", "action": "allow"}]})
+
+
+def test_retrieval_agent_keeps_default_deny_and_allows_only_named_read_tools(tmp_path):
+    configure_file_agent(tmp_path, retrieval=True)
+    actual = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))
+    role = actual["agent"][RETRIEVAL_AGENT]
+    assert role["permission"]["*"] == "deny"
+    assert role["permission"]["code_locate"] == "allow"
+    assert role["permission"]["code_context"] == "allow"
+    assert "bash" not in role["permission"]
+    rules = [
+        {"permission": "*", "pattern": "*", "action": "deny"},
+        *({"permission": name, "pattern": "*", "action": "allow"}
+          for name in ("read", "edit", "code_locate", "code_context")),
+    ]
+    validate_file_agent({**role, "name": RETRIEVAL_AGENT, "permission": rules}, retrieval=True)
+    with pytest.raises(ValueError, match="bash"):
+        validate_file_agent({**role, "name": RETRIEVAL_AGENT, "permission": rules + [
+            {"permission": "bash", "pattern": "*", "action": "allow"},
+        ]}, retrieval=True)
+    assert RETRIEVAL_PROFILE == "retrieval-files-v1"
+
+
+def test_retrieval_interventions_keep_role_and_prompt_identical(tmp_path):
+    task = load_task(TASK)
+    prompts = [build_prompt(replace(task, opencode_tool_profile=profile), Path("C:/trial"))
+               for profile in ("file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1")]
+    assert prompts[0] == prompts[1] == prompts[2]
+    assert "Do not run tests, invoke a shell" in prompts[0]
+
+    for profile, retrieval, structural in (("file-tools-v1", False, False),
+                                            ("retrieval-files-v1", True, False),
+                                            ("retrieval-structural-v1", True, True)):
+        root = tmp_path / profile
+        root.mkdir()
+        configure_file_agent(root, retrieval=retrieval, structural=structural)
+        role = json.loads((root / "opencode.json").read_text(encoding="utf-8"))["agent"][FILE_AGENT]
+        assert role["prompt"] == FILE_PROMPT
+        assert role["permission"]["*"] == "deny"
+        assert ("code_context" in role["permission"]) is retrieval
+        assert ("code_map" in role["permission"]) is structural
 
 
 def test_file_agent_refuses_overwriting_an_existing_agent(tmp_path):
@@ -155,3 +217,43 @@ def test_sandbox_manifest_is_not_silently_downgraded(tmp_path):
     manifest.write_text(json.dumps(data), encoding="utf-8")
     with pytest.raises(ValueError, match="sandboxed-shell-v1"):
         load_task(copy)
+
+
+def test_structural_retrieval_profile_is_distinct_and_default_deny(tmp_path):
+    from agent_benchmark.tool_profile import (
+        STRUCTURAL_AGENT, STRUCTURAL_PROFILE, STRUCTURAL_PROMPT, validate_execution_profile,
+    )
+
+    configure_file_agent(tmp_path, structural=True)
+    role = json.loads((tmp_path / "opencode.json").read_text(encoding="utf-8"))["agent"][STRUCTURAL_AGENT]
+    assert role["permission"]["*"] == "deny"
+    for tool in ("code_locate", "code_context", "code_symbols", "code_map"):
+        assert role["permission"][tool] == "allow"
+    assert "bash" not in role["permission"]
+    rules = [{"permission": "*", "pattern": "*", "action": "deny"}]
+    rules.extend({"permission": name, "pattern": "*", "action": "allow"}
+                 for name in ("read", "edit", "code_locate", "code_context", "code_symbols", "code_map"))
+    validate_file_agent({**role, "name": STRUCTURAL_AGENT, "permission": rules}, structural=True)
+    with pytest.raises(ValueError, match="bash"):
+        validate_file_agent({**role, "name": STRUCTURAL_AGENT, "permission": rules + [
+            {"permission": "bash", "pattern": "*", "action": "allow"},
+        ]}, structural=True)
+    assert STRUCTURAL_PROFILE == "retrieval-structural-v1"
+    assert STRUCTURAL_PROMPT == FILE_PROMPT
+    validate_execution_profile(STRUCTURAL_PROFILE)
+
+
+def test_structural_profile_manifest_and_prompt_are_identifiable(tmp_path):
+    import shutil
+    from agent_benchmark.tool_profile import STRUCTURAL_PROFILE
+
+    copy = tmp_path / "task"
+    shutil.copytree(TASK, copy, ignore=shutil.ignore_patterns("__pycache__"))
+    manifest = copy / "task.json"
+    data = json.loads(manifest.read_text(encoding="utf-8"))
+    data["opencode_tool_profile"] = STRUCTURAL_PROFILE
+    manifest.write_text(json.dumps(data), encoding="utf-8")
+    task = load_task(copy)
+    prompt = build_prompt(replace(task, opencode_tool_profile=STRUCTURAL_PROFILE), Path("C:/trial"))
+    assert task.opencode_tool_profile == STRUCTURAL_PROFILE
+    assert prompt == build_prompt(replace(task, opencode_tool_profile="file-tools-v1"), Path("C:/trial"))

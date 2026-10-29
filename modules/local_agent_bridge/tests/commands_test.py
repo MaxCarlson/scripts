@@ -1,3 +1,5 @@
+from pathlib import Path
+
 from local_agent_bridge.commands import main
 import local_agent_bridge.commands as commands_module
 import local_agent_bridge.cli as cli_module
@@ -43,6 +45,67 @@ def test_saved_plan_roundtrip_and_tampering(tmp_path, capsys):
     assert main(["setup", "apply", "-i", str(saved)]) == 4
     assert not (tmp_path / "unrelated").exists()
     capsys.readouterr()
+
+
+def test_setup_retrieval_opt_in_is_saved_and_can_be_disabled(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    saved = tmp_path / "retrieval-plan.json"
+    assert main([
+        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+        "--code-retrieval", "-o", str(saved),
+    ]) == 0
+    assert json.loads(saved.read_text())["code_retrieval"] is True
+    assert main(["setup", "apply", "-i", str(saved)]) == 0
+    installed = home / ".config/opencode/tools/code_locate.js"
+    assert installed.is_file()
+    capsys.readouterr()
+    assert main([
+        "setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+        "--no-code-retrieval", "-j",
+    ]) == 0
+    output = capsys.readouterr().out
+    plan = json.loads(output[output.index("{\n"):])
+    assert plan["code_retrieval"] is False
+    assert any(op["resource_id"] == "shared.code-retrieval.code_locate" and op["retire"]
+               for op in plan["operations"])
+    assert main([
+        "setup", "apply", "-H", str(home), "-s", "copy", "-m", "generic", "--no-code-retrieval",
+    ]) == 0
+    assert not installed.exists()
+    capsys.readouterr()
+
+
+def test_checkpoint_cli_save_show_and_recover_are_local_and_stale_aware(tmp_path, capsys):
+    import json
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    source = workspace / "module.py"
+    source.write_text("VALUE = 1\n", encoding="utf-8")
+    payload = tmp_path / "task.json"
+    payload.write_text(json.dumps({
+        "task_id": "task-cli",
+        "objective": "Inspect the module",
+        "authorized_scope": ["module.py"],
+        "next_action": "Check the existing session before continuing.",
+        "identities": {"session_id": "ses-cli", "job_id": "job-cli", "message_id": "msg-cli",
+                        "provider_id": "local", "model_id": "model-cli", "worker_agent": "local-worker"},
+        "confirmed_sources": [{"path": "module.py", "start_line": 1, "end_line": 1}],
+    }), encoding="utf-8")
+    state = tmp_path / "outside-state"
+    assert main(["checkpoint", "save", "-C", str(workspace), "-S", str(state), "-i", str(payload), "-j"]) == 0
+    saved = json.loads(capsys.readouterr().out)
+    assert saved["identities"]["message_id"] == "msg-cli"
+    assert not Path(saved["checkpoint_path"]).is_relative_to(workspace)
+    assert main(["checkpoint", "show", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    assert json.loads(capsys.readouterr().out)["task_id"] == "task-cli"
+    source.write_text("VALUE = 2\n", encoding="utf-8")
+    assert main(["checkpoint", "recover", "task-cli", "-C", str(workspace), "-S", str(state), "-j"]) == 1
+    packet = json.loads(capsys.readouterr().out)
+    assert packet["status"] == "stale"
+    assert packet["automatic_resubmission"] is False
 
 
 def test_run_parser_keeps_management_in_model_group():
@@ -509,7 +572,7 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit) as version:
         main(["--version"])
     assert version.value.code == 0
-    assert "3.3.0" in capsys.readouterr().out
+    assert "3.4.0" in capsys.readouterr().out
 
     # A temporary target keeps this regression check independent of the user's installed profiles.
     assert main(["setup", "status", "-H", str(tmp_path / "empty-home"), "-j"]) in {0, 3}
@@ -524,3 +587,50 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
         main(["run", "--help"])
     assert help_result.value.code == 0
     assert "local-agent run" in capsys.readouterr().out
+
+
+def test_checkpoint_recover_session_cli_is_additive_and_json(tmp_path, capsys):
+    import json
+    from local_agent_bridge.context.checkpoint import save_checkpoint
+
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+    state = tmp_path / "state"
+    save_checkpoint(workspace, "task-session", "Continue the checkpoint", state_dir=state,
+                    authorized_scope=[], next_action="Check the existing job first.",
+                    identities={"session_id": "ses-cli-recover", "job_id": "job-cli"})
+    assert main(["checkpoint", "recover-session", "ses-cli-recover", "-C", str(workspace), "-S", str(state), "-j"]) == 0
+    packet = json.loads(capsys.readouterr().out)
+    assert packet["task_id"] == "task-session"
+    assert packet["identities"]["job_id"] == "job-cli"
+    assert packet["automatic_resubmission"] is False
+
+
+def test_checkpoint_compaction_setup_flag_survives_saved_plan_replay(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    plan_path = tmp_path / "compaction-plan.json"
+    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+                 "--checkpoint-compaction", "-o", str(plan_path), "-j"]) == 0
+    assert json.loads(plan_path.read_text())["checkpoint_compaction"] is True
+    capsys.readouterr()
+    assert main(["setup", "apply", "-i", str(plan_path)]) == 0
+    assert (home / ".config/opencode/plugins/local_agent_checkpoint.js").is_file()
+    capsys.readouterr()
+
+
+def test_structural_setup_flag_is_saved_and_installs_optional_tools(tmp_path, capsys):
+    import json
+
+    home = tmp_path / "home"
+    plan_path = tmp_path / "structural-plan.json"
+    assert main(["setup", "plan", "-H", str(home), "-s", "copy", "-m", "generic",
+                 "--structural-retrieval", "-o", str(plan_path), "-j"]) == 0
+    plan = json.loads(plan_path.read_text())
+    assert plan["structural_retrieval"] is True
+    assert plan["code_retrieval"] is True
+    capsys.readouterr()
+    assert main(["setup", "apply", "-i", str(plan_path)]) == 0
+    assert (home / ".config/opencode/tools/code_map.js").is_file()
+    capsys.readouterr()

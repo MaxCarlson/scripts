@@ -1,6 +1,5 @@
 """Installer contracts exercised only in isolated profile trees."""
 import json
-from pathlib import Path
 
 import pytest
 
@@ -360,3 +359,69 @@ def test_atomic_replace_retries_windows_denial_without_overwriting_changes(tmp_p
     with pytest.raises(ValueError, match='Concurrent change'):
         files.atomic_write(target, b'do not apply')
     assert target.read_text() == 'new user content'
+
+
+def test_opencode_retrieval_tools_are_opt_in_and_receipt_managed(tmp_path):
+    home = tmp_path / 'home'
+    opt_in = build_plan(home, strategy='copy', environ={}, code_retrieval=True)
+    resource = next(op for op in opt_in.operations if op.resource_id == 'shared.code-retrieval.code_locate')
+    assert resource.path == home / '.config/opencode/tools/code_locate.js'
+    assert resource.kind == 'file'
+    apply_plan(opt_in)
+    installed = resource.path
+    assert installed.is_file()
+
+    preserved = build_plan(home, strategy='copy', environ={})
+    assert preserved.code_retrieval is True
+    assert next(op for op in preserved.operations
+                if op.resource_id == 'shared.code-retrieval.code_locate').action == 'unchanged'
+
+    remove_feature = build_plan(home, strategy='copy', environ={}, code_retrieval=False)
+    assert any(op.resource_id == 'shared.code-retrieval.code_locate' and op.details.get('retire')
+               for op in remove_feature.operations)
+    apply_plan(remove_feature)
+    assert not installed.exists()
+
+
+def test_opencode_checkpoint_compaction_plugin_is_opt_in_and_receipt_managed(tmp_path):
+    home = tmp_path / "home"
+    opt_in = build_plan(home, strategy="copy", environ={}, checkpoint_compaction=True)
+    resource = next(op for op in opt_in.operations if op.resource_id == "shared.checkpoint-compaction.plugin")
+    assert resource.path == home / ".config/opencode/plugins/local_agent_checkpoint.js"
+    apply_plan(opt_in)
+    assert resource.path.is_file()
+
+    preserved = build_plan(home, strategy="copy", environ={})
+    assert preserved.checkpoint_compaction is True
+    assert next(op for op in preserved.operations if op.resource_id == resource.resource_id).action == "unchanged"
+
+    remove = build_plan(home, strategy="copy", environ={}, checkpoint_compaction=False)
+    assert any(op.resource_id == resource.resource_id and op.details.get("retire") for op in remove.operations)
+    apply_plan(remove)
+    assert not resource.path.exists()
+
+
+def test_opencode_structural_tools_install_with_lexical_tools_and_retire_separately(tmp_path):
+    home = tmp_path / "home"
+    opt_in = build_plan(home, strategy="copy", environ={}, structural_retrieval=True)
+    assert opt_in.code_retrieval is True
+    assert opt_in.structural_retrieval is True
+    structural = [op for op in opt_in.operations if op.resource_id.startswith("shared.structural-retrieval.")]
+    assert {op.path.name for op in structural} == {"code_symbols.js", "code_map.js"}
+    apply_plan(opt_in)
+    assert (home / ".config/opencode/tools/code_locate.js").is_file()
+    assert (home / ".config/opencode/tools/code_symbols.js").is_file()
+
+    remove_structural = build_plan(home, strategy="copy", environ={}, structural_retrieval=False)
+    assert remove_structural.code_retrieval is True
+    assert any(op.resource_id == "shared.structural-retrieval.code_map" and op.details.get("retire")
+               for op in remove_structural.operations)
+    apply_plan(remove_structural)
+    assert (home / ".config/opencode/tools/code_locate.js").is_file()
+    assert not (home / ".config/opencode/tools/code_map.js").exists()
+
+    remove_all = build_plan(home, strategy="copy", environ={},
+                            code_retrieval=False, structural_retrieval=False)
+    apply_plan(remove_all)
+    assert not (home / ".config/opencode/tools/code_locate.js").exists()
+    assert not (home / ".config/opencode/tools/code_symbols.js").exists()

@@ -2,6 +2,7 @@
 
 import asyncio
 from copy import deepcopy
+import json
 from pathlib import Path
 
 import httpx
@@ -192,6 +193,8 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
             bridge = OpenCodeBridge(unused, http)
             facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="local-worker")
             assert facts["model"] == "model-a" and facts["opencode_version"] == "1.19.3"
+            assert facts["configured_inference_evidence"]["context_limit"]["status"] == "not_explicitly_configured"
+            assert facts["configured_inference_evidence"]["effective_settings_status"] == "unavailable_from_read_only_preflight"
             with pytest.raises(ValueError, match="Effective model IDs: model-a"):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="missing", agent="local-worker")
             connected.clear()
@@ -202,6 +205,53 @@ def test_read_only_preflight_requires_connected_explicit_model_and_role(tmp_path
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="cloud", model="model-a", agent="local-worker")
             with pytest.raises(ValueError):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent="unknown")
+
+    asyncio.run(run())
+
+
+def test_preflight_records_configured_inference_values_without_claiming_effective_settings(tmp_path):
+    configured_model = {
+        "limit": {"context": 32768, "output": 8192},
+        "options": {"reasoningEffort": "medium", "apiKey": "must-not-be-recorded"},
+        "variants": {"high": {"reasoningEffort": "high"}},
+    }
+
+    def remote(request):
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": configured_model}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path in ("/path", "/project/current"):
+            return project_remote(tmp_path)(request)
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": "local-worker", "temperature": 0.2, "topP": 0.9,
+                                              "variant": "high", "options": {"maxOutputTokens": 4096,
+                                                                               "secret": "must-not-be-recorded"},
+                                              "permission": [{"permission": "task", "action": "deny"}]}])
+        return httpx.Response(200, json=[])
+
+    async def unused(name, args):
+        pytest.fail("Read-only preflight must not dispatch")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a",
+                                           agent="local-worker")
+        evidence = facts["configured_inference_evidence"]
+        assert evidence["schema"] == "opencode-configured-inference-v1"
+        assert evidence["effective_settings_status"] == "unavailable_from_read_only_preflight"
+        assert evidence["context_limit"] == {"value": 32768, "source": "/provider/all[lmstudio]/models/model-a/limit/context",
+                                              "status": "configured"}
+        assert evidence["output_limit"]["value"] == 8192
+        assert evidence["agent"]["temperature"] == {"value": 0.2, "source": "/agent[local-worker]/temperature",
+                                                      "status": "configured"}
+        assert evidence["agent"]["top_p"]["value"] == 0.9
+        assert evidence["agent"]["variant"]["value"] == "high"
+        encoded = json.dumps(evidence)
+        assert "must-not-be-recorded" not in encoded
+        assert "apiKey" not in encoded and "secret" not in encoded
 
     asyncio.run(run())
 
@@ -423,6 +473,93 @@ def test_file_role_readiness_failure_is_actionable_before_session_creation(tmp_p
             bridge = OpenCodeBridge(unused, http)
             with pytest.raises(ModelConfigurationError, match="file-tools-v1"):
                 await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a", agent=FILE_AGENT)
+
+    asyncio.run(run())
+    assert not any(method == "POST" for method, _ in requests)
+
+
+def test_retrieval_role_preflight_preserves_default_deny_and_named_tools(tmp_path):
+    from agent_benchmark.tool_profile import RETRIEVAL_AGENT, RETRIEVAL_PROMPT
+
+    requests = []
+    rules = [
+        {"permission": "*", "pattern": "*", "action": "deny"},
+        *({"permission": name, "pattern": "*", "action": "allow"}
+          for name in ("read", "edit", "code_locate", "code_context")),
+    ]
+
+    def remote(request):
+        requests.append(request.method)
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path == "/path":
+            return httpx.Response(200, json={"directory": str(tmp_path), "worktree": str(tmp_path)})
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": RETRIEVAL_AGENT, "mode": "primary",
+                                              "prompt": RETRIEVAL_PROMPT, "permission": rules}])
+        return project_remote(tmp_path)(request)
+
+    async def unused(*args):
+        pytest.fail("Read-only preflight must not dispatch")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            facts = await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio",
+                                           model="model-a", agent=RETRIEVAL_AGENT)
+            assert facts["agent"] == RETRIEVAL_AGENT
+            assert facts["permissions"] == rules
+
+    asyncio.run(run())
+    assert "POST" not in requests
+
+
+@pytest.mark.parametrize("grant_shell, omit_tool, expected_error", [
+    (True, None, "bash"),
+    (False, "code_map", "code_map"),
+])
+def test_structural_role_preflight_requires_named_retrieval_tools_and_rejects_shell(
+    tmp_path, grant_shell, omit_tool, expected_error
+):
+    from agent_benchmark.bridge import ModelConfigurationError
+    from agent_benchmark.tool_profile import STRUCTURAL_AGENT, STRUCTURAL_PROMPT
+
+    requests = []
+    rules = [
+        {"permission": "*", "pattern": "*", "action": "deny"},
+        *({"permission": name, "pattern": "*", "action": "allow"}
+          for name in ("read", "edit", "code_locate", "code_context", "code_symbols", "code_map")
+          if name != omit_tool),
+    ]
+    if grant_shell:
+        rules.append({"permission": "bash", "pattern": "*", "action": "allow"})
+
+    def remote(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/global/health":
+            return httpx.Response(200, json={"version": "1.19.3"})
+        if request.url.path == "/provider":
+            return httpx.Response(200, json={"all": [{"id": "lmstudio", "models": {"model-a": {}}}],
+                                             "connected": ["lmstudio"]})
+        if request.url.path == "/path":
+            return httpx.Response(200, json={"directory": str(tmp_path), "worktree": str(tmp_path)})
+        if request.url.path == "/agent":
+            return httpx.Response(200, json=[{"name": STRUCTURAL_AGENT, "mode": "primary",
+                                              "prompt": STRUCTURAL_PROMPT, "permission": rules}])
+        return project_remote(tmp_path)(request)
+
+    async def unused(*args):
+        pytest.fail("Invalid structural preflight must never submit inference")
+
+    async def run():
+        async with httpx.AsyncClient(base_url="http://localhost:4096", transport=httpx.MockTransport(remote)) as http:
+            bridge = OpenCodeBridge(unused, http)
+            with pytest.raises(ModelConfigurationError, match=expected_error):
+                await bridge.preflight(tmp_path, project_id=PROJECT, provider="lmstudio", model="model-a",
+                                       agent=STRUCTURAL_AGENT)
 
     asyncio.run(run())
     assert not any(method == "POST" for method, _ in requests)
