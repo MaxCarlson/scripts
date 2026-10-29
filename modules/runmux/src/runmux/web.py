@@ -31,8 +31,10 @@ from runmux.lifecycle import (
     RunNotFoundError as LifecycleRunNotFoundError,
 )
 from runmux.llm_monitor_integration import (
+    LLMMonitorConfig,
     LLMMonitorIntegration,
-    get_monitor_integration,
+    MonitoringServiceUnavailableError,
+    MonitoringSessionNotFoundError,
 )
 from runmux.platform_paths import get_state_dir
 from runmux.runner import RunnerError, create_managed_run
@@ -120,7 +122,11 @@ def create_runmux_web_app(
     backend = ReadOnlyRunmux(resolved_state_dir)
     lifecycle = LifecycleManager(resolved_state_dir)
     effective_default_cwd = default_cwd or Path.cwd().resolve()
-    monitor = llm_monitor_integration if llm_monitor_integration is not None else get_monitor_integration()
+    monitor = (
+        llm_monitor_integration
+        if llm_monitor_integration is not None
+        else LLMMonitorIntegration(config=LLMMonitorConfig.from_env())
+    )
     api = APIRouter(prefix="/api")
 
     @api.get("/runs")
@@ -525,18 +531,21 @@ def create_runmux_web_app(
         return monitor.status()
 
     @api.get("/llm-monitor/v1/snapshot")
-    async def monitor_snapshot(force_refresh: bool = False) -> dict[str, Any]:
-        return await run_in_threadpool(monitor.snapshot, force_refresh=force_refresh)
+    async def monitor_snapshot() -> dict[str, Any]:
+        return await run_in_threadpool(monitor.snapshot)
 
     @api.get("/llm-monitor/v1/sessions/detail")
     async def monitor_session_detail(
         provider_instance_id: str = Query(..., min_length=1, max_length=2048),
         session_id: str = Query(..., min_length=1, max_length=512),
     ) -> dict[str, Any]:
-        detail = await run_in_threadpool(monitor.session_detail, provider_instance_id, session_id)
-        if detail is None:
-            raise HTTPException(status_code=404, detail="LLM session not found")
-        return {"schema_version": 1, "availability": "available", "detail": detail}
+        try:
+            detail = await run_in_threadpool(monitor.session_detail, provider_instance_id, session_id)
+            return {"schema_version": 1, "availability": "available", "detail": detail}
+        except MonitoringServiceUnavailableError as error:
+            raise HTTPException(status_code=503, detail=error.message) from error
+        except MonitoringSessionNotFoundError as error:
+            raise HTTPException(status_code=404, detail="LLM session not found") from error
 
     @api.get("/llm-monitor/v1/sessions/timeline")
     async def monitor_session_timeline(

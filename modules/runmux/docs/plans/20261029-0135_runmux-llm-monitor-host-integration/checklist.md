@@ -17,6 +17,14 @@
   - [x] Reconfirm Phase 6C merge status (unmerged at `a03b4fa6`, awaiting audit)
   - [x] Document frontend ownership boundary and modular integration specification (`FRONTEND_INTEGRATION_SPEC.md`)
   - [x] Complete Stages 1–2 independently per Stage 3 fallback
+- [x] Review Corrections (Backend Refinement Pass)
+  - [x] Remove force_refresh cache bypass on snapshot endpoint
+  - [x] Ensure disabled integration is inert with malformed config or missing package
+  - [x] Validate provider URLs (IPv6 bracket preservation, port range, reject missing hostname, strip credentials)
+  - [x] Enforce status privacy by removing raw provider endpoint and private paths
+  - [x] Scope integration instances to each Runmux Web application
+  - [x] Distinguish unavailable provider (503) from missing session (404)
+  - [x] Isolate nonexistent telemetry database from default database fallback
 - [x] Stage 4-6: Hardening, Regression & Delivery
   - [x] Verify Python 3.10 / missing package compatibility
   - [x] Verify database existing-only file check (no DB creation on read)

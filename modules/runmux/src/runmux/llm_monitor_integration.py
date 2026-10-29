@@ -27,24 +27,63 @@ DEFAULT_MAX_SESSIONS = 200
 METADATA_CACHE_TTL_SECONDS = 300.0
 
 
+class MonitoringServiceUnavailableError(Exception):
+    """Raised when the monitoring integration or provider is disabled or unavailable."""
+
+    def __init__(self, reason: str, message: str | None = None) -> None:
+        self.reason = reason
+        self.message = message or f"Monitoring service is unavailable ({reason})"
+        super().__init__(self.message)
+
+
+class MonitoringSessionNotFoundError(Exception):
+    """Raised when an LLM session is not found in either live or historical data."""
+
+    def __init__(self, session_id: str) -> None:
+        self.session_id = session_id
+        super().__init__(f"LLM session '{session_id}' not found")
+
+
 def validate_provider_url(url: str) -> str:
-    """Validate that a provider URL is a safe HTTP(S) endpoint without userinfo, query, or fragment."""
+    """Validate that a provider URL is a safe HTTP(S) endpoint without userinfo, query, or fragment.
+
+    Correctly handles and preserves IPv6 bracketed hosts, validates ports (1-65535),
+    and rejects credentials without leaking them in error messages.
+    """
     if not isinstance(url, str) or not url.strip():
         raise ValueError("Provider URL must be a non-empty string.")
-    parsed = urlsplit(url.strip())
+    raw = url.strip()
+    try:
+        parsed = urlsplit(raw)
+    except Exception as exc:
+        raise ValueError("Provider URL is not a valid URL.") from exc
+
     if parsed.scheme not in {"http", "https"}:
         raise ValueError(f"Invalid scheme '{parsed.scheme}'; only http and https are allowed.")
-    if not parsed.netloc:
-        raise ValueError("Provider URL must have a valid host and optional port.")
-    if "@" in parsed.netloc:
-        raise ValueError("Provider URL must not contain userinfo credentials.")
+
+    if not parsed.netloc or not parsed.hostname:
+        raise ValueError("Provider URL must have a valid host.")
+
+    if parsed.username is not None or parsed.password is not None or "@" in parsed.netloc:
+        raise ValueError("Provider URL must not contain credentials.")
+
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Provider URL has an invalid port.") from exc
+
+    if port is not None and not (1 <= port <= 65535):
+        raise ValueError(f"Port {port} is out of range (1-65535).")
+
     if parsed.query:
         raise ValueError("Provider URL must not contain query parameters.")
     if parsed.fragment:
         raise ValueError("Provider URL must not contain URL fragments.")
+
     clean_path = parsed.path.rstrip("/")
-    port_part = f":{parsed.port}" if parsed.port is not None else ""
-    return f"{parsed.scheme}://{parsed.hostname}{port_part}{clean_path}"
+    host_part = f"[{parsed.hostname}]" if ":" in parsed.hostname else parsed.hostname
+    port_part = f":{port}" if port is not None else ""
+    return f"{parsed.scheme}://{host_part}{port_part}{clean_path}"
 
 
 @dataclass(frozen=True)
@@ -55,39 +94,56 @@ class LLMMonitorConfig:
     opencode_url: str = DEFAULT_OPENCODE_URL
     lmstudio_url: str | None = DEFAULT_LMSTUDIO_URL
     database_path: Path | None = None
+    explicit_database: bool = False
     directory: str | None = None
     refresh_interval_seconds: float = DEFAULT_REFRESH_INTERVAL_SECONDS
     max_sessions: int = DEFAULT_MAX_SESSIONS
+    invalid_config_error: str | None = None
 
     @classmethod
     def from_env(cls, env: Mapping[str, str] | None = None) -> LLMMonitorConfig:
-        """Parse configuration from server-side environment variables."""
+        """Parse configuration from server-side environment variables.
+
+        When disabled, configuration parsing is completely inert and will not fail
+        due to malformed URLs or missing monitor packages.
+        """
         source = os.environ if env is None else env
         raw_enabled = source.get("RUNMUX_LLM_MONITOR_ENABLED", "").strip().lower()
         enabled = raw_enabled in {"1", "true", "yes"}
 
+        if not enabled:
+            return cls(enabled=False)
+
+        # Integration is explicitly enabled; parse and validate settings safely
         raw_opencode = source.get("RUNMUX_LLM_MONITOR_OPENCODE_URL", DEFAULT_OPENCODE_URL).strip()
-        opencode_url = validate_provider_url(raw_opencode) if raw_opencode else DEFAULT_OPENCODE_URL
+        try:
+            opencode_url = validate_provider_url(raw_opencode) if raw_opencode else DEFAULT_OPENCODE_URL
+        except ValueError:
+            return cls(enabled=True, invalid_config_error="invalid_opencode_url")
 
         raw_lmstudio = source.get("RUNMUX_LLM_MONITOR_LMSTUDIO_URL", DEFAULT_LMSTUDIO_URL)
         lmstudio_url: str | None = None
         if raw_lmstudio and raw_lmstudio.strip() not in {"0", "none", "false", ""}:
-            lmstudio_url = validate_provider_url(raw_lmstudio.strip())
+            try:
+                lmstudio_url = validate_provider_url(raw_lmstudio.strip())
+            except ValueError:
+                return cls(enabled=True, invalid_config_error="invalid_lmstudio_url")
 
         raw_db = source.get("RUNMUX_LLM_MONITOR_DATABASE")
         database_path: Path | None = None
+        explicit_database = False
         if raw_db and raw_db.strip():
             candidate = Path(raw_db.strip()).resolve()
-            if candidate.is_file():
-                database_path = candidate
+            database_path = candidate
+            explicit_database = True
         else:
             # Check if platform default DB exists; never create one
             with contextlib.suppress(Exception):
                 if sys.version_info >= (3, 11):
                     from llm_monitor.storage import default_database_path
+
                     default_path = default_database_path()
-                    if default_path.is_file():
-                        database_path = default_path
+                    database_path = default_path
 
         raw_dir = source.get("RUNMUX_LLM_MONITOR_DIRECTORY")
         directory = raw_dir.strip() if raw_dir and raw_dir.strip() else None
@@ -107,10 +163,11 @@ class LLMMonitorConfig:
                     max_sessions = min(max(parsed_max, 1), 1000)
 
         return cls(
-            enabled=enabled,
+            enabled=True,
             opencode_url=opencode_url,
             lmstudio_url=lmstudio_url,
             database_path=database_path,
+            explicit_database=explicit_database,
             directory=directory,
             refresh_interval_seconds=refresh_interval,
             max_sessions=max_sessions,
@@ -239,9 +296,13 @@ class LLMMonitorIntegration:
         self._service = service
         self._init_lock = threading.RLock()
         self._initialized = adapter is not None
+        self._last_force_refresh = 0.0
 
     def status(self) -> dict[str, Any]:
-        """Return the host configuration and availability status without performing provider I/O."""
+        """Return the host configuration and availability status without performing provider I/O.
+
+        Does not expose raw provider endpoint URLs or sensitive paths.
+        """
         if not self.config.enabled:
             return {
                 "schema_version": 1,
@@ -250,7 +311,16 @@ class LLMMonitorIntegration:
                 "capabilities": [],
                 "max_sessions": self.config.max_sessions,
                 "refresh_interval_seconds": self.config.refresh_interval_seconds,
-                "provider_endpoint": None,
+            }
+
+        if self.config.invalid_config_error:
+            return {
+                "schema_version": 1,
+                "availability": "unavailable",
+                "reason": self.config.invalid_config_error,
+                "capabilities": [],
+                "max_sessions": self.config.max_sessions,
+                "refresh_interval_seconds": self.config.refresh_interval_seconds,
             }
 
         compatible, reason = check_monitor_availability()
@@ -262,7 +332,6 @@ class LLMMonitorIntegration:
                 "capabilities": [],
                 "max_sessions": self.config.max_sessions,
                 "refresh_interval_seconds": self.config.refresh_interval_seconds,
-                "provider_endpoint": self.config.opencode_url,
             }
 
         return {
@@ -272,12 +341,11 @@ class LLMMonitorIntegration:
             "capabilities": ["snapshot", "session_detail", "timeline", "alerts", "hardware"],
             "max_sessions": self.config.max_sessions,
             "refresh_interval_seconds": self.config.refresh_interval_seconds,
-            "provider_endpoint": self.config.opencode_url,
         }
 
     def get_adapter(self) -> Any | None:
         """Lazily initialize and return the shared RunmuxMonitoringAdapter."""
-        if not self.config.enabled:
+        if not self.config.enabled or self.config.invalid_config_error:
             return None
         with self._init_lock:
             if self._adapter is not None:
@@ -317,7 +385,10 @@ class LLMMonitorIntegration:
                 return None
 
     def snapshot(self, *, force_refresh: bool = False) -> dict[str, Any]:
-        """Return the shared system and session snapshot envelope."""
+        """Return the shared system and session snapshot envelope.
+
+        Rate-limits force_refresh to avoid flooding OpenCode with serial session polling.
+        """
         adapter = self.get_adapter()
         if adapter is None:
             st = self.status()
@@ -327,31 +398,72 @@ class LLMMonitorIntegration:
                 "reason": st["reason"],
                 "snapshot": None,
             }
-        try:
-            raw_snapshot = adapter.snapshot(force_refresh=force_refresh)
-            return {
-                "schema_version": 1,
-                "availability": "available",
-                "reason": None,
-                "snapshot": raw_snapshot,
-            }
-        except Exception as exc:
-            return {
-                "schema_version": 1,
-                "availability": "unavailable",
-                "reason": type(exc).__name__,
-                "snapshot": None,
-            }
+
+        now = time.monotonic()
+        with self._init_lock:
+            effective_force = False
+            if force_refresh and now - self._last_force_refresh >= self.config.refresh_interval_seconds:
+                effective_force = True
+                self._last_force_refresh = now
+
+            try:
+                raw_snapshot = adapter.snapshot(force_refresh=effective_force)
+                return {
+                    "schema_version": 1,
+                    "availability": "available",
+                    "reason": None,
+                    "snapshot": raw_snapshot,
+                }
+            except Exception as exc:
+                return {
+                    "schema_version": 1,
+                    "availability": "unavailable",
+                    "reason": type(exc).__name__,
+                    "snapshot": None,
+                }
 
     def session_detail(self, provider_instance_id: str, session_id: str) -> dict[str, Any] | None:
-        """Return provider-scoped session detail, refreshing snapshot first to ensure currency."""
+        """Return provider-scoped session detail, refreshing snapshot first to ensure currency.
+
+        Raises MonitoringServiceUnavailableError if the integration or provider is offline.
+        Raises MonitoringSessionNotFoundError if the session is genuinely absent.
+        """
+        st = self.status()
+        if st["availability"] == "disabled":
+            raise MonitoringServiceUnavailableError("disabled", "LLM monitor integration is disabled")
+        if st["availability"] == "unavailable":
+            raise MonitoringServiceUnavailableError(
+                st["reason"] or "unavailable",
+                f"LLM monitor integration is unavailable ({st['reason']})",
+            )
+
         adapter = self.get_adapter()
         if adapter is None:
-            return None
-        # Call snapshot first to ensure service state is seeded/current
-        with contextlib.suppress(Exception):
-            adapter.snapshot(force_refresh=False)
-        return adapter.session_detail(provider_instance_id, session_id)
+            raise MonitoringServiceUnavailableError("adapter_unavailable", "LLM monitor adapter is unavailable")
+
+        # Refresh snapshot to ensure service state is seeded/current
+        snap_env = self.snapshot(force_refresh=False)
+        if snap_env.get("availability") != "available":
+            raise MonitoringServiceUnavailableError(
+                snap_env.get("reason", "provider_unavailable"),
+                "OpenCode provider snapshot failed",
+            )
+
+        detail = adapter.session_detail(provider_instance_id, session_id)
+        if detail is not None:
+            return detail
+
+        # Check if provider had an error during snapshot discovery
+        snap_payload = snap_env.get("snapshot") or {}
+        provider_info = snap_payload.get("provider") or {}
+        if provider_info.get("status") == "unavailable":
+            error_msg = provider_info.get("error") or "provider unavailable"
+            raise MonitoringServiceUnavailableError(
+                "provider_unavailable",
+                f"OpenCode provider is offline: {error_msg}",
+            )
+
+        raise MonitoringSessionNotFoundError(session_id)
 
     def timeline(
         self,
@@ -415,22 +527,3 @@ class LLMMonitorIntegration:
             "reason": None,
             "hardware": hw,
         }
-
-
-_GLOBAL_INTEGRATION: LLMMonitorIntegration | None = None
-_GLOBAL_LOCK = threading.Lock()
-
-
-def get_monitor_integration(
-    config: LLMMonitorConfig | None = None,
-    *,
-    adapter: Any | None = None,
-    service: Any | None = None,
-    force_reload: bool = False,
-) -> LLMMonitorIntegration:
-    """Retrieve or create the global shared LLMMonitorIntegration instance."""
-    global _GLOBAL_INTEGRATION
-    with _GLOBAL_LOCK:
-        if _GLOBAL_INTEGRATION is None or force_reload or config is not None or adapter is not None:
-            _GLOBAL_INTEGRATION = LLMMonitorIntegration(config=config, adapter=adapter, service=service)
-        return _GLOBAL_INTEGRATION
