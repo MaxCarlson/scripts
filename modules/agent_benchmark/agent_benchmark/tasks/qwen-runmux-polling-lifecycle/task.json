@@ -1,0 +1,10 @@
+{
+  "task_id": "qwen-runmux-polling-lifecycle",
+  "suite_version": "1.0.0",
+  "category": "async-ui-lifecycle-and-visibility",
+  "allowed_paths": ["src/telemetry_polling.js"],
+  "forbidden_paths": ["README.md", "instruction.md", "task.json"],
+  "time_budget_seconds": 180,
+  "verifier": "verifier/check.py",
+  "opencode_tool_profile": "file-tools-v1"
+}

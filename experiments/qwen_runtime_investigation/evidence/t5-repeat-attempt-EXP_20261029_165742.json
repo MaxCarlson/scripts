@@ -1,0 +1,70 @@
+{
+  "schema": "qwen-runtime-attempt-v1",
+  "attempt_class": "infrastructure_abort_after_inference_start",
+  "experiment_id": "EXP_20261029_165742",
+  "trial_id": "trial-001",
+  "task_id": "qwen-async-behavior",
+  "task_fixture_sha256": "485eaf02ff324a6bf6fecd91b89a650be20790611b970c351a16aa8fe1373a67",
+  "verifier_sha256": "ef8ef868a71de78027c581eaaa8076e87e7509f3edaa99aacbc98cad6db1bcd9",
+  "job_id": "job_57744e54b41c494288498176391ac2f6",
+  "session_id": "ses_e77675d30ffeE202ThTugrVNLz",
+  "message_id": "msg_188993ad5001964582813708b3",
+  "runtime": {
+    "opencode_version": "1.19.3",
+    "opencode_endpoint": "http://127.0.0.1:4196",
+    "lm_studio_version": "0.4.26.0",
+    "model_key": "qwen38-27b-q4km",
+    "model_alias": "qwen38_23GB",
+    "model_identity": "Qwen3.8-27B Q4_K_M",
+    "loaded_context": 98304
+  },
+  "requested_settings": {
+    "context_tokens": 98304,
+    "output_limit_tokens": 8192,
+    "reasoning_mode": "unconfigured",
+    "reasoning_effort": null,
+    "random_seed": null,
+    "tool_profile": "file-tools-v1",
+    "request_parameter_capture": "not available for this live request"
+  },
+  "result": {
+    "benchmark_status": "INFRASTRUCTURE_ERROR",
+    "correctness": "unverified",
+    "worker_output": "aborted; no actionable response observed",
+    "wall_seconds": 5.8,
+    "termination": "ResourceLimitExceeded",
+    "inference_events_observed": 1,
+    "inference_completed_with_usage": 0,
+    "inference_duration_seconds": 4.111,
+    "reported_input_tokens": 0,
+    "reported_reasoning_tokens": 0,
+    "reported_output_tokens": 0,
+    "token_accounting_complete": false,
+    "finish_reason": null,
+    "tool_events": 0,
+    "edits": 0,
+    "first_write_seconds": null,
+    "verifier_error": "NotImplementedError on untouched starter after worker cancellation",
+    "failure_classification": "infrastructure_resource_guard; not a model correctness or finish-length result"
+  },
+  "monitoring": {
+    "source": "LLM Monitor persisted history and report",
+    "coverage": "complete",
+    "collection_gaps": 0,
+    "observed_session_transitions": ["idle", "inference_running", "idle"],
+    "token_values_are_reported_zeros_not_verified_zero_generation": true,
+    "raw_reasoning_preserved": false
+  },
+  "resources": {
+    "host_ram_percent_before_dispatch": 86.5,
+    "runner_host_ram_min_percent": 86.0,
+    "runner_host_ram_max_percent": 91.6,
+    "guard_sample_percent": 90.6,
+    "available_gib_at_guard": 5.8,
+    "host_ram_percent_after_worker_exit": 89.5,
+    "available_gib_after_worker_exit": 6.45,
+    "device_vram_used_gib_min": 29.04,
+    "device_vram_used_gib_max": 29.28,
+    "attribution": "host and GPU samples are point-in-time device/system measurements, not process attribution"
+  }
+}

@@ -41,6 +41,8 @@ The paired T2 repair and T4 state-machine screening is recorded in [`evidence/t2
 
 The T5 async and output-limit screen is recorded in [`evidence/t5-async-comparison.md`](evidence/t5-async-comparison.md). At 8,192, both profiles passed, with `none` reaching its first write in about 7 seconds versus 72 seconds for default and reporting zero reasoning. Default at 16,384 also passed. The matched `none` 16,384 run was safely blocked before dispatch at 90.2% host RAM against the 90% guard. Keep `none` at 8,192 as a candidate, not a proven reliable profile. Do not expand to a full matrix or bypass resource guards. Next tests should repeat an informative condition or reproduce the combined lifecycle/polling failure when host RAM preflight allows it.
 
+The historical Runmux B1 lifecycle/visibility no-edit failure is documented in [`evidence/historical-b1-reproduction.md`](evidence/historical-b1-reproduction.md). Its exact source baseline, selected variant, limits and per-inference exhaustion are recovered from preserved evidence; its full worker prompt and dispatch-time permission snapshot are missing. The closest reproducible analogue is now a supplemental `agent_benchmark` task, `qwen-runmux-polling-lifecycle`. Its reference implementation passes the public and hidden offline checks; the starter intentionally fails. The fresh T5 repeat phase is recorded in [`evidence/t5-repeat-attempts.md`](evidence/t5-repeat-attempts.md): one launch failed before dispatch at 90.3% RAM, and one session began an inference but was cancelled at 90.6%. The latter had no completed token/finish record or tool call. Neither counts as a model result, and no comparison trial has reproduced `finish=length`.
+
 Each `--inference-profile` is explicit and validated. Pair it with `-c 98304`; a mismatch fails before dispatch. Pass the exact LM Studio `modelKey` to `-m`, not the OpenCode alias. The profile writes the effort to the exact model's project-local `options.reasoningEffort`; mock request capture proves this reaches tool-bearing requests, while direct LM Studio and the T1/T2/T4 Monitor histories show `none` disables reported reasoning. This still does not prove the field was present on each live provider request. For one task/profile, use the normal experiment runner with dedicated state and evidence paths.
 
 This environment's venv has an editable Agent Benchmark finder pointing at the main tree. To run the just-checked-out worktree version, remove that finder before importing the CLI:
@@ -50,15 +52,17 @@ $env:PYTHONPATH = 'modules/agent_benchmark'
 $bench = 'import sys; sys.meta_path=[f for f in sys.meta_path if "__editable___agent_benchmark" not in repr(f)]; from agent_benchmark.cli import main; main()'
 python -c $bench experiment plan `
   -m qwen38-27b-q4km -t qwen-file-creation -r 1 -c 98304 `
+  -u http://127.0.0.1:4196 `
   --inference-profile experiments/qwen_runtime_investigation/configs/qwen-unconfigured-output-8192.json
 python -c $bench experiment run -x `
   -m qwen38-27b-q4km -t qwen-file-creation -r 1 -c 98304 `
+  -u http://127.0.0.1:4196 `
   --inference-profile experiments/qwen_runtime_investigation/configs/qwen-unconfigured-output-8192.json `
   -o experiments/qwen_runtime_investigation/evidence/runs `
   -s experiments/qwen_runtime_investigation/evidence/state
 ```
 
-To use the explicit no-reasoning profile, substitute `configs/qwen-none-output-8192.json` for the profile path in both commands. Monitor reports from the persisted evidence database require the endpoint to disambiguate sessions:
+To use the explicit no-reasoning profile, substitute `configs/qwen-none-output-8192.json` for the profile path in both commands. Always pass `-u http://127.0.0.1:4196`; the benchmark CLI defaults to 4096, which belongs to the preserved Runmux pilot. Monitor reports from the persisted evidence database require the endpoint to disambiguate sessions:
 
 ```powershell
 llm-monitor history --session <SESSION_ID> `

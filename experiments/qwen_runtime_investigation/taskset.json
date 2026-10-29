@@ -46,6 +46,11 @@
       "id": "qwen-existing-code-modification",
       "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-existing-code-modification",
       "allowed_paths": ["src/names.py"]
+    },
+    {
+      "id": "qwen-runmux-polling-lifecycle",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-runmux-polling-lifecycle",
+      "allowed_paths": ["src/telemetry_polling.js"]
     }
   ],
   "screening_task": "qwen-file-creation",
