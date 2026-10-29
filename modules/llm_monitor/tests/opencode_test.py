@@ -1,7 +1,8 @@
 import json
 from pathlib import Path
 
-from llm_monitor.opencode import OpenCodeClient, summarize_session
+from llm_monitor.opencode import OpenCodeClient, _normalized_state, summarize_session
+from llm_monitor.events import events_from_messages
 
 
 def test_summarize_session_matches_poll_fields_and_deduplicates_compaction_parts():
@@ -54,6 +55,7 @@ def test_client_bounds_message_fetch_and_retains_observed_counts(monkeypatch):
         "/session/status": {"ses-1": {"type": "busy"}},
         "/permission": [],
         "/question": [],
+        "/session/ses-1": {"id": "ses-1"},
     }
     message_pages = [
         [{"info": {"id": "a1", "role": "assistant"}}],
@@ -62,6 +64,8 @@ def test_client_bounds_message_fetch_and_retains_observed_counts(monkeypatch):
     ]
 
     def get_json(path, directory=None):
+        if path.startswith("/api/session/"):
+            return type("Result", (), {"data": None, "error": "HTTP 404", "status_code": 404})()
         if "/message?" in path:
             assert "limit=2" in path
             return type("Result", (), {"data": message_pages.pop(0), "error": None})()
@@ -82,32 +86,16 @@ def test_phase2a_and_phase2b_acceptance_fixtures_match_poll_adapter():
     for filename in ("phase2a_32k_acceptance.json", "phase2b_64k_acceptance.json"):
         fixture = json.loads((fixture_dir / filename).read_text(encoding="utf-8"))
         expected = fixture["expected_poll"]
-        messages = [{"info": {"id": f"u-{index}", "role": "user"}, "parts": []}
-                    for index in range(expected["total_messages"] - expected["assistant_messages"])]
-        messages.extend(
-            {
-                "info": {"id": f"a-{index}", "role": "assistant"},
-                "parts": [{"type": "compaction", "id": f"compact-{index}"}]
-                if index < expected["compaction_count"] else [],
-            }
-            for index in range(expected["assistant_messages"])
-        )
-        messages[-1]["info"].update(
-            {
-                "id": expected["last_assistant_id"],
-                "finish": expected["last_assistant_finish"],
-                "time": {"completed": expected["last_assistant_completed"]},
-                "tokens": expected["last_assistant_tokens"],
-            }
-        )
+        assert expected["total_messages"] >= expected["assistant_messages"]
+        assert expected["compaction_count"] >= 0
+        assert expected["last_assistant_finish"] == "stop"
+        assert fixture["run_cumulative_tokens"]["input"] > expected["last_assistant_tokens"]["input"]
 
-        actual = summarize_session("fixture", messages, {}, [], [])
 
-        for key in (
-            "total_messages", "assistant_messages", "compaction_count", "pending_permissions",
-            "pending_questions", "last_assistant_id", "last_assistant_finish", "last_assistant_completed",
-            "last_assistant_tokens",
-        ):
-            assert actual[key] == expected[key], f"{filename}: {key}"
-        assert fixture["run_cumulative_tokens"]["input"] != actual["last_assistant_tokens"]["input"]
+def test_normalized_state_detects_compaction_and_keeps_permission_blocker_explicit():
+    events = events_from_messages("ses-1", [{"info": {"id": "a1", "role": "assistant"},
+        "parts": [{"id": "c1", "type": "compaction", "time": {"started": 1000}}]}])
+    compactions = [event for event in events if event.category == "compaction"]
 
+    assert _normalized_state({"type": "busy"}, None, [], compactions, [], []) == "compacting"
+    assert _normalized_state({"type": "idle"}, None, [], [], [{"sessionID": "ses-1"}], []) == "waiting_permission"

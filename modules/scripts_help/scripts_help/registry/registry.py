@@ -533,9 +533,9 @@ REGISTRY: dict = {
             {
                 "name": "llm_monitor (module)",
                 "path": "modules/llm_monitor",
-                "desc": "Read-only OpenCode session polling and local GPU status",
+                "desc": "Local LLM observability with persistent telemetry, historical analysis, alerts, and an interactive dashboard",
                 "help_cmd": ["python", "-m", "llm_monitor", "--help"],
-                "version": "0.1.0",
+                "version": "0.5.0",
             },
             {
                 "name": "runmux (module)",
