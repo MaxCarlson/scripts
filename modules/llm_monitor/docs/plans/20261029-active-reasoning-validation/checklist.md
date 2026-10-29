@@ -7,4 +7,4 @@
 - [x] No active session handoff supplied; retain active streaming as unverified and reuse only the earlier documented completed-session evidence.
 - [x] Reconcile available completed-message, configuration, and tool facts; mark provider parameters, MCP state, and independent verifier unavailable.
 - [x] Correct the snapshot timeline/duplicate-observability gap with test-first regressions; rerun full suite.
-- [ ] Commit and push the follow-up branch without merging.
+- [x] Commit and push the follow-up branch without merging.

@@ -1,6 +1,6 @@
 # Status
 
-**State:** Independent validation complete; active-session streaming remains unverified pending a future controlled trial
+**State:** Complete; active-session streaming remains unverified pending a future controlled trial
 **Branch:** `codex/llm-monitor-live-validation-20261029`
 **Base:** `codex/llm-monitor-live-reasoning-20261029` at `88a50d9b81fbb210ffb5192d6f0c373da39509d5`
 
@@ -18,5 +18,5 @@
 
 ## Next
 
-- Commit and push the validation branch without merging.
-- In a future separately authorized trial, attach before inference and reconcile exact sanitized request evidence, MCP state, and independent verifier artifacts.
+- This branch is published and not merged.
+- A future, separately authorized live-trial assignment can attach before inference and reconcile exact sanitized request evidence, MCP state, and independent verifier artifacts.
