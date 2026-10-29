@@ -1,6 +1,6 @@
 # Status
 
-**State:** Offline infrastructure, six fixture integration, mock request-contract, and direct LM Studio probe phases are complete. T1, paired T2, and paired T4 screening have six valid passes. One explicit-none T2 run is preserved as pre-dispatch infrastructure failure after stdin closed; no inference occurred. Reliability, T3/T5, live request correlation, and incremental SSE delivery remain open.
+**State:** Offline infrastructure, six fixture integration, mock request-contract, and direct LM Studio probe phases are complete. T1, paired T2/T4, paired T5 at 8,192, and T5 default at 16,384 have nine valid verifier-passing trials. The matched T5 `none` 16,384 dispatch was blocked by the benchmark RAM guard at 90.2%; no inference occurred. Reliability, T3, live request correlation, and incremental SSE delivery remain open.
 **Branch:** `experiment/qwen-runtime-investigation-20261029`
 **Base:** `268805c41fe4b3b0c1107452298a8a4a79978ad3`
 **Worktree:** `.worktrees/qwen-runtime-investigation-20261029`
@@ -54,12 +54,21 @@
 - `EXP_20261029_161015` preserves a non-interactive `--pause-before-dispatch` input failure. The harness persisted it as infrastructure error before inference. It is excluded from model outcome counts; the following T2-none trial used a live terminal and is a separate attempt.
 - Screening suggests explicit `none` is a promising candidate: it suppressed reasoning without reducing correctness on these two fixtures and had fewer calls/earlier edits. This does not establish reliability or prove default fails. Next informative trial should target the existing async fixture with one matched omitted/default versus `none` pair, then repeat only if outcomes distinguish reliability. Keep alternate-model testing deferred until the Qwen control/task-workflow comparison is stronger.
 
+## T5 async and output-limit screen (2026-10-29)
+
+- The same validated async fixture was run serially at 8,192 with omitted/default and explicit `none`; both passed. Default used 7 inferences, 6,564 session reasoning tokens, and 9 tool calls; one inference generated 6,077 reasoning tokens over 63 seconds. The first write arrived 71.953 seconds after the first inference. Explicit `none` used 5 inferences and 0 reasoning tokens, with a write 6.928 seconds after the first inference. Full per-inference details and limitations are in `experiments/qwen_runtime_investigation/evidence/t5-async-comparison.md`.
+- At 16,384, the default profile passed in 69.8 seconds, using 6 inferences and 5,716 session reasoning tokens; its largest inference used 5,170 reasoning tokens plus 683 ordinary output tokens, then ended `tool-calls`. It made five reads before editing at 57.210 seconds. No `finish=length` occurred. The matched `none` launch was rejected before dispatch by the normal scheduler safety check at 90.2% host RAM versus its 90% limit. No override or retry was made.
+- `none` at 8,192 is now the leading candidate, not a reliability claim. The async evidence shows a large first-edit and reconnaissance difference with correctness retained in one matched pair. The default also passed, so suppression has not yet been shown to be necessary. Do not interpret per-session token sums as one inference's allowance. Defer alternatives and prompt rewrites; next compare the known combined lifecycle/polling failure at bounded size, and test a repeat only when host RAM preflight is below its limit.
+
 ## Remaining
 
 - [x] Run a direct, short LM Studio probe for this exact GGUF: identify whether `reasoning_effort` low/medium/xhigh/none and off/on are rejected, ignored, or behaviorally effective; preserve only sanitized settings/usage/finish/timing.
-- [ ] Coordinate one OpenCode inference with the LLM Monitor developer when its SSE observer is ready, to validate OpenCode incremental event delivery. Persisted Monitor history is validated for T1/T2/T4; the bounded `live` observer currently hangs past the deadline. No direct developer channel was available to relay the suspected defect; the user can forward the summary from `evidence/t1-monitor-findings.md`.
+- [ ] Coordinate one OpenCode inference with the LLM Monitor developer when its SSE observer is ready, to validate OpenCode incremental event delivery. Persisted Monitor history is validated for T1/T2/T4/T5; the bounded `live` observer currently hangs past the deadline. No direct developer channel was available to relay the suspected defect; see `evidence/live-sse-deadline-defect.md`.
 - [x] Run matched T2 omitted/default and explicit-none trials, then matched T4 state-machine trials; preserve the pre-dispatch harness failure separately.
-- [ ] Continue with a bounded T5 async comparison only after checking idle runtime ownership and recorder readiness; do not expand into a Cartesian matrix.
-- [x] Collect per-inference and session telemetry, correctness, first-edit timing, tool outcomes, history coverage, and device-attribution gaps for T2/T4.
-- [ ] Produce final root-cause categories and operating-profile recommendations after the next targeted async comparison and informative repetition.
-- [x] Create and push allowlisted checkpoint `9bb19500` on the isolated branch; do not merge. New comparison artifacts remain uncommitted pending final review.
+- [x] Run T5 async at 8,192 under omitted/default and explicit `none`, with attached Monitor recording; both passed but differed materially in first-edit time and reasoning/tool activity.
+- [x] Screen T5 default at 16,384. Preserve the paired `none` 16,384 pre-dispatch refusal at 90.2% RAM; do not override the 90% guard.
+- [ ] Repeat an informative condition or run the T5 `none` 16,384 match only when the host safety preflight clears; preserve failures and keep the matrix bounded.
+- [ ] Validate a reproducible combined lifecycle/polling regression before changing worker prompts or selecting another model.
+- [x] Collect per-inference and session telemetry, correctness, first-edit timing, tool outcomes, history coverage, and device-attribution gaps for T2/T4/T5.
+- [x] Produce a provisional evidence-based recommendation in `evidence/t2-t4-comparison.md` and `evidence/t5-async-comparison.md`; reliability and historical failure reproduction remain open.
+- [x] Create and push allowlisted checkpoint `cf760b70` on the isolated branch; do not merge. T5 evidence is being reviewed for a separate allowlisted checkpoint.

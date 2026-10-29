@@ -1,0 +1,8 @@
+{
+  "experiment_id": "EXP_20261029_162618",
+  "stage": "model_transition",
+  "model": "qwen38-27b-q4km",
+  "error_type": "ModelTransitionError",
+  "message": "Refusing to dispatch preloaded model 'qwen38-27b-q4km': host RAM utilization is 90.2% (safety limit 90%).",
+  "diagnostic_log": "benchmark.log"
+}

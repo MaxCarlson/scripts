@@ -1,0 +1,48 @@
+{
+  "config": {
+    "experiment_id": "EXP_20261029_162427",
+    "created_at": "2026-10-29T16:24:27Z",
+    "suite_id": "agent-benchmark",
+    "suite_version": "1.18.0",
+    "task_ids": [
+      "qwen-async-behavior"
+    ],
+    "variant_ids": [
+      "qwen38-27b-q4km"
+    ],
+    "repetitions": 1,
+    "scoring_basis": "worker_first_attempt_full_success",
+    "budget_profile": "canonical-120s",
+    "random_seed": null,
+    "metadata": {
+      "requested_context_length": 98304,
+      "runtime_max_ram_percent": 100.0,
+      "requested_inference_profile": {
+        "schema": "opencode-inference-profile-v1",
+        "context_length": 98304,
+        "output_limit": 16384,
+        "reasoning": {
+          "mode": "unconfigured",
+          "effort": null,
+          "provenance": "source_config"
+        },
+        "sha256": "47301a933ebc62b3afdb702acd10b0844088ad6a01c8c273b9bbeef3bfbd2a28"
+      }
+    }
+  },
+  "run_refs": [
+    {
+      "run_id": "run-EXP_20261029_162427-qwen38-27b-q4km",
+      "run_dir": "EXP_20261029_162427/runs/run-EXP_20261029_162427-qwen38-27b-q4km",
+      "variant_id": "qwen38-27b-q4km",
+      "suite_id": "agent-benchmark",
+      "suite_version": "1.18.0",
+      "scoring_basis": "worker_first_attempt_full_success",
+      "budget_profile": "canonical-120s",
+      "comparison_eligible": true,
+      "exclusion_reasons": [],
+      "metadata": {}
+    }
+  ],
+  "metadata": {}
+}

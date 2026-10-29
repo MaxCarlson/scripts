@@ -1,0 +1,14 @@
+[
+  {
+    "run_id": "run-EXP_20261029_162023-qwen38-27b-q4km",
+    "run_dir": "EXP_20261029_162023/runs/run-EXP_20261029_162023-qwen38-27b-q4km",
+    "variant_id": "qwen38-27b-q4km",
+    "suite_id": "agent-benchmark",
+    "suite_version": "1.18.0",
+    "scoring_basis": "worker_first_attempt_full_success",
+    "budget_profile": "canonical-120s",
+    "comparison_eligible": true,
+    "exclusion_reasons": [],
+    "metadata": {}
+  }
+]

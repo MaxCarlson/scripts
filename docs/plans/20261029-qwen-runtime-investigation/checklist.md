@@ -12,8 +12,11 @@
 - [x] Start independent LLM Monitor recording for OpenCode trials; complete history and comparison captured in the experimental database. The bounded `live` observer connected but hung past its observation deadline; coordinate one SSE observation after that issue is resolved and the observer is ready.
 - [x] Run bounded serial T1/T2 screening with omitted/default and explicit `none`; T2 baseline and `none` passed. Preserve the no-dispatch `INFRASTRUCTURE_ERROR` from the initial paused invocation separately.
 - [x] Run a matched T4 state-machine screen after both T2 trials passed; both profiles passed. Full results and limitations are in `evidence/t2-t4-comparison.md`.
-- [ ] Run T3 or a bounded T5 async comparison only if needed to distinguish Qwen settings from task-workflow causes; do not create a full Cartesian matrix.
-- [ ] Repeat informative conditions before claiming reliability. Current paired comparisons are one trial per task/profile.
+- [x] Run T5 async at 8,192 with omitted/default and explicit `none`; both passed. Default spent a long reasoning-heavy inference and edited late; `none` edited earlier with zero reported reasoning. Preserve inference-level data.
+- [x] Check T5 default at 16,384; it passed. Preserve the matched `none` launch as a pre-dispatch resource refusal at 90.2% host RAM; do not override the 90% safety guard.
+- [ ] Run T3 or repeat one selected condition only when host RAM preflight is below its guard; do not create a full Cartesian matrix.
+- [ ] Repeat informative conditions before claiming reliability. Current paired task/profile comparisons are still one trial per task/condition.
+- [ ] Reproduce or add a small combined lifecycle/polling regression that matches the historical no-edit failure before broadening to alternative models.
 - [x] Analyze per-inference/session telemetry and record current recommendation: `reasoning_effort=none` is promising but not yet a reliable operating profile; no correctness benefit over default is established.
 - [ ] Correlate live OpenCode provider request fields and validate incremental SSE delivery when safe instrumentation/observer support is ready.
-- [x] Review and push checkpoint `9bb19500` on the isolated branch; do not merge. Review and checkpoint new evidence separately after verification.
+- [x] Review and push checkpoint `cf760b70` on the isolated branch; do not merge. Review T5 evidence and checkpoint it separately after verification.
