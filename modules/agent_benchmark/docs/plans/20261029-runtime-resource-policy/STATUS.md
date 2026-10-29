@@ -106,5 +106,9 @@ not be staged as implementation artifacts.
    checks, so another unchanged run would not test a new intervention. Keep the result as a
    stage-gate failure; test again only after a concrete workflow change, and keep the local
    policy at independently verified small tasks with escalation on failed verification.
-6. [ ] Validate the allowlisted implementation/report checkpoint, then commit and push it to the
-   isolated branch. Do not stage raw telemetry, prompts, logs or runtime caches.
+6. [x] Validate and push the allowlisted implementation/report checkpoint as `f6ca0d59` to the
+   isolated branch. Raw telemetry, prompts, logs and runtime caches were excluded.
+7. [x] Retain the live OpenCode outbound-parameter capture gap as unresolved. Project config,
+   mock captures, and zero reasoning-token observations are not request-level proof. Do not add
+   transport interception without a reviewed path; correlate any future capture with an already-
+   planned correctness inference.

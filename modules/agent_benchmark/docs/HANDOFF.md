@@ -14,9 +14,13 @@ report: two sessions
 were unrecorded and two recorded sessions were queried from the wrong database. No further
 same-condition inference is justified because all three revision-1.0.1 workflow conditions failed
 independent correctness and no intervention showed benefit. Preserve the report as a stage-gate
-failure and require independent verification/escalation for complex stateful work. Next: validate
-and push the allowlisted task-variant source, tests, fixture clarification and sanitized reports.
-Raw run evidence and telemetry remain unstaged.
+failure and require independent verification/escalation for complex stateful work. The allowlisted
+task-variant source, tests, fixture clarification and sanitized reports are pushed as `f6ca0d59`.
+Raw run evidence and telemetry remain unstaged. The remaining technical gap is correlated
+live-request parameter capture. The project-local config, mock captures, and zero reasoning-token
+observations do not prove the exact parameter sent on a coding inference. No transport proxy or
+OpenCode modification was introduced. Keep this unresolved; revisit it only with a reviewed,
+narrowly scoped capture path that can coincide with an already-planned correctness trial.
 
 # Historical checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 
