@@ -17,6 +17,10 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
+The active Runmux Web server lifecycle plan is:
+
+- `20261029-0030_runmux-web-server-lifecycle/`: Web server lifecycle management, existing-instance discovery, credential recovery, graceful stop, and status controls. Read `00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
+
 The active Runmux LLM Monitor host integration plan is:
 
 - `20261029-0135_runmux-llm-monitor-host-integration/`: Integration of LLM Monitor 0.5.0 read-only functionality into Runmux Web as an optional, authenticated monitoring workspace. Read `00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.

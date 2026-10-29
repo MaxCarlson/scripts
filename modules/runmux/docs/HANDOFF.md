@@ -1,11 +1,24 @@
 # Runmux Current Handoff
 
-## Runmux Web UI — LLM Monitor Frontend Workspace (Stages 4–5 Complete)
+## Runmux Web UI — Server Lifecycle Management (Integrated)
 
-The LLM Monitor browser workspace and lifetime management (Stages 4 & 5) are complete, validated, and ready for review on branch `codex/runmux-llm-monitor-frontend-20261029`.
+Server Lifecycle Management is fully implemented and verified on branch `codex/runmux-web-server-lifecycle-integrated-20261029`.
+It provides:
+- Existing-server automatic discovery on `runmux web`, verifying running instances via zero-knowledge challenge-response, printing `Status: Already running` with verified URL, original access code (without regeneration), and PID, returning exit code 0 without duplicate server launch.
+- Post-bind startup reporting: the server banner (`Status: Started`) is printed only after successful loopback socket binding and application initialization.
+- Inspection via `runmux web -S` / `--status`: reports running / not running / unverifiable status, verified URL, access code, PID, and state directory without mutating any state or creating credentials.
+- Graceful shutdown via `runmux web -x` / `--stop`: requests authenticated shutdown using signed challenge-response, safely disconnects WebSockets, stops background telemetry workers, removes instance descriptors, and terminates the Web UI server process. Repeated stop commands are idempotent.
+- **Supervisor Independence Invariant**: Stopping the Web UI server leaves all supervised Runmux processes alive and running without interruption.
+- Owner-scoped filesystem security: descriptors (`server_<port>.json`) use Windows ACL restriction (`icacls` removing inheritance, granting user `(F)`) and POSIX `0600` mode, and strictly reject attacker symbolic links. Zero-knowledge challenge-response ensures secrets are never transmitted to unverified endpoints.
+- Verified with unit, lifecycle, and CLI tests (`web_server_lifecycle_test.py`, `web_cli_test.py`, `web_test.py`).
+- See `plans/20261029-0030_runmux-web-server-lifecycle/00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
+
+## Runmux Web UI — LLM Monitor Frontend Workspace (Stages 4–5 Integrated)
+
+The LLM Monitor browser workspace and lifetime management (Stages 4 & 5) are complete, validated, and merged into `main` at commit `ee4fcb19`.
 It provides:
 - Top-level workspace switcher tabs ("Processes" and "LLM Monitor") in the authenticated header.
-- `window.RunmuxLLMMonitor` lifecycle interface (`start`, `stop`, `onVisibilityChange`, `getStatus`, `getSelectedSession`, `selectSession`).
+- `window.RunmuxLLMMonitor` lifecycle interface (`mount`, `destroy`, `startPolling`, `stopPolling`, `getStatus`, `getSelectedSession`, `selectSession`).
 - Sessions sidebar listing active and historical sessions identified by composite identity `(provider_instance_id, session_id)`.
 - Main detail view displaying:
   - Session summary, model identification, status badge, context utilization ratio, and token breakdown.
@@ -22,13 +35,13 @@ It provides:
 - Responsive mobile layout bounded across all viewports (390px, 768px, 1366px, 1920px) with 0 page overflow.
 - Phase 6C History Explorer (`a03b4fa6` / `382c0608`) integrated and validated without regressions.
 - Validation:
-  - `llm_monitor_view_test.js`: All 5 test suites passed.
+  - `llm_monitor_view_test.js`: All 6 test suites passed.
   - `browser_e2e_test.js`: Passed full Chrome E2E suite across 5 responsive widths.
   - `llm_monitor_browser_e2e_test.js`: Passed full Chrome E2E suite and captured responsive screenshots.
   - Backend/API tests: 39/39 passed.
   - Ruff lint clean on all modified files.
 
-## Runmux Web UI — LLM Monitor Host Integration (Stages 0–3)
+## Runmux Web UI — LLM Monitor Host Integration (Stages 0–3 Integrated)
 
 The host-side LLM Monitor integration (Stages 0–3) is fully implemented, review-corrected, verified, and merged into `main` at `39603daa`.
 It provides:
@@ -52,10 +65,9 @@ It provides:
 
 Last updated: 2026-10-29
 
-## Runmux Web UI — Phase 6C historical explorer frontend
+## Runmux Web UI — Phase 6C historical explorer frontend (Integrated)
 
-The historical explorer frontend is complete on branch `codex/runmux-6c-history-frontend-local-pilot-20261024` and incorporated into this frontend integration branch. It uses the integrated history API with bounded cursor pages and supported filters/sorts, and presents recorded events separately from registry-derived markers plus explicit Run ID lineage. The UI exposes the supported state, exact name, exit code, restart/duplicate parent, and `has_restarts` filters. Focused Node/Python tests and the full real headless Chrome suite pass, including History-open responsive checks at five widths.
-
+The historical explorer frontend is complete on branch `codex/runmux-6c-history-frontend-local-pilot-20261024` and incorporated into `main`. It uses the integrated history API with bounded cursor pages and supported filters/sorts, and presents recorded events separately from registry-derived markers plus explicit Run ID lineage. The UI exposes the supported state, exact name, exit code, restart/duplicate parent, and `has_restarts` filters. Focused Node/Python tests and the full real headless Chrome suite pass, including History-open responsive checks at five widths.
 ## Runmux Web UI — Phase 4A integrated (Backend and Frontend)
 
 Phase 4A (Lifecycle Controls Backend and Frontend) is fully integrated and merged into `main` from `codex/runmux-lifecycle-backend-20261024` and `codex/runmux-web-lifecycle-frontend-20261024` with no conflicts.

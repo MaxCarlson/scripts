@@ -27,6 +27,24 @@ Start the dashboard with `runmux web`. The service binds to `127.0.0.1:8787` by 
 
 Use `runmux web -H 127.0.0.1 -p 8787 -s <state-directory>` to choose the bind address, port, and existing registry. `-H/--host`, `-p/--port`, and `-s/--state-dir` are available in short and long forms. The default state directory follows Runmux's existing `RUNMUX_HOME`, `LOCALAPPDATA`, and XDG rules.
 
+### Server Lifecycle Management (Discovery, Status, and Stop)
+
+Runmux Web includes intelligent server lifecycle and discovery controls:
+
+- **Automatic discovery & reconnect (`runmux web`)**: If a compatible Runmux Web server is already running for the specified state directory and port, invoking `runmux web` discovers the instance, verifies it via zero-knowledge challenge-response, displays `Status: Already running`, reports the existing URL, recovers the original still-valid login/access code, and returns exit code 0 without starting a competing instance.
+- **Inspect status (`runmux web -S` or `--status`)**: Inspects the running server and reports `Status: Running` along with verified URL, access code, PID, and state directory, or `Status: Not running` (including diagnostics for stale metadata), without mutating any state or starting a server.
+- **Graceful shutdown (`runmux web -x` or `--stop`)**: Authenticates via owner-scoped signed challenge-response, requests graceful server shutdown, disconnects WebSockets, stops background telemetry workers, removes instance descriptors, and terminates the Web UI server. Repeated stop invocations are idempotent.
+- **Supervisor independence invariant**: Stopping the Web UI server **never** kills, stops, pauses, or restarts supervised Runmux processes. Managed processes continue executing independently under their supervisors.
+- **Security architecture**: Server metadata is stored in an owner-protected descriptor (`server_<port>.json`) with restricted permissions (Windows ACL inheritance removed and granted exclusively to current user; POSIX 0600 mode). Attacker-controlled symbolic links are strictly rejected. The CLI verifies the running server using a zero-knowledge HMAC-SHA256 challenge-response before sending control commands, ensuring secrets are never sent to unverified services.
+- **Multiple servers**: When multiple servers run across different ports or state directories, use `-p/--port` and `-s/--state-dir` to scope lifecycle commands to the intended instance.
+
+### Optional LLM Monitor Integration
+
+Runmux Web UI provides an optional read-only bridge to the `llm_monitor` observability API (`ObservabilityService`).
+- **Opt-in & Read-only**: Viewing the dashboard does not initiate recording, modify providers, or start background collectors.
+- **Graceful degradation**: When `llm_monitor`, OpenCode, or LM Studio is absent or offline, the core Runmux process dashboard remains fully operational with explicit unavailable state notices.
+- **Privacy & Boundaries**: Telemetry databases and provider connections are never exposed to browser scripts; attribution between system GPU load and individual LLM sessions remains strictly qualified.
+
 The browser shows the full stable run ID, optional user name, executable basename, status, PID, exit code, runtime, and timestamps. Names and executable basenames may themselves identify private projects or tools, so anyone with the local browser session can see them. The view hides existing-run command arguments, working directories, environment overrides, log paths, IPC ports, and credentials. User-provided names and process output are treated as untrusted text. Output is decoded incrementally as UTF-8 (invalid bytes become replacement characters), ANSI/control sequences are stripped across chunk boundaries, each response is limited to 64 KiB, and the visible transcript is capped at 512 Ki characters.
 
 The explorer groups runs by their recorded status and supports searching by name, executable, status, or full run ID. Selecting a run opens a browser-only workspace tab; switching or closing a tab changes only the browser view. Each process workspace keeps the Output, Terminal, and Details views together, and the process tab strip scrolls horizontally when needed.

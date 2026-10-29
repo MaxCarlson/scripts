@@ -420,7 +420,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     web_parser = subparsers.add_parser("web", help="Browse managed runs and output in a local browser.")
     web_parser.add_argument("-H", "--host", default="127.0.0.1", help="Loopback bind IP address (default: 127.0.0.1).")
-    web_parser.add_argument("-p", "--port", type=port_number, default=8787, help="Local browser service port (default: 8787).")
+    web_parser.add_argument("-p", "--port", type=port_number, default=None, help="Local browser service port (default: 8787).")
     web_parser.add_argument(
         "-s",
         "--state-dir",
@@ -433,6 +433,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         default=False,
         help="Disable background telemetry collection and historical metrics storage.",
+    )
+    action_group = web_parser.add_mutually_exclusive_group()
+    action_group.add_argument(
+        "-x",
+        "--stop",
+        action="store_true",
+        default=False,
+        help="Gracefully stop a running Runmux Web server.",
+    )
+    action_group.add_argument(
+        "-S",
+        "--status",
+        action="store_true",
+        default=False,
+        help="Report status and connection details of a running Runmux Web server without starting one.",
     )
     web_parser.set_defaults(func=handle_web)
 
@@ -1047,11 +1062,12 @@ def handle_tui(args: argparse.Namespace) -> int:
 
 
 def handle_web(args: argparse.Namespace) -> int:
-    """Start the optional authenticated local browser service."""
+    """Start, inspect, or gracefully stop the optional authenticated local browser service."""
 
     try:
+        from runmux.server_lifecycle import run_web_server, status_server, stop_server
         from runmux.web import create_runmux_web_app
-        from web_ui_tools import create_server
+        import web_ui_tools  # noqa: F401
     except ImportError:
         print(
             "runmux: web view dependencies are not installed; install the optional runmux web extra "
@@ -1060,35 +1076,27 @@ def handle_web(args: argparse.Namespace) -> int:
         )
         return 2
 
-    import secrets
+    state_dir = getattr(args, "state_dir", None)
+    if state_dir is None:
+        from runmux.platform_paths import get_state_dir
+        state_dir = get_state_dir()
 
-    login_code = secrets.token_urlsafe(24)
-    try:
-        from web_ui_tools import LOOPBACK_HOSTS
+    port = getattr(args, "port", None)
+    host = getattr(args, "host", "127.0.0.1")
 
-        enable_telemetry_history = not getattr(args, "no_telemetry_history", False)
-        if os.environ.get("RUNMUX_NO_TELEMETRY_HISTORY", "").lower() in {"1", "true", "yes"}:
-            enable_telemetry_history = False
+    if getattr(args, "stop", False):
+        return stop_server(state_dir, port=port, host=host)
 
-        app = create_runmux_web_app(
-            args.state_dir,
-            login_code=login_code,
-            allowed_hosts=(*LOOPBACK_HOSTS, args.host),
-            enable_telemetry_history=enable_telemetry_history,
-        )
-        server = create_server(app, host=args.host, port=args.port)
-    except (OSError, ValueError) as error:
-        print(f"runmux: web: {error}", file=sys.stderr)
-        return 2
-    browser_host = f"[{args.host}]" if ":" in args.host else args.host
-    print(f"Runmux browser: http://{browser_host}:{args.port}")
-    print(f"Startup login code (valid until server exit): {login_code}")
-    print("Press Ctrl+C to close the browser service; managed processes keep running.")
-    try:
-        server.run()
-    except KeyboardInterrupt:
-        return 130
-    return 0
+    if getattr(args, "status", False):
+        return status_server(state_dir, port=port, host=host)
+
+    no_telemetry_history = getattr(args, "no_telemetry_history", False)
+    return run_web_server(
+        state_dir,
+        host=host,
+        port=port or 8787,
+        no_telemetry_history=no_telemetry_history,
+    )
 
 
 def handle_history(args: argparse.Namespace) -> int:

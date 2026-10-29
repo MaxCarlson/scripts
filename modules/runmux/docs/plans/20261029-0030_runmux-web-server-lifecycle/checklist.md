@@ -1,0 +1,23 @@
+# Runmux Web Server Lifecycle Checklist
+
+- [x] Task 1: Server Descriptor and Filesystem Security Model
+  - [x] Write failing unit tests for `ServerDescriptor` and file security
+  - [x] Implement `ServerDescriptor`, owner ACL/mode enforcement, symlink checks
+  - [x] Verify tests pass
+- [x] Task 2: Zero-Knowledge Verification and Control Protocol
+  - [x] Write failing unit tests for challenge-response and signed shutdown
+  - [x] Implement HMAC challenge verification and shutdown endpoint
+  - [x] Verify tests pass
+- [x] Task 3: Startup Correctness and Pre-bound Socket Management
+  - [x] Write failing unit tests for socket pre-binding and post-bind notification
+  - [x] Implement socket pre-binding and server startup notification
+  - [x] Verify tests pass
+- [x] Task 4: CLI Web Discovery, Stop (`-x/--stop`), and Status (`-S/--status`)
+  - [x] Write failing unit tests for CLI `-x/--stop` and `-S/--status`
+  - [x] Implement CLI options and dispatch in `cli.py`
+  - [x] Verify tests pass
+- [x] Task 5: Security, Invariant, and Integration Verification
+  - [x] Verify managed processes invariant: stopping Web UI leaves processes running
+  - [x] Verify security: challenge-response, unauthorized caller rejection, symlink safety
+  - [x] Verify concurrency: race condition handled gracefully
+  - [x] Run full runmux test suite and ruff checks

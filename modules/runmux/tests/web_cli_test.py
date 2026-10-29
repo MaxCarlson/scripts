@@ -34,3 +34,79 @@ def test_web_dependency_is_loaded_only_when_web_is_requested(tmp_path: Path, mon
     assert handle_web(args) == 2
     assert "optional runmux web extra" in capsys.readouterr().err
     assert not (tmp_path / "registry.sqlite3").exists()
+
+
+def test_web_stop_and_status_options_parsed() -> None:
+    # Short and long stop
+    args_stop_short = build_parser().parse_args(["web", "-x"])
+    assert args_stop_short.stop is True
+    assert args_stop_short.status is False
+
+    args_stop_long = build_parser().parse_args(["web", "--stop"])
+    assert args_stop_long.stop is True
+    assert args_stop_long.status is False
+
+    # Short and long status
+    args_status_short = build_parser().parse_args(["web", "-S"])
+    assert args_status_short.status is True
+    assert args_status_short.stop is False
+
+    args_status_long = build_parser().parse_args(["web", "--status"])
+    assert args_status_long.status is True
+    assert args_status_long.stop is False
+
+
+def test_web_stop_and_status_mutually_exclusive() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["web", "--stop", "--status"])
+
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(["web", "-x", "-S"])
+
+
+def test_web_cli_dispatches_to_stop_server(tmp_path: Path, monkeypatch) -> None:
+    import runmux.server_lifecycle as lifecycle_module
+
+    stop_called = []
+
+    def fake_stop(state_dir, port=None, host="127.0.0.1", timeout=5.0):
+        stop_called.append((state_dir, port, host))
+        return 0
+
+    monkeypatch.setattr(lifecycle_module, "stop_server", fake_stop)
+
+    args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "-p", "8888", "--stop"])
+    assert handle_web(args) == 0
+    assert stop_called == [(tmp_path, 8888, "127.0.0.1")]
+
+
+def test_web_cli_dispatches_to_status_server(tmp_path: Path, monkeypatch) -> None:
+    import runmux.server_lifecycle as lifecycle_module
+
+    status_called = []
+
+    def fake_status(state_dir, port=None, host="127.0.0.1"):
+        status_called.append((state_dir, port, host))
+        return 0
+
+    monkeypatch.setattr(lifecycle_module, "status_server", fake_status)
+
+    args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "--status"])
+    assert handle_web(args) == 0
+    assert status_called == [(tmp_path, None, "127.0.0.1")]
+
+
+def test_web_cli_dispatches_to_run_web_server(tmp_path: Path, monkeypatch) -> None:
+    import runmux.server_lifecycle as lifecycle_module
+
+    run_called = []
+
+    def fake_run(state_dir, host="127.0.0.1", port=8787, no_telemetry_history=False):
+        run_called.append((state_dir, host, port, no_telemetry_history))
+        return 0
+
+    monkeypatch.setattr(lifecycle_module, "run_web_server", fake_run)
+
+    args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "-p", "8900", "--no-telemetry-history"])
+    assert handle_web(args) == 0
+    assert run_called == [(tmp_path, "127.0.0.1", 8900, True)]
