@@ -3,8 +3,8 @@
 **Branch:** `codex/runmux-6c-history-frontend-local-pilot-20261024`
 **Worktree:** `.worktrees/runmux-6c-history-frontend-local-pilot`
 **Baseline:** `4591b3247bdfafe82f0b8d1a73f40002152a6c2b`
-**State:** D0–D7 are complete. D1, D2, and D5 local assignments produced no worker changes; D3 and D6 were retained by Codex based on these outcomes. The feature commit is reviewed and ready for independent audit.
-**Next:** Independent GPT-6.1 Sol Medium audit. Do not merge automatically.
+**State:** Completed, verified, independently audited, cherry-picked (`382c0608`), and merged into `main` at commit `ee4fcb1994da4ea95d03320a22a63997f0ed8342`.
+**Next:** None. Merged and active in `main`.
 
 ## Completed
 
@@ -34,15 +34,8 @@
 - [x] Corrected a lifecycle E2E timing assertion to wait for the existing in-flight guard to clear after killed status is displayed; the full real Chrome E2E then passed.
 - [x] Restored ten tracked screenshots from earlier plans that E2E overwrote; retained the Phase 6C screenshots.
 - [x] Focused validation passes: `node tests/dashboard_test.js`, `node tests/history_view_test.js`, JavaScript syntax checks, `python -m pytest tests/historical_runs_api_test.py -q` (6 passed), full real headless Chrome E2E, and `git diff --check`. Default sandbox loopback restrictions required the previously approved scoped route for API and Chrome tests.
+- [x] D7 complete final privacy/diff review, stage intended files, commit, push, independent audit, and merge into `main` at `ee4fcb19`.
 
 ## Delegation and validation evidence
 
 See `LOCAL_DISPATCH_LEDGER.md` for the genuine worker dispatch record and environment retry details.
-
-## Remaining
-
-- [x] D5 event/lineage expired-auth and repeated-Details request-efficiency tests.
-- [x] D4 actual authenticated HTTP route coverage over 10K records documents bounded keyset behavior and lack of cross-request snapshot isolation.
-- [x] D5 event/lineage expired-auth and repeated-Details request-efficiency tests.
-- [x] D6 responsive Chrome checks with History open and inspected narrow screenshot.
-- [x] D7 complete final privacy/diff review, stage intended files, commit, and push; leave unmerged for independent audit.

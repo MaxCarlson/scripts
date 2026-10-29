@@ -17,53 +17,40 @@ Folder naming:
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
 
-The active Runmux Web server lifecycle plan is:
+### Integrated Plans in Main Baseline
 
-- `20261029-0030_runmux-web-server-lifecycle/`: Web server lifecycle management, existing-instance discovery, credential recovery, graceful stop, and status controls. Read `00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
+The following dated plans have completed implementation, passed all validation gates, and are merged into `main`:
 
-The active Runmux LLM Monitor host integration plan is:
+1. **Runmux Web Server Lifecycle Management** (`20261029-0030_runmux-web-server-lifecycle/`):
+   - Existing-server auto-discovery on `runmux web`, status inspection via `-S/--status`, graceful stop via `-x/--stop`, and JSON output via `-j/--json`.
+   - Security: Zero-knowledge HMAC challenge-response, owner-only ACLs (`icacls` on Windows, POSIX 0600), reparse-point rejection, pre-bound sockets (`SO_EXCLUSIVEADDRUSE` on Windows).
+   - Invariant: Supervisor independence (stopping web server leaves supervised runs uninterrupted).
+   - Merged into `main` at `e9a5e788` with maintenance hardening on `codex/runmux-maintenance-cleanup-20261029`.
 
-- `20261029-0135_runmux-llm-monitor-host-integration/`: Integration of LLM Monitor 0.5.0 read-only functionality into Runmux Web as an optional, authenticated monitoring workspace. Read `00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
+2. **Runmux LLM Monitor Host Integration & Browser Workspace** (`20261029-0135_runmux-llm-monitor-host-integration/`):
+   - Stages 0–3 (Backend): Optional, read-only `/api/llm-monitor/v1/` REST routes, lazy imports, no background mutation. Merged into `main` at `39603daa`.
+   - Stages 4–5 (Frontend): Browser workspace, composite session identities, hardware metrics, alerts, cursor timeline, visibility throttling, and auth expiration handling. Merged into `main` at `ee4fcb19`.
 
-The latest active Runmux Web UI phase plan is:
+3. **Phase 6C Historical Explorer Frontend** (`20261024-1805_runmux-history-frontend-local-pilot/`):
+   - Historical run explorer workspace, advanced filters/sorting, keyset cursor pagination, bounded DOM rendering, event provenance, and Run ID lineage navigation. Merged into `main` at `ee4fcb19`.
 
-- `20261024-1805_runmux-history-frontend-local-pilot/`: Phase 6C historical explorer frontend and controlled local-model dispatch evaluation. Read its `00_implementation-plan.md`, `STATUS.md`, `checklist.md`, and `LOCAL_DISPATCH_LEDGER.md`. Current branch is `codex/runmux-6c-history-frontend-local-pilot-20261024`; D0–D7 are complete, and the pushed branch remains unmerged for independent audit.
+4. **Phase 6C Historical Runs Backend** (`20261024-1530_runmux-historical-runs-backend/`):
+   - Keyset-paginated historical queries, event history, lineage mapping, and query optimization. Merged into `main`.
 
-- `20261024-1530_runmux-historical-runs-backend/`: Phase 6C historical run discovery, filtering, keyset pagination, and lifecycle events backend. Read its `00_implementation-plan.md`, `01_existing_capabilities_matrix.md`, `STATUS.md`, and `HANDOFF.md` for architecture, contracts, and verification evidence.
+5. **Phase 5C Historical Telemetry Backend and Frontend** (`20261024-runmux-historical-telemetry/` & `20261024-1530_runmux-web-historical-telemetry-frontend/`):
+   - Telemetry persistence, compaction, SQLite history ring-buffer, and dashboard/expanded charts. Merged into `main`.
 
-The completed Runmux Web UI Phase 5C historical telemetry plan is:
+6. **Phase 4A Lifecycle Controls Backend and Frontend** (`20261024-runmux-lifecycle-backend/` & `20261024-1315_runmux-web-lifecycle-frontend/`):
+   - Authenticated process control endpoints and UI for graceful stop, kill, restart, duplicate, and pause/resume. Merged into `main`.
 
-- `20261024-runmux-historical-telemetry/`: Phase 5C historical telemetry architecture, empirical benchmarks, and implementation plan. Read its `00_implementation-plan.md`, `01_architecture_specification.md`, `02_alternatives_analysis.md`, `03_resource_budget_and_benchmarks.md`, `04_api_proposal.md`, `05_implementation_plan.md`, `06_approval_decisions.md`, `STATUS.md`, and `HANDOFF.md` for full implementation, verification results, and architecture details.
+7. **Phase 5A+ Overview Modes and Live Telemetry** (`20261024-runmux-web-overview-telemetry/`):
+   - Overview density modes (Minimal, Inline, Dashboard, Expanded) and live telemetry. Merged into `main`.
 
-The completed Runmux Web UI Phase 4A lifecycle controls plans are:
+8. **Earlier Integrated Web and Native TUI Plans**:
+   - `20261024-runmux-web-enhanced-logs/`: Phase 4B log search/filtering.
+   - `20261024-runmux-web-explorer-workspace/`: Phase 3 explorer workspace.
+   - `20261024-runmux-web-terminal-log-correctness/`: Phase 2 terminal and log streaming.
+   - `20261024-runmux-web-process-launching/`: Phase 1 process launch.
+   - `20261023-2120_runmux-native-tui-final-integration/`: Native TUI (`runmux tui`).
 
-- `20261024-1315_runmux-web-lifecycle-frontend/`: Phase 4A browser-facing process lifecycle controls for Stop, Kill, Restart, Duplicate, and Pause/Resume. Merged to `origin/main`. Read its `00_implementation-plan.md`, `checklist.md`, `STATUS.md`, and `HANDOFF.md` for scope, invariants, verification results, and screenshots.
-- `20261024-runmux-lifecycle-backend/`: Phase 4A lifecycle controls backend integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `LIFECYCLE_API_SPEC.md` for endpoint specs, verification results, and safety boundaries.
-
-The completed Runmux Web UI Phase 5A+ overview modes and live telemetry plan is:
-
-- `20261024-runmux-web-overview-telemetry/`: Phase 5A four selectable overview modes (Minimal, Inline, Dashboard, Expanded) and complete frontend integration of Phase 5B live telemetry endpoints. Merged to `origin/main`. Read its `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `screenshots/` for implementation details, verification results, and representative browser screenshots.
-
-The Phase 5C historical telemetry frontend is being completed on its own review branch:
-
-- `20261024-1530_runmux-web-historical-telemetry-frontend/`: Dashboard and Expanded history charts consuming the already-integrated Phase 5C API. Read `HANDOFF.md`, `STATUS.md`, `checklist.md`, and `screenshots/` for the current implementation and validation evidence. Do not merge until separately authorized.
-
-The earlier integrated Runmux Web UI phase plans on `main` are:
-- `20261024-runmux-web-enhanced-logs/`: Phase 4B enhanced output search and filtering integrated into `main`. Read its `HANDOFF.md`, `STATUS.md`, and `checklist.md` for implementation details, verification results, and boundaries.
-- `20261024-runmux-web-explorer-workspace/`: Phase 3 integrated into `main` at `54502666b5724596ee3d21c1e694b8522d5a5151`. Read its `HANDOFF.md`, `STATUS.md`, and `checklist.md` for verified results and limitations.
-
-Phase 2 terminal/log correctness and Phase 5B telemetry backend are included in the
-integrated baseline; Phase 2 evidence is retained in
-`20261024-runmux-web-terminal-log-correctness/`. Phase 1 launch evidence is in
-`20261024-runmux-web-process-launching/`.
-
-The previously active native TUI integration plan is:
-
-`20261023-2120_runmux-native-tui-final-integration/`
-
-Its documents remain historical design and implementation evidence. The older
-multi-attach and history plan is also retained as history.
-
-New implementation plans that require multiple work stages must receive their
-own dated folder here. Completed plans remain available as historical design and
-implementation evidence.
+New implementation plans that require multiple work stages must receive their own dated folder here. Completed plans remain available as historical design and implementation evidence.

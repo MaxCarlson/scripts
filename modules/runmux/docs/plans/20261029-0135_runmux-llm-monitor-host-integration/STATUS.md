@@ -4,7 +4,7 @@
 **Worktree:** `.worktrees/runmux-llm-monitor-frontend-20261029`  
 **Baseline:** `39603daa` (`origin/main` containing completed Backend Stages 0–3)  
 **Integrated Frontend Dependency:** Phase 6C History Explorer (`a03b4fa6` cherry-picked at `382c0608`)  
-**State:** Stages 4 & 5 (LLM Monitor browser workspace & lifetime management) completed and verified with all tests passing (unit suites, Python integration tests, and real headless Chrome CDP E2E). Responsive screenshots captured at 1920, 1366, 768, and 390px. Ready for code review and merge.
+**State:** Completed, verified, and merged into `main` at commit `ee4fcb1994da4ea95d03320a22a63997f0ed8342`. All test suites passing.
 
 ## Implementation Overview
 
@@ -31,7 +31,6 @@
 - Clean logout/lock teardown canceling in-flight `AbortController`s and resetting cached state.
 - Compact mobile responsive styles avoiding page overflow across all tested viewports (390px to 2560px).
 
-
 ### Independent Final Review Hardening
 - **Dynamic CSS Class Sanitization:** Sanitized all provider-controlled class names (`status.availability`, `session.state`, `alert.severity`, `detailError.type`) via `.toLowerCase().replace(/[^a-z0-9_-]/g, "-")` to eliminate any potential style injection or malformed class token surface.
 - **Session Expiration / Lock (401) Handling:** Added explicit checks for `err.message === "locked"` across all API calls in `llm-monitor.js` (`pollSnapshot`, `fetchSessionDiagnostics`, `initStatus`), halting polling immediately and triggering `globalThis.showLogin` to show the session expired message.
@@ -40,7 +39,7 @@
 
 ## Verification Evidence
 
-- `node modules/runmux/tests/llm_monitor_view_test.js`: All 5 test suites passed.
+- `node modules/runmux/tests/llm_monitor_view_test.js`: All 6 test suites passed.
 - `node modules/runmux/tests/dashboard_test.js`: All tests passed.
 - `node modules/runmux/tests/history_view_test.js`: Passed.
 - `node modules/runmux/tests/browser_e2e_test.js`: Full real Chrome CDP E2E passed across all 5 responsive viewports.

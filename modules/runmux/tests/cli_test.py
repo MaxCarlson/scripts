@@ -339,7 +339,8 @@ def test_history_browser_renders_global_ids_and_bottom_hotkeys() -> None:
     )
 
     assert "(3).  ytaedl run" in rendered
-    assert "r run | s save" in rendered
+    assert "r run" in rendered
+    assert "s save" in rendered
     assert rendered.rstrip().endswith("w/x wrap | q")
 
 
@@ -914,8 +915,14 @@ def test_list_rows_show_numeric_id_and_selected_actions() -> None:
 
     rows = build_list_rows([record], width=80, selected_index=0)
 
-    assert any("3" in row and "python" in row for row in rows)
+    # At 80 width, command wraps to its own row
+    assert any("(3)." in row for row in rows)
+    assert any("python" in row for row in rows)
     assert any("i=interact" in row and "v=view" in row for row in rows)
+
+    # At wider widths (>= 96), numeric ID and command fit on the same row
+    wide_rows = build_list_rows([record], width=120, selected_index=0)
+    assert any("(3)." in row and "python" in row for row in wide_rows)
 
 
 def test_list_rows_can_colorize_status_and_selection() -> None:
@@ -947,7 +954,7 @@ def test_list_rows_can_colorize_status_and_selection() -> None:
 
     rendered = "\n".join(build_list_rows([record], width=80, selected_index=0, color=True))
 
-    assert "\x1b[1;37mID" in rendered
+    assert "\x1b[1;37m    ID" in rendered
     assert "\x1b[32mrunning  " in rendered
     assert "\x1b[7m" in rendered
 
@@ -1120,7 +1127,16 @@ def test_handle_run_defaults_to_interact(tmp_path: Path) -> None:
         detach=False,
         interact=False,
     )
-    record = Mock(id="run-id", command_line="python -V", cwd=str(tmp_path))
+    record = Mock(
+        id="run-id",
+        command_line="python -V",
+        cwd=str(tmp_path),
+        argv_json='["python", "-V"]',
+        env_overrides_json="{}",
+        rows=24,
+        columns=80,
+    )
+    record.name = None
     started = Mock(record=record)
 
     with (
@@ -1162,6 +1178,8 @@ def test_handle_run_detach_does_not_attach(tmp_path: Path) -> None:
 
 
 def test_handle_run_save_command_marks_saved(tmp_path: Path) -> None:
+    from runmux.history import SavedCommand
+
     args = argparse.Namespace(
         state_dir=tmp_path,
         program=["python", "-V"],
@@ -1175,19 +1193,41 @@ def test_handle_run_save_command_marks_saved(tmp_path: Path) -> None:
         detach=True,
         interact=False,
     )
-    record = Mock(id="run-id", command_line="python -V", cwd=str(tmp_path))
+    record = Mock(
+        id="run-id",
+        command_line="python -V",
+        cwd=str(tmp_path),
+        argv_json='["python", "-V"]',
+        env_overrides_json="{}",
+        started_at="2026-10-29T00:00:00Z",
+        created_at="2026-10-29T00:00:00Z",
+        status="finished",
+        runtime_seconds=1.0,
+        rows=24,
+        columns=80,
+    )
+    record.name = None
     started = Mock(record=record)
+    saved_cmd = SavedCommand(
+        id=1,
+        base="python",
+        argv=["python", "-V"],
+        command_line="python -V",
+        cwd=str(tmp_path),
+        saved_at="2026-10-29T00:00:00Z",
+    )
 
     with (
         patch("runmux.cli.create_managed_run", return_value=started),
-        patch("runmux.cli.save_command") as save_command_mock,
+        patch("runmux.cli.save_record_command", return_value=saved_cmd) as save_record_mock,
         patch("runmux.cli.mark_saved_command_run") as mark_run_mock,
+        patch("runmux.cli.print_saved_command_confirmation"),
     ):
         result = handle_run(args)
 
     assert result == 0
-    save_command_mock.assert_called_once()
-    mark_run_mock.assert_called_once_with("python -V")
+    save_record_mock.assert_called_once_with(record)
+    mark_run_mock.assert_called_once_with("python -V", cwd=str(tmp_path))
 
 
 def test_interact_tails_from_end_for_live_tui_without_tail_lines(tmp_path: Path) -> None:

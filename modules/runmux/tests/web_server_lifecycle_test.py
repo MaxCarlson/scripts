@@ -741,3 +741,81 @@ def test_stop_server_outputs_json_when_not_running(tmp_path: Path, capsys) -> No
     out = json.loads(capsys.readouterr().out)
     assert out["status"] == "not_running"
     assert out["stopped"] is True
+
+
+def test_stop_server_timeout_preserves_descriptor_and_allows_retry(tmp_path: Path, capsys) -> None:
+    import runmux.server_lifecycle as sl_mod
+
+    desc = ServerDescriptor(
+        instance_id="test-timeout-inst",
+        version=1,
+        protocol="runmux_web_v1",
+        host="127.0.0.1",
+        port=8787,
+        state_dir=str(tmp_path),
+        pid=os.getpid(),
+        process_create_time=None,
+        started_at="2026-10-29T00:00:00Z",
+        access_code="timeout-access-code",
+        control_token="timeout-token",
+    )
+    p = descriptor_path(tmp_path, 8787)
+    write_descriptor(p, desc)
+    assert p.exists()
+
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(sl_mod, "verify_running_instance", lambda d, timeout=2.0: True)
+    monkeypatch.setattr(sl_mod, "request_instance_shutdown", lambda d, timeout=5.0: True)
+
+    # 1. Simulate process failing to stop within timeout: is_process_alive remains True
+    monkeypatch.setattr(sl_mod, "is_process_alive", lambda pid, expected_create_time=None: True)
+
+    ret = stop_server(tmp_path, port=8787, timeout=0.1, as_json=True)
+    assert ret == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "timeout"
+    assert out["stopped"] is False
+
+    # The descriptor MUST NOT have been deleted
+    assert p.exists()
+
+    # 2. Subsequent status_server still reports running and preserves access code
+    ret = status_server(tmp_path, port=8787, as_json=True)
+    assert ret == 0
+    status_out = json.loads(capsys.readouterr().out)
+    assert status_out["status"] == "running"
+    assert status_out["access_code"] == "timeout-access-code"
+
+    # 3. Simulate process now stopping on retry
+    monkeypatch.setattr(sl_mod, "is_process_alive", lambda pid, expected_create_time=None: False)
+
+    ret_retry = stop_server(tmp_path, port=8787, timeout=0.1, as_json=True)
+    assert ret_retry == 0
+    retry_out = json.loads(capsys.readouterr().out)
+    assert retry_out["status"] == "not_running"
+    assert retry_out["stopped"] is True
+
+    # After successful stop / stale detection, descriptor is cleaned up
+    assert not p.exists()
+    monkeypatch.undo()
+
+
+def test_unmanaged_listener_reported_on_run_collision(tmp_path: Path, capsys) -> None:
+    import runmux.server_lifecycle as sl_mod
+    from runmux.server_lifecycle import run_web_server
+
+    monkeypatch = pytest.MonkeyPatch()
+    # Simulate socket bind failure (port in use)
+    def fake_bind(h, p):
+        raise OSError("Address already in use")
+
+    monkeypatch.setattr(sl_mod, "bind_loopback_socket", fake_bind)
+    monkeypatch.setattr(sl_mod, "probe_unmanaged_runmux", lambda h, p: True)
+
+    ret = run_web_server(tmp_path, port=8787)
+    assert ret == 1
+    err = capsys.readouterr().err
+    assert "occupied by an unmanaged or legacy Runmux server" in err
+    assert "cannot be safely stopped automatically" in err
+
+    monkeypatch.undo()

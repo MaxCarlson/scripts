@@ -443,6 +443,20 @@ def mount_control_routes(
         )
 
 
+
+def probe_unmanaged_runmux(host: str, port: int) -> bool:
+    """Check if an unmanaged service on host:port responds with Runmux web content."""
+    try:
+        browser_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+        conn = http.client.HTTPConnection(host, port, timeout=0.8)
+        conn.request("GET", "/", headers={"Host": f"{browser_host}:{port}"})
+        resp = conn.getresponse()
+        body = resp.read(2048).decode("utf-8", errors="replace")
+        conn.close()
+        return "Runmux" in body or "runmux" in body.lower()
+    except Exception:
+        return False
+
 def find_target_descriptor(
     state_dir: Path | str,
     port: int | None = None,
@@ -551,9 +565,8 @@ def stop_server(
             break
         time.sleep(0.1)
 
-    remove_descriptor(desc_path)
-
     if stopped:
+        remove_descriptor(desc_path)
         if as_json:
             print(
                 json.dumps(
@@ -570,6 +583,9 @@ def stop_server(
             print("Managed processes remain running.")
         return 0
 
+    # Shutdown timed out: the process is still running.
+    # Preserve the descriptor so that the server remains discoverable by `runmux web`,
+    # inspectable by `runmux web -S/--status`, and retryable by `runmux web -x/--stop`.
     if as_json:
         print(
             json.dumps(
@@ -577,12 +593,16 @@ def stop_server(
                     "status": "timeout",
                     "stopped": False,
                     "pid": descriptor.pid,
-                    "warning": f"Server process {descriptor.pid} did not exit within {timeout} seconds.",
+                    "warning": (
+                        f"Server process {descriptor.pid} did not exit within {timeout} seconds; "
+                        "descriptor preserved for subsequent status inspection or retry."
+                    ),
                 }
             )
         )
     else:
         print(f"Warning: Server process {descriptor.pid} did not exit within {timeout} seconds.", file=sys.stderr)
+        print("The server descriptor was preserved so shutdown can be retried.")
         print("Managed processes remain running.")
     return 1
 
@@ -752,10 +772,19 @@ def run_web_server(
                 print("The existing server was left running.")
                 return 0
 
-        print(
-            f"runmux: web: Port {port} is already in use by an unrelated service or unresponsive process: {err}",
-            file=sys.stderr,
-        )
+        if probe_unmanaged_runmux(host, port):
+            print(
+                f"runmux: web: Port {port} is occupied by an unmanaged or legacy Runmux server "
+                "lacking a valid instance descriptor. "
+                "Because identity cannot be verified, it cannot be safely stopped automatically. "
+                "Terminate that process manually or select another port with -p/--port.",
+                file=sys.stderr,
+            )
+        else:
+            print(
+                f"runmux: web: Port {port} is already in use by an unrelated service or unresponsive process: {err}",
+                file=sys.stderr,
+            )
         return 1
 
     # Step 3: Socket bound successfully. Initialize application and descriptor.
