@@ -1,0 +1,25 @@
+{
+  "session": {
+    "session_id": "ses-fixture-16k",
+    "last_assistant_id": "msg-fixture-16k",
+    "last_assistant_created": "2026-10-29T13:00:00Z",
+    "last_assistant_is_complete": true,
+    "last_assistant_finish": "length",
+    "last_assistant_tokens": {"reasoning": 16384, "output": 0},
+    "session_info": {"model": "qwen38_23GB", "variant": "medium"}
+  },
+  "snapshot": {
+    "session_id": "ses-fixture-16k",
+    "activity": "completed",
+    "last_completed_reasoning_tokens": 16384,
+    "last_completed_output_tokens": 0,
+    "last_completed_finish_reason": "length",
+    "successful_file_edits": 0,
+    "file_writes_observed": 0,
+    "output_limits": {"output": 16384, "source": "opencode_config_providers",
+                      "verification_status": "reported"}
+  },
+  "tool_names": ["read", "grep", "read", "read", "glob", "read", "grep", "read"],
+  "history_coverage": "complete",
+  "expected_reasoning_capabilities": ["off", "on"]
+}

@@ -240,6 +240,66 @@ def test_tui_and_alert_commands_parse_existing_style_flags():
     assert alert_ack.alert_command == "acknowledge"
 
 
+def test_live_command_requires_project_session_and_supports_bounded_json():
+    from llm_monitor.cli import build_parser
+
+    args = build_parser().parse_args([
+        "live", "--url", "http://127.0.0.1:4096", "--project-directory", r"C:\pilot",
+        "--session", "ses-1", "--observe-seconds", "5", "--format", "json",
+    ])
+
+    assert (args.command, args.session, args.observe_seconds, args.format) == ("live", "ses-1", 5.0, "json")
+    assert args.show_reasoning is False
+
+
+def test_live_json_requires_a_bounded_observation_window(capsys):
+    from llm_monitor.cli import main
+
+    assert main(["live", "-p", r"C:\pilot", "-s", "ses-1", "-f", "json"]) == 2
+    assert "--observe-seconds" in capsys.readouterr().err
+
+
+def test_live_json_outputs_snapshot_without_reasoning_by_default(monkeypatch, capsys):
+    from llm_monitor import cli
+    from llm_monitor.live import SSEEvent
+
+    class FakeOpenCodeClient:
+        def __init__(self, _url, **_kwargs):
+            pass
+
+        def poll(self, _session, _directory):
+            return {"session_state": {"type": "busy"}, "last_assistant_is_complete": False}
+
+    class FakeStream:
+        connected = True
+        reconnection_gaps = 0
+        server_origin = "http://127.0.0.1:4096"
+
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def events(self, _seconds):
+            yield SSEEvent(event="__connected__")
+            yield SSEEvent(data=json.dumps({"type": "message.part.delta", "properties": {
+                "sessionID": "ses-1", "messageID": "msg-1", "partID": "prt-1",
+                "field": "reasoning", "delta": "private reasoning"}}))
+
+    monkeypatch.setattr(cli, "OpenCodeClient", FakeOpenCodeClient)
+    monkeypatch.setattr(cli, "OpenCodeSSEClient", FakeStream)
+
+    assert cli.main(["live", "-p", r"C:\pilot", "-s", "ses-1", "-t", "1", "-f", "json"]) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["activity"] == "reasoning"
+    assert output["current_reasoning_tokens"] is None
+    assert "current_reasoning_text" not in output
+    assert "private reasoning" not in json.dumps(output)
+
+    assert cli.main(["live", "-p", r"C:\pilot", "-s", "ses-1", "-t", "1", "-f", "json",
+                     "--show-reasoning"]) == 0
+    raw_opt_in = json.loads(capsys.readouterr().out)
+    assert raw_opt_in["current_reasoning_text"] == "private reasoning"
+
+
 def test_alert_rules_cli_is_offline_and_json(capsys):
     from llm_monitor.cli import main
 

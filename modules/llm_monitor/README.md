@@ -9,6 +9,7 @@ llm-monitor status [-u URL] [-d DIRECTORY] [-f text|json]
 llm-monitor sessions [-u URL] [-d DIRECTORY] [-f text|json]
 llm-monitor watch -s SESSION_ID [-i SECONDS] [-v] [-f text|json]
 llm-monitor watch --all [-i SECONDS] [-v] [-f text|json]
+llm-monitor live -p PROJECT_DIRECTORY -s SESSION_ID [-u URL] [-t SECONDS] [-f text|json]
 llm-monitor diagnose -s SESSION_ID [-u URL] [-l LM_STUDIO_URL] [--mcp-jobs JSON] [-f text|json]
 llm-monitor report -s SESSION_ID [-u URL] [-l LM_STUDIO_URL] [--mcp-jobs JSON] [-f text|json]
 llm-monitor record -s SESSION_ID [-i SECONDS] [-d DATABASE] [-f text|json]
@@ -24,6 +25,32 @@ llm-monitor alerts list|rules|test|acknowledge [options]
 ```
 
 OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. `-d/--directory` remains the OpenCode project-directory option on existing live commands; database commands use `-d/--database`. The historical `report` uses `-D/--database` to preserve that existing directory flag. Optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations.
+
+## Live reasoning diagnostics
+
+`live` is an opt-in, read-only OpenCode SSE observer for one exact project and session. It reconciles the session summary and bounded tool history before and after the event window. Text output runs until interrupted unless `--observe-seconds` is supplied. JSON always requires a bounded window:
+
+```powershell
+llm-monitor live --url http://127.0.0.1:4096 `
+  --project-directory 'C:\path\to\pilot' --session ses_example `
+  --observe-seconds 5 --format json
+
+# Continuous compact terminal display
+llm-monitor live -p 'C:\path\to\pilot' -s ses_example
+
+# Reasoning text is sensitive and hidden unless explicitly requested
+llm-monitor live -p 'C:\path\to\pilot' -s ses_example --show-reasoning
+```
+
+The stream capability is one of `streaming`, `completion_only`, `activity_only`, or `unavailable`. A healthy event connection with no incremental content is not called a stall. Reconnection gaps and malformed/oversized frames mark coverage incomplete. Reasoning and ordinary output character counts are separate from exact token usage; `current_reasoning_tokens` stays `null`. The observer never persists reasoning and does not cancel or restart workers.
+
+The JSON `reasoning_configuration` object keeps reported settings separate from independently captured outbound parameters. `--requested-variant` is an operator-reported expectation. OpenCode's `session_recorded_variant`, model alias options, limits, completed-message token statistics, and optional LM Studio loaded-model capabilities each identify their source and verification status. A variant recorded by OpenCode does not prove the same parameter reached LM Studio. `--lmstudio-url` opts into a read-only model inventory lookup; it does not issue an inference request.
+
+An external experimental harness may supply sanitized outbound request evidence with `--request-evidence evidence.json`. Evidence uses schema version 1 and records `session_id`, `message_id`, exact `message_created_at`, `request_observed_at`, `provider`, `model`, and an allowlisted `parameters` object. LLM Monitor accepts only an exact session/message/creation-time match and only `reasoning`, `reasoning_effort`, `max_tokens`, `max_output_tokens`, `temperature`, `top_p`, and `top_k`. Prompts, credentials, and full request bodies are not accepted or persisted. This is a correlation interface; the passive monitor does not intercept provider traffic.
+
+Advisory diagnostics include `length_finish`, reasoning allowance exhaustion, no successful file edits when stored history coverage is complete, long read-only discovery sequences, repeated tool calls, quiet periods during extended inference, and differences from reported limits. These observations do not establish a model defect. See the [OpenCode 1.19.3 compatibility report](docs/validation/live-reasoning-opencode-1.19.3-20261029.md).
+
+For a future Codex coordinator, `opencode_worker` can expose the bounded `live --observe-seconds N --format json` result for the already selected project/session. Keep that bridge read-only, omit reasoning text by default, preserve the snapshot's source/status fields, and do not treat missing events as a reason to intervene. No MCP contract changes are part of this release.
 
 ## Persistent collection
 

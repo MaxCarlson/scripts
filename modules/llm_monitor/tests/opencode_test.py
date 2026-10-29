@@ -1,7 +1,7 @@
 import json
 from pathlib import Path
 
-from llm_monitor.opencode import OpenCodeClient, _normalized_state, summarize_session
+from llm_monitor.opencode import OpenCodeClient, _normalized_state, _safe_session_info, summarize_session
 from llm_monitor.events import events_from_messages
 
 
@@ -14,8 +14,9 @@ def test_summarize_session_matches_poll_fields_and_deduplicates_compaction_parts
                 "role": "assistant",
                 "agent": "local-worker",
                 "modelID": "qwen38_23GB",
+                "variant": "medium",
                 "finish": "stop",
-                "time": {"completed": 1730000000},
+                "time": {"created": 1729999990, "completed": 1730000000},
                 "tokens": {"input": 100, "output": 20, "reasoning": 5, "total": 120},
             },
             "parts": [
@@ -36,6 +37,8 @@ def test_summarize_session_matches_poll_fields_and_deduplicates_compaction_parts
     assert summary["compaction_count"] == 1
     assert summary["pending_permissions"] == summary["pending_questions"] == 0
     assert summary["last_assistant_finish"] == "stop"
+    assert summary["last_assistant_variant"] == "medium"
+    assert summary["last_assistant_created"] is not None
     assert summary["last_assistant_tokens"]["reasoning"] == 5
     assert "private prompt" not in str(summary)
 
@@ -47,6 +50,39 @@ def test_client_reports_unavailable_endpoint_without_raising():
 
     assert result.data is None
     assert result.error
+
+
+def test_client_supports_optional_basic_auth_and_project_directory(monkeypatch):
+    import base64
+    import llm_monitor.opencode as opencode_module
+
+    captured = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return b'{"version":"1.19.3"}'
+
+    def fake_urlopen(request, timeout):
+        captured["auth"] = request.get_header("Authorization")
+        captured["directory"] = request.get_header("X-opencode-directory")
+        return Response()
+
+    monkeypatch.setattr(opencode_module, "urlopen", fake_urlopen)
+    client = OpenCodeClient("http://opencode", username="opencode", password="secret")
+
+    result = client.get_json("/global/health", r"C:\pilot")
+
+    assert result.data == {"version": "1.19.3"}
+    assert captured["auth"] == "Basic " + base64.b64encode(b"opencode:secret").decode()
+    assert captured["directory"] == r"C:\pilot"
 
 
 def test_client_bounds_message_fetch_and_retains_observed_counts(monkeypatch):
@@ -99,3 +135,23 @@ def test_normalized_state_detects_compaction_and_keeps_permission_blocker_explic
 
     assert _normalized_state({"type": "busy"}, None, [], compactions, [], []) == "compacting"
     assert _normalized_state({"type": "idle"}, None, [], [], [{"sessionID": "ses-1"}], []) == "waiting_permission"
+
+
+def test_safe_session_info_preserves_variant_and_allowlisted_model_options():
+    info = _safe_session_info({"id": "ses-1", "variant": "medium", "model": {
+        "id": "qwen38_23GB", "providerID": "lmstudio", "options": {
+            "maxTokens": 8192, "reasoning_effort": "medium", "apiKey": "secret-value"}}})
+
+    assert info["variant"] == "medium"
+    assert info["model_options"] == {"maxTokens": 8192, "reasoning_effort": "medium"}
+    assert "secret-value" not in str(info)
+
+
+def test_completed_message_reconciliation_sets_completed_activity_when_status_is_absent():
+    from llm_monitor.live import LiveSessionState
+
+    state = LiveSessionState("ses-1", r"C:\pilot")
+    state.reconcile({"session_state": None, "last_assistant_finish": "length",
+                     "last_assistant_is_complete": True, "last_assistant_tokens": {"reasoning": 8192}}, now=1.0)
+
+    assert state.snapshot(now=1.0)["activity"] == "completed"

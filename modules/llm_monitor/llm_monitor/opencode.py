@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import base64
 import json
 import time
 from typing import Any
@@ -49,18 +50,23 @@ class OpenCodeClient:
         *,
         retries: int = 2,
         max_events: int = 5000,
+        username: str | None = None,
+        password: str | None = None,
     ):
         self.base_url = base_url.rstrip("/")
         self.timeout = timeout
         self.message_limit = max(1, message_limit)
         self.retries = max(0, retries)
         self.max_events = max(10, max_events)
+        self.username = username or "opencode"
+        self.password = password
         self._message_api: str | None = None
         self._events: dict[str, OrderedDict[str, NormalizedEvent]] = {}
         self._message_roles: dict[str, OrderedDict[str, str | None]] = {}
         self._compaction_parts: dict[str, OrderedDict[str, int]] = {}
         self._coverage: dict[str, HistoryCoverage] = {}
         self._session_info: dict[str, dict[str, Any]] = {}
+        self._last_assistant_info: dict[str, dict[str, Any]] = {}
         self._last_status: dict[str, Any] = {}
         self._last_errors: dict[str, dict[str, str]] = {}
         self._last_message_observed: dict[str, str] = {}
@@ -71,6 +77,11 @@ class OpenCodeClient:
         headers = {"Accept": "application/json"}
         if directory:
             headers["x-opencode-directory"] = directory
+            separator = "&" if "?" in path else "?"
+            path = f"{path}{separator}{urlencode({'directory': directory})}"
+        if self.password:
+            credentials = base64.b64encode(f"{self.username}:{self.password}".encode()).decode()
+            headers["Authorization"] = f"Basic {credentials}"
         for attempt in range(self.retries + 1):
             try:
                 request = Request(self.base_url + path, headers=headers, method="GET")
@@ -239,6 +250,12 @@ class OpenCodeClient:
         for index, message in enumerate(messages):
             info = _info(message)
             message_id = _string(info.get("id")) or f"unidentified-{index}"
+            if info.get("role") == "assistant":
+                self._last_assistant_info[session_id] = {
+                    "id": _string(info.get("id")),
+                    "variant": _string(info.get("variant")),
+                    "created": (info.get("time") or {}).get("created") if isinstance(info.get("time"), dict) else None,
+                }
             parts = message.get("parts") if isinstance(message.get("parts"), list) else []
             raw_count = sum(1 for part in parts if isinstance(part, dict) and part.get("type") == "compaction")
             compactions[message_id] = raw_count
@@ -303,6 +320,9 @@ class OpenCodeClient:
             "last_assistant_id": last.provider_id if last else None,
             "last_assistant_agent": last.agent if last else None,
             "last_assistant_model": last.model if last else None,
+            "last_assistant_variant": self._last_assistant_info.get(session_id, {}).get("variant"),
+            "last_assistant_created": last.timestamp if last and last.timestamp else
+            self._last_assistant_info.get(session_id, {}).get("created"),
             "last_assistant_finish": last.finish_reason if last else None,
             "last_assistant_completed": last.provider_completed_at if last and last.outcome == "completed" else None,
             "last_assistant_tokens": last.tokens if last else None,
@@ -337,6 +357,13 @@ def _page_coverage(messages: list[dict[str, Any]], limit: int, source: str) -> H
 def _safe_session_info(session: dict[str, Any]) -> dict[str, Any]:
     model = session.get("model") if isinstance(session.get("model"), dict) else {}
     time_info = session.get("time") if isinstance(session.get("time"), dict) else {}
+    model_options = model.get("options") if isinstance(model.get("options"), dict) else {}
+    allowed_options = {"reasoning", "reasoning_effort", "maxTokens", "max_tokens", "maxOutputTokens",
+                       "max_output_tokens", "temperature", "top_p", "top_k", "context_length"}
+    safe_model_options = {
+        key: value for key, value in model_options.items()
+        if key in allowed_options and isinstance(value, (str, int, float, bool))
+    }
     return {
         "id": _string(session.get("id")),
         "title": _string(session.get("title")),
@@ -344,6 +371,8 @@ def _safe_session_info(session: dict[str, Any]) -> dict[str, Any]:
         "agent": _string(session.get("agent")),
         "model": _string(model.get("id")),
         "provider": _string(model.get("providerID")),
+        "variant": _string(session.get("variant")),
+        "model_options": safe_model_options,
         "created": time_info.get("created") if isinstance(time_info.get("created"), (int, float)) else None,
         "updated": time_info.get("updated") if isinstance(time_info.get("updated"), (int, float)) else None,
         "summary_files": (
@@ -437,6 +466,9 @@ def summarize_session(
         "last_assistant_agent": last_info.get("agent"),
         "last_assistant_model": last_info.get("modelID") or last_info.get("model", {}).get("modelID")
         if isinstance(last_info.get("model"), dict) else last_info.get("modelID"),
+        "last_assistant_variant": _string(last_info.get("variant")),
+        "last_assistant_created": last_info.get("time", {}).get("created")
+        if isinstance(last_info.get("time"), dict) else None,
         "last_assistant_finish": last_info.get("finish"),
         "last_assistant_completed": last_info.get("time", {}).get("completed")
         if isinstance(last_info.get("time"), dict) else None,

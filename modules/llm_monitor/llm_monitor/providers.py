@@ -42,6 +42,46 @@ def extract_opencode_model_limits(
     return matches[0] if len(matches) == 1 else None
 
 
+def extract_opencode_model_configuration(
+    payload: Any, model_id: str, *, provider_id: str | None = None
+) -> dict[str, Any] | None:
+    """Return exact-model option/limit evidence after dropping all unapproved fields."""
+    root = payload.get("data", payload) if isinstance(payload, dict) else None
+    providers = root.get("providers") if isinstance(root, dict) else None
+    if not isinstance(providers, list):
+        return None
+    matches = []
+    safe_options = {"reasoning", "reasoning_effort", "maxTokens", "max_tokens", "maxOutputTokens",
+                    "max_output_tokens", "temperature", "top_p", "top_k", "context_length"}
+    for provider in providers:
+        if not isinstance(provider, dict) or not isinstance(provider.get("models"), dict):
+            continue
+        current_provider = provider.get("id")
+        if provider_id and current_provider != provider_id:
+            continue
+        model = provider["models"].get(model_id)
+        if not isinstance(model, dict):
+            continue
+        raw_limit = model.get("limit") if isinstance(model.get("limit"), dict) else {}
+        limit = {key: _positive(raw_limit.get(key)) for key in ("context", "output")}
+        limit = {key: value for key, value in limit.items() if value is not None}
+        raw_options = model.get("options") if isinstance(model.get("options"), dict) else {}
+        options = {key: value for key, value in raw_options.items()
+                   if key in safe_options and isinstance(value, (str, int, float, bool))}
+        raw_variants = model.get("variants") if isinstance(model.get("variants"), dict) else {}
+        variants = {
+            key: {option: value for option, value in values.items()
+                  if option in safe_options and isinstance(value, (str, int, float, bool))}
+            for key, values in raw_variants.items()
+            if isinstance(key, str) and isinstance(values, dict)
+        }
+        matches.append({"provider_id": current_provider, "model_id": model_id,
+                        "limit": limit, "options": options, "variants": variants})
+    if provider_id:
+        return matches[0] if matches else None
+    return matches[0] if len(matches) == 1 else None
+
+
 class LMStudioClient:
     """Read loaded model metadata; never calls inference or load/unload endpoints."""
 
@@ -92,6 +132,12 @@ def _normalize_v1_model(model: dict[str, Any]) -> dict[str, Any]:
             contexts.append(context)
     unique_contexts = sorted(set(contexts))
     identifier = model.get("key") or model.get("id") or model.get("model_key")
+    reasoning_choices = model.get("reasoning_choices")
+    if not isinstance(reasoning_choices, list):
+        reasoning = model.get("reasoning")
+        reasoning_choices = reasoning.get("choices") if isinstance(reasoning, dict) else None
+    safe_reasoning_choices = sorted({item for item in reasoning_choices if item in {"off", "on"}}) \
+        if isinstance(reasoning_choices, list) else []
     return {
         "id": identifier if isinstance(identifier, str) else None,
         "state": "loaded" if loaded_instances else "not-loaded",
@@ -100,6 +146,7 @@ def _normalize_v1_model(model: dict[str, Any]) -> dict[str, Any]:
         "loaded_instance_count": len(loaded_instances),
         "max_context_length": _positive(model.get("max_context_length")),
         "context_source": "loaded_instance_config" if len(unique_contexts) == 1 else "unavailable",
+        "reasoning_capabilities": safe_reasoning_choices,
         "api_version": "v1",
     }
 

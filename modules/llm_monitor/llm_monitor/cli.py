@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sqlite3
 import sys
 import time
@@ -16,6 +17,8 @@ from .analysis import analyze_events
 from .alerts import AlertEngine, DEFAULT_RULES
 from .diagnostics import diagnose_events
 from .history_analysis import analyze_stored_session, compare_stored_sessions
+from .live import (MAX_OBSERVE_SECONDS, MAX_DISPLAY_CHARS, OpenCodeSSEClient, load_request_evidence,
+                   observe_session)
 from .mcp import correlate_job, load_job_snapshot
 from .opencode import HistoryCoverage, OpenCodeClient
 from .observability import (
@@ -43,6 +46,19 @@ def build_parser() -> argparse.ArgumentParser:
     watch.add_argument("-s", "--session")
     watch.add_argument("-a", "--all", action="store_true")
     watch.add_argument("-i", "--interval", type=float, default=2.0)
+    live = sub.add_parser("live", help="Observe one OpenCode worker session over SSE")
+    live.add_argument("-u", "--url", default="http://127.0.0.1:4096", help="OpenCode server URL")
+    live.add_argument("-p", "--project-directory", required=True, help="Exact OpenCode project directory")
+    live.add_argument("-s", "--session", required=True, help="OpenCode session ID to observe")
+    live.add_argument("-t", "--observe-seconds", type=float,
+                      help=f"Bound observation to 0-{MAX_OBSERVE_SECONDS:g} seconds; required for JSON output")
+    live.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    live.add_argument("-r", "--show-reasoning", action="store_true",
+                      help="Display bounded reasoning text (sensitive content; hidden by default)")
+    live.add_argument("-V", "--requested-variant", help="Operator-reported requested variant for comparison")
+    live.add_argument("-l", "--lmstudio-url", help="Optional read-only LM Studio model metadata endpoint")
+    live.add_argument("-e", "--request-evidence", type=Path,
+                      help="Optional sanitized external request-parameter evidence JSON")
     record = sub.add_parser("record", help="Persist read-only monitoring observations")
     selector = record.add_mutually_exclusive_group(required=True)
     selector.add_argument("-s", "--session")
@@ -171,6 +187,8 @@ def main(argv: list[str] | None = None) -> int:
             return _alerts_command(args)
         if args.command == "report" and args.history:
             return _historical_report(args)
+        if args.command == "live":
+            return _live(args)
         client = OpenCodeClient(args.url)
         if args.command == "status":
             return _status(client, args)
@@ -186,6 +204,71 @@ def main(argv: list[str] | None = None) -> int:
     except (TelemetryStoreError, sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         print(f"llm-monitor: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
+
+
+def _live(args: argparse.Namespace) -> int:
+    if args.observe_seconds is not None and not 0 < args.observe_seconds <= MAX_OBSERVE_SECONDS:
+        print(f"--observe-seconds must be greater than zero and at most {MAX_OBSERVE_SECONDS:g}", file=sys.stderr)
+        return 2
+    if args.format == "json" and args.observe_seconds is None:
+        print("JSON live output requires --observe-seconds so the observation is bounded", file=sys.stderr)
+        return 2
+    username = os.environ.get("OPENCODE_SERVER_USERNAME", "opencode")
+    password = os.environ.get("OPENCODE_SERVER_PASSWORD")
+    client = OpenCodeClient(args.url, username=username, password=password)
+    stream = OpenCodeSSEClient(args.url, args.project_directory, username=username, password=password)
+    try:
+        request_evidence = load_request_evidence(args.request_evidence) if args.request_evidence else None
+        lmstudio_models = LMStudioClient(args.lmstudio_url).list_models() if args.lmstudio_url else None
+    except ValueError:
+        print("request evidence is invalid or exceeds its size limit", file=sys.stderr)
+        return 2
+    except RuntimeError:
+        lmstudio_models = None
+    previous_length = 0
+
+    def render(snapshot: dict[str, Any]) -> None:
+        nonlocal previous_length
+        line = _format_live_snapshot(snapshot, show_reasoning=args.show_reasoning)
+        line = line[:MAX_DISPLAY_CHARS]
+        sys.stdout.write("\r" + line + " " * max(0, previous_length - len(line)))
+        sys.stdout.flush()
+        previous_length = len(line)
+
+    try:
+        snapshot = observe_session(
+            client,
+            stream,
+            session_id=args.session,
+            project_directory=args.project_directory,
+            observe_seconds=args.observe_seconds,
+            include_reasoning=args.show_reasoning,
+            requested_variant=args.requested_variant,
+            lmstudio_models=lmstudio_models,
+            request_evidence=request_evidence,
+            on_update=render if args.format == "text" else None,
+        )
+    except KeyboardInterrupt:
+        sys.stdout.write("\n")
+        return 130
+    if args.format == "json":
+        _emit(snapshot, "json")
+    else:
+        render(snapshot)
+        sys.stdout.write("\n")
+    return 0
+
+
+def _format_live_snapshot(snapshot: dict[str, Any], *, show_reasoning: bool = False) -> str:
+    elapsed = snapshot.get("inference_elapsed_seconds")
+    elapsed_text = "unknown" if elapsed is None else f"{elapsed:.1f}s"
+    line = (f"session={snapshot.get('session_id')} activity={snapshot.get('activity')} "
+            f"stream={snapshot.get('stream_capability')} elapsed={elapsed_text} "
+            f"tools={snapshot.get('tool_calls')} last_tool={snapshot.get('last_tool') or '-'} "
+            f"writes={snapshot.get('file_writes_observed')} warnings={','.join(snapshot.get('warnings') or []) or '-'}")
+    if show_reasoning and snapshot.get("current_reasoning_text"):
+        line += " reasoning=" + snapshot["current_reasoning_text"]
+    return line
 
 
 def _status(client: OpenCodeClient, args: argparse.Namespace) -> int:
