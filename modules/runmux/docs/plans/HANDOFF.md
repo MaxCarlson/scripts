@@ -1,6 +1,6 @@
 # Runmux Plans Index Handoff
 
-Last updated: 2026-10-24
+Last updated: 2026-10-29
 
 This folder contains dated, self-contained implementation plans for runmux.
 
@@ -16,6 +16,10 @@ Folder naming:
 ```text
 YYYYMMDD-HHMM_<descriptive-plan-name>/
 ```
+
+The active Runmux LLM Monitor host integration plan is:
+
+- `20261029-0135_runmux-llm-monitor-host-integration/`: Integration of LLM Monitor 0.5.0 read-only functionality into Runmux Web as an optional, authenticated monitoring workspace. Read `00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
 
 The latest active Runmux Web UI phase plan is:
 

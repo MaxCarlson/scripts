@@ -1,5 +1,29 @@
 # Runmux Current Handoff
 
+## Runmux Web UI — LLM Monitor Host Integration (Stages 0–3)
+
+The host-side LLM Monitor integration (Stages 0–2) is fully implemented and verified on branch `runmux-llm-monitor-host-integration-20261029`.
+It provides:
+- Optional, lazily imported host integration factory (`llm_monitor_integration.py`) preserving Python 3.10 compatibility for ordinary Runmux.
+- Explicit server-side opt-in via `RUNMUX_LLM_MONITOR_ENABLED` (disabled by default).
+- Safe provider endpoint validation rejecting userinfo, query, or fragment inputs.
+- Read-only database access verifying the database is an existing file before opening; never creates a database or initializes recording.
+- Model metadata caching (300s TTL) matching exact loaded model IDs without fabricating capacity limits.
+- Point-in-time hardware metric sampling via `resource_metrics.gpu`.
+- Authenticated read-only REST endpoints under `/api/llm-monitor/v1/`:
+  - `GET /status`: capability availability without provider I/O.
+  - `GET /snapshot`: cached system and session snapshot envelope.
+  - `GET /sessions/detail`: snapshot-seeded detail lookup by `provider_instance_id` and `session_id`.
+  - `GET /sessions/timeline`: bounded event page with opaque session-bound cursor.
+  - `GET /alerts`: persisted alert queries filterable by status (`active`, `acknowledged`, `resolved`).
+  - `GET /hardware`: point-in-time hardware projection.
+- Invariants strictly preserved: No inference, recording, mutation, or process lifecycle actions are triggered.
+- Stage 3 coordination: Confirmed Phase 6C History Explorer (`a03b4fa6`) remains unmerged and awaiting audit; `web_static/` was kept untouched to avoid collisions. Stages 1 and 2 are delivered independently with 17 passing tests, and the frontend specification is documented in `FRONTEND_INTEGRATION_SPEC.md`.
+- Verified with 17 unit and API tests (`llm_monitor_integration_test.py`, `web_llm_monitor_api_test.py`) and 15 existing web tests (`web_test.py`).
+- See `plans/20261029-0135_runmux-llm-monitor-host-integration/00_implementation-plan.md`, `STATUS.md`, and `checklist.md`.
+
+Last updated: 2026-10-29
+
 ## Runmux Web UI — Phase 4A integrated (Backend and Frontend)
 
 Phase 4A (Lifecycle Controls Backend and Frontend) is fully integrated and merged into `main` from `codex/runmux-lifecycle-backend-20261024` and `codex/runmux-web-lifecycle-frontend-20261024` with no conflicts.

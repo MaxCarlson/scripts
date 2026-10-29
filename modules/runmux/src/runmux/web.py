@@ -30,6 +30,10 @@ from runmux.lifecycle import (
 from runmux.lifecycle import (
     RunNotFoundError as LifecycleRunNotFoundError,
 )
+from runmux.llm_monitor_integration import (
+    LLMMonitorIntegration,
+    get_monitor_integration,
+)
 from runmux.platform_paths import get_state_dir
 from runmux.runner import RunnerError, create_managed_run
 from runmux.store import RunNotFoundError, RunStore
@@ -107,13 +111,16 @@ def create_runmux_web_app(
     allowed_hosts: tuple[str, ...] = LOOPBACK_HOSTS,
     enable_telemetry_history: bool = True,
     telemetry_worker: TelemetryHistoryWorker | None = None,
+    default_cwd: Path | None = None,
+    llm_monitor_integration: LLMMonitorIntegration | None = None,
 ) -> FastAPI:
     """Create an authenticated browser view and process-launch API for Runmux."""
 
     resolved_state_dir = state_dir or get_state_dir()
     backend = ReadOnlyRunmux(resolved_state_dir)
     lifecycle = LifecycleManager(resolved_state_dir)
-    default_cwd = Path.cwd().resolve()
+    effective_default_cwd = default_cwd or Path.cwd().resolve()
+    monitor = llm_monitor_integration if llm_monitor_integration is not None else get_monitor_integration()
     api = APIRouter(prefix="/api")
 
     @api.get("/runs")
@@ -197,7 +204,7 @@ def create_runmux_web_app(
 
     @api.get("/launch-defaults")
     def launch_defaults() -> dict[str, str]:
-        return {"cwd": str(default_cwd)}
+        return {"cwd": str(effective_default_cwd)}
 
     @api.get("/capabilities")
     def get_capabilities() -> dict[str, Any]:
@@ -229,7 +236,7 @@ def create_runmux_web_app(
                 detail="Program, arguments, name, and directory cannot contain NUL characters.",
             )
         try:
-            cwd = Path(cwd_text).expanduser().resolve() if cwd_text else default_cwd
+            cwd = Path(cwd_text).expanduser().resolve() if cwd_text else effective_default_cwd
         except (OSError, RuntimeError, ValueError) as error:
             raise HTTPException(status_code=400, detail=f"Working directory is invalid: {error}") from error
         if not cwd.exists() or not cwd.is_dir():
@@ -512,6 +519,58 @@ def create_runmux_web_app(
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @api.get("/llm-monitor/v1/status")
+    async def monitor_status() -> dict[str, Any]:
+        return monitor.status()
+
+    @api.get("/llm-monitor/v1/snapshot")
+    async def monitor_snapshot(force_refresh: bool = False) -> dict[str, Any]:
+        return await run_in_threadpool(monitor.snapshot, force_refresh=force_refresh)
+
+    @api.get("/llm-monitor/v1/sessions/detail")
+    async def monitor_session_detail(
+        provider_instance_id: str = Query(..., min_length=1, max_length=2048),
+        session_id: str = Query(..., min_length=1, max_length=512),
+    ) -> dict[str, Any]:
+        detail = await run_in_threadpool(monitor.session_detail, provider_instance_id, session_id)
+        if detail is None:
+            raise HTTPException(status_code=404, detail="LLM session not found")
+        return {"schema_version": 1, "availability": "available", "detail": detail}
+
+    @api.get("/llm-monitor/v1/sessions/timeline")
+    async def monitor_session_timeline(
+        provider_instance_id: str = Query(..., min_length=1, max_length=2048),
+        session_id: str = Query(..., min_length=1, max_length=512),
+        limit: int = Query(100, ge=1, le=500),
+        cursor: str | None = Query(None, max_length=1024),
+    ) -> dict[str, Any]:
+        try:
+            return await run_in_threadpool(
+                monitor.timeline,
+                provider_instance_id,
+                session_id,
+                limit=limit,
+                cursor=cursor,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Invalid timeline request parameters") from error
+
+    @api.get("/llm-monitor/v1/alerts")
+    async def monitor_alerts(
+        status: str | None = Query(None),
+        limit: int = Query(100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        if status is not None and status not in {"active", "acknowledged", "resolved"}:
+            raise HTTPException(status_code=400, detail="Invalid alerts status parameter")
+        try:
+            return await run_in_threadpool(monitor.alerts, status=status, limit=limit)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="Invalid alerts request parameters") from error
+
+    @api.get("/llm-monitor/v1/hardware")
+    async def monitor_hardware() -> dict[str, Any]:
+        return await run_in_threadpool(monitor.hardware)
 
     @api.websocket("/runs/{run_id}/terminal")
     async def run_terminal(websocket: WebSocket, run_id: str) -> None:
