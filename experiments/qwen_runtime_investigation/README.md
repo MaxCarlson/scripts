@@ -2,6 +2,10 @@
 
 This directory holds request-capture tooling, staged experiment settings, and their evidence. Reusable tasks and independent verifiers live in `modules/agent_benchmark/agent_benchmark/tasks/` and use the normal `agent-bench` trial lifecycle, S0/S1 snapshots, scope audit, hidden verifier, scoring, durable state, and benchmark_core reports.
 
+## Latest checkpoint
+
+The RAM unload/reload measurements, controlled B1 analogue comparison, and completed T5 repeats are summarized in [`evidence/ram-b1-t5-checkpoint.md`](evidence/ram-b1-t5-checkpoint.md). The B1 default analogue reproduced reasoning-only `finish=length`; explicit `none` reached edits but failed one lifecycle assertion. In the 8K T5 repeats, both conditions had a scored pass and a scored failure; `none` was faster and reported zero reasoning, but is not yet a general reliability fix. The report preserves the distinction between the historical B1 failure and its synthetic analogue.
+
 ## Offline request forwarding
 
 Run from the isolated investigation worktree:

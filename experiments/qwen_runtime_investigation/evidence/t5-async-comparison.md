@@ -30,3 +30,15 @@ Trial-local configs recorded the output ceilings and reasoning modes. The scalar
 ## Decision
 
 Keep `reasoning_effort=none`, context 98,304, and output 8,192 as the leading Qwen screening candidate. Do not yet call it reliable: one T5 `none` success is still one observation. A future paired 16,384 experiment should wait until the benchmark's RAM preflight clears naturally. For the next engineering step, repeat the 8,192 `none` async condition only after the host safety guard permits it; then target a reproducible no-edit fixture matching the historical combined lifecycle/polling workload. Defer alternative models and automatic prompt rewriting. The observed five-read delay under default justifies evaluating a bounded reconnaissance/early-edit workflow if `none` is unavailable or the combined regression still stalls, but this comparison did not change task instructions and is not a controlled workflow intervention.
+
+## Fresh repeats after RAM unload/reload
+
+The later repeats, including per-attempt input/reasoning/output totals, finish
+sequences, first successful write latency, scope status, RAM observations, and
+the B1 analogue, are recorded in [`ram-b1-t5-checkpoint.md`](ram-b1-t5-checkpoint.md).
+In brief: default produced one new no-edit 8K `finish=length` and one code-pass
+that was correctly left unscored after a malformed write target; its earlier
+baseline passed. `none` produced one incorrect async contract and one pass; its
+earlier baseline also passed. Among scored attempts, default was 1/2 and `none`
+was 2/3. The default unscored attempt stays outside the denominator. Neither
+condition is established as reliable.

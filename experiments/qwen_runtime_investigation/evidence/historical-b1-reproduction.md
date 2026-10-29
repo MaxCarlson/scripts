@@ -75,7 +75,23 @@ Then run one matched omitted/default versus `none` comparison on this B1 analogu
 at output 16,384. Only after that comparison should a genuinely harder
 multi-file task be screened. Record failures and infrastructure blocks as-is.
 
-No completed Agent Benchmark comparison trial has produced `finish=length` so
-far. The preserved historical B1 attempt did; the current controlled comparison
-has not yet run. Keep per-inference usage and finish reason separate from session
-token totals in all reports.
+No completed Agent Benchmark comparison trial had produced `finish=length` at
+the time this section was written. The preserved historical B1 attempt did;
+keep per-inference usage separate from session totals.
+
+## Subsequent controlled analogue results
+
+The historical claim above remains unchanged: its original prompt and
+dispatch-time permissions are missing, so it cannot be exactly replayed. The
+synthetic fixture has since been run under omitted/default reasoning and
+explicit `reasoning_effort=none`; results and RAM measurements are in
+[`ram-b1-t5-checkpoint.md`](ram-b1-t5-checkpoint.md).
+
+The default analogue reproduced the no-edit exhaustion: four read-only
+`tool-calls` inferences followed by a fifth inference ending `length` at 16,384
+reasoning tokens and zero ordinary output. The `none` analogue used zero
+reasoning, made edits, and finished normally, but the independent verifier
+found that it failed to resume polling immediately after an in-flight response
+when the page became visible. This is an incorrect implementation of an
+explicit fixture requirement, not an infrastructure failure. The original
+verdict is preserved; no repair or rescore has been applied.
