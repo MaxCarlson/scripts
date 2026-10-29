@@ -110,3 +110,45 @@ def test_web_cli_dispatches_to_run_web_server(tmp_path: Path, monkeypatch) -> No
     args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "-p", "8900", "--no-telemetry-history"])
     assert handle_web(args) == 0
     assert run_called == [(tmp_path, "127.0.0.1", 8900, True)]
+
+
+def test_web_json_flag_parsed() -> None:
+    args_json = build_parser().parse_args(["web", "--status", "-j"])
+    assert args_json.status is True
+    assert args_json.json is True
+
+    args_json_long = build_parser().parse_args(["web", "--stop", "--json"])
+    assert args_json_long.stop is True
+    assert args_json_long.json is True
+
+
+def test_web_cli_dispatches_status_with_json(tmp_path: Path, monkeypatch) -> None:
+    import runmux.server_lifecycle as lifecycle_module
+
+    status_called = []
+
+    def fake_status(state_dir, port=None, host="127.0.0.1", as_json=False):
+        status_called.append((state_dir, port, host, as_json))
+        return 0
+
+    monkeypatch.setattr(lifecycle_module, "status_server", fake_status)
+
+    args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "--status", "--json"])
+    assert handle_web(args) == 0
+    assert status_called == [(tmp_path, None, "127.0.0.1", True)]
+
+
+def test_web_cli_dispatches_stop_with_json(tmp_path: Path, monkeypatch) -> None:
+    import runmux.server_lifecycle as lifecycle_module
+
+    stop_called = []
+
+    def fake_stop(state_dir, port=None, host="127.0.0.1", as_json=False):
+        stop_called.append((state_dir, port, host, as_json))
+        return 0
+
+    monkeypatch.setattr(lifecycle_module, "stop_server", fake_stop)
+
+    args = build_parser().parse_args(["web", "--state-dir", str(tmp_path), "--stop", "-j"])
+    assert handle_web(args) == 0
+    assert stop_called == [(tmp_path, None, "127.0.0.1", True)]

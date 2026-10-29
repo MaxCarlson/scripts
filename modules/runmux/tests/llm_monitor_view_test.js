@@ -468,6 +468,7 @@ async function runTests() {
   }
 
   console.log("\nALL 6 llm_monitor_view_test.js TEST SUITES PASSED!");
+  process.exit(0);
 }
 
 runTests().catch((err) => {

@@ -682,3 +682,62 @@ def test_managed_processes_remain_running_when_web_stops(tmp_path: Path, capsys)
                 server_proc.wait()
     finally:
         kill_run(store, run_id=run_id, force=True)
+
+
+def test_status_server_outputs_json(tmp_path: Path, capsys) -> None:
+    import json
+    import os
+
+    from runmux.server_lifecycle import ServerDescriptor, descriptor_path, status_server, write_descriptor
+
+    # When not running
+    ret = status_server(tmp_path, port=8787, as_json=True)
+    assert ret == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "not_running"
+    assert out["running"] is False
+
+    # When descriptor exists with running PID
+    desc = ServerDescriptor(
+        instance_id="test-inst",
+        version=1,
+        protocol="runmux_web_v1",
+        host="127.0.0.1",
+        port=8787,
+        state_dir=str(tmp_path),
+        pid=os.getpid(),
+        process_create_time=None,
+        started_at="2026-10-29T00:00:00Z",
+        access_code="secret-code-123",
+        control_token="ctrl-token",
+    )
+    p = descriptor_path(tmp_path, 8787)
+    write_descriptor(p, desc)
+
+    # Mock verify_running_instance to True
+    import runmux.server_lifecycle as sl_mod
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(sl_mod, "verify_running_instance", lambda d, timeout=2.0: True)
+    try:
+        ret = status_server(tmp_path, port=8787, as_json=True)
+        assert ret == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["status"] == "running"
+        assert out["running"] is True
+        assert out["access_code"] == "secret-code-123"
+        assert out["port"] == 8787
+        assert out["pid"] == os.getpid()
+    finally:
+        monkeypatch.undo()
+
+
+def test_stop_server_outputs_json_when_not_running(tmp_path: Path, capsys) -> None:
+    import json
+
+    from runmux.server_lifecycle import stop_server
+
+    ret = stop_server(tmp_path, port=8787, as_json=True)
+    assert ret == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"] == "not_running"
+    assert out["stopped"] is True

@@ -476,47 +476,71 @@ def stop_server(
     port: int | None = None,
     host: str = "127.0.0.1",
     timeout: float = 5.0,
+    as_json: bool = False,
 ) -> int:
     """Stop the running Runmux Web server gracefully."""
     resolved_state_dir = Path(state_dir).resolve()
     descriptor, error_msg = find_target_descriptor(resolved_state_dir, port, host)
     if error_msg:
-        print(f"runmux: web: {error_msg}", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"status": "error", "error": error_msg}))
+        else:
+            print(f"runmux: web: {error_msg}", file=sys.stderr)
         return 1
 
     if descriptor is None:
-        print("Runmux Web UI")
-        print("Status: Not running\n")
-        print("No matching server needs to be stopped.")
+        if as_json:
+            print(json.dumps({"status": "not_running", "stopped": True}))
+        else:
+            print("Runmux Web UI")
+            print("Status: Not running\n")
+            print("No matching server needs to be stopped.")
         return 0
 
     desc_path = descriptor_path(resolved_state_dir, descriptor.host, descriptor.port)
     if not is_process_alive(descriptor.pid, descriptor.process_create_time):
         remove_descriptor(desc_path)
-        print("Runmux Web UI")
-        print("Status: Not running\n")
-        print("No matching server needs to be stopped.")
+        if as_json:
+            print(json.dumps({"status": "not_running", "stopped": True}))
+        else:
+            print("Runmux Web UI")
+            print("Status: Not running\n")
+            print("No matching server needs to be stopped.")
         return 0
 
     if not verify_running_instance(descriptor):
-        print("Runmux Web UI", file=sys.stderr)
-        print("Status: Unverifiable", file=sys.stderr)
-        print(
-            f"Error: Process {descriptor.pid} on port {descriptor.port} could not be verified as genuine Runmux.",
-            file=sys.stderr,
-        )
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "unverifiable",
+                        "error": (
+                            f"Process {descriptor.pid} on port {descriptor.port} "
+                            "could not be verified as genuine Runmux."
+                        ),
+                    }
+                )
+            )
+        else:
+            print("Runmux Web UI", file=sys.stderr)
+            print("Status: Unverifiable", file=sys.stderr)
+            print(
+                f"Error: Process {descriptor.pid} on port {descriptor.port} could not be verified as genuine Runmux.",
+                file=sys.stderr,
+            )
         return 1
 
     browser_host = f"[{descriptor.host}]" if ":" in descriptor.host else descriptor.host
     url = f"http://{browser_host}:{descriptor.port}/"
 
-    print("Runmux Web UI")
-    print("Status: Stopping")
-    print(f"URL:    {url}")
-    print(f"PID:    {descriptor.pid}\n")
+    if not as_json:
+        print("Runmux Web UI")
+        print("Status: Stopping")
+        print(f"URL:    {url}")
+        print(f"PID:    {descriptor.pid}\n")
 
     requested = request_instance_shutdown(descriptor, timeout=timeout)
-    if not requested:
+    if not requested and not as_json:
         print("Warning: Shutdown request did not receive expected acknowledgement.", file=sys.stderr)
 
     deadline = time.time() + timeout
@@ -530,12 +554,36 @@ def stop_server(
     remove_descriptor(desc_path)
 
     if stopped:
-        print("Server stopped successfully.")
-        print("Managed processes remain running.")
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "stopped",
+                        "stopped": True,
+                        "pid": descriptor.pid,
+                        "url": url,
+                    }
+                )
+            )
+        else:
+            print("Server stopped successfully.")
+            print("Managed processes remain running.")
         return 0
 
-    print(f"Warning: Server process {descriptor.pid} did not exit within {timeout} seconds.", file=sys.stderr)
-    print("Managed processes remain running.")
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "status": "timeout",
+                    "stopped": False,
+                    "pid": descriptor.pid,
+                    "warning": f"Server process {descriptor.pid} did not exit within {timeout} seconds.",
+                }
+            )
+        )
+    else:
+        print(f"Warning: Server process {descriptor.pid} did not exit within {timeout} seconds.", file=sys.stderr)
+        print("Managed processes remain running.")
     return 1
 
 
@@ -543,35 +591,86 @@ def status_server(
     state_dir: Path | str,
     port: int | None = None,
     host: str = "127.0.0.1",
+    as_json: bool = False,
 ) -> int:
     """Report the status of the Runmux Web server without modifying state."""
     resolved_state_dir = Path(state_dir).resolve()
     descriptor, error_msg = find_target_descriptor(resolved_state_dir, port, host)
     if error_msg:
-        print(f"runmux: web: {error_msg}", file=sys.stderr)
+        if as_json:
+            print(json.dumps({"status": "error", "error": error_msg}))
+        else:
+            print(f"runmux: web: {error_msg}", file=sys.stderr)
         return 1
 
     if descriptor is None:
-        print("Runmux Web UI")
-        print("Status: Not running")
+        if as_json:
+            print(json.dumps({"status": "not_running", "running": False}))
+        else:
+            print("Runmux Web UI")
+            print("Status: Not running")
         return 0
 
     browser_host = f"[{descriptor.host}]" if ":" in descriptor.host else descriptor.host
     url = f"http://{browser_host}:{descriptor.port}/"
 
     if not is_process_alive(descriptor.pid, descriptor.process_create_time):
-        print("Runmux Web UI")
-        print("Status: Not running")
-        print(f"Warning: Stale descriptor found for PID {descriptor.pid} (process not running).")
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "not_running",
+                        "running": False,
+                        "stale_descriptor": True,
+                        "pid": descriptor.pid,
+                        "warning": f"Stale descriptor found for PID {descriptor.pid} (process not running).",
+                    }
+                )
+            )
+        else:
+            print("Runmux Web UI")
+            print("Status: Not running")
+            print(f"Warning: Stale descriptor found for PID {descriptor.pid} (process not running).")
         return 0
 
     if not verify_running_instance(descriptor):
-        print("Runmux Web UI")
-        print("Status: Unverifiable")
-        print(f"URL:    {url}")
-        print(f"PID:    {descriptor.pid}")
-        print("Warning: Process is running but did not pass Runmux instance verification.")
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "unverifiable",
+                        "running": False,
+                        "url": url,
+                        "pid": descriptor.pid,
+                        "warning": "Process is running but did not pass Runmux instance verification.",
+                    }
+                )
+            )
+        else:
+            print("Runmux Web UI")
+            print("Status: Unverifiable")
+            print(f"URL:    {url}")
+            print(f"PID:    {descriptor.pid}")
+            print("Warning: Process is running but did not pass Runmux instance verification.")
         return 1
+
+    if as_json:
+        print(
+            json.dumps(
+                {
+                    "status": "running",
+                    "running": True,
+                    "url": url,
+                    "access_code": descriptor.access_code,
+                    "pid": descriptor.pid,
+                    "state_dir": descriptor.state_dir,
+                    "host": descriptor.host,
+                    "port": descriptor.port,
+                },
+                indent=2,
+            )
+        )
+        return 0
 
     print("Runmux Web UI")
     print("Status: Running")

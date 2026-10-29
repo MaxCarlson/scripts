@@ -1,10 +1,10 @@
 # Runmux Web Server Lifecycle Status
 
-**Branch:** `runmux-web-server-lifecycle-20261029`  
-**Worktree:** `.worktrees/runmux-web-server-lifecycle-20261029`  
-**Baseline:** `92c5f068fe2d0c8c99ca4a14991388b1819a3764`  
-**State:** Workstream A completed and verified. Workstream B deferred per concurrency boundaries.  
-**Next:** Stage intended files for review; stop for user manual validation and approval.
+**Branch:** `codex/runmux-web-server-lifecycle-integrated-20261029`  
+**Worktree:** `.worktrees/runmux-lifecycle-integration-20261029`  
+**Baseline:** `ee4fcb1994da4ea95d03320a22a63997f0ed8342` (`origin/main`)  
+**State:** Workstream A completed, verified, and integrated with completed LLM Monitor and History Explorer baselines.  
+**Next:** Validate, merge into `main`, and push to `origin/main`.
 
 ## Implementation & Validation Ledger
 
@@ -20,33 +20,37 @@
     - Cross-protocol attack prevention tested: health endpoint cannot act as a signing oracle for shutdown.
   - Pre-bound socket using Windows `SO_EXCLUSIVEADDRUSE` (no `SO_REUSEADDR` workaround) and POSIX `SO_REUSEADDR`. Exact bound socket passed to Uvicorn server.
   - Readiness reporting: `RunmuxWebServer.startup` hook triggers `on_ready()` banner only after ASGI application lifespan and TCP socket listening are fully functional.
-  - CLI discovery, status (`-S/--status`), and stop (`-x/--stop`):
+  - CLI discovery, status (`-S/--status`), stop (`-x/--stop`), and scriptable JSON (`-j/--json`):
     - `runmux web` re-discovers running instances, confirms liveness, and outputs `Status: Already running` with verified URL, existing access code (without regeneration), and verified PID.
     - `runmux web -S/--status` inspects instance liveness, returning exit code 0 if running or 1 if stopped, without mutating state or creating credentials.
+    - `runmux web -S -j` emits machine-readable JSON status object with liveness, verified URL, access code, PID, and state directory.
     - `runmux web -x/--stop` performs authenticated shutdown of the Web UI server and removes descriptors. Idempotent on repeated calls.
     - Alien/unrelated listener rejection: informs caller without terminating unrelated PIDs or leaking credentials.
     - **Supervisor Independence Invariant:** Verified that stopping the Web UI server leaves supervised Runmux child processes running and healthy.
 
-- **Workstream B (LLM Monitor Web Integration):** Deferred.
-  - Phase 3C LLM Monitor (`5fd0a288`) and Phase 6C History Explorer (`a03b4fa6`) are unmerged into `main`.
-  - Phase 3D is under active development.
-  - No edits made to `modules/llm_monitor/`, `modules/local_agent_bridge/`, or `modules/runmux/src/runmux/web_static/*`.
+- **Integrated Feature Baseline:**
+  - LLM Monitor host integration (Stages 0–3) merged at `39603daa`.
+  - Phase 6C History Explorer (`382c0608`) and LLM Monitor Browser Workspace (Stages 4–5) merged at `ee4fcb19`.
+  - Full suite compatibility confirmed across backend, frontend, and lifecycle controls.
 
 ## Verification Commands & Evidence
 
 ```text
-python -m pytest .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_server_lifecycle_test.py -q
--> 15 passed, 1 skipped (POSIX mode test skipped on Windows)
+python -m pytest modules/runmux/tests/web_server_lifecycle_test.py modules/runmux/tests/web_cli_test.py -q
+-> 27 passed, 1 skipped (POSIX mode test skipped on Windows)
 
-python -m pytest .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_cli_test.py -q
--> 8 passed
+python -m pytest modules/runmux/tests/web_test.py modules/runmux/tests/llm_monitor_integration_test.py modules/runmux/tests/web_llm_monitor_api_test.py modules/runmux/tests/historical_runs_api_test.py -q
+-> 39 passed in 10.8s
 
-python -m pytest .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_test.py -q
--> 15 passed
+node modules/runmux/tests/llm_monitor_view_test.js
+-> ALL 6 llm_monitor_view_test.js TEST SUITES PASSED!
 
-python -m pytest .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/lifecycle_test.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/lifecycle_api_test.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_adapter_test.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/telemetry_worker_test.py -q
--> 75 passed, 1 skipped
+node modules/runmux/tests/dashboard_test.js
+-> Passed (exit 0)
 
-ruff check .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/src/runmux/server_lifecycle.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/src/runmux/cli.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_server_lifecycle_test.py .worktrees/runmux-web-server-lifecycle-20261029/modules/runmux/tests/web_cli_test.py
+node modules/runmux/tests/history_view_test.js
+-> history_view_test.js passed
+
+ruff check modules/runmux/src/runmux/server_lifecycle.py modules/runmux/src/runmux/cli.py modules/runmux/tests/web_server_lifecycle_test.py modules/runmux/tests/web_cli_test.py
 -> All checks passed!
 ```

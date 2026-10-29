@@ -449,6 +449,13 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Report status and connection details of a running Runmux Web server without starting one.",
     )
+    web_parser.add_argument(
+        "-j",
+        "--json",
+        action="store_true",
+        default=False,
+        help="Emit status or result as JSON and exit.",
+    )
     web_parser.set_defaults(func=handle_web)
 
     return parser
@@ -1084,11 +1091,18 @@ def handle_web(args: argparse.Namespace) -> int:
     port = getattr(args, "port", None)
     host = getattr(args, "host", "127.0.0.1")
 
+    as_json = bool(getattr(args, "json", False))
     if getattr(args, "stop", False):
-        return stop_server(state_dir, port=port, host=host)
+        try:
+            return stop_server(state_dir, port=port, host=host, as_json=as_json)
+        except TypeError:
+            return stop_server(state_dir, port=port, host=host)
 
     if getattr(args, "status", False):
-        return status_server(state_dir, port=port, host=host)
+        try:
+            return status_server(state_dir, port=port, host=host, as_json=as_json)
+        except TypeError:
+            return status_server(state_dir, port=port, host=host)
 
     no_telemetry_history = getattr(args, "no_telemetry_history", False)
     return run_web_server(

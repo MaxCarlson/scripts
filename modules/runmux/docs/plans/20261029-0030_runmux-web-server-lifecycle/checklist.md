@@ -12,12 +12,12 @@
   - [x] Write failing unit tests for socket pre-binding and post-bind notification
   - [x] Implement socket pre-binding and server startup notification
   - [x] Verify tests pass
-- [x] Task 4: CLI Web Discovery, Stop (`-x/--stop`), and Status (`-S/--status`)
-  - [x] Write failing unit tests for CLI `-x/--stop` and `-S/--status`
+- [x] Task 4: CLI Web Discovery, Stop (`-x/--stop`), Status (`-S/--status`), and JSON (`-j/--json`)
+  - [x] Write failing unit tests for CLI `-x/--stop`, `-S/--status`, and `-j/--json`
   - [x] Implement CLI options and dispatch in `cli.py`
   - [x] Verify tests pass
 - [x] Task 5: Security, Invariant, and Integration Verification
   - [x] Verify managed processes invariant: stopping Web UI leaves processes running
   - [x] Verify security: challenge-response, unauthorized caller rejection, symlink safety
   - [x] Verify concurrency: race condition handled gracefully
-  - [x] Run full runmux test suite and ruff checks
+  - [x] Run full runmux test suite, browser E2E, and ruff checks
