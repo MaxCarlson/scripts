@@ -63,10 +63,48 @@ The Windows sandbox hangs in `pytest-asyncio` while creating its loopback socket
 run outside that socket restriction. A shared editable install also redirected imports to the main
 checkout; test invocations explicitly loaded the investigation worktree package.
 
-## Next actions
+## Follow-up investigation (2026-10-29)
 
-1. [x] Add regression tests for default-disabled guards, explicit thresholds, measured estimate
-   capacity, and transition propagation.
-2. [x] Implement the smallest compatible behavior change, update module version/docs.
-3. [x] Run focused module tests and lint; revise historical memory-safety docs as superseded.
-4. [ ] Continue B1 analysis and controlled comparisons after this phase is verified.
+The RAM-policy phase was committed and pushed as `d1e6342a`. Its historical 90% and fixed-byte
+threshold findings above describe the pre-fix code; they are not current dispatch policy.
+
+The B1 analogue analysis and a small first workflow comparison are recorded in
+`experiments/qwen_runtime_investigation/evidence/b1-workflow-comparison.md`. On task revision
+1.0.1, fresh single-stage `none`, task-derived checklist, and one bounded repair each reached
+edits and terminated normally, but all three failed an independent lifecycle assertion. A
+separate revision-1.0.0 repair passed; do not combine the task revisions or infer reliability
+from one success. The checklist did not prevent the visibility-resume bug. The repair fixed that
+behavior but regressed `close()` abort and single-flight behavior.
+
+The first live Monitor 0.6.0 observation on the isolated 4196 session saw streaming text deltas
+during inference, but zero reasoning-delta events. Persisted history was complete; the live
+snapshot ended at its deadline. Monitor-reported effective options did not match the project-local
+OpenCode config, so actual outbound reasoning-field delivery is still unverified. See the workflow
+report for counts and attribution limits.
+
+The Monitor `found=false` cases are resolved: two earlier sessions have no trial-local recorder
+log, so their Monitor history was never persisted. Two later recorded sessions were queried
+against the shared evidence DB instead of their per-run databases. Querying each correct
+`runs/EXP_.../telemetry.sqlite3` with endpoint 4196 returns complete history and zero gaps.
+
+The task-instruction append variant is implemented in Agent Benchmark and has seven focused tests.
+It records the variant file's resolved path, SHA-256 and byte count in experiment metadata. Raw
+run directories, session logs and the telemetry database remain experimental evidence and must
+not be staged as implementation artifacts.
+
+## Remaining work
+
+1. [x] Complete code-level B1 visibility-resume and single-flight root-cause analysis.
+2. [x] Run one matched single-stage, checklist, and bounded-repair comparison; preserve all first
+   attempt verdicts and report failures separately.
+3. [x] Validate live text-event delivery and compare it with persisted history; retain the
+   outbound-parameter provenance gap.
+4. [x] Diagnose Monitor `found=false` cases by recorder lifecycle and database/session scoping;
+   update coverage claims without reconstructing missing telemetry.
+5. [x] Resolve whether to expand the current matrix: no further same-condition repeat is
+   justified now. The three matched B1 workflow conditions all failed different correctness
+   checks, so another unchanged run would not test a new intervention. Keep the result as a
+   stage-gate failure; test again only after a concrete workflow change, and keep the local
+   policy at independently verified small tasks with escalation on failed verification.
+6. [ ] Validate the allowlisted implementation/report checkpoint, then commit and push it to the
+   isolated branch. Do not stage raw telemetry, prompts, logs or runtime caches.

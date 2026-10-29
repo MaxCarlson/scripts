@@ -33,6 +33,7 @@ from .diagnostic import run_diagnostic
 from .evidence import EVIDENCE_LIMITS, load_task
 from .identity import get_effective_lmstudio_model_ids, model_readiness
 from .inference_profile import load_inference_profile, validate_context_match
+from .instruction_overlay import load_instruction_append
 from .logging_setup import close_run_logging, configure_run_logging
 from .models_lifecycle import (
     DEFAULT_BENCHMARK_CONTEXT_LENGTH,
@@ -244,6 +245,8 @@ def parser() -> argparse.ArgumentParser:
                           help="Shared LM Studio context cap for all local models (default: 16384)")
     exp_plan.add_argument("--inference-profile", type=Path,
                           help="Validated per-trial OpenCode context/output/reasoning settings JSON")
+    exp_plan.add_argument("--instruction-append-file", type=Path,
+                          help="Append a UTF-8 task-instruction variant; record its path and SHA-256")
     exp_plan.add_argument("-u", "--base-url", default="http://127.0.0.1:4096")
     exp_plan.add_argument("--random-seed", type=int, default=None)
     exp_plan.add_argument(
@@ -295,6 +298,8 @@ def parser() -> argparse.ArgumentParser:
                          help="Shared LM Studio context cap for all local models (default: 16384)")
     exp_run.add_argument("--inference-profile", type=Path,
                          help="Validated per-trial OpenCode context/output/reasoning settings JSON")
+    exp_run.add_argument("--instruction-append-file", type=Path,
+                         help="Append a UTF-8 task-instruction variant; record its path and SHA-256")
     exp_run.add_argument("--pause-before-dispatch", action="store_true",
                          help="Print the prepared OpenCode endpoint/project/session, then wait for monitor attachment")
     exp_run.add_argument("--tool-profile", choices=("file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1"),
@@ -481,6 +486,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
         task_map = _resolve_tasks(args.task)
         models = args.model if isinstance(args.model, list) else [args.model]
         profile = load_inference_profile(args.inference_profile) if args.inference_profile else None
+        instruction_append = load_instruction_append(args.instruction_append_file) if args.instruction_append_file else None
         if profile is not None:
             validate_context_match(profile, args.context_length)
             if any(resolve_model_provider_and_key(model)[0] != "lmstudio" for model in models):
@@ -500,7 +506,8 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             budget_profile=args.budget_profile,
             random_seed=args.random_seed,
             metadata={"requested_context_length": args.context_length,
-                      "requested_inference_profile": profile.to_dict() if profile else None},
+                      "requested_inference_profile": profile.to_dict() if profile else None,
+                      "instruction_append": instruction_append.to_dict() if instruction_append else None},
         )
         plan = expand_experiment_plan(config, randomize_tasks=False)
         async def _readiness():
@@ -559,6 +566,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
 
         models = args.model if isinstance(args.model, list) else [args.model]
         profile = load_inference_profile(args.inference_profile) if args.inference_profile else None
+        instruction_append = load_instruction_append(args.instruction_append_file) if args.instruction_append_file else None
         if profile is not None:
             validate_context_match(profile, args.context_length)
             if any(resolve_model_provider_and_key(model)[0] != "lmstudio" for model in models):
@@ -579,7 +587,8 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
             random_seed=args.random_seed,
             metadata={"requested_context_length": args.context_length,
                       "runtime_max_ram_percent": args.max_ram_percent,
-                      "requested_inference_profile": profile.to_dict() if profile else None},
+                      "requested_inference_profile": profile.to_dict() if profile else None,
+                      "instruction_append": instruction_append.to_dict() if instruction_append else None},
         )
 
         plan = expand_experiment_plan(config, randomize_tasks=False)
@@ -612,6 +621,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
                 max_ram_percent=args.max_ram_percent,
                 tool_profile=args.tool_profile,
                 inference_profile=profile.to_dict() if profile else None,
+                instruction_append=instruction_append,
                 before_dispatch=before_dispatch if args.pause_before_dispatch else None,
                 base_url=args.base_url,
                 on_trial_start=dashboard.on_trial_start,

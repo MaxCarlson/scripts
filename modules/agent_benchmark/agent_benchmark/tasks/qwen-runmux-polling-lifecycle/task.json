@@ -1,6 +1,6 @@
 {
   "task_id": "qwen-runmux-polling-lifecycle",
-  "suite_version": "1.0.0",
+  "suite_version": "1.0.1",
   "category": "async-ui-lifecycle-and-visibility",
   "allowed_paths": ["src/telemetry_polling.js"],
   "forbidden_paths": ["README.md", "instruction.md", "task.json"],

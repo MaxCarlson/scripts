@@ -1,15 +1,22 @@
-# Current checkpoint: configurable resource policy (1.19.0)
+# Current checkpoint: Qwen workflow comparison and task-instruction variants (1.20.0)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/qwen-runtime-investigation-20261029`, branch
-`experiment/qwen-runtime-investigation-20261029`. The current RAM-policy implementation removes the
-implicit 90% threshold, 4 GiB available-RAM floor, fixed 2/4 GiB allocation reserves, and 1.25x
-model-file-size rule. Percent limits are optional and flow from CLI through scheduler to lifecycle;
-the LM Studio estimate is compared against measured available capacity. Model inventory, context,
-busy-state, command failure, and confirmed worker termination checks remain. Focused validation is
-in progress. This supersedes the historical checkpoint below; preserve that evidence but do not use
-its guard thresholds as current policy. Next: finish focused tests, complete B1 root-cause analysis,
-then run matched `none` versus task-derived checklist and one-repair comparisons with LLM Monitor live
-attached to an already-planned trial.
+`experiment/qwen-runtime-investigation-20261029`. RAM-policy correction is committed and pushed as
+`d1e6342a`: arbitrary percentage/default byte cutoffs are removed while explicit limits, measured
+allocation checks and safe termination remain. A task-instruction append option is implemented for
+matched Agent Benchmark prompt variants. The B1 code-level analysis and first workflow comparison
+are in `experiments/qwen_runtime_investigation/evidence/b1-workflow-comparison.md`: single-stage
+`none`, a task-derived checklist and one bounded repair all reached edits but failed independent
+correctness on revision 1.0.1; one separate revision-1.0.0 repair passed. The live Monitor saw
+text deltas during inference and complete persisted history, but the effective-options/outbound
+parameter discrepancy remains unresolved. Monitor `found=false` is now resolved in the workflow
+report: two sessions
+were unrecorded and two recorded sessions were queried from the wrong database. No further
+same-condition inference is justified because all three revision-1.0.1 workflow conditions failed
+independent correctness and no intervention showed benefit. Preserve the report as a stage-gate
+failure and require independent verification/escalation for complex stateful work. Next: validate
+and push the allowlisted task-variant source, tests, fixture clarification and sanitized reports.
+Raw run evidence and telemetry remain unstaged.
 
 # Historical checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 

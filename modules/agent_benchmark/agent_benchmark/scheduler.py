@@ -46,6 +46,7 @@ from .attempt import run_attempt, run_cli_attempt
 from .telemetry import ResourceLimitExceeded, RuntimeMemoryGuard
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
+from .instruction_overlay import InstructionAppend, apply_instruction_append
 from .tool_profile import FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE
 from .diagnostics import describe_trial
 from .git_workspace import ISOLATION_POLICY
@@ -208,6 +209,7 @@ class ExperimentScheduler:
         trial_executor: Optional[TrialExecutor] = None,
         tool_profile: str | None = None,
         inference_profile: dict[str, Any] | None = None,
+        instruction_append: InstructionAppend | None = None,
         before_dispatch: Optional[Callable[[dict[str, Any]], None]] = None,
         on_trial_start: Optional[TrialCallback] = None,
         on_trial_complete: Optional[TrialCallback] = None,
@@ -228,6 +230,7 @@ class ExperimentScheduler:
         self.lms_runner = lms_runner
         self.trial_executor = trial_executor
         self.inference_profile = inference_profile
+        self.instruction_append = instruction_append
         self.before_dispatch = before_dispatch
         if tool_profile not in {None, FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
             raise ValueError(f"Unsupported experiment tool profile: {tool_profile}")
@@ -392,6 +395,7 @@ class ExperimentScheduler:
                     self.on_trial_start(planned_trial, None)
 
                 task = load_task(self.task_dirs[planned_trial.task_id])
+                task = apply_instruction_append(task, self.instruction_append)
                 if self.tool_profile is not None and resolved_provider == "lmstudio":
                     task = replace(task, opencode_tool_profile=self.tool_profile)
                 evidence_dir = run_dir / "evidence" / f"trial-{planned_trial.trial_index + 1:03d}"

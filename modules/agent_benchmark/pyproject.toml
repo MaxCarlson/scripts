@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-benchmark"
-version = "1.19.0"
+version = "1.20.0"
 description = "Independent evaluation of coding workers through the existing OpenCode bridge"
 readme = "README.md"
 requires-python = ">=3.12"
