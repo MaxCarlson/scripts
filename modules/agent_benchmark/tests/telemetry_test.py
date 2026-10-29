@@ -133,14 +133,34 @@ def test_runtime_memory_guard_logs_process_attribution_without_stopping_healthy_
     assert "llama-server" in caplog.text
 
 
-def test_runtime_memory_guard_checks_available_ram_even_below_percentage_limit(monkeypatch):
+def test_runtime_memory_guard_does_not_stop_on_high_ram_without_explicit_limits(monkeypatch):
+    monkeypatch.setattr("resource_metrics.system.psutil.virtual_memory", lambda: SimpleNamespace(
+        percent=95.0, available=1 * 1024**3))
+    monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [])
+    telemetry.RuntimeMemoryGuard()()
+
+
+def test_runtime_memory_guard_ignores_missing_metrics_without_limits(monkeypatch):
+    monkeypatch.setattr(telemetry, "memory_stats", lambda: None)
+    telemetry.RuntimeMemoryGuard()()
+
+
+def test_runtime_memory_guard_cannot_silently_enforce_explicit_limit_without_metrics(monkeypatch):
+    import pytest
+
+    monkeypatch.setattr(telemetry, "memory_stats", lambda: None)
+    with pytest.raises(telemetry.ResourceLimitExceeded, match="explicitly configured.*counters unavailable"):
+        telemetry.RuntimeMemoryGuard(max_ram_pct=90.0)()
+
+
+def test_runtime_memory_guard_enforces_explicit_available_memory_limit(monkeypatch):
     import pytest
 
     monkeypatch.setattr("resource_metrics.system.psutil.virtual_memory", lambda: SimpleNamespace(
         percent=70.0, available=3 * 1024**3))
     monkeypatch.setattr(telemetry, "process_memory_snapshot", lambda: [])
-    with pytest.raises(telemetry.ResourceLimitExceeded):
-        telemetry.RuntimeMemoryGuard()()
+    with pytest.raises(telemetry.ResourceLimitExceeded, match="3.0 GiB available"):
+        telemetry.RuntimeMemoryGuard(min_available_bytes=4 * 1024**3)()
 
 
 def test_process_memory_snapshot_sorts_and_omits_unavailable_process_memory(monkeypatch):

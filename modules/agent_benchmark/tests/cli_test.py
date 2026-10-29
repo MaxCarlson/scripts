@@ -23,6 +23,18 @@ def test_experiment_run_can_pause_after_session_creation_for_monitor_attachment(
     ])
 
     assert args.pause_before_dispatch is True
+    assert args.max_ram_percent is None
+
+
+def test_experiment_run_accepts_explicit_ram_percentage_limit():
+    from agent_benchmark.cli import parser
+
+    args = parser().parse_args([
+        "experiment", "run", "-x", "-m", "qwen38-27b-q4km", "-t", "qwen-file-creation",
+        "--max-ram-percent", "87.5",
+    ])
+
+    assert args.max_ram_percent == 87.5
 
 
 def test_plan_and_status_are_read_only(tmp_path, capsys):

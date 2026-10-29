@@ -303,8 +303,8 @@ def parser() -> argparse.ArgumentParser:
         "-M",
         "--max-ram-percent",
         type=ram_percent,
-        default=100.0,
-        help="Stop local inference at this host RAM use percentage; 100 disables this limit (default: 100)",
+        default=None,
+        help="Opt in to stopping local inference at this host RAM use percentage (default: no percentage limit)",
     )
     exp_run.add_argument(
         "-o",

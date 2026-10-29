@@ -1,5 +1,9 @@
 # Benchmark context and budget safety
 
+> Historical record. The fixed 2 GiB GPU and 4 GiB combined-memory reserves are superseded by
+> `20261029-runtime-resource-policy/STATUS.md`; context verification and LM Studio estimate parsing
+> remain active.
+
 ## Goal
 
 Prevent LM Studio benchmark loads from silently using a model's very large native context, validate preloaded model context before dispatch, and keep strict budget outcomes interpretable.

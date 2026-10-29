@@ -199,7 +199,7 @@ class ExperimentScheduler:
         reports_dir: Path,
         state_dir: Path,
         allow_model_transitions: bool = False,
-        max_ram_percent: float = 100.0,
+        max_ram_percent: float | None = None,
         base_url: str = "http://127.0.0.1:4096",
         provider: str = "lmstudio",
         agent: str = "local-worker",
@@ -318,6 +318,8 @@ class ExperimentScheduler:
                 loaded_model = await transition_model(
                     resolved_model,
                     allow_transitions=self.allow_model_transitions,
+                    max_ram_pct=(self.max_ram_percent
+                                 if self.max_ram_percent is not None and self.max_ram_percent < 100 else None),
                     lms_path=self.lms_path,
                     context_length=context_length,
                     expected_model_size_bytes=(
@@ -678,7 +680,11 @@ class ExperimentScheduler:
                             model=resolved_model,
                             agent=self.agent,
                             model_identity=self.model_identities.get(trial.model_key),
-                            resource_check=RuntimeMemoryGuard(max_ram_pct=self.max_ram_percent),
+                            resource_check=RuntimeMemoryGuard(
+                                max_ram_pct=(self.max_ram_percent
+                                             if self.max_ram_percent is not None and self.max_ram_percent < 100
+                                             else None)
+                            ),
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,

@@ -173,16 +173,45 @@ async def test_transition_model_rejects_preloaded_context_mismatch_without_autho
 
 
 @pytest.mark.asyncio
-async def test_transition_model_blocks_preloaded_model_at_high_ram(monkeypatch) -> None:
+async def test_transition_model_allows_preloaded_model_at_high_ram_by_default(monkeypatch) -> None:
     monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(ram_pct=95.0))
 
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
         if cmd == ["lms", "ps", "--json"]:
             return 0, SAMPLE_LMS_PS_LOADED, ""
-        pytest.fail(f"High RAM must prevent dispatch or transition: {cmd}")
+        pytest.fail(f"A matching preloaded model should not need a transition: {cmd}")
 
-    with pytest.raises(ModelTransitionError, match="preloaded model.*95.0%"):
-        await transition_model("qwen38-27b-q4km", allow_transitions=False, context_length=32768, runner=mock_runner)
+    loaded = await transition_model("qwen38-27b-q4km", allow_transitions=False,
+                                    context_length=32768, runner=mock_runner)
+    assert loaded.model_key == "qwen38-27b-q4km"
+
+
+@pytest.mark.asyncio
+async def test_transition_model_honors_explicit_ram_percent_for_preloaded_model(monkeypatch) -> None:
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(ram_pct=95.0))
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, SAMPLE_LMS_PS_LOADED, ""
+        pytest.fail(f"Explicit RAM limit must prevent dispatch: {cmd}")
+
+    with pytest.raises(ModelTransitionError, match="95.0%.*explicit RAM limit 90.0%"):
+        await transition_model("qwen38-27b-q4km", allow_transitions=False, context_length=32768,
+                               max_ram_pct=90.0, runner=mock_runner)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_fails_closed_when_explicit_ram_limit_cannot_be_measured(monkeypatch) -> None:
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot())
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        if cmd == ["lms", "ps", "--json"]:
+            return 0, SAMPLE_LMS_PS_LOADED, ""
+        pytest.fail(f"An unenforceable explicit limit must stop before dispatch: {cmd}")
+
+    with pytest.raises(ModelTransitionError, match="Cannot enforce explicit host RAM limit"):
+        await transition_model("qwen38-27b-q4km", allow_transitions=False, context_length=32768,
+                               max_ram_pct=90.0, runner=mock_runner)
 
 
 @pytest.mark.asyncio
@@ -241,8 +270,15 @@ def test_parse_lms_memory_estimate_rejects_incomplete_output():
         parse_lms_memory_estimate("Model can be loaded")
 
 
+def test_lms_estimate_blocks_when_combined_measured_capacity_is_insufficient():
+    snapshot = ResourceSnapshot(ram_available_bytes=8 * 1024**3,
+                                gpu_memory_used_bytes=0, gpu_memory_total_bytes=32 * 1024**3)
+    with pytest.raises(ModelTransitionError, match="measured combined headroom is 40.0 GiB"):
+        models_lifecycle._verify_memory_estimate(31 * 1024**3, 41 * 1024**3, snapshot)
+
+
 @pytest.mark.asyncio
-async def test_transition_model_blocks_estimate_that_exceeds_gpu_headroom(monkeypatch) -> None:
+async def test_transition_model_blocks_estimate_that_exceeds_measured_gpu_capacity(monkeypatch) -> None:
     calls = []
 
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
@@ -250,16 +286,51 @@ async def test_transition_model_blocks_estimate_that_exceeds_gpu_headroom(monkey
         if cmd == ["lms", "ps", "--json"]:
             return 0, SAMPLE_LMS_PS_EMPTY, ""
         if "--estimate-only" in cmd:
-            return 0, "Estimated GPU Memory: 31 GiB\nEstimated Total Memory: 35 GiB", ""
+            return 0, "Estimated GPU Memory: 33 GiB\nEstimated Total Memory: 35 GiB", ""
         pytest.fail(f"Unsafe estimate must block actual load: {cmd}")
 
     monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
         ram_pct=35, ram_available_bytes=40 * 1024**3,
         gpu_memory_used_bytes=0, gpu_memory_total_bytes=32 * 1024**3,
     ))
-    with pytest.raises(ModelTransitionError, match="estimates 31.0 GiB GPU memory"):
+    with pytest.raises(ModelTransitionError, match="GPU estimate 33.0 GiB exceeds measured GPU availability"):
         await transition_model("large-model", allow_transitions=True, context_length=16384, runner=mock_runner)
     assert not any("-y" in command for command in calls)
+
+
+@pytest.mark.asyncio
+async def test_transition_model_allows_estimate_that_fits_measured_capacity_without_reserve(monkeypatch) -> None:
+    commands = []
+    state = "empty"
+    loaded_json = "[]"
+
+    async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        nonlocal state, loaded_json
+        commands.append(cmd)
+        if cmd == ["lms", "ps", "--json"]:
+            if state == "empty":
+                return 0, SAMPLE_LMS_PS_EMPTY, ""
+            return 0, loaded_json, ""
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 30 GiB\nEstimated Total Memory: 45 GiB", ""
+        if "-y" in cmd:
+            item = dict(json.loads(SAMPLE_LMS_PS_LOADED)[0], modelKey="new-model", identifier="new-model",
+                        contextLength=16384)
+            state = "loaded"
+            loaded_json = json.dumps([item])
+            return 0, "Loaded", ""
+        if cmd == ["lms", "ps", "--json"] and any("-y" in command for command in commands):
+            return 0, commands[-1][1], ""
+        pytest.fail(f"Unexpected command: {cmd}")
+
+    monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
+        ram_pct=96.0, ram_available_bytes=15 * 1024**3,
+        gpu_memory_used_bytes=0, gpu_memory_total_bytes=30 * 1024**3,
+    ))
+    loaded = await transition_model("new-model", allow_transitions=True, context_length=16384,
+                                    runner=mock_runner, load_timeout=0.01)
+    assert loaded.model_key == "new-model"
+    assert any("-y" in command for command in commands)
 
 
 @pytest.mark.asyncio
@@ -425,40 +496,59 @@ def test_resolve_model_provider_and_key() -> None:
 
 
 @pytest.mark.asyncio
-async def test_transition_model_stops_before_load_at_ram_safety_limit(monkeypatch) -> None:
+async def test_transition_model_allows_load_above_90_percent_without_explicit_limit(monkeypatch) -> None:
+    state = "empty"
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        nonlocal state
         if cmd == ["lms", "ps", "--json"]:
-            return 0, "[]", ""
-        pytest.fail(f"No load should be attempted at high RAM usage: {cmd}")
+            if state == "empty":
+                return 0, "[]", ""
+            item = dict(json.loads(SAMPLE_LMS_PS_LOADED)[0], modelKey="new-model", identifier="new-model",
+                        contextLength=16384)
+            return 0, json.dumps([item]), ""
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 10 GiB\nEstimated Total Memory: 15 GiB", ""
+        if "-y" in cmd:
+            state = "loaded"
+            return 0, "Loaded", ""
+        pytest.fail(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(
         "agent_benchmark.models_lifecycle.collect_resource_snapshot",
-        lambda: ResourceSnapshot(ram_pct=91.0),
+        lambda: ResourceSnapshot(ram_pct=91.0, ram_available_bytes=20 * 1024**3,
+                                 gpu_memory_used_bytes=0, gpu_memory_total_bytes=32 * 1024**3),
     )
 
-    with pytest.raises(ModelTransitionError, match="RAM utilization is 91.0%.*safety limit 90%"):
-        await transition_model("new-model", allow_transitions=True, runner=mock_runner)
+    loaded = await transition_model("new-model", allow_transitions=True, runner=mock_runner)
+    assert loaded.model_key == "new-model"
 
 
 @pytest.mark.asyncio
-async def test_transition_model_requires_estimated_model_headroom(monkeypatch) -> None:
+async def test_transition_model_does_not_apply_file_size_multiplier(monkeypatch) -> None:
+    state = "empty"
     async def mock_runner(cmd: list[str]) -> tuple[int, str, str]:
+        nonlocal state
         if cmd == ["lms", "ps", "--json"]:
-            return 0, "[]", ""
-        pytest.fail(f"Insufficient headroom must block load: {cmd}")
+            if state == "empty":
+                return 0, "[]", ""
+            item = dict(json.loads(SAMPLE_LMS_PS_LOADED)[0], modelKey="large-model", identifier="large-model",
+                        contextLength=16384)
+            return 0, json.dumps([item]), ""
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 1 GiB\nEstimated Total Memory: 2 GiB", ""
+        if "-y" in cmd:
+            state = "loaded"
+            return 0, "Loaded", ""
+        pytest.fail(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(
         "agent_benchmark.models_lifecycle.collect_resource_snapshot",
-        lambda: ResourceSnapshot(ram_pct=75.0, ram_available_bytes=10 * 1024**3),
+        lambda: ResourceSnapshot(ram_pct=75.0, ram_available_bytes=10 * 1024**3,
+                                 gpu_memory_used_bytes=0, gpu_memory_total_bytes=8 * 1024**3),
     )
 
-    with pytest.raises(ModelTransitionError, match="at least 13421772800 bytes is required"):
-        await transition_model(
-            "large-model",
-            allow_transitions=True,
-            expected_model_size_bytes=10 * 1024**3,
-            runner=mock_runner,
-        )
+    await transition_model("large-model", allow_transitions=True,
+                           expected_model_size_bytes=10 * 1024**3, runner=mock_runner)
 
 
 @pytest.mark.asyncio
@@ -500,7 +590,7 @@ async def test_list_gemini_and_codex_models(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
-async def test_unload_waits_for_measured_headroom_after_inventory_is_empty(monkeypatch):
+async def test_unload_waits_for_empty_inventory_without_percentage_or_reserve_threshold(monkeypatch):
     state = "loaded"
     samples = 0
     commands = []
@@ -524,7 +614,6 @@ async def test_unload_waits_for_measured_headroom_after_inventory_is_empty(monke
         if "unload" in cmd:
             state = "empty"
             return 0, "", ""
-        assert samples >= 2, "No estimate or load before RAM has recovered"
         if "--estimate-only" in cmd:
             return 0, "Estimated GPU Memory: 18 GiB\nEstimated Total Memory: 22 GiB", ""
         state = "new"
@@ -533,13 +622,11 @@ async def test_unload_waits_for_measured_headroom_after_inventory_is_empty(monke
     monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", snapshot)
     await transition_model("new", allow_transitions=True, runner=runner,
                            expected_model_size_bytes=22 * 1024**3, poll_interval=0.001)
-    assert sum("ps" in cmd for cmd in commands) >= 4
+    assert sum("ps" in cmd for cmd in commands) >= 3
 
 
 @pytest.mark.asyncio
-async def test_unload_does_not_load_next_model_when_memory_never_recovers(monkeypatch):
-    from agent_benchmark.models_lifecycle import ModelTransitionError
-
+async def test_unload_proceeds_when_inventory_is_empty_even_if_memory_percent_is_high(monkeypatch):
     state = "loaded"
     commands = []
 
@@ -548,11 +635,24 @@ async def test_unload_does_not_load_next_model_when_memory_never_recovers(monkey
         commands.append(cmd)
         if "unload" in cmd:
             state = "empty"
-        return 0, SAMPLE_LMS_PS_LOADED if state == "loaded" else "[]", ""
+        if "ps" in cmd:
+            if state == "loaded":
+                return 0, SAMPLE_LMS_PS_LOADED, ""
+            if state == "new":
+                item = dict(json.loads(SAMPLE_LMS_PS_LOADED)[0], modelKey="new", identifier="new",
+                            contextLength=16384)
+                return 0, json.dumps([item]), ""
+            return 0, "[]", ""
+        if "--estimate-only" in cmd:
+            return 0, "Estimated GPU Memory: 10 GiB\nEstimated Total Memory: 15 GiB", ""
+        if "-y" in cmd:
+            state = "new"
+            return 0, "Loaded", ""
+        return 0, "", ""
 
     monkeypatch.setattr(models_lifecycle, "collect_resource_snapshot", lambda: ResourceSnapshot(
-        ram_pct=95, ram_available_bytes=2 * 1024**3))
-    with pytest.raises(ModelTransitionError, match="No next model load"):
-        await transition_model("new", allow_transitions=True, runner=runner,
-                               unload_timeout=0.005, poll_interval=0.001)
-    assert not any("load" in cmd for cmd in commands)
+        ram_pct=95, ram_available_bytes=20 * 1024**3, gpu_memory_used_bytes=0,
+        gpu_memory_total_bytes=32 * 1024**3))
+    await transition_model("new", allow_transitions=True, runner=runner,
+                           unload_timeout=0.005, poll_interval=0.001)
+    assert any("-y" in cmd for cmd in commands)

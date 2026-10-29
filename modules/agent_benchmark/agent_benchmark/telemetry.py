@@ -40,11 +40,13 @@ def process_memory_snapshot(limit: int = 8) -> list[dict[str, int | str]]:
 
 
 class RuntimeMemoryGuard:
-    """Cheap RAM checks during local inference, with periodic process attribution."""
+    """Observe RAM during local inference and enforce only explicitly configured limits."""
 
-    def __init__(self, max_ram_pct: float = 100.0, min_available_bytes: int = 4 * 1024**3):
-        if not math.isfinite(max_ram_pct) or not 0 < max_ram_pct <= 100:
+    def __init__(self, max_ram_pct: float | None = None, min_available_bytes: int | None = None):
+        if max_ram_pct is not None and (not math.isfinite(max_ram_pct) or not 0 < max_ram_pct <= 100):
             raise ValueError("max_ram_pct must be greater than 0 and at most 100")
+        if min_available_bytes is not None and min_available_bytes < 0:
+            raise ValueError("min_available_bytes must not be negative")
         self.max_ram_pct = max_ram_pct
         self.min_available_bytes = min_available_bytes
         self._next_process_sample = 0.0
@@ -54,11 +56,14 @@ class RuntimeMemoryGuard:
 
         memory = memory_stats()
         if memory is None:
-            raise ResourceLimitExceeded("Cannot measure host RAM during local inference: counters unavailable")
-        percent_limit_enabled = self.max_ram_pct < 100
-        exceeded = (percent_limit_enabled and memory["percent"] >= self.max_ram_pct) or (
-            memory["available"] < self.min_available_bytes
-        )
+            if self.max_ram_pct is not None or self.min_available_bytes is not None:
+                raise ResourceLimitExceeded("Cannot enforce the explicitly configured host RAM limit: counters unavailable")
+            logger.warning("Host RAM telemetry unavailable during local inference; no automatic RAM limit is configured",
+                           extra={"event_type": "RUNTIME_MEMORY_UNAVAILABLE"})
+            return
+        percentage_exceeded = self.max_ram_pct is not None and memory["percent"] >= self.max_ram_pct
+        available_exceeded = self.min_available_bytes is not None and memory["available"] < self.min_available_bytes
+        exceeded = percentage_exceeded or available_exceeded
         now = time.monotonic()
         if exceeded or now >= self._next_process_sample:
             self._next_process_sample = now + 5.0
@@ -66,13 +71,15 @@ class RuntimeMemoryGuard:
                         memory["percent"], memory["available"], process_memory_snapshot(),
                         extra={"event_type": "RUNTIME_MEMORY"})
         if exceeded:
-            percent_limit = (
-                f"<{self.max_ram_pct:.0f}% used" if percent_limit_enabled else "percentage limit off"
-            )
-            message = (f"Host RAM safety stop: {memory['percent']:.1f}% used, "
+            limits = []
+            if self.max_ram_pct is not None:
+                limits.append(f"<{self.max_ram_pct:.1f}% used")
+            if self.min_available_bytes is not None:
+                limits.append(f">={self.min_available_bytes / 1024**3:g} GiB available")
+            message = (f"Host RAM limit exceeded: {memory['percent']:.1f}% used, "
                        f"{memory['available'] / 1024**3:.1f} GiB available "
-                       f"(limits: {percent_limit}, >={self.min_available_bytes / 1024**3:g} GiB available). "
-                       "Cancelling the benchmark worker; no further model loads will be attempted.")
+                       f"(explicit limits: {', '.join(limits)}). Cancelling the benchmark worker; "
+                       "no further model loads will be attempted.")
             logger.error(message, extra={"event_type": "RUNTIME_MEMORY_LIMIT"})
             raise ResourceLimitExceeded(message)
 

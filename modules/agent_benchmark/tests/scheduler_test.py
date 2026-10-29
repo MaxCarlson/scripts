@@ -390,8 +390,10 @@ async def test_scheduler_saves_partial_reports_after_later_model_transition_fail
     monkeypatch,
 ) -> None:
     from agent_benchmark import scheduler as scheduler_module
+    transition_settings = []
 
     async def fake_transition(model_key: str, **kwargs):
+        transition_settings.append(kwargs)
         if model_key == "qwen38-27b-q6k":
             raise RuntimeError("simulated model load failure")
 
@@ -425,6 +427,7 @@ async def test_scheduler_saves_partial_reports_after_later_model_transition_fail
     assert (experiment_dir / "report.md").is_file()
     manifest = json.loads((experiment_dir / "experiment.json").read_text(encoding="utf-8"))
     assert [item["variant_id"] for item in manifest["run_refs"]] == ["qwen38-27b-q4km"]
+    assert transition_settings[0]["max_ram_pct"] is None
     failure = json.loads((experiment_dir / "experiment-failure.json").read_text(encoding="utf-8"))
     assert failure["stage"] == "model_transition"
     assert failure["model"] == "qwen38-27b-q6k"

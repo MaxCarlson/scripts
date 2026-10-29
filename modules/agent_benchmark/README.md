@@ -1,4 +1,4 @@
-# agent_benchmark — 1.10.0
+# agent_benchmark — 1.19.0
 
 Trial output shows code correctness, scope compliance, budget compliance, and confirmed termination separately, followed by specific violations, verifier/provider errors, uncertainty reasons, and an evidence path. Final output also counts functional code passes with an explicit measured denominator and unavailable count. Strict scoring remains the combined contract; correct code with a scope violation is reported as a functional pass and a strict failure. The same diagnostics are written to `benchmark.log`; trial JSON retains bounded verifier diagnostics.
 
@@ -16,7 +16,7 @@ agent-bench cleanup -r reports/RUN_ID -x    # fresh reconciliation, then owned c
 
 `run` requires `-x/--execute`; plan, status and cleanup preview do not call models. Services must already be running. No command starts or reconfigures shared OpenCode/LM Studio services. LM Studio models resolve by exact downloaded `modelKey`; when OpenCode lacks that exact ID, a registration is generated only in the isolated trial project config. Model display names and similar quantizations are never used as aliases. Planning reports provider readiness and distinguishes unknown, unavailable, runnable, and registration-required models. No cloud fallback.
 
-Multi-model experiments default to a shared 16,384-token LM Studio context cap (`-c/--context-length`) and strict `canonical-120s` worker budget (`-b/--budget-profile`). Before a benchmark-initiated load, the scheduler runs LM Studio's read-only estimate, checks available GPU and host memory with reserves, then loads at the requested context and verifies the reported loaded context. A preloaded model is reused only when its reported context matches. Use `canonical-60s` to reproduce older runs; timeout outcomes remain strict and receive no completion grace. Example:
+Multi-model experiments default to a shared 16,384-token LM Studio context cap (`-c/--context-length`) and strict `canonical-120s` worker budget (`-b/--budget-profile`). Before a benchmark-initiated load, the scheduler runs LM Studio's read-only allocation estimate and compares it to measured free GPU and host capacity without fixed reserve margins. It loads at the requested context and verifies the reported loaded context. A preloaded model is reused only when its reported context matches. Use `canonical-60s` to reproduce older runs; timeout outcomes remain strict and receive no completion grace. Example:
 
 ```powershell
 agent-bench experiment plan -m lms/openai/gpt-oss-20b -m lms/meta/muse-glimmer -c 16384 -b canonical-120s
@@ -65,13 +65,22 @@ Validation from repository root, using the actual repo virtualenv:
 
 ### Runtime memory safety
 
-Local experiment workers are monitored during dispatch and observation. The default runtime
-percentage limit is off; set `agent-bench experiment run --max-ram-percent 90` to stop at 90% host
-RAM usage. Less than 4 GiB available RAM always triggers cancellation, worker reconciliation,
-preserved trial evidence and partial reports, and stops the experiment before another trial/model.
-The diagnostic code is `ResourceLimitExceeded`, an infrastructure result rather than a model-quality
-failure. Unconfirmed termination still blocks future dispatch. This is a sampled safety stop, not an
-OS memory cap or a guarantee against an abrupt native allocation.
+Local experiment workers record host RAM, top resident processes, and GPU memory during dispatch
+and observation. No automatic host RAM percentage or fixed available-RAM threshold is enabled.
+Users may opt in with `agent-bench experiment run --max-ram-percent 90`; that limit is applied both
+while a worker runs and before a benchmark-initiated model load. `--max-ram-percent 100` retains its
+legacy meaning of disabling the percentage check. A configured limit that cannot be measured stops
+before dispatch with `ResourceLimitExceeded`; without a configured limit, missing RAM telemetry is
+reported as unavailable and does not become a model-quality failure.
+
+Model loads require LM Studio's context-specific estimate to fit measured free dedicated GPU memory
+and combined available host/GPU capacity. A missing estimate or missing capacity measurement blocks
+the load; an actual runtime allocation failure is reported without blind retry. The former fixed 2
+GiB GPU reserve, 4 GiB combined reserve, 4 GiB available-RAM floor, and 1.25x model-file-size rule
+were removed because they were not supported as universal capacity boundaries. After unload, the
+harness verifies the model inventory is empty and records resource measurements; it does not wait for
+a utilization percentage. Unconfirmed worker termination still blocks future dispatch. These checks
+cannot prevent a sudden native allocation failure or guarantee shared GPU memory headroom.
 
 Before `run`, `experiment run`, or `smoke` dispatches, it reconciles any pending receipt. It confirms
 the exact prior job, or aborts the bound OpenCode session and waits for fresh terminal evidence. A
@@ -79,10 +88,8 @@ receipt is cleared only after that confirmation; the old evidence and workspace 
 OpenCode cannot confirm termination, the new run stops before model transitions or dispatch.
 
 `benchmark.log` records RAM and the largest resident processes every five seconds during local
-inference (names, PIDs and RSS only), plus a sample at the safety limit. Shared services are never
-force-killed. After an authorized unload, the next model waits up to the existing unload deadline
-for an empty model inventory and measured RAM/VRAM headroom; an empty inventory alone does not
-prove that enough memory has been released. Memory estimates remain mandatory before loading.
+inference (names, PIDs and RSS only). Shared services are never force-killed. Resource percentages
+are observations; capacity decisions use the LM Studio estimate and current measured memory.
 
 
 ### Auditable smoke-task tools
@@ -97,7 +104,7 @@ Windows test-script output. It does not guarantee a model's implementation will 
 Effective tool permissions are checked before submission and retained with trial evidence.
 Other trusted task manifests default to `shell-v1`; unknown profiles fail validation. Codex/agy
 CLI workers retain their separate existing behavior. Historical scores, scope uncertainty, timeouts,
-and memory guardrails are unchanged. Compare runs with matching task/tool profile provenance.
+and the runtime memory policy is described above. Compare runs with matching task/tool profile provenance.
 
 The opt-in `retrieval-files-v1` profile is a separate experimental condition. Before using it,
 install the optional local-agent OpenCode tools by reviewing

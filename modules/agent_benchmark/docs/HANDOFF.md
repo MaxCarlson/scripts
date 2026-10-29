@@ -1,4 +1,17 @@
-# Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
+# Current checkpoint: configurable resource policy (1.19.0)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/qwen-runtime-investigation-20261029`, branch
+`experiment/qwen-runtime-investigation-20261029`. The current RAM-policy implementation removes the
+implicit 90% threshold, 4 GiB available-RAM floor, fixed 2/4 GiB allocation reserves, and 1.25x
+model-file-size rule. Percent limits are optional and flow from CLI through scheduler to lifecycle;
+the LM Studio estimate is compared against measured available capacity. Model inventory, context,
+busy-state, command failure, and confirmed worker termination checks remain. Focused validation is
+in progress. This supersedes the historical checkpoint below; preserve that evidence but do not use
+its guard thresholds as current policy. Next: finish focused tests, complete B1 root-cause analysis,
+then run matched `none` versus task-derived checklist and one-repair comparisons with LLM Monitor live
+attached to an already-planned trial.
+
+# Historical checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 
 Worktree `C:/Users/mcarls/src/scripts-agent-benchmark`, branch `agent/benchmark-resume-20261023`,
 baseline `a0ff1778ef1737f1c23d8f1cbd7ef57d4973af75`. Agent Benchmark is now 1.16.0. The multi-model
