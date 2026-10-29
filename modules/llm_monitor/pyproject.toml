@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llm-monitor"
+version = "0.5.0"
+description = "Read-only local LLM and OpenCode monitoring"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+llm-monitor = "llm_monitor.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["llm_monitor*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q --basetemp=modules/llm_monitor/.pytest_tmp_root"
