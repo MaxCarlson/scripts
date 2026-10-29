@@ -75,4 +75,4 @@
 - [x] Run all LLM Monitor tests, Scripts Help tests, `compileall`, CLI help, and diff checks.
 - [x] Exercise deterministic synthetic multi-session load and report wall time and traced peak memory.
 - [x] Build/install package in an isolated virtual environment; inspect changed paths and protected scope.
-- [ ] Commit, push, and verify remote SHA.
+- [x] Commit `fe5f182c9437c6e6abecc37c61d55ed2b3a6e228`, push the isolated branch, and verify its remote SHA.

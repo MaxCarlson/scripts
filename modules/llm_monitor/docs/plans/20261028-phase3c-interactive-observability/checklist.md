@@ -26,6 +26,6 @@
 
 ## Delivery
 
-- [ ] Run module and registry tests, packaging, compile, help, and diff checks.
-- [ ] Measure synthetic concurrent-session performance.
-- [ ] Review protected scope, commit, push, and verify remote SHA.
+- [x] Run module and registry tests, packaging, compile, help, and diff checks.
+- [x] Measure synthetic concurrent-session performance.
+- [x] Review protected scope, commit, push, and verify remote SHA.
