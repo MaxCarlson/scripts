@@ -1,7 +1,7 @@
 # Runmux LLM Monitor Integration Handoff
 
-**Owner:** Runmux implementation agent  
-**Consumer module:** `llm_monitor`  
+**Owner:** Runmux implementation agent
+**Consumer module:** `llm_monitor`
 **Boundary:** Read-only integration. This document was prepared without changing Runmux source.
 
 ## Available LLM Monitor interface
