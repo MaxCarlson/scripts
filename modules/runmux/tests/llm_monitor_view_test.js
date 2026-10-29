@@ -411,7 +411,63 @@ async function runTests() {
     console.log("✓ Test 5: Outdated async race protection verified");
   }
 
-  console.log("\nALL 5 llm_monitor_view_test.js TEST SUITES PASSED!");
+  // --- Test 6: Auth locked (401) handling and dynamic class sanitization ---
+  {
+    let showLoginCalledWith = null;
+    const container = makeElement("div");
+    container.id = "llm-monitor-workspace";
+    const harness = createTestHarness(container);
+    harness.context.showLogin = (msg) => { showLoginCalledWith = msg; };
+    harness.context.globalThis.showLogin = (msg) => { showLoginCalledWith = msg; };
+
+    harness.responses.set("/api/llm-monitor/v1/status", () => ({
+      json: async () => ({
+        schema_version: 1,
+        availability: "available",
+        configured_provider: "opencode",
+      }),
+    }));
+
+    // Return malformed / adversarial session state to test class sanitization
+    harness.responses.set("/api/llm-monitor/v1/snapshot", () => ({
+      json: async () => ({
+        schema_version: 1,
+        system: { total_sessions: 1, loaded_models: [] },
+        sessions: [
+          {
+            provider_instance_id: "http://127.0.0.1:4096",
+            session_id: "sec-sess",
+            model: "qwen",
+            state: "ACTIVE; color: red\" <script>",
+          },
+        ],
+      }),
+    }));
+
+    harness.Monitor.start(container, harness.api);
+    harness.Monitor.onVisibilityChange(true);
+    await new Promise((r) => setTimeout(r, 40));
+
+    const pill = container.querySelector(".session-status-pill");
+    assert.ok(pill, "Status pill must exist");
+    assert.equal(pill.className.includes("<script>"), false, "Must sanitize dynamic class");
+    assert.equal(pill.className.includes("active--color--red---script-"), true, "Must normalize to safe CSS identifier");
+
+    // Test auth locked error
+    harness.responses.set("/api/llm-monitor/v1/sessions/detail", () => {
+      throw new Error("locked");
+    });
+
+    harness.Monitor.selectSession("http://127.0.0.1:4096", "sec-sess");
+    await new Promise((r) => setTimeout(r, 40));
+
+    assert.ok(showLoginCalledWith, "showLogin must be called on 401 locked error");
+    assert.ok(showLoginCalledWith.includes("Session expired"), "Must present session expired message");
+
+    console.log("✓ Test 6: Auth locked (401) handling and dynamic class sanitization verified");
+  }
+
+  console.log("\nALL 6 llm_monitor_view_test.js TEST SUITES PASSED!");
 }
 
 runTests().catch((err) => {

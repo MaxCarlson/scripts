@@ -31,6 +31,13 @@
 - Clean logout/lock teardown canceling in-flight `AbortController`s and resetting cached state.
 - Compact mobile responsive styles avoiding page overflow across all tested viewports (390px to 2560px).
 
+
+### Independent Final Review Hardening
+- **Dynamic CSS Class Sanitization:** Sanitized all provider-controlled class names (`status.availability`, `session.state`, `alert.severity`, `detailError.type`) via `.toLowerCase().replace(/[^a-z0-9_-]/g, "-")` to eliminate any potential style injection or malformed class token surface.
+- **Session Expiration / Lock (401) Handling:** Added explicit checks for `err.message === "locked"` across all API calls in `llm-monitor.js` (`pollSnapshot`, `fetchSessionDiagnostics`, `initStatus`), halting polling immediately and triggering `globalThis.showLogin` to show the session expired message.
+- **Linter Compliance:** Wrapped long assertion line in `historical_runs_api_test.py` to satisfy Ruff 120-character limit.
+- **Extended Test Coverage:** Added Test 6 to `llm_monitor_view_test.js` for 401 handling and class sanitization; extended `llm_monitor_browser_e2e_test.js` with second session selection and reauthentication verification.
+
 ## Verification Evidence
 
 - `node modules/runmux/tests/llm_monitor_view_test.js`: All 5 test suites passed.

@@ -327,7 +327,9 @@ def test_ten_thousand_run_registry_queries_remain_page_bounded(tmp_path: Path) -
         assert removed_from_filter not in after_ids
         assert len(after_ids) == 50
         assert len(before_ids - after_ids) == 1
-        assert len(after_ids - before_ids) == 1, "A later record shifts into the page after a matching run leaves the filter"
+        assert len(after_ids - before_ids) == 1, (
+            "A later record shifts into the page after a matching run leaves the filter"
+        )
         assert after_payload["has_more"] is False
 
         maximum = client.get("/api/runs/history", params={"limit": 200})

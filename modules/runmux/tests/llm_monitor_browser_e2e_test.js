@@ -334,6 +334,34 @@ async function runLLMMonitorBrowserE2E() {
     assert.equal(detailState.eventsCount, 2);
     console.log("Verified session detail diagnostics, hardware metrics, alerts, and timeline.");
 
+    // 5b. Select second session (sess-beta-5678)
+    console.log("Selecting second session sess-beta-5678...");
+    await evaluate(`(function() {
+      const cards = document.querySelectorAll(".monitor-session-card");
+      cards[1].click();
+    })()`);
+    await sleep(600);
+
+    const secondSessionState = await evaluate(`(function() {
+      const items = Array.from(document.querySelectorAll(".detail-item"));
+      const map = {};
+      for (const item of items) {
+        const label = item.querySelector(".detail-label")?.textContent.trim();
+        const code = item.querySelector("code, span.status-badge")?.textContent.trim();
+        if (label) map[label] = code;
+      }
+      return {
+        selectedId: document.querySelector(".monitor-session-card.selected .session-id-text")?.textContent.trim(),
+        modelText: map["MODEL"],
+        statusText: map["STATUS"],
+      };
+    })()`);
+
+    assert.equal(secondSessionState.selectedId, "sess-beta-5678");
+    assert.equal(secondSessionState.modelText, "claude-3-5-sonnet");
+    assert.equal(secondSessionState.statusText, "idle");
+    console.log("Verified switching to second session updates diagnostics and status.");
+
     // 6. Responsive viewports and screenshots
     const viewports = [
       { name: "desktop_1920", width: 1920, height: 1080, mobile: false },
@@ -400,6 +428,25 @@ async function runLLMMonitorBrowserE2E() {
     assert.equal(logoutState.dashboardHidden, true);
     assert.equal(logoutState.monitorStatus, null);
     console.log("Verified logout clears authentication, stops monitor polling, and resets state.");
+
+    // 9. Test Reauthentication
+    console.log("Testing reauthentication after logout...");
+    await evaluate(`(function() {
+      const input = document.querySelector("#login-code");
+      input.value = "${loginCode}";
+      document.querySelector("#login-form").dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+    })()`);
+    await sleep(800);
+
+    const reloginState = await evaluate(`({
+      loginHidden: Boolean(document.querySelector("#login-view")?.hidden),
+      dashboardVisible: !document.querySelector("#dashboard")?.hidden,
+      monitorAvail: window.RunmuxLLMMonitor?.getStatus()?.availability,
+    })`);
+    assert.equal(reloginState.loginHidden, true);
+    assert.equal(reloginState.dashboardVisible, true);
+    assert.equal(reloginState.monitorAvail, "available");
+    console.log("Verified reauthentication restores dashboard and re-initializes monitor availability.");
 
     console.log("\n================================================");
     console.log("ALL REAL BROWSER LLM MONITOR E2E TESTS PASSED!");

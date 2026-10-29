@@ -62,7 +62,8 @@
       return badge;
     }
 
-    const avail = status.availability || "unknown";
+    const rawAvail = String(status.availability || "unknown");
+    const avail = rawAvail.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
     badge.classList.add(avail);
     if (avail === "available") {
       const provider = status.configured_provider || "Provider";
@@ -195,8 +196,10 @@
       const idEl = makeEl("span", "session-id-text", session.session_id);
       idEl.title = session.session_id;
 
-      const statusText = (session.state || session.status || "active").toLowerCase();
-      const statusPill = makeEl("span", `session-status-pill ${statusText}`, statusText);
+      const rawStatus = String(session.state || session.status || "active");
+      const statusText = rawStatus.toLowerCase();
+      const statusClass = statusText.replace(/[^a-z0-9_-]/g, "-");
+      const statusPill = makeEl("span", `session-status-pill ${statusClass}`, statusText);
       cardHead.append(idEl, statusPill);
 
       const cardBody = makeEl("div", "session-card-body");
@@ -283,6 +286,10 @@
     } catch (err) {
       if (signal.aborted || currentGeneration !== requestGeneration) return;
       detailLoading = false;
+      if (err && err.message === "locked") {
+        globalThis.showLogin?.("Session expired. Enter the current terminal login code again.");
+        return;
+      }
       if (err.status === 404) {
         detailError = { type: "404", message: "LLM session not found or expired from provider." };
       } else if (err.status === 503) {
@@ -375,7 +382,8 @@
     }
 
     if (detailError) {
-      const errBox = makeEl("div", `monitor-error-box ${detailError.type}`);
+      const errType = String(detailError.type || "error").toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+      const errBox = makeEl("div", `monitor-error-box ${errType}`);
       errBox.append(
         makeEl("h4", null, detailError.type === "404" ? "Session Missing" : "Provider Unavailable"),
         makeEl("p", null, detailError.message)
@@ -418,7 +426,9 @@
     // State
     const stateItem = makeEl("div", "detail-item");
     stateItem.append(makeEl("span", "detail-label", "STATUS"));
-    stateItem.append(makeEl("span", `status-badge ${summary.state || summary.status || "active"}`, summary.state || summary.status || "active"));
+    const rawState = String(summary.state || summary.status || "active");
+    const stateClass = rawState.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+    stateItem.append(makeEl("span", `status-badge ${stateClass}`, rawState));
 
     // Context utilization
     const utilItem = makeEl("div", "detail-item");
@@ -538,7 +548,9 @@
 
     const list = makeEl("ul", "alerts-list");
     for (const alert of alerts) {
-      const item = makeEl("li", `alert-item severity-${(alert.severity || "info").toLowerCase()}`);
+      const rawSev = String(alert.severity || "info");
+      const sevClass = rawSev.toLowerCase().replace(/[^a-z0-9_-]/g, "-");
+      const item = makeEl("li", `alert-item severity-${sevClass}`);
       const head = makeEl("div", "alert-head");
       head.append(
         makeEl("span", "alert-severity", (alert.severity || "INFO").toUpperCase()),
@@ -642,8 +654,11 @@
         }
       }
     } catch (err) {
-      if (!abortController.signal.aborted) {
-        // If locked, let host handle
+      if (abortController && !abortController.signal.aborted) {
+        if (err && err.message === "locked") {
+          globalThis.showLogin?.("Session expired. Enter the current terminal login code again.");
+          return;
+        }
       }
     } finally {
       isPolling = false;
@@ -668,8 +683,10 @@
       }
       updateHeaderStats();
       updateSessionList();
-    } catch {
-      // Keep default
+    } catch (err) {
+      if (err && err.message === "locked") {
+        globalThis.showLogin?.("Session expired. Enter the current terminal login code again.");
+      }
     }
   }
 

@@ -42,6 +42,12 @@
   - [x] Clean logout/lock teardown canceling in-flight AbortControllers and clearing DOM/state
   - [x] Zero snapshot cache bypass (uses standard `/snapshot` without force_refresh)
   - [x] Mobile responsive viewport bounding (390px, 768px, 1366px, 1920px) with 0 page overflow
+- [x] Final Independent Review Hardening
+  - [x] Sanitize dynamic CSS class identifiers in `llm-monitor.js`
+  - [x] Handle HTTP 401 (session locked) cleanly across polling and diagnostics
+  - [x] Fix Ruff line length in `historical_runs_api_test.py`
+  - [x] Add Test 6 to `llm_monitor_view_test.js`
+  - [x] Add second session selection and reauthentication to `llm_monitor_browser_e2e_test.js`
 - [x] Stage 6: Hardening, Regression & Delivery
   - [x] Unit test suite `llm_monitor_view_test.js` (5 suites passed)
   - [x] Real headless Chrome CDP E2E test `browser_e2e_test.js` passed
