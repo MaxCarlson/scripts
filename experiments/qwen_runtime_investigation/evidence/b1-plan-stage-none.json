@@ -1,0 +1,26 @@
+{
+  "schema": "b1-planning-stage-v1",
+  "created_at": "2026-10-29T18:16:26.918250+00:00",
+  "model_key": "qwen38_23GB",
+  "expected_runtime_model_id": "qwen38-27b-q4km",
+  "lm_studio_version": "0.4.26.0",
+  "endpoint_path": "/v1/chat/completions",
+  "request_parameters": {
+    "max_tokens": 4096,
+    "temperature": 0,
+    "seed": 17,
+    "stream": false,
+    "reasoning_effort": "none",
+    "reasoning_effort_source": "experiment_plan_stage"
+  },
+  "prompt_saved": false,
+  "http_status": 200,
+  "provider_model_id": "qwen38_23GB",
+  "finish_reason": "stop",
+  "input_tokens": 1444,
+  "output_tokens": 796,
+  "reasoning_tokens": 0,
+  "plan_chars": 3462,
+  "plan_available": true,
+  "wall_seconds": 6.531
+}

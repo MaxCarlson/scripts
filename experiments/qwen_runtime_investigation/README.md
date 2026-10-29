@@ -6,6 +6,8 @@ This directory holds request-capture tooling, staged experiment settings, and th
 
 The RAM unload/reload measurements, controlled B1 analogue comparison, and completed T5 repeats are summarized in [`evidence/ram-b1-t5-checkpoint.md`](evidence/ram-b1-t5-checkpoint.md). The B1 default analogue reproduced reasoning-only `finish=length`; explicit `none` reached edits but failed one lifecycle assertion. In the 8K T5 repeats, both conditions had a scored pass and a scored failure; `none` was faster and reported zero reasoning, but is not yet a general reliability fix. The report preserves the distinction between the historical B1 failure and its synthetic analogue.
 
+The bounded B1 repair, numeric reasoning-budget probes, and one plan-then-execute comparison are recorded in [`evidence/b1-repair-budget-plan-comparison.md`](evidence/b1-repair-budget-plan-comparison.md). The original `none` failure remains frozen; a separate single repair passed, while two fresh B1 attempts still failed different lifecycle assertions. Numeric `reasoning_budget` and `thinking_budget` fields were accepted but did not cap reasoning on the exact Qwen GGUF. Planning did not establish a correctness benefit.
+
 ## Offline request forwarding
 
 Run from the isolated investigation worktree:
