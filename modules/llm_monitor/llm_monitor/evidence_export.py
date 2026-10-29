@@ -115,7 +115,7 @@ def write_evidence_package(*, store: TelemetryStore, session_ids: list[str], end
                     archive.writestr(name, data)
                     hashes[name] = hashlib.sha256(data).hexdigest()
             manifest = {"export_schema_version": EXPORT_SCHEMA_VERSION, "created_at": datetime.now(timezone.utc).isoformat(),
-                "monitor_version": __version__, "source_telemetry_schema_version": 1,
+                "monitor_version": __version__, "source_telemetry_schema_version": store.schema_version,
                 "session_ids": session_ids, "record_counts": counts, "files": hashes,
                 "redaction_policy": REDACTION_POLICY,
                 "provenance_note": "Checksums establish package integrity only, not provider-data authenticity."}

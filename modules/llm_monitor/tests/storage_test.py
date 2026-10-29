@@ -32,11 +32,33 @@ def test_fresh_database_has_versioned_schema_and_integrity_check(tmp_path):
         info = store.database_info()
         check = store.check_integrity()
 
-    assert info["schema_version"] == 1
+    assert info["schema_version"] == 2
     assert info["counts"]["sessions"] == 0
     assert check["ok"] is True
     assert check["foreign_key_violations"] == []
     assert path.exists()
+
+
+def test_recent_session_records_returns_bounded_window_in_chronological_order(tmp_path):
+    path = tmp_path / "recent.sqlite3"
+    events = [NormalizedEvent(
+        event_id=f"event-{index}", timestamp=f"2026-01-01T00:00:{index:02d}+00:00",
+        observed_at="2026-01-01T00:01:00+00:00", source="synthetic", category="tool",
+        subtype="completed", session_id="recent-session", provider_id=f"provider-{index}", outcome="success",
+    ) for index in range(5)]
+    snapshot = {"polled_at": "2026-01-01T00:01:00+00:00", "normalized_state": "idle",
+                "history_coverage": {"status": "complete"}}
+    with TelemetryStore(path) as store:
+        store.ingest_poll("opencode", "http://localhost:4096", "recent-session", snapshot, events)
+        recent = store.recent_session_records("recent-session", endpoint="http://localhost:4096", limit=7)
+        bounded = store.recent_session_records("recent-session", endpoint="http://localhost:4096", limit=2)
+
+    recent_tools = [row for row in recent if row["category"] == "tool"]
+    assert [row["timestamp"] for row in recent_tools] == [
+        f"2026-01-01T00:00:0{index}+00:00" for index in range(5)
+    ]
+    assert len(bounded) == 2
+    assert all(row["timestamp"] == "2026-01-01T00:01:00+00:00" for row in bounded)
 
 
 def test_future_schema_is_rejected_without_replacing_existing_data(tmp_path):

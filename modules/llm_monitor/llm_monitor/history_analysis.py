@@ -336,7 +336,7 @@ def analyze_stored_session(
         "findings": findings,
         "provenance": {
             "event_source": "TelemetryStore.iter_session_records",
-            "database_schema_version": 1,
+            "database_schema_version": store.schema_version,
             "streamed": True,
             "metric_coverage": coverage.get("status", "unknown"),
             "task_equivalence": "unknown",

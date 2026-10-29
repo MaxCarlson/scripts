@@ -16,13 +16,15 @@ from urllib.parse import urlsplit
 from .events import NormalizedEvent
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 DEFAULT_RETENTION_POLICY = "manual_prune_only"
-REQUIRED_TABLES = {
+BASE_REQUIRED_TABLES = {
     "schema_metadata", "provider_instances", "sessions", "jobs", "events", "inferences",
     "compactions", "tools", "model_configurations", "hardware_samples", "collection_checkpoints",
     "collection_gaps",
 }
+ALERT_TABLES = {"alert_states"}
+REQUIRED_TABLES = BASE_REQUIRED_TABLES | ALERT_TABLES
 
 
 class TelemetryStoreError(RuntimeError):
@@ -218,9 +220,13 @@ class TelemetryStore:
             if version == 0:
                 connection.execute("PRAGMA journal_mode=WAL")
                 self._create_schema(connection)
+                version = SCHEMA_VERSION
+            elif version == 1:
+                self._migrate_v1_to_v2(connection)
+                version = SCHEMA_VERSION
             elif version != SCHEMA_VERSION:
                 raise UnsupportedSchemaError(f"unsupported telemetry schema version {version}")
-            self._verify_schema_tables(connection)
+            self._verify_schema_tables(connection, version)
 
     def _check_schema(self) -> None:
         with closing(self._connect(readonly=True)) as connection:
@@ -229,16 +235,17 @@ class TelemetryStore:
                 raise UnsupportedSchemaError(
                     f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
                 )
-            if version != SCHEMA_VERSION:
+            if version not in {1, SCHEMA_VERSION}:
                 raise TelemetryStoreError(f"unsupported telemetry schema version {version}")
-            self._verify_schema_tables(connection)
+            self._verify_schema_tables(connection, version)
 
     @staticmethod
-    def _verify_schema_tables(connection: sqlite3.Connection) -> None:
+    def _verify_schema_tables(connection: sqlite3.Connection, version: int | None = None) -> None:
         tables = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
-        missing = sorted(REQUIRED_TABLES - tables)
+        required = BASE_REQUIRED_TABLES | (ALERT_TABLES if version == SCHEMA_VERSION else set())
+        missing = sorted(required - tables)
         if missing:
             raise TelemetryStoreError("telemetry schema is incomplete; missing tables: " + ", ".join(missing))
 
@@ -259,6 +266,8 @@ class TelemetryStore:
                 "CREATE TABLE hardware_samples (sample_id TEXT PRIMARY KEY, observed_at TEXT NOT NULL, source TEXT NOT NULL, scope TEXT NOT NULL, device_id TEXT, values_json TEXT NOT NULL)",
                 "CREATE TABLE collection_checkpoints (session_key TEXT PRIMARY KEY REFERENCES sessions(session_key) ON DELETE CASCADE, last_polled_at TEXT NOT NULL, last_event_at TEXT, coverage_json TEXT NOT NULL, last_error_sources_json TEXT NOT NULL)",
                 "CREATE TABLE collection_gaps (gap_id TEXT PRIMARY KEY, session_key TEXT NOT NULL REFERENCES sessions(session_key) ON DELETE CASCADE, category TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL, reason_code TEXT NOT NULL, detail_json TEXT NOT NULL)",
+                "CREATE TABLE alert_states (alert_id TEXT PRIMARY KEY, provider_instance_id TEXT NOT NULL, session_id TEXT NOT NULL, rule_id TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL, classification TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL, evidence_json TEXT NOT NULL, threshold REAL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_notified_at TEXT, acknowledged_at TEXT, resolved_at TEXT, last_updated TEXT NOT NULL)",
+                "CREATE INDEX ix_alert_states_status_updated ON alert_states(status, last_updated)",
                 "CREATE INDEX ix_events_session_time ON events(session_key, timestamp, event_uid)",
                 "CREATE INDEX ix_events_category_time ON events(category, timestamp)",
                 "CREATE INDEX ix_events_provider_id ON events(session_key, provider_event_id)",
@@ -275,6 +284,29 @@ class TelemetryStore:
                 [("schema_version", str(SCHEMA_VERSION)), ("retention_policy", DEFAULT_RETENTION_POLICY)],
             )
             connection.execute(f"PRAGMA user_version={SCHEMA_VERSION}")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    @staticmethod
+    def _migrate_v1_to_v2(connection: sqlite3.Connection) -> None:
+        """Atomically add alert-state storage without changing existing telemetry rows."""
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            connection.execute(
+                "CREATE TABLE alert_states (alert_id TEXT PRIMARY KEY, provider_instance_id TEXT NOT NULL, "
+                "session_id TEXT NOT NULL, rule_id TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL, "
+                "classification TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL, evidence_json TEXT NOT NULL, "
+                "threshold REAL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_notified_at TEXT, "
+                "acknowledged_at TEXT, resolved_at TEXT, last_updated TEXT NOT NULL)"
+            )
+            connection.execute("CREATE INDEX ix_alert_states_status_updated ON alert_states(status, last_updated)")
+            connection.execute(
+                "INSERT INTO schema_metadata(key, value) VALUES('schema_version', '2') "
+                "ON CONFLICT(key) DO UPDATE SET value='2'"
+            )
+            connection.execute("PRAGMA user_version=2")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -734,6 +766,24 @@ class TelemetryStore:
                 for row in rows:
                     yield dict(row) | {"payload": json.loads(row["payload_json"])}
 
+    def recent_session_records(
+        self, session_id: str, *, provider_type: str = "opencode", endpoint: str | None = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
+        """Return the latest bounded event window in chronological order."""
+        page_size = min(max(1, limit), 1000)
+        session = self._resolve_session(session_id, provider_type=provider_type, endpoint=endpoint)
+        if not session:
+            return []
+        with closing(self._connect()) as connection:
+            rows = connection.execute(
+                "SELECT event_uid, session_key, timestamp, observed_at, source, category, subtype, provider_event_id, "
+                "identity_quality, payload_json FROM events WHERE session_key=? "
+                "ORDER BY timestamp IS NULL, timestamp DESC, event_uid DESC LIMIT ?",
+                (session["session_key"], page_size),
+            ).fetchall()
+        return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in reversed(rows)]
+
     def hardware_samples(
         self, *, start_at: str | None = None, end_at: str | None = None,
         limit: int = 1000, offset: int = 0,
@@ -810,10 +860,13 @@ class TelemetryStore:
     def database_info(self) -> dict[str, Any]:
         with closing(self._connect()) as connection:
             version = connection.execute("PRAGMA user_version").fetchone()[0]
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             counts = {}
             for table in ("provider_instances", "sessions", "events", "inferences", "compactions", "tools",
                           "hardware_samples", "collection_checkpoints", "collection_gaps", "jobs"):
                 counts[table] = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            if "alert_states" in tables:
+                counts["alert_states"] = connection.execute("SELECT COUNT(*) FROM alert_states").fetchone()[0]
             span = connection.execute("SELECT MIN(observed_at), MAX(observed_at) FROM events").fetchone()
         file_paths = (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm"))
         size_bytes = sum(file.stat().st_size for file in file_paths if file.exists())
@@ -822,16 +875,79 @@ class TelemetryStore:
                 "counts": counts, "oldest_observation": span[0], "latest_observation": span[1],
                 "retention_policy": DEFAULT_RETENTION_POLICY, "automatic_pruning": False}
 
+    @property
+    def schema_version(self) -> int:
+        with closing(self._connect()) as connection:
+            return int(connection.execute("PRAGMA user_version").fetchone()[0])
+
     def check_integrity(self) -> dict[str, Any]:
         with closing(self._connect(readonly=True)) as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version != SCHEMA_VERSION:
+            if version not in {1, SCHEMA_VERSION}:
                 return {"ok": False, "schema_version": version, "integrity": [],
                         "error": f"unsupported schema version {version}"}
+            self._verify_schema_tables(connection, version)
             rows = [row[0] for row in connection.execute("PRAGMA integrity_check")]
             foreign_key_rows = [tuple(row) for row in connection.execute("PRAGMA foreign_key_check")]
         return {"ok": rows == ["ok"] and not foreign_key_rows, "schema_version": version,
                 "integrity": rows, "foreign_key_violations": foreign_key_rows}
+
+    def list_alert_states(self, *, status: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+        size = min(max(1, limit), 10000)
+        with closing(self._connect()) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "alert_states" not in tables:
+                return []
+            query = "SELECT * FROM alert_states"
+            values: tuple[Any, ...] = ()
+            if status:
+                query += " WHERE status=?"
+                values = (status,)
+            query += " ORDER BY last_updated DESC, alert_id LIMIT ?"
+            rows = connection.execute(query, (*values, size)).fetchall()
+        return [dict(row) | {"evidence": json.loads(row["evidence_json"])} for row in rows]
+
+    def save_alert_state(self, state: dict[str, Any]) -> None:
+        if self.readonly:
+            raise TelemetryStoreError("database is open read-only")
+        evidence = state.get("evidence")
+        evidence_json = state.get("evidence_json")
+        if not isinstance(evidence_json, str):
+            evidence_json = _json(evidence if isinstance(evidence, list) else [])
+        last_updated = state.get("last_updated") or state.get("last_seen") or _utc_now()
+        with self._transaction() as connection:
+            connection.execute(
+                "INSERT INTO alert_states(alert_id, provider_instance_id, session_id, rule_id, category, severity, "
+                "classification, status, summary, evidence_json, threshold, first_seen, last_seen, last_notified_at, "
+                "acknowledged_at, resolved_at, last_updated) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT(alert_id) DO UPDATE SET status=excluded.status, severity=excluded.severity, "
+                "classification=excluded.classification, summary=excluded.summary, evidence_json=excluded.evidence_json, "
+                "threshold=excluded.threshold, last_seen=excluded.last_seen, "
+                "last_notified_at=COALESCE(excluded.last_notified_at, alert_states.last_notified_at), "
+                "acknowledged_at=excluded.acknowledged_at, resolved_at=excluded.resolved_at, "
+                "last_updated=excluded.last_updated",
+                (state["alert_id"], state["provider_instance_id"], state["session_id"], state["rule_id"],
+                 state["category"], state["severity"], state["classification"], state["status"],
+                 state["summary"], evidence_json, state.get("threshold"), state["first_seen"], state["last_seen"],
+                 state.get("last_notified_at"), state.get("acknowledged_at"), state.get("resolved_at"), last_updated),
+            )
+
+    def acknowledge_alert(self, alert_id: str, *, at: str | None = None) -> dict[str, Any]:
+        if self.readonly:
+            raise TelemetryStoreError("database is open read-only")
+        stamp = _normalize_stamp(at)
+        with self._transaction() as connection:
+            cursor = connection.execute(
+                "UPDATE alert_states SET status='acknowledged', acknowledged_at=COALESCE(acknowledged_at, ?), "
+                "last_updated=? WHERE alert_id=? AND status IN ('active', 'acknowledged')",
+                (stamp, stamp, alert_id),
+            )
+            if not cursor.rowcount:
+                raise TelemetryStoreError(f"active alert {alert_id!r} was not found")
+            row = connection.execute("SELECT * FROM alert_states WHERE alert_id=?", (alert_id,)).fetchone()
+        if row is None:
+            raise TelemetryStoreError(f"active alert {alert_id!r} was not found")
+        return dict(row) | {"evidence": json.loads(row["evidence_json"])}
 
     def prune_before(self, cutoff: str, *, write: bool = False) -> dict[str, Any]:
         with closing(self._connect(readonly=not write)) as connection:

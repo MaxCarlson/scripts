@@ -19,6 +19,8 @@ llm-monitor db info [-d DATABASE] [-f text|json]
 llm-monitor db check [-d DATABASE] [-f text|json]
 llm-monitor db prune -r DAYS [-d DATABASE] [-w] [-f text|json]
 llm-monitor gpu [-f text|json]
+llm-monitor tui [-s SESSION_ID | -a] [-d DATABASE] [-i SECONDS]
+llm-monitor alerts list|rules|test|acknowledge [options]
 ```
 
 OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. `-d/--directory` remains the OpenCode project-directory option on existing live commands; database commands use `-d/--database`. The historical `report` uses `-D/--database` to preserve that existing directory flag. Optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations.
@@ -43,7 +45,7 @@ llm-monitor history --session SESSION_ID --database ./telemetry.sqlite3 --format
 llm-monitor report --session SESSION_ID --history --database ./telemetry.sqlite3
 ```
 
-By default, the database is outside the current directory: `%LOCALAPPDATA%\\llm-monitor\\telemetry.sqlite3` on Windows, `~/Library/Application Support/llm-monitor/telemetry.sqlite3` on macOS, and `$XDG_DATA_HOME/llm-monitor/telemetry.sqlite3` on Linux, WSL2, and Termux (falling back to `~/.local/share`). Set `-d/--database` to choose a different file. The current schema is version 1. New databases use SQLite WAL; event batches and their checkpoints commit in one transaction. SQLite serializes writers and unique event keys make repeated polling idempotent. Multiple sessions can be recorded by one `record --all` process; independent processes can share the database through SQLite locking.
+By default, the database is outside the current directory: `%LOCALAPPDATA%\\llm-monitor\\telemetry.sqlite3` on Windows, `~/Library/Application Support/llm-monitor/telemetry.sqlite3` on macOS, and `$XDG_DATA_HOME/llm-monitor/telemetry.sqlite3` on Linux, WSL2, and Termux (falling back to `~/.local/share`). Set `-d/--database` to choose a different file. The current schema is version 2; opening a writable v1 database performs a transactional forward migration that adds local alert state. Read-only history access remains compatible with v1. New databases use SQLite WAL; event batches and their checkpoints commit in one transaction. SQLite serializes writers and unique event keys make repeated polling idempotent. Multiple sessions can be recorded by one `record --all` process; independent processes can share the database through SQLite locking.
 
 New sessions receive one initial history collection. Later cycles use the existing bounded/cursor-aware OpenCode poller. A restart replays the available overlap and records an offline gap; older events outside a provider's bounded window cannot be reconstructed. Partial and unavailable intervals remain represented as gaps. A historical report reads only stored telemetry, so it works without OpenCode but can only cover monitoring observations.
 
@@ -69,17 +71,34 @@ llm-monitor export -s SESSION_A -s SESSION_B -o .\runs.zip                 # pre
 llm-monitor export -s SESSION_A -s SESSION_B -o .\runs.zip --write -F csv
 llm-monitor export --action verify -o .\runs.zip
 llm-monitor visualize -s SESSION_A -o .\timeline.svg --write
+llm-monitor tui --all --interval 2
+llm-monitor tui --session SESSION_ID --database .\telemetry.sqlite3
+llm-monitor tui --all --persist-alerts --database .\telemetry.sqlite3
+llm-monitor alerts rules --format json
+llm-monitor alerts test --session SESSION_ID --database .\telemetry.sqlite3 --format json
+llm-monitor alerts list --database .\telemetry.sqlite3
+llm-monitor alerts acknowledge --id ALERT_ID --database .\telemetry.sqlite3
 ```
 
 ```sh
 llm-monitor compare -s SESSION_A -s SESSION_B --database ./telemetry.sqlite3
 llm-monitor export -s SESSION_A -o ./evidence.zip --write
 llm-monitor visualize -s SESSION_A -o ./timeline.html --format html --write
+llm-monitor tui --all --interval 2
+llm-monitor alerts test --session SESSION_ID --database ./telemetry.sqlite3 --format json
 ```
 
-Export creation previews unless `--write` is supplied. The ZIP contains session metadata, normalized event rows, analysis, coverage gaps, configuration, optional sampled hardware observations, and a manifest with per-file SHA-256 checksums. It serializes only the privacy-safe telemetry already stored: prompts, responses, source content, tool output, and raw arguments are not reconstructed. CSV cells are guarded against spreadsheet formula interpretation. Verification checks package structure and checksums; a valid checksum proves package integrity, not provider authenticity. Export schema is version 1; source telemetry remains schema version 1 and requires no migration.
+Export creation previews unless `--write` is supplied. The ZIP contains session metadata, normalized event rows, analysis, coverage gaps, configuration, optional sampled hardware observations, and a manifest with per-file SHA-256 checksums. It serializes only the privacy-safe telemetry already stored: prompts, responses, source content, tool output, and raw arguments are not reconstructed. CSV cells are guarded against spreadsheet formula interpretation. Verification checks package structure and checksums; a valid checksum proves package integrity, not provider authenticity. Export schema is version 1; the manifest reports the actual source telemetry schema version.
 
 `visualize` produces a static SVG timeline or self-contained HTML wrapper. It previews metadata by default and writes only with `--write`. The current view marks known inference, tool, compaction, lifecycle, and hardware events; it does not interpolate missing intervals or fabricate continuous hardware samples. Comparison visualization shows observed wall-duration bars. Large event histories use the analyzer's bounded marker sampling. Percentiles require at least five samples. Message-boundary throughput is approximate and is not decode throughput. Time categories are interval unions; unclassified wall time is not called idle. Sampled state durations are limited to their observed coverage and may be unavailable for older transition-only histories.
+
+## Interactive dashboard and alerts
+
+`tui` is a live-only consumer of the shared `ObservabilityService`; it does not start persistent recording. Historical sessions are included when a database is available. Use arrows or `j/k` to select, Enter to inspect, Tab to change sections, `/` to filter, `s` to cycle session/state/context/activity sorting, `r` to refresh, `p` to pause display refreshes, `[`/`]` to scroll, `?` for help, and `q` to exit. Pause affects the dashboard's own refresh loop only. A TTY is required; use `watch`, `status`, or `report` for non-interactive output. Hardware readings remain device-level unless source data explicitly provides process attribution.
+
+Alerts are local diagnostic state, not external notifications. `alerts test` evaluates stored session evidence without writing; `alerts list` reads existing alert state; `alerts acknowledge` explicitly changes local telemetry state. `tui --persist-alerts` opts into persisting alert state and migrates a v1 database to schema v2 if needed. Rules distinguish observation from confidence; missing metrics do not trigger numerical alerts. Sustained hardware-pressure and recorder/database-error alerts are not emitted because this release has no shared sampled hardware alert stream or recorder error feed. No external notification destinations are configured by this module.
+
+The reusable snapshot/detail envelope and the proposed authenticated Runmux HTTP mapping are documented in [docs/API.md](docs/API.md). The contract preserves provider-instance/session identity and requires the host's existing authentication, origin, and no-store protections. This release provides the consumer API contract; it does not modify Runmux or expose an HTTP server.
 
 ## Development checks
 

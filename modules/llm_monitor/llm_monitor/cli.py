@@ -13,10 +13,14 @@ from typing import Any
 from urllib.parse import quote
 
 from .analysis import analyze_events
+from .alerts import AlertEngine, DEFAULT_RULES
 from .diagnostics import diagnose_events
 from .history_analysis import analyze_stored_session, compare_stored_sessions
 from .mcp import correlate_job, load_job_snapshot
 from .opencode import HistoryCoverage, OpenCodeClient
+from .observability import (
+    Freshness, ObservabilityService, ProviderStatus, SessionSummary, SystemSnapshot, SystemSummary,
+)
 from .providers import LMStudioClient, extract_opencode_model_limits
 from .recording import Recorder
 from .storage import TelemetryStore, TelemetryStoreError, default_database_path
@@ -101,6 +105,37 @@ def build_parser() -> argparse.ArgumentParser:
     visualize.add_argument("-w", "--write", action="store_true", help="Write the visualization")
     visualize.add_argument("-f", "--format", choices=("svg", "html"), default="svg")
     visualize.add_argument("-v", "--verbose", action="store_true")
+
+    tui = sub.add_parser("tui", help="Open the interactive read-only monitoring dashboard")
+    selection = tui.add_mutually_exclusive_group()
+    selection.add_argument("-s", "--session", help="Focus the dashboard on one session")
+    selection.add_argument("-a", "--all", action="store_true", help="Show all discovered sessions")
+    tui.add_argument("-d", "--database", type=Path, help="Optional telemetry database for historical sessions")
+    tui.add_argument("-i", "--interval", type=float, default=2.0)
+    tui.add_argument("-u", "--url", default="http://127.0.0.1:4096", help="OpenCode server URL")
+    tui.add_argument("-l", "--lmstudio-url", default="http://127.0.0.1:1234")
+    tui.add_argument("-p", "--project-directory", help="OpenCode project directory header")
+    tui.add_argument("-P", "--persist-alerts", action="store_true",
+                     help="Persist local alert state in the telemetry database")
+    tui.add_argument("-v", "--verbose", action="store_true")
+
+    alerts = sub.add_parser("alerts", help="Inspect, test, or acknowledge local diagnostic alerts")
+    alert_sub = alerts.add_subparsers(dest="alert_command", required=True)
+    alert_list = alert_sub.add_parser("list")
+    alert_list.add_argument("-d", "--database", type=Path)
+    alert_list.add_argument("-s", "--status", choices=("active", "acknowledged", "resolved"))
+    alert_list.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    alert_rules = alert_sub.add_parser("rules")
+    alert_rules.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    alert_test = alert_sub.add_parser("test", help="Evaluate alerts against stored session history without writing")
+    alert_test.add_argument("-s", "--session", required=True)
+    alert_test.add_argument("-d", "--database", type=Path)
+    alert_test.add_argument("-e", "--endpoint", help="Provider endpoint for disambiguation")
+    alert_test.add_argument("-f", "--format", choices=("text", "json"), default="text")
+    alert_ack = alert_sub.add_parser("acknowledge")
+    alert_ack.add_argument("-i", "--id", required=True)
+    alert_ack.add_argument("-d", "--database", type=Path)
+    alert_ack.add_argument("-f", "--format", choices=("text", "json"), default="text")
     return parser
 
 
@@ -128,6 +163,10 @@ def main(argv: list[str] | None = None) -> int:
             return _export_command(args)
         if args.command == "visualize":
             return _visualize_command(args)
+        if args.command == "tui":
+            return _tui(args)
+        if args.command == "alerts":
+            return _alerts_command(args)
         if args.command == "report" and args.history:
             return _historical_report(args)
         client = OpenCodeClient(args.url)
@@ -142,7 +181,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except KeyboardInterrupt:
         return 130
-    except (TelemetryStoreError, sqlite3.Error, OSError, ValueError) as exc:
+    except (TelemetryStoreError, sqlite3.Error, OSError, ValueError, RuntimeError) as exc:
         print(f"llm-monitor: {type(exc).__name__}: {exc}", file=sys.stderr)
         return 1
 
@@ -417,6 +456,136 @@ def _visualize_command(args: argparse.Namespace) -> int:
     return 0
 
 
+def _tui(args: argparse.Namespace) -> int:
+    if args.interval <= 0:
+        print("--interval must be greater than zero", file=sys.stderr)
+        return 2
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        raise RuntimeError("tui requires an interactive terminal; use status, watch, or report for non-interactive output")
+    from .tui import run_dashboard
+
+    client = OpenCodeClient(args.url)
+    lmstudio = LMStudioClient(args.lmstudio_url)
+    loaded_cache: dict[str, Any] = {}
+
+    def model_metadata(session_id: str, snapshot: dict[str, Any]):
+        return _model_metadata(client, lmstudio, session_id, snapshot, args.project_directory, loaded_cache)
+
+    database_path = args.database or default_database_path()
+    service = ObservabilityService(
+        client,
+        directory=args.project_directory,
+        database_path=database_path,
+        hardware_provider=_hardware_snapshot,
+        model_metadata_provider=model_metadata,
+        session_filter=args.session,
+    )
+    alert_store = TelemetryStore(database_path) if args.persist_alerts else None
+    try:
+        return run_dashboard(service, interval=args.interval, initial_session=args.session, alert_store=alert_store,
+                             verbose=args.verbose)
+    finally:
+        if alert_store:
+            alert_store.__exit__(None, None, None)
+
+
+def _alerts_command(args: argparse.Namespace) -> int:
+    if args.alert_command == "rules":
+        result = {"schema_version": 1, "rules": [
+            {"rule_id": rule.rule_id, "category": rule.category, "severity": rule.severity,
+             "classification": rule.classification, "finding_codes": list(rule.finding_codes),
+             "threshold": rule.threshold, "minimum_observations": rule.minimum_observations,
+             "window_seconds": rule.window_seconds, "cooldown_seconds": rule.cooldown_seconds}
+            for rule in DEFAULT_RULES
+        ]}
+        if args.format == "json":
+            _emit(result, args.format)
+        else:
+            for rule in result["rules"]:
+                threshold = f" threshold={rule['threshold']}" if rule["threshold"] is not None else ""
+                print(f"{rule['rule_id']} [{rule['severity']}/{rule['classification']}]"
+                      f"{threshold} cooldown={rule['cooldown_seconds']}s")
+        return 0
+    if args.alert_command == "list":
+        path = _selected_database(args)
+        if path.is_file():
+            with TelemetryStore(path, readonly=True) as store:
+                rows = store.list_alert_states(status=args.status)
+        else:
+            rows = []
+        result = {"schema_version": 1, "database": str(path), "alerts": rows}
+        if args.format == "json":
+            _emit(result, args.format)
+        else:
+            print(f"Persisted alerts in {path}:")
+            for item in rows:
+                print(f"[{item['status']}/{item['severity']}/{item['classification']}] "
+                      f"{item['session_id']} {item['rule_id']}: {item['summary']}")
+            if not rows:
+                print("No persisted alert states.")
+        return 0
+    if args.alert_command == "acknowledge":
+        path = _selected_database(args)
+        if not path.is_file():
+            raise TelemetryStoreError(f"telemetry database does not exist: {path}")
+        with TelemetryStore(path) as store:
+            row = store.acknowledge_alert(args.id)
+        if args.format == "json":
+            _emit({"schema_version": 1, "alert": row}, args.format)
+        else:
+            print(f"Acknowledged {row['alert_id']} ({row['session_id']} {row['rule_id']}).")
+        return 0
+    if args.alert_command == "test":
+        with TelemetryStore(_selected_database(args), readonly=True) as store:
+            analysis = analyze_stored_session(store, args.session, endpoint=args.endpoint)
+            context = store.session_context(args.session, endpoint=args.endpoint)
+        session = analysis["session"]
+        metrics = analysis["metrics"]
+        markers = metrics["timeline"]["markers"]
+        latest = next((item for item in reversed(markers) if item.get("category") == "inference"), None)
+        recent_context = [{"event_id": item.get("event_id"), "timestamp": item.get("timestamp"),
+                           "utilization_percent": item.get("context_utilization_percent")}
+                          for item in markers if item.get("category") == "inference"]
+        capacity = metrics["context"]["effective_capacity_tokens"].get("maximum")
+        summary = SessionSummary(
+            provider_instance_id=session.get("provider_instance") or "unknown",
+            session_id=args.session,
+            job_id=next((job.get("job_id") for job in context["jobs"] if job.get("correlation") == "exact"), None),
+            model=session.get("model"), agent=session.get("agent"), context_capacity=capacity,
+            state="unknown", last_observed_state="historical", state_confidence="observed",
+            state_source="telemetry_store", last_activity_at=session.get("last_observed"),
+            freshness=Freshness("historical", session.get("last_observed"), None, "telemetry_store"),
+            coverage=analysis["coverage"], latest_inference=latest,
+            cumulative_tokens={key: value.get("value") for key, value in metrics["tokens"]["observed_completed_totals"].items()},
+            compaction_count=metrics["compactions"]["unique_cycles"], current_tool=None,
+            blockers={"permissions": None, "questions": None}, diagnostic_severity={}, is_live=False,
+            last_error_sources=[], diagnostic_findings=analysis["findings"],
+            recent_context_utilization=recent_context,
+        )
+        now = datetime.now(timezone.utc)
+        snapshot = SystemSnapshot(
+            1, now.isoformat(), ProviderStatus(summary.provider_instance_id, "unavailable", now.isoformat(),
+                                               "offline historical evaluation"),
+            SystemSummary(1, 0, 0, 0, 0, [summary.model] if summary.model else [], "not_started_by_dashboard"),
+            [summary], None, str(_selected_database(args)),
+        )
+        batch = AlertEngine().evaluate(snapshot, now=now)
+        result = {"schema_version": 1, "session_id": args.session, "source": "persisted_telemetry",
+                  "history_coverage": analysis["coverage"], "alerts": [item.to_dict() for item in batch.active],
+                  "transitions": [{"transition": item.transition, "alert_id": item.alert.alert_id,
+                                   "notify": item.notify} for item in batch.transitions], "written": False}
+        if args.format == "text":
+            print(f"Alert evaluation for {args.session}; coverage={analysis['coverage'].get('status')}; writes=none")
+            for item in batch.active:
+                print(f"[{item.severity}/{item.classification}] {item.rule_id}: {item.summary}")
+            if not batch.active:
+                print("No alert rules matched the available evidence.")
+        else:
+            _emit(result, args.format)
+        return 0
+    return 2
+
+
 def _database_command(args: argparse.Namespace) -> int:
     path = _selected_database(args)
     if args.db_command == "prune" and not path.is_file():
@@ -490,9 +659,16 @@ def _model_metadata(client: OpenCodeClient, lmstudio: LMStudioClient, session_id
     info = snapshot.get("session_info") if isinstance(snapshot.get("session_info"), dict) else {}
     model_id = info.get("model") if isinstance(info.get("model"), str) else None
     provider_id = info.get("provider") if isinstance(info.get("provider"), str) else None
-    limits_response = client.get_json("/config/providers", directory)
-    limits = extract_opencode_model_limits(limits_response.data, model_id, provider_id=provider_id) if model_id else None
     now = time.monotonic()
+    limits_key = (model_id, provider_id)
+    limits_cache = loaded_cache.setdefault("limits", {})
+    cached_limits = limits_cache.get(limits_key)
+    if not cached_limits or now - cached_limits["checked_at"] >= 300:
+        limits_response = client.get_json("/config/providers", directory)
+        limits = extract_opencode_model_limits(limits_response.data, model_id, provider_id=provider_id) if model_id else None
+        limits_cache[limits_key] = {"checked_at": now, "limits": limits}
+    else:
+        limits = cached_limits["limits"]
     if now - loaded_cache.get("checked_at", 0) >= 300:
         try:
             loaded_cache["models"] = lmstudio.list_models()

@@ -533,9 +533,9 @@ REGISTRY: dict = {
             {
                 "name": "llm_monitor (module)",
                 "path": "modules/llm_monitor",
-                "desc": "Local LLM observability with persistent telemetry, historical comparisons, and evidence export",
+                "desc": "Local LLM observability with persistent telemetry, historical analysis, alerts, and an interactive dashboard",
                 "help_cmd": ["python", "-m", "llm_monitor", "--help"],
-                "version": "0.4.0",
+                "version": "0.5.0",
             },
             {
                 "name": "runmux (module)",

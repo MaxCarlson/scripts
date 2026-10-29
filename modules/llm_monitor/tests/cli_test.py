@@ -204,3 +204,34 @@ def test_record_command_commits_before_clean_interrupt(tmp_path, monkeypatch, ca
     with TelemetryStore(database, readonly=True) as store:
         bundle = store.history_bundle("recorded-session", endpoint="http://127.0.0.1:4096")
     assert len([event for event in bundle["analysis_events"] if event.category == "inference"]) == 1
+
+
+def test_tui_and_alert_commands_parse_existing_style_flags():
+    parser = build_parser()
+    tui = parser.parse_args(["tui", "-s", "session-a", "-d", "telemetry.sqlite3", "-i", "1.5", "-P"])
+    all_sessions = parser.parse_args(["tui", "-a"])
+    alert_test = parser.parse_args(["alerts", "test", "-s", "session-a", "-d", "telemetry.sqlite3"])
+    alert_ack = parser.parse_args(["alerts", "acknowledge", "-i", "alert-id", "-d", "telemetry.sqlite3"])
+
+    assert (tui.command, tui.session, tui.interval, tui.persist_alerts) == ("tui", "session-a", 1.5, True)
+    assert all_sessions.all is True
+    assert alert_test.alert_command == "test"
+    assert alert_ack.alert_command == "acknowledge"
+
+
+def test_alert_rules_cli_is_offline_and_json(capsys):
+    from llm_monitor.cli import main
+
+    assert main(["alerts", "rules", "-f", "json"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["schema_version"] == 1
+    assert "blocker.permission" in {item["rule_id"] for item in result["rules"]}
+
+
+def test_tui_cli_reports_noninteractive_terminal_without_creating_database(tmp_path, capsys):
+    from llm_monitor.cli import main
+
+    database = tmp_path / "must-not-be-created.sqlite3"
+    assert main(["tui", "--interval", "1", "--persist-alerts", "--database", str(database)]) == 1
+    assert "interactive terminal" in capsys.readouterr().err
+    assert not database.exists()
