@@ -99,6 +99,10 @@ runmux load
   exits. Closing the browser or stopping the web server only detaches browser
   sessions and never stops managed processes. Install browser dependencies with
   the `web` extra; they are loaded only when this command is selected.
+  When `RUNMUX_LLM_MONITOR_ENABLED=true` is set, the web dashboard enables an
+  "LLM Monitor" workspace tab providing read-only observability over local OpenCode
+  or LM Studio sessions, context utilization, alerts, hardware metrics, and timeline
+  events.
 - `runmux list` opens the live list. Use Up/Down to select a run, `v` to view,
   `i` to interact, and `q` to quit.
 - `runmux ls` prints a non-interactive one-shot list.

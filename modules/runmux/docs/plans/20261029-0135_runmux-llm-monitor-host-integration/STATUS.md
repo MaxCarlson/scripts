@@ -1,58 +1,42 @@
-# Runmux + LLM Monitor Host-Side Integration Status
+# Runmux + LLM Monitor Host-Side & Browser Frontend Integration Status
 
-**Branch:** `runmux-llm-monitor-host-integration-20261029`  
-**Worktree:** `.worktrees/runmux-llm-monitor-host-integration-20261029`  
-**Baseline:** `c34739c5b3fe41f9cd3c63a19c4991e7da519fec` (`origin/main`)  
-**Verified Remote Branch HEAD:** `e7a0fd825f4542c9cf3e247985b542201c289939`  
-**State:** Backend implementation and review corrections completed, verified with 33 passing tests (18 integration/API tests + 15 web tests). Frontend workspace deferred per Stage 3 specification (`FRONTEND_INTEGRATION_SPEC.md`) awaiting Phase 6C merge.  
-**Next:** Stage intended files, commit review corrections, and await Phase 6C frontend unblock.
+**Branch:** `codex/runmux-llm-monitor-frontend-20261029`  
+**Worktree:** `.worktrees/runmux-llm-monitor-frontend-20261029`  
+**Baseline:** `39603daa` (`origin/main` containing completed Backend Stages 0–3)  
+**Integrated Frontend Dependency:** Phase 6C History Explorer (`a03b4fa6` cherry-picked at `382c0608`)  
+**State:** Stages 4 & 5 (LLM Monitor browser workspace & lifetime management) completed and verified with all tests passing (unit suites, Python integration tests, and real headless Chrome CDP E2E). Responsive screenshots captured at 1920, 1366, 768, and 390px. Ready for code review and merge.
 
-## Concurrency Ledger & Implementation Evidence
+## Implementation Overview
 
-- **Baseline SHA:** `c34739c5b3fe41f9cd3c63a19c4991e7da519fec`.
-- **Remote Branch Baseline:** `e7a0fd825f4542c9cf3e247985b542201c289939`.
-- **LLM Monitor Baseline:** Merged on `main` at `c34739c5`. Provides `llm_monitor.runmux_adapter.RunmuxMonitoringAdapter`, `ObservabilityService`, `TelemetryStore`.
-- **Phase 6C Status:** Unmerged on `codex/runmux-6c-history-frontend-local-pilot-20261024` (`a03b4fa65d49bde59287dc4a246603f13a91b974`), holding `web_static/`. Per Stage 3 instructions, `web_static/` was kept untouched to avoid conflicts. Stages 1 and 2 and review corrections are delivered independently along with `FRONTEND_INTEGRATION_SPEC.md`.
-- **Runmux Server Lifecycle:** Commit `3881681d` is unmerged into `main`. Changes in `create_runmux_web_app` add optional `llm_monitor_integration` and `default_cwd` parameters, remaining backwards-compatible with all existing call sites.
+### Stages 0–3: Host-Side Backend (Merged at `39603daa`)
+- `llm_monitor_integration.py`: Lazy imports, explicit opt-in via `RUNMUX_LLM_MONITOR_ENABLED`, URL validation, database existing-only check.
+- `web.py`: Authenticated `/api/llm-monitor/v1/` routes for status, snapshot, sessions/detail, sessions/timeline, alerts, and hardware.
+- All 7 review corrections implemented and verified.
 
-## Review Corrections Completed
+### Stage 4: LLM Monitor Browser Workspace
+- `llm-monitor.js`: Modular component implementing the `window.RunmuxLLMMonitor` lifecycle interface (`start`, `stop`, `onVisibilityChange`, `getStatus`, `getSelectedSession`, `selectSession`).
+- Integrated into `index.html` and `dashboard.js` with topbar workspace switcher tabs (`#view-tab-processes` and `#view-tab-llm-monitor`).
+- Responsive design in `dashboard.css`:
+  - Sessions sidebar keyed by composite tuple `(provider_instance_id, session_id)`.
+  - Main detail pane with session overview, model metadata, context utilization ratio, token breakdown, and hardware metrics.
+  - Active alerts list with severity-colored badges and timestamps.
+  - Chronological event timeline with cursor-based pagination.
+  - Safe DOM text operations (`document.createElement`, `textContent`, `replaceChildren`) providing complete XSS immunity.
+  - Graceful error states: 404 Session Missing, 503 Provider Offline.
 
-1. **Snapshot Cache Bypass Prevention:** Removed `force_refresh` query parameter from `/api/llm-monitor/v1/snapshot`. Browser callers share the scheduled background refresh cadence and cannot flood the OpenCode provider with serial requests.
-2. **Inert Disabled Integration:** `LLMMonitorConfig.from_env()` performs no validation or import of `llm_monitor.storage` when monitoring is disabled (`RUNMUX_LLM_MONITOR_ENABLED` not truthy). Malformed environment variables or missing dependencies do not hinder ordinary Runmux startup.
-3. **Provider URL Validation:** Rigorous URL parsing preserves IPv6 square brackets (`[::1]`), rejects absent hostnames, enforces port range (1–65535), and strips userinfo/credentials without leaking secrets.
-4. **Status Privacy:** Removed raw configured provider endpoints and private URL paths from `/api/llm-monitor/v1/status`. The response envelope is restricted to capabilities, status, and safe reason codes.
-5. **App-Scoped Integration Instances:** `create_runmux_web_app` binds an isolated `LLMMonitorIntegration` per application instance rather than relying on a shared global singleton, ensuring test and multi-instance isolation.
-6. **Unavailable vs. Missing Sessions:** Differentiates provider offline errors (`MonitoringServiceUnavailableError` -> HTTP 503) from genuinely absent session records (`MonitoringSessionNotFoundError` -> HTTP 404), preserving historical session availability.
-7. **Explicit Database Isolation:** Specifying a nonexistent database file marks the database configuration invalid instead of silently falling back to the platform-default database.
-
-## Stage 1 & 2 Completed Capabilities
-
-1. **`llm_monitor_integration.py`:**
-   - Lazy loading, preserving Python 3.10 compatibility.
-   - Explicit opt-in via `RUNMUX_LLM_MONITOR_ENABLED` (disabled by default).
-   - Validates server-side URLs (rejects userinfo, queries, fragments, invalid ports).
-   - Only accepts existing database files; never creates a database or initializes a recorder.
-   - Cached model metadata provider (300s TTL) matching exact loaded model IDs.
-   - Point-in-time hardware metrics via `resource_metrics.gpu`.
-   - Safe status method that never triggers provider I/O.
-2. **`web.py` API Endpoints:**
-   - `GET /api/llm-monitor/v1/status`: non-blocking capability status.
-   - `GET /api/llm-monitor/v1/snapshot`: cached snapshot envelope without cache bypass.
-   - `GET /api/llm-monitor/v1/sessions/detail`: snapshot-seeded detail lookup by `provider_instance_id` and `session_id`.
-   - `GET /api/llm-monitor/v1/sessions/timeline`: bounded event pagination with opaque cursors.
-   - `GET /api/llm-monitor/v1/alerts`: read-only persisted alert query with validated status enum.
-   - `GET /api/llm-monitor/v1/hardware`: point-in-time hardware projection.
-   - Enforces session cookie authentication, trusted host/origin validation, `Cache-Control: no-store`, and generic error messages.
+### Stage 5: Workspace Lifetime Management & Polling
+- Bounded polling cadence (~5.0s) avoiding redundant requests or OpenCode flooding.
+- Background throttling and visibility gating: pauses when tab is hidden or "Processes" workspace is active; resumes on visibility.
+- Monotonic `requestGeneration` tracking to drop stale out-of-order async responses.
+- Clean logout/lock teardown canceling in-flight `AbortController`s and resetting cached state.
+- Compact mobile responsive styles avoiding page overflow across all tested viewports (390px to 2560px).
 
 ## Verification Evidence
 
-```text
-python -m pytest modules/runmux/tests/llm_monitor_integration_test.py modules/runmux/tests/web_llm_monitor_api_test.py modules/runmux/tests/web_test.py -v
--> 33 passed in 10.63s
-
-python -m ruff check modules/runmux/src/runmux/llm_monitor_integration.py modules/runmux/src/runmux/web.py modules/runmux/tests/llm_monitor_integration_test.py modules/runmux/tests/web_llm_monitor_api_test.py
--> All checks passed!
-
-python -m compileall modules/runmux/src/ modules/runmux/tests/
--> 0 errors
-```
+- `node modules/runmux/tests/llm_monitor_view_test.js`: All 5 test suites passed.
+- `node modules/runmux/tests/dashboard_test.js`: All tests passed.
+- `node modules/runmux/tests/history_view_test.js`: Passed.
+- `node modules/runmux/tests/browser_e2e_test.js`: Full real Chrome CDP E2E passed across all 5 responsive viewports.
+- `node modules/runmux/tests/llm_monitor_browser_e2e_test.js`: Real Chrome CDP E2E passed; captured 4 responsive screenshots.
+- `pytest modules/runmux/tests/web_llm_monitor_api_test.py modules/runmux/tests/llm_monitor_integration_test.py modules/runmux/tests/historical_runs_api_test.py modules/runmux/tests/web_test.py`: 39/39 passed.
+- `ruff check`: All checks passed.

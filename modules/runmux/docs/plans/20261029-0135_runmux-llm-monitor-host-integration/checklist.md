@@ -1,4 +1,4 @@
-# Runmux + LLM Monitor Host-Side Integration Checklist
+# Runmux + LLM Monitor Host-Side & Browser Frontend Integration Checklist
 
 - [x] Stage 0: Concurrency Reconciliation & Plan Setup
   - [x] Inspect origin/main and worktree inventory
@@ -14,9 +14,9 @@
   - [x] Implement routes in `web.py` using `run_in_threadpool`, bounded validation, and error translation
   - [x] Verify API tests pass with and without monitor enabled
 - [x] Stage 3: Coordinate Frontend Integration
-  - [x] Reconfirm Phase 6C merge status (unmerged at `a03b4fa6`, awaiting audit)
-  - [x] Document frontend ownership boundary and modular integration specification (`FRONTEND_INTEGRATION_SPEC.md`)
-  - [x] Complete Stages 1–2 independently per Stage 3 fallback
+  - [x] Audit Phase 6C History Explorer (`a03b4fa6`) for safe integration
+  - [x] Integrate Phase 6C commit into feature branch (`382c0608`)
+  - [x] Verify combined baseline with existing tests
 - [x] Review Corrections (Backend Refinement Pass)
   - [x] Remove force_refresh cache bypass on snapshot endpoint
   - [x] Ensure disabled integration is inert with malformed config or missing package
@@ -25,9 +25,27 @@
   - [x] Scope integration instances to each Runmux Web application
   - [x] Distinguish unavailable provider (503) from missing session (404)
   - [x] Isolate nonexistent telemetry database from default database fallback
-- [x] Stage 4-6: Hardening, Regression & Delivery
-  - [x] Verify Python 3.10 / missing package compatibility
-  - [x] Verify database existing-only file check (no DB creation on read)
-  - [x] Run full Runmux test suites and ruff check
-  - [x] Update README and handoffs
-  - [x] Stage intended files and report completion
+- [x] Stage 4: LLM Monitor Browser Workspace
+  - [x] Create modular browser component `llm-monitor.js` with `window.RunmuxLLMMonitor` lifecycle
+  - [x] Add top-level navigation tabs (`#view-tab-processes` and `#view-tab-llm-monitor`) in `index.html` and `dashboard.js`
+  - [x] Add responsive CSS layout and styles in `dashboard.css`
+  - [x] Render sessions sidebar with composite identity `(provider_instance_id, session_id)`
+  - [x] Render session summary, model metadata, context utilization ratio, token breakdown, and hardware metrics
+  - [x] Render persisted alerts list with severity-colored badges and timestamps
+  - [x] Render chronological event timeline with cursor-based pagination
+  - [x] Safe DOM text operations (`document.createElement`, `textContent`, `replaceChildren`) providing XSS immunity
+  - [x] Graceful error states: 404 Session Missing, 503 Provider Offline
+- [x] Stage 5: Workspace Lifetime Management & Polling
+  - [x] Bounded ~5s snapshot polling loop (pauses when hidden, stops on logout/lock, prevents overlapping polls)
+  - [x] Visibility gating via `document.addEventListener("visibilitychange")`
+  - [x] Monotonic generation tracking to discard stale out-of-order async responses
+  - [x] Clean logout/lock teardown canceling in-flight AbortControllers and clearing DOM/state
+  - [x] Zero snapshot cache bypass (uses standard `/snapshot` without force_refresh)
+  - [x] Mobile responsive viewport bounding (390px, 768px, 1366px, 1920px) with 0 page overflow
+- [x] Stage 6: Hardening, Regression & Delivery
+  - [x] Unit test suite `llm_monitor_view_test.js` (5 suites passed)
+  - [x] Real headless Chrome CDP E2E test `browser_e2e_test.js` passed
+  - [x] Dedicated real Chrome CDP E2E test `llm_monitor_browser_e2e_test.js` passed
+  - [x] Captured responsive screenshots at 1920, 1366, 768, and 390px in `screenshots/`
+  - [x] Python test suites (39/39 passed)
+  - [x] Ruff lint checks clean on all modified files

@@ -10,6 +10,7 @@
     <script src="/assets/vendor/xterm.js" defer></script>
     <script src="/assets/vendor/addon-fit.js" defer></script>
     <script src="/assets/history_view.js" defer></script>
+    <script src="/assets/llm-monitor.js" defer></script>
     <script src="/assets/dashboard.js" defer></script>
   </head>
   <body>
@@ -35,6 +36,10 @@
           <div class="brand-mark small" aria-hidden="true">R</div>
           <div><strong>runmux</strong><span>PROCESS DESK</span></div>
         </div>
+        <nav class="app-views-nav" role="tablist" aria-label="Workspace views">
+          <button id="view-tab-processes" class="app-view-tab active" role="tab" aria-selected="true" aria-controls="workspace">Processes</button>
+          <button id="view-tab-llm-monitor" class="app-view-tab" role="tab" aria-selected="false" aria-controls="llm-monitor-workspace">LLM Monitor</button>
+        </nav>
         <div class="topbar-right">
           <span class="local-badge"><span class="live-dot"></span> LOCAL SESSION</span>
           <div id="connection-state" class="connection-state"><span class="state-dot"></span><span>Loading registry</span></div>
@@ -376,6 +381,7 @@
           </section>
         </section>
       </section>
+      <section id="llm-monitor-workspace" class="workspace llm-monitor-workspace" hidden aria-hidden="true"></section>
       <div id="lifecycle-confirm-modal" class="modal-backdrop" role="dialog" aria-modal="true" aria-labelledby="confirm-modal-title" hidden>
         <div class="modal-box">
           <div class="modal-header">

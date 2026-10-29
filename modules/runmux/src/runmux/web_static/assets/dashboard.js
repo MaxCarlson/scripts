@@ -36,6 +36,7 @@ let historyTimer = null;
 let historyRequestId = 0;
 let historyAbortController = null;
 let activeWorkspaceView = "run";
+let currentTopLevelWorkspace = "processes";
 let historyViewOpen = false;
 let runHistoryFilters = { name: "", status: "", since: "", until: "", time_field: "created_at", sort_by: "created_at", sort_dir: "desc", limit: 50, failed_only: false, lost_only: false, state: "", name_exact: false, exit_code: "", restart_of: "", duplicate_of: "", has_restarts: false };
 let runHistoryItems = [];
@@ -686,11 +687,56 @@ async function api(path, options = {}) {
   return response;
 }
 
+
+function switchTopLevelWorkspace(viewName) {
+  currentTopLevelWorkspace = viewName;
+  const isProcesses = viewName === "processes";
+  const procTab = $("#view-tab-processes");
+  const monTab = $("#view-tab-llm-monitor");
+  const procWorkspace = $("#workspace");
+  const monWorkspace = $("#llm-monitor-workspace");
+
+  if (procTab) {
+    procTab.classList.toggle("active", isProcesses);
+    procTab.setAttribute("aria-selected", isProcesses ? "true" : "false");
+  }
+  if (monTab) {
+    monTab.classList.toggle("active", !isProcesses);
+    monTab.setAttribute("aria-selected", !isProcesses ? "true" : "false");
+  }
+  if (procWorkspace) {
+    procWorkspace.hidden = !isProcesses;
+    if (typeof procWorkspace.removeAttribute === "function") {
+      if (isProcesses) procWorkspace.removeAttribute("aria-hidden");
+      else procWorkspace.setAttribute("aria-hidden", "true");
+    } else {
+      procWorkspace.setAttribute("aria-hidden", isProcesses ? "false" : "true");
+    }
+  }
+  if (monWorkspace) {
+    monWorkspace.hidden = isProcesses;
+    if (typeof monWorkspace.removeAttribute === "function") {
+      if (!isProcesses) monWorkspace.removeAttribute("aria-hidden");
+      else monWorkspace.setAttribute("aria-hidden", "true");
+    } else {
+      monWorkspace.setAttribute("aria-hidden", !isProcesses ? "false" : "true");
+    }
+  }
+  globalThis.RunmuxLLMMonitor?.onVisibilityChange(!isProcesses);
+}
+
+function setupLLMMonitorListeners() {
+  $("#view-tab-processes")?.addEventListener("click", () => switchTopLevelWorkspace("processes"));
+  $("#view-tab-llm-monitor")?.addEventListener("click", () => switchTopLevelWorkspace("llm-monitor"));
+}
+
 function showLogin(message = "") {
   authGeneration += 1;
   invalidateSelection();
   clearInterval(listTimer);
   listTimer = null;
+  globalThis.RunmuxLLMMonitor?.stop();
+  switchTopLevelWorkspace("processes");
   $("#dashboard").hidden = true;
   $("#login-view").hidden = false;
   $("#login-error").textContent = message;
@@ -701,6 +747,10 @@ function showDashboard() {
   $("#login-view").hidden = true;
   $("#dashboard").hidden = false;
   refreshCapabilities();
+  const monitorEl = $("#llm-monitor-workspace");
+  if (monitorEl && globalThis.RunmuxLLMMonitor) {
+    globalThis.RunmuxLLMMonitor.start(monitorEl, api);
+  }
 }
 
 async function refreshCapabilities() {
@@ -820,18 +870,25 @@ setupRunHistoryListeners();
 setupHistoryListeners();
 setupOutputSearchListeners();
 setupLifecycleListeners();
+setupLLMMonitorListeners();
 
 if (typeof document !== "undefined" && document.addEventListener) {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) {
       stopTelemetryPolling();
       stopHistoryPolling();
-    } else if (selectedId && overviewMode !== "minimal") {
-      startTelemetryPolling();
-      refreshTelemetry(selectionGeneration, selectedId);
-      if (overviewMode === "dashboard" || overviewMode === "expanded") {
-        startHistoryPolling();
-        refreshHistoryTelemetry(selectionGeneration, selectedId);
+      globalThis.RunmuxLLMMonitor?.onVisibilityChange(false);
+    } else {
+      if (selectedId && overviewMode !== "minimal") {
+        startTelemetryPolling();
+        refreshTelemetry(selectionGeneration, selectedId);
+        if (overviewMode === "dashboard" || overviewMode === "expanded") {
+          startHistoryPolling();
+          refreshHistoryTelemetry(selectionGeneration, selectedId);
+        }
+      }
+      if (currentTopLevelWorkspace === "llm-monitor") {
+        globalThis.RunmuxLLMMonitor?.onVisibilityChange(true);
       }
     }
   });

@@ -1,5 +1,33 @@
 # Runmux Current Handoff
 
+## Runmux Web UI — LLM Monitor Frontend Workspace (Stages 4–5 Complete)
+
+The LLM Monitor browser workspace and lifetime management (Stages 4 & 5) are complete, validated, and ready for review on branch `codex/runmux-llm-monitor-frontend-20261029`.
+It provides:
+- Top-level workspace switcher tabs ("Processes" and "LLM Monitor") in the authenticated header.
+- `window.RunmuxLLMMonitor` lifecycle interface (`start`, `stop`, `onVisibilityChange`, `getStatus`, `getSelectedSession`, `selectSession`).
+- Sessions sidebar listing active and historical sessions identified by composite identity `(provider_instance_id, session_id)`.
+- Main detail view displaying:
+  - Session summary, model identification, status badge, context utilization ratio, and token breakdown.
+  - Hardware metrics card (GPU utilization %, VRAM used/total GB, temperature °C).
+  - Persisted alerts list with severity categorization (`warning`, `error`, `critical`).
+  - Chronological event timeline with cursor-based forward/backward pagination.
+- Complete XSS immunity via native DOM text nodes and element construction.
+- Non-misleading error handling distinguishing 404 Session Missing from 503 Provider Offline.
+- Lifetime management & polling:
+  - Shared ~5.0s snapshot cadence without client-controlled cache bypass.
+  - Active tab / visibility gating: pauses when tab is hidden or "Processes" workspace is selected.
+  - Monotonic request generation tracking to prevent async race conditions.
+  - Complete lock/logout cleanup canceling in-flight AbortControllers and wiping state.
+- Responsive mobile layout bounded across all viewports (390px, 768px, 1366px, 1920px) with 0 page overflow.
+- Phase 6C History Explorer (`a03b4fa6` / `382c0608`) integrated and validated without regressions.
+- Validation:
+  - `llm_monitor_view_test.js`: All 5 test suites passed.
+  - `browser_e2e_test.js`: Passed full Chrome E2E suite across 5 responsive widths.
+  - `llm_monitor_browser_e2e_test.js`: Passed full Chrome E2E suite and captured responsive screenshots.
+  - Backend/API tests: 39/39 passed.
+  - Ruff lint clean on all modified files.
+
 ## Runmux Web UI — LLM Monitor Host Integration (Stages 0–3)
 
 The host-side LLM Monitor integration (Stages 0–3) is fully implemented, review-corrected, verified, and merged into `main` at `39603daa`.
