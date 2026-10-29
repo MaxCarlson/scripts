@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
 import math
+import socket
 import os
 from pathlib import Path
 import re
@@ -64,7 +65,47 @@ class NormalizedLiveEvent:
     raw_event_id: str | None = None
 
 
-def iter_sse_events(stream: BinaryIO, *, max_event_bytes: int = MAX_EVENT_BYTES) -> Iterator[SSEEvent]:
+def _set_stream_timeout(stream: Any, timeout: float | None) -> None:
+    if hasattr(stream, "settimeout"):
+        try:
+            stream.settimeout(timeout)
+            return
+        except (OSError, TypeError):
+            pass
+    sock = getattr(stream, "socket", None)
+    if sock is None:
+        fp = getattr(stream, "fp", None)
+        if fp is not None:
+            if hasattr(fp, "settimeout"):
+                try:
+                    fp.settimeout(timeout)
+                    return
+                except (OSError, TypeError):
+                    pass
+            raw = getattr(fp, "raw", None)
+            if raw is not None:
+                if hasattr(raw, "settimeout"):
+                    try:
+                        raw.settimeout(timeout)
+                        return
+                    except (OSError, TypeError):
+                        pass
+                sock = getattr(raw, "_sock", None)
+            if sock is None:
+                sock = getattr(fp, "_sock", None)
+    if sock is not None and hasattr(sock, "settimeout"):
+        try:
+            sock.settimeout(timeout)
+        except (OSError, TypeError):
+            pass
+
+
+def iter_sse_events(
+    stream: BinaryIO,
+    *,
+    max_event_bytes: int = MAX_EVENT_BYTES,
+    deadline: float | None = None,
+) -> Iterator[SSEEvent]:
     """Parse SSE frames incrementally, dropping oversized frames without unbounded reads."""
     event_name: str | None = None
     event_id: str | None = None
@@ -73,7 +114,29 @@ def iter_sse_events(stream: BinaryIO, *, max_event_bytes: int = MAX_EVENT_BYTES)
     oversized = False
 
     while True:
-        line = stream.readline(max_event_bytes + 2)
+        if deadline is not None:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                if oversized:
+                    yield SSEEvent(error="oversized_event")
+                elif data_lines or event_name is not None:
+                    yield _sse_frame(event_name, event_id, data_lines)
+                break
+            _set_stream_timeout(stream, max(0.001, remaining))
+
+        try:
+            line = stream.readline(max_event_bytes + 2)
+        except (TimeoutError, socket.timeout):
+            if deadline is not None and (time.monotonic() >= deadline or (deadline - time.monotonic()) <= 0.05):
+                if time.monotonic() < deadline:
+                    time.sleep(max(0.0, deadline - time.monotonic()))
+                if oversized:
+                    yield SSEEvent(error="oversized_event")
+                elif data_lines or event_name is not None:
+                    yield _sse_frame(event_name, event_id, data_lines)
+                break
+            raise
+
         if not line:
             if oversized:
                 yield SSEEvent(error="oversized_event")
@@ -92,8 +155,12 @@ def iter_sse_events(stream: BinaryIO, *, max_event_bytes: int = MAX_EVENT_BYTES)
                     yield _sse_frame(event_name, event_id, data_lines)
                 event_name, event_id, data_lines = None, None, []
                 frame_size, oversized = 0, False
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 continue
             if decoded.startswith(":") or oversized:
+                if deadline is not None and time.monotonic() >= deadline:
+                    break
                 continue
             field, separator, value = decoded.partition(":")
             if separator and value.startswith(" "):
@@ -111,6 +178,8 @@ def iter_sse_events(stream: BinaryIO, *, max_event_bytes: int = MAX_EVENT_BYTES)
                 yield _sse_frame(event_name, event_id, data_lines)
             event_name, event_id, data_lines = None, None, []
             frame_size, oversized = 0, False
+            if deadline is not None and time.monotonic() >= deadline:
+                break
 
 
 def _sse_frame(event_name: str | None, event_id: str | None, data_lines: list[str]) -> SSEEvent:
@@ -528,6 +597,7 @@ class LiveSessionState:
         result: dict[str, Any] = {
             "schema_version": 1,
             "server": None,
+            "observation_deadline_limited": "observation_deadline_limited" in self.warnings,
             "stream_connection": "connected" if self.stream_connected else "unavailable",
             "sse_frames_received": self.sse_frames_received,
             "matching_session_events": self.matching_session_events,
@@ -741,10 +811,12 @@ class OpenCodeSSEClient:
         self.connection_attempts = 0
         self.reconnection_gaps = 0
         self.server_origin = f"{parsed.scheme}://{parsed.netloc}"
+        self.observation_deadline_reached = False
 
     def events(self, observe_seconds: float | None) -> Iterator[SSEEvent]:
         if observe_seconds is not None and not 0 < observe_seconds <= MAX_OBSERVE_SECONDS:
             raise ValueError(f"observe_seconds must be between 0 and {MAX_OBSERVE_SECONDS:g}")
+        self.observation_deadline_reached = False
         deadline = time.monotonic() + observe_seconds if observe_seconds is not None else None
         attempts = 0
         while deadline is None or time.monotonic() < deadline:
@@ -766,8 +838,17 @@ class OpenCodeSSEClient:
                         return
                     self.connected = True
                     yield SSEEvent(event="__connected__")
-                    yield from iter_sse_events(response)
-                    if deadline is not None and time.monotonic() >= deadline:
+                    try:
+                        yield from iter_sse_events(response, deadline=deadline)
+                    finally:
+                        try:
+                            response.close()
+                        except OSError:
+                            pass
+                    if deadline is not None and (time.monotonic() >= deadline or (deadline - time.monotonic()) <= 0.05):
+                        if time.monotonic() < deadline:
+                            time.sleep(max(0.0, deadline - time.monotonic()))
+                        self.observation_deadline_reached = True
                         return
                     self._gap()
             except HTTPError as exc:
@@ -776,16 +857,26 @@ class OpenCodeSSEClient:
                     return
                 self._gap()
             except (URLError, TimeoutError, OSError, ValueError) as exc:
+                if deadline is not None and time.monotonic() >= deadline:
+                    self.observation_deadline_reached = True
+                    return
                 yield SSEEvent(error="connection_failed")
                 self._gap()
                 if isinstance(exc, ValueError):
                     return
+            if deadline is not None and time.monotonic() >= deadline:
+                self.observation_deadline_reached = True
+                return
             if attempts >= self.max_reconnects:
                 yield SSEEvent(error="stream_unavailable")
                 return
             attempts += 1
             if deadline is None:
                 time.sleep(min(0.25 * attempts, 1.0))
+            else:
+                sleep_time = min(0.25 * attempts, 1.0, max(0.0, deadline - time.monotonic()))
+                if sleep_time > 0:
+                    time.sleep(sleep_time)
 
     def _gap(self) -> None:
         self.reconnection_gaps += 1
@@ -808,6 +899,7 @@ def observe_session(
     on_update: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Reconcile stored summary, observe a bounded event window, then reconcile once more."""
+    deadline = time.monotonic() + observe_seconds if observe_seconds is not None else None
     state = LiveSessionState(session_id, project_directory, include_reasoning=include_reasoning, trial_id=trial_id)
     before = client.poll(session_id, project_directory)
     state.reconcile(before)
@@ -842,6 +934,10 @@ def observe_session(
             state.ingest(event)
             if on_update:
                 on_update(state.snapshot())
+    if getattr(stream, "observation_deadline_reached", False) or (
+        observe_seconds is not None and deadline is not None and time.monotonic() >= deadline
+    ):
+        state.warnings.add("observation_deadline_limited")
     after = client.poll(session_id, project_directory)
     state.reconcile(after)
     history_events = client.events_for_session(session_id) if hasattr(client, "events_for_session") else []
@@ -887,6 +983,10 @@ def observe_session(
         snapshot["stream_capability"] = "unavailable"
         snapshot["warnings"] = sorted(state.warnings)
         snapshot["coverage"] = "incomplete"
+    if "observation_deadline_limited" in state.warnings:
+        snapshot["observation_deadline_limited"] = True
+        snapshot["coverage"] = "incomplete"
+        snapshot["warnings"] = sorted(state.warnings)
     snapshot["reconnection_gaps"] = stream.reconnection_gaps
     return snapshot
 
