@@ -702,6 +702,39 @@ class TelemetryStore:
             ).fetchall()
         return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
 
+    def session_records_page(
+        self,
+        session_key: str,
+        *,
+        limit: int = 100,
+        after_timestamp: str | None = None,
+        after_event_uid: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Return a keyset-paginated chronological page for stable concurrent reads."""
+        page_size = min(max(1, limit), 1000)
+        if after_event_uid is None and after_timestamp is not None:
+            raise ValueError("after_event_uid is required when after_timestamp is supplied")
+        query = (
+            "SELECT event_uid, session_key, timestamp, observed_at, source, category, subtype, provider_event_id, "
+            "identity_quality, payload_json FROM events WHERE session_key=?"
+        )
+        values: list[Any] = [session_key]
+        if after_event_uid is not None:
+            if after_timestamp is None:
+                query += " AND timestamp IS NULL AND event_uid>?"
+                values.append(after_event_uid)
+            else:
+                query += (
+                    " AND (timestamp IS NULL OR (timestamp IS NOT NULL AND "
+                    "(timestamp>? OR (timestamp=? AND event_uid>?))))"
+                )
+                values.extend((after_timestamp, after_timestamp, after_event_uid))
+        query += " ORDER BY timestamp IS NULL, timestamp, event_uid LIMIT ?"
+        values.append(page_size)
+        with closing(self._connect()) as connection:
+            rows = connection.execute(query, values).fetchall()
+        return [dict(row) | {"payload": json.loads(row["payload_json"])} for row in rows]
+
     def session_context(
         self, session_id: str, *, provider_type: str = "opencode", endpoint: str | None = None,
     ) -> dict[str, Any] | None:
