@@ -16,7 +16,9 @@
 - Added storage keyset pagination and bounded/cached serialized snapshots.
 - Sanitized endpoint identities, paths, serialized alert evidence, and local database path fields at the adapter boundary.
 - Added seven adapter tests, the Runmux owner handoff, API/README updates, and the live validation report.
-- Commit/push identifiers are recorded in the final report after delivery.
+- Implementation commit: `5db30d11` (`feat(llm-monitor): add Runmux read-only adapter`).
+- Documentation commit: `3306985a` (`docs(llm-monitor): record Phase 3D integration findings`).
+- Both commits were pushed to `origin/codex/llm-monitor-phase3d-20261029`; branch tracking is configured.
 
 ## Validation notes
 

@@ -8,4 +8,4 @@
 - [x] Implement bounded versioned adapter and privacy filtering.
 - [x] Document live validation and Runmux implementation handoff.
 - [x] Run module tests, packaging/help, compile, and diff checks.
-- [ ] Confirm all changed paths are module-scoped; commit and push feature branch.
+- [x] Confirm all changed paths are module-scoped; commit and push feature branch.
