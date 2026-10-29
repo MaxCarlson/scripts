@@ -524,3 +524,302 @@ def test_request_evidence_loader_rejects_oversized_files_without_echoing_content
         assert "128 KiB" in str(exc)
     else:
         raise AssertionError("oversized request evidence must be rejected")
+
+
+class _FakeSSEServer:
+    def __init__(self, handler_callback):
+        import socket
+        import threading
+
+        self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.sock.bind(("127.0.0.1", 0))
+        self.port = self.sock.getsockname()[1]
+        self.url = f"http://127.0.0.1:{self.port}"
+        self.sock.listen(5)
+        self.stop_event = threading.Event()
+        self.client_closed = threading.Event()
+        self.thread = threading.Thread(target=self._run, args=(handler_callback,))
+        self.thread.daemon = True
+        self.thread.start()
+
+    def _run(self, handler_callback):
+        import socket
+
+        self.sock.settimeout(0.5)
+        while not self.stop_event.is_set():
+            try:
+                conn, _ = self.sock.accept()
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                break
+            try:
+                conn.recv(2048)
+                handler_callback(conn, self.stop_event, self.client_closed)
+            except Exception:
+                pass
+            finally:
+                try:
+                    conn.close()
+                except OSError:
+                    pass
+
+    def close(self):
+        self.stop_event.set()
+        try:
+            self.sock.close()
+        except OSError:
+            pass
+        self.thread.join(timeout=1.0)
+
+
+def test_idle_connected_sse_stream_respects_observe_seconds_deadline_and_closes():
+    import socket
+    import time
+    from llm_monitor.live import OpenCodeSSEClient, observe_session
+
+    def idle_handler(conn, stop_event, client_closed):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+        conn.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                data = conn.recv(1024)
+                if not data:
+                    client_closed.set()
+                    break
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                client_closed.set()
+                break
+
+    server = _FakeSSEServer(idle_handler)
+    try:
+        class FakeClient:
+            def poll(self, _session, _directory):
+                return {"session_id": "ses-idle", "session_state": {"type": "busy"}}
+
+        stream = OpenCodeSSEClient(server.url, r"C:\project", timeout=5.0)
+        t0 = time.monotonic()
+        snapshot = observe_session(FakeClient(), stream, session_id="ses-idle", project_directory=r"C:\project",
+                                   observe_seconds=0.4)
+        elapsed = time.monotonic() - t0
+
+        assert 0.35 <= elapsed <= 0.7, f"Elapsed {elapsed:.3f}s was not bounded near 0.4s"
+        assert server.client_closed.wait(timeout=1.0), "Client did not close the connection upon deadline expiration"
+        assert snapshot["stream_connection"] == "connected"
+        assert snapshot["observation_deadline_limited"] is True
+        assert "observation_deadline_limited" in snapshot["warnings"]
+        assert snapshot["coverage"] == "incomplete"
+        assert snapshot["matching_session_events"] == 0
+        assert snapshot["reconnection_gaps"] == 0
+    finally:
+        server.close()
+
+
+def test_sse_stream_with_periodic_comments_respects_observe_seconds_deadline():
+    import socket
+    import time
+    from llm_monitor.live import OpenCodeSSEClient, observe_session
+
+    def comment_handler(conn, stop_event, client_closed):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+        conn.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                data = conn.recv(1024)
+                if not data:
+                    client_closed.set()
+                    break
+            except (TimeoutError, socket.timeout):
+                pass
+            except OSError:
+                client_closed.set()
+                break
+            try:
+                conn.sendall(b": keep-alive\n\n")
+            except OSError:
+                client_closed.set()
+                break
+            time.sleep(0.08)
+
+    server = _FakeSSEServer(comment_handler)
+    try:
+        class FakeClient:
+            def poll(self, _session, _directory):
+                return {"session_id": "ses-comments", "session_state": {"type": "busy"}}
+
+        stream = OpenCodeSSEClient(server.url, r"C:\project", timeout=5.0)
+        t0 = time.monotonic()
+        snapshot = observe_session(FakeClient(), stream, session_id="ses-comments", project_directory=r"C:\project",
+                                   observe_seconds=0.4)
+        elapsed = time.monotonic() - t0
+
+        assert 0.35 <= elapsed <= 0.75, f"Elapsed {elapsed:.3f}s was not bounded near 0.4s"
+        assert server.client_closed.wait(timeout=1.0), "Client did not close the connection upon deadline expiration"
+        assert snapshot["observation_deadline_limited"] is True
+        assert "observation_deadline_limited" in snapshot["warnings"]
+        assert snapshot["coverage"] == "incomplete"
+        assert snapshot["reconnection_gaps"] == 0
+    finally:
+        server.close()
+
+
+def test_sse_stream_with_intermittent_events_respects_deadline_and_preserves_partials():
+    import json
+    import socket
+    import time
+    from llm_monitor.live import OpenCodeSSEClient, observe_session
+
+    def delta_handler(conn, stop_event, client_closed):
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+        # Send 2 delta events with slight delays, then stay idle
+        events = [
+            {"id": "evt-1", "type": "message.part.delta", "properties": {
+                "sessionID": "ses-deltas", "messageID": "msg-1", "partID": "prt-1",
+                "field": "reasoning", "delta": "step 1 "}},
+            {"id": "evt-2", "type": "message.part.delta", "properties": {
+                "sessionID": "ses-deltas", "messageID": "msg-1", "partID": "prt-1",
+                "field": "reasoning", "delta": "step 2"}},
+        ]
+        time.sleep(0.1)
+        for evt in events:
+            payload = f"id: {evt['id']}\nevent: message.part.delta\ndata: {json.dumps(evt)}\n\n".encode("utf-8")
+            try:
+                conn.sendall(payload)
+            except OSError:
+                client_closed.set()
+                return
+            time.sleep(0.1)
+        # Now stay idle until client closes
+        conn.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                data = conn.recv(1024)
+                if not data:
+                    client_closed.set()
+                    break
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                client_closed.set()
+                break
+
+    server = _FakeSSEServer(delta_handler)
+    try:
+        class FakeClient:
+            def poll(self, _session, _directory):
+                return {"session_id": "ses-deltas", "session_state": {"type": "busy"}}
+
+        stream = OpenCodeSSEClient(server.url, r"C:\project", timeout=5.0)
+        t0 = time.monotonic()
+        snapshot = observe_session(FakeClient(), stream, session_id="ses-deltas", project_directory=r"C:\project",
+                                   observe_seconds=0.5, include_reasoning=True)
+        elapsed = time.monotonic() - t0
+
+        assert 0.45 <= elapsed <= 0.85, f"Elapsed {elapsed:.3f}s was not bounded near 0.5s"
+        assert server.client_closed.wait(timeout=1.0), "Client did not close the connection upon deadline expiration"
+        assert snapshot["stream_connection"] == "connected"
+        assert snapshot["stream_capability"] == "streaming"
+        assert snapshot["reasoning_delta_events"] == 2
+        assert snapshot["matching_session_events"] == 2
+        assert snapshot["current_reasoning_text"] == "step 1 step 2"
+        assert snapshot["current_reasoning_tokens"] is None
+        assert snapshot["observation_deadline_limited"] is True
+        assert "observation_deadline_limited" in snapshot["warnings"]
+        assert snapshot["coverage"] == "incomplete"
+        assert snapshot["reconnection_gaps"] == 0
+    finally:
+        server.close()
+
+
+def test_sse_stream_disconnection_before_deadline_records_gap_and_reconnects():
+    import socket
+    import threading
+    import time
+    from llm_monitor.live import OpenCodeSSEClient, observe_session
+
+    connection_count = 0
+    lock = threading.Lock()
+
+    def disconnect_handler(conn, stop_event, client_closed):
+        nonlocal connection_count
+        with lock:
+            connection_count += 1
+            current = connection_count
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+        if current == 1:
+            # First connection: send nothing, immediately close to trigger disconnect
+            time.sleep(0.05)
+            conn.close()
+            return
+        # Second connection: hold until deadline
+        conn.settimeout(0.05)
+        while not stop_event.is_set():
+            try:
+                data = conn.recv(1024)
+                if not data:
+                    client_closed.set()
+                    break
+            except (TimeoutError, socket.timeout):
+                continue
+            except OSError:
+                client_closed.set()
+                break
+
+    server = _FakeSSEServer(disconnect_handler)
+    try:
+        class FakeClient:
+            def poll(self, _session, _directory):
+                return {"session_id": "ses-reconnect", "session_state": {"type": "busy"}}
+
+        stream = OpenCodeSSEClient(server.url, r"C:\project", timeout=5.0, max_reconnects=2)
+        t0 = time.monotonic()
+        snapshot = observe_session(FakeClient(), stream, session_id="ses-reconnect", project_directory=r"C:\project",
+                                   observe_seconds=0.6)
+        elapsed = time.monotonic() - t0
+
+        assert 0.5 <= elapsed <= 1.0, f"Elapsed {elapsed:.3f}s was not bounded near 0.6s"
+        assert snapshot["connection_attempts"] >= 2
+        assert snapshot["reconnection_gaps"] >= 1
+        assert "reconnection_gap" in snapshot["warnings"]
+        assert snapshot["coverage"] == "incomplete"
+    finally:
+        server.close()
+
+
+def test_sse_stream_disconnect_at_deadline_exits_cleanly_without_reconnect():
+    import threading
+    import time
+    from llm_monitor.live import OpenCodeSSEClient, observe_session
+
+    connection_count = 0
+    lock = threading.Lock()
+
+    def disconnect_at_deadline_handler(conn, stop_event, client_closed):
+        nonlocal connection_count
+        with lock:
+            connection_count += 1
+        conn.sendall(b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n\r\n")
+        # Hold connection until close to deadline, then close socket
+        time.sleep(0.35)
+        conn.close()
+
+    server = _FakeSSEServer(disconnect_at_deadline_handler)
+    try:
+        class FakeClient:
+            def poll(self, _session, _directory):
+                return {"session_id": "ses-disc-deadline", "session_state": {"type": "busy"}}
+
+        stream = OpenCodeSSEClient(server.url, r"C:\project", timeout=5.0, max_reconnects=2)
+        t0 = time.monotonic()
+        snapshot = observe_session(FakeClient(), stream, session_id="ses-disc-deadline", project_directory=r"C:\project",
+                                   observe_seconds=0.35)
+        elapsed = time.monotonic() - t0
+
+        assert 0.3 <= elapsed <= 0.7, f"Elapsed {elapsed:.3f}s was not bounded near 0.35s"
+        # Should not attempt reconnect because deadline was reached
+        assert connection_count == 1
+        assert snapshot["observation_deadline_limited"] is True
+    finally:
+        server.close()
