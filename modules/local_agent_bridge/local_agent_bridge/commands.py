@@ -101,6 +101,24 @@ How to inspect or attach to an existing OpenCode server:
                 default=None,
                 help="Exact existing resource IDs to adopt",
             )
+            action.add_argument(
+                "--code-retrieval",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Opt in to receipt-managed OpenCode code_locate/code_context tools",
+            )
+            action.add_argument(
+                "--structural-retrieval",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Opt in to receipt-managed code_symbols/code_map tools (includes lexical tools)",
+            )
+            action.add_argument(
+                "--checkpoint-compaction",
+                action=argparse.BooleanOptionalAction,
+                default=None,
+                help="Opt in to the OpenCode compaction checkpoint plugin",
+            )
         if name == "plan":
             action.add_argument(
                 "-o",
@@ -201,6 +219,67 @@ How to inspect or attach to an existing OpenCode server:
             action.add_argument(
                 "-d", "--dir", type=Path, help="Project directory passed to OpenCode"
             )
+    code = groups.add_parser("code", help="Locate, search, and read bounded source context")
+    code_actions = code.add_subparsers(dest="action")
+    locate = code_actions.add_parser("locate", help="List Git-aware workspace paths")
+    locate.add_argument("query", nargs="?", help="Optional case-insensitive path substring")
+    locate.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    locate.add_argument("-p", "--path", action="append", help="Explicit relative path; repeat as needed")
+    locate.add_argument("-l", "--limit", type=int, default=200, help="Maximum paths to return")
+    locate.add_argument("-b", "--max-bytes", type=int, default=8 * 1024, help="Maximum compact JSON bytes")
+    locate.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    search = code_actions.add_parser("search", help="Search source using a literal query or explicit regex")
+    search.add_argument("query", help="Search text or regular expression")
+    search.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    search.add_argument("-p", "--path", action="append", help="Restrict to an explicit relative path; repeat as needed")
+    search.add_argument("-r", "--regex", action="store_true", help="Interpret query as a Python regular expression")
+    search.add_argument("-l", "--limit", type=int, default=80, help="Maximum matches to return")
+    search.add_argument("-f", "--max-files", type=int, default=200, help="Maximum candidate files to inspect")
+    search.add_argument("-m", "--max-line-bytes", type=int, default=4096, help="Maximum returned match-line bytes")
+    search.add_argument("-b", "--max-bytes", type=int, default=12 * 1024, help="Maximum compact JSON bytes")
+    search.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    context = code_actions.add_parser("context", help="Read an exact bounded source line range")
+    context.add_argument("path", help="Workspace-relative source path")
+    context.add_argument("start_line", type=int, help="Inclusive one-based start line")
+    context.add_argument("end_line", type=int, help="Inclusive one-based end line")
+    context.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    context.add_argument("-m", "--max-line-bytes", type=int, default=4096, help="Maximum bytes per returned line")
+    context.add_argument("-b", "--max-bytes", type=int, default=16 * 1024, help="Maximum compact JSON bytes")
+    context.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    symbols = code_actions.add_parser("symbols", help="Show Python AST symbols with exact line ranges")
+    symbols.add_argument("path", help="Workspace-relative Python file")
+    symbols.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    symbols.add_argument("-b", "--max-bytes", type=int, default=12 * 1024, help="Maximum compact JSON bytes")
+    symbols.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    repo_map = code_actions.add_parser("map", help="Build a bounded task-specific Python symbol map")
+    repo_map.add_argument("task_query", help="Task text used to rank relevant Python symbols")
+    repo_map.add_argument("-C", "--workspace", type=Path, help="Workspace root (default: current directory)")
+    repo_map.add_argument("-f", "--max-files", type=int, default=80, help="Maximum Python files to parse")
+    repo_map.add_argument("-l", "--max-results", type=int, default=80, help="Maximum ranked symbols")
+    repo_map.add_argument("-t", "--max-tokens", type=int, default=3000, help="Conservative serialized-byte token upper bound")
+    repo_map.add_argument("-b", "--max-bytes", type=int, default=12 * 1024, help="Maximum compact JSON bytes")
+    repo_map.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    checkpoint = groups.add_parser("checkpoint", help="Save, inspect, or recover durable task context")
+    checkpoint_actions = checkpoint.add_subparsers(dest="action")
+    checkpoint_save = checkpoint_actions.add_parser("save", help="Validate and atomically save a task checkpoint")
+    checkpoint_save.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+    checkpoint_save.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+    checkpoint_save.add_argument("-i", "--input", type=Path, required=True, help="JSON checkpoint fields")
+    checkpoint_save.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    for name in ("show", "recover"):
+        action = checkpoint_actions.add_parser(name, help={"show": "Show the saved task state",
+                                                            "recover": "Build a stale-aware recovery packet"}[name])
+        action.add_argument("task_id", help="Stable task identifier")
+        action.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+        action.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+        action.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
+    recover_session = checkpoint_actions.add_parser(
+        "recover-session", help="Build a stale-aware recovery packet by OpenCode session ID"
+    )
+    recover_session.add_argument("session_id", help="Exact OpenCode session identifier")
+    recover_session.add_argument("-C", "--workspace", type=Path, required=True, help="Task workspace root")
+    recover_session.add_argument("-S", "--state-dir", type=Path, help="Checkpoint directory outside the workspace")
+    recover_session.add_argument("-j", "--json", action="store_true", help="Print machine-readable JSON")
     groups.add_parser(
         "run",
         help="Configure/load the model and start the foreground bridge",
@@ -515,6 +594,128 @@ def _output(value: dict, as_json: bool) -> None:
             print(problem)
 
 
+def _handle_code(args: argparse.Namespace) -> int:
+    from .retrieval import RetrievalError, context, locate, repository_map, search, symbols
+
+    try:
+        if args.action == "locate":
+            result = locate(
+                args.workspace, args.query, paths=args.path, limit=args.limit,
+                max_output_bytes=args.max_bytes,
+            )
+        elif args.action == "search":
+            result = search(
+                args.workspace, args.query, regex=args.regex, paths=args.path,
+                limit=args.limit, max_files=args.max_files, max_output_bytes=args.max_bytes,
+                max_line_bytes=args.max_line_bytes,
+            )
+        elif args.action == "context":
+            result = context(
+                args.workspace, args.path, args.start_line, args.end_line,
+                max_output_bytes=args.max_bytes, max_line_bytes=args.max_line_bytes,
+            )
+        elif args.action == "symbols":
+            result = symbols(args.workspace, args.path, max_output_bytes=args.max_bytes)
+        else:
+            result = repository_map(
+                args.workspace, args.task_query, max_files=args.max_files,
+                max_results=args.max_results, max_tokens=args.max_tokens,
+                max_output_bytes=args.max_bytes,
+            )
+    except (RetrievalError, OSError, ValueError) as exc:
+        result = {
+            "schema": "local-agent-retrieval-v1",
+            "operation": args.action,
+            "workspace": str(args.workspace) if args.workspace else str(Path.cwd()),
+            "status": "error",
+            "results": [],
+            "truncated": False,
+            "errors": [{"code": "invalid_request", "message": str(exc)}],
+        }
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    else:
+        for item in result["results"]:
+            if args.action == "locate":
+                print(item["path"])
+            elif args.action == "search":
+                print(f'{item["path"]}:{item["line"]}: {item["text"]}')
+            elif args.action == "context":
+                print(f'{item["line"]:>5}: {item["text"]}')
+            elif args.action == "symbols":
+                for symbol in item.get("symbols", []):
+                    print(f'{item["path"]}:{symbol["start_line"]}: {symbol["kind"]} {symbol["qualified_name"]}')
+            else:
+                print(f'{item["path"]}:{item["start_line"]}: {item["qualified_name"]} ({item["relevance"]})')
+        if args.action == "context" and result["results"]:
+            print(f'Next line: {result["next_line"]}')
+        if not result["results"]:
+            print("No results.")
+        for issue in result["errors"]:
+            location = f' ({issue["path"]})' if issue.get("path") else ""
+            print(f'Notice{location}: {issue["message"]}', file=sys.stderr)
+        if result["truncated"]:
+            print("Output was truncated to the configured retrieval budget.", file=sys.stderr)
+    return 1 if result["status"] == "partial" else 0
+
+
+def _handle_checkpoint(args: argparse.Namespace) -> int:
+    from .context.checkpoint import CheckpointError, load_checkpoint, recover_session, recovery_packet, save_checkpoint
+
+    try:
+        if args.action == "save":
+            payload = json.loads(args.input.read_text(encoding="utf-8"))
+            allowed = {
+                "task_id", "objective", "authorized_scope", "next_action", "base_revision", "identities",
+                "confirmed_sources", "decisions", "assumptions", "modified_paths", "completed_verification",
+                "pending_checks", "blockers",
+            }
+            if not isinstance(payload, dict) or set(payload) - allowed:
+                raise CheckpointError("Checkpoint input must be an object with only supported task fields")
+            result = save_checkpoint(
+                args.workspace, payload.get("task_id"), payload.get("objective"),
+                state_dir=args.state_dir,
+                authorized_scope=payload.get("authorized_scope"),
+                next_action=payload.get("next_action"),
+                base_revision=payload.get("base_revision"),
+                identities=payload.get("identities"),
+                confirmed_sources=payload.get("confirmed_sources"),
+                decisions=payload.get("decisions"),
+                assumptions=payload.get("assumptions"),
+                modified_paths=payload.get("modified_paths"),
+                completed_verification=payload.get("completed_verification"),
+                pending_checks=payload.get("pending_checks"),
+                blockers=payload.get("blockers"),
+            )
+        elif args.action == "recover-session":
+            result = recover_session(args.workspace, args.session_id, state_dir=args.state_dir)
+        else:
+            result = load_checkpoint(args.workspace, args.task_id, state_dir=args.state_dir)
+            if args.action == "recover":
+                result = recovery_packet(args.workspace, result)
+    except (CheckpointError, OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        result = {"status": "error", "errors": [{"code": "checkpoint_error", "message": str(exc)}]}
+        if args.json:
+            print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+        else:
+            print(str(exc), file=sys.stderr)
+        return 2
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, separators=(",", ":")))
+    else:
+        print(f"Checkpoint {result.get('task_id')}: {result.get('status', 'saved')}")
+        if result.get("next_action"):
+            print("Next action: " + result["next_action"])
+        for reason in result.get("stale_reasons", []):
+            print("Stale evidence: " + reason)
+    return 1 if result.get("status") == "stale" else 0
+
+
 def main(argv: list[str] | None = None) -> int:
     arguments = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
@@ -535,6 +736,10 @@ def main(argv: list[str] | None = None) -> int:
         parser.parse_args([args.group, "--help"])
     if args.group == "opencode":
         return _handle_opencode(args)
+    if args.group == "code":
+        return _handle_code(args)
+    if args.group == "checkpoint":
+        return _handle_checkpoint(args)
     try:
         if args.group == "model":
             from . import cli
@@ -593,6 +798,9 @@ def main(argv: list[str] | None = None) -> int:
                         args.strategy,
                         args.adopt,
                         args.mode,
+                        args.code_retrieval,
+                        args.checkpoint_compaction,
+                        args.structural_retrieval,
                         args.state_dir,
                         args.home,
                     ]
@@ -603,6 +811,9 @@ def main(argv: list[str] | None = None) -> int:
                 saved = json.loads(args.input_plan.read_text(encoding="utf-8"))
                 if saved.get("schema_version") != 1:
                     raise ValueError("Unsupported saved plan schema")
+                saved.setdefault("code_retrieval", False)
+                saved.setdefault("checkpoint_compaction", False)
+                saved.setdefault("structural_retrieval", False)
                 home, clients, strategy, mode, adopt, state = (
                     Path(saved["home"]),
                     tuple(saved["clients"]),
@@ -620,6 +831,9 @@ def main(argv: list[str] | None = None) -> int:
                     tuple(args.adopt or []),
                     args.state_dir,
                 )
+                code_retrieval = args.code_retrieval
+                checkpoint_compaction = args.checkpoint_compaction
+                structural_retrieval = args.structural_retrieval
                 if args.action == "status" and args.mode is None:
                     from .setup.manifest import Layout
                     from .setup.planner import load_receipt
@@ -638,6 +852,9 @@ def main(argv: list[str] | None = None) -> int:
                 adopt=adopt,
                 mode=mode,
                 state_dir=state,
+                code_retrieval=(saved["code_retrieval"] if saved is not None else code_retrieval),
+                checkpoint_compaction=(saved["checkpoint_compaction"] if saved is not None else checkpoint_compaction),
+                structural_retrieval=(saved["structural_retrieval"] if saved is not None else structural_retrieval),
             )
             if args.action == "apply":
                 result = apply_plan(plan, expected=saved)

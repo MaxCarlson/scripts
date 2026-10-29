@@ -11,6 +11,12 @@ from pathlib import Path
 
 FILE_AGENT = "benchmark-files"
 FILE_PROFILE = "file-tools-v1"
+RETRIEVAL_AGENT = FILE_AGENT
+RETRIEVAL_PROFILE = "retrieval-files-v1"
+RETRIEVAL_TOOLS = {"code_locate", "code_context"}
+STRUCTURAL_AGENT = FILE_AGENT
+STRUCTURAL_PROFILE = "retrieval-structural-v1"
+STRUCTURAL_TOOLS = {"code_symbols", "code_map"}
 SAFE_PERMISSIONS = {"read", "edit", "glob", "grep", "list", "StructuredOutput"}
 FILE_PROMPT = (
     "Implement the requested deliverable using read/edit/write file tools only. "
@@ -20,19 +26,27 @@ FILE_PROMPT = (
     "Finish promptly after implementing the solution. Report checks as not run (harness verifies). "
     "Respect allowed paths and protected files; do not modify .git or opencode.json."
 )
+# Keep role instructions byte-identical across B0/B2/B3. The exposed tool surface
+# is the intervention; teaching retrieval in only one condition would confound it.
+RETRIEVAL_PROMPT = FILE_PROMPT
+STRUCTURAL_PROMPT = FILE_PROMPT
 
 
-def configure_file_agent(workspace: Path) -> None:
+def configure_file_agent(workspace: Path, *, retrieval: bool = False, structural: bool = False) -> None:
     """Only called while building a fresh owned trial, before its initial snapshot."""
     path = workspace / "opencode.json"
     config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     agents = config.setdefault("agent", {})
-    if FILE_AGENT in agents:
-        raise ValueError("Task seed already defines the reserved benchmark-files agent")
-    agents[FILE_AGENT] = {
+    name = FILE_AGENT
+    if name in agents:
+        raise ValueError(f"The task seed already defines the reserved {name} agent")
+    permissions = SAFE_PERMISSIONS | (RETRIEVAL_TOOLS if retrieval or structural else set())
+    if structural:
+        permissions |= STRUCTURAL_TOOLS
+    agents[name] = {
         "description": "Benchmark file implementation; hidden verification is performed by the harness",
         "mode": "primary", "prompt": FILE_PROMPT,
-        "permission": {"*": "deny", **{name: "allow" for name in sorted(SAFE_PERMISSIONS)},
+        "permission": {"*": "deny", **{tool: "allow" for tool in sorted(permissions)},
                        "external_directory": "deny"},
     }
     path.write_text(json.dumps(config, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
@@ -92,10 +106,18 @@ def _match(pattern: str, value: str) -> bool:
     return re.fullmatch(re.escape(pattern).replace(r"\*", ".*").replace(r"\?", "."), value, re.DOTALL) is not None
 
 
-def validate_file_agent(role: dict, *, trusted_output_directory: Path | None = None) -> None:
+def validate_file_agent(
+    role: dict,
+    *,
+    trusted_output_directory: Path | None = None,
+    retrieval: bool = False,
+    structural: bool = False,
+) -> None:
     """Validate the ordered effective tool contract before session creation."""
-    if role.get("name") != FILE_AGENT or role.get("mode") != "primary" or role.get("prompt") != FILE_PROMPT:
-        raise ValueError("benchmark-files role name, mode or prompt identity differs from the declared profile")
+    expected_name = FILE_AGENT
+    expected_prompt = FILE_PROMPT
+    if role.get("name") != expected_name or role.get("mode") != "primary" or role.get("prompt") != expected_prompt:
+        raise ValueError(f"{expected_name} role name, mode or prompt identity differs from the declared profile")
     rules = role.get("permission")
     if not isinstance(rules, list) or any(
         not isinstance(r, dict) or any(not isinstance(r.get(k), str) or not r[k] for k in ("permission", "pattern", "action"))
@@ -106,6 +128,9 @@ def validate_file_agent(role: dict, *, trusted_output_directory: Path | None = N
     if not roots:
         raise ValueError("benchmark-files is missing its default-deny tool policy")
     effective = rules[roots[-1] + 1:]
+    allowed_permissions = SAFE_PERMISSIONS | (RETRIEVAL_TOOLS if retrieval or structural else set())
+    if structural:
+        allowed_permissions |= STRUCTURAL_TOOLS
     for index, rule in enumerate(effective):
         # A later complete denial for this key overrides every target of this rule.
         if any(r["action"] == "deny" and r["pattern"] == "*" and r["permission"] in (rule["permission"], "*")
@@ -122,19 +147,24 @@ def validate_file_agent(role: dict, *, trusted_output_directory: Path | None = N
             actual = rule["pattern"].replace("\\", "/")
             if expected is None or actual != expected:
                 raise ValueError(f"Unverified external_directory allowance: {rule['pattern']}")
-        elif permission not in SAFE_PERMISSIONS:
-            raise ValueError(f"benchmark-files has an unexpected effective tool permission: {rule}")
-    for tool in ("read", "edit"):
+        elif permission not in allowed_permissions:
+            raise ValueError(f"{expected_name} has an unexpected effective tool permission: {rule}")
+    required_tools = set()
+    if retrieval or structural:
+        required_tools |= RETRIEVAL_TOOLS
+    if structural:
+        required_tools |= STRUCTURAL_TOOLS
+    for tool in ("read", "edit", *sorted(required_tools)):
         matches = [r["action"] for r in rules if _match(r["permission"], tool) and r["pattern"] == "*"]
         broad = [i for i, r in enumerate(rules) if _match(r["permission"], tool) and r["pattern"] == "*"]
         narrow_denials = any(_match(r["permission"], tool) and r["action"] != "allow"
                              for r in rules[broad[-1] + 1:]) if broad else True
         if not matches or matches[-1] != "allow" or narrow_denials:
-            raise ValueError(f"benchmark-files cannot use required {tool} tools")
+            raise ValueError(f"{expected_name} cannot use required {tool} tools")
 
 
 def validate_execution_profile(profile: str) -> None:
     if profile == "sandboxed-shell-v1":
         raise ValueError("sandboxed-shell-v1 is unavailable: worker AND verifier containment has not been demonstrated. No host-shell fallback is permitted.")
-    if profile not in {"shell-v1", FILE_PROFILE}:
+    if profile not in {"shell-v1", FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
         raise ValueError(f"Unknown task OpenCode tool profile: {profile}")

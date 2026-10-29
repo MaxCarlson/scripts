@@ -1,0 +1,29 @@
+{
+  "schema": "local-agent-efficiency-experiment-v1",
+  "seed": 20261029,
+  "conditions": {
+    "B0": {"profile": "file-tools-v1", "intervention": "baseline file tools"},
+    "B2": {"profile": "retrieval-files-v1", "intervention": "code_locate and code_context"},
+    "B3": {"profile": "retrieval-structural-v1", "intervention": "B2 plus code_symbols and code_map"}
+  },
+  "tasks": [
+    "py-repository-investigation",
+    "py-focused-bug-fix",
+    "py-multifile-change",
+    "py-test-development"
+  ],
+  "repetitions_per_condition_task": 3,
+  "expected_dispatches": 36,
+  "order_policy": "each of six B0/B2/B3 permutations appears twice across 12 task-repetition blocks; block order and permutation assignment are shuffled with seed",
+  "budget_profile": "canonical-120s",
+  "task_seconds": 120,
+  "grace_seconds": 15,
+  "verifier_seconds": 10,
+  "request_timeout_seconds": 10,
+  "context_length": 32768,
+  "max_ram_percent": 95,
+  "max_duration_seconds": 7200,
+  "allow_model_transitions": false,
+  "stop_on_nonzero_attempt": true,
+  "retry_invalid_attempts": false
+}

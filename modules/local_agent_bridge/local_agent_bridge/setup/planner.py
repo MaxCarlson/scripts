@@ -8,7 +8,7 @@ from pathlib import Path
 
 from .files import digest, inspect, tree_digest
 from .manifest import Layout, assets, bridge_settings, role_text
-from .profiles import (BEGIN, END, SLOT, compose, generic_baseline, instruction_block, leaves,
+from .profiles import (BEGIN, compose, generic_baseline, instruction_block, leaves,
                        lookup, parse_config, patch_config, strip_block)
 
 
@@ -47,6 +47,9 @@ class Plan:
     adopt: tuple[str, ...]
     operations: list[Operation]
     receipt_state: dict
+    code_retrieval: bool = False
+    structural_retrieval: bool = False
+    checkpoint_compaction: bool = False
     warnings: list[str] = field(default_factory=list)
 
     @property
@@ -56,6 +59,9 @@ class Plan:
     def summary(self) -> dict:
         return {'schema_version': 1, 'home': str(self.layout.home), 'state_dir': str(self.layout.state),
                 'clients': list(self.clients), 'strategy': self.strategy, 'mode': self.mode,
+                'code_retrieval': self.code_retrieval,
+                'structural_retrieval': self.structural_retrieval,
+                'checkpoint_compaction': self.checkpoint_compaction,
                 'adopt': list(self.adopt), 'receipt_state': self.receipt_state,
                 'operations': [op.summary() for op in self.operations],
                 'conflicts': self.conflicts, 'warnings': self.warnings}
@@ -73,16 +79,35 @@ def load_receipt(layout: Layout) -> dict:
 
 def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
                strategy: str = 'auto', adopt: tuple[str, ...] = (), state_dir: Path | None = None,
-               environ: dict | None = None, mode: str = 'local') -> Plan:
+               environ: dict | None = None, mode: str = 'local',
+               code_retrieval: bool | None = None,
+               structural_retrieval: bool | None = None,
+               checkpoint_compaction: bool | None = None) -> Plan:
     if not clients or set(clients) - {'codex', 'agy'}:
         raise ValueError('Supported clients: codex, agy')
     if strategy not in {'auto', 'link', 'copy'} or mode not in {'generic', 'local'}:
         raise ValueError('Invalid installation strategy or mode')
+    if code_retrieval is not None and type(code_retrieval) is not bool:
+        raise ValueError('code_retrieval must be a boolean or None')
+    if checkpoint_compaction is not None and type(checkpoint_compaction) is not bool:
+        raise ValueError('checkpoint_compaction must be a boolean or None')
+    if structural_retrieval is not None and type(structural_retrieval) is not bool:
+        raise ValueError('structural_retrieval must be a boolean or None')
     layout = Layout.discover(Path(home), state_dir, environ)
     receipt = load_receipt(layout)
     resources = receipt['resources']
+    if code_retrieval is None:
+        code_retrieval = any(rid.startswith('shared.code-retrieval.') for rid in resources)
+    if structural_retrieval is None:
+        structural_retrieval = any(rid.startswith('shared.structural-retrieval.') for rid in resources)
+    if structural_retrieval:
+        code_retrieval = True
+    if checkpoint_compaction is None:
+        checkpoint_compaction = any(rid.startswith('shared.checkpoint-compaction.') for rid in resources)
     plan = Plan(layout, tuple(dict.fromkeys(clients)), strategy, mode, tuple(adopt), [],
-                inspect(layout.state / 'receipt.json'))
+                inspect(layout.state / 'receipt.json'), code_retrieval=code_retrieval,
+                structural_retrieval=structural_retrieval,
+                checkpoint_compaction=checkpoint_compaction)
     method_file = 'link' if strategy == 'link' or (strategy == 'auto' and os.name != 'nt') else 'copy'
     method_tree = 'copy' if strategy == 'copy' else 'link'
 
@@ -294,6 +319,24 @@ def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
             if role in oc.get('agent', {}):
                 op.conflict = 'Competing agent definition in OpenCode JSON config'
                 op.action = 'conflict'
+    if code_retrieval:
+        tool_dir = assets() / 'opencode-tools'
+        for name in ('local_agent_bridge.js', 'code_locate.js', 'code_context.js'):
+            op = add('shared.code-retrieval.' + name.removesuffix('.js'), 'shared',
+                     layout.opencode / 'tools' / name, 'file',
+                     (tool_dir / name).read_text(encoding='utf-8'), method=method_file)
+    if structural_retrieval:
+        tool_dir = assets() / 'opencode-tools'
+        for name in ('code_symbols.js', 'code_map.js'):
+            add('shared.structural-retrieval.' + name.removesuffix('.js'), 'shared',
+                layout.opencode / 'tools' / name, 'file',
+                (tool_dir / name).read_text(encoding='utf-8'), method=method_file)
+    if checkpoint_compaction:
+        plugin = assets() / 'opencode-plugins' / 'local_agent_checkpoint.js'
+        add('shared.checkpoint-compaction.plugin', 'shared',
+            layout.opencode / 'plugins' / plugin.name, 'file',
+            plugin.read_text(encoding='utf-8'), method=method_file)
+
 
     from .installer import removal_operation
     desired = {op.resource_id for op in plan.operations}
@@ -301,7 +344,10 @@ def build_plan(home: Path, clients: tuple[str, ...] = ('codex', 'agy'), *,
     retired = []
     for rid, record in reversed(list(resources.items())):
         if rid not in desired and (record['client'] in plan.clients or
-                record['client'] == 'shared' and 'local' not in modes.values()):
+                record['client'] == 'shared' and ('local' not in modes.values() or
+                rid.startswith('shared.code-retrieval.') and not code_retrieval or
+                rid.startswith('shared.structural-retrieval.') and not structural_retrieval or
+                rid.startswith('shared.checkpoint-compaction.') and not checkpoint_compaction)):
             op = removal_operation(layout, rid, record)
             op.details['retire'] = True
             retired.append(op)
