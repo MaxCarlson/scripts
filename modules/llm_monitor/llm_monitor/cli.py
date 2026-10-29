@@ -50,6 +50,7 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("-u", "--url", default="http://127.0.0.1:4096", help="OpenCode server URL")
     live.add_argument("-p", "--project-directory", required=True, help="Exact OpenCode project directory")
     live.add_argument("-s", "--session", required=True, help="OpenCode session ID to observe")
+    live.add_argument("-T", "--trial-id", help="External trial identity for cross-artifact correlation")
     live.add_argument("-t", "--observe-seconds", type=float,
                       help=f"Bound observation to 0-{MAX_OBSERVE_SECONDS:g} seconds; required for JSON output")
     live.add_argument("-f", "--format", choices=("text", "json"), default="text")
@@ -246,6 +247,7 @@ def _live(args: argparse.Namespace) -> int:
             requested_variant=args.requested_variant,
             lmstudio_models=lmstudio_models,
             request_evidence=request_evidence,
+            trial_id=args.trial_id,
             on_update=render if args.format == "text" else None,
         )
     except KeyboardInterrupt:
@@ -262,7 +264,8 @@ def _live(args: argparse.Namespace) -> int:
 def _format_live_snapshot(snapshot: dict[str, Any], *, show_reasoning: bool = False) -> str:
     elapsed = snapshot.get("inference_elapsed_seconds")
     elapsed_text = "unknown" if elapsed is None else f"{elapsed:.1f}s"
-    line = (f"session={snapshot.get('session_id')} activity={snapshot.get('activity')} "
+    trial = f"trial={snapshot.get('trial_id')} " if snapshot.get("trial_id") else ""
+    line = (f"{trial}session={snapshot.get('session_id')} activity={snapshot.get('activity')} "
             f"stream={snapshot.get('stream_capability')} elapsed={elapsed_text} "
             f"tools={snapshot.get('tool_calls')} last_tool={snapshot.get('last_tool') or '-'} "
             f"writes={snapshot.get('file_writes_observed')} warnings={','.join(snapshot.get('warnings') or []) or '-'}")

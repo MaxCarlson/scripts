@@ -18,6 +18,16 @@ def test_watch_accepts_session_json_and_interval_options():
     assert args.interval == 0.5
 
 
+def test_live_accepts_trial_identity_for_cross_artifact_correlation():
+    args = build_parser().parse_args([
+        "live", "--trial-id", "EXP-20261029-01", "--project-directory", "C:/trial",
+        "--session", "ses-1", "--observe-seconds", "5", "--format", "json",
+    ])
+
+    assert args.command == "live"
+    assert args.trial_id == "EXP-20261029-01"
+
+
 def test_diagnose_and_report_accept_session_format_and_source_overrides():
     parser = build_parser()
     diagnose = parser.parse_args(

@@ -22,6 +22,8 @@ MAX_PART_CHARS = 4096
 MAX_SESSION_TEXT_CHARS = 16 * 1024
 MAX_DISPLAY_CHARS = MAX_SESSION_TEXT_CHARS
 MAX_TOOL_IDS = 256
+MAX_TIMELINE_EVENTS = 256
+MAX_CONNECTION_EVENTS = 32
 MAX_OBSERVE_SECONDS = 3600.0
 MAX_REQUEST_EVIDENCE_BYTES = 128 * 1024
 READ_ONLY_TOOLS = {"read", "glob", "grep", "list", "search", "webfetch"}
@@ -115,6 +117,10 @@ def _sse_frame(event_name: str | None, event_id: str | None, data_lines: list[st
     return SSEEvent(event_name, event_id, "\n".join(data_lines))
 
 
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
 def normalize_opencode_event(
     value: Any,
     *,
@@ -200,10 +206,13 @@ class _Part:
 class LiveSessionState:
     """Bounded in-memory aggregation for one explicitly selected session."""
 
-    def __init__(self, session_id: str, project_directory: str, *, include_reasoning: bool = False):
+    def __init__(
+        self, session_id: str, project_directory: str, *, include_reasoning: bool = False, trial_id: str | None = None
+    ):
         self.session_id = session_id
         self.project_directory = project_directory
         self.include_reasoning = include_reasoning
+        self.trial_id = trial_id
         self.parts: OrderedDict[tuple[str, str], _Part] = OrderedDict()
         self.part_delta_chars: OrderedDict[tuple[str, str], int] = OrderedDict()
         self.part_char_categories: dict[tuple[str, str], str | None] = {}
@@ -247,8 +256,39 @@ class LiveSessionState:
         self.reasoning_provenance: dict[str, Any] | None = None
         self.warnings: set[str] = set()
         self._seen_sse_ids: OrderedDict[str, None] = OrderedDict()
+        self.observer_started_at = _utc_now()
+        self.stream_connected_at: str | None = None
+        self.connection_attempts = 0
+        self.connection_timeline: list[dict[str, Any]] = []
+        self.connection_timeline_truncated = False
+        self.first_matching_event_at: str | None = None
+        self.last_matching_event_at: str | None = None
+        self.first_reasoning_delta_at: str | None = None
+        self.last_reasoning_delta_at: str | None = None
+        self.first_text_delta_at: str | None = None
+        self.last_text_delta_at: str | None = None
+        self.reasoning_delta_events = 0
+        self.text_delta_events = 0
+        self.reasoning_parts_observed = 0
+        self.text_parts_observed = 0
+        self.reasoning_part_ids: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self.text_part_ids: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self.reasoning_part_count_truncated = False
+        self.text_part_count_truncated = False
+        self.part_delta_event_counts: dict[tuple[str, str], int] = {}
+        self.part_classified_delta_events: dict[tuple[str, str], int] = {}
+        self.part_delta_observed_at: dict[tuple[str, str], tuple[str, str]] = {}
+        self.duplicate_events = 0
+        self.event_timeline: list[dict[str, Any]] = []
+        self.event_timeline_truncated = False
 
     def mark_connected(self) -> None:
+        observed_at = _utc_now()
+        self.connection_attempts += 1
+        self.stream_connected_at = self.stream_connected_at or observed_at
+        self._append_connection_event(
+            "connected" if self.connection_attempts == 1 else "reconnected", observed_at
+        )
         self.stream_connected = True
 
     def note_telemetry_error(self, reason: str) -> None:
@@ -256,6 +296,49 @@ class LiveSessionState:
             self.warnings.add("telemetry_incomplete")
         if reason == "connection_gap":
             self.warnings.add("reconnection_gap")
+            self._append_connection_event("interrupted", _utc_now())
+        elif reason == "stream_unavailable":
+            self._append_connection_event("unavailable", _utc_now())
+
+    def _append_connection_event(self, state: str, observed_at: str) -> None:
+        self.connection_timeline.append({"state": state, "observed_at": observed_at})
+        if len(self.connection_timeline) > MAX_CONNECTION_EVENTS:
+            del self.connection_timeline[0]
+            self.connection_timeline_truncated = True
+
+    def _append_event_timeline(self, event: NormalizedLiveEvent, observed_at: str, *, duplicate: bool) -> None:
+        entry = {
+            "observed_at": observed_at,
+            "event_type": event.event_type[:80],
+            "event_id": event.raw_event_id[:80] if event.raw_event_id else None,
+            "message_id": event.message_id[:80] if event.message_id else None,
+            "part_id": event.part_id[:80] if event.part_id else None,
+            "part_type": event.part_type[:40] if event.part_type else None,
+            "tool_name": _redact_text(event.tool_name)[:80] if event.tool_name else None,
+            "tool_status": event.tool_status[:40] if event.tool_status else None,
+            "finish_reason": event.finish_reason[:40] if event.finish_reason else None,
+            "duplicate": duplicate,
+        }
+        self.event_timeline.append(entry)
+        if len(self.event_timeline) > MAX_TIMELINE_EVENTS:
+            del self.event_timeline[0]
+            self.event_timeline_truncated = True
+
+    def _remember_part(self, parts: OrderedDict[tuple[str, str], None], key: tuple[str, str], category: str) -> None:
+        if key in parts:
+            parts.move_to_end(key)
+            return
+        parts[key] = None
+        if category == "reasoning":
+            self.reasoning_parts_observed += 1
+        else:
+            self.text_parts_observed += 1
+        if len(parts) > MAX_TOOL_IDS:
+            parts.popitem(last=False)
+            if category == "reasoning":
+                self.reasoning_part_count_truncated = True
+            else:
+                self.text_part_count_truncated = True
 
     def reconcile(self, summary: dict[str, Any] | None, *, now: float | None = None) -> None:
         if not isinstance(summary, dict):
@@ -325,12 +408,18 @@ class LiveSessionState:
         if event is None:
             return
         now = time.monotonic() if now is None else now
+        observed_at = _utc_now()
+        self.first_matching_event_at = self.first_matching_event_at or observed_at
+        self.last_matching_event_at = observed_at
         if event.raw_event_id:
             if event.raw_event_id in self._seen_sse_ids:
+                self.duplicate_events += 1
+                self._append_event_timeline(event, observed_at, duplicate=True)
                 return
             self._seen_sse_ids[event.raw_event_id] = None
             while len(self._seen_sse_ids) > MAX_TOOL_IDS:
                 self._seen_sse_ids.popitem(last=False)
+        self._append_event_timeline(event, observed_at, duplicate=False)
         self.has_session_activity = True
         self.last_event_at = now
         if event.event_type in {"session.status", "server.connected"}:
@@ -362,6 +451,9 @@ class LiveSessionState:
             current.text = _bounded_text(current.text + text)
             self.pending_deltas[key] = _bounded_text(self.pending_deltas.get(key, "") + text)
             self.part_delta_chars[key] = self.part_delta_chars.get(key, 0) + len(text)
+            self.part_delta_event_counts[key] = self.part_delta_event_counts.get(key, 0) + 1
+            first_at, _last_at = self.part_delta_observed_at.get(key, (observed_at, observed_at))
+            self.part_delta_observed_at[key] = (first_at, observed_at)
             self.parts.move_to_end(key)
             self.part_delta_chars.move_to_end(key)
             self._bound_parts()
@@ -444,6 +536,27 @@ class LiveSessionState:
             "oversized_events": self.oversized_events,
             "project_directory": self.project_directory,
             "session_id": self.session_id,
+            "trial_id": self.trial_id,
+            "observer_started_at": self.observer_started_at,
+            "stream_connected_at": self.stream_connected_at,
+            "connection_attempts": self.connection_attempts,
+            "connection_timeline": self.connection_timeline,
+            "connection_timeline_truncated": self.connection_timeline_truncated,
+            "first_matching_event_at": self.first_matching_event_at,
+            "last_matching_event_at": self.last_matching_event_at,
+            "first_reasoning_delta_at": self.first_reasoning_delta_at,
+            "last_reasoning_delta_at": self.last_reasoning_delta_at,
+            "reasoning_delta_events": self.reasoning_delta_events,
+            "reasoning_parts_observed": self.reasoning_parts_observed,
+            "reasoning_part_count_truncated": self.reasoning_part_count_truncated,
+            "first_text_delta_at": self.first_text_delta_at,
+            "last_text_delta_at": self.last_text_delta_at,
+            "text_delta_events": self.text_delta_events,
+            "text_parts_observed": self.text_parts_observed,
+            "text_part_count_truncated": self.text_part_count_truncated,
+            "duplicate_events": self.duplicate_events,
+            "event_timeline": self.event_timeline,
+            "event_timeline_truncated": self.event_timeline_truncated,
             "activity": self.activity,
             "stream_capability": self.stream_capability,
             "inference_elapsed_seconds": round(max(0.0, now - (self.inference_started_at or self.reasoning_started_at)), 1)
@@ -511,12 +624,18 @@ class LiveSessionState:
             self.part_delta_chars.pop(key, None)
             self.part_char_categories.pop(key, None)
             self.part_classified_chars.pop(key, None)
+            self.part_delta_event_counts.pop(key, None)
+            self.part_classified_delta_events.pop(key, None)
+            self.part_delta_observed_at.pop(key, None)
         while len(self.pending_deltas) > MAX_PARTS:
             self.pending_deltas.popitem(last=False)
         while len(self.part_delta_chars) > MAX_PARTS:
             key, _count = self.part_delta_chars.popitem(last=False)
             self.part_char_categories.pop(key, None)
             self.part_classified_chars.pop(key, None)
+            self.part_delta_event_counts.pop(key, None)
+            self.part_classified_delta_events.pop(key, None)
+            self.part_delta_observed_at.pop(key, None)
         excess = sum(len(part.text) for part in self.parts.values()) - MAX_SESSION_TEXT_CHARS
         for part in self.parts.values():
             if excess <= 0:
@@ -538,6 +657,7 @@ class LiveSessionState:
             elif desired == "text":
                 self.text_chars += difference
             self.part_classified_chars[key] = max(classified, count)
+            self._classify_delta_events(key, desired, previous=previous)
             return desired
         if previous == "reasoning":
             self.reasoning_chars = max(0, self.reasoning_chars - classified)
@@ -549,7 +669,34 @@ class LiveSessionState:
             self.text_chars += count
         self.part_char_categories[key] = desired
         self.part_classified_chars[key] = count if desired else 0
+        self._classify_delta_events(key, desired, previous=previous)
         return desired
+
+    def _classify_delta_events(self, key: tuple[str, str], category: str | None, *, previous: str | None) -> None:
+        total = self.part_delta_event_counts.get(key, 0)
+        classified = self.part_classified_delta_events.get(key, 0)
+        if previous == "reasoning" and category != previous:
+            self.reasoning_delta_events = max(0, self.reasoning_delta_events - classified)
+        elif previous == "text" and category != previous:
+            self.text_delta_events = max(0, self.text_delta_events - classified)
+        already_classified = classified if previous == category else 0
+        difference = max(0, total - already_classified)
+        first_at, last_at = self.part_delta_observed_at.get(
+            key, (self.last_matching_event_at or _utc_now(), self.last_matching_event_at or _utc_now())
+        )
+        if category == "reasoning":
+            self.reasoning_delta_events += difference
+            if difference:
+                self.first_reasoning_delta_at = min(self.first_reasoning_delta_at or first_at, first_at)
+                self.last_reasoning_delta_at = max(self.last_reasoning_delta_at or last_at, last_at)
+            self._remember_part(self.reasoning_part_ids, key, "reasoning")
+        elif category == "text":
+            self.text_delta_events += difference
+            if difference:
+                self.first_text_delta_at = min(self.first_text_delta_at or first_at, first_at)
+                self.last_text_delta_at = max(self.last_text_delta_at or last_at, last_at)
+            self._remember_part(self.text_part_ids, key, "text")
+        self.part_classified_delta_events[key] = total if category else 0
 
     def _update_warnings(self, now: float) -> None:
         if self.last_completed_finish_reason == "length" and self.file_writes_observed == 0:
@@ -591,6 +738,7 @@ class OpenCodeSSEClient:
         self.timeout = min(max(0.1, timeout), 30.0)
         self.max_reconnects = min(max(0, max_reconnects), 3)
         self.connected = False
+        self.connection_attempts = 0
         self.reconnection_gaps = 0
         self.server_origin = f"{parsed.scheme}://{parsed.netloc}"
 
@@ -610,6 +758,7 @@ class OpenCodeSSEClient:
             event_url = f"{self.base_url}/event?{urlencode({'directory': self.project_directory})}"
             request = Request(event_url, headers=headers, method="GET")
             try:
+                self.connection_attempts += 1
                 with urlopen(request, timeout=max(0.1, min(self.timeout, remaining))) as response:
                     content_type = response.headers.get("Content-Type", "")
                     if "text/event-stream" not in content_type.lower():
@@ -655,10 +804,11 @@ def observe_session(
     lmstudio_model: dict[str, Any] | None = None,
     lmstudio_models: list[dict[str, Any]] | None = None,
     request_evidence: dict[str, Any] | None = None,
+    trial_id: str | None = None,
     on_update: Callable[[dict[str, Any]], None] | None = None,
 ) -> dict[str, Any]:
     """Reconcile stored summary, observe a bounded event window, then reconcile once more."""
-    state = LiveSessionState(session_id, project_directory, include_reasoning=include_reasoning)
+    state = LiveSessionState(session_id, project_directory, include_reasoning=include_reasoning, trial_id=trial_id)
     before = client.poll(session_id, project_directory)
     state.reconcile(before)
     for frame in stream.events(observe_seconds):
@@ -722,12 +872,14 @@ def observe_session(
     state.output_limits = provenance.get("output_limits", {}).get("value")
     snapshot = state.snapshot()
     snapshot["server"] = stream.server_origin
+    snapshot["connection_attempts"] = getattr(stream, "connection_attempts", state.connection_attempts)
+    snapshot["reconnection_attempts"] = max(0, snapshot["connection_attempts"] - 1)
     snapshot["tool_names"] = state.tool_names[-MAX_TOOL_IDS:]
     snapshot["diagnostics"] = diagnose_live_attempt(
         snapshot, tool_names=state.tool_names, history_coverage=state.history_coverage
     )
     if stream.reconnection_gaps:
-        state.note_telemetry_error("connection_gap")
+        state.warnings.update({"reconnection_gap", "telemetry_incomplete"})
         snapshot["warnings"] = sorted(state.warnings)
         snapshot["coverage"] = "incomplete"
     if not stream.connected:

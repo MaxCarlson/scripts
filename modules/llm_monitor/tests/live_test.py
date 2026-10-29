@@ -12,6 +12,8 @@ from llm_monitor.live import (
     diagnose_live_attempt,
     iter_sse_events,
     normalize_opencode_event,
+    observe_session,
+    SSEEvent,
 )
 
 
@@ -186,6 +188,109 @@ def test_delta_before_update_is_retained_and_duplicate_full_updates_do_not_dupli
 
     assert state.snapshot(now=3.0)["current_reasoning_text"] == "start more"
     assert state.snapshot(now=3.0)["activity"] == "reasoning"
+
+
+def test_snapshot_reports_bounded_metadata_timeline_and_duplicate_delivery_without_reasoning_text():
+    payload = {"id": "evt-duplicate", "type": "message.part.delta", "properties": {
+        "sessionID": "ses-timeline", "messageID": "msg-timeline", "partID": "prt-thought",
+        "field": "reasoning", "delta": "private reasoning sentinel"}}
+
+    class Client:
+        def poll(self, _session_id, _project_directory):
+            return {"session_id": "ses-timeline", "session_state": {"type": "busy"},
+                    "history_coverage": {"status": "unavailable"}}
+
+    class Stream:
+        connected = True
+        reconnection_gaps = 0
+        server_origin = "http://127.0.0.1:4096"
+
+        def events(self, _observe_seconds):
+            yield SSEEvent(event="__connected__")
+            frame = SSEEvent(data=json.dumps(payload))
+            yield frame
+            yield frame
+
+    snapshot = observe_session(
+        Client(), Stream(), session_id="ses-timeline", project_directory=r"C:\pilot",
+        observe_seconds=1,
+    )
+
+    assert snapshot["duplicate_events"] == 1
+    assert snapshot["reasoning_delta_events"] == 1
+    assert snapshot["reasoning_parts_observed"] == 1
+    assert snapshot["first_reasoning_delta_at"]
+    assert snapshot["last_reasoning_delta_at"]
+    assert snapshot["observer_started_at"]
+    assert snapshot["stream_connected_at"]
+    assert snapshot["connection_attempts"] == 1
+    assert snapshot["connection_timeline"][0]["state"] == "connected"
+    assert len(snapshot["event_timeline"]) == 2
+    assert [item["duplicate"] for item in snapshot["event_timeline"]] == [False, True]
+    assert "current_reasoning_text" not in snapshot
+    assert "private reasoning sentinel" not in json.dumps(snapshot)
+
+
+def test_event_timeline_is_bounded_and_reports_truncation():
+    state = LiveSessionState("ses-timeline", r"C:\pilot")
+    for index in range(300):
+        event = normalize_opencode_event(
+            {"id": f"evt-{index}", "type": "session.status", "properties": {
+                "sessionID": "ses-timeline", "status": {"type": "busy"}}},
+            project_directory=r"C:\pilot", session_id="ses-timeline", raw_event_id=f"evt-{index}",
+        )
+        state.ingest(event, now=float(index))
+
+    snapshot = state.snapshot(now=300.0)
+
+    assert len(snapshot["event_timeline"]) == 256
+    assert snapshot["event_timeline_truncated"] is True
+    assert snapshot["event_timeline"][0]["event_id"] == "evt-44"
+
+
+def test_reconnection_preserves_partial_reasoning_and_marks_timeline_gap():
+    first = {"id": "evt-before-gap", "type": "message.part.delta", "properties": {
+        "sessionID": "ses-gap", "messageID": "msg-gap", "partID": "prt-gap",
+        "field": "reasoning", "delta": "first"}}
+    second = {"id": "evt-after-gap", "type": "message.part.delta", "properties": {
+        "sessionID": "ses-gap", "messageID": "msg-gap", "partID": "prt-gap",
+        "field": "reasoning", "delta": " second"}}
+
+    class Client:
+        def poll(self, _session_id, _project_directory):
+            return {"session_id": "ses-gap", "session_state": {"type": "busy"},
+                    "history_coverage": {"status": "unavailable"}}
+
+    class Stream:
+        connected = True
+        connection_attempts = 2
+        reconnection_gaps = 1
+        server_origin = "http://127.0.0.1:4096"
+
+        def events(self, _observe_seconds):
+            yield SSEEvent(event="__connected__")
+            yield SSEEvent(data=json.dumps(first))
+            yield SSEEvent(error="connection_failed")
+            yield SSEEvent(event="__connected__")
+            yield SSEEvent(data=json.dumps(second))
+
+    updates = []
+    snapshot = observe_session(
+        Client(), Stream(), session_id="ses-gap", project_directory=r"C:\pilot",
+        observe_seconds=5, include_reasoning=True, trial_id="trial-gap", on_update=updates.append,
+    )
+
+    assert snapshot["trial_id"] == "trial-gap"
+    assert updates and all(update["trial_id"] == "trial-gap" for update in updates)
+    assert snapshot["current_reasoning_text"] == "first second"
+    assert snapshot["reasoning_delta_events"] == 2
+    assert snapshot["connection_attempts"] == 2
+    assert snapshot["reconnection_attempts"] == 1
+    assert snapshot["reconnection_gaps"] == 1
+    assert [item["state"] for item in snapshot["connection_timeline"]] == [
+        "connected", "interrupted", "reconnected",
+    ]
+    assert snapshot["coverage"] == "incomplete"
 
 
 def test_snapshot_keeps_live_token_count_unknown_and_reports_completion_metadata():
