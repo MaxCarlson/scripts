@@ -21,3 +21,7 @@
 - [x] Capture a live OpenCode request through the isolated 1235 proxy and observe matching-session SSE activity. Proxy rows contain only allowlisted fields and align with session inferences by timestamp; no session ID is captured, so correlation is not exact. The bounded live snapshot reports incomplete coverage.
 - [x] Bootstrap current runtime and complete one disposable T1 coding smoke test with an independent passing verifier; do not interpret one pass as reliability evidence.
 - [x] Review and push checkpoint `cf760b70` on the isolated branch; do not merge. Review T5 evidence and checkpoint it separately after verification.
+- [x] Reconcile bootstrap T1 and new B1 Monitor coverage against persisted history; document expected deadline/idle boundaries, sticky activity-only warning behavior, and the unresolved T1 live-warning cause.
+- [x] Run one revision-1.0.1 explicit-invariant B1 attempt and one bounded verifier-guided repair; preserve separate first-attempt/repair outcomes and stop after the single repair failed.
+- [x] Finalize request provenance and operating recommendation without broadening proxy capture or repeating failed conditions; document remaining limits.
+- [x] Write the sanitized evidence summary and update the investigation status/handoff; keep raw evidence unstaged and do not merge.

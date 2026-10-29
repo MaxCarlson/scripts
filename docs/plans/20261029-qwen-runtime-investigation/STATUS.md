@@ -99,3 +99,11 @@ This section records the state before the runtime bootstrap below. Its outage di
 - [x] Collect per-inference and session telemetry, correctness, first-edit timing, tool outcomes, history coverage, and device-attribution gaps for T2/T4/T5.
 - [x] Produce a provisional evidence-based recommendation in `evidence/t2-t4-comparison.md` and `evidence/t5-async-comparison.md`; reliability and historical failure reproduction remain open.
 - [x] Create and push allowlisted checkpoint `cf760b70` on the isolated branch; do not merge. T5 evidence is being reviewed for a separate allowlisted checkpoint.
+
+## 2026-10-29 Monitor and B1 transition follow-up
+
+The targeted revision-1.0.1 state-transition experiment is complete with a negative result. One invariant-guided first attempt failed with a JavaScript syntax error; one fresh 60-second verifier-guided repair timed out without editing. First-attempt and repair metrics, Monitor evidence, proxy provenance, root cause, and operating decision are in [`evidence/b1-transition-matrix-followup.md`](../../../experiments/qwen_runtime_investigation/evidence/b1-transition-matrix-followup.md). No further B1 inference is justified without a new hypothesis.
+
+Monitor coverage reconciles cleanly: both new sessions had complete persisted history and zero database gaps. Their connected live observers delivered thousands of matching SSE events and text deltas with zero malformed or oversized frames and zero reconnect gaps. Deadline/idle warnings reflect the bounded observer window. `telemetry_incomplete` remained set after incremental text arrived because the current warning is sticky after an initial activity-only period; do not treat it alone as a transport failure. The earlier T1 live snapshot was not preserved, so its specific `telemetry_incomplete` trigger remains unknown; its persisted history was complete.
+
+The experimental runtime remained healthy through the trials. The final recommendation is unchanged for simple, independently verifiable tasks and stricter for async state-machine work: escalate the latter. One bounded repair is optional for localized actionable failures and not dependable for complex lifecycle code.
