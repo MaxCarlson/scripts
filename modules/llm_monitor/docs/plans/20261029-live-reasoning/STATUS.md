@@ -1,6 +1,6 @@
 # Status
 
-**State:** Implemented; awaiting commit/push verification
+**State:** Implemented and pushed; active-session streaming validation remains pending
 **Branch:** `codex/llm-monitor-live-reasoning-20261029`
 **Base:** `origin/main` at `268805c41fe4b3b0c1107452298a8a4a79978ad3`
 
@@ -18,4 +18,5 @@
 
 ## Next
 
-- Review final diff/status, commit and push the isolated branch without merging.
+- When an already-authorized active worker is available, perform a read-only SSE observation and update the compatibility report. Do not initiate inference for this validation.
+- Merge only after separate approval.

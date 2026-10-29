@@ -7,4 +7,4 @@
 - [x] Add sanitized outbound-parameter evidence format, provenance comparison, 8K/16K exhaustion fixtures, and advisory diagnostic summaries.
 - [x] Document warnings, limits, `opencode_worker` coordinator integration, and OpenCode 1.19.3 runtime compatibility evidence.
 - [x] Run focused tests and full LLM Monitor regression suite; run lint/compile checks.
-- [ ] Review final diff/status; commit and push the isolated branch without merging.
+- [x] Review final diff/status; commit and push the isolated branch without merging.
