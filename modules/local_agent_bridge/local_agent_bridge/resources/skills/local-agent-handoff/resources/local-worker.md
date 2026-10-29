@@ -17,6 +17,14 @@ OpenCode 1.19.3's read tool may return up to 2,000 lines or 50 KiB by default;
 that cap is not a small context budget. Full-file reads remain permitted when the file is
 short or the complete structure is needed for correctness.
 
+For a small coding task with an explicit target, make the first edit the first
+milestone: inspect at most one focused source location, then write the requested
+file before doing broader review. Do not spend a turn planning or narrating
+reconnaissance when the supplied task already identifies the file and behavior.
+After the first edit, run only the focused validation needed for that change and
+report the changed path and result. If a concrete blocker prevents the edit, state
+that blocker instead of continuing speculative exploration.
+
 Coordinator envelopes may include known symbols, paths, line ranges, existing
 helpers or tests, constraints, and verification commands. Those are useful
 starting points, not trusted facts: confirm them against the current workspace

@@ -30,7 +30,7 @@ OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.
 Recording is opt-in. `watch` remains an in-memory live view and does not write the telemetry database.
 
 ```powershell
-llm-monitor record --all --interval 2 --hardware
+llm-monitor record --all --project-directory "C:\\path\\to\\project" --interval 2 --hardware
 llm-monitor history
 llm-monitor report --session SESSION_ID --history --format json
 llm-monitor db info
@@ -46,6 +46,8 @@ llm-monitor report --session SESSION_ID --history --database ./telemetry.sqlite3
 ```
 
 By default, the database is outside the current directory: `%LOCALAPPDATA%\\llm-monitor\\telemetry.sqlite3` on Windows, `~/Library/Application Support/llm-monitor/telemetry.sqlite3` on macOS, and `$XDG_DATA_HOME/llm-monitor/telemetry.sqlite3` on Linux, WSL2, and Termux (falling back to `~/.local/share`). Set `-d/--database` to choose a different file. The current schema is version 2; opening a writable v1 database performs a transactional forward migration that adds local alert state. Read-only history access remains compatible with v1. New databases use SQLite WAL; event batches and their checkpoints commit in one transaction. SQLite serializes writers and unique event keys make repeated polling idempotent. Multiple sessions can be recorded by one `record --all` process; independent processes can share the database through SQLite locking.
+
+`record --all` discovers every session visible to the selected OpenCode project. Pass `-p/--project-directory` for the worker's project context; OpenCode may group sibling worktrees under one project, so discovered sessions can show other worktree paths. Use `--session` to pin recording to one worker session. The recorder prints the sanitized server origin and selected scope each cycle so a project mismatch is visible. Verify discovery before recording with `llm-monitor sessions --url URL --directory PATH`.
 
 New sessions receive one initial history collection. Later cycles use the existing bounded/cursor-aware OpenCode poller. A restart replays the available overlap and records an offline gap; older events outside a provider's bounded window cannot be reconstructed. Partial and unavailable intervals remain represented as gaps. A historical report reads only stored telemetry, so it works without OpenCode but can only cover monitoring observations.
 

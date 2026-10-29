@@ -206,9 +206,14 @@ class OpenCodeClient:
             v2 = self.get_json(f"/api/session/{encoded_id}/message?{urlencode(query)}", directory)
             envelope = _cursor_envelope(v2.data)
             if envelope is not None and v2.error is None:
-                self._message_api = "cursor"
                 messages, cursors = envelope
-                return ApiResult(data=messages), "cursor", _string(cursors.get("next"))
+                next_cursor = _string(cursors.get("next"))
+                if messages or next_cursor:
+                    self._message_api = "cursor"
+                    return ApiResult(data=messages), "cursor", next_cursor
+                # Some OpenCode versions return a valid but empty cursor envelope
+                # for sessions whose messages are available from the legacy route.
+                # Probe that route before recording a complete empty history.
             if self._message_api == "cursor" and v2.error and v2.status_code not in {404, 405}:
                 return v2, "cursor", None
             self._message_api = "legacy"

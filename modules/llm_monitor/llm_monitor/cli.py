@@ -10,7 +10,7 @@ import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from .analysis import analyze_events
 from .alerts import AlertEngine, DEFAULT_RULES
@@ -46,13 +46,15 @@ def build_parser() -> argparse.ArgumentParser:
     record = sub.add_parser("record", help="Persist read-only monitoring observations")
     selector = record.add_mutually_exclusive_group(required=True)
     selector.add_argument("-s", "--session")
-    selector.add_argument("-a", "--all", action="store_true")
+    selector.add_argument("-a", "--all", action="store_true",
+                          help="Record all sessions visible in the selected OpenCode project")
     record.add_argument("-i", "--interval", type=float, default=2.0)
     record.add_argument("-d", "--database", type=Path)
     record.add_argument("-f", "--format", choices=("text", "json"), default="text")
     record.add_argument("-v", "--verbose", action="store_true")
     record.add_argument("-u", "--url", default="http://127.0.0.1:4096")
-    record.add_argument("-p", "--project-directory")
+    record.add_argument("-p", "--project-directory",
+                        help="OpenCode project used for session discovery; --all is scoped to this project")
     record.add_argument("-l", "--lmstudio-url", default="http://127.0.0.1:1234")
     record.add_argument("-m", "--mcp-jobs", help="Optional read-only JSON snapshot of MCP jobs")
     record.add_argument("-g", "--hardware", action="store_true", help="Sample optional GPU telemetry per cycle")
@@ -734,18 +736,45 @@ def _record(args: argparse.Namespace) -> int:
             progress = recorder.collect_cycle(session_ids)
             if args.hardware:
                 progress["hardware_samples"] += recorder.sample_hardware()
-            record = {"schema_version": 1, "command": "record", "database": str(path), **progress}
+            record = {
+                "schema_version": 1,
+                "command": "record",
+                "database": str(path),
+                "server": _display_endpoint(args.url),
+                "session_scope": "selected_project" if args.all else "selected_session",
+                "project_directory": args.project_directory,
+                **progress,
+            }
             if discovery_error:
                 record["discovery_error"] = discovery_error
             if args.format == "json":
                 print(json.dumps(record, ensure_ascii=False), flush=True)
             else:
-                print(f"Recording {len(session_ids)} sessions to {path}: "
+                project = args.project_directory or "<server-default>"
+                scope = "project sessions" if args.all else "selected session"
+                print(f"Recording {len(session_ids)} {scope} from server={_display_endpoint(args.url)} "
+                      f"project={project} to {path}: "
                       f"new={progress['inserted']} updated={progress['updated']} "
                       f"duplicates={progress['duplicates']} unavailable={progress['unavailable']} "
                       f"gaps/errors={progress['errors']} hardware_samples={progress['hardware_samples']}"
                       + (f" discovery={discovery_error}" if discovery_error else ""), flush=True)
             time.sleep(args.interval)
+
+
+def _display_endpoint(endpoint: str) -> str:
+    """Show the server origin without credentials, paths, query strings, or fragments."""
+    try:
+        parsed = urlsplit(endpoint)
+        hostname = parsed.hostname
+        port = parsed.port
+    except ValueError:
+        return "invalid-endpoint"
+    if not parsed.scheme or not hostname:
+        return "invalid-endpoint"
+    host = f"[{hostname}]" if ":" in hostname else hostname
+    if port is not None:
+        host = f"{host}:{port}"
+    return f"{parsed.scheme}://{host}"
 
 
 def _historical_report(args: argparse.Namespace) -> int:

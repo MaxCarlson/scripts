@@ -173,6 +173,10 @@ def test_record_command_commits_before_clean_interrupt(tmp_path, monkeypatch, ca
         def __init__(self, *_args):
             pass
 
+        def sessions(self, directory=None):
+            assert directory == "C:/isolated/project"
+            return ApiResult([{"id": "recorded-session"}])
+
         def collect_history(self, session_id, _directory=None):
             return HistoryResult(events, HistoryCoverage("complete", "cursor", 1, 100))
 
@@ -199,11 +203,28 @@ def test_record_command_commits_before_clean_interrupt(tmp_path, monkeypatch, ca
     monkeypatch.setattr(cli, "LMStudioClient", LMStudio)
     monkeypatch.setattr(cli.time, "sleep", lambda _interval: (_ for _ in ()).throw(KeyboardInterrupt()))
 
-    assert cli.main(["record", "-s", "recorded-session", "-d", str(database), "-i", "0.1"]) == 130
-    assert "new=" in capsys.readouterr().out
+    assert cli.main([
+        "record", "--all", "--project-directory", "C:/isolated/project",
+        "--url", "http://user:secret@127.0.0.1:4096/api?token=hidden",
+        "-d", str(database), "-i", "0.1",
+    ]) == 130
+    output = capsys.readouterr().out
+    assert "new=" in output
+    assert "project=C:/isolated/project" in output
+    assert "http://127.0.0.1:4096" in output
+    assert "secret" not in output
+    assert "hidden" not in output
     with TelemetryStore(database, readonly=True) as store:
         bundle = store.history_bundle("recorded-session", endpoint="http://127.0.0.1:4096")
     assert len([event for event in bundle["analysis_events"] if event.category == "inference"]) == 1
+
+
+def test_record_all_help_explains_project_scoped_discovery():
+    from llm_monitor.cli import build_parser
+
+    record_help = build_parser()._subparsers._group_actions[0].choices["record"].format_help()
+    assert "selected OpenCode project" in " ".join(record_help.split())
+    assert "--project-directory" in record_help
 
 
 def test_tui_and_alert_commands_parse_existing_style_flags():

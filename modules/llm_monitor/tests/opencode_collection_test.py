@@ -67,6 +67,46 @@ def test_cursor_pages_can_be_collected_without_repeating_full_history(monkeypatc
     assert len(requests) == 2
 
 
+def test_empty_cursor_page_falls_back_to_legacy_messages(monkeypatch):
+    client = OpenCodeClient("http://opencode", message_limit=100)
+    assistant = {
+        "info": {
+            "id": "assistant-1",
+            "role": "assistant",
+            "finish": "stop",
+            "time": {"created": 1000, "completed": 2000},
+            "tokens": {"input": 20, "output": 5, "reasoning": 1},
+        },
+        "parts": [{
+            "id": "tool-1",
+            "type": "tool",
+            "callID": "call-1",
+            "tool": "write",
+            "state": {"status": "completed", "input": {"filePath": "tiny_answer.py"}},
+        }],
+    }
+    requests = []
+
+    def get_json(path, _directory=None):
+        requests.append(path)
+        if path.startswith("/api/session/"):
+            return ApiResult(data={"data": [], "cursor": {"next": None, "previous": None}})
+        if path.startswith("/session/ses-1/message?"):
+            return ApiResult(data=[assistant])
+        return ApiResult(data=[])
+
+    monkeypatch.setattr(client, "get_json", get_json)
+
+    result = client.collect_history("ses-1")
+
+    assert result.coverage.status == "complete"
+    assert result.coverage.source == "legacy"
+    assert any(path.startswith("/session/ses-1/message?") for path in requests)
+    assert [(event.category, event.tool_name) for event in result.events if event.category in {"inference", "tool"}] == [
+        ("inference", None), ("tool", "write")
+    ]
+
+
 def test_full_cursor_page_without_next_cursor_is_complete(monkeypatch):
     client = OpenCodeClient("http://opencode", message_limit=1)
     monkeypatch.setattr(

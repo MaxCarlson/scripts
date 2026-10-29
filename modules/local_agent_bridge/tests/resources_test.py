@@ -13,6 +13,9 @@ def test_worker_prompt_prefers_focused_discovery_and_bounded_reads():
     for phrase in ("rg --files", "offset", "limit", "unbounded", "focused test", "progress checkpoint"):
         assert phrase in prompt
     assert "full-file reads remain permitted" in prompt
+    assert "first edit" in prompt
+    assert "small coding task" in prompt
+    assert "at most one focused source location" in prompt
 
 
 def test_dispatch_and_recovery_guidance_preserve_turn_identity_and_evidence():
