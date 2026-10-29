@@ -38,6 +38,18 @@ requires another apply for copied/rendered resources. Linked skill changes appea
 immediately; apply acknowledges the updated canonical source. Changed link targets
 and independently edited copies are reported as drift.
 
+`local-agent setup status` is a read-only sync audit. It leads with the overall
+state and counts for current, outdated, missing, and conflicting resources, then
+shows each resource's destination, copy/link method, verification type, and source
+path. It uses terminal colors only for interactive output and respects `NO_COLOR`.
+JSON status keeps the existing `operations` records and adds a summary, optional
+feature selections, and provenance for the active package and resource sources.
+Files and copied trees are compared byte for byte; managed JSON/TOML values are
+compared semantically, so line-ending or formatting differences alone are not
+reported as setup drift. Disabled optional features are reported as disabled, not
+as failed installations. Status never applies changes; use the displayed plan and
+apply commands when updates are needed.
+
 For existing files, setup can own just its marked instruction block/config fields.
 Whole instruction ownership or existing skill replacement requires exact adoption
 IDs shown by the plan. Unrelated edits are preserved. Review the migration guide

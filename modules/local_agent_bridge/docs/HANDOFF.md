@@ -1,5 +1,28 @@
 # Local agent setup handoff
 
+## Setup status synchronization audit — 2026-10-29
+
+Branch: `codex/local-agent-setup-status-sync-20261029`, based on fetched
+`origin/main` at `c34739c5b3fe41f9cd3c63a19c4991e7da519fec`. The package is
+version 3.5.0. `setup status` now reports sync counts and states, per-resource
+copy/link and verification details, managed tree differences, optional feature
+selection, and the active package/resource provenance. JSON adds these fields
+without changing the existing `operations` records or exit codes. Status remains
+read-only; no live profile or configuration was inspected or changed during this
+implementation.
+
+Synthetic tests cover the 11-current/4-outdated scenario, generated worker roles,
+byte and tree drift, missing paths, incorrect link targets, semantic JSON/TOML
+comparison, optional-feature states, colors, JSON compatibility, provenance, and
+read-only behavior. Final full module run: 171 passed, 3 skipped, 2 failed because
+Git Bash could not create its MSYS named object (`NtCreateDirectoryObject`,
+`0xC0000022`). Excluding those two environment-blocked shell-hook tests: 171
+passed, 3 skipped, 2 deselected. Changed-file Ruff passed; whole-module Ruff still
+reports two existing E402/F401 findings in the outer `modules/local_agent_bridge/`
+compatibility `__init__.py`. The 3.5.0 wheel built and inspection confirmed the
+new status module and canonical worker prompt are packaged. Next: complete diff
+review, commit, and push this branch only; do not merge.
+
 ## Reliability hardening implementation - 2026-10-25
 
 Branch: `codex/local-agent-bridge-reliability-20261025`, based on
@@ -244,3 +267,13 @@ Active plan:
 [checklist](plans/20261017-1650_host-adoption-and-runtime-handoff/checklist.md), and
 [plan handoff](plans/20261017-1650_host-adoption-and-runtime-handoff/HANDOFF.md).
 Prior installer stage: [20261017-1602_local-agent-setup](plans/20261017-1602_local-agent-setup/plan.md).
+
+# 2026-10-29 Local Agent Setup Status Audit
+
+- Branch/worktree: `codex/local-agent-setup-status-sync-20261029` at the dedicated `.worktrees/local-agent-setup-status-sync-20261029`, based on `origin/main` `c34739c5b3fe41f9cd3c63a19c4991e7da519fec`.
+- Objective: make `local-agent setup status` a clear, colored, read-only sync audit with resource methods, exact/semantic verification labels, optional-feature state, active package/source provenance, and backward-compatible JSON summary.
+- Implementation: status reporting lives in `local_agent_bridge/setup/status.py`; existing operation payloads and exit codes are preserved. Human action commands now carry the selected home/state, clients, strategy/mode, adoption IDs, and feature selections. Package version is 3.5.0.
+- Tests: focused setup/CLI tests: 41 passed, 1 skipped. Full module suite: 171 passed, 3 skipped, 2 failed only because Git Bash failed to initialize an MSYS namespace (`NtCreateDirectoryObject ... 0xC0000022`); excluding those two shell tests: 171 passed, 3 skipped, 2 deselected. Changed-file Ruff passed; whole-module Ruff still reports E402/F401 in the pre-existing outer compatibility wrapper `modules/local_agent_bridge/__init__.py`.
+- Packaging: rebuilt `local_agent_bridge-3.5.0-py3-none-any.whl` (138,402 bytes, SHA-256 `3109d758c3382e6494552de2023d0d68c3aeac1c031513be25ee1ede5bd34890`); inspected metadata version and confirmed status module and worker resource are included. No live home was used or modified.
+- Review: staged diff reviewed; `git diff --cached --check` passes. Only the 11 listed implementation, regression-test, README, handoff, and plan files are staged.
+- Next: commit and push this feature branch as explicitly requested. Do not merge.
