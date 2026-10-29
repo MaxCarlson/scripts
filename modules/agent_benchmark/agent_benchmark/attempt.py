@@ -286,6 +286,8 @@ async def run_attempt(
     poll_seconds: float = 0.1,
     verifier_seconds: float = 10,
     model_identity: ModelIdentity | None = None,
+    inference_profile: dict[str, Any] | None = None,
+    before_dispatch: Callable[[dict[str, Any]], None] | None = None,
     resource_check: Callable[[], None] | None = None,
 ) -> AttemptEvidence:
     """Dispatch once and freeze S1 only after fresh termination confirmation.
@@ -316,7 +318,8 @@ async def run_attempt(
     evidence_dir.mkdir(parents=True, exist_ok=False)
     workspace = guard.allocate(workspace_root)
     git_identity = prepare_workspace(
-        task, workspace.path, scope_policy=SCOPE_POLICY, model_identity=model_identity
+        task, workspace.path, scope_policy=SCOPE_POLICY, model_identity=model_identity,
+        inference_profile=inference_profile,
     )
     # Worker processes belong to OpenCode's shared process tree, not local subprocess
     # supervision; owned_pids is intentionally empty.
@@ -325,7 +328,8 @@ async def run_attempt(
                "git": asdict(git_identity), "scope_policy": SCOPE_POLICY,
                "opencode_tool_profile": task.opencode_tool_profile, "scratch": provenance(workspace.path),
                "evidence_limits": asdict(EVIDENCE_LIMITS),
-               "model_identity": model_identity.to_dict() if model_identity else None}
+               "model_identity": model_identity.to_dict() if model_identity else None,
+               "requested_inference_profile": inference_profile}
     _write_json(evidence_dir / "lifecycle.json", journal)
     s0 = _capture_checkpoint(workspace.path, evidence_dir, journal, "S0")
     prompt = build_prompt(task, workspace.path)
@@ -339,6 +343,7 @@ async def run_attempt(
         configuration["opencode_tool_profile"] = task.opencode_tool_profile
         if model_identity is not None:
             configuration["model_identity"] = model_identity.to_dict()
+        configuration["requested_inference_profile"] = inference_profile
         prepared_session = await bridge.prepare_session(workspace.path, project_id=git_identity.root_commit)
         configuration.update(git=asdict(git_identity), session=prepared_session,
                              scope_policy=SCOPE_POLICY, scratch=provenance(workspace.path),
@@ -356,6 +361,10 @@ async def run_attempt(
         _write_json(evidence_dir / "lifecycle.json", journal)
         raise
     _write_json(evidence_dir / "runtime.json", configuration)
+    if before_dispatch is not None:
+        before_dispatch({"endpoint": bridge.base_url,
+                         "project_directory": str(workspace.path.resolve()),
+                         "session_id": prepared_session.get("id"), "model": model, "agent": agent})
     handle = None
     task_budget_expired = False
     execution_error = None

@@ -14,6 +14,17 @@ def test_run_requires_execute_before_writing_any_files(tmp_path, capsys):
     assert "execute" in capsys.readouterr().err.lower()
 
 
+def test_experiment_run_can_pause_after_session_creation_for_monitor_attachment():
+    from agent_benchmark.cli import parser
+
+    args = parser().parse_args([
+        "experiment", "run", "-x", "-m", "qwen38-27b-q4km", "-t", "qwen-file-creation",
+        "--pause-before-dispatch",
+    ])
+
+    assert args.pause_before_dispatch is True
+
+
 def test_plan_and_status_are_read_only(tmp_path, capsys):
     state = tmp_path / "state"
     assert main(["plan", "-s", str(state)]) == 0

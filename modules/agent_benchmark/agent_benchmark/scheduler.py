@@ -207,6 +207,8 @@ class ExperimentScheduler:
         lms_runner: Optional[CommandRunner] = None,
         trial_executor: Optional[TrialExecutor] = None,
         tool_profile: str | None = None,
+        inference_profile: dict[str, Any] | None = None,
+        before_dispatch: Optional[Callable[[dict[str, Any]], None]] = None,
         on_trial_start: Optional[TrialCallback] = None,
         on_trial_complete: Optional[TrialCallback] = None,
         on_model_start: Optional[Callable[[str], None]] = None,
@@ -225,6 +227,8 @@ class ExperimentScheduler:
         self.lms_path = lms_path
         self.lms_runner = lms_runner
         self.trial_executor = trial_executor
+        self.inference_profile = inference_profile
+        self.before_dispatch = before_dispatch
         if tool_profile not in {None, FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
             raise ValueError(f"Unsupported experiment tool profile: {tool_profile}")
         self.tool_profile = tool_profile
@@ -373,6 +377,7 @@ class ExperimentScheduler:
                     "evidence_limits": EVIDENCE_LIMITS.to_dict() if hasattr(EVIDENCE_LIMITS, "to_dict") else {},
                     "model_identity": self.model_identities[model_key].to_dict()
                     if model_key in self.model_identities else None,
+                    "requested_inference_profile": self.inference_profile,
                 },
             )
             save_run(run_dir, run_info, overwrite=True)
@@ -411,6 +416,8 @@ class ExperimentScheduler:
                         task_seconds,
                         grace_seconds,
                         verifier_seconds,
+                        self.inference_profile,
+                        self.before_dispatch,
                     )
 
                 runtime = ({"kind": "injected", "version": "test-executor"} if self.trial_executor is not None else runtime_conditions(evidence_dir))
@@ -620,11 +627,27 @@ class ExperimentScheduler:
         task_seconds: float,
         grace_seconds: float,
         verifier_seconds: float,
+        inference_profile: dict[str, Any] | None = None,
+        before_dispatch: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> TrialResult:
         """Run a single live trial via CLI worker (`agy`/`codex`) or OpenCodeBridge (`lmstudio`)."""
         resolved_provider, resolved_model = resolve_model_provider_and_key(
             trial.model_key, default_provider=self.provider
         )
+        dispatch_callback = None
+        if before_dispatch is not None:
+            benchmark_trial_id = f"trial-{trial.trial_index + 1:03d}"
+            monitor_trial_id = f"{trial.run_id}/{benchmark_trial_id}"
+
+            def dispatch_callback(details: dict[str, Any]) -> None:
+                before_dispatch({
+                    **details,
+                    "run_id": trial.run_id,
+                    "trial_id": benchmark_trial_id,
+                    "monitor_trial_id": monitor_trial_id,
+                    "task_id": trial.task_id,
+                })
+
         with reserved_trial(self.state_dir, evidence_dir, lock_held=True) as guard:
             trial_res: Optional[TrialResult] = None
             cancelled = False
@@ -659,6 +682,8 @@ class ExperimentScheduler:
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,
+                            inference_profile=inference_profile,
+                            before_dispatch=dispatch_callback,
                         )
                 trial_res = trial_from_attempt(
                     evidence,

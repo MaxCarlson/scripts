@@ -1,0 +1,6 @@
+{
+  "schema": "opencode-inference-profile-v1",
+  "context_length": 98304,
+  "output_limit": 8192,
+  "reasoning": {"mode": "effort", "effort": "medium", "provenance": "experiment_profile"}
+}

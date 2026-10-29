@@ -1,0 +1,2335 @@
+{
+  "schema_version": 1,
+  "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+  "runs": [
+    {
+      "schema_version": 1,
+      "source": "persisted_telemetry",
+      "session": {
+        "session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "provider_instance": "http://127.0.0.1:4196",
+        "first_observed": "2026-10-29T15:22:40.538862+00:00",
+        "last_observed": "2026-10-29T15:23:29.640426+00:00",
+        "model": "qwen38-27b-q4km",
+        "agent": "benchmark-files"
+      },
+      "coverage": {
+        "status": "complete",
+        "source": "legacy",
+        "event_rows": 56,
+        "gaps": [],
+        "state_samples": 44,
+        "state_sample_note": "Phase 3A records have transition-only state evidence; sampled occupancy is unavailable before state observations were added."
+      },
+      "metrics": {
+        "execution": {
+          "observed_wall_seconds": {
+            "value": 49.101564,
+            "method": "first_to_last_monitor_observation",
+            "sample_count": 2,
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "time_by_operation_seconds": {
+            "inference": {
+              "value": 7.0809999999999995,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "tool": {
+              "value": 0.011,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 2,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "compaction": {
+              "value": null,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 0,
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "combined_activity_union": {
+              "value": 7.0809999999999995,
+              "method": "union_across_known_activity_intervals",
+              "sample_count": 5,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cross_category_overlap": {
+              "value": 0.01100000000000012,
+              "method": "sum_of_category_unions_minus_combined_union",
+              "sample_count": 5,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "unclassified_not_idle": {
+              "value": 42.02056400000001,
+              "method": "wall_span_minus_known_activity_union; not an idle estimate",
+              "sample_count": 2,
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "sampled_state_seconds": {
+            "values": {
+              "idle": 42.208387,
+              "inference_running": 6.893177
+            },
+            "unknown_seconds": 0.0,
+            "sample_pairs": 43,
+            "method": "bounded_poll_interval_interpolation",
+            "status": "observed",
+            "max_interpolation_gap_seconds": 30.0,
+            "note": "Estimate assigns each short sample interval to its earlier observed state; it is not provider-measured time."
+          },
+          "collection_gaps": []
+        },
+        "inference": {
+          "count": 3,
+          "completed_count": 3,
+          "in_progress_count": 0,
+          "duration_seconds": {
+            "count": 3,
+            "minimum": 1.608,
+            "maximum": 3.258,
+            "mean": 2.360333333333333,
+            "median": 2.215,
+            "p50": 2.215,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "provider_start_completion_boundary",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "output_tokens_per_second": {
+            "count": 3,
+            "minimum": 24.554941682013506,
+            "maximum": 83.955223880597,
+            "mean": 58.89390770822909,
+            "median": 68.17155756207676,
+            "p50": 68.17155756207676,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "approx_message_elapsed",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "throughput_note": "Approximate end-to-end message rate; not measured decode throughput."
+        },
+        "tokens": {
+          "observed_completed_totals": {
+            "cache_read": {
+              "value": 0.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cache_write": {
+              "value": 0.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "input": {
+              "value": 9384.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "output": {
+              "value": 366.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "reasoning": {
+              "value": 155.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "total": {
+              "value": 9905.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 3,
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "per_inference": {
+            "cache_read": {
+              "count": 3,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "mean": 0.0,
+              "median": 0.0,
+              "p50": 0.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cache_write": {
+              "count": 3,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "mean": 0.0,
+              "median": 0.0,
+              "p50": 0.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "input": {
+              "count": 3,
+              "minimum": 2917.0,
+              "maximum": 3335.0,
+              "mean": 3128.0,
+              "median": 3132.0,
+              "p50": 3132.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "output": {
+              "count": 3,
+              "minimum": 80.0,
+              "maximum": 151.0,
+              "mean": 122.0,
+              "median": 135.0,
+              "p50": 135.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "reasoning": {
+              "count": 3,
+              "minimum": 15.0,
+              "maximum": 95.0,
+              "mean": 51.666666666666664,
+              "median": 45.0,
+              "p50": 45.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "total": {
+              "count": 3,
+              "minimum": 3012.0,
+              "maximum": 3581.0,
+              "mean": 3301.6666666666665,
+              "median": 3312.0,
+              "p50": 3312.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "session_cumulative_provider_total": null
+        },
+        "context": {
+          "effective_capacity_tokens": {
+            "count": 2,
+            "minimum": 98304,
+            "maximum": 98304,
+            "mean": 98304.0,
+            "median": 98304.0,
+            "p50": 98304.0,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "matching_loaded_and_configured_capacity",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "usable_input_capacity_tokens": {
+            "count": 2,
+            "minimum": 90112,
+            "maximum": 90112,
+            "mean": 90112.0,
+            "median": 90112.0,
+            "p50": 90112.0,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "effective_capacity_minus_output_reservation",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "utilization_percent": {
+            "count": 2,
+            "minimum": 3.4756747159090913,
+            "maximum": 3.700949928977273,
+            "mean": 3.588312322443182,
+            "median": 3.588312322443182,
+            "p50": 3.588312322443182,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "input_tokens_over_usable_capacity",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "maximum_observed_utilization_percent": 3.700949928977273,
+          "utilization_sample_count": 2,
+          "model_identities": [
+            "qwen38-27b-q4km"
+          ]
+        },
+        "compactions": {
+          "unique_cycles": 0,
+          "raw_parts": 0,
+          "duration_seconds": {
+            "count": 0,
+            "minimum": null,
+            "maximum": null,
+            "mean": null,
+            "median": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "unavailable",
+            "method": "provider_compaction_boundaries",
+            "status": "unavailable",
+            "history_coverage": "complete"
+          },
+          "cycles_per_observed_hour": 0.0,
+          "cycles": [],
+          "interval_seconds": []
+        },
+        "tools": {
+          "invocations": 2,
+          "by_operation": {
+            "read": 1,
+            "write": 1
+          },
+          "failures_by_operation": {},
+          "duration_seconds": {
+            "count": 2,
+            "minimum": 0.005,
+            "maximum": 0.006,
+            "mean": 0.0055,
+            "median": 0.0055,
+            "p50": 0.0055,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "provider_tool_boundaries",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "read_calls": 1,
+          "distinct_read_targets": 1,
+          "repeated_read_targets": 0,
+          "reads_after_compaction": 0,
+          "repeated_read_targets_after_compaction": 0,
+          "repeated_read_evidence": [],
+          "edit_attempts": 1,
+          "reported_edit_successes": 1,
+          "reported_edit_failures": 0,
+          "edit_verification": "unverified",
+          "repeated_failure_loops": []
+        },
+        "hardware": {
+          "sample_count": 1419,
+          "samples_analyzed": 1419,
+          "truncated": false,
+          "sampling_scope_counts": {
+            "process_gpu_memory": 1376,
+            "point_in_time_device_measurement": 43
+          },
+          "attribution": "device/process observations; not attributed to this session",
+          "measurements": {
+            "load": {
+              "count": 43,
+              "minimum": 0.0,
+              "maximum": 97.0,
+              "mean": 12.534883720930232,
+              "median": 3.0,
+              "p50": 3.0,
+              "p90": 67.00000000000028,
+              "p95": 85.69999999999999,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "available",
+              "method": "observed_samples_no_interpolation",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "memory_utilization": {
+              "count": 43,
+              "minimum": 1.0,
+              "maximum": 74.0,
+              "mean": 30.162790697674417,
+              "median": 32.0,
+              "p50": 32.0,
+              "p90": 39.0,
+              "p95": 70.6,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "available",
+              "method": "observed_samples_no_interpolation",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "mem_used": {
+              "count": 43,
+              "minimum": 31418482688.0,
+              "maximum": 31677480960.0,
+              "mean": 31434699037.76744,
+              "median": 31418482688.0,
+              "p50": 31418482688.0,
+              "p90": 31419531264.0,
+              "p95": 31560564736.0,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "available",
+              "method": "observed_samples_no_interpolation",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "mem_total": {
+              "count": 43,
+              "minimum": 34190917632.0,
+              "maximum": 34190917632.0,
+              "mean": 34190917632.0,
+              "median": 34190917632.0,
+              "p50": 34190917632.0,
+              "p90": 34190917632.0,
+              "p95": 34190917632.0,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "available",
+              "method": "observed_samples_no_interpolation",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "power_w": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "temp": {
+              "count": 43,
+              "minimum": 29.0,
+              "maximum": 61.0,
+              "mean": 35.04651162790697,
+              "median": 32.0,
+              "p50": 32.0,
+              "p90": 51.20000000000002,
+              "p95": 56.0,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "available",
+              "method": "observed_samples_no_interpolation",
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "sampling_density": "time-bounded samples"
+        },
+        "coverage": {
+          "status": "complete",
+          "source": "legacy",
+          "event_rows": 56,
+          "gaps": [],
+          "state_samples": 44,
+          "state_sample_note": "Phase 3A records have transition-only state evidence; sampled occupancy is unavailable before state observations were added."
+        },
+        "completion": {
+          "inference_completion": {
+            "completed": 3,
+            "in_progress": 0
+          },
+          "session_completion": "unknown",
+          "work_product_completion": "unverified",
+          "task_acceptance": "unverified",
+          "mcp_jobs": []
+        },
+        "timeline": {
+          "event_counts": {
+            "inference": 3,
+            "lifecycle": 47,
+            "message": 4,
+            "tool": 2
+          },
+          "marker_count": 56,
+          "markers": [
+            {
+              "event_id": "45eea89738f7f2d14961b598084c54de18754f8a34b7092bb3c17eb43b1ad270",
+              "timestamp": "2026-10-29T15:22:40.538862+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f6103e226034d50353be56bcfd2f7435943b27cf7511fd3a8bc7463d5424cc31",
+              "timestamp": "2026-10-29T15:22:40.538862+00:00",
+              "category": "lifecycle",
+              "subtype": "state_change",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "7edff657d6f87901626eb68333ee833fe24fedf15e53c8ccf332f989d02353ab",
+              "timestamp": "2026-10-29T15:22:41.751123+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c47b87b3e671eeb945859cb7db4bc01fca51c5a995c24ad6b4898ce0897ec6e3",
+              "timestamp": "2026-10-29T15:22:42.893287+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c6bcaa783e5994ec6d761eed7797f0fadfe04366b30bfb30ad6db11600c08bd7",
+              "timestamp": "2026-10-29T15:22:44.051523+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "561eef02ede104d26de3632ca018fe2ee6ff69ee711723c40b821ed1da87b867",
+              "timestamp": "2026-10-29T15:22:45.195984+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "b43a49c495889972361c5df032c707b3c733a9d9902943cbb474ee10374107d3",
+              "timestamp": "2026-10-29T15:22:46.319300+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "b029c0552b76abf92146270331a3cb92f1e77b62a10fa1f8523569f71e6eea4f",
+              "timestamp": "2026-10-29T15:22:47.457891+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "7c9e2fd355255b17b1f8cca255ce67ed053482b04b7f4392b311ef53ce5c9202",
+              "timestamp": "2026-10-29T15:22:48.613221+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "6c4e51a24d9d0d6475c20f4ba96f837cc7ce290d36bca87bd80365beb6b51c8e",
+              "timestamp": "2026-10-29T15:22:49.740030+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "76f63e423ffa8c799e0eb5395e4fcb3d2e7e050c66baa4578bcdad31e10880cb",
+              "timestamp": "2026-10-29T15:22:50.861746+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "65a7daaa81548f40ea46a68ec18fbd40e7460fb802a9bbbba3fabda4915f57b5",
+              "timestamp": "2026-10-29T15:22:51.977424+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "335f326124ab3febab4e01ee332567e160fb239575143b258eb5dcbbdfe39f2d",
+              "timestamp": "2026-10-29T15:22:53.111683+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "aab99ecdf0fd07bd378e07d1b4fba94b8ea56bfad30bab0c54ac73fa0c760119",
+              "timestamp": "2026-10-29T15:22:54.261868+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f4e6eaf43c4b835a61ad34c30b06c82bd6364333cfde7089c6da6a80e5b37e31",
+              "timestamp": "2026-10-29T15:22:55.396166+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c26e98bd62dc521f92dfabbfa736238c610ca39527a22f81ae5c1946477df241",
+              "timestamp": "2026-10-29T15:22:56.505477+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "81c66583a42d50dbccf5046d1e0ffbab2b53fadd5329809a7eaa44354f4b0618",
+              "timestamp": "2026-10-29T15:22:57.604017+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "3567ebaba2fb93dfe010b97c91bfa35d5079ddd8e4c16b1e170eff875e3b51ea",
+              "timestamp": "2026-10-29T15:22:58.748882+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "7bbab659a193d1e071b4d335727f0bc421a282bf56f11add0d31a7c56b09c6f3",
+              "timestamp": "2026-10-29T15:22:59.886915+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "55f1d06119d1857c8384785d94b0811ae968b665296661457e2843a2ccfe2d51",
+              "timestamp": "2026-10-29T15:23:00.232000+00:00",
+              "category": "message",
+              "subtype": "user",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "7f6ae330a1304920284370bbc7c3451f89ae4d8cbf1db1190b0ea465d57ddde6",
+              "timestamp": "2026-10-29T15:23:00.245000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "4278fb7e6af6432d6ea3b2cc08b2ad59abcf52c12a12b5c3620a5248b66581a3",
+              "timestamp": "2026-10-29T15:23:00.245000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 3.258,
+              "finish_reason": "tool-calls",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 2917,
+                "output": 80,
+                "reasoning": 15,
+                "total": 3012
+              },
+              "context_utilization_percent": null,
+              "usable_input_capacity_tokens": null
+            },
+            {
+              "event_id": "b267e12ddecaa0a333691d3e00802a35bfb0037f2ecd3be571900f63ea59e280",
+              "timestamp": "2026-10-29T15:23:01.014587+00:00",
+              "category": "lifecycle",
+              "subtype": "state_change",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c8492f8cdce6bde98c37cb51e9afe30e3585786aaf01e3ffbc99b5674ad98239",
+              "timestamp": "2026-10-29T15:23:01.014587+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f1a98ba467faa20e1d67f182c45dc48ca458ea75ec3f1c67ec65096697dfb64e",
+              "timestamp": "2026-10-29T15:23:02.278434+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "39f3641a45769a9316a5e8720e2d28bb4c443a2b736ab2048c7c488ba7bbf152",
+              "timestamp": "2026-10-29T15:23:03.287000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.005,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "b23ca1caa563b58f38c27f7f7993b06b34d2e8b6ed854ff3932694f756fcf083",
+              "timestamp": "2026-10-29T15:23:03.386927+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "bdba3177da8d53c9de30740e005b7f3cc660d9d20594830c8de8ee43b9b2ed9e",
+              "timestamp": "2026-10-29T15:23:03.505000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "9330619fa9b378e8f686c48266fd2997a36dab3c5ddb9083ad733f076cf34fa0",
+              "timestamp": "2026-10-29T15:23:03.505000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 1.608,
+              "finish_reason": "tool-calls",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 3132,
+                "output": 135,
+                "reasoning": 45,
+                "total": 3312
+              },
+              "context_utilization_percent": 3.48,
+              "usable_input_capacity_tokens": 90112
+            },
+            {
+              "event_id": "d9f5bff0558a47dc7ec39cb28cbaf73233001fa3d738623f8d4001ae5d770e5f",
+              "timestamp": "2026-10-29T15:23:04.530474+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "33914937a1f52f8037504893e48e8e84cdac2d6fce06266bbdac6c114a00cde7",
+              "timestamp": "2026-10-29T15:23:04.978000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.006,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "e297e46e7c21c9f47308910628c570b55fd0d6411723282b0f64cea9274e86a6",
+              "timestamp": "2026-10-29T15:23:05.115000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "5cd2d86fa4591515bd41deb85f0fd67f27578013c453d7e94f2cdaf838ea8830",
+              "timestamp": "2026-10-29T15:23:05.115000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 2.215,
+              "finish_reason": "stop",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 3335,
+                "output": 151,
+                "reasoning": 95,
+                "total": 3581
+              },
+              "context_utilization_percent": 3.7,
+              "usable_input_capacity_tokens": 90112
+            },
+            {
+              "event_id": "248d9d68fd99b01e6b7d400d26cd627c1cc96ad719c9eb992d3d1e5af054bd8c",
+              "timestamp": "2026-10-29T15:23:05.654296+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "089672aeb8eb36ad5d153612c20717bdfe98111d7fd0b38c622576ec6cdee395",
+              "timestamp": "2026-10-29T15:23:06.774314+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "91686f8602e2e05df4ebf44dbe4685d42d972bde9aaf8db5be28d6c7ffaac60c",
+              "timestamp": "2026-10-29T15:23:07.907764+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f4c43e6e2327fb792982d24f5fca2e1190518b60af18bb50bde4307b83ad4215",
+              "timestamp": "2026-10-29T15:23:07.907764+00:00",
+              "category": "lifecycle",
+              "subtype": "state_change",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "1c56b7265b58a1fb6d269ac5feb7c9361780e96440b147f93f860d5886731bd5",
+              "timestamp": "2026-10-29T15:23:09.065449+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "10ad8b8a2c637250459e2022d36454bf603b5ecbc2bf0cceca355d47a7b031d6",
+              "timestamp": "2026-10-29T15:23:10.205472+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "bf9db0240db2bec74f9cd79b9f376bfbc064846d8c69a77f2f8a8be38ca1bbdb",
+              "timestamp": "2026-10-29T15:23:11.352180+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c678645929bb0b49dee56dbe96721386f28dd10d3f1d87d24bd8ae7404a8217a",
+              "timestamp": "2026-10-29T15:23:12.504770+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "3f48119a135059521e9cc76a7f78f245ea9b069d54fedf067db131f9fd82cb48",
+              "timestamp": "2026-10-29T15:23:13.653600+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "9567e3532b54d11547ca99e6f44959edee745d60986d5a89e02d1ccab8c2b0ef",
+              "timestamp": "2026-10-29T15:23:14.801333+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "b62f249c1712b32f636e5cc555735f2001ec244759f60f92442923b3a65782eb",
+              "timestamp": "2026-10-29T15:23:15.926158+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "a8ac0110453103186140da0de00a0c71d073a717d3409fc9b029a5e8b067a054",
+              "timestamp": "2026-10-29T15:23:17.060310+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "cb699f682a3fba856792e8df1670e8f3fca7428caeb76f5f1cba026cfdc8e50c",
+              "timestamp": "2026-10-29T15:23:18.211152+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "0f6471f7cebc589870efbc3a769d325c050926317ace13da7614f07a3c6d79c0",
+              "timestamp": "2026-10-29T15:23:19.369093+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "0e8a7f80242d4221b52bc406946719eae83b98416f40aba619d09702927d3608",
+              "timestamp": "2026-10-29T15:23:20.529100+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "a54df9a52a87cd9014386b2e162a1d3297a3faf0fc1cdd5e9b9ae13874d43b36",
+              "timestamp": "2026-10-29T15:23:21.643074+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f98a5ed4ef1e5072c7226e0f812f96c115e1073eadc7bf1408528f30afab67e5",
+              "timestamp": "2026-10-29T15:23:22.786437+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "1027c606001d4415f21261e6638b392a59c92bace6b096ae32ef53fc3e6d2ae5",
+              "timestamp": "2026-10-29T15:23:23.928846+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "cf0b1feb7269534caed00147627022b06c9d06cc0022399ce9615d39a9ae133b",
+              "timestamp": "2026-10-29T15:23:25.084958+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "fbebff2d6c1d31955918c44778da90d2f17cb4991bf4bc59c801f76d78884f02",
+              "timestamp": "2026-10-29T15:23:26.214043+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "ba99c566c1f15aafaf351e5f00e00314df92a7fb733ec3d347db0e0eb4d0c236",
+              "timestamp": "2026-10-29T15:23:27.360389+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "299aceaddf1552c32dae3e0f04067f34ff6244f8edfcaf63b1847158f22d88d1",
+              "timestamp": "2026-10-29T15:23:28.490594+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "897a3c383d54952a99ffd2aefcb145c24894263973b5677d83104d3bf060d453",
+              "timestamp": "2026-10-29T15:23:29.640426+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            }
+          ],
+          "downsampled": false,
+          "lifecycle_transitions": [
+            {
+              "category": "lifecycle",
+              "from": null,
+              "observed_at": "2026-10-29T15:22:40.538862+00:00",
+              "provenance": "observed_opencode_status",
+              "session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+              "source": "monitor",
+              "subtype": "state_change",
+              "timestamp": "2026-10-29T15:22:40.538862+00:00",
+              "to": "idle"
+            },
+            {
+              "category": "lifecycle",
+              "from": "idle",
+              "observed_at": "2026-10-29T15:23:01.014587+00:00",
+              "provenance": "observed_opencode_status",
+              "session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+              "source": "monitor",
+              "subtype": "state_change",
+              "timestamp": "2026-10-29T15:23:01.014587+00:00",
+              "to": "inference_running"
+            },
+            {
+              "category": "lifecycle",
+              "from": "inference_running",
+              "observed_at": "2026-10-29T15:23:07.907764+00:00",
+              "provenance": "observed_opencode_status",
+              "session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+              "source": "monitor",
+              "subtype": "state_change",
+              "timestamp": "2026-10-29T15:23:07.907764+00:00",
+              "to": "idle"
+            }
+          ]
+        }
+      },
+      "completion": {
+        "inference_completion": {
+          "completed": 3,
+          "in_progress": 0
+        },
+        "session_completion": "unknown",
+        "work_product_completion": "unverified",
+        "task_acceptance": "unverified",
+        "mcp_jobs": []
+      },
+      "findings": [],
+      "provenance": {
+        "event_source": "TelemetryStore.iter_session_records",
+        "database_schema_version": 2,
+        "streamed": true,
+        "metric_coverage": "complete",
+        "task_equivalence": "unknown"
+      }
+    },
+    {
+      "schema_version": 1,
+      "source": "persisted_telemetry",
+      "session": {
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "provider_instance": "http://127.0.0.1:4196",
+        "first_observed": "2026-10-29T15:29:22.582138+00:00",
+        "last_observed": "2026-10-29T15:29:39.445949+00:00",
+        "model": "qwen38-27b-q4km",
+        "agent": "benchmark-files"
+      },
+      "coverage": {
+        "status": "complete",
+        "source": "legacy",
+        "event_rows": 31,
+        "gaps": [],
+        "state_samples": 17,
+        "state_sample_note": "Phase 3A records have transition-only state evidence; sampled occupancy is unavailable before state observations were added."
+      },
+      "metrics": {
+        "execution": {
+          "observed_wall_seconds": {
+            "value": 16.863811,
+            "method": "first_to_last_monitor_observation",
+            "sample_count": 2,
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "time_by_operation_seconds": {
+            "inference": {
+              "value": 6.622,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "tool": {
+              "value": 0.055,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "compaction": {
+              "value": null,
+              "method": "union_of_provider_timed_intervals",
+              "sample_count": 0,
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "combined_activity_union": {
+              "value": 6.622,
+              "method": "union_across_known_activity_intervals",
+              "sample_count": 8,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cross_category_overlap": {
+              "value": 0.054999999999999716,
+              "method": "sum_of_category_unions_minus_combined_union",
+              "sample_count": 8,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "unclassified_not_idle": {
+              "value": 10.241810999999998,
+              "method": "wall_span_minus_known_activity_union; not an idle estimate",
+              "sample_count": 2,
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "sampled_state_seconds": {
+            "values": {
+              "idle": 16.863811
+            },
+            "unknown_seconds": 0.0,
+            "sample_pairs": 16,
+            "method": "bounded_poll_interval_interpolation",
+            "status": "observed",
+            "max_interpolation_gap_seconds": 30.0,
+            "note": "Estimate assigns each short sample interval to its earlier observed state; it is not provider-measured time."
+          },
+          "collection_gaps": []
+        },
+        "inference": {
+          "count": 4,
+          "completed_count": 4,
+          "in_progress_count": 0,
+          "duration_seconds": {
+            "count": 4,
+            "minimum": 0.88,
+            "maximum": 3.314,
+            "mean": 1.6555,
+            "median": 1.214,
+            "p50": 1.214,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "provider_start_completion_boundary",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "output_tokens_per_second": {
+            "count": 4,
+            "minimum": 32.28726614363307,
+            "maximum": 121.52070604209096,
+            "mean": 82.4726974728946,
+            "median": 88.04140885292718,
+            "p50": 88.04140885292718,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "approx_message_elapsed",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "throughput_note": "Approximate end-to-end message rate; not measured decode throughput."
+        },
+        "tokens": {
+          "observed_completed_totals": {
+            "cache_read": {
+              "value": 0.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cache_write": {
+              "value": 0.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "input": {
+              "value": 12942.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "output": {
+              "value": 447.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "reasoning": {
+              "value": 0.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "total": {
+              "value": 13389.0,
+              "method": "sum_of_completed_inference_records",
+              "sample_count": 4,
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "per_inference": {
+            "cache_read": {
+              "count": 4,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "mean": 0.0,
+              "median": 0.0,
+              "p50": 0.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "cache_write": {
+              "count": 4,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "mean": 0.0,
+              "median": 0.0,
+              "p50": 0.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "input": {
+              "count": 4,
+              "minimum": 2884.0,
+              "maximum": 3619.0,
+              "mean": 3235.5,
+              "median": 3219.5,
+              "p50": 3219.5,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "output": {
+              "count": 4,
+              "minimum": 77.0,
+              "maximum": 179.0,
+              "mean": 111.75,
+              "median": 95.5,
+              "p50": 95.5,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "reasoning": {
+              "count": 4,
+              "minimum": 0.0,
+              "maximum": 0.0,
+              "mean": 0.0,
+              "median": 0.0,
+              "p50": 0.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            },
+            "total": {
+              "count": 4,
+              "minimum": 2991.0,
+              "maximum": 3696.0,
+              "mean": 3347.25,
+              "median": 3351.0,
+              "p50": 3351.0,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "insufficient_sample",
+              "method": "provider_reported_per_inference",
+              "status": "observed",
+              "history_coverage": "complete"
+            }
+          },
+          "session_cumulative_provider_total": null
+        },
+        "context": {
+          "effective_capacity_tokens": {
+            "count": 0,
+            "minimum": null,
+            "maximum": null,
+            "mean": null,
+            "median": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "unavailable",
+            "method": "matching_loaded_and_configured_capacity",
+            "status": "unavailable",
+            "history_coverage": "complete"
+          },
+          "usable_input_capacity_tokens": {
+            "count": 0,
+            "minimum": null,
+            "maximum": null,
+            "mean": null,
+            "median": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "unavailable",
+            "method": "effective_capacity_minus_output_reservation",
+            "status": "unavailable",
+            "history_coverage": "complete"
+          },
+          "utilization_percent": {
+            "count": 0,
+            "minimum": null,
+            "maximum": null,
+            "mean": null,
+            "median": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "unavailable",
+            "method": "input_tokens_over_usable_capacity",
+            "status": "unavailable",
+            "history_coverage": "complete"
+          },
+          "maximum_observed_utilization_percent": null,
+          "utilization_sample_count": 0,
+          "model_identities": [
+            "qwen38-27b-q4km"
+          ]
+        },
+        "compactions": {
+          "unique_cycles": 0,
+          "raw_parts": 0,
+          "duration_seconds": {
+            "count": 0,
+            "minimum": null,
+            "maximum": null,
+            "mean": null,
+            "median": null,
+            "p50": null,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "unavailable",
+            "method": "provider_compaction_boundaries",
+            "status": "unavailable",
+            "history_coverage": "complete"
+          },
+          "cycles_per_observed_hour": 0.0,
+          "cycles": [],
+          "interval_seconds": []
+        },
+        "tools": {
+          "invocations": 4,
+          "by_operation": {
+            "glob": 1,
+            "read": 2,
+            "write": 1
+          },
+          "failures_by_operation": {},
+          "duration_seconds": {
+            "count": 4,
+            "minimum": 0.003,
+            "maximum": 0.042,
+            "mean": 0.01375,
+            "median": 0.005,
+            "p50": 0.005,
+            "p90": null,
+            "p95": null,
+            "percentile_sample_threshold": 5,
+            "percentile_status": "insufficient_sample",
+            "method": "provider_tool_boundaries",
+            "status": "observed",
+            "history_coverage": "complete"
+          },
+          "read_calls": 2,
+          "distinct_read_targets": 2,
+          "repeated_read_targets": 0,
+          "reads_after_compaction": 0,
+          "repeated_read_targets_after_compaction": 0,
+          "repeated_read_evidence": [],
+          "edit_attempts": 1,
+          "reported_edit_successes": 1,
+          "reported_edit_failures": 0,
+          "edit_verification": "unverified",
+          "repeated_failure_loops": []
+        },
+        "hardware": {
+          "sample_count": 0,
+          "samples_analyzed": 0,
+          "truncated": false,
+          "sampling_scope_counts": {},
+          "attribution": "device/process observations; not attributed to this session",
+          "measurements": {
+            "load": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "memory_utilization": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "mem_used": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "mem_total": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "power_w": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            },
+            "temp": {
+              "count": 0,
+              "minimum": null,
+              "maximum": null,
+              "mean": null,
+              "median": null,
+              "p50": null,
+              "p90": null,
+              "p95": null,
+              "percentile_sample_threshold": 5,
+              "percentile_status": "unavailable",
+              "method": "observed_samples_no_interpolation",
+              "status": "unavailable",
+              "history_coverage": "complete"
+            }
+          },
+          "sampling_density": "sparse_or_unavailable"
+        },
+        "coverage": {
+          "status": "complete",
+          "source": "legacy",
+          "event_rows": 31,
+          "gaps": [],
+          "state_samples": 17,
+          "state_sample_note": "Phase 3A records have transition-only state evidence; sampled occupancy is unavailable before state observations were added."
+        },
+        "completion": {
+          "inference_completion": {
+            "completed": 4,
+            "in_progress": 0
+          },
+          "session_completion": "unknown",
+          "work_product_completion": "unverified",
+          "task_acceptance": "unverified",
+          "mcp_jobs": []
+        },
+        "timeline": {
+          "event_counts": {
+            "inference": 4,
+            "lifecycle": 18,
+            "message": 5,
+            "tool": 4
+          },
+          "marker_count": 31,
+          "markers": [
+            {
+              "event_id": "98c7fd8cfa378627ef52f1941efc4898ee3f40618a710be22460f61ca926fb8f",
+              "timestamp": "2026-10-29T15:27:04.118000+00:00",
+              "category": "message",
+              "subtype": "user",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "1d1c6902f464329808c4457a2fa7fd0e57bfcade2b598a52049d2062805af89d",
+              "timestamp": "2026-10-29T15:27:04.126000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "dd9ffb13f1a56258f5cabcc049fbcfda8f928a181c83ffd40cf73140ce133581",
+              "timestamp": "2026-10-29T15:27:04.126000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 3.314,
+              "finish_reason": "tool-calls",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 2884,
+                "output": 107,
+                "reasoning": 0,
+                "total": 2991
+              },
+              "context_utilization_percent": null,
+              "usable_input_capacity_tokens": null
+            },
+            {
+              "event_id": "f197b9d6deff2a84a612994b15ebbf97a42ce746b87b05acf98f5e76b52063d5",
+              "timestamp": "2026-10-29T15:27:06.882000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.042,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "535a9983b639391cbe0ef93ff56007a0d80f140e0b67fef1d7745034a33a3f1a",
+              "timestamp": "2026-10-29T15:27:07.327000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.003,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f67908f43879a273d616102defceaa3c8ef342645e93e2d6ced35552f4cf0c22",
+              "timestamp": "2026-10-29T15:27:07.441000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 1.473,
+              "finish_reason": "tool-calls",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 3119,
+                "output": 179,
+                "reasoning": 0,
+                "total": 3298
+              },
+              "context_utilization_percent": null,
+              "usable_input_capacity_tokens": null
+            },
+            {
+              "event_id": "2ac9204f35717680dbf6d622d9bd8b28dcfd70189f1277196fe67281f8cd37b8",
+              "timestamp": "2026-10-29T15:27:07.441000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "cb1103723ba0856ec035e3764b21631d08453be677c5240e5f713badfd811769",
+              "timestamp": "2026-10-29T15:27:08.780000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.004,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "95984a496daec0cb96b3bb47b440c8afe79fb7586a66aee143462281ed45fcf0",
+              "timestamp": "2026-10-29T15:27:08.915000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 0.88,
+              "finish_reason": "tool-calls",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 3320,
+                "output": 84,
+                "reasoning": 0,
+                "total": 3404
+              },
+              "context_utilization_percent": null,
+              "usable_input_capacity_tokens": null
+            },
+            {
+              "event_id": "102387164908431078d2e9622368b1caa5be47c60c293daf39c1808e5c8ea7db",
+              "timestamp": "2026-10-29T15:27:08.915000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "9b651b1dce0a561d6e6dd0ad21066d54db04a2906c09503686a1ef128b74fa62",
+              "timestamp": "2026-10-29T15:27:09.670000+00:00",
+              "category": "tool",
+              "subtype": "invocation",
+              "outcome": "succeeded",
+              "duration_seconds": 0.006,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "fbca22fa26ffaea7255fafaa4e806e0b9db4f8d9c3828174b3485ebc19f269fd",
+              "timestamp": "2026-10-29T15:27:09.797000+00:00",
+              "category": "message",
+              "subtype": "assistant",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f29a758e41e1edea34ea7467b3324f9f7f9915c979d876d2381e2fb02677ceb3",
+              "timestamp": "2026-10-29T15:27:09.797000+00:00",
+              "category": "inference",
+              "subtype": "completed",
+              "outcome": "completed",
+              "duration_seconds": 0.955,
+              "finish_reason": "stop",
+              "tokens": {
+                "cache_read": 0,
+                "cache_write": 0,
+                "input": 3619,
+                "output": 77,
+                "reasoning": 0,
+                "total": 3696
+              },
+              "context_utilization_percent": null,
+              "usable_input_capacity_tokens": null
+            },
+            {
+              "event_id": "64dd8aa2e3039ea5923965c63cd28e456edd0f06767cf0150302d9eb1da8921b",
+              "timestamp": "2026-10-29T15:29:22.582138+00:00",
+              "category": "lifecycle",
+              "subtype": "state_change",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "edb9c108e06ec39d6e18386749edc075eb483cdff1c06f463db0893740b2c07b",
+              "timestamp": "2026-10-29T15:29:22.582138+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "bcf91536a3702fb63f69bf318e9d432b5cd74ac83a7eafb81d03e9e2d685973a",
+              "timestamp": "2026-10-29T15:29:23.676628+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "af4d1548eef5c07ed3084d3f8a1aff33ca06637b2ba1e0358ac5ea4dedcb762e",
+              "timestamp": "2026-10-29T15:29:24.728545+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "166251c2a4ea21a15d1524226b31136a2f9ef75a3467254ee3cf82295301c6e5",
+              "timestamp": "2026-10-29T15:29:25.785724+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "9596e7497eda9708bdab7d517a4adb6aa6077909cd9102d77cf76d13c35813b2",
+              "timestamp": "2026-10-29T15:29:26.815305+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "30b3515af23f4a86efbd1645d5966f594bb2263c4b6804358bf8b600611478d6",
+              "timestamp": "2026-10-29T15:29:27.896344+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "a5f94d43286732a9e28bed44b4723f14ace85a0cfc1d3c7ee3dec0749b330c35",
+              "timestamp": "2026-10-29T15:29:28.967569+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c596e5db670bd2f338a1f8463ae9c8c157f7128f19867a4fba2f6a2d3408853e",
+              "timestamp": "2026-10-29T15:29:30.013514+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "0bd951dc3c247f329ed01463069486bfec454469299f8a8b56fa3d42cde46057",
+              "timestamp": "2026-10-29T15:29:31.047360+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "cac647c4a96f666f713867904e39da3343d5b4947dea3166ee6f1d30727d2818",
+              "timestamp": "2026-10-29T15:29:32.104261+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "f936eedeba88d4c1a676b5f9b23867598d5bf4a6f0e37db98d20f27fd911b867",
+              "timestamp": "2026-10-29T15:29:33.167785+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "d4666402181d195c8e8b5eb188029c166c75d5a2092d04de5a208637010bddc1",
+              "timestamp": "2026-10-29T15:29:34.206116+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "95dc2e6475bd8f1d86a2d2bae213c033fcfc90c8edc0ffd05d921a1e4c06ac11",
+              "timestamp": "2026-10-29T15:29:35.238736+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "0c61bcf1ed85c9b3390eb77ee51a73a7134e93c3fa62ebae58944a783c8738ce",
+              "timestamp": "2026-10-29T15:29:36.286646+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "c002cc2d7a9a4e6fa6f0be5290147f259d4eb4875e0d3c88633a1012071218c6",
+              "timestamp": "2026-10-29T15:29:37.342520+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "438ec9c39d0cfae0f33abcd60ba835b899d7e271cf7d179ba5d195685ae38233",
+              "timestamp": "2026-10-29T15:29:38.412012+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            },
+            {
+              "event_id": "d58ecace3918bc5e2750dec40eff91d7dec5f45319ef07b03329b63cef54f5bb",
+              "timestamp": "2026-10-29T15:29:39.445949+00:00",
+              "category": "lifecycle",
+              "subtype": "state_observation",
+              "outcome": null,
+              "duration_seconds": null,
+              "finish_reason": null,
+              "tokens": null
+            }
+          ],
+          "downsampled": false,
+          "lifecycle_transitions": [
+            {
+              "category": "lifecycle",
+              "from": null,
+              "observed_at": "2026-10-29T15:29:22.582138+00:00",
+              "provenance": "observed_opencode_status",
+              "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+              "source": "monitor",
+              "subtype": "state_change",
+              "timestamp": "2026-10-29T15:29:22.582138+00:00",
+              "to": "idle"
+            }
+          ]
+        }
+      },
+      "completion": {
+        "inference_completion": {
+          "completed": 4,
+          "in_progress": 0
+        },
+        "session_completion": "unknown",
+        "work_product_completion": "unverified",
+        "task_acceptance": "unverified",
+        "mcp_jobs": []
+      },
+      "findings": [],
+      "provenance": {
+        "event_source": "TelemetryStore.iter_session_records",
+        "database_schema_version": 2,
+        "streamed": true,
+        "metric_coverage": "complete",
+        "task_equivalence": "unknown"
+      }
+    }
+  ],
+  "differences": {
+    "observed_wall_seconds": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 49.101564,
+        "value": 16.863811,
+        "absolute": -32.237753000000005,
+        "percent": -65.66,
+        "status": "observed"
+      }
+    ],
+    "inference_union_seconds": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 7.0809999999999995,
+        "value": 6.622,
+        "absolute": -0.45899999999999963,
+        "percent": -6.48,
+        "status": "observed"
+      }
+    ],
+    "tool_union_seconds": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0.011,
+        "value": 0.055,
+        "absolute": 0.044,
+        "percent": 400.0,
+        "status": "observed"
+      }
+    ],
+    "compaction_union_seconds": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": null,
+        "value": null,
+        "absolute": null,
+        "percent": null,
+        "status": "unavailable"
+      }
+    ],
+    "context_capacity": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 98304,
+        "value": null,
+        "absolute": null,
+        "percent": null,
+        "status": "unavailable"
+      }
+    ],
+    "inference_count": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 3,
+        "value": 4,
+        "absolute": 1,
+        "percent": 33.33,
+        "status": "observed"
+      }
+    ],
+    "input_tokens": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 9384.0,
+        "value": 12942.0,
+        "absolute": 3558.0,
+        "percent": 37.92,
+        "status": "observed"
+      }
+    ],
+    "output_tokens": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 366.0,
+        "value": 447.0,
+        "absolute": 81.0,
+        "percent": 22.13,
+        "status": "observed"
+      }
+    ],
+    "reasoning_tokens": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 155.0,
+        "value": 0.0,
+        "absolute": -155.0,
+        "percent": -100.0,
+        "status": "observed"
+      }
+    ],
+    "output_tokens_per_second_p50": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 68.17155756207676,
+        "value": 88.04140885292718,
+        "absolute": 19.86985129085042,
+        "percent": 29.15,
+        "status": "observed"
+      }
+    ],
+    "maximum_context_utilization_percent": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 3.700949928977273,
+        "value": null,
+        "absolute": null,
+        "percent": null,
+        "status": "unavailable"
+      }
+    ],
+    "compactions": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0,
+        "value": 0,
+        "absolute": 0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "compactions_per_observed_hour": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0.0,
+        "value": 0.0,
+        "absolute": 0.0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "compaction_duration_total_seconds": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": null,
+        "value": null,
+        "absolute": null,
+        "percent": null,
+        "status": "unavailable"
+      }
+    ],
+    "tool_invocations": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 2,
+        "value": 4,
+        "absolute": 2,
+        "percent": 100.0,
+        "status": "observed"
+      }
+    ],
+    "tool_failures": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0,
+        "value": 0,
+        "absolute": 0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "read_calls": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 1,
+        "value": 2,
+        "absolute": 1,
+        "percent": 100.0,
+        "status": "observed"
+      }
+    ],
+    "reads_per_completed_inference": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0.3333333333333333,
+        "value": 0.5,
+        "absolute": 0.16666666666666669,
+        "percent": 50.0,
+        "status": "observed"
+      }
+    ],
+    "repeated_read_targets": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0,
+        "value": 0,
+        "absolute": 0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "reads_after_compaction": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0,
+        "value": 0,
+        "absolute": 0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "edit_attempts": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 1,
+        "value": 1,
+        "absolute": 0,
+        "percent": 0.0,
+        "status": "observed"
+      }
+    ],
+    "reported_edit_successes": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 1,
+        "value": 1,
+        "absolute": 0,
+        "percent": 0.0,
+        "status": "observed"
+      }
+    ],
+    "reported_edit_failures": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 0,
+        "value": 0,
+        "absolute": 0,
+        "percent": null,
+        "status": "zero_denominator"
+      }
+    ],
+    "hardware_sample_count": [
+      {
+        "baseline_session_id": "ses_e77bec26fffeIHHVVQ6zoT38oo",
+        "session_id": "ses_e77bb1880ffesxw556KEqEdkN6",
+        "baseline": 1419,
+        "value": 0,
+        "absolute": -1419,
+        "percent": -100.0,
+        "status": "observed"
+      }
+    ]
+  },
+  "comparability": {
+    "task_equivalence": "unknown",
+    "task_acceptance_comparable": false,
+    "summary": "No task identifier or independently verified acceptance metadata is stored."
+  },
+  "warnings": [
+    {
+      "code": "comparison.task_equivalence_unknown",
+      "classification": "hypothesis",
+      "summary": "The database has no task/workload identifier; equal task difficulty cannot be assumed."
+    },
+    {
+      "code": "comparison.acceptance_unverified",
+      "classification": "observed",
+      "summary": "Independent task acceptance is unavailable for the compared runs."
+    },
+    {
+      "code": "comparison.capacity_differs",
+      "classification": "observed",
+      "summary": "The runs used different or unavailable effective context capacities.",
+      "values": [
+        98304,
+        null
+      ]
+    },
+    {
+      "code": "comparison.hardware_sampling_differs",
+      "classification": "observed",
+      "summary": "Hardware sampling coverage differs; device activity is not attributed to sessions.",
+      "sample_counts": [
+        1419,
+        0
+      ]
+    }
+  ],
+  "provenance": {
+    "source": "persisted_telemetry",
+    "offline": true,
+    "significance_claim": false,
+    "causal_attribution": false
+  }
+}

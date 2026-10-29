@@ -1,0 +1,172 @@
+{
+  "run_id": "run-EXP_20261029_152031-qwen38-27b-q4km",
+  "created_at": "2026-10-29T15:20:34Z",
+  "suite_id": "agent-benchmark",
+  "suite_version": "1.18.0",
+  "task_ids": [
+    "qwen-file-creation"
+  ],
+  "variants": {
+    "qwen38-27b-q4km": {
+      "provider": "lmstudio",
+      "model": "qwen38-27b-q4km",
+      "effective_context_length": 98304
+    }
+  },
+  "repetitions": 1,
+  "scoring_basis": "worker_first_attempt_full_success",
+  "environment": {
+    "python": "3.12.10",
+    "platform": "Windows-11-10.0.26300-SP0",
+    "machine": "AMD64"
+  },
+  "metadata": {
+    "budget_profile": "canonical-120s",
+    "requested_context_length": 98304,
+    "task_tool_profiles": {
+      "qwen-file-creation": "file-tools-v1"
+    },
+    "effective_context_length": 98304,
+    "comparison_eligible": true,
+    "suite_fingerprint": "802fd5de24b975ac3cbe0a78b84b4d743e6dc1502d778cc59b52d924c3b4c4ad",
+    "random_seed": null,
+    "benchmark_version": "1.18.0",
+    "isolation_policy": "isolated-git-project-v1",
+    "scope_policy": "trial-local-scratch-v1",
+    "evidence_limits": {},
+    "model_identity": {
+      "requested_id": "qwen38-27b-q4km",
+      "provider": "lmstudio",
+      "runtime_model_id": "qwen38-27b-q4km",
+      "lms_model_key": "qwen38-27b-q4km",
+      "display_name": "Qwen3.8 27B",
+      "quantization": "Q4_K_M",
+      "selected_variant": null,
+      "available_variants": [],
+      "max_context_length": 262144,
+      "size_bytes": 16810714336,
+      "resolution": "exact_model_key"
+    },
+    "requested_inference_profile": {
+      "schema": "opencode-inference-profile-v1",
+      "context_length": 98304,
+      "output_limit": 8192,
+      "reasoning": {
+        "mode": "unconfigured",
+        "effort": null,
+        "provenance": "source_config"
+      },
+      "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+    },
+    "comparison_contract": {
+      "schema": "comparison-conditions-v1",
+      "tasks": {
+        "qwen-file-creation": {
+          "task_sha256": "cefd376e81cbc89309535ee5edecada788285ef05fecd6be74072cab0b2b7175",
+          "verifier_sha256": "fb7af3cda99ec0fd11ea5b7b51504dec1e0138f1f6162b711d30856014e17861"
+        }
+      },
+      "execution_profiles": {
+        "qwen-file-creation": "file-tools-v1"
+      },
+      "scope_policy": "trial-local-scratch-v1",
+      "isolation_policy": "isolated-git-project-v1",
+      "context_length": 98304,
+      "budget": {
+        "profile": "canonical-120s",
+        "task_seconds": 120.0,
+        "grace_seconds": 15.0,
+        "verifier_seconds": 10.0
+      },
+      "environment": {
+        "python": "3.12.10",
+        "platform": "Windows-11-10.0.26300-SP0",
+        "machine": "AMD64",
+        "harness_version": "1.18.0",
+        "host_fingerprint": "6d970eb8e25340c75cd29feaa29d84c52c26ea452980a291e7a5949429477acf",
+        "model_identity": {
+          "requested_id": "qwen38-27b-q4km",
+          "provider": "lmstudio",
+          "runtime_model_id": "qwen38-27b-q4km",
+          "lms_model_key": "qwen38-27b-q4km",
+          "display_name": "Qwen3.8 27B",
+          "quantization": "Q4_K_M",
+          "selected_variant": null,
+          "available_variants": [],
+          "max_context_length": 262144,
+          "size_bytes": 16810714336,
+          "resolution": "exact_model_key"
+        },
+        "runtime": {
+          "kind": "opencode",
+          "version": "1.19.3",
+          "bridge_version": "3.0.0",
+          "agent": "benchmark-files",
+          "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+          "allowed_tools": [
+            "StructuredOutput",
+            "edit",
+            "glob",
+            "grep",
+            "list",
+            "read"
+          ],
+          "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+          "model_settings": null,
+          "requested_inference_profile": {
+            "schema": "opencode-inference-profile-v1",
+            "context_length": 98304,
+            "output_limit": 8192,
+            "reasoning": {
+              "mode": "unconfigured",
+              "effort": null,
+              "provenance": "source_config"
+            },
+            "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+          }
+        }
+      }
+    },
+    "agent_runtime": {
+      "kind": "opencode",
+      "version": "1.19.3",
+      "bridge_version": "3.0.0",
+      "agent": "benchmark-files",
+      "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+      "allowed_tools": [
+        "StructuredOutput",
+        "edit",
+        "glob",
+        "grep",
+        "list",
+        "read"
+      ],
+      "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+      "model_identity": {
+        "requested_id": "qwen38-27b-q4km",
+        "provider": "lmstudio",
+        "runtime_model_id": "qwen38-27b-q4km",
+        "lms_model_key": "qwen38-27b-q4km",
+        "display_name": "Qwen3.8 27B",
+        "quantization": "Q4_K_M",
+        "selected_variant": null,
+        "available_variants": [],
+        "max_context_length": 262144,
+        "size_bytes": 16810714336,
+        "resolution": "exact_model_key"
+      },
+      "model_settings": null,
+      "requested_inference_profile": {
+        "schema": "opencode-inference-profile-v1",
+        "context_length": 98304,
+        "output_limit": 8192,
+        "reasoning": {
+          "mode": "unconfigured",
+          "effort": null,
+          "provenance": "source_config"
+        },
+        "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+      }
+    }
+  }
+}

@@ -66,6 +66,7 @@ def runtime_conditions(evidence_dir):
                 "prompt_sha256": role.get("prompt_sha256"), "allowed_tools": allowed_tools,
                 "permissions_sha256": hashlib.sha256(json.dumps(effective_permissions, sort_keys=True).encode()).hexdigest(),
                 "model_identity": lifecycle.get("model_identity"),
-                "model_settings": evidence.get("effective_model_settings")}
+                "model_settings": evidence.get("effective_model_settings"),
+                "requested_inference_profile": evidence.get("requested_inference_profile")}
     except (OSError, ValueError, TypeError):
         return None

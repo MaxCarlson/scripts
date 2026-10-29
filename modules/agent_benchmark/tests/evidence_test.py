@@ -87,6 +87,31 @@ def test_worker_does_not_receive_hidden_verifier(tmp_path):
     assert sorted(p.name for p in (tmp_path / "worker").iterdir()) == [".git", "grep.py", "instruction.md", "task.json"]
 
 
+def test_seed_copy_excludes_python_bytecode_caches(tmp_path):
+    task_dir = tmp_path / "task"
+    seed = task_dir / "seed" / "src"
+    (seed / "__pycache__").mkdir(parents=True)
+    (task_dir / "verifier").mkdir(parents=True)
+    (task_dir / "instruction.md").write_text("Create src/main.py", encoding="utf-8")
+    (task_dir / "task.json").write_text(
+        '{"task_id":"cache-test","suite_version":"1","category":"test",'
+        '"allowed_paths":["src/main.py"],"forbidden_paths":["task.json","instruction.md"],'
+        '"time_budget_seconds":5,"verifier":"verifier/check.py"}',
+        encoding="utf-8",
+    )
+    (task_dir / "verifier" / "check.py").write_text("raise SystemExit(0)\n", encoding="utf-8")
+    (seed / "main.py").write_text("VALUE = 1\n", encoding="utf-8")
+    (seed / "__pycache__" / "main.cpython-312.pyc").write_bytes(b"compiled")
+    (seed / "stale.pyc").write_bytes(b"compiled")
+
+    worker = tmp_path / "worker"
+    prepare_workspace(load_task(task_dir), worker)
+
+    visible = {path.relative_to(worker).as_posix() for path in worker.rglob("*")
+               if path.is_file() and ".git" not in path.parts}
+    assert visible == {"instruction.md", "task.json", "src/main.py"}
+
+
 def test_symlink_entry_cannot_escape_snapshot(tmp_path):
     worker = tmp_path / "worker"
     worker.mkdir()

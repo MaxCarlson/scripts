@@ -1,0 +1,33 @@
+{
+  "capture_time_utc": "approximately 2026-10-29T15:01Z, before the first direct request",
+  "lm_studio_version": "0.4.26.0",
+  "lm_studio_api_route": "/v1/chat/completions",
+  "loaded_model": {
+    "api_alias": "qwen38_23GB",
+    "model_key": "qwen38-27b-q4km",
+    "display_name": "Qwen3.8 27B",
+    "format": "gguf",
+    "quantization": "Q4_K_M",
+    "size_bytes": 16810714336,
+    "context_length": 98304,
+    "status_before_probe": "IDLE",
+    "parallelism": 4,
+    "inventory_max_context_length": 262144,
+    "reasoning_allowed_options": ["off", "on"],
+    "reasoning_default": "on"
+  },
+  "open_code": {
+    "version": "1.19.3",
+    "existing_port": 4096,
+    "active_session_count_before_probe": 0,
+    "experimental_port_4196_state_before_start": "closed"
+  },
+  "device_snapshot": {
+    "device": "NVIDIA GeForce RTX 5090",
+    "memory_used_mib": 30045,
+    "memory_total_mib": 32607,
+    "utilization_percent": 6,
+    "attribution": "device-level only; not attributable to these direct inferences"
+  },
+  "scope": "Direct serial LM Studio probes only; no OpenCode worker inference was dispatched."
+}

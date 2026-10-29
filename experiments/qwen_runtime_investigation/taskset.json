@@ -1,0 +1,61 @@
+{
+  "schema": "qwen-runtime-task-suite-v1",
+  "base_commit": "268805c41fe4b3b0c1107452298a8a4a79978ad3",
+  "context_tokens": 98304,
+  "output_screening_tokens": [8192, 16384],
+  "tasks": [
+    {
+      "id": "qwen-file-creation",
+      "category": "simple-file-creation",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-file-creation",
+      "allowed_paths": ["src/greeting.py"]
+    },
+    {
+      "id": "py-focused-bug-fix",
+      "category": "focused-bug-fix",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/py-focused-bug-fix",
+      "allowed_paths": ["score.py"]
+    },
+    {
+      "id": "py-test-development",
+      "category": "test-implementation",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/py-test-development",
+      "allowed_paths": ["tests/test_normalize.py"]
+    },
+    {
+      "id": "qwen-session-state",
+      "category": "session-lifecycle-state-machine",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-session-state",
+      "allowed_paths": ["src/session_state.py"]
+    },
+    {
+      "id": "qwen-async-behavior",
+      "category": "moderate-asynchronous-behavior",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-async-behavior",
+      "allowed_paths": ["src/async_jobs.py"]
+    },
+    {
+      "id": "py-multifile-change",
+      "category": "bounded-multi-file-change",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/py-multifile-change",
+      "allowed_paths": ["retry_config.py", "client.py"]
+    }
+  ],
+  "supplemental_tasks": [
+    {
+      "id": "qwen-existing-code-modification",
+      "path": "../../modules/agent_benchmark/agent_benchmark/tasks/qwen-existing-code-modification",
+      "allowed_paths": ["src/names.py"]
+    }
+  ],
+  "screening_task": "qwen-file-creation",
+  "stage_a": [
+    {"task": "qwen-file-creation", "profile": "configs/qwen-unconfigured-output-8192.json", "purpose": "baseline"},
+    {"task": "qwen-file-creation", "profile": "configs/qwen-unconfigured-output-16384.json", "purpose": "output-limit comparison"},
+    {"task": "qwen-file-creation", "profile": "configs/qwen-low-output-16384.json", "precondition": "LM Studio direct probe accepts the setting"},
+    {"task": "qwen-file-creation", "profile": "configs/qwen-none-output-16384.json", "precondition": "LM Studio direct probe verifies none disables reasoning"},
+    {"task": "py-focused-bug-fix", "profile": "best informative Stage A profile", "purpose": "repair task confirmation"}
+  ],
+  "execution_policy": {"screening_repetitions": 1, "repeat_only_informative_conditions": true,
+    "serial_gpu_runs": true, "do_not_expand_as_full_cartesian_product": true}
+}

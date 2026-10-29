@@ -1,0 +1,534 @@
+{
+  "schema_version": 2,
+  "capture_tool_version": "0.2.0",
+  "provider": "local OpenAI-compatible mock",
+  "open_code_version": "1.19.3",
+  "prompt_or_body_recorded": false,
+  "credentials_recorded": false,
+  "validation": "passed",
+  "validation_error": null,
+  "scenarios": [
+    {
+      "output_limit": 8192,
+      "reasoning_capability_configured": false,
+      "agent_variant_configured": null,
+      "model_reasoning_option": null,
+      "attempts": [
+        {
+          "requested_variant": null,
+          "exit_code": 0
+        },
+        {
+          "requested_variant": "low",
+          "exit_code": 0
+        },
+        {
+          "requested_variant": "medium",
+          "exit_code": 0
+        },
+        {
+          "requested_variant": "xhigh",
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        }
+      ]
+    },
+    {
+      "output_limit": 16384,
+      "reasoning_capability_configured": false,
+      "agent_variant_configured": null,
+      "model_reasoning_option": null,
+      "attempts": [
+        {
+          "requested_variant": null,
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 16384,
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 16384,
+            "stream": true
+          }
+        }
+      ]
+    },
+    {
+      "output_limit": 8192,
+      "reasoning_capability_configured": true,
+      "agent_variant_configured": null,
+      "model_reasoning_option": null,
+      "attempts": [
+        {
+          "requested_variant": "low",
+          "exit_code": 0
+        },
+        {
+          "requested_variant": "medium",
+          "exit_code": 0
+        },
+        {
+          "requested_variant": "xhigh",
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "medium",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "xhigh",
+            "stream": true
+          }
+        }
+      ]
+    },
+    {
+      "output_limit": 16384,
+      "reasoning_capability_configured": true,
+      "agent_variant_configured": null,
+      "model_reasoning_option": null,
+      "attempts": [
+        {
+          "requested_variant": "none",
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 16384,
+            "reasoning_effort": "none",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 16384,
+            "reasoning_effort": "none",
+            "stream": true
+          }
+        }
+      ]
+    },
+    {
+      "output_limit": 8192,
+      "reasoning_capability_configured": true,
+      "agent_variant_configured": "low",
+      "model_reasoning_option": null,
+      "attempts": [
+        {
+          "requested_variant": null,
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "stream": true
+          }
+        }
+      ]
+    },
+    {
+      "output_limit": 8192,
+      "reasoning_capability_configured": false,
+      "agent_variant_configured": null,
+      "model_reasoning_option": "low",
+      "attempts": [
+        {
+          "requested_variant": null,
+          "exit_code": 0
+        }
+      ],
+      "captures": [
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options"
+          ],
+          "tool_count": 0,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        },
+        {
+          "method": "POST",
+          "path": "/v1/chat/completions",
+          "model": "qwen38_23GB",
+          "request_fields": [
+            "max_tokens",
+            "messages",
+            "model",
+            "reasoning_effort",
+            "stream",
+            "stream_options",
+            "tool_choice",
+            "tools"
+          ],
+          "tool_count": 10,
+          "parameters": {
+            "max_tokens": 8192,
+            "reasoning_effort": "low",
+            "stream": true
+          }
+        }
+      ]
+    }
+  ]
+}
