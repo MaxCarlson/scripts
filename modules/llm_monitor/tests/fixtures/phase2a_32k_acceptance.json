@@ -1,0 +1,24 @@
+{
+  "source": "Argon Phase 2A D5 uncontended 32K replay",
+  "outcome": "accepted",
+  "duration_sec": 1128.58,
+  "model_limits": {"context": 32768, "output": 8192},
+  "run_cumulative_tokens": {"input": 867876, "output": 26129, "reasoning": 88974, "total": 982979},
+  "expected_poll": {
+    "total_messages": 72,
+    "assistant_messages": 51,
+    "compaction_count": 10,
+    "pending_permissions": 0,
+    "pending_questions": 0,
+    "last_assistant_id": "msg_1725e7c2a001Aro7723h0rH2Mx",
+    "last_assistant_finish": "stop",
+    "last_assistant_completed": 1792920165939,
+    "last_assistant_tokens": {
+      "total": 22123,
+      "input": 21140,
+      "output": 812,
+      "reasoning": 171,
+      "cache": {"read": 0, "write": 0}
+    }
+  }
+}

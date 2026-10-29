@@ -531,6 +531,13 @@ REGISTRY: dict = {
                 "version": "0.4.0",
             },
             {
+                "name": "llm_monitor (module)",
+                "path": "modules/llm_monitor",
+                "desc": "Read-only OpenCode session polling and local GPU status",
+                "help_cmd": ["python", "-m", "llm_monitor", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "runmux (module)",
                 "path": "modules/runmux",
                 "desc": "Managed process runner with a native terminal workspace and optional read-only browser",
