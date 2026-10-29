@@ -9,14 +9,15 @@
 - [x] Add explicit per-experiment context/output/reasoning profile support and provenance to Agent Benchmark.
 - [x] Directly probe LM Studio's handling of reasoning settings for the exact loaded Q4_K_M model; preserve sanitized request/response evidence in `experiments/qwen_runtime_investigation/evidence/direct-model-findings.md`.
 - [x] Start isolated OpenCode on verified port 4196, with separate config/data and no changes to the active 4096 server.
-- [x] Start independent LLM Monitor recording for OpenCode trials; complete history and comparison captured in the experimental database. The bounded `live` observer connected but hung past its observation deadline; coordinate one SSE observation after that issue is resolved and the observer is ready.
+- [x] Validate LLM Monitor recorder, matching-session live SSE events, TUI, and persisted history for the bootstrap T1 session. History and database integrity passed; the bounded live snapshot received incremental activity but ended deadline-limited with incomplete-coverage warnings.
 - [x] Run bounded serial T1/T2 screening with omitted/default and explicit `none`; T2 baseline and `none` passed. Preserve the no-dispatch `INFRASTRUCTURE_ERROR` from the initial paused invocation separately.
 - [x] Run a matched T4 state-machine screen after both T2 trials passed; both profiles passed. Full results and limitations are in `evidence/t2-t4-comparison.md`.
 - [x] Run T5 async at 8,192 with omitted/default and explicit `none`; both passed. Default spent a long reasoning-heavy inference and edited late; `none` edited earlier with zero reported reasoning. Preserve inference-level data.
-- [x] Check T5 default at 16,384; it passed. Preserve the matched `none` launch as a pre-dispatch resource refusal at 90.2% host RAM; do not override the 90% safety guard.
-- [ ] Run T3 or repeat one selected condition only when host RAM preflight is below its guard; do not create a full Cartesian matrix.
+- [x] Check T5 default at 16,384. Preserve the matched `none` launch as a pre-dispatch refusal at 90.2% host RAM; the former default percentage guard was subsequently removed, and the refusal remains an infrastructure event rather than a model result.
+- [x] Defer T3 and broad repeats: no unresolved hypothesis warrants another matrix; record the small-sample reliability limitation explicitly.
 - [ ] Repeat informative conditions before claiming reliability. Current paired task/profile comparisons are still one trial per task/condition.
 - [ ] Reproduce or add a small combined lifecycle/polling regression that matches the historical no-edit failure before broadening to alternative models.
 - [x] Analyze per-inference/session telemetry and record current recommendation: `reasoning_effort=none` is promising but not yet a reliable operating profile; no correctness benefit over default is established.
-- [ ] Correlate live OpenCode provider request fields and validate incremental SSE delivery when safe instrumentation/observer support is ready.
+- [x] Capture a live OpenCode request through the isolated 1235 proxy and observe matching-session SSE activity. Proxy rows contain only allowlisted fields and align with session inferences by timestamp; no session ID is captured, so correlation is not exact. The bounded live snapshot reports incomplete coverage.
+- [x] Bootstrap current runtime and complete one disposable T1 coding smoke test with an independent passing verifier; do not interpret one pass as reliability evidence.
 - [x] Review and push checkpoint `cf760b70` on the isolated branch; do not merge. Review T5 evidence and checkpoint it separately after verification.
