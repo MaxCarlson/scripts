@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 
+from local_agent_bridge import __version__
 from local_agent_bridge import commands
 from local_agent_bridge.setup import manifest, planner
 from local_agent_bridge.setup.installer import apply_plan
@@ -314,7 +315,7 @@ def test_json_status_adds_summary_without_changing_operations_or_exit_code(tmp_p
     assert len(result["operations"]) == 15
     assert {"resource_id", "path", "kind", "before", "desired_hash", "source", "method", "action", "conflict", "retire"} <= set(result["operations"][0])
     assert result["summary"]["missing"] == 15
-    assert result["provenance"]["package"]["version"] == "3.5.0"
+    assert result["provenance"]["package"]["version"] == __version__
     assert result["features"]["checkpoint_compaction"]["status"] == "disabled"
     assert "\u001b[" not in output
 

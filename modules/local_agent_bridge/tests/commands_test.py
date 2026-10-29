@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from local_agent_bridge import __version__
 from local_agent_bridge.commands import main
 import local_agent_bridge.commands as commands_module
 import local_agent_bridge.cli as cli_module
@@ -572,7 +573,7 @@ def test_existing_cli_commands_keep_parsing_and_dispatch(monkeypatch, tmp_path, 
     with pytest.raises(SystemExit) as version:
         main(["--version"])
     assert version.value.code == 0
-    assert "3.5.0" in capsys.readouterr().out
+    assert __version__ in capsys.readouterr().out
 
     # A temporary target keeps this regression check independent of the user's installed profiles.
     assert main(["setup", "status", "-H", str(tmp_path / "empty-home"), "-j"]) in {0, 3}
