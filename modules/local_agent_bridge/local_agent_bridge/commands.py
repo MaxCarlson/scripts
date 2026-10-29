@@ -32,6 +32,7 @@ from . import __version__
 from .setup.files import write_json
 from .setup.installer import apply_plan, recover_installation, remove_installation
 from .setup.planner import build_plan
+from .setup.status import build_status_report, format_status_report
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -578,6 +579,16 @@ def _handle_opencode(args: argparse.Namespace) -> int:
 def _output(value: dict, as_json: bool) -> None:
     if as_json:
         print(json.dumps(value, indent=2))
+    elif "summary" in value and "provenance" in value and "resources" in value:
+        try:
+            color = (
+                sys.stdout.isatty()
+                and not os.environ.get("NO_COLOR")
+                and os.environ.get("TERM") != "dumb"
+            )
+        except (AttributeError, OSError):
+            color = False
+        print(format_status_report(value, color=color))
     elif "operations" in value:
         for op in value["operations"]:
             print(f"{op['action']:10} {op['resource_id']:28} {op['path']}")
@@ -869,6 +880,17 @@ def main(argv: list[str] | None = None) -> int:
                     )
                     else 0
                 )
+                if args.action == "status":
+                    from .setup.manifest import assets
+
+                    result.update(
+                        build_status_report(
+                            plan,
+                            package_version=__version__,
+                            module_path=Path(__file__).resolve(),
+                            resources_path=assets(),
+                        )
+                    )
                 if args.action == "plan" and args.output:
                     write_json(args.output, plan.summary())
         _output(result, args.json)
