@@ -37,16 +37,19 @@ llm-monitor live `
 
 Reasoning display remains off by default. The current observer deadline issue means use persisted Monitor history for bounded trials until the observer is fixed; do not wait on or treat absent SSE deltas as evidence of no model activity.
 
-Continue serially with a fresh `py-focused-bug-fix` fixture using the same selected reasoning profiles and limits, then repeat only outcomes that distinguish task success or provide actionable evidence. Keep the 16,384 output limit as a separate variable. Expand to test-development and state-machine tasks only after the simple and repair stages provide a useful signal; defer async and multi-file tasks until then. Use the six task definitions in `taskset.json`; do not substitute framework defaults for model, context, output, or reasoning profile.
+The paired T2 repair and T4 state-machine screening is recorded in [`evidence/t2-t4-comparison.md`](evidence/t2-t4-comparison.md). Both omitted/default and explicit `none` passed both fixtures. `none` used zero reasoning tokens and fewer inferences/read-only tools, but the sample is too small to establish reliability or show a correctness difference. The next useful test is a bounded paired comparison on the async fixture; do not expand to a full matrix. Keep the 16,384 output limit as a separate variable. Use the six task definitions in `taskset.json`; do not substitute framework defaults for model, context, output, or reasoning profile.
 
-Each `--inference-profile` is explicit and validated. Pair it with `-c 98304`; a mismatch fails before dispatch. Pass the exact LM Studio `modelKey` to `-m`, not the OpenCode alias. The profile writes the effort to the exact model's project-local `options.reasoningEffort`; mock request capture proves this reaches tool-bearing requests, while direct LM Studio evidence shows `none` disables reasoning for the probe and low/medium/xhigh had no observed effect for that probe. Agentic T1 histories show the requested `none` session used zero reported reasoning tokens, but no outbound parameters were correlated to that session. For one task/profile, use the normal experiment runner with dedicated state and evidence paths:
+Each `--inference-profile` is explicit and validated. Pair it with `-c 98304`; a mismatch fails before dispatch. Pass the exact LM Studio `modelKey` to `-m`, not the OpenCode alias. The profile writes the effort to the exact model's project-local `options.reasoningEffort`; mock request capture proves this reaches tool-bearing requests, while direct LM Studio and the T1/T2/T4 Monitor histories show `none` disables reported reasoning. This still does not prove the field was present on each live provider request. For one task/profile, use the normal experiment runner with dedicated state and evidence paths.
+
+This environment's venv has an editable Agent Benchmark finder pointing at the main tree. To run the just-checked-out worktree version, remove that finder before importing the CLI:
 
 ```powershell
 $env:PYTHONPATH = 'modules/agent_benchmark'
-python -m agent_benchmark experiment plan `
+$bench = 'import sys; sys.meta_path=[f for f in sys.meta_path if "__editable___agent_benchmark" not in repr(f)]; from agent_benchmark.cli import main; main()'
+python -c $bench experiment plan `
   -m qwen38-27b-q4km -t qwen-file-creation -r 1 -c 98304 `
   --inference-profile experiments/qwen_runtime_investigation/configs/qwen-unconfigured-output-8192.json
-python -m agent_benchmark experiment run -x `
+python -c $bench experiment run -x `
   -m qwen38-27b-q4km -t qwen-file-creation -r 1 -c 98304 `
   --inference-profile experiments/qwen_runtime_investigation/configs/qwen-unconfigured-output-8192.json `
   -o experiments/qwen_runtime_investigation/evidence/runs `

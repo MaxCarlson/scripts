@@ -1,0 +1,526 @@
+{
+  "experiment_id": "EXP_20261029_161327",
+  "config": {
+    "experiment_id": "EXP_20261029_161327",
+    "created_at": "2026-10-29T16:13:27Z",
+    "suite_id": "agent-benchmark",
+    "suite_version": "1.18.0",
+    "task_ids": [
+      "qwen-session-state"
+    ],
+    "variant_ids": [
+      "qwen38-27b-q4km"
+    ],
+    "repetitions": 1,
+    "scoring_basis": "worker_first_attempt_full_success",
+    "budget_profile": "canonical-120s",
+    "random_seed": null,
+    "metadata": {
+      "requested_context_length": 98304,
+      "runtime_max_ram_percent": 100.0,
+      "requested_inference_profile": {
+        "schema": "opencode-inference-profile-v1",
+        "context_length": 98304,
+        "output_limit": 8192,
+        "reasoning": {
+          "mode": "effort",
+          "effort": "none",
+          "provenance": "experiment_profile"
+        },
+        "sha256": "8442a059ee9809772b8e6cc149750e877549ef8f933a97bb5bcddb151c826dc6"
+      }
+    }
+  },
+  "eligible_variants": {},
+  "reference_variants": {},
+  "incompatible_runs": [
+    {
+      "run_id": "run-EXP_20261029_161327-qwen38-27b-q4km",
+      "reasons": [
+        "Comparison contract has unknown, empty or malformed conditions",
+        "Missing or unsupported comparison contract"
+      ],
+      "run_info": {
+        "run_id": "run-EXP_20261029_161327-qwen38-27b-q4km",
+        "created_at": "2026-10-29T16:13:29Z",
+        "suite_id": "agent-benchmark",
+        "suite_version": "1.18.0",
+        "task_ids": [
+          "qwen-session-state"
+        ],
+        "variants": {
+          "qwen38-27b-q4km": {
+            "provider": "lmstudio",
+            "model": "qwen38-27b-q4km",
+            "effective_context_length": 98304
+          }
+        },
+        "repetitions": 1,
+        "scoring_basis": "worker_first_attempt_full_success",
+        "environment": {
+          "python": "3.12.10",
+          "platform": "Windows-11-10.0.26300-SP0",
+          "machine": "AMD64"
+        },
+        "metadata": {
+          "budget_profile": "canonical-120s",
+          "requested_context_length": 98304,
+          "task_tool_profiles": {
+            "qwen-session-state": "file-tools-v1"
+          },
+          "effective_context_length": 98304,
+          "comparison_eligible": true,
+          "suite_fingerprint": "73f6a4d39d07ec2058227d83f099d9e408d284f892ed7d1267370d4c9d91ebba",
+          "random_seed": null,
+          "benchmark_version": "1.18.0",
+          "isolation_policy": "isolated-git-project-v1",
+          "scope_policy": "trial-local-scratch-v1",
+          "evidence_limits": {},
+          "model_identity": {
+            "requested_id": "qwen38-27b-q4km",
+            "provider": "lmstudio",
+            "runtime_model_id": "qwen38-27b-q4km",
+            "lms_model_key": "qwen38-27b-q4km",
+            "display_name": "Qwen3.8 27B",
+            "quantization": "Q4_K_M",
+            "selected_variant": null,
+            "available_variants": [],
+            "max_context_length": 262144,
+            "size_bytes": 16810714336,
+            "resolution": "exact_model_key"
+          },
+          "requested_inference_profile": {
+            "schema": "opencode-inference-profile-v1",
+            "context_length": 98304,
+            "output_limit": 8192,
+            "reasoning": {
+              "mode": "effort",
+              "effort": "none",
+              "provenance": "experiment_profile"
+            },
+            "sha256": "8442a059ee9809772b8e6cc149750e877549ef8f933a97bb5bcddb151c826dc6"
+          },
+          "comparison_contract": {
+            "schema": "comparison-conditions-v1",
+            "tasks": {
+              "qwen-session-state": {
+                "task_sha256": "61dff43acae297754d08a1bd1ed11e08eb68f5210f84f1bc2c950d0154b15aae",
+                "verifier_sha256": "3f0af46198d8f5ed2113f2efba80b80cfde93dcb96f7e5f687363605e59cb672"
+              }
+            },
+            "execution_profiles": {
+              "qwen-session-state": "file-tools-v1"
+            },
+            "scope_policy": "trial-local-scratch-v1",
+            "isolation_policy": "isolated-git-project-v1",
+            "context_length": 98304,
+            "budget": {
+              "profile": "canonical-120s",
+              "task_seconds": 120.0,
+              "grace_seconds": 15.0,
+              "verifier_seconds": 10.0
+            },
+            "environment": {
+              "python": "3.12.10",
+              "platform": "Windows-11-10.0.26300-SP0",
+              "machine": "AMD64",
+              "harness_version": "1.18.0",
+              "host_fingerprint": "6d970eb8e25340c75cd29feaa29d84c52c26ea452980a291e7a5949429477acf",
+              "model_identity": {
+                "requested_id": "qwen38-27b-q4km",
+                "provider": "lmstudio",
+                "runtime_model_id": "qwen38-27b-q4km",
+                "lms_model_key": "qwen38-27b-q4km",
+                "display_name": "Qwen3.8 27B",
+                "quantization": "Q4_K_M",
+                "selected_variant": null,
+                "available_variants": [],
+                "max_context_length": 262144,
+                "size_bytes": 16810714336,
+                "resolution": "exact_model_key"
+              },
+              "runtime": {
+                "kind": "opencode",
+                "version": "1.19.3",
+                "bridge_version": "3.0.0",
+                "agent": "benchmark-files",
+                "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+                "allowed_tools": [
+                  "StructuredOutput",
+                  "edit",
+                  "glob",
+                  "grep",
+                  "list",
+                  "read"
+                ],
+                "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+                "model_settings": null,
+                "requested_inference_profile": {
+                  "schema": "opencode-inference-profile-v1",
+                  "context_length": 98304,
+                  "output_limit": 8192,
+                  "reasoning": {
+                    "mode": "effort",
+                    "effort": "none",
+                    "provenance": "experiment_profile"
+                  },
+                  "sha256": "8442a059ee9809772b8e6cc149750e877549ef8f933a97bb5bcddb151c826dc6"
+                }
+              }
+            }
+          },
+          "agent_runtime": {
+            "kind": "opencode",
+            "version": "1.19.3",
+            "bridge_version": "3.0.0",
+            "agent": "benchmark-files",
+            "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+            "allowed_tools": [
+              "StructuredOutput",
+              "edit",
+              "glob",
+              "grep",
+              "list",
+              "read"
+            ],
+            "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+            "model_identity": {
+              "requested_id": "qwen38-27b-q4km",
+              "provider": "lmstudio",
+              "runtime_model_id": "qwen38-27b-q4km",
+              "lms_model_key": "qwen38-27b-q4km",
+              "display_name": "Qwen3.8 27B",
+              "quantization": "Q4_K_M",
+              "selected_variant": null,
+              "available_variants": [],
+              "max_context_length": 262144,
+              "size_bytes": 16810714336,
+              "resolution": "exact_model_key"
+            },
+            "model_settings": null,
+            "requested_inference_profile": {
+              "schema": "opencode-inference-profile-v1",
+              "context_length": 98304,
+              "output_limit": 8192,
+              "reasoning": {
+                "mode": "effort",
+                "effort": "none",
+                "provenance": "experiment_profile"
+              },
+              "sha256": "8442a059ee9809772b8e6cc149750e877549ef8f933a97bb5bcddb151c826dc6"
+            }
+          }
+        }
+      },
+      "trials": [
+        {
+          "run_id": "run-EXP_20261029_161327-qwen38-27b-q4km",
+          "trial_id": "trial-001",
+          "task_id": "qwen-session-state",
+          "variant_id": "qwen38-27b-q4km",
+          "repetition": 1,
+          "status": "passed",
+          "metrics": {
+            "agent.artifact_compliance": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "independent_scope_audit",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.budget_pass": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "task_budget",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.clean_termination": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "lifecycle_harness",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.completion_ms": {
+              "value": 7250,
+              "unit": "ms",
+              "source": "correlated_session_timestamps",
+              "quality": "measured",
+              "reason": null
+            },
+            "agent.coordinator_repairs": {
+              "value": 0,
+              "unit": "count",
+              "source": "harness",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.execution_compliance": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "independent_scope_audit",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.first_edit_ms": {
+              "value": 5769,
+              "unit": "ms",
+              "source": "correlated_session_timestamps",
+              "quality": "measured",
+              "reason": null
+            },
+            "agent.functional_pass": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "hidden_verifier",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.last_edit_ms": {
+              "value": 5769,
+              "unit": "ms",
+              "source": "correlated_session_timestamps",
+              "quality": "measured",
+              "reason": null
+            },
+            "agent.local_retries": {
+              "value": 0,
+              "unit": "count",
+              "source": "harness",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.scope_compliance": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "independent_scope_audit",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.scope_violations": {
+              "value": 0,
+              "unit": "count",
+              "source": "snapshot_and_transcript",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.worker_after_retry_pass": {
+              "value": null,
+              "unit": "boolean",
+              "source": "agent_benchmark",
+              "quality": "unavailable",
+              "reason": "Stage not exercised"
+            },
+            "agent.worker_first_pass": {
+              "value": 1,
+              "unit": "boolean",
+              "source": "independent_verifier_and_audit",
+              "quality": "derived",
+              "reason": null
+            },
+            "agent.workflow_final_pass": {
+              "value": null,
+              "unit": "boolean",
+              "source": "agent_benchmark",
+              "quality": "unavailable",
+              "reason": "Stage not exercised"
+            },
+            "duration.verification_ms": {
+              "value": 125.0,
+              "unit": "ms",
+              "source": "monotonic",
+              "quality": "measured",
+              "reason": null
+            },
+            "duration.wall_ms": {
+              "value": 8859.999999869615,
+              "unit": "ms",
+              "source": "monotonic",
+              "quality": "measured",
+              "reason": null
+            },
+            "duration.worker_ms": {
+              "value": 8718.999999808148,
+              "unit": "ms",
+              "source": "monotonic",
+              "quality": "measured",
+              "reason": null
+            },
+            "tokens.coordinator.input": {
+              "value": null,
+              "unit": "tokens",
+              "source": "agent_benchmark",
+              "quality": "unavailable",
+              "reason": "No attributable runtime counter collected"
+            },
+            "tokens.coordinator.output": {
+              "value": null,
+              "unit": "tokens",
+              "source": "agent_benchmark",
+              "quality": "unavailable",
+              "reason": "No attributable runtime counter collected"
+            },
+            "tokens.worker.content": {
+              "value": 549,
+              "unit": "tokens",
+              "source": "opencode_session",
+              "quality": "measured",
+              "reason": "Visible completion tokens generated across all turns"
+            },
+            "tokens.worker.initial_prompt": {
+              "value": 3016,
+              "unit": "tokens",
+              "source": "opencode_history",
+              "quality": "derived",
+              "reason": "Baseline prompt tokens for initial turn"
+            },
+            "tokens.worker.input": {
+              "value": 9843,
+              "unit": "tokens",
+              "source": "opencode_session",
+              "quality": "measured",
+              "reason": "Cumulative prompt tokens transmitted across all turns"
+            },
+            "tokens.worker.output": {
+              "value": 549,
+              "unit": "tokens",
+              "source": "opencode_session",
+              "quality": "measured",
+              "reason": "Total completion tokens generated (content + reasoning) across all turns"
+            },
+            "tokens.worker.peak_context": {
+              "value": 3595,
+              "unit": "tokens",
+              "source": "opencode_history",
+              "quality": "derived",
+              "reason": "Maximum context window tokens in any single turn"
+            },
+            "tokens.worker.reasoning": {
+              "value": 0,
+              "unit": "tokens",
+              "source": "opencode_session",
+              "quality": "measured",
+              "reason": "Reasoning/thinking tokens generated across all turns"
+            },
+            "tools.calls": {
+              "value": 2,
+              "unit": "count",
+              "source": "opencode_history",
+              "quality": "derived",
+              "reason": null
+            },
+            "tools.failures": {
+              "value": 0,
+              "unit": "count",
+              "source": "opencode_history",
+              "quality": "derived",
+              "reason": null
+            }
+          },
+          "details": {
+            "scoring_basis": "worker_first_attempt_full_success",
+            "checkpoints": {
+              "S0": {
+                "tree_hash": "f92e9e42c28eb53d3964bbd482cd7a5201502b553df90db6826bef3730967926"
+              },
+              "S1": {
+                "tree_hash": "70207b119c2d17cb32ca28f209ff1915bbee8e8526d72e878843944403de1b8d",
+                "diff_path": "evidence/trial-001/worker.patch"
+              }
+            },
+            "judgments": {
+              "functional": "passed",
+              "artifact": "passed",
+              "execution": "passed",
+              "budget": "passed",
+              "termination": "passed"
+            },
+            "evidence_diagnostic": null,
+            "evidence_path": "evidence/trial-001",
+            "changed_paths": [
+              "src/session_state.py"
+            ],
+            "scope_violations": [],
+            "scope_audit": {
+              "scope_policy": "trial-local-scratch-v1",
+              "task_changed_paths": [
+                "src/session_state.py"
+              ],
+              "scratch_changed_paths": [],
+              "compliance": "compliant",
+              "snapshot_violations": [],
+              "transcript_violations": [],
+              "all_violations": [],
+              "mutated_paths": [
+                "src/session_state.py"
+              ],
+              "mutation_events": [
+                {
+                  "tool": "write",
+                  "target_path": "C:\\Users\\mcarls\\src\\scripts\\.worktrees\\qwen-runtime-investigation-20261029\\experiments\\qwen_runtime_investigation\\evidence\\state\\workspaces\\trial-c3t3_m_g\\src\\session_state.py",
+                  "resolved_path": "C:\\Users\\mcarls\\src\\scripts\\.worktrees\\qwen-runtime-investigation-20261029\\experiments\\qwen_runtime_investigation\\evidence\\state\\workspaces\\trial-c3t3_m_g\\src\\session_state.py",
+                  "in_workspace": true,
+                  "in_scope": true,
+                  "status": "completed",
+                  "message_id": "msg_1887092660010aOJMA3VsVpAOn",
+                  "call_id": "6mawUI74045tDRdQ1MdiRBTIwc0fxdNF",
+                  "category": "task",
+                  "safety_outcome": "unknown"
+                }
+              ],
+              "unverifiable_operations": []
+            },
+            "scope_policy": "trial-local-scratch-v1",
+            "task_changed_paths": [
+              "src/session_state.py"
+            ],
+            "scratch_changed_paths": [],
+            "task_budget_expired": false,
+            "execution_error": null,
+            "execution_diagnostic": null,
+            "verifier_status": "passed",
+            "verifier_returncode": 0,
+            "verifier_diagnostic": null,
+            "turn_completion": "completed",
+            "worker_job_status": "completed",
+            "worker_diagnostic": null,
+            "termination": {
+              "confirmed": true,
+              "grace_seconds": 15.0,
+              "diagnostics": []
+            },
+            "session_tokens": {
+              "input": 9843,
+              "output": 549,
+              "content": 549,
+              "reasoning": 0,
+              "initial_prompt": 3016,
+              "peak_context": 3595
+            },
+            "tool_telemetry": {
+              "total_calls": 2,
+              "total_failures": 0,
+              "tool_counts": {
+                "read": 1,
+                "write": 1
+              }
+            },
+            "unverifiable_categories": null,
+            "job_id": "job_4ee26f660c9543dc8b20d688afb8a041",
+            "session_id": "ses_e778fe00effeuPdLN1cUixvRY6",
+            "message_id": "msg_1887084cc0016dcbf2b6d514ee",
+            "project_id": "9ebc8379aad402ff26eb5dafc6d4107b7d4f4895"
+          }
+        }
+      ],
+      "condition_key": null
+    }
+  ],
+  "canonical_rankings": [],
+  "unranked_variants": {},
+  "condition_groups": {},
+  "warnings": [
+    "Incompatible run 'run-EXP_20261029_161327-qwen38-27b-q4km' rejected: Comparison contract has unknown, empty or malformed conditions; Missing or unsupported comparison contract"
+  ]
+}

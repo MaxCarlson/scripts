@@ -1,0 +1,1428 @@
+{
+  "run_info": {
+    "run_id": "run-EXP_20261029_161226-qwen38-27b-q4km",
+    "created_at": "2026-10-29T16:12:28Z",
+    "suite_id": "agent-benchmark",
+    "suite_version": "1.18.0",
+    "task_ids": [
+      "qwen-session-state"
+    ],
+    "variants": {
+      "qwen38-27b-q4km": {
+        "provider": "lmstudio",
+        "model": "qwen38-27b-q4km",
+        "effective_context_length": 98304
+      }
+    },
+    "repetitions": 1,
+    "scoring_basis": "worker_first_attempt_full_success",
+    "environment": {
+      "python": "3.12.10",
+      "platform": "Windows-11-10.0.26300-SP0",
+      "machine": "AMD64"
+    },
+    "metadata": {
+      "budget_profile": "canonical-120s",
+      "requested_context_length": 98304,
+      "task_tool_profiles": {
+        "qwen-session-state": "file-tools-v1"
+      },
+      "effective_context_length": 98304,
+      "comparison_eligible": true,
+      "suite_fingerprint": "73f6a4d39d07ec2058227d83f099d9e408d284f892ed7d1267370d4c9d91ebba",
+      "random_seed": null,
+      "benchmark_version": "1.18.0",
+      "isolation_policy": "isolated-git-project-v1",
+      "scope_policy": "trial-local-scratch-v1",
+      "evidence_limits": {},
+      "model_identity": {
+        "requested_id": "qwen38-27b-q4km",
+        "provider": "lmstudio",
+        "runtime_model_id": "qwen38-27b-q4km",
+        "lms_model_key": "qwen38-27b-q4km",
+        "display_name": "Qwen3.8 27B",
+        "quantization": "Q4_K_M",
+        "selected_variant": null,
+        "available_variants": [],
+        "max_context_length": 262144,
+        "size_bytes": 16810714336,
+        "resolution": "exact_model_key"
+      },
+      "requested_inference_profile": {
+        "schema": "opencode-inference-profile-v1",
+        "context_length": 98304,
+        "output_limit": 8192,
+        "reasoning": {
+          "mode": "unconfigured",
+          "effort": null,
+          "provenance": "source_config"
+        },
+        "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+      },
+      "comparison_contract": {
+        "schema": "comparison-conditions-v1",
+        "tasks": {
+          "qwen-session-state": {
+            "task_sha256": "61dff43acae297754d08a1bd1ed11e08eb68f5210f84f1bc2c950d0154b15aae",
+            "verifier_sha256": "3f0af46198d8f5ed2113f2efba80b80cfde93dcb96f7e5f687363605e59cb672"
+          }
+        },
+        "execution_profiles": {
+          "qwen-session-state": "file-tools-v1"
+        },
+        "scope_policy": "trial-local-scratch-v1",
+        "isolation_policy": "isolated-git-project-v1",
+        "context_length": 98304,
+        "budget": {
+          "profile": "canonical-120s",
+          "task_seconds": 120.0,
+          "grace_seconds": 15.0,
+          "verifier_seconds": 10.0
+        },
+        "environment": {
+          "python": "3.12.10",
+          "platform": "Windows-11-10.0.26300-SP0",
+          "machine": "AMD64",
+          "harness_version": "1.18.0",
+          "host_fingerprint": "6d970eb8e25340c75cd29feaa29d84c52c26ea452980a291e7a5949429477acf",
+          "model_identity": {
+            "requested_id": "qwen38-27b-q4km",
+            "provider": "lmstudio",
+            "runtime_model_id": "qwen38-27b-q4km",
+            "lms_model_key": "qwen38-27b-q4km",
+            "display_name": "Qwen3.8 27B",
+            "quantization": "Q4_K_M",
+            "selected_variant": null,
+            "available_variants": [],
+            "max_context_length": 262144,
+            "size_bytes": 16810714336,
+            "resolution": "exact_model_key"
+          },
+          "runtime": {
+            "kind": "opencode",
+            "version": "1.19.3",
+            "bridge_version": "3.0.0",
+            "agent": "benchmark-files",
+            "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+            "allowed_tools": [
+              "StructuredOutput",
+              "edit",
+              "glob",
+              "grep",
+              "list",
+              "read"
+            ],
+            "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+            "model_settings": null,
+            "requested_inference_profile": {
+              "schema": "opencode-inference-profile-v1",
+              "context_length": 98304,
+              "output_limit": 8192,
+              "reasoning": {
+                "mode": "unconfigured",
+                "effort": null,
+                "provenance": "source_config"
+              },
+              "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+            }
+          }
+        }
+      },
+      "agent_runtime": {
+        "kind": "opencode",
+        "version": "1.19.3",
+        "bridge_version": "3.0.0",
+        "agent": "benchmark-files",
+        "prompt_sha256": "d2d760a2839aa4ae64b3b5a17b3520ff2f39006e3615b332109f9d8740934e40",
+        "allowed_tools": [
+          "StructuredOutput",
+          "edit",
+          "glob",
+          "grep",
+          "list",
+          "read"
+        ],
+        "permissions_sha256": "0af3347ab44392a4340d675fff7588d8b50af377e2a0fbe577863dfb1c348abf",
+        "model_identity": {
+          "requested_id": "qwen38-27b-q4km",
+          "provider": "lmstudio",
+          "runtime_model_id": "qwen38-27b-q4km",
+          "lms_model_key": "qwen38-27b-q4km",
+          "display_name": "Qwen3.8 27B",
+          "quantization": "Q4_K_M",
+          "selected_variant": null,
+          "available_variants": [],
+          "max_context_length": 262144,
+          "size_bytes": 16810714336,
+          "resolution": "exact_model_key"
+        },
+        "model_settings": null,
+        "requested_inference_profile": {
+          "schema": "opencode-inference-profile-v1",
+          "context_length": 98304,
+          "output_limit": 8192,
+          "reasoning": {
+            "mode": "unconfigured",
+            "effort": null,
+            "provenance": "source_config"
+          },
+          "sha256": "53b62d405bae38aacc43a64171e0c33ae7e6512f5f805d6f98e8cbdd55162ac0"
+        }
+      }
+    }
+  },
+  "variants": {
+    "qwen38-27b-q4km": {
+      "variant_id": "qwen38-27b-q4km",
+      "configuration": {
+        "provider": "lmstudio",
+        "model": "qwen38-27b-q4km",
+        "effective_context_length": 98304
+      },
+      "total_trials": 1,
+      "passed": 1,
+      "failed": 0,
+      "timed_out": 0,
+      "infrastructure_error": 0,
+      "unscored": 0,
+      "eligible_count": 1,
+      "micro_success_rate": 1.0,
+      "macro_success_rate": 1.0,
+      "confidence_interval": {
+        "lower": 0.2065,
+        "upper": 1.0,
+        "confidence": 0.95,
+        "sample_size": 1
+      },
+      "insufficiently_sampled_tasks": [],
+      "metrics": {
+        "agent.artifact_compliance": {
+          "name": "agent.artifact_compliance",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.budget_pass": {
+          "name": "agent.budget_pass",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.clean_termination": {
+          "name": "agent.clean_termination",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.completion_ms": {
+          "name": "agent.completion_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 17619.0,
+          "median": 17619.0,
+          "min": 17619.0,
+          "max": 17619.0,
+          "stdev": null,
+          "measured_mean": 17619.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "agent.coordinator_repairs": {
+          "name": "agent.coordinator_repairs",
+          "unit": "count",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.execution_compliance": {
+          "name": "agent.execution_compliance",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.first_edit_ms": {
+          "name": "agent.first_edit_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 12313.0,
+          "median": 12313.0,
+          "min": 12313.0,
+          "max": 12313.0,
+          "stdev": null,
+          "measured_mean": 12313.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "agent.functional_pass": {
+          "name": "agent.functional_pass",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.last_edit_ms": {
+          "name": "agent.last_edit_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 12313.0,
+          "median": 12313.0,
+          "min": 12313.0,
+          "max": 12313.0,
+          "stdev": null,
+          "measured_mean": 12313.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "agent.local_retries": {
+          "name": "agent.local_retries",
+          "unit": "count",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.scope_compliance": {
+          "name": "agent.scope_compliance",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.scope_violations": {
+          "name": "agent.scope_violations",
+          "unit": "count",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.worker_after_retry_pass": {
+          "name": "agent.worker_after_retry_pass",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 0,
+          "missing_count": 1,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "max": null,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 1
+          }
+        },
+        "agent.worker_first_pass": {
+          "name": "agent.worker_first_pass",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1.0,
+          "median": 1.0,
+          "min": 1.0,
+          "max": 1.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "agent.workflow_final_pass": {
+          "name": "agent.workflow_final_pass",
+          "unit": "boolean",
+          "observation_count": 1,
+          "available_count": 0,
+          "missing_count": 1,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "max": null,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 1
+          }
+        },
+        "duration.verification_ms": {
+          "name": "duration.verification_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 140.0,
+          "median": 140.0,
+          "min": 140.0,
+          "max": 140.0,
+          "stdev": null,
+          "measured_mean": 140.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "duration.wall_ms": {
+          "name": "duration.wall_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 19297.0,
+          "median": 19297.0,
+          "min": 19297.0,
+          "max": 19297.0,
+          "stdev": null,
+          "measured_mean": 19297.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "duration.worker_ms": {
+          "name": "duration.worker_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 19125.0,
+          "median": 19125.0,
+          "min": 19125.0,
+          "max": 19125.0,
+          "stdev": null,
+          "measured_mean": 19125.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "tokens.coordinator.input": {
+          "name": "tokens.coordinator.input",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 0,
+          "missing_count": 1,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "max": null,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 1
+          }
+        },
+        "tokens.coordinator.output": {
+          "name": "tokens.coordinator.output",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 0,
+          "missing_count": 1,
+          "mean": null,
+          "median": null,
+          "min": null,
+          "max": null,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 1
+          }
+        },
+        "tokens.worker.content": {
+          "name": "tokens.worker.content",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1025.0,
+          "median": 1025.0,
+          "min": 1025.0,
+          "max": 1025.0,
+          "stdev": null,
+          "measured_mean": 1025.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "tokens.worker.initial_prompt": {
+          "name": "tokens.worker.initial_prompt",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 3055.0,
+          "median": 3055.0,
+          "min": 3055.0,
+          "max": 3055.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "tokens.worker.input": {
+          "name": "tokens.worker.input",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 24674.0,
+          "median": 24674.0,
+          "min": 24674.0,
+          "max": 24674.0,
+          "stdev": null,
+          "measured_mean": 24674.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "tokens.worker.output": {
+          "name": "tokens.worker.output",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 1934.0,
+          "median": 1934.0,
+          "min": 1934.0,
+          "max": 1934.0,
+          "stdev": null,
+          "measured_mean": 1934.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "tokens.worker.peak_context": {
+          "name": "tokens.worker.peak_context",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 5545.0,
+          "median": 5545.0,
+          "min": 5545.0,
+          "max": 5545.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "tokens.worker.reasoning": {
+          "name": "tokens.worker.reasoning",
+          "unit": "tokens",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 909.0,
+          "median": 909.0,
+          "min": 909.0,
+          "max": 909.0,
+          "stdev": null,
+          "measured_mean": 909.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "tools.calls": {
+          "name": "tools.calls",
+          "unit": "count",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 6.0,
+          "median": 6.0,
+          "min": 6.0,
+          "max": 6.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        },
+        "tools.failures": {
+          "name": "tools.failures",
+          "unit": "count",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 0.0,
+          "median": 0.0,
+          "min": 0.0,
+          "max": 0.0,
+          "stdev": null,
+          "measured_mean": null,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 1,
+            "estimated": 0,
+            "measured": 0,
+            "unavailable": 0
+          }
+        }
+      },
+      "duration": {
+        "all_scored": {
+          "name": "duration.wall_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 19297.0,
+          "median": 19297.0,
+          "min": 19297.0,
+          "max": 19297.0,
+          "stdev": null,
+          "measured_mean": 19297.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        },
+        "successful_only": {
+          "name": "duration.wall_ms",
+          "unit": "ms",
+          "observation_count": 1,
+          "available_count": 1,
+          "missing_count": 0,
+          "mean": 19297.0,
+          "median": 19297.0,
+          "min": 19297.0,
+          "max": 19297.0,
+          "stdev": null,
+          "measured_mean": 19297.0,
+          "estimated_mean": null,
+          "quality_counts": {
+            "derived": 0,
+            "estimated": 0,
+            "measured": 1,
+            "unavailable": 0
+          }
+        }
+      },
+      "tasks": {
+        "qwen-session-state": {
+          "task_id": "qwen-session-state",
+          "total_trials": 1,
+          "passed": 1,
+          "failed": 0,
+          "timed_out": 0,
+          "infrastructure_error": 0,
+          "unscored": 0,
+          "eligible_count": 1,
+          "success_rate": 1.0,
+          "confidence_interval": {
+            "lower": 0.2065,
+            "upper": 1.0,
+            "confidence": 0.95,
+            "sample_size": 1
+          },
+          "metrics": {
+            "agent.artifact_compliance": {
+              "name": "agent.artifact_compliance",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.budget_pass": {
+              "name": "agent.budget_pass",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.clean_termination": {
+              "name": "agent.clean_termination",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.completion_ms": {
+              "name": "agent.completion_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 17619.0,
+              "median": 17619.0,
+              "min": 17619.0,
+              "max": 17619.0,
+              "stdev": null,
+              "measured_mean": 17619.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "agent.coordinator_repairs": {
+              "name": "agent.coordinator_repairs",
+              "unit": "count",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 0.0,
+              "median": 0.0,
+              "min": 0.0,
+              "max": 0.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.execution_compliance": {
+              "name": "agent.execution_compliance",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.first_edit_ms": {
+              "name": "agent.first_edit_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 12313.0,
+              "median": 12313.0,
+              "min": 12313.0,
+              "max": 12313.0,
+              "stdev": null,
+              "measured_mean": 12313.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "agent.functional_pass": {
+              "name": "agent.functional_pass",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.last_edit_ms": {
+              "name": "agent.last_edit_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 12313.0,
+              "median": 12313.0,
+              "min": 12313.0,
+              "max": 12313.0,
+              "stdev": null,
+              "measured_mean": 12313.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "agent.local_retries": {
+              "name": "agent.local_retries",
+              "unit": "count",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 0.0,
+              "median": 0.0,
+              "min": 0.0,
+              "max": 0.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.scope_compliance": {
+              "name": "agent.scope_compliance",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.scope_violations": {
+              "name": "agent.scope_violations",
+              "unit": "count",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 0.0,
+              "median": 0.0,
+              "min": 0.0,
+              "max": 0.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.worker_after_retry_pass": {
+              "name": "agent.worker_after_retry_pass",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 0,
+              "missing_count": 1,
+              "mean": null,
+              "median": null,
+              "min": null,
+              "max": null,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 1
+              }
+            },
+            "agent.worker_first_pass": {
+              "name": "agent.worker_first_pass",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1.0,
+              "median": 1.0,
+              "min": 1.0,
+              "max": 1.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "agent.workflow_final_pass": {
+              "name": "agent.workflow_final_pass",
+              "unit": "boolean",
+              "observation_count": 1,
+              "available_count": 0,
+              "missing_count": 1,
+              "mean": null,
+              "median": null,
+              "min": null,
+              "max": null,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 1
+              }
+            },
+            "duration.verification_ms": {
+              "name": "duration.verification_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 140.0,
+              "median": 140.0,
+              "min": 140.0,
+              "max": 140.0,
+              "stdev": null,
+              "measured_mean": 140.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "duration.wall_ms": {
+              "name": "duration.wall_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 19297.0,
+              "median": 19297.0,
+              "min": 19297.0,
+              "max": 19297.0,
+              "stdev": null,
+              "measured_mean": 19297.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "duration.worker_ms": {
+              "name": "duration.worker_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 19125.0,
+              "median": 19125.0,
+              "min": 19125.0,
+              "max": 19125.0,
+              "stdev": null,
+              "measured_mean": 19125.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "tokens.coordinator.input": {
+              "name": "tokens.coordinator.input",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 0,
+              "missing_count": 1,
+              "mean": null,
+              "median": null,
+              "min": null,
+              "max": null,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 1
+              }
+            },
+            "tokens.coordinator.output": {
+              "name": "tokens.coordinator.output",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 0,
+              "missing_count": 1,
+              "mean": null,
+              "median": null,
+              "min": null,
+              "max": null,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 1
+              }
+            },
+            "tokens.worker.content": {
+              "name": "tokens.worker.content",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1025.0,
+              "median": 1025.0,
+              "min": 1025.0,
+              "max": 1025.0,
+              "stdev": null,
+              "measured_mean": 1025.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "tokens.worker.initial_prompt": {
+              "name": "tokens.worker.initial_prompt",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 3055.0,
+              "median": 3055.0,
+              "min": 3055.0,
+              "max": 3055.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "tokens.worker.input": {
+              "name": "tokens.worker.input",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 24674.0,
+              "median": 24674.0,
+              "min": 24674.0,
+              "max": 24674.0,
+              "stdev": null,
+              "measured_mean": 24674.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "tokens.worker.output": {
+              "name": "tokens.worker.output",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 1934.0,
+              "median": 1934.0,
+              "min": 1934.0,
+              "max": 1934.0,
+              "stdev": null,
+              "measured_mean": 1934.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "tokens.worker.peak_context": {
+              "name": "tokens.worker.peak_context",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 5545.0,
+              "median": 5545.0,
+              "min": 5545.0,
+              "max": 5545.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "tokens.worker.reasoning": {
+              "name": "tokens.worker.reasoning",
+              "unit": "tokens",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 909.0,
+              "median": 909.0,
+              "min": 909.0,
+              "max": 909.0,
+              "stdev": null,
+              "measured_mean": 909.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "tools.calls": {
+              "name": "tools.calls",
+              "unit": "count",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 6.0,
+              "median": 6.0,
+              "min": 6.0,
+              "max": 6.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            },
+            "tools.failures": {
+              "name": "tools.failures",
+              "unit": "count",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 0.0,
+              "median": 0.0,
+              "min": 0.0,
+              "max": 0.0,
+              "stdev": null,
+              "measured_mean": null,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 1,
+                "estimated": 0,
+                "measured": 0,
+                "unavailable": 0
+              }
+            }
+          },
+          "duration": {
+            "all_scored": {
+              "name": "duration.wall_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 19297.0,
+              "median": 19297.0,
+              "min": 19297.0,
+              "max": 19297.0,
+              "stdev": null,
+              "measured_mean": 19297.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            },
+            "successful_only": {
+              "name": "duration.wall_ms",
+              "unit": "ms",
+              "observation_count": 1,
+              "available_count": 1,
+              "missing_count": 0,
+              "mean": 19297.0,
+              "median": 19297.0,
+              "min": 19297.0,
+              "max": 19297.0,
+              "stdev": null,
+              "measured_mean": 19297.0,
+              "estimated_mean": null,
+              "quality_counts": {
+                "derived": 0,
+                "estimated": 0,
+                "measured": 1,
+                "unavailable": 0
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "generated_at": "2026-10-29T16:13:17Z"
+}
