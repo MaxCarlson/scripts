@@ -100,20 +100,20 @@ and memory guardrails are unchanged. Compare runs with matching task/tool profil
 The opt-in `retrieval-files-v1` profile is a separate experimental condition. Before using it,
 install the optional local-agent OpenCode tools by reviewing
 `local-agent setup plan --code-retrieval -o retrieval-plan.json` and applying it with
-`local-agent setup apply -i retrieval-plan.json`. A retrieval task receives the `benchmark-retrieval` role,
+`local-agent setup apply -i retrieval-plan.json`. A retrieval task receives the common `benchmark-files` role,
 which keeps default deny and allows only the existing file tools plus `code_locate` and
 `code_context`; shell, MCP, skills and web tools remain denied. The task manifest's exact profile,
-role prompt hash and effective permissions are retained for comparison. No live retrieval-profile
-evaluation is implied by this implementation.
+identical role prompt hash and effective permissions are retained for comparison. No live
+retrieval-profile evaluation is implied by this implementation.
 
 The distinct `retrieval-structural-v1` condition is for Python structural
 retrieval experiments. Set that exact value in a task's `opencode_tool_profile`
 manifest field and install the optional tools with
 `local-agent setup plan --structural-retrieval` followed by reviewing and
-applying the saved plan. Its `benchmark-structural` role allows the usual safe
+applying the saved plan. Its common `benchmark-files` role allows the usual safe
 file tools plus `code_locate`, `code_context`, `code_symbols`, and `code_map`;
 default deny remains in force and shell, MCP, skills and web remain denied.
-The exact profile, prompt identity and effective permissions remain part of
+The exact profile, shared prompt identity and effective permissions remain part of
 the trial evidence. This is an auditable B3 variant, not evidence of a quality
 or efficiency improvement; controlled comparison with matching context and
 runtime conditions is still required.
@@ -149,3 +149,44 @@ that edit-tool replacement text is literal source. OpenCode 1.19.3's exact edit 
 error is recorded as a proven pre-mutation failure; other failed mutations remain uncertain. Runtime
 comparison identity fingerprints only the ordered permissions after the benchmark role's default-deny
 reset, so overridden inherited grants do not split equivalent runs.
+
+## Local Agent Efficiency fixtures and comparison
+
+Four fixed offline fixtures cover repository investigation, a focused bug fix,
+a coordinated two-file change, and test development. Their manifests use the
+same `file-tools-v1` profile and are not rewritten per condition. Select a
+condition with `experiment run --tool-profile file-tools-v1`,
+`retrieval-files-v1`, or `retrieval-structural-v1`; the role name and worker
+prompt remain byte-identical while the default-deny tool surface changes.
+
+Validate the fixtures and schedule offline with:
+
+```powershell
+python -m pytest tests/efficiency_fixtures_test.py tests/efficiency_experiment_test.py -q
+```
+
+From `modules/agent_benchmark`, inspect the deterministic schedule without
+dispatching a worker:
+
+```powershell
+python -B experiments/local_agent_efficiency.py --model-key <exact-verified-modelKey>
+```
+
+The optional `--execute` flag launches 36 individual runs and is reserved for a
+separately approved Gate B. The plan uses four tasks, three repetitions,
+counterbalanced B0/B2/B3 orders (each of the six orders twice), seed `20261029`,
+the canonical 120-second task budget, a 15-second grace, 32,768 context, a 95%
+RAM ceiling, no model transitions, and a two-hour deadline. It stops on the
+first failed/invalid attempt and never retries. The script does not verify the
+model identity or effective runtime limits; preflight is required before use.
+
+`benchmark_core.compare_runs` still requires exact condition equality by
+default. The opt-in `declared-tool-intervention-v1` contract permits only the
+versioned B0/B2/B3 tool profile, allowed-tool list, and permission digest to
+differ. It still requires identical task/verifier and suite fingerprints,
+worker role and prompt, exact model identity/quantization, and effective
+context, output, temperature, top-p, reasoning and provider-options fingerprint.
+The current runtime evidence producer does not capture all effective inference
+settings, so real OpenCode runs remain incomparable until those values can be
+verified and recorded. This is a readiness blocker, not a reason to weaken the
+comparison contract.

@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import asyncio
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import logging
@@ -46,6 +46,7 @@ from .attempt import run_attempt, run_cli_attempt
 from .telemetry import ResourceLimitExceeded, RuntimeMemoryGuard
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
+from .tool_profile import FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE
 from .diagnostics import describe_trial
 from .git_workspace import ISOLATION_POLICY
 from .identity import ModelIdentity, resolve_lmstudio_identity
@@ -205,6 +206,7 @@ class ExperimentScheduler:
         lms_path: str = "lms",
         lms_runner: Optional[CommandRunner] = None,
         trial_executor: Optional[TrialExecutor] = None,
+        tool_profile: str | None = None,
         on_trial_start: Optional[TrialCallback] = None,
         on_trial_complete: Optional[TrialCallback] = None,
         on_model_start: Optional[Callable[[str], None]] = None,
@@ -223,6 +225,9 @@ class ExperimentScheduler:
         self.lms_path = lms_path
         self.lms_runner = lms_runner
         self.trial_executor = trial_executor
+        if tool_profile not in {None, FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
+            raise ValueError(f"Unsupported experiment tool profile: {tool_profile}")
+        self.tool_profile = tool_profile
 
         # Event callbacks
         self.on_trial_start = on_trial_start
@@ -354,7 +359,7 @@ class ExperimentScheduler:
                     "budget_profile": config.budget_profile,
                     "requested_context_length": context_length,
                     "task_tool_profiles": {
-                        tid: (load_task(self.task_dirs[tid]).opencode_tool_profile
+                        tid: (self.tool_profile or load_task(self.task_dirs[tid]).opencode_tool_profile
                               if resolved_provider == "lmstudio" else "cli-shell-v1")
                         for tid in self.plan.task_ids
                     },
@@ -380,6 +385,8 @@ class ExperimentScheduler:
                     self.on_trial_start(planned_trial, None)
 
                 task = load_task(self.task_dirs[planned_trial.task_id])
+                if self.tool_profile is not None and resolved_provider == "lmstudio":
+                    task = replace(task, opencode_tool_profile=self.tool_profile)
                 evidence_dir = run_dir / "evidence" / f"trial-{planned_trial.trial_index + 1:03d}"
 
                 if self.trial_executor is not None:
@@ -410,7 +417,23 @@ class ExperimentScheduler:
                 conditions = build_conditions(self.task_dirs,
                     loaded_model.context_length if loaded_model else (context_length if self.trial_executor else None),
                     config.budget_profile, {"task_seconds": task_seconds, "grace_seconds": grace_seconds,
-                                            "verifier_seconds": verifier_seconds}, runtime, provider=resolved_provider)
+                                            "verifier_seconds": verifier_seconds}, runtime, provider=resolved_provider,
+                    tool_profile=self.tool_profile)
+                assignment = ({FILE_PROFILE: "B0", RETRIEVAL_PROFILE: "B2",
+                               STRUCTURAL_PROFILE: "B3"}.get(self.tool_profile)
+                              if resolved_provider == "lmstudio" else None)
+                if assignment:
+                    from benchmark_core.conditions import TOOL_INTERVENTION_PROFILES
+                    run_info.metadata["intervention_contract"] = {
+                        "schema": "declared-tool-intervention-v1",
+                        "design_id": "local-agent-efficiency-b0-b2-b3-v1",
+                        "factor": "tool_profile",
+                        "allowed_differences": ["execution_profiles", "environment.runtime.allowed_tools",
+                                                "environment.runtime.permissions_sha256"],
+                        "conditions": {key: {"profile": profile, "allowed_tools": tools}
+                                       for key, (profile, tools) in TOOL_INTERVENTION_PROFILES.items()},
+                        "assignment": assignment,
+                    }
                 previous = run_info.metadata.get("comparison_contract")
                 if previous is not None and previous != conditions:
                     run_info.metadata["comparison_contract_error"] = "Runtime conditions changed within this model batch"

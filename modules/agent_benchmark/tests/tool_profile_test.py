@@ -88,12 +88,24 @@ def test_retrieval_agent_keeps_default_deny_and_allows_only_named_read_tools(tmp
     assert RETRIEVAL_PROFILE == "retrieval-files-v1"
 
 
-def test_retrieval_profile_prompt_names_its_exact_tools():
-    task = replace(load_task(TASK), opencode_tool_profile=RETRIEVAL_PROFILE)
-    prompt = build_prompt(task, Path("C:/trial"))
-    assert "code_locate" in prompt and "code_context" in prompt
-    assert "Tool profile: retrieval-files-v1" in prompt
-    assert "Do not run tests, invoke a shell" in prompt
+def test_retrieval_interventions_keep_role_and_prompt_identical(tmp_path):
+    task = load_task(TASK)
+    prompts = [build_prompt(replace(task, opencode_tool_profile=profile), Path("C:/trial"))
+               for profile in ("file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1")]
+    assert prompts[0] == prompts[1] == prompts[2]
+    assert "Do not run tests, invoke a shell" in prompts[0]
+
+    for profile, retrieval, structural in (("file-tools-v1", False, False),
+                                            ("retrieval-files-v1", True, False),
+                                            ("retrieval-structural-v1", True, True)):
+        root = tmp_path / profile
+        root.mkdir()
+        configure_file_agent(root, retrieval=retrieval, structural=structural)
+        role = json.loads((root / "opencode.json").read_text(encoding="utf-8"))["agent"][FILE_AGENT]
+        assert role["prompt"] == FILE_PROMPT
+        assert role["permission"]["*"] == "deny"
+        assert ("code_context" in role["permission"]) is retrieval
+        assert ("code_map" in role["permission"]) is structural
 
 
 def test_file_agent_refuses_overwriting_an_existing_agent(tmp_path):
@@ -227,7 +239,7 @@ def test_structural_retrieval_profile_is_distinct_and_default_deny(tmp_path):
             {"permission": "bash", "pattern": "*", "action": "allow"},
         ]}, structural=True)
     assert STRUCTURAL_PROFILE == "retrieval-structural-v1"
-    assert "code_map" in STRUCTURAL_PROMPT and "code_symbols" in STRUCTURAL_PROMPT
+    assert STRUCTURAL_PROMPT == FILE_PROMPT
     validate_execution_profile(STRUCTURAL_PROFILE)
 
 
@@ -244,5 +256,4 @@ def test_structural_profile_manifest_and_prompt_are_identifiable(tmp_path):
     task = load_task(copy)
     prompt = build_prompt(replace(task, opencode_tool_profile=STRUCTURAL_PROFILE), Path("C:/trial"))
     assert task.opencode_tool_profile == STRUCTURAL_PROFILE
-    assert "code_symbols" in prompt and "code_map" in prompt
-    assert "Tool profile: retrieval-structural-v1" in prompt
+    assert prompt == build_prompt(replace(task, opencode_tool_profile="file-tools-v1"), Path("C:/trial"))

@@ -11,10 +11,10 @@ from pathlib import Path
 
 FILE_AGENT = "benchmark-files"
 FILE_PROFILE = "file-tools-v1"
-RETRIEVAL_AGENT = "benchmark-retrieval"
+RETRIEVAL_AGENT = FILE_AGENT
 RETRIEVAL_PROFILE = "retrieval-files-v1"
 RETRIEVAL_TOOLS = {"code_locate", "code_context"}
-STRUCTURAL_AGENT = "benchmark-structural"
+STRUCTURAL_AGENT = FILE_AGENT
 STRUCTURAL_PROFILE = "retrieval-structural-v1"
 STRUCTURAL_TOOLS = {"code_symbols", "code_map"}
 SAFE_PERMISSIONS = {"read", "edit", "glob", "grep", "list", "StructuredOutput"}
@@ -26,14 +26,10 @@ FILE_PROMPT = (
     "Finish promptly after implementing the solution. Report checks as not run (harness verifies). "
     "Respect allowed paths and protected files; do not modify .git or opencode.json."
 )
-RETRIEVAL_PROMPT = (
-    FILE_PROMPT + " Use code_locate to discover candidate source paths and code_context to read exact line ranges. "
-    "These tools are read-only and bounded."
-)
-STRUCTURAL_PROMPT = (
-    RETRIEVAL_PROMPT + " For Python tasks, use code_map to rank relevant symbols and code_symbols "
-    "for an exact file outline. Structural retrieval is optional and bounded."
-)
+# Keep role instructions byte-identical across B0/B2/B3. The exposed tool surface
+# is the intervention; teaching retrieval in only one condition would confound it.
+RETRIEVAL_PROMPT = FILE_PROMPT
+STRUCTURAL_PROMPT = FILE_PROMPT
 
 
 def configure_file_agent(workspace: Path, *, retrieval: bool = False, structural: bool = False) -> None:
@@ -41,7 +37,7 @@ def configure_file_agent(workspace: Path, *, retrieval: bool = False, structural
     path = workspace / "opencode.json"
     config = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
     agents = config.setdefault("agent", {})
-    name = STRUCTURAL_AGENT if structural else RETRIEVAL_AGENT if retrieval else FILE_AGENT
+    name = FILE_AGENT
     if name in agents:
         raise ValueError(f"The task seed already defines the reserved {name} agent")
     permissions = SAFE_PERMISSIONS | (RETRIEVAL_TOOLS if retrieval or structural else set())
@@ -49,7 +45,7 @@ def configure_file_agent(workspace: Path, *, retrieval: bool = False, structural
         permissions |= STRUCTURAL_TOOLS
     agents[name] = {
         "description": "Benchmark file implementation; hidden verification is performed by the harness",
-        "mode": "primary", "prompt": STRUCTURAL_PROMPT if structural else RETRIEVAL_PROMPT if retrieval else FILE_PROMPT,
+        "mode": "primary", "prompt": FILE_PROMPT,
         "permission": {"*": "deny", **{tool: "allow" for tool in sorted(permissions)},
                        "external_directory": "deny"},
     }
@@ -118,8 +114,8 @@ def validate_file_agent(
     structural: bool = False,
 ) -> None:
     """Validate the ordered effective tool contract before session creation."""
-    expected_name = STRUCTURAL_AGENT if structural else RETRIEVAL_AGENT if retrieval else FILE_AGENT
-    expected_prompt = STRUCTURAL_PROMPT if structural else RETRIEVAL_PROMPT if retrieval else FILE_PROMPT
+    expected_name = FILE_AGENT
+    expected_prompt = FILE_PROMPT
     if role.get("name") != expected_name or role.get("mode") != "primary" or role.get("prompt") != expected_prompt:
         raise ValueError(f"{expected_name} role name, mode or prompt identity differs from the declared profile")
     rules = role.get("permission")

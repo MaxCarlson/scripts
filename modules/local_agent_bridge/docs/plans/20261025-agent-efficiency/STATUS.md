@@ -1,7 +1,7 @@
 # Local Coding-Agent Efficiency — Status
 
-**Last updated:** 2026-10-25
-**Overall state:** P0/P1 reconciled; Release A and P3–P6 implemented and offline-verified; B3 structural tool/profile wiring is implemented and offline-verified; controlled evaluation remains pending authorization
+**Last updated:** 2026-10-29
+**Overall state:** Implementation phase complete; P0–P6, matched benchmark fixtures, B0/B2/B3 profiles, and the fail-closed intervention comparison contract are ready for integration. Live validation and performance evaluation remain pending separate authorization and runtime evidence.
 **Verified baseline:** remote `main` merge commit `92c5f068fe2d0c8c99ca4a14991388b1819a3764`
 **Performance branch:** `codex/local-agent-efficiency-20261025`
 **Canonical plan:** `./plan.md`
@@ -170,3 +170,244 @@ Validation:
 - `ruff check` across all changed Python files: **All checks passed**. `git diff --check`: **passed**.
 - Static serialized module-export JSON for `[ {name, description, args}, ... ]` measured **442 UTF-8 bytes** for the two structural tool definitions together and **1,157 bytes** for all four lexical plus structural definitions. This is definition-shape byte sizing, not tokenizer tokens or the complete provider request.
 - Setup, saved-plan replay, adapter argv/output bounds, structural profile identity and default-deny checks are included in the suites above. No model request, inference, OpenCode server operation, or live benchmark was performed. Controlled B0/B2/B3/B4 comparisons remain unmeasured; no efficiency gain is claimed.
+
+## Validation phase — 2026-10-29
+
+### Verified repository and scope
+
+- Worktree: `C:\Users\mcarls\.codex\worktrees\d253\scripts`.
+- Branch: `codex/local-agent-efficiency-20261025`; HEAD and upstream: `ba58ad0d91d7344e72e24a63d277eba7a270d52f` (`Record B3 structural retrieval completion`). Baseline: `92c5f068fe2d0c8c99ca4a14991388b1819a3764`.
+- The branch is unchanged from `origin/codex/local-agent-efficiency-20261025` at HEAD. No commit, push, merge, rebase, reset, or cleanup was performed.
+- Working changes at handoff: `HANDOFF-VALIDATION.md` (new); `modules/local_agent_bridge/local_agent_bridge/retrieval/{core.py,structure.py}`; `modules/local_agent_bridge/tests/{retrieval_test.py,structure_test.py}`; `modules/agent_benchmark/agent_benchmark/runner.py`; `modules/agent_benchmark/tests/runner_test.py`. These implementation/test edits were already present when validation resumed; this pass reviewed and verified them.
+- Installed source versions: `local-agent-bridge` 3.4.0 and `agent-benchmark` 1.17.0. The source tree implements P0–P6: bounded lexical retrieval/CLI, optional OpenCode tools and default-deny benchmark profiles, durable checkpoints, Python AST symbols/maps, optional checkpoint-aware compaction, and a distinct `retrieval-structural-v1` profile. P1 remains satisfied by the v3.3.0 worker/task-envelope guidance; no prompt rewrite/B1 variant was introduced.
+- Setup integration remains optional and receipt-managed. The benchmark roles reset permissions to `* = deny` and grant only the exact file/retrieval tools for the selected profile. No permissions were broadened.
+
+### Independent review and fixes
+
+A read-only independent review of `92c5f068..ba58ad0d` identified two Important findings; both now have regression tests and fixes in the current worktree:
+
+1. **Regex CPU bound — fixed.** `modules/local_agent_bridge/local_agent_bridge/retrieval/core.py:24-26, 371-438, 556-560` previously let explicit regex mode evaluate backtracking patterns in-process without a time limit. It now caps query length at 4096 characters and evaluates regex in an isolated Python subprocess with a 2-second timeout, bounded input files/bytes, and explicit `regex_timeout` partial-result metadata. Tests cover worker argv/input, timeout, and a catastrophic-backtracking expression (`tests/retrieval_test.py:87-119`). This is an execution-time bound, not a regex-language restriction.
+2. **Structural truncation metadata — fixed.** `modules/local_agent_bridge/local_agent_bridge/retrieval/structure.py:63-117, 141-164, 219-236` previously capped per-file definitions at `MAX_SYMBOLS_PER_FILE` without reporting that loss. `_definitions` now returns a truncation flag; `symbols` and `repository_map` propagate it to response metadata. Tests cover both APIs (`tests/structure_test.py`, symbol-cap cases).
+
+The reviewer found no other Critical/Important defect in path containment, retrieval provenance/budgets, JS argv/no-shell adapters, setup ownership, checkpoint project/source identity, no-auto-resubmit recovery, default-deny benchmark profiles, or scope-audit design. That review was static; runtime installation/discovery is not thereby proven.
+
+### Pinned OpenCode contract check
+
+Read the tagged OpenCode 1.19.3 primary sources online. `ToolContext` includes the current `directory`, tool definitions use `description`, schema `args`, and `execute(args, context)`, and the registry discovers JS/TS files under tool directories and names default exports after the file. The pinned compaction hook accepts `{sessionID}` and `{context: string[], prompt?: string}`. This matches the file-based retrieval tools and optional checkpoint hook in the branch. Sources: [1.19.3 tool API](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/plugin/src/tool.ts), [custom tool discovery](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/opencode/src/tool/registry.ts), [compaction hook type](https://github.com/anomalyco/opencode/blob/v1.19.3/packages/plugin/src/index.ts#L1405-L1424). This establishes source compatibility only; no OpenCode process was started in this validation pass.
+
+### Offline validation reproduced after fixes
+
+Environment: Windows PowerShell in the isolated worktree. Commands use the worktree module source (excluding ambient editable import finders) and a temporary directory under `C:/Windows/Temp`.
+
+- Full bridge tests:
+  `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'local_agent_bridge' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/local_agent_bridge'); import pytest; raise SystemExit(pytest.main(['modules/local_agent_bridge/tests', '-q', '-rs', '--basetemp=C:/Windows/Temp/local-agent-validation-final', '--tb=short', '--deselect=modules/local_agent_bridge/tests/audit_test.py::test_shell_mode_comes_from_receipt_modes_only']))"`
+  Result: **155 passed, 2 skipped, 1 deselected** in 16.57s. The skips require Windows symlink creation/privilege. The deselected shell-mode test has the previously recorded Git Bash/MSYS app-execution-alias failure.
+- Mocked/offline benchmark reconciliation tests:
+  `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge']; import pytest; raise SystemExit(pytest.main(['modules/agent_benchmark/tests/runner_test.py::test_pending_reconciliation_failure_names_unresolved_worker', 'modules/agent_benchmark/tests/runner_test.py::test_real_adapter_project_gate_and_canonical_provenance_offline', '-q', '-rs', '--basetemp=C:/Windows/Temp/agent-benchmark-validation-focused', '--tb=short']))"`
+  Result: **4 passed** in 2.37s; connector traffic was mocked.
+- `ruff check modules/local_agent_bridge/local_agent_bridge/retrieval/core.py modules/local_agent_bridge/local_agent_bridge/retrieval/structure.py modules/local_agent_bridge/tests/retrieval_test.py modules/local_agent_bridge/tests/structure_test.py modules/agent_benchmark/agent_benchmark/runner.py modules/agent_benchmark/tests/runner_test.py` — **All checks passed**.
+- `git diff --check` — **passed**. Git printed only LF-to-CRLF working-copy notices for four Python files.
+
+The earlier selected benchmark groups (117 + 327 test executions, six skips across those groups and the then-149-test bridge run) were reproduced before these validation fixes; 117 is included in the 327 group, so 593 is not a unique-test count. The current broader benchmark suite was not rerun. A broad diagnostic/runner attempt reaches local OpenCode/MCP through subprocess recovery, and an automatic review rejected a subsequent broad command before tests started for that same service-contact risk. Do not count that rejected command as a test result. The narrow mocked regression tests above passed.
+
+### OpenCode/MCP diagnosis
+
+- `agent_benchmark/diagnostic.py:202` calls `reconcile_pending` before reserving/submitting its smoke trial. `agent_benchmark/runner.py:74-...` may contact the connected OpenCode bridge to reconcile exact pending session/job identity and confirm termination; this is necessary recovery behavior, not a model submission. Restart/refusal tests in `tests/diagnostic_test.py:143` and `tests/runner_test.py:53,177` launch subprocesses and therefore can contact the already-running local OpenCode/MCP endpoint even when the test's intended assertion is about safe refusal.
+- The earlier broad attempt observed an OpenCode/MCP refusal before any new model transition or worker dispatch. This validation pass did not repeat that runtime contact. The attempted broad selection was blocked by automatic review before execution. A further test-fixture issue was that import-finder filtering in a parent Python process does not apply to subprocesses, which can select an ambient installed package rather than the worktree source.
+- The unresolved-worker error now explicitly says the dispatch “remains unresolved”; a focused mocked connector regression test verifies that the pending receipt is preserved and names the unresolved state. This resolves the offline error-contract assertion only.
+- **Classification:** mocked/offline reconciliation behavior resolved and tested; actual MCP initialization, pending-session reconciliation, and runtime tool discovery remain environment-dependent and unverified. No live worker or model request was made.
+
+### B0/B2/B3 protocol and readiness
+
+- **B0:** reliability v3.3.0 source baseline (`92c5f068...`) and `file-tools-v1`.
+- **B2:** current bounded lexical retrieval implementation and `retrieval-files-v1` (`code_locate`, `code_context`).
+- **B3:** B2 source plus `retrieval-structural-v1` (`code_symbols`, `code_map`). The optional tool definitions serialize to 442 UTF-8 bytes for the structural pair and 1,157 bytes for all four retrieval tools. These are JSON definition bytes, not tokenizer counts or provider payload measurements.
+- Pin the same Qwen 27B Q4_K_M model identity, LM Studio/OpenCode versions, context, output limit, instructions, task seeds/prompts, hidden verifiers, scope policy, and 120-second task/15-second grace budget across conditions. Repository documentation describes the candidate as Q4_K_M with 32,768 context and 8,192 output; runtime identity and effective request settings have not been verified. Proposed harness versions are `agent-benchmark` 1.17.0, `local-agent-bridge` 3.4.0, and OpenCode 1.19.3. Record the resolved LM Studio modelKey/quantization, software SHAs, prompt hash, exact profile/permissions hash, runtime identity, context settings, and host state in each trial; stop if any differ. Do not load a model, alter limits, or transition models as part of validation.
+- The current built-in task set contains only `py-grep-smoke` (`category: smoke`, `file-tools-v1`). It does not cover the requested bug-fix, repository-investigation, multi-file-change, and test-writing categories. **Gate B is not ready** until four fixed task fixtures plus trusted hidden verifiers exist and are checked into the trial source.
+- There is also a comparison-contract blocker. `comparison_conditions.py:13-26` fingerprints each full task directory and stores its tool profile. `benchmark_core/compare.py:200-206` requires exact contract equality and suppresses numeric deltas when profiles differ. Therefore B0/B2/B3 cannot be compared by silently holding contracts equal or by treating a profile mismatch as noise. Add an explicit, predeclared intervention contract that permits only the intended tool-profile change while still enforcing same tasks/verifiers, model/runtime, context, scope, and budgets; then add offline tests proving allowed and disallowed differences. Until that exists, benchmark artifacts can be collected per profile but the canonical comparator will intentionally refuse a direct efficacy comparison.
+- Once those two readiness items are resolved, use four matched categories, three repetitions per condition (36 worker dispatches total), and 12 task/repetition blocks; randomize the B0/B2/B3 order within blocks using seed `20261029`, balancing the six possible orders twice. Use `canonical-120s`, 15-second grace, 10-second bridge request timeout, 10-second verifier timeout, context 32,768, `--no-allow-model-transitions`, and a maximum 2-hour wall-clock gate. Stop on model/profile/context mismatch, any scope violation, an unresolved job, preflight refusal, memory ceiling, or 2-hour limit. Never retry an invalid/uncertain dispatch; retain it as invalid with evidence and stop if termination is uncertain.
+- Record correctness/hidden verifier status, scope compliance, wall time, tool calls/failures, source reads and repeated reads, returned source bytes, input/output tokens, compaction count, and memory/GPU telemetry when available. Missing telemetry is null/unavailable, never zero. Invalid preflight/run attempts are excluded from efficacy summaries but retained and counted separately. Promotion remains subject to no correctness/scope regression and plan targets of at least 15% lower median wall time and 25% fewer repeated source reads across categories; no improvement is claimed until then.
+
+### Separate authorization proposals
+
+**Gate A — one live runtime smoke, not B0/B2/B3 approval.** Proposed command from the module environment (run only after the user separately authorizes it and read-only preflight confirms the exact model identity):
+
+```powershell
+python -m agent_benchmark smoke -x -m qwen38_23GB -p lmstudio -a local-worker -u http://127.0.0.1:4096 -q 10 -o .\reports\integration-acceptance\local-agent-efficiency-gate-a
+```
+
+Uses the shared default dispatch-state directory, one diagnostic task/one possible worker dispatch, 60-second task budget, 10-second cancellation/confirmation grace, and 10-second per-request timeout; no retries, model load, setting change, or transition. The runtime modelKey must resolve exactly to the intended Qwen 27B Q4_K_M before dispatch. This smoke does not independently prove the provider's effective context/output payload, and its current harness exposes no hard cap on the number of underlying model completion turns; the bound is one task dispatch and the fixed 60-second observation budget. Stop before dispatch on any identity/config mismatch, active unresolved job, OpenCode/MCP refusal, scope uncertainty, or miner contention. No Gate A operation has been performed.
+
+**Gate B — 36-run controlled B0/B2/B3 evaluation.** This is separate approval from Gate A and is **not yet ready for execution**. Once fixtures and the declared comparison-contract support above are complete, use the existing `agent-bench experiment run` per condition, with `-x`, the same exact modelKey, four category fixtures, `-r 3`, `-b canonical-120s`, `-c 32768`, `--no-allow-model-transitions`, a fixed random seed of `20261029`, and condition-specific output directories. The precise executable command lines must be generated from the checked-in task paths and final intervention-contract interface at that later readiness gate; do not guess or launch a placeholder command. Maximum 36 dispatches and 2 hours total; 120-second task budget plus 15-second grace; stop conditions and invalid-attempt handling are as specified above. Gate A approval does not approve Gate B.
+
+### Continuation point
+
+Next, keep all validation work in this isolated branch and preserve the current uncommitted changes. The first implementation action is to add the four matched benchmark fixtures/verifiers and design/test the explicit intervention comparison contract with `benchmark_core`; rerun safe offline tests. Only after those gates pass should the exact Gate B command set be prepared for separate user authorization. Then request separate authorization for Gate A if runtime smoke remains useful. No inference, model load/reload, OpenCode session, benchmark trial, commit, or push was performed in this validation pass.
+
+## Benchmark preparation phase — 2026-10-29
+
+### Implementation
+
+- Repository/worktree/branch remain `C:\Users\mcarls\.codex\worktrees\d253\scripts`, `codex/local-agent-efficiency-20261025`; HEAD remains `ba58ad0d91d7344e72e24a63d277eba7a270d52f`. No branch operation or commit/push occurred; validation-phase uncommitted work was preserved.
+- Reused the task loader, isolated Git workspaces, hidden verifier runner, scope audit, `ExperimentScheduler`, and `benchmark_core.compare_runs`. No framework, service, or runtime dependency was added.
+- Added four fixed offline fixtures: `py-repository-investigation`, `py-focused-bug-fix`, `py-multifile-change`, `py-test-development`. Their manifests have narrow allowed paths, 120-second task budgets, and independent hidden verifiers. Each test starts from identical seed bytes across B0/B2/B3; tests verify seed rejection/reference solution acceptance and temporary-directory isolation.
+- Added additive `experiment run --tool-profile {file-tools-v1,retrieval-files-v1,retrieval-structural-v1}`. B0/B2/B3 now share the `benchmark-files` role, identical role prompt and identical task prompt; only the default-deny allowed tool surface changes. Existing single-run commands and permission/scope behavior are unchanged.
+- `benchmark_core.compare_runs` remains exact-match by default. New opt-in `declared-tool-intervention-v1` permits only exact B0/B2/B3 execution profile, allowed tool list, and permission digest differences. It still requires equal task and verifier digests, suite fingerprints, worker role and prompt hash, exact LM Studio identity/quantization, and complete matched model settings. Missing or mismatched provenance returns an explicit refusal reason and suppresses all metric deltas.
+- Package versions: `benchmark_core 0.2.0`, `agent_benchmark 1.18.0`. No dependency added.
+
+### Reproducible experiment
+
+- Added `modules/agent_benchmark/experiments/local_agent_efficiency_b0_b2_b3.json` and dry-run-first `local_agent_efficiency.py`. The seed-`20261029` schedule shuffles 12 task/repetition blocks and uses each of the six B0/B2/B3 orders twice, for 36 one-dispatch calls. Each call uses one fixture, one repetition, exact profile, `canonical-120s` (120-second task + 15-second grace), context 32768, RAM ceiling 95%, no model transitions. The launcher has a 7200-second outer cap, stops at first failed/nonzero attempt, and never retries.
+- Executed the default dry-run only (no `--execute`): **36 commands, 12 blocks, all six condition orders, `execute=false`**. It resolved all four fixture paths. No run or worker was dispatched.
+- Primary outcomes: hidden verifier correctness, scope compliance, elapsed time, failure/timeout/invalid outcome. Raw invalid attempts remain evidence and are excluded from efficacy summaries; the schedule stops rather than retrying. Secondary read counts, repeated reads, tool calls, retrieved bytes, tokens, compactions and resource data remain null/unavailable if runtime telemetry omits them, never zero-filled.
+
+### Offline validation
+
+Environment: Windows PowerShell, Python 3.12. Source imports were directed to this worktree. These tests use local fixtures and mocked bridge transport; runtime-facing diagnostic/runner tests were excluded because they can contact OpenCode/MCP.
+
+- Focused agent-benchmark selection: **125 passed, 1 skipped** (Windows symlink privilege). Exact command:
+  `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark', 'benchmark_core'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge', 'modules/benchmark_core']; import pytest; raise SystemExit(pytest.main(['modules/agent_benchmark/tests/efficiency_fixtures_test.py', 'modules/agent_benchmark/tests/efficiency_experiment_test.py', 'modules/agent_benchmark/tests/tool_profile_test.py', 'modules/agent_benchmark/tests/comparison_conditions_test.py', 'modules/agent_benchmark/tests/bridge_test.py', 'modules/agent_benchmark/tests/attempt_test.py', 'modules/agent_benchmark/tests/evidence_test.py', '-q', '-rs', '--basetemp=C:/Windows/Temp/efficiency-release-offline-v3', '--tb=short']))"`
+- Full pure `benchmark_core` suite: **116 passed, 1 skipped** (historical report directory absent). Command from `modules/benchmark_core`:
+  `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'benchmark_core' not in getattr(x, '__module__', '')]; sys.path.insert(0, '.'); import pytest; raise SystemExit(pytest.main(['tests', '-q', '-o', 'addopts=', '-rs', '--basetemp=.pytest_tmp_root/efficiency-benchmark-core-v3', '--tb=short']))"`
+- Focused intervention comparison regressions: **2 passed**, covering B0/B2/B3 acceptance; refusal for missing settings/provenance, model/settings/task/verifier/prompt/tool mismatch; and retained strict default. Command from `modules/benchmark_core`:
+  `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'benchmark_core' not in getattr(x, '__module__', '')]; sys.path.insert(0, '.'); import pytest; raise SystemExit(pytest.main(['tests/compare_test.py::test_compare_runs_allows_only_a_declared_tool_surface_intervention', 'tests/compare_test.py::test_compare_runs_rejects_undeclared_intervention_mismatches', '-q', '--basetemp=.pytest_tmp_root/efficiency-intervention-v8', '--tb=short']))"`
+- `ruff check` on the changed Python source/tests: **All checks passed**. `git diff --check`: **passed**; only LF-to-CRLF working-copy notices.
+
+### Historical readiness before final evidence audit — superseded below
+
+- **Gate A: Blocked.** Exact LM Studio model key and effective 32768 context/8192 output have not been verified; do not guess the legacy OpenCode alias as a model key. Harness bounds one dispatch and a 60-second task/cancel window but cannot hard-cap all underlying completion turns. Pinned OpenCode 1.19.3's `agent.steps` appends a max-step instruction while leaving tools enabled, so it is not a hard provider-call cap. Title/summary/compaction may also call the model. No model inventory query, model request, or smoke was run.
+- **Gate B: Blocked.** Fixtures, profile selection, schedule and the opt-in comparison contract pass offline tests. The current runtime evidence producer does not record effective output cap, temperature, top-p, reasoning, or provider-options fingerprint. The comparator therefore correctly rejects real cross-profile comparisons. Add and test source-verified settings capture, or retain the blocker if pinned runtime cannot expose those values. Do not execute the prepared launcher yet.
+- **Gate A proposed preflight/command (not run):** from `modules/agent_benchmark`, query the read-only exact model inventory with `agent-bench models list -p lmstudio -u http://127.0.0.1:1234 --format json`; set `$ModelKey` only to the exact intended downloaded LM Studio `modelKey` and matching quantization. Verify the currently configured OpenCode alias without changing it using `local-agent model verify $ModelAlias -j -c 32768 -o 8192`; stop unless the output establishes the expected alias/model mapping and both limits. Proposed one-dispatch smoke: `python -m agent_benchmark smoke -x -m $ModelKey -p lmstudio -a local-worker -u http://127.0.0.1:4096 -q 10 -o .\reports\integration-acceptance\local-agent-efficiency-gate-a -s .\reports\integration-acceptance\state`. This proposes the harness's 60-second task budget, 10-second request timeout and 10-second cancellation/confirmation grace. Stop before dispatch for model/context/output mismatch, unresolved state, preflight refusal or resource contention; never retry. The command is not authorization and must not be run until Gate A is separately approved. It still cannot cap underlying completion turns, so Gate A remains blocked even after preflight unless that hard limit is added or otherwise verified.
+- **Gate B proposed command (not run):** from `modules/agent_benchmark`, first inspect with `python -B experiments/local_agent_efficiency.py --model-key $ModelKey --output-root .\reports\local-agent-efficiency\runs --state-dir .\reports\local-agent-efficiency\state`; after settings provenance is complete and Gate B is separately approved, the execution command is the same command with `--execute`. It caps at 36 trials/two hours and halts on the first nonzero attempt. Gate A approval does not authorize this command.
+- No OpenCode/MCP or LM Studio service contact, model inference/load/reload, Gate A, or Gate B occurred. Online inspection was limited to tagged OpenCode 1.19.3 source.
+- Changed this phase: `modules/benchmark_core/{benchmark_core/__init__.py,benchmark_core/conditions.py,benchmark_core/compare.py,pyproject.toml,README.md,tests/compare_test.py}`; `modules/agent_benchmark/{agent_benchmark/__init__.py,agent_benchmark/attempt.py,agent_benchmark/bridge.py,agent_benchmark/cli.py,agent_benchmark/comparison_conditions.py,agent_benchmark/scheduler.py,agent_benchmark/tool_profile.py,pyproject.toml,README.md,experiments/local_agent_efficiency.py,experiments/local_agent_efficiency_b0_b2_b3.json,tests/comparison_conditions_test.py,tests/efficiency_experiment_test.py,tests/efficiency_fixtures_test.py,tests/tool_profile_test.py}`; plus the four new task fixture folders. Earlier retrieval/runner edits and original `HANDOFF.md` remain preserved.
+- This interim assessment is superseded by **Final inference-configuration readiness** below, which records the new configured-only evidence and the pinned runtime limitation. No hard completion-turn enforcement was added.
+
+## Final inference-configuration readiness — 2026-10-29
+
+### Verification and minimal evidence change
+
+- Reconfirmed worktree `C:\Users\mcarls\.codex\worktrees\d253\scripts`, branch `codex/local-agent-efficiency-20261025`, HEAD `ba58ad0d91d7344e72e24a63d277eba7a270d52f`. Existing validation edits were preserved. No commit, push, reset, or branch change occurred.
+- Extended `OpenCodeBridge.preflight` to record `configured_inference_evidence` from its existing mocked/tested `/provider` and `/agent` reads. It records the provider/model IDs, provider model context/output limits, explicitly configured agent temperature/top-p/variant, available variant names, and source paths. Missing role/model values are marked `not_explicitly_configured`; arbitrary options are omitted to avoid copying sensitive values. The evidence explicitly says it is configuration-only and that effective settings are unavailable from this preflight.
+- `runtime.json` receives this observation through the existing preflight result flow. `effective_model_settings` is still absent. `benchmark_core` and its intervention contract were not weakened or changed; a comparison still refuses incomplete settings evidence.
+
+### Required setting evidence matrix
+
+| Required value | Existing evidence / source | What remains unverified |
+|---|---|---|
+| Provider and runtime model ID | Bridge records the requested provider/model and checks the configured `/provider` inventory; the benchmark scheduler resolves the LM Studio downloaded model identity. | A live LM Studio preflight is required to confirm the exact downloaded and loaded `modelKey`; `/provider` alone does not prove a currently loaded model. |
+| Quantization | Scheduler's model identity is derived from the downloaded LM Studio inventory and carried into lifecycle evidence. | Must be verified against the exact live model inventory/loaded state. OpenCode's provider model ID alone does not establish quantization. |
+| Context window | Scheduler records the loaded model context; new bridge evidence records `/provider/.../limit/context` as a configured catalog limit. | The comparator additionally requires the effective request context. `/provider` and the configured limit do not prove that final value. |
+| Output-token limit | New bridge evidence records `/provider/.../limit/output` as a configured catalog limit. | Effective `maxOutputTokens` depends on that model limit, `OPENCODE_EXPERIMENTAL_OUTPUT_TOKEN_MAX` (or the pinned default), then `chat.params` plugin mutation. The benchmark preflight does not observe those final values. |
+| Temperature and top-p | New evidence records explicit `/agent` values, or marks them not explicitly configured. | OpenCode may derive model-specific defaults; `chat.params` plugins may change the final values. Those effective values are not returned by current bridge preflight. |
+| Reasoning configuration | New evidence records the configured agent variant and model variant names. | Effective provider/model/agent/variant options and plugin mutations are not exposed as final request options. Arbitrary option payloads are not copied. |
+| Provider-options SHA-256 | Comparator requires the hash of the effective options. | No final options object or equivalent safe fingerprint is exposed through the bridge's read-only preflight API. A hash of merely configured options would mislabel it as effective and is not substituted. |
+
+The comparator's exact required object remains `context`, `output`, `temperature`, `top_p`, `reasoning_effort`, and `options_sha256`. The tagged OpenCode 1.19.3 request-preparation code constructs these request parameters from runtime flags, provider/model/agent configuration, variants, and then the `chat.params` plugin hook. The preflight endpoints used by this bridge return role and model catalog data, not the finalized request object. The output cap is `min(model.limit.output, outputTokenMax)` (with a default of 32,000 when the runtime flag is not overridden), before the same plugin hook can mutate prepared parameters. No live runtime request was made in this phase.
+
+### Gate A — not ready for worker dispatch
+
+- Existing limits: one worker submission per fresh bridge/session; smoke task observation budget 60 seconds; 10-second HTTP/MCP request timeout; 10-second cancellation/termination-confirmation grace. On timeout/error the harness attempts cancellation and confirms termination; unresolved jobs retain their durable pending state and must not be retried. The diagnostic uses an isolated task workspace and does not transition/load a model.
+- There is no harness output-token cap and no hard cap on underlying completion turns. OpenCode's configured `agent.steps` adds a maximum-step prompt but leaves tools available on that step; the pinned implementation also starts title and summary work and may compact. Wall-clock timeout plus cancellation is not a hard completion-turn cap.
+- Proposed read-only preflight commands (not run; service contact requires separate authorization):
+
+  ```powershell
+  $ModelKey = "<exact LM Studio modelKey from the inventory output>"
+  $ModelAlias = "<existing OpenCode model alias>"
+  agent-bench models list -p lmstudio -u http://127.0.0.1:1234 --format json
+  local-agent model verify $ModelAlias -j -c 32768 -o 8192
+  ```
+
+  Require the exact intended downloaded/loaded model ID and quantization, configured alias mapping, and context/output expectations. These commands still do not establish final request parameters after runtime flag and plugin processing. Stop before worker dispatch if exact effective settings cannot be established; do not treat the configured evidence as a pass.
+- Proposed one-dispatch command (not run):
+
+  ```powershell
+  python -m agent_benchmark smoke -x -m $ModelKey -p lmstudio -a local-worker `
+    -u http://127.0.0.1:4096 -q 10 `
+    -o .\reports\integration-acceptance\local-agent-efficiency-gate-a `
+    -s .\reports\integration-acceptance\local-agent-efficiency-state
+  ```
+
+  Gate A is **Blocked** until the required model and effective settings can be verified before dispatch, and the user decides whether the disclosed absence of a hard completion-turn cap is acceptable for this bounded smoke. This command is a proposal only and is not authorization.
+
+### Gate B — not ready for comparison
+
+- The intervention-aware comparator still requires verified provider/model identity and quantization plus all six equal effective settings. Present offline evidence proves the B0/B2/B3 contract and task/verifier matching, but not effective inference settings. It correctly refuses numeric cross-condition comparison.
+- The four-task × three-condition × three-repetition schedule, seed `20261029`, 36 dispatch ceiling, 120-second task / 15-second grace, and two-hour outer limit are prepared. Raw attempts must be retained; invalid/timeout/unresolved attempts are not retried or included as valid efficacy observations; any stop condition halts the schedule. Missing telemetry remains unavailable, not zero.
+- Executed non-dispatching inspection command in this phase with placeholder model key `offline-preflight-placeholder`:
+
+  ```powershell
+  python -B experiments/local_agent_efficiency.py --model-key offline-preflight-placeholder `
+    --output-root .\reports\local-agent-efficiency\runs-dry-check `
+    --state-dir .\reports\local-agent-efficiency\state-dry-check
+  ```
+
+  Output reported `dispatches=36`, `duration_cap_seconds=7200`, `execute=false`; this was schedule inspection only and ran no subprocess command. The eventual approved run uses the same checked-in script and real verified `$ModelKey`, then adds `--execute`.
+
+  Proposed execution command after the evidence blocker is resolved and Gate B is separately authorized: append `--execute` to the command above. The launcher stops on the first failed/nonzero attempt, permits at most 36 dispatches, and has a 7,200-second cap. Stop on identity/settings/profile mismatch, scope violation, unresolved dispatch, preflight refusal, host memory stop, or outer time cap. Gate A approval does not authorize this command.
+- Gate B is **Blocked** until effective settings evidence is produced for every trial and matches across conditions. The smallest presently verified runtime interface cannot provide that evidence. A runtime hook/instrumentation change would exceed this handoff's scope and requires separate approval.
+
+### Offline validation performed in this phase
+
+- Test-first regression: the new configured-evidence test failed before implementation with `KeyError: configured_inference_evidence`; after implementation, the focused bridge tests passed.
+- `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark', 'benchmark_core'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge', 'modules/benchmark_core']; import pytest; result=pytest.main(['modules/agent_benchmark/tests/bridge_test.py', 'modules/agent_benchmark/tests/comparison_conditions_test.py', 'modules/agent_benchmark/tests/efficiency_experiment_test.py', '-vv', '-s', '--basetemp=modules/agent_benchmark/.pytest_tmp_root/final-evidence-44-rerun', '--tb=short']); print('RESULT', result); raise SystemExit(result)` — **44 passed**. Worktree packages were selected by removing the ambient editable finders. Bridge tests use mocked transports; the dry-run test asserts no subprocess execution.
+- `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'benchmark_core' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/benchmark_core'); import pytest; result=pytest.main(['modules/benchmark_core/tests/compare_test.py', '-vv', '-s', '-o', 'addopts=', '--basetemp=modules/benchmark_core/.pytest_tmp_root/final-evidence-compare-verbose-rerun', '--tb=short']); print('RESULT', result); raise SystemExit(result)` — **6 passed**. This selection includes valid declared intervention comparisons and fail-closed mismatches.
+- `ruff check modules/agent_benchmark/agent_benchmark/bridge.py modules/agent_benchmark/tests/bridge_test.py` — **All checks passed**.
+- `git diff --check` — **passed**; Git emitted only existing LF-to-CRLF working-copy notices.
+- No OpenCode/MCP/LM Studio service contact, model request/load, worker dispatch, Gate A, or Gate B was performed.
+
+### Continuation decision
+
+This interim conclusion is superseded by the source-level capture-point review below.
+
+## Finalized-request capture review — 2026-10-29
+
+### Finding
+
+- Pinned OpenCode 1.19.3 has a supported `chat.params` plugin hook. `LLMRequestPrep.prepare` first merges provider/model/agent/variant options and computes temperature, top-p, and `maxOutputTokens` using runtime flags, then invokes that hook with mutable parameter values. The hook type includes `temperature`, `topP`, `topK`, `maxOutputTokens`, and `options`. A callback can observe those values only after hooks that run before it.
+- The hook's model/provider input can identify the selected OpenCode provider and model. Its model object contains catalog limits, including context; that is still OpenCode-prepared metadata, not proof that the inference provider accepted those values. LM Studio's loaded identity and quantization remain separate lifecycle evidence.
+- `reasoning_effort` is provider-specific and is carried through `options` when configured; the hook does not expose it as a separate normalized field. A source adapter would need provider-specific extraction and a fingerprint of the remaining finalized options.
+- The current benchmark process has no supported channel for obtaining a plugin's observation. `OpenCodeBridge` persists its own `/provider` and `/agent` preflight result before calling `dispatch`; it does not install a plugin, query plugin state, or receive request parameters from OpenCode session history.
+
+### Why no capture code was added
+
+- OpenCode invokes plugin hooks sequentially in loaded order, but the shared service's complete plugin set/order is not controlled by `agent_benchmark`. The v1.19.3 config loader appends project, home `.opencode`, optional config-directory, and other plugin origins through multiple sources. A project-local observer cannot be assumed to be the final `chat.params` hook; a later hook could still change the values.
+- A project plugin would also need a new evidence return channel (for example, a sidecar file or local IPC) and benchmark-runner wiring. A workspace file can be visible to the worker and affect scope auditing; a local receiver adds a new service boundary. Neither is an existing clean bridge integration point. Capturing an earlier hook's values or hashing arbitrary options would produce misleading or potentially sensitive evidence.
+- Therefore no finalized-request evidence mechanism was implemented. The existing configured-only observation remains explicitly distinct from `effective_model_settings`, and the comparator's missing/mismatch rejection is unchanged.
+
+### Pinned source references
+
+- [`session/llm/request.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/opencode/src/session/llm/request.ts): parameter merge/default preparation and `chat.params` call.
+- [`provider/transform.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/opencode/src/provider/transform.ts): output-token cap, model defaults, and provider-specific transform helpers.
+- [`packages/plugin/src/index.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/plugin/src/index.ts): supported `chat.params` hook type and fields.
+- [`plugin/index.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/opencode/src/plugin/index.ts): hook callbacks execute sequentially in loaded order.
+- [`config/config.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/opencode/src/config/config.ts) and [`config/paths.ts` (v1.19.3)](https://raw.githubusercontent.com/anomalyco/opencode/v1.19.3/packages/opencode/src/config/paths.ts): plugins can be merged/discovered from project, home, optional config, and managed sources; project scope alone does not establish final hook order.
+
+### Readiness and next decision
+
+- **Settings capturable at the supported hook:** selected OpenCode provider/model ID; OpenCode model context metadata; prepared output cap, temperature, top-p, and full options object. If loaded last, a custom plugin could observe these finalized OpenCode-prepared values. It would not prove provider acceptance.
+- **Still unavailable as trustworthy existing evidence:** guaranteed post-all-plugin values in the current shared service; a stable export path to `runtime.json`; normalized reasoning effort and safe options fingerprint; provider-observed settings; exact loaded LM Studio identity/quantization without live inventory; and the absence/value of runtime overrides unless established by a live preflight.
+- **Gate A: Blocked.** Effective settings are not verified before dispatch. The existing one-dispatch/60-second/10-second request/10-second cancellation-grace limits are not a hard completion-turn cap. `agent.steps` remains a prompt hint; no turn-cap code was added.
+- **Gate B: Blocked.** The comparator still lacks complete per-run effective settings and exact runtime model identity/quantization. Its fail-closed behavior remains intact.
+- **Smallest alternative:** a benchmark-scoped OpenCode process with an isolated, controlled plugin set, a last-loaded capture hook, and a per-attempt evidence sink integrated into `agent_benchmark`. This requires a separate implementation decision because it adds runtime orchestration/evidence transport beyond the existing shared-server bridge. Approval for this design would not authorize starting the process, contacting services, inference, Gate A, or Gate B.
+- This phase changed documentation only: `modules/local_agent_bridge/docs/plans/20261025-agent-efficiency/STATUS.md`. No model inference/load, OpenCode/MCP or LM Studio service contact, worker dispatch, Gate A/B execution, commit, or push occurred.
+
+### Offline validation for this review
+
+- `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if not any(name in getattr(x, '__module__', '') for name in ('local_agent_bridge', 'agent_benchmark', 'benchmark_core'))]; sys.path[:0] = ['modules/agent_benchmark', 'modules/local_agent_bridge', 'modules/benchmark_core']; import pytest; result=pytest.main(['modules/agent_benchmark/tests/bridge_test.py', 'modules/agent_benchmark/tests/comparison_conditions_test.py', 'modules/agent_benchmark/tests/efficiency_experiment_test.py', '-vv', '-s', '--basetemp=modules/agent_benchmark/.pytest_tmp_root/final-capture-review-agent', '--tb=short']); print('RESULT', result); raise SystemExit(result)` — **44 passed**. All bridge HTTP is mocked; the dry-run test verifies no subprocess dispatch.
+- `python -c "import sys; sys.meta_path[:] = [x for x in sys.meta_path if 'benchmark_core' not in getattr(x, '__module__', '')]; sys.path.insert(0, 'modules/benchmark_core'); import pytest; result=pytest.main(['modules/benchmark_core/tests/compare_test.py', '-vv', '-s', '-o', 'addopts=', '--basetemp=modules/benchmark_core/.pytest_tmp_root/final-capture-review-compare', '--tb=short']); print('RESULT', result); raise SystemExit(result)` — **6 passed**, including the declared B0/B2/B3 comparison and fail-closed mismatch tests.
+- `ruff check modules/agent_benchmark/agent_benchmark/bridge.py modules/agent_benchmark/tests/bridge_test.py modules/agent_benchmark/tests/comparison_conditions_test.py` — **All checks passed**.
+- `git diff --check` — **passed**; only LF-to-CRLF working-copy notices were emitted.
+
+### Implementation closeout — 2026-10-29
+
+The implementation phase is complete. The branch contains bounded lexical and structural retrieval, optional OpenCode tools/checkpoint and compaction support, four matched benchmark fixtures, B0/B2/B3 profiles, the declared intervention comparison contract, and the dry-run-first 36-dispatch schedule. No performance improvement is claimed.
+
+Final focused offline verification in the feature worktree:
+
+- Benchmark fixtures, experiment schedule, profiles, comparison conditions, mocked bridge, attempt, and evidence tests: **127 passed, 1 skipped**. The skip is Windows symlink privilege unavailable. No live runtime was contacted; bridge transport is mocked and dry-run tests assert no dispatch.
+- `modules/benchmark_core/tests/compare_test.py`: **6 passed**.
+- Ruff on the affected agent-benchmark, benchmark-core, retrieval, and regression-test paths: **All checks passed**.
+- `git diff --check`: passed before staging; only existing LF-to-CRLF notices were observed.
+
+Accepted limitations remain: OpenCode/MCP integration and model inference have not been tested live; effective request settings and exact loaded model identity/quantization are not proven by the shared-server bridge; the comparator rejects incomplete runtime evidence; OpenCode 1.19.3 `agent.steps` is not a hard completion-turn cap. Gate A and Gate B remain blocked and unexecuted. Any live smoke or 36-dispatch benchmark requires separate authorization. No model was loaded, no service contacted, and no worker was dispatched.

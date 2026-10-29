@@ -10,7 +10,7 @@ import pytest
 from benchmark_core import load_run
 
 from attempt_test import TASK, Worker
-from agent_benchmark.runner import run_benchmark, cleanup_trial
+from agent_benchmark.runner import run_benchmark, cleanup_trial, reconcile_pending
 from agent_benchmark.identity import ModelIdentity
 from agent_benchmark.state import command_lock, read_pending
 
@@ -65,6 +65,26 @@ def test_unresolved_job_blocks_new_process_before_runtime_connection(tmp_path):
     assert process.returncode != 0
     assert "unresolved" in process.stderr.lower()
     assert not (tmp_path / "other-reports").exists()
+
+
+def test_pending_reconciliation_failure_names_unresolved_worker(tmp_path):
+    @asynccontextmanager
+    async def unresolved(**kwargs):
+        yield Worker(unresolved=True)
+
+    with pytest.warns(RuntimeWarning):
+        run_dir = run(tmp_path, unresolved)
+    assert read_pending(tmp_path / "state") is not None
+
+    @asynccontextmanager
+    async def offline(**kwargs):
+        raise ConnectionError("offline reconciliation transport")
+        yield
+
+    with pytest.raises(RuntimeError, match="remains unresolved"):
+        asyncio.run(reconcile_pending(state=tmp_path / "state", connector=offline))
+    assert read_pending(tmp_path / "state") is not None
+    assert (run_dir / "evidence/trial-001/lifecycle.json").is_file()
 
 
 def test_cleanup_requires_fresh_confirmation_and_does_not_rescore(tmp_path):

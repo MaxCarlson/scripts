@@ -290,6 +290,8 @@ def parser() -> argparse.ArgumentParser:
     )
     exp_run.add_argument("-c", "--context-length", type=positive_int, default=DEFAULT_BENCHMARK_CONTEXT_LENGTH,
                          help="Shared LM Studio context cap for all local models (default: 16384)")
+    exp_run.add_argument("--tool-profile", choices=("file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1"),
+                         default=None, help="Apply one identical tool profile to every task (matched intervention runs)")
     exp_run.add_argument(
         "-M",
         "--max-ram-percent",
@@ -584,6 +586,7 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
                 state_dir=args.state_dir,
                 allow_model_transitions=args.allow_model_transitions,
                 max_ram_percent=args.max_ram_percent,
+                tool_profile=args.tool_profile,
                 base_url=args.base_url,
                 on_trial_start=dashboard.on_trial_start,
                 on_trial_complete=dashboard.on_trial_complete,

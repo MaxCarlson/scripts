@@ -56,6 +56,70 @@ def test_search_returns_exact_unicode_path_line_and_literal_or_regex_results(rep
     ]
 
 
+def test_regex_search_uses_fixed_code_worker_with_timeout(repo, monkeypatch):
+    import json
+    import subprocess
+    from local_agent_bridge.retrieval import core
+
+    (repo / "regex.txt").write_text("TOKEN = 1\n", encoding="utf-8")
+    calls = []
+
+    def bounded_worker(args, **kwargs):
+        calls.append((args, kwargs))
+        payload = json.loads(kwargs["input"])
+        assert payload["query"] == r"TOKEN\s*="
+        assert payload["files"][0]["path"] == "regex.txt"
+        return subprocess.CompletedProcess(args, 0, json.dumps({"results": [
+            {"path": "regex.txt", "line": 1, "text": "TOKEN = 1", "line_truncated": False},
+        ], "truncated": False}), "")
+
+    monkeypatch.setattr(core.subprocess, "run", bounded_worker)
+    result = search(repo, r"TOKEN\s*=", regex=True, paths=["regex.txt"])
+
+    assert len(calls) == 1
+    assert calls[0][0][1:3] == ["-I", "-c"]
+    assert calls[0][1]["timeout"] == core.REGEX_TIMEOUT_SECONDS
+    assert result["engine"] == "python-regex-worker"
+    assert result["results"][0]["line"] == 1
+
+
+def test_regex_worker_timeout_is_reported_as_partial(repo, monkeypatch):
+    import subprocess
+    from local_agent_bridge.retrieval import core
+
+    (repo / "regex.txt").write_text("TOKEN = 1\n", encoding="utf-8")
+
+    def timeout(args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(core.subprocess, "run", timeout)
+    result = search(repo, r"TOKEN\s*=", regex=True, paths=["regex.txt"])
+
+    assert result["status"] == "partial"
+    assert result["truncated"] is True
+    assert result["errors"][0]["code"] == "regex_timeout"
+
+
+def test_search_rejects_unbounded_query_length(repo):
+    from local_agent_bridge.retrieval import RetrievalError
+
+    with pytest.raises(RetrievalError, match="4096"):
+        search(repo, "x" * 4097, regex=True)
+
+
+def test_pathological_regex_is_stopped_at_the_worker_deadline(repo, monkeypatch):
+    from local_agent_bridge.retrieval import core
+
+    (repo / "pathological.txt").write_text("a" * 300 + "!\n", encoding="utf-8")
+    monkeypatch.setattr(core, "REGEX_TIMEOUT_SECONDS", 0.5)
+
+    result = search(repo, r"(a+)+$", regex=True, paths=["pathological.txt"])
+
+    assert result["status"] == "partial"
+    assert result["truncated"] is True
+    assert result["errors"][0]["code"] == "regex_timeout"
+
+
 def test_search_empty_results_are_explicit(repo):
     result = search(repo, "does-not-exist")
     assert result["results"] == []

@@ -18,7 +18,7 @@
 from benchmark_core import RunInfo, TrialResult, MetricValue
 ```
 
-## Comparison conditions (0.1.3)
+## Comparison conditions (0.2.0)
 
 `comparison-conditions-v1` metadata explicitly establishes task/verifier identity, execution profiles,
 scope/isolation policy, context, budget and environment/runtime identity. Missing or malformed conditions

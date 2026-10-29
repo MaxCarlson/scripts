@@ -63,7 +63,7 @@ def _decode_python(data: bytes) -> str:
     return data.decode(encoding)
 
 
-def _definitions(source: str) -> list[dict[str, Any]]:
+def _definitions(source: str) -> tuple[list[dict[str, Any]], bool]:
     tree = ast.parse(source)
     lines = source.splitlines()
     result: list[dict[str, Any]] = []
@@ -114,7 +114,7 @@ def _definitions(source: str) -> list[dict[str, Any]]:
 
     visit(tree.body)
     result.sort(key=lambda item: (item["start_line"], item["end_line"], item["qualified_name"], item["kind"]))
-    return result[:MAX_SYMBOLS_PER_FILE]
+    return result[:MAX_SYMBOLS_PER_FILE], len(result) > MAX_SYMBOLS_PER_FILE
 
 
 def symbols(
@@ -138,7 +138,7 @@ def symbols(
     else:
         text = _decode_python(data)
         try:
-            outline = _definitions(text)
+            outline, symbols_truncated = _definitions(text)
         except SyntaxError as exc:
             errors.append({"code": "syntax_error", "path": relative,
                            "message": f"{exc.msg} at line {exc.lineno}"[:200]})
@@ -149,7 +149,7 @@ def symbols(
                 "path": relative,
                 "sha256": hashlib.sha256(data).hexdigest(),
                 "symbol_count": len(outline),
-                "symbols_truncated": False,
+                "symbols_truncated": symbols_truncated,
                 "symbols": outline,
             }
             while True:
@@ -226,13 +226,14 @@ def repository_map(
             continue
         total_bytes += len(data)
         try:
-            outline = _definitions(_decode_python(data))
+            outline, definitions_truncated = _definitions(_decode_python(data))
         except SyntaxError as exc:
             errors.append({"code": "syntax_error", "path": relative, "message": f"{exc.msg} at line {exc.lineno}"[:200]})
             continue
         except RecursionError:
             errors.append({"code": "ast_depth", "path": relative, "message": "Python syntax tree is too deeply nested"})
             continue
+        truncated |= definitions_truncated
         digest = hashlib.sha256(data).hexdigest()
         path_words = _words(relative)
         for item in outline:

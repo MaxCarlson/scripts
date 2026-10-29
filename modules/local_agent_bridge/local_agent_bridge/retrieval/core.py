@@ -9,6 +9,7 @@ from pathlib import Path, PurePosixPath, PureWindowsPath
 import re
 import shutil
 import subprocess
+import sys
 from typing import Any, Iterable
 
 SCHEMA = "local-agent-retrieval-v1"
@@ -20,6 +21,44 @@ MAX_FILE_BYTES = 2 * 1024 * 1024
 MAX_TOTAL_SCAN_BYTES = 32 * 1024 * 1024
 MAX_DISCOVERY_BYTES = 4 * 1024 * 1024
 MAX_DISCOVERY_PATHS = 20_000
+MAX_QUERY_CHARS = 4096
+REGEX_TIMEOUT_SECONDS = 2.0
+_REGEX_WORKER = r'''import json, re, sys
+request = json.load(sys.stdin)
+expression = re.compile(request["query"])
+limit = request["limit"]
+max_line_bytes = request["max_line_bytes"]
+results = []
+truncated = False
+for item in request["files"]:
+    for line_number, line in enumerate(item["source"].splitlines(), 1):
+        match = expression.search(line)
+        if match is None:
+            continue
+        if len(line.encode("utf-8")) > max_line_bytes:
+            chars = max(1, (max_line_bytes - 2) // 2)
+            start = max(0, match.start() - chars // 2)
+            end = min(len(line), start + chars)
+            start = max(0, end - chars)
+            text = ("…" if start else "") + line[start:end] + ("…" if end < len(line) else "")
+            while len(text.encode("utf-8")) > max_line_bytes and end > start:
+                end -= 1
+                text = ("…" if start else "") + line[start:end] + ("…" if end < len(line) else "")
+            clipped = True
+        else:
+            text = line
+            clipped = False
+        results.append({"path": item["path"], "line": line_number, "text": text,
+                        "line_truncated": clipped})
+        if len(results) > limit:
+            results.pop()
+            truncated = True
+            break
+    if truncated:
+        break
+json.dump({"results": results, "truncated": truncated}, sys.stdout, ensure_ascii=False,
+          separators=(",", ":"))
+'''
 EXCLUDED_DIRS = {
     ".git", ".hg", ".svn", ".venv", "venv", "env", "node_modules", "vendor",
     "__pycache__", ".pytest_cache", ".pytest_tmp_root", ".mypy_cache", ".ruff_cache",
@@ -332,6 +371,73 @@ def _python_search(
     return results, truncated, errors
 
 
+def _python_regex_search(
+    candidates: list[tuple[str, Path]], query: str, limit: int, max_line_bytes: int,
+) -> tuple[list[dict[str, Any]], bool, list[dict[str, str]]]:
+    files: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    total_bytes = 0
+    for relative, path in candidates:
+        try:
+            with path.open("rb") as stream:
+                data = stream.read(MAX_FILE_BYTES + 1)
+        except OSError as exc:
+            errors.append({"code": "read_error", "path": relative, "message": str(exc)[:200]})
+            continue
+        if len(data) > MAX_FILE_BYTES:
+            errors.append({"code": "file_too_large", "path": relative, "message": "Search stopped at 2 MiB"})
+            continue
+        if total_bytes + len(data) > MAX_TOTAL_SCAN_BYTES:
+            errors.append({"code": "scan_budget", "path": relative, "message": "Search stopped at the 32 MiB scan budget"})
+            break
+        total_bytes += len(data)
+        if b"\0" in data:
+            errors.append({"code": "binary_file", "path": relative, "message": "Binary content was skipped"})
+            continue
+        try:
+            source = data.decode("utf-8")
+        except UnicodeDecodeError:
+            errors.append({"code": "decode_error", "path": relative, "message": "File is not valid UTF-8"})
+            continue
+        files.append({"path": relative, "source": source})
+
+    request = json.dumps(
+        {"query": query, "limit": limit, "max_line_bytes": max_line_bytes, "files": files},
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    args = [sys.executable, "-I", "-c", _REGEX_WORKER]
+    try:
+        process = subprocess.run(
+            args,
+            input=request,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=REGEX_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        errors.append({"code": "regex_timeout", "message": f"Regex search exceeded {REGEX_TIMEOUT_SECONDS:g}s and was stopped"})
+        return [], True, errors
+    except OSError as exc:
+        errors.append({"code": "regex_worker", "message": str(exc)[:200]})
+        return [], True, errors
+    if process.returncode != 0:
+        errors.append({"code": "regex_worker", "message": "Regex worker exited unsuccessfully"})
+        return [], True, errors
+    try:
+        result = json.loads(process.stdout)
+        results = result["results"]
+        truncated = result["truncated"]
+        if not isinstance(results, list) or type(truncated) is not bool:
+            raise ValueError("Malformed regex result")
+    except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+        errors.append({"code": "regex_worker", "message": "Regex worker returned invalid JSON"})
+        return [], True, errors
+    return results, truncated, errors
+
+
 def _rg_search(
     executable: str,
     root: Path,
@@ -450,23 +556,28 @@ def search(
     root = _workspace(workspace)
     if not isinstance(query, str) or not query or "\0" in query:
         raise RetrievalError("Search query must be a nonempty string without NUL characters")
+    if len(query) > MAX_QUERY_CHARS:
+        raise RetrievalError(f"Search query must be at most {MAX_QUERY_CHARS} characters")
     limit = _positive("limit", limit, 2000)
     max_files = _positive("max_files", max_files, 2000)
     max_output_bytes = _positive("max_output_bytes", max_output_bytes, 1024 * 1024)
     max_line_bytes = _positive("max_line_bytes", max_line_bytes, 64 * 1024)
     if max_output_bytes < 512:
         raise RetrievalError("max_output_bytes must be at least 512")
-    expression = None
     if regex:
         try:
-            expression = re.compile(query)
+            re.compile(query)
         except re.error as exc:
             raise RetrievalError(f"Invalid regular expression: {exc}") from exc
     candidates, candidate_truncated, git_aware = _candidate_paths(root, paths, max_files)
     candidates, scan_errors, scan_truncated = _bounded_search_candidates(candidates)
     engine = "python"
     errors: list[dict[str, str]] = list(scan_errors)
-    if not regex and (rg := shutil.which("rg")):
+    if regex:
+        results, truncated, regex_errors = _python_regex_search(candidates, query, limit, max_line_bytes)
+        errors.extend(regex_errors)
+        engine = "python-regex-worker"
+    elif rg := shutil.which("rg"):
         searchable: list[tuple[str, Path]] = []
         for relative, path in candidates:
             try:
@@ -490,7 +601,7 @@ def search(
             errors.extend(fallback_errors)
             engine = "python"
     else:
-        results, truncated, fallback_errors = _python_search(candidates, query, expression, limit, max_line_bytes)
+        results, truncated, fallback_errors = _python_search(candidates, query, None, limit, max_line_bytes)
         errors.extend(fallback_errors)
     results.sort(key=lambda item: (item["path"], item["line"]))
     return _response(

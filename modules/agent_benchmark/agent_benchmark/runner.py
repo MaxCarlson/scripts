@@ -224,8 +224,8 @@ async def reconcile_pending(
             if isinstance(error, RuntimeError) and str(error).startswith("Cannot safely start"):
                 raise
             raise RuntimeError(
-                "Cannot safely start a new benchmark run because the previous worker could not be "
-                f"confirmed finished ({type(error).__name__}: {error}). The pending receipt, evidence, "
+                "Cannot safely start a new benchmark run because the previous worker dispatch remains unresolved "
+                f"and could not be confirmed finished ({type(error).__name__}: {error}). The pending receipt, evidence, "
                 f"and workspace are preserved at {evidence_dir}. No new model transition or dispatch was attempted."
             ) from error
 

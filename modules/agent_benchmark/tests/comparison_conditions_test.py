@@ -14,6 +14,23 @@ def test_missing_permissions_do_not_hash_into_established_runtime(tmp_path):
     assert len(runtime_conditions(tmp_path)["permissions_sha256"]) == 64
 
 
+def test_configured_inference_observations_do_not_become_effective_comparison_settings(tmp_path):
+    evidence = {
+        "opencode_version": "1.19.3",
+        "bridge_version": "3.0.0",
+        "agent": "benchmark-files",
+        "permissions": [{"permission": "*", "pattern": "*", "action": "deny"}],
+        "agent_configuration": {"prompt_sha256": "a" * 64},
+        "configured_inference_evidence": {
+            "schema": "opencode-configured-inference-v1",
+            "context_limit": {"value": 32768, "source": "/provider", "status": "configured"},
+            "output_limit": {"value": 8192, "source": "/provider", "status": "configured"},
+        },
+    }
+    (tmp_path / "runtime.json").write_text(json.dumps(evidence), encoding="utf-8")
+    assert runtime_conditions(tmp_path)["model_settings"] is None
+
+
 def test_effective_permission_fingerprint_ignores_only_overridden_prefix(tmp_path):
     base = [{"permission": "read", "pattern": "*", "action": "allow"},
             {"permission": "external_directory", "pattern": "C:/skill/a/*", "action": "allow"}]
@@ -53,3 +70,19 @@ def test_permission_fingerprint_requires_reset_and_preserves_effective_order(tmp
     missing_reset.mkdir()
     (missing_reset / "runtime.json").write_text(json.dumps({**base, "permissions": [allow]}), encoding="utf-8")
     assert runtime_conditions(missing_reset) is None
+
+
+def test_same_fixture_hashes_support_declared_profile_override():
+    from agent_benchmark.comparison_conditions import build_conditions
+    from pathlib import Path
+
+    task = Path(__file__).resolve().parents[1] / "agent_benchmark/tasks/py-grep-smoke"
+    common = dict(task_dirs={"py-grep-smoke": task}, context_length=32768,
+                  budget_profile="canonical-120s",
+                  budget={"task_seconds": 120, "grace_seconds": 15, "verifier_seconds": 10},
+                  runtime={"kind": "test", "version": "1"})
+    conditions = [build_conditions(**common, tool_profile=profile)
+                  for profile in ("file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1")]
+    assert conditions[0]["tasks"] == conditions[1]["tasks"] == conditions[2]["tasks"]
+    assert [condition["execution_profiles"]["py-grep-smoke"] for condition in conditions] == [
+        "file-tools-v1", "retrieval-files-v1", "retrieval-structural-v1"]

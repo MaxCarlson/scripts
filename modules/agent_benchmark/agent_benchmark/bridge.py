@@ -18,11 +18,58 @@ from urllib.parse import quote
 
 import httpx
 
-from .tool_profile import (FILE_AGENT, RETRIEVAL_AGENT, STRUCTURAL_AGENT, STRUCTURAL_PROFILE,
+from .tool_profile import (FILE_AGENT, FILE_PROFILE, RETRIEVAL_AGENT, RETRIEVAL_PROFILE, RETRIEVAL_TOOLS,
+                           STRUCTURAL_AGENT, STRUCTURAL_PROFILE, STRUCTURAL_TOOLS,
                            runtime_output_evidence, validate_file_agent)
 from .lifecycle import Observation, WorkerHandle
 
 ToolCaller = Callable[[str, dict], Awaitable[dict]]
+
+
+def _configured_setting(value: object, source: str) -> dict:
+    """Represent an explicitly configured scalar without implying it is effective."""
+    valid = isinstance(value, (str, int, float, bool)) and not (
+        isinstance(value, float) and not math.isfinite(value)
+    )
+    if valid:
+        return {"value": value, "source": source, "status": "configured"}
+    return {"value": None, "source": source, "status": "not_explicitly_configured"}
+
+
+def _configured_inference_evidence(providers: dict, role: dict, provider: str, model: str) -> dict:
+    """Capture safe /provider and /agent observations; effective params require runtime instrumentation."""
+    entries = providers.get("all", [])
+    provider_entry = next((item for item in entries if isinstance(item, dict) and item.get("id") == provider), {})
+    models = provider_entry.get("models", {})
+    model_entry = models.get(model, {}) if isinstance(models, dict) else {}
+    model_entry = model_entry if isinstance(model_entry, dict) else {}
+    limits = model_entry.get("limit", {})
+    limits = limits if isinstance(limits, dict) else {}
+    model_source = f"/provider/all[{provider}]/models/{model}"
+    role_source = f"/agent[{role.get('name', '')}]"
+    variants = model_entry.get("variants", {})
+    variant_names = sorted(key for key in variants if isinstance(key, str)) if isinstance(variants, dict) else []
+    return {
+        "schema": "opencode-configured-inference-v1",
+        "status": "configured_values_only",
+        "sources": {"model_catalog": "/provider", "agent_role": "/agent"},
+        "provider": provider,
+        "model": model,
+        "context_limit": _configured_setting(limits.get("context"), f"{model_source}/limit/context"),
+        "output_limit": _configured_setting(limits.get("output"), f"{model_source}/limit/output"),
+        "agent": {
+            "temperature": _configured_setting(role.get("temperature"), f"{role_source}/temperature"),
+            "top_p": _configured_setting(role.get("topP"), f"{role_source}/topP"),
+            "variant": _configured_setting(role.get("variant"), f"{role_source}/variant"),
+            "available_model_variants": {"value": variant_names, "source": f"{model_source}/variants",
+                                          "status": "configured" if variant_names else "none_listed"},
+        },
+        "provider_specific_options": {
+            "status": "not_captured",
+            "reason": "Arbitrary provider/model/agent options may contain sensitive values and are not exposed as effective request values",
+        },
+        "effective_settings_status": "unavailable_from_read_only_preflight",
+    }
 
 
 class SubmissionUncertain(RuntimeError):
@@ -281,7 +328,8 @@ class OpenCodeBridge:
             raise ModelConfigurationError(f"OpenCode provider '{provider}' is not connected.")
         return set(models)
 
-    async def preflight(self, directory: Path, *, provider: str, model: str, agent: str, project_id: str) -> dict:
+    async def preflight(self, directory: Path, *, provider: str, model: str, agent: str, project_id: str,
+                        tool_profile: str | None = None) -> dict:
         """Read-only model/role and exact trial-project validation; no prompt submission."""
         if self.submission_attempted or self.session_creation_attempted or self.prepared_session is not None:
             raise RuntimeError("Use a fresh bridge for each trial")
@@ -297,23 +345,32 @@ class OpenCodeBridge:
         role = next((a for a in agents if a.get("name") == agent), None)
         if role is None or agent not in ("local-worker", "local-reviewer", FILE_AGENT, RETRIEVAL_AGENT, STRUCTURAL_AGENT):
             raise ModelConfigurationError(f"Requested bounded local role '{agent}' is unavailable in this trial project")
-        if agent in (FILE_AGENT, RETRIEVAL_AGENT, STRUCTURAL_AGENT):
+        if agent == FILE_AGENT:
             try:
+                if tool_profile is None:
+                    allow_rules = role.get("permission", [])
+                    granted = {rule.get("permission") for rule in allow_rules if isinstance(rule, dict)
+                               and rule.get("action") == "allow"}
+                    tool_profile = (STRUCTURAL_PROFILE if STRUCTURAL_TOOLS & granted else
+                                    RETRIEVAL_PROFILE if RETRIEVAL_TOOLS <= granted else FILE_PROFILE)
+                if tool_profile not in {FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
+                    raise ValueError(f"Unsupported tool profile: {tool_profile}")
                 output_trust = runtime_output_evidence(await self._get("/path", directory), health.get("version"), str(self.http.base_url))
                 output_directory = Path(output_trust["directory"]) if output_trust else None
                 validate_file_agent(role, trusted_output_directory=output_directory,
-                                    retrieval=agent == RETRIEVAL_AGENT,
-                                    structural=agent == STRUCTURAL_AGENT)
+                                    retrieval=tool_profile in {RETRIEVAL_PROFILE, STRUCTURAL_PROFILE},
+                                    structural=tool_profile == STRUCTURAL_PROFILE)
             except ValueError as error:
-                profile = (STRUCTURAL_PROFILE if agent == STRUCTURAL_AGENT else
-                           "retrieval-files-v1" if agent == RETRIEVAL_AGENT else "file-tools-v1")
+                profile = tool_profile or FILE_PROFILE
                 raise ModelConfigurationError(f"OpenCode {profile} preflight failed: {error}") from error
         project = await self._validate_project(directory, project_id)
         self.project_context = project
+        inference_configuration = _configured_inference_evidence(providers, role, provider, model)
         # Preserve permissions/configuration as observations, not a sandbox claim.
         return {"opencode_version": health.get("version"), "provider": provider, "model": model,
                 "agent": agent, "permissions": role.get("permission"), "bridge_version": "3.0.0",
-                "tool_output_trust": output_trust if agent in (FILE_AGENT, RETRIEVAL_AGENT, STRUCTURAL_AGENT) else None,
+                "configured_inference_evidence": inference_configuration,
+                "tool_output_trust": output_trust if agent == FILE_AGENT else None,
                 "project": project,
                 "agent_configuration": {"name": role.get("name"), "mode": role.get("mode"),
                                         "model": role.get("model"),

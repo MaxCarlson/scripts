@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 import json
 from typing import Any, Optional, Sequence
 
-from .conditions import contract_error, contract_key
+from .conditions import contract_error, contract_key, declared_tool_intervention_error
 from .models import ExperimentConfig, MetricValue, RunInfo, TrialResult, TrialStatus
 from .stats import (
     BenchmarkSummary,
@@ -95,6 +95,7 @@ class RunComparison:
     candidate_run_id: str
     warnings: list[str]
     variant_comparisons: dict[str, VariantComparison]
+    condition_comparison: dict[str, str] = field(default_factory=lambda: {"status": "strict_contract"})
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -102,6 +103,7 @@ class RunComparison:
             "candidate_run_id": self.candidate_run_id,
             "warnings": list(self.warnings),
             "variant_comparisons": {k: v.to_dict() for k, v in sorted(self.variant_comparisons.items())},
+            "condition_comparison": dict(self.condition_comparison),
         }
 
     def to_json(self) -> str:
@@ -202,6 +204,18 @@ def compare_runs(
     condition_mismatch = (contract_error(baseline_contract) is not None
                           or contract_error(candidate_contract) is not None
                           or baseline_contract != candidate_contract)
+    condition_comparison: dict[str, str] = {"status": "strict_contract"}
+    if condition_mismatch:
+        intervention_error, intervention = declared_tool_intervention_error(
+            baseline_contract, candidate_contract,
+            baseline.run_info.metadata, candidate.run_info.metadata,
+        )
+        if intervention_error is None and intervention is not None:
+            condition_mismatch = False
+            condition_comparison = {"status": "declared_intervention", **intervention}
+        else:
+            condition_comparison = {"status": "refused", "reason": intervention_error or "Unknown mismatch"}
+            warnings.append(f"Declared intervention comparison refused: {condition_comparison['reason']}.")
     if condition_mismatch:
         warnings.append("CRITICAL: Comparison conditions differ or are not established; numerical deltas suppressed.")
     # Match variants
@@ -242,6 +256,7 @@ def compare_runs(
         candidate_run_id=candidate.run_info.run_id,
         warnings=warnings,
         variant_comparisons=variant_comps,
+        condition_comparison=condition_comparison,
     )
 
 

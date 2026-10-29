@@ -125,6 +125,43 @@ def test_symbols_truncate_inside_large_outline_without_dropping_provenance(tmp_p
     assert result["results"][0]["symbols_truncated"] is True
 
 
+def test_symbols_report_per_file_symbol_cap_truncation(tmp_path: Path):
+    from local_agent_bridge.retrieval.structure import MAX_SYMBOLS_PER_FILE
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "many.py"
+    source.write_text(
+        "\n".join(f"def function_{index}():\n    return {index}" for index in range(MAX_SYMBOLS_PER_FILE + 1)),
+        encoding="utf-8",
+    )
+
+    result = symbols(root, "many.py", max_output_bytes=1024 * 1024)
+
+    assert result["results"][0]["symbol_count"] == MAX_SYMBOLS_PER_FILE
+    assert result["results"][0]["symbols_truncated"] is True
+    assert result["truncated"] is True
+
+
+def test_repository_map_propagates_per_file_symbol_cap_truncation(tmp_path: Path):
+    from local_agent_bridge.retrieval.structure import MAX_SYMBOLS_PER_FILE
+
+    root = tmp_path / "repo"
+    root.mkdir()
+    source = root / "many.py"
+    source.write_text(
+        "\n".join(f"def unrelated_{index}():\n    pass" for index in range(MAX_SYMBOLS_PER_FILE))
+        + "\ndef target_checkpoint():\n    pass\n",
+        encoding="utf-8",
+    )
+
+    result = repository_map(root, "target checkpoint", max_results=80)
+
+    assert result["results"] == []
+    assert result["truncated"] is True
+    assert result["status"] == "partial"
+
+
 def test_map_prioritizes_task_relevant_paths_within_file_limit(tmp_path: Path):
     root = tmp_path / "repo"
     root.mkdir()

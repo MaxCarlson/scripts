@@ -2,7 +2,7 @@
 benchmark_core — Lightweight, reusable benchmarking results and reporting utility.
 """
 
-__version__ = "0.1.3"
+__version__ = "0.2.0"
 
 from .compare import (
     AggregatedVariantMetrics,
