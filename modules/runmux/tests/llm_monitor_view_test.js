@@ -292,7 +292,10 @@ async function runTests() {
 
     harness.responses.set("/api/llm-monitor/v1/alerts", () => ({
       json: async () => ({
-        alerts: [{ severity: "warning", message: "High context usage", timestamp: "2026-10-29T12:00:00Z" }],
+        alerts: [{
+          provider_instance_id: "http://127.0.0.1:4096", session_id: "sess-1",
+          severity: "warning", message: "High context usage", timestamp: "2026-10-29T12:00:00Z",
+        }],
       }),
     }));
 
@@ -467,7 +470,82 @@ async function runTests() {
     console.log("✓ Test 6: Auth locked (401) handling and dynamic class sanitization verified");
   }
 
-  console.log("\nALL 6 llm_monitor_view_test.js TEST SUITES PASSED!");
+  // Test 7: Render the current monitor API token/context shapes and scope persisted alerts.
+  {
+    const container = makeElement("div");
+    container.id = "llm-monitor-workspace";
+    const harness = createTestHarness(container);
+    const provider = "http://127.0.0.1:4096";
+    harness.responses.set("/api/llm-monitor/v1/status", () => ({ json: async () => ({ availability: "available" }) }));
+    harness.responses.set("/api/llm-monitor/v1/snapshot", () => ({ json: async () => ({
+      availability: "available",
+      snapshot: {
+        system: { loaded_models: ["model-a"], session_model_identities: ["model-a"] },
+        sessions: [{
+          provider_instance_id: provider, session_id: "session-a", model: "model-a", state: "idle",
+          cumulative_tokens: { input: 80, output: 20, reasoning: 8 },
+          cumulative_token_scope: "observed_completed_events",
+        }],
+      },
+    }) }));
+    harness.responses.set("/api/llm-monitor/v1/sessions/detail", () => ({ json: async () => ({ detail: {
+      summary: {
+        session_id: "session-a", model: "model-a",
+        cumulative_tokens: { input: 80, output: 20, reasoning: 8 },
+        cumulative_token_scope: "observed_completed_events",
+      },
+      context_utilization: [{ status: "observed", utilization_percent: 25.0 }],
+    } }) }));
+    harness.responses.set("/api/llm-monitor/v1/sessions/timeline", () => ({ json: async () => ({ events: [] }) }));
+    harness.responses.set("/api/llm-monitor/v1/alerts", () => ({ json: async () => ({ alerts: [
+      { provider_instance_id: provider, session_id: "session-a", severity: "warning", message: "This session alert" },
+      { provider_instance_id: provider, session_id: "session-b", severity: "critical", message: "Other session alert" },
+    ] }) }));
+
+    harness.Monitor.start(container, harness.api);
+    harness.Monitor.onVisibilityChange(true);
+    await new Promise((r) => setTimeout(r, 20));
+    await harness.Monitor.selectSession(provider, "session-a");
+    await new Promise((r) => setTimeout(r, 40));
+
+    const content = container.querySelector("#monitor-detail-content").textContent;
+    assert.ok(content.includes("80"), "cumulative input tokens should render");
+    assert.ok(content.includes("20"), "cumulative output tokens should render");
+    assert.ok(content.includes("8"), "cumulative reasoning tokens should render");
+    assert.ok(content.includes("25.0%"), "latest measured context utilization should render");
+    assert.ok(content.includes("This session alert"), "selected-session alert should render");
+    assert.equal(content.includes("Other session alert"), false, "other-session alerts must not render here");
+    assert.ok(container.textContent.includes("model identities observed in sessions"));
+  }
+
+  // Test 8: Empty persisted alert state is unknown, not a healthy-system assertion.
+  {
+    const container = makeElement("div");
+    container.id = "llm-monitor-workspace";
+    const harness = createTestHarness(container);
+    harness.responses.set("/api/llm-monitor/v1/status", () => ({ json: async () => ({ availability: "available" }) }));
+    harness.responses.set("/api/llm-monitor/v1/snapshot", () => ({ json: async () => ({
+      availability: "available",
+      snapshot: { sessions: [{ provider_instance_id: "provider-a", session_id: "session-a", state: "idle" }] },
+    }) }));
+    harness.responses.set("/api/llm-monitor/v1/sessions/detail", () => ({ json: async () => ({ detail: {
+      summary: { session_id: "session-a" }, context_utilization: [],
+    } }) }));
+    harness.responses.set("/api/llm-monitor/v1/sessions/timeline", () => ({ json: async () => ({ events: [] }) }));
+    harness.responses.set("/api/llm-monitor/v1/alerts", () => ({ json: async () => ({ alerts: [] }) }));
+
+    harness.Monitor.start(container, harness.api);
+    harness.Monitor.onVisibilityChange(true);
+    await new Promise((r) => setTimeout(r, 20));
+    await harness.Monitor.selectSession("provider-a", "session-a");
+    await new Promise((r) => setTimeout(r, 30));
+
+    const content = container.querySelector("#monitor-detail-content").textContent;
+    assert.ok(content.includes("system health is unknown"));
+    assert.equal(content.includes("System healthy"), false);
+  }
+
+  console.log("\nALL 8 llm_monitor_view_test.js TEST SUITES PASSED!");
   process.exit(0);
 }
 

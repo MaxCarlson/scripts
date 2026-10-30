@@ -489,7 +489,14 @@ class LLMMonitorIntegration:
             }
         return adapter.timeline(provider_instance_id, session_id, limit=limit, cursor=cursor)
 
-    def alerts(self, *, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def alerts(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        provider_instance_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return persisted alert states."""
         adapter = self.get_adapter()
         if adapter is None:
@@ -501,7 +508,12 @@ class LLMMonitorIntegration:
                 "alerts": [],
                 "limit": limit,
             }
-        return adapter.alerts(status=status, limit=limit)
+        return adapter.alerts(
+            status=status,
+            limit=limit,
+            provider_instance_id=provider_instance_id,
+            session_id=session_id,
+        )
 
     def hardware(self) -> dict[str, Any]:
         """Return point-in-time hardware metrics projected from the current snapshot."""

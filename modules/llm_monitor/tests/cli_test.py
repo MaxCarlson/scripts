@@ -116,6 +116,18 @@ def test_persistent_commands_parse_database_and_recording_options():
     assert report.history is True and report.database == Path("data.sqlite3")
 
 
+def test_web_command_parses_local_host_options_without_database_flags():
+    args = build_parser().parse_args([
+        "web", "-p", "8788", "-e", "http://127.0.0.1:1234", "-n", "--refresh-interval", "3",
+    ])
+
+    assert args.command == "web"
+    assert args.port == 8788
+    assert args.endpoint == "http://127.0.0.1:1234"
+    assert args.no_browser is True
+    assert args.refresh_interval == 3
+
+
 def test_database_commands_and_historical_report_work_offline(tmp_path, capsys):
     from llm_monitor.cli import main
     from llm_monitor.storage import TelemetryStore

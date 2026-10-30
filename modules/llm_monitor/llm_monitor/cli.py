@@ -125,6 +125,12 @@ def build_parser() -> argparse.ArgumentParser:
     visualize.add_argument("-f", "--format", choices=("svg", "html"), default="svg")
     visualize.add_argument("-v", "--verbose", action="store_true")
 
+    web = sub.add_parser("web", help="Open the standalone local inference overview")
+    web.add_argument("-p", "--port", type=int, default=8788)
+    web.add_argument("-e", "--endpoint", default="http://127.0.0.1:1234", help="LM Studio HTTP base URL")
+    web.add_argument("-i", "--refresh-interval", type=float, default=2.0)
+    web.add_argument("-n", "--no-browser", action="store_true", help="Do not open a browser window")
+
     tui = sub.add_parser("tui", help="Open the interactive read-only monitoring dashboard")
     selection = tui.add_mutually_exclusive_group()
     selection.add_argument("-s", "--session", help="Focus the dashboard on one session")
@@ -182,6 +188,15 @@ def main(argv: list[str] | None = None) -> int:
             return _export_command(args)
         if args.command == "visualize":
             return _visualize_command(args)
+        if args.command == "web":
+            from .web import run_web
+
+            return run_web(
+                endpoint=args.endpoint,
+                port=args.port,
+                no_browser=args.no_browser,
+                refresh_interval=args.refresh_interval,
+            )
         if args.command == "tui":
             return _tui(args)
         if args.command == "alerts":

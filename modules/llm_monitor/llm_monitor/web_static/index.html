@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>LLM Monitor</title>
+    <link rel="stylesheet" href="/assets/app.css">
+    <script src="/assets/app.js" defer></script>
+  </head>
+  <body>
+    <section id="login-panel" class="login-shell" aria-labelledby="login-title">
+      <form id="login-form" class="login-card">
+        <div class="brand-mark" aria-hidden="true">LM</div>
+        <p class="eyebrow">Local inference observability</p>
+        <h1 id="login-title">LLM Monitor</h1>
+        <p class="muted">Enter the one-time code printed by the local monitor process.</p>
+        <label for="login-code">Startup login code</label>
+        <input id="login-code" name="code" type="password" autocomplete="current-password" required maxlength="256">
+        <button class="button button-primary" type="submit">Unlock dashboard</button>
+        <p id="login-error" class="message message-error" role="alert" hidden></p>
+        <p class="privacy-note">This dashboard is served on loopback. Browser content stays in memory unless a future recording option is explicitly enabled.</p>
+      </form>
+    </section>
+
+    <div id="dashboard" class="app-shell" hidden>
+      <header class="topbar">
+        <div class="brand-lockup">
+          <div class="brand-mark brand-mark-small" aria-hidden="true">LM</div>
+          <div><strong>LLM Monitor</strong><span>Inference workspace</span></div>
+        </div>
+        <div class="topbar-actions">
+          <span id="refresh-time" class="refresh-time">Waiting for inventory</span>
+          <button id="logout-button" class="button button-quiet" type="button">Lock</button>
+        </div>
+      </header>
+
+      <div class="workspace">
+        <aside class="sidebar" aria-label="Main navigation">
+          <p class="nav-label">Monitor</p>
+          <a class="nav-item nav-item-active" href="#overview" aria-current="page"><span class="nav-icon">◉</span>Overview</a>
+          <a class="nav-item" href="#models"><span class="nav-icon">▦</span>Models</a>
+          <a class="nav-item" href="#requests"><span class="nav-icon">≋</span>Requests</a>
+          <div class="sidebar-foot"><span class="scope-dot"></span><span>Local process only</span></div>
+        </aside>
+
+        <main class="main-content" id="overview">
+          <div class="page-heading">
+            <div>
+              <p class="eyebrow">Passive inventory</p>
+              <h1>Model overview</h1>
+              <p class="page-subtitle">Read-only visibility into LM Studio availability and loaded model configuration.</p>
+            </div>
+            <div id="server-badge" class="status-badge status-unknown"><span class="status-dot"></span><span>Checking server</span></div>
+          </div>
+
+          <section class="metric-grid" aria-label="Monitor summary">
+            <article class="metric-card"><span class="metric-label">Inference server</span><strong id="metric-server" class="metric-value">—</strong><span id="metric-endpoint" class="metric-detail mono">—</span></article>
+            <article class="metric-card"><span class="metric-label">Model entries</span><strong id="metric-models" class="metric-value">—</strong><span class="metric-detail">Inventory returned by provider</span></article>
+            <article class="metric-card"><span class="metric-label">Loaded instances</span><strong id="metric-loaded" class="metric-value">—</strong><span class="metric-detail">Provider-reported count</span></article>
+            <article class="metric-card"><span class="metric-label">Request capture</span><strong id="metric-capture" class="metric-value metric-value-small">Unavailable</strong><span class="metric-detail">No individual request source is connected</span></article>
+          </section>
+
+          <div id="provider-message" class="message message-info" role="status" hidden></div>
+
+          <section id="models" class="panel model-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Server inventory</p><h2>Models</h2></div>
+              <span id="model-count" class="count-badge">—</span>
+            </div>
+            <div class="table-wrap">
+              <table>
+                <thead><tr><th>Model</th><th>State</th><th>Loaded instances</th><th>Loaded context</th><th>Maximum context</th></tr></thead>
+                <tbody id="model-rows"><tr><td colspan="5" class="empty-cell">Waiting for provider inventory…</td></tr></tbody>
+              </table>
+            </div>
+            <p class="panel-footnote">Context values are shown only when the provider reports them. Multiple loaded contexts are listed separately; no single context is inferred.</p>
+          </section>
+
+          <section id="requests" class="panel request-panel">
+            <div class="panel-heading">
+              <div><p class="eyebrow">Observation coverage</p><h2>Recent requests</h2></div>
+              <span class="capability-badge">Unavailable</span>
+            </div>
+            <div class="empty-request-state">
+              <div class="empty-mark" aria-hidden="true">≋</div>
+              <h3>Individual requests are not captured</h3>
+              <p>Passive inventory confirms the server and model configuration, but it cannot reconstruct request transcripts. No inference request has been sent by this monitor.</p>
+            </div>
+          </section>
+
+          <footer class="page-footer"><span>Live observations are kept in process memory.</span><span id="recording-status">Persistent recording: disabled</span></footer>
+        </main>
+      </div>
+    </div>
+  </body>
+</html>

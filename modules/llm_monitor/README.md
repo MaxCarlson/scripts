@@ -22,9 +22,22 @@ llm-monitor db prune -r DAYS [-d DATABASE] [-w] [-f text|json]
 llm-monitor gpu [-f text|json]
 llm-monitor tui [-s SESSION_ID | -a] [-d DATABASE] [-i SECONDS]
 llm-monitor alerts list|rules|test|acknowledge [options]
+llm-monitor web [-p PORT] [-e URL] [-i SECONDS] [-n]
 ```
 
 OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. `-d/--directory` remains the OpenCode project-directory option on existing live commands; database commands use `-d/--database`. The historical `report` uses `-D/--database` to preserve that existing directory flag. Optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations.
+
+## Standalone inference overview
+
+Install the optional browser dependencies with `python -m pip install -e ".[web]"`, then run:
+
+```powershell
+llm-monitor web
+```
+
+The web command binds to `127.0.0.1:8788`, prints a one-time browser login code, and opens the dashboard. It reads LM Studio model inventory through the existing GET-only API client. Use `-n/--no-browser` to keep the browser closed, `-p/--port` to select a port, `-e/--endpoint` to set an HTTP(S) endpoint, and `-i/--refresh-interval` to change the shared inventory poll interval.
+
+This initial overview reports server and model inventory only. It does not send inference requests, passively reconstruct request transcripts, capture reasoning/output streams, or access the telemetry database. Individual request capture and historical recording are not implemented in this phase. A reachable server therefore does not imply request-content coverage.
 
 ## Live reasoning diagnostics
 

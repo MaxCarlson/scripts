@@ -569,11 +569,21 @@ def create_runmux_web_app(
     async def monitor_alerts(
         status: str | None = Query(None),
         limit: int = Query(100, ge=1, le=500),
+        provider_instance_id: str | None = Query(None, min_length=1, max_length=2048),
+        session_id: str | None = Query(None, min_length=1, max_length=512),
     ) -> dict[str, Any]:
         if status is not None and status not in {"active", "acknowledged", "resolved"}:
             raise HTTPException(status_code=400, detail="Invalid alerts status parameter")
+        if (provider_instance_id is None) != (session_id is None):
+            raise HTTPException(status_code=400, detail="Provider and session filters must be provided together")
         try:
-            return await run_in_threadpool(monitor.alerts, status=status, limit=limit)
+            return await run_in_threadpool(
+                monitor.alerts,
+                status=status,
+                limit=limit,
+                provider_instance_id=provider_instance_id,
+                session_id=session_id,
+            )
         except ValueError as error:
             raise HTTPException(status_code=400, detail="Invalid alerts request parameters") from error
 

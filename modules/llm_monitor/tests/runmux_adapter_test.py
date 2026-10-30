@@ -80,6 +80,26 @@ def test_snapshot_cache_shares_refresh_between_consumers():
     assert client.poll_calls == ["s1"]
 
 
+def test_snapshot_labels_session_model_identities_separately_from_inventory():
+    class ModelClient(Client):
+        def poll(self, session_id, _directory=None):
+            return {
+                "session_id": session_id,
+                "polled_at": stamp(10),
+                "normalized_state": "idle",
+                "session_info": {"model": "example/model-q4"},
+                "history_coverage": {"status": "complete"},
+                "pending_permissions": 0,
+                "pending_questions": 0,
+                "errors": {},
+            }
+
+    result = RunmuxMonitoringAdapter(ObservabilityService(ModelClient())).snapshot()
+
+    assert result["system"]["session_model_identities"] == ["example/model-q4"]
+    assert result["system"]["model_inventory_available"] is False
+
+
 def test_timeline_supports_concurrent_readers_without_writes(tmp_path):
     db = tmp_path / "concurrent.sqlite3"
     with TelemetryStore(db) as store:
@@ -159,3 +179,42 @@ def test_alert_evidence_json_is_decoded_and_path_fields_are_removed(tmp_path):
     assert "evidence_json" not in result["alerts"][0]
     assert "path" not in result["alerts"][0]["evidence"][0]
     assert "private/file.py" not in str(result)
+
+
+def test_alerts_can_be_filtered_to_a_provider_scoped_session(tmp_path):
+    db = tmp_path / "scoped-alerts.sqlite3"
+    with TelemetryStore(db) as store:
+        for alert_id, provider, session_id in (
+            ("target", "http://user:secret@localhost:4096/private?key=secret", "s1"),
+            ("other-provider", "http://localhost:4097", "s1"),
+            ("other-session", "http://user:secret@localhost:4096/private?key=secret", "s2"),
+        ):
+            store.save_alert_state({
+                "alert_id": alert_id,
+                "provider_instance_id": provider,
+                "session_id": session_id,
+                "rule_id": "sample",
+                "category": "monitoring",
+                "severity": "warning",
+                "classification": "observed",
+                "status": "active",
+                "summary": "Synthetic alert",
+                "evidence": [],
+                "first_seen": stamp(),
+                "last_seen": stamp(),
+            })
+    adapter = RunmuxMonitoringAdapter(ObservabilityService(Client(), database_path=db), database_path=db)
+
+    result = adapter.alerts(
+        status="active", provider_instance_id="http://localhost:4096", session_id="s1"
+    )
+
+    assert [item["alert_id"] for item in result["alerts"]] == ["target"]
+    assert "secret" not in str(result)
+
+
+def test_alert_filter_requires_both_provider_and_session_identity(tmp_path):
+    adapter = RunmuxMonitoringAdapter(ObservabilityService(Client()), database_path=tmp_path / "absent.sqlite3")
+
+    with pytest.raises(ValueError, match="provided together"):
+        adapter.alerts(provider_instance_id="http://localhost:4096")

@@ -1,0 +1,27 @@
+{
+  "request_id": "synthetic-req-001",
+  "server_instance_id": "synthetic-lmstudio-local",
+  "model_instance_id": null,
+  "provider_request_id": null,
+  "source": "synthetic_fixture",
+  "state": "completed",
+  "started_at": "2026-10-29T12:00:00Z",
+  "ended_at": "2026-10-29T12:00:02Z",
+  "input_tokens": null,
+  "reasoning_tokens": null,
+  "output_tokens": null,
+  "coverage": {
+    "request_lifecycle": "complete",
+    "structured_input": "available",
+    "reasoning_text": "completion_only",
+    "output_text": "completion_only",
+    "token_usage": "unavailable",
+    "request_timing": "gateway_timed"
+  },
+  "content": [
+    {"kind": "system", "role": "system", "text": "synthetic system instruction", "truncated": false},
+    {"kind": "user", "role": "user", "text": "synthetic prompt", "truncated": false},
+    {"kind": "reasoning", "role": "assistant", "text": "synthetic reasoning text", "truncated": false},
+    {"kind": "assistant", "role": "assistant", "text": "synthetic response", "truncated": false}
+  ]
+}

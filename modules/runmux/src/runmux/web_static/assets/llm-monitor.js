@@ -47,6 +47,18 @@
     return String(value);
   }
 
+  function formatCumulativeTokens(summary) {
+    const tokens = summary && summary.cumulative_tokens;
+    if (!tokens || typeof tokens !== "object") return "Token counts unavailable";
+    const labels = [["input", "Input"], ["output", "Output"], ["reasoning", "Reasoning"]];
+    const available = labels.filter(([key]) => Number.isFinite(tokens[key]) && tokens[key] >= 0);
+    if (available.length === 0) return "Token counts unavailable";
+    return labels.map(([key, label]) => {
+      const value = Number.isFinite(tokens[key]) && tokens[key] >= 0 ? formatTokens(tokens[key]) : "—";
+      return `${label} ${value}`;
+    }).join(" · ");
+  }
+
   function makeEl(tag, className, textContent) {
     const el = document.createElement(tag);
     if (className) el.className = className;
@@ -110,13 +122,15 @@
 
     const sys = snapshotData.system || {};
     const sessions = Array.isArray(snapshotData.sessions) ? snapshotData.sessions : [];
-    const models = Array.isArray(sys.loaded_models) ? sys.loaded_models : [];
+    const models = Array.isArray(sys.session_model_identities)
+      ? sys.session_model_identities
+      : (Array.isArray(sys.loaded_models) ? sys.loaded_models : []);
 
     const sessPill = makeEl("span", "stat-pill");
     sessPill.append(makeEl("strong", null, String(sessions.length)), " sessions");
 
     const modelsPill = makeEl("span", "stat-pill");
-    modelsPill.append(makeEl("strong", null, String(models.length)), " models loaded");
+    modelsPill.append(makeEl("strong", null, String(models.length)), " model identities observed in sessions");
 
     statsEl.append(sessPill, modelsPill);
 
@@ -206,8 +220,7 @@
       const modelName = session.model || session.model_id || "default";
       const modelEl = makeEl("span", "session-model-name", modelName);
 
-      const tokens = session.total_tokens || (session.tokens && session.tokens.total) || 0;
-      const tokensEl = makeEl("span", "session-tokens-count", `${formatTokens(tokens)} tok`);
+      const tokensEl = makeEl("span", "session-tokens-count", formatCumulativeTokens(session));
       cardBody.append(modelEl, tokensEl);
 
       card.append(cardHead, cardBody);
@@ -347,12 +360,18 @@
       const params = new URLSearchParams({
         status: "active",
         limit: String(ALERTS_LIMIT),
+        provider_instance_id: selectedSessionTuple.provider_instance_id,
+        session_id: selectedSessionTuple.session_id,
       });
       const res = await api(`/api/llm-monitor/v1/alerts?${params.toString()}`, { signal });
       const data = await res.json();
       if (generation !== requestGeneration) return;
       const alerts = Array.isArray(data.alerts) ? data.alerts : [];
-      renderAlertsSection(alerts);
+      const scopedAlerts = alerts.filter((alert) =>
+        alert && alert.session_id === selectedSessionTuple.session_id &&
+        alert.provider_instance_id === selectedSessionTuple.provider_instance_id
+      );
+      renderAlertsSection(scopedAlerts, data.availability);
     } catch {
       // Non-fatal, keep existing
     }
@@ -434,7 +453,12 @@
     const utilItem = makeEl("div", "detail-item");
     utilItem.append(makeEl("span", "detail-label", "CONTEXT UTILIZATION"));
     let utilVal = "—";
-    if (typeof detail.context_utilization === "number") {
+    const contextSamples = Array.isArray(detail.context_utilization) ? detail.context_utilization : [];
+    const latestMeasuredContext = [...contextSamples].reverse().find((sample) =>
+      sample && sample.status === "observed" && Number.isFinite(sample.utilization_percent)
+    );
+    if (latestMeasuredContext) utilVal = `${latestMeasuredContext.utilization_percent.toFixed(1)}%`;
+    else if (typeof detail.context_utilization === "number") {
       utilVal = `${(detail.context_utilization * 100).toFixed(1)}%`;
     } else if (detail.context_utilization && typeof detail.context_utilization.utilization_ratio === "number") {
       utilVal = `${(detail.context_utilization.utilization_ratio * 100).toFixed(1)}%`;
@@ -446,8 +470,7 @@
     // Tokens
     const tokItem = makeEl("div", "detail-item");
     tokItem.append(makeEl("span", "detail-label", "TOKENS"));
-    const totalTok = summary.total_tokens || (summary.tokens && summary.tokens.total) || 0;
-    tokItem.append(makeEl("code", null, formatNumber(totalTok)));
+    tokItem.append(makeEl("code", null, formatCumulativeTokens(summary)));
 
     // Provider Instance
     const provItem = makeEl("div", "detail-item");
@@ -536,13 +559,16 @@
     targetEl.append(grid);
   }
 
-  function renderAlertsSection(alerts) {
+  function renderAlertsSection(alerts, availability = "available") {
     const alertsBody = document.getElementById("monitor-alerts-list");
     if (!alertsBody) return;
     alertsBody.replaceChildren();
 
     if (!Array.isArray(alerts) || alerts.length === 0) {
-      alertsBody.append(makeEl("p", "muted", "No active alerts. System healthy."));
+      const message = availability === "unavailable"
+        ? "Persisted alerts are unavailable; system health is unknown."
+        : "No persisted alert records for this session; system health is unknown.";
+      alertsBody.append(makeEl("p", "muted", message));
       return;
     }
 

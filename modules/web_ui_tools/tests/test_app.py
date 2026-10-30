@@ -116,6 +116,48 @@ def test_api_requires_login_and_session_cookie_is_http_only() -> None:
         assert browser_get.headers["cache-control"] == "no-store"
 
 
+def test_application_can_use_an_isolated_session_cookie_name() -> None:
+    app = create_app(
+        api_router=make_router(),
+        static_dir=Path(__file__).resolve().parents[1] / "src" / "web_ui_tools" / "static",
+        login_code="isolated-login",
+        allowed_hosts=["testserver"],
+        session_cookie_name="llm_monitor_session",
+    )
+
+    with TestClient(app) as client:
+        login = client.post(
+            "/auth/login",
+            json={"code": "isolated-login"},
+            headers={"Origin": "http://testserver"},
+        )
+        assert login.status_code == 204
+        assert login.headers["set-cookie"].startswith("llm_monitor_session=")
+        session_id = client.cookies.get("llm_monitor_session")
+        assert session_id
+        assert client.get("/api/sample", headers={"Origin": "http://testserver"}).status_code == 200
+        with client.websocket_connect(
+            "/api/socket",
+            headers={"Origin": "http://testserver", "Cookie": f"llm_monitor_session={session_id}"},
+        ) as websocket:
+            assert websocket.receive_text() == "connected"
+
+        logout = client.post("/auth/logout", headers={"Origin": "http://testserver"})
+        assert "llm_monitor_session=\"\"" in logout.headers["set-cookie"]
+        assert client.get("/api/sample", headers={"Origin": "http://testserver"}).status_code == 401
+
+
+def test_application_rejects_invalid_session_cookie_names() -> None:
+    with pytest.raises(ValueError, match="session_cookie_name"):
+        create_app(
+            api_router=make_router(),
+            static_dir=Path(__file__).resolve().parents[1] / "src" / "web_ui_tools" / "static",
+            login_code="test-login",
+            allowed_hosts=["testserver"],
+            session_cookie_name="bad name",
+        )
+
+
 def test_login_rejects_wrong_code_and_cross_origin_requests() -> None:
     login_code = token_urlsafe(32)
     with TestClient(make_app(login_code)) as client:

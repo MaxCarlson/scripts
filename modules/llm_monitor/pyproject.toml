@@ -4,11 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-monitor"
-version = "0.6.0"
+version = "0.7.0"
 description = "Read-only local LLM and OpenCode monitoring"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.optional-dependencies]
+web = ["web-ui-tools>=0.2.0"]
 
 [project.scripts]
 llm-monitor = "llm_monitor.cli:main"
@@ -16,6 +19,9 @@ llm-monitor = "llm_monitor.cli:main"
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["llm_monitor*"]
+
+[tool.setuptools.package-data]
+llm_monitor = ["web_static/*.html", "web_static/assets/*.css", "web_static/assets/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -78,6 +78,8 @@ class SystemSummary:
     potentially_stalled_sessions: int
     loaded_models: list[str]
     recording_status: str
+    session_model_identities: list[str] = field(default_factory=list)
+    model_inventory_available: bool = False
 
 
 @dataclass(frozen=True)
@@ -224,14 +226,18 @@ class ObservabilityService:
             database_error = None
 
         session_values = sorted(summaries.values(), key=lambda item: (not item.is_live, item.session_id.casefold()))
+        session_models = sorted({item.model for item in session_values if item.model})
         counts = {
             "discovered_sessions": len(session_values),
             "active_inferences": sum(item.is_live and item.state == "inference_running" for item in session_values),
             "active_tools": sum(item.is_live and item.state == "tool_running" for item in session_values),
             "blocked_sessions": sum(item.state in {"waiting_permission", "waiting_question"} for item in session_values),
             "potentially_stalled_sessions": sum(item.state == "possibly_stalled" for item in session_values),
-            "loaded_models": sorted({item.model for item in session_values if item.model}),
+            # Retained for schema-v1 clients; these are session model identities, not a live inventory.
+            "loaded_models": session_models,
             "recording_status": "not_started_by_dashboard",
+            "session_model_identities": session_models,
+            "model_inventory_available": False,
         }
         if provider_error:
             provider_status = "unavailable" if not live_rows else "degraded"

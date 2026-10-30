@@ -925,17 +925,29 @@ class TelemetryStore:
         return {"ok": rows == ["ok"] and not foreign_key_rows, "schema_version": version,
                 "integrity": rows, "foreign_key_violations": foreign_key_rows}
 
-    def list_alert_states(self, *, status: str | None = None, limit: int = 1000) -> list[dict[str, Any]]:
+    def list_alert_states(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 1000,
+        session_id: str | None = None,
+    ) -> list[dict[str, Any]]:
         size = min(max(1, limit), 10000)
         with closing(self._connect()) as connection:
             tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             if "alert_states" not in tables:
                 return []
             query = "SELECT * FROM alert_states"
-            values: tuple[Any, ...] = ()
+            filters: list[str] = []
+            values: list[Any] = []
             if status:
-                query += " WHERE status=?"
-                values = (status,)
+                filters.append("status=?")
+                values.append(status)
+            if session_id is not None:
+                filters.append("session_id=?")
+                values.append(session_id)
+            if filters:
+                query += " WHERE " + " AND ".join(filters)
             query += " ORDER BY last_updated DESC, alert_id LIMIT ?"
             rows = connection.execute(query, (*values, size)).fetchall()
         return [dict(row) | {"evidence": json.loads(row["evidence_json"])} for row in rows]
