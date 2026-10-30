@@ -385,6 +385,131 @@ def parser() -> argparse.ArgumentParser:
         help="Generate standalone interactive HTML report",
     )
 
+    # 4. External Harbor benchmark command group
+    ext_p = actions.add_parser(
+        "external",
+        help="External Harbor-based benchmark evaluation (Aider Polyglot, Terminal-Bench)",
+    )
+    ext_actions = ext_p.add_subparsers(dest="external_command")
+
+    # external list
+    ext_list = ext_actions.add_parser(
+        "list", help="List supported external benchmark suites and readiness"
+    )
+    ext_list.add_argument(
+        "--format", choices=("table", "json"), default="table", help="Output format (default: table)"
+    )
+
+    # external plan
+    ext_plan = ext_actions.add_parser(
+        "plan", help="Resolve tasks, configuration, and projected work without execution"
+    )
+    ext_plan.add_argument(
+        "-d", "--dataset", default="aider/aider-polyglot", help="Dataset identifier and version"
+    )
+    ext_plan.add_argument(
+        "-a", "--agent", default="oracle", help="Agent implementation (e.g. codex, antigravity-cli, opencode, oracle)"
+    )
+    ext_plan.add_argument(
+        "-m", "--model", default="default", help="Exact model identifier"
+    )
+    ext_plan.add_argument(
+        "-t", "--task", action="append", help="Specific task ID (repeatable)"
+    )
+    ext_plan.add_argument(
+        "-k", "--repetitions", type=int, default=1, help="Number of trials per task (default: 1)"
+    )
+    ext_plan.add_argument(
+        "-s", "--seed", type=int, default=42, help="Deterministic task selection seed"
+    )
+    ext_plan.add_argument(
+        "-n", "--count", type=int, default=None, help="Limit number of tasks"
+    )
+    ext_plan.add_argument(
+        "--language", help="Filter tasks by language (e.g. python, cpp, go, java, javascript, rust)"
+    )
+    ext_plan.add_argument(
+        "--format", choices=("table", "json"), default="table"
+    )
+
+    # external run
+    ext_run = ext_actions.add_parser(
+        "run", help="Execute a planned external benchmark under explicit authorization"
+    )
+    ext_run.add_argument(
+        "-x", "--execute", action="store_true", help="Explicitly authorize execution (required)"
+    )
+    ext_run.add_argument(
+        "-d", "--dataset", default="aider/aider-polyglot", help="Dataset identifier and version"
+    )
+    ext_run.add_argument(
+        "-a", "--agent", required=True, help="Agent implementation"
+    )
+    ext_run.add_argument(
+        "-m", "--model", default="default", help="Exact model identifier"
+    )
+    ext_run.add_argument(
+        "-t", "--task", action="append", help="Specific task ID (repeatable)"
+    )
+    ext_run.add_argument(
+        "-k", "--repetitions", type=int, default=1, help="Number of trials per task (default: 1)"
+    )
+    ext_run.add_argument(
+        "-s", "--seed", type=int, default=42, help="Deterministic task selection seed"
+    )
+    ext_run.add_argument(
+        "-n", "--count", type=int, default=None, help="Limit number of tasks"
+    )
+    ext_run.add_argument(
+        "--language", help="Filter tasks by language (e.g. python, cpp, go, java, javascript, rust)"
+    )
+    ext_run.add_argument(
+        "-o", "--output-dir", type=Path, default=Path("reports/harbor"), help="Directory for imported results"
+    )
+    ext_run.add_argument(
+        "--jobs-dir", type=Path, default=Path(".harbor-jobs"), help="Directory for native Harbor job outputs"
+    )
+    ext_run.add_argument(
+        "-s-dir", "--state-dir", dest="state_dir", type=Path, default=Path.home() / ".local/share/agent-benchmark",
+        help="State directory for locks and pending receipts"
+    )
+    ext_run.add_argument(
+        "--format", choices=("table", "json"), default="table"
+    )
+
+    # external import
+    ext_import = ext_actions.add_parser(
+        "import", help="Import existing Harbor job results without running inference"
+    )
+    ext_import.add_argument(
+        "-j",
+        "--job-dir",
+        type=Path,
+        required=True,
+        help="Harbor job directory containing result.json",
+    )
+    ext_import.add_argument(
+        "-o",
+        "--output-dir",
+        type=Path,
+        default=None,
+        help="Destination directory for benchmark_core records (default: reports/harbor/<job_id>)",
+    )
+    ext_import.add_argument(
+        "--format", choices=("table", "json"), default="table", help="Output format (default: table)"
+    )
+
+    # external report
+    ext_report = ext_actions.add_parser(
+        "report", help="Rebuild leaderboard and reports from imported results"
+    )
+    ext_report.add_argument(
+        "-o", "--output-dir", type=Path, required=True, help="Directory containing imported benchmark_core results"
+    )
+    ext_report.add_argument(
+        "--format", choices=("table", "json", "markdown"), default="table"
+    )
+
     return root
 
 
@@ -701,6 +826,202 @@ def _handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPa
     return 0
 
 
+
+def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    cmd = getattr(args, "external_command", None)
+    if not cmd:
+        parser.parse_args(["external", "--help"])
+        return 0
+
+    if cmd == "list":
+        from .harbor import DATASETS, SUPPORTED_HARBOR_AGENTS, check_docker_readiness, check_harbor_readiness
+        harbor_ok, harbor_ver = check_harbor_readiness()
+        docker_ok, docker_msg = check_docker_readiness()
+
+        suites_info = []
+        for d_id, desc in DATASETS.items():
+            suites_info.append({
+                "id": desc.id,
+                "name": desc.name,
+                "version": desc.version,
+                "languages": list(desc.supported_languages),
+                "total_tasks": len(desc.all_tasks),
+                "scoring_protocol": desc.default_scoring_protocol,
+            })
+
+        agents_info = []
+        for a_id, meta in SUPPORTED_HARBOR_AGENTS.items():
+            agents_info.append({
+                "agent": a_id,
+                "description": meta["description"],
+                "requires_model": meta["requires_model"],
+                "requires_credentials": meta.get("requires_credentials", False),
+            })
+
+        payload = {
+            "readiness": {
+                "harbor_available": harbor_ok,
+                "harbor_version": harbor_ver,
+                "docker_available": docker_ok,
+                "docker_status": docker_msg,
+            },
+            "datasets": suites_info,
+            "supported_agents": agents_info,
+        }
+
+        fmt = getattr(args, "format", "table")
+        if fmt == "json":
+            print(json.dumps(payload, indent=2))
+        else:
+            h_stat = "OK" if harbor_ok else "Missing"
+            d_stat = "OK" if docker_ok else "Offline"
+            print(f"\nExternal Evaluation Readiness (Harbor: {h_stat}, Docker: {d_stat}):")
+            tbl = Table(
+                headers=["Dataset", "Version", "Tasks", "Languages"],
+                style="dash",
+            )
+            for d in suites_info:
+                tbl.add_row(d["id"], d["version"], str(d["total_tasks"]), ", ".join(d["languages"]))
+            print(tbl.render())
+        return 0
+
+    elif cmd == "plan":
+        from .harbor import plan_benchmark
+        try:
+            plan = plan_benchmark(
+                args.dataset,
+                agent=args.agent,
+                model=args.model,
+                task_ids=args.task,
+                language=getattr(args, "language", None),
+                count=getattr(args, "count", None),
+                repetitions=args.repetitions,
+                seed=args.seed,
+            )
+        except Exception as err:
+            print(f"agent-bench: planning error: {err}", file=sys.stderr)
+            return 2
+
+        plan_dict = plan.to_dict()
+        fmt = getattr(args, "format", "table")
+        if fmt == "json":
+            print(json.dumps(plan_dict, indent=2))
+        else:
+            status_text = "READY TO RUN" if plan.readiness.is_runnable else f"BLOCKED: {'; '.join(plan.readiness.blockers)}"
+            print(f"\nExternal Benchmark Plan: {plan.dataset.name}")
+            tbl = Table(headers=["Property", "Value"], style="dash")
+            tbl.add_row("Dataset", f"{plan.dataset.id} ({plan.dataset.version})")
+            tbl.add_row("Agent", plan.agent)
+            tbl.add_row("Model", plan.model)
+            tbl.add_row("Selected Tasks", str(len(plan.selected_tasks)))
+            tbl.add_row("Repetitions", str(plan.repetitions))
+            tbl.add_row("Total Projected Trials", str(plan.projected_trials))
+            tbl.add_row("Scoring Protocol", plan.scoring_protocol)
+            tbl.add_row("Harbor Available", "Yes" if plan.readiness.harbor_installed else "No")
+            tbl.add_row("Docker Available", "Yes" if plan.readiness.docker_available else "No (Required for run)")
+            tbl.add_row("Status", status_text)
+            print(tbl.render())
+        return 0 if plan.readiness.is_runnable else 1
+
+    elif cmd == "run":
+        from .harbor import plan_benchmark, execute_harbor_run
+        try:
+            plan = plan_benchmark(
+                args.dataset,
+                agent=args.agent,
+                model=args.model,
+                task_ids=args.task,
+                language=getattr(args, "language", None),
+                count=getattr(args, "count", None),
+                repetitions=args.repetitions,
+                seed=args.seed,
+            )
+            saved_dir, summary = execute_harbor_run(
+                plan,
+                execute=args.execute,
+                output_dir=args.output_dir,
+                jobs_dir=args.jobs_dir,
+                state_dir=getattr(args, "state_dir", None),
+            )
+        except Exception as err:
+            print(f"agent-bench: {err}", file=sys.stderr)
+            return 2
+
+        fmt = getattr(args, "format", "table")
+        if fmt == "json":
+            print(json.dumps(summary, indent=2))
+        else:
+            print(f"Results saved to: {saved_dir}")
+        return 0 if summary.get("infrastructure_error", 0) == 0 else 1
+
+    elif cmd == "import":
+        from .harbor import HarborImporter
+        try:
+            importer = HarborImporter(args.job_dir)
+            job_result, _, _ = importer.load_job()
+            out_dir = args.output_dir or (Path("reports/harbor") / str(job_result.id))
+            saved_dir, summary = importer.import_to(out_dir)
+        except Exception as err:
+            print(f"agent-bench: import error: {err}", file=sys.stderr)
+            return 2
+
+        fmt = getattr(args, "format", "table")
+        if fmt == "json":
+            print(json.dumps(summary, indent=2))
+        else:
+            rate_str = f"{summary['pass_rate_pct']:.2f}%" if summary["scored"] > 0 else "N/A"
+            print(f"\nHarbor Import: {summary['suite_id']} (Job {summary['job_id'][:8]})")
+            tbl = Table(headers=["Metric", "Value"], style="dash")
+            tbl.add_row("Scheduled trials", str(summary["scheduled"]))
+            tbl.add_row("Completed trials", str(summary["completed"]))
+            tbl.add_row("Valid scored trials", str(summary["scored"]))
+            tbl.add_row("Passed trials", str(summary["passed"]))
+            tbl.add_row("Failed trials", str(summary["failed"]))
+            tbl.add_row("Timed out trials", str(summary["timed_out"]))
+            tbl.add_row("Infrastructure errors", str(summary["infrastructure_error"]))
+            tbl.add_row("Points earned", f"{summary['points_earned']:.2f}")
+            tbl.add_row("Pass rate", rate_str)
+            tbl.add_row("Coverage", f"{summary['coverage_pct']:.2f}%")
+            tbl.add_row("Output directory", str(saved_dir))
+            print(tbl.render())
+        return 0 if summary.get("infrastructure_error", 0) == 0 else 1
+
+    elif cmd == "report":
+        from .harbor import collect_run_summaries, render_leaderboard_table
+        summaries = collect_run_summaries(args.output_dir)
+
+        fmt = getattr(args, "format", "table")
+        if fmt == "json":
+            print(json.dumps(summaries, indent=2))
+        elif fmt == "markdown":
+            print(render_leaderboard_table(summaries))
+        else:
+            if not summaries:
+                print(f"No valid benchmark_core runs found in {args.output_dir}")
+                return 0
+            tbl = Table(
+                headers=["Agent", "Model", "Benchmark", "Score", "Pass Rate", "Coverage", "Wall Time", "Errors", "Cost"],
+                style="dash",
+            )
+            for s in sorted(summaries, key=lambda x: (-x["pass_rate_pct"], x["errors"])):
+                time_str = f"{s['median_wall_ms'] / 1000.0:.1f}s" if s["median_wall_ms"] is not None else "N/A"
+                cost_str = f"${s['total_cost_usd']:.4f}" if s["total_cost_usd"] is not None else "N/A"
+                tbl.add_row(
+                    s["agent"],
+                    s["model"],
+                    s["benchmark"],
+                    s["score_display"],
+                    f"{s['pass_rate_pct']:.1f}%",
+                    f"{s['coverage_pct']:.1f}%",
+                    time_str,
+                    str(s["errors"]),
+                    cost_str,
+                )
+            print("\nExternal Benchmark Leaderboard:")
+            print(tbl.render())
+        return 0
+    return 0
+
 def main(argv: list[str] | None = None) -> int:
     argument_parser = parser()
     args = argument_parser.parse_args(argv)
@@ -716,7 +1037,9 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     try:
-        if args.command == "models":
+        if args.command == "external":
+            return _handle_external(args, argument_parser)
+        elif args.command == "models":
             return _handle_models(args)
         elif args.command == "experiment":
             return _handle_experiment(args, argument_parser)

@@ -1,3 +1,15 @@
+# Current checkpoint: Harbor Integration and Deterministic Coding-Agent Evaluation
+
+Branch `harbor-integration-20261029-1755`, baseline `origin/main` at `33040f00`. Agent Benchmark baseline is 1.20.0.
+Active plan: [`plans/20261029-1755_harbor-integration/STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
+Current stage: Stage A (Harbor Research and Offline Importer).
+Preliminary audit confirmed pinned Harbor version `harbor==0.25.0` on PyPI, exact Pydantic model schemas for
+`JobResult`, `TrialResult`, `JobLock`, and `ErrorPolicy`. Docker engine is currently stopped; preflight checks will
+enforce fail-closed execution safety for live runs while allowing offline planning and import.
+
+All 411 existing Agent Benchmark tests and 114 Benchmark Core tests pass cleanly offline. Historical results and
+B0/B2/B3 experiment methodology remain intact.
+
 # Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 
 Worktree `C:/Users/mcarls/src/scripts-agent-benchmark`, branch `agent/benchmark-resume-20261023`,

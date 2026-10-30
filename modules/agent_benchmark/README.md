@@ -201,3 +201,50 @@ The current runtime evidence producer does not capture all effective inference
 settings, so real OpenCode runs remain incomparable until those values can be
 verified and recorded. This is a readiness blocker, not a reason to weaken the
 comparison contract.
+
+
+## External Benchmark Evaluation — Harbor Integration
+
+Agent Benchmark provides integration with external coding benchmarks using the Harbor evaluation framework (`harbor==0.25.0`):
+1. **Aider Polyglot** (`aider/aider-polyglot`): 225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust.
+2. **Terminal-Bench** (`terminal-bench/terminal-bench@4.0.0` / `terminal-bench-cpu-only`): pinned CPU-only tasks with deterministic executable verifiers.
+
+The architecture separates responsibilities cleanly:
+- **`agent_benchmark`**: CLI, planning, task filtering, deterministic seeds, lifecycle guards, results normalization, and comparison.
+- **Harbor**: external task isolation, containerized sandbox management, agent invocation, and authoritative verification.
+- **`benchmark_core`**: persistent storage (`RunInfo`, `TrialResult`, `MetricValue`), statistics, and leaderboard reporting.
+
+### Requirements & Setup
+- **Harbor**: Install or pin `harbor==0.25.0` via `uv tool install harbor` or run on-demand via `uv tool run --from harbor==0.25.0 harbor`.
+- **Docker**: Harbor requires an active Docker daemon (e.g., Docker Desktop for Windows with WSL2 engine) for containerized agent isolation and verification. If Docker is offline, planning and import remain available, but execution fails closed before dispatch.
+- **Windows 11 / WSL2 Deployment**: Run Docker Desktop with the WSL2 backend enabled. For local model servers (e.g., LM Studio), ensure the host model server is accessible from container networks via `host.docker.internal`.
+
+### CLI Commands (`agent-bench external`)
+
+```powershell
+# List available datasets, task counts, and environment readiness:
+agent-bench external list
+agent-bench external list --format json
+
+# Plan a benchmark run deterministically without execution (zero inference):
+agent-bench external plan -d aider/aider-polyglot --language python -n 5 -s 42
+agent-bench external plan -d terminal-bench-cpu-only -a oracle
+
+# Execute an authorized external benchmark (requires -x/--execute):
+agent-bench external run -x -d aider/aider-polyglot -a oracle -t python/bank-account
+agent-bench external run -x -d terminal-bench-cpu-only -a oracle
+
+# Import completed native Harbor jobs into canonical benchmark_core records:
+agent-bench external import -j <harbor-job-dir> -o reports/harbor/<job_id>
+agent-bench external import -j <harbor-job-dir> --format json
+
+# Rebuild comparative leaderboards across imported runs:
+agent-bench external report -o reports/harbor
+agent-bench external report -o reports/harbor --format markdown
+```
+
+### Scoring and Provenance Contracts
+- **Scoring Basis**: `external_verifier_pass_v1`. Solved tasks earn 1.0 point, valid failing tasks earn 0.0 points.
+- **Failures & Timeouts**: Budget expirations (`AgentTimeoutError`) are classified as `timed_out` (0.0 points). Container or model-provider crashes are classified as `infrastructure_error` (points `unavailable`).
+- **Isolation Scope**: External verification does not assert internal strict-scope compliance; `scope_compliance` is explicitly recorded as `unavailable`.
+- **Idempotent Import**: Reimporting the same Harbor job updates records cleanly without generating duplicate trial IDs.
