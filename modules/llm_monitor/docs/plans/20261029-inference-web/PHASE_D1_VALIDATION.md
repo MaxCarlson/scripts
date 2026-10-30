@@ -123,4 +123,4 @@ The full-suite first attempt used an incorrect current directory and then encoun
 4. Browser replay: reconnect reconciles bounded final snapshots; it does not guarantee replay of each missed delta or original inter-delta timing.
 5. Compatibility: tool-call argument text is captured, but robust multiple-tool-call assembly and full OpenAI API parity remain outside scope.
 
-**Assessment:** Transport and browser-observer behavior are materially hardened and test-covered. The feature remains unmerged and the Phase D.1 performance gate is open. Commit/push the validated implementation and evidence to the authorized feature branch, then stop for the next explicitly approved decision.
+**Assessment:** Transport and browser-observer behavior are materially hardened and test-covered. The implementation and evidence are committed as `4749fe40` and pushed to the authorized feature branch. The feature remains unmerged, and the Phase D.1 performance gate is open for the next explicitly approved decision.

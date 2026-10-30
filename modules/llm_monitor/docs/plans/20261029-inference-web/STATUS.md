@@ -52,4 +52,4 @@ Current validation: full LLM Monitor suite passes (170 passed, 1 skipped); `web_
 
 ## Publication
 
-Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e` and Phase D baseline are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.1 changes are prepared for the authorized feature-branch commit/push; the branch remains unmerged.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. The branch remains unmerged; performance readiness is still open as documented above.
