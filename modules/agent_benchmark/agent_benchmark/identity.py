@@ -202,3 +202,45 @@ def write_project_model_registration(directory: Path, identity: ModelIdentity) -
     finally:
         temp_path.unlink(missing_ok=True)
     return target
+
+
+def apply_inference_profile(directory: Path, model_id: str, profile: dict[str, Any], *, agent: str) -> Path:
+    """Apply validated experiment settings only to the fresh trial project's exact model."""
+    target = directory / "opencode.json"
+    if not target.is_file() or (directory / "opencode.jsonc").exists():
+        raise ModelIdentityError("Inference profiles require a fresh JSON trial config; JSONC is preserved")
+    try:
+        config = json.loads(target.read_text(encoding="utf-8"))
+        model = config["provider"]["lmstudio"]["models"][model_id]
+        reasoning = profile["reasoning"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        raise ModelIdentityError("Cannot safely apply inference profile to the exact trial model") from error
+    if not isinstance(model, dict) or not isinstance(reasoning, dict):
+        raise ModelIdentityError("Trial model or reasoning profile has an invalid shape")
+    model["limit"] = {"context": profile["context_length"], "output": profile["output_limit"]}
+    if reasoning["mode"] == "unconfigured":
+        model.pop("reasoning", None)
+        model.pop("variants", None)
+        options = model.get("options", {})
+        if isinstance(options, dict):
+            options.pop("reasoningEffort", None)
+            if options:
+                model["options"] = options
+            else:
+                model.pop("options", None)
+    elif reasoning["mode"] == "effort":
+        effort = reasoning["effort"]
+        model["reasoning"] = True
+        options = model.setdefault("options", {})
+        if not isinstance(options, dict):
+            raise ModelIdentityError("Trial model options must be an object")
+        options["reasoningEffort"] = effort
+    else:
+        raise ModelIdentityError("Unsupported reasoning mode in validated inference profile")
+    agents = config.setdefault("agent", {})
+    role = agents.get(agent)
+    if not isinstance(role, dict):
+        raise ModelIdentityError(f"Inference profile requires the configured trial agent '{agent}'")
+    role.pop("variant", None)
+    target.write_text(json.dumps(config, indent=2, ensure_ascii=True) + "\n", encoding="utf-8")
+    return target

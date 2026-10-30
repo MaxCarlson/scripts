@@ -153,6 +153,80 @@ def test_expand_experiment_plan_randomization_preserves_model_grouping() -> None
 
 
 @pytest.mark.asyncio
+async def test_scheduler_passes_monitor_ready_callback_to_worker_before_dispatch(tmp_path, monkeypatch):
+    from agent_benchmark import scheduler as scheduler_module
+    from agent_benchmark.evidence import load_task
+
+    task_dir = Path(__file__).resolve().parents[1] / "agent_benchmark" / "tasks" / "py-grep-smoke"
+    config = ExperimentConfig(
+        experiment_id="exp-monitor-ready",
+        created_at="2026-10-19T10:00:00Z",
+        suite_id="agent-smoke",
+        suite_version="0.1.1",
+        task_ids=["py-grep-smoke"],
+        variant_ids=["qwen38-27b-q4km"],
+        repetitions=1,
+        scoring_basis="worker_first_attempt_full_success",
+        budget_profile="canonical-60s",
+    )
+    plan = expand_experiment_plan(config)
+    observed = []
+
+    def before_dispatch(details):
+        observed.append(details)
+
+    class FakeBridge:
+        pass
+
+    @asynccontextmanager
+    async def fake_connected_bridge(**_kwargs):
+        yield FakeBridge()
+
+    async def fake_run_attempt(_task, _bridge, _guard, **kwargs):
+        callback = kwargs.get("before_dispatch")
+        assert callable(callback)
+        callback({
+            "endpoint": "http://127.0.0.1:4196",
+            "project_directory": str(tmp_path / "trial"),
+            "session_id": "session-before-dispatch",
+            "model": "qwen38-27b-q4km",
+            "agent": "local-worker",
+        })
+        raise RuntimeError("controlled stop after the readiness handoff")
+
+    monkeypatch.setattr(scheduler_module, "connected_bridge", fake_connected_bridge)
+    monkeypatch.setattr(scheduler_module, "run_attempt", fake_run_attempt)
+    scheduler = ExperimentScheduler(
+        plan,
+        task_dirs={"py-grep-smoke": task_dir},
+        reports_dir=tmp_path / "reports",
+        state_dir=tmp_path / "state",
+        base_url="http://127.0.0.1:4196",
+        before_dispatch=before_dispatch,
+    )
+    (tmp_path / "state").mkdir(parents=True)
+
+    result = await scheduler._execute_real_trial(
+        plan.planned_trials[0], load_task(task_dir), tmp_path / "reports" / "run",
+        tmp_path / "reports" / "run" / "evidence" / "trial-001", 10, 1, 1,
+        scheduler.inference_profile, scheduler.before_dispatch,
+    )
+
+    assert result.status == TrialStatus.INFRASTRUCTURE_ERROR
+    assert observed == [{
+        "endpoint": "http://127.0.0.1:4196",
+        "project_directory": str(tmp_path / "trial"),
+        "session_id": "session-before-dispatch",
+        "model": "qwen38-27b-q4km",
+        "agent": "local-worker",
+        "run_id": plan.planned_trials[0].run_id,
+        "trial_id": "trial-001",
+        "monitor_trial_id": f"{plan.planned_trials[0].run_id}/trial-001",
+        "task_id": "py-grep-smoke",
+    }]
+
+
+@pytest.mark.asyncio
 async def test_scheduler_sequential_execution_and_aggregation(
     tmp_path: Path,
     sample_experiment_config: ExperimentConfig,
@@ -291,10 +365,13 @@ async def test_scheduler_sequential_execution_and_aggregation(
     assert models_completed == ["qwen38-27b-q4km", "qwen38-27b-q6k"]
     assert len(final_comparison_holder) == 1
 
-    # Verification: Comparison outcome
-    assert comparison.canonical_rankings == ["qwen38-27b-q4km", "qwen38-27b-q6k"]
-    assert comparison.eligible_variants["qwen38-27b-q4km"].strict_acceptance_rate == 1.0
-    assert comparison.eligible_variants["qwen38-27b-q6k"].strict_acceptance_rate == 0.0
+    # The injected executor has no observed model/runtime identity, so it must
+    # not create a canonical ranking from otherwise plausible trial scores.
+    assert comparison.canonical_rankings == []
+    assert comparison.eligible_variants == {}
+    assert len(comparison.incompatible_runs) == 2
+    assert all("unknown, empty or malformed conditions" in " ".join(item["reasons"])
+               for item in comparison.incompatible_runs)
 
     # Verification: Persistent experiment artifacts
     exp_dir = reports_dir / "exp-test-01"
@@ -313,8 +390,10 @@ async def test_scheduler_saves_partial_reports_after_later_model_transition_fail
     monkeypatch,
 ) -> None:
     from agent_benchmark import scheduler as scheduler_module
+    transition_settings = []
 
     async def fake_transition(model_key: str, **kwargs):
+        transition_settings.append(kwargs)
         if model_key == "qwen38-27b-q6k":
             raise RuntimeError("simulated model load failure")
 
@@ -348,6 +427,7 @@ async def test_scheduler_saves_partial_reports_after_later_model_transition_fail
     assert (experiment_dir / "report.md").is_file()
     manifest = json.loads((experiment_dir / "experiment.json").read_text(encoding="utf-8"))
     assert [item["variant_id"] for item in manifest["run_refs"]] == ["qwen38-27b-q4km"]
+    assert transition_settings[0]["max_ram_pct"] is None
     failure = json.loads((experiment_dir / "experiment-failure.json").read_text(encoding="utf-8"))
     assert failure["stage"] == "model_transition"
     assert failure["model"] == "qwen38-27b-q6k"

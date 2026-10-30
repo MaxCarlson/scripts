@@ -14,6 +14,48 @@ def test_run_requires_execute_before_writing_any_files(tmp_path, capsys):
     assert "execute" in capsys.readouterr().err.lower()
 
 
+def test_experiment_run_can_pause_after_session_creation_for_monitor_attachment():
+    from agent_benchmark.cli import parser
+
+    args = parser().parse_args([
+        "experiment", "run", "-x", "-m", "qwen38-27b-q4km", "-t", "qwen-file-creation",
+        "--pause-before-dispatch",
+    ])
+
+    assert args.pause_before_dispatch is True
+    assert args.max_ram_percent is None
+
+
+def test_experiment_run_accepts_explicit_ram_percentage_limit():
+    from agent_benchmark.cli import parser
+
+    args = parser().parse_args([
+        "experiment", "run", "-x", "-m", "qwen38-27b-q4km", "-t", "qwen-file-creation",
+        "--max-ram-percent", "87.5",
+    ])
+
+    assert args.max_ram_percent == 87.5
+
+
+def test_experiment_run_short_aliases_match_long_inference_options():
+    from agent_benchmark.cli import parser
+
+    plan_args = parser().parse_args([
+        "experiment", "plan", "-m", "qwen38-27b-q4km", "-I", "profile.json", "-A", "invariants.md",
+    ])
+    assert str(plan_args.inference_profile) == "profile.json"
+    assert str(plan_args.instruction_append_file) == "invariants.md"
+
+    args = parser().parse_args([
+        "experiment", "run", "-x", "-m", "qwen38-27b-q4km", "-t", "qwen-file-creation",
+        "-I", "profile.json", "-A", "invariants.md", "-P",
+    ])
+
+    assert str(args.inference_profile) == "profile.json"
+    assert str(args.instruction_append_file) == "invariants.md"
+    assert args.pause_before_dispatch is True
+
+
 def test_plan_and_status_are_read_only(tmp_path, capsys):
     state = tmp_path / "state"
     assert main(["plan", "-s", str(state)]) == 0

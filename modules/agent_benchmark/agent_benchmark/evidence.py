@@ -21,7 +21,7 @@ from typing import Any, Mapping
 from .git_workspace import GitIdentity, initialize_git
 from .tool_profile import (FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE, configure_file_agent,
                            validate_execution_profile)
-from .identity import ModelIdentity, write_project_model_registration
+from .identity import ModelIdentity, apply_inference_profile, write_project_model_registration
 from .scratch import SCRATCH_NAME, is_scratch, reserved_path, safe_spelling, validate_policy
 
 
@@ -179,7 +179,8 @@ def _write_tree(files: Mapping[str, bytes], destination: Path) -> None:
 
 
 def prepare_workspace(
-    task: Task, workspace: Path, *, scope_policy: str | None = None, model_identity: ModelIdentity | None = None
+    task: Task, workspace: Path, *, scope_policy: str | None = None, model_identity: ModelIdentity | None = None,
+    inference_profile: Mapping[str, Any] | None = None,
 ) -> GitIdentity:
     """Copy public files only; existing workspace must be empty and benchmark-owned."""
     validate_policy(scope_policy)
@@ -189,7 +190,11 @@ def prepare_workspace(
     if workspace.exists() and any(workspace.iterdir()):
         raise ValueError("Worker workspace must be fresh and empty")
     workspace.mkdir(parents=True, exist_ok=True)
-    seed = _read_tree(task.path / "seed")
+    seed = {
+        name: data for name, data in _read_tree(task.path / "seed").items()
+        if not any(part.lower() == "__pycache__" for part in name.split("/"))
+        and Path(name).suffix.lower() not in {".pyc", ".pyo"}
+    }
     if any(name.split("/")[0].lower() == ".git" for name in seed):
         raise ValueError("Seed .git metadata is reserved for the benchmark")
     if scope_policy and any(reserved_path(path.name) for path in (task.path / "seed").iterdir()):
@@ -207,6 +212,12 @@ def prepare_workspace(
         if task.opencode_tool_profile in {FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
             configure_file_agent(workspace, retrieval=task.opencode_tool_profile == RETRIEVAL_PROFILE,
                                  structural=task.opencode_tool_profile == STRUCTURAL_PROFILE)
+    if inference_profile is not None:
+        if model_identity is None or model_identity.provider != "lmstudio":
+            raise ValueError("Inference profiles require an exact LM Studio model identity")
+        if task.opencode_tool_profile not in {FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
+            raise ValueError("Inference profiles require a project-local benchmark agent profile")
+        apply_inference_profile(workspace, model_identity.runtime_model_id, dict(inference_profile), agent="benchmark-files")
     return initialize_git(workspace)
 
 

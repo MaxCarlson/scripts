@@ -27,8 +27,6 @@ logger = logging.getLogger(__name__)
 CommandRunner = Callable[[list[str]], Awaitable[tuple[int, str, str]]]
 DEFAULT_BENCHMARK_CONTEXT_LENGTH = 16384
 GIB = 1024**3
-GPU_MEMORY_RESERVE_BYTES = 2 * GIB
-TOTAL_MEMORY_RESERVE_BYTES = 4 * GIB
 
 
 class ModelDiscoveryError(RuntimeError):
@@ -73,22 +71,36 @@ def parse_lms_memory_estimate(output: str) -> tuple[int, int]:
 
 
 def _verify_memory_estimate(gpu_bytes: int, total_bytes: int, snapshot) -> None:
-    """Fail closed unless estimated allocations fit measured headroom with reserves."""
+    """Fail closed unless LM Studio's allocation estimate fits measured capacity."""
     if snapshot.gpu_memory_used_bytes is None or snapshot.gpu_memory_total_bytes is None:
         raise ModelTransitionError("Cannot verify free GPU memory for the LM Studio estimate; refusing model load.")
     gpu_available = snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes
-    if gpu_bytes > max(0, gpu_available - GPU_MEMORY_RESERVE_BYTES):
+    if gpu_bytes > gpu_available:
         raise ModelTransitionError(
-            f"LM Studio estimates {gpu_bytes / GIB:.1f} GiB GPU memory, but only "
-            f"{gpu_available / GIB:.1f} GiB is free (including a {GPU_MEMORY_RESERVE_BYTES / GIB:.0f} GiB reserve)."
+            f"LM Studio GPU estimate {gpu_bytes / GIB:.1f} GiB exceeds measured GPU availability "
+            f"of {gpu_available / GIB:.1f} GiB."
         )
     if snapshot.ram_available_bytes is None:
         raise ModelTransitionError("Cannot verify available host RAM for the LM Studio estimate; refusing model load.")
     total_available = snapshot.ram_available_bytes + gpu_available
-    if total_bytes > max(0, total_available - TOTAL_MEMORY_RESERVE_BYTES):
+    if total_bytes > total_available:
         raise ModelTransitionError(
             f"LM Studio estimates {total_bytes / GIB:.1f} GiB total memory, but measured combined headroom is "
-            f"{total_available / GIB:.1f} GiB (including a {TOTAL_MEMORY_RESERVE_BYTES / GIB:.0f} GiB reserve)."
+            f"{total_available / GIB:.1f} GiB."
+        )
+
+
+def _enforce_ram_percent_limit(target_model_key: str, snapshot, max_ram_pct: float | None) -> None:
+    if max_ram_pct is None:
+        return
+    if snapshot.ram_pct is None:
+        raise ModelTransitionError(
+            f"Cannot enforce explicit host RAM limit for '{target_model_key}': RAM percentage is unavailable."
+        )
+    if snapshot.ram_pct >= max_ram_pct:
+        raise ModelTransitionError(
+            f"Refusing model operation for '{target_model_key}': host RAM utilization is "
+            f"{snapshot.ram_pct:.1f}% (explicit RAM limit {max_ram_pct:.1f}%)."
         )
 
 
@@ -315,7 +327,7 @@ async def transition_model(
     unload_timeout: float = 30.0,
     load_timeout: float = 120.0,
     poll_interval: float = 0.25,
-    max_ram_pct: float = 90.0,
+    max_ram_pct: float | None = None,
     expected_model_size_bytes: int | None = None,
     context_length: int = DEFAULT_BENCHMARK_CONTEXT_LENGTH,
     runner: Optional[CommandRunner] = None,
@@ -329,9 +341,9 @@ async def transition_model(
     3. If allow_transitions=True:
        - Unloads existing models via `lms unload -a`.
        - Polls until LM Studio reports no loaded models within unload_timeout.
-       - Refuses to load when measured host RAM headroom is below the requested model's
-         downloaded size plus 25% overhead, or RAM utilization reaches max_ram_pct.
-       - Estimates memory and loads via `lms load <key> --context-length <n> -y`.
+       - Compares LM Studio's context-specific allocation estimate with measured available
+         host and GPU capacity. Percentage limits apply only when explicitly configured.
+       - Loads via `lms load <key> --context-length <n> -y`.
        - Verifies target model is active, idle, and at the requested context.
        - Halts immediately on any command or service failure without blind retries.
     """
@@ -339,18 +351,12 @@ async def transition_model(
 
     if not target_model_key or not target_model_key.strip():
         raise ValueError("target_model_key must be a non-empty string")
-    if not 0 < max_ram_pct <= 100:
+    if max_ram_pct is not None and not 0 < max_ram_pct <= 100:
         raise ValueError("max_ram_pct must be greater than 0 and at most 100")
     if isinstance(context_length, bool) or context_length <= 0:
         raise ValueError("context_length must be a positive integer")
     if expected_model_size_bytes is not None and expected_model_size_bytes < 0:
         raise ValueError("expected_model_size_bytes must not be negative")
-
-    required_headroom = (
-        int(expected_model_size_bytes * 1.25)
-        if expected_model_size_bytes is not None and expected_model_size_bytes > 0
-        else None
-    )
 
     loaded_list = await get_loaded_models(lms_path=lms_path, runner=runner)
     target_loaded = next(
@@ -371,19 +377,12 @@ async def transition_model(
             )
         if context_matches:
             snapshot = collect_resource_snapshot()
-            if snapshot.ram_pct is not None and snapshot.ram_pct >= max_ram_pct:
-                raise ModelTransitionError(
-                    f"Refusing to dispatch preloaded model '{target_model_key}': host RAM utilization is "
-                    f"{snapshot.ram_pct:.1f}% (safety limit {max_ram_pct:.0f}%)."
-                )
-            if (snapshot.gpu_memory_used_bytes is not None and snapshot.gpu_memory_total_bytes is not None
-                    and snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes < GPU_MEMORY_RESERVE_BYTES):
-                raise ModelTransitionError(
-                    f"Refusing to dispatch preloaded model '{target_model_key}': less than "
-                    f"{GPU_MEMORY_RESERVE_BYTES / GIB:.0f} GiB GPU memory remains free."
-                )
-            logger.info("Model already loaded at requested context; no transition needed target=%s context=%s",
-                        target_model_key, context_length, extra={"event_type": "MODEL_READY"})
+            _enforce_ram_percent_limit(target_model_key, snapshot, max_ram_pct)
+            logger.info("Model already loaded at requested context; no transition needed target=%s context=%s "
+                        "ram_pct=%s ram_available_bytes=%s gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s",
+                        target_model_key, context_length, snapshot.ram_pct, snapshot.ram_available_bytes,
+                        snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes,
+                        extra={"event_type": "MODEL_READY"})
             return target_loaded
 
     # Model is not loaded. Check authorization.
@@ -429,68 +428,30 @@ async def transition_model(
                 f"Failed to unload active model(s) (exit code {code}): {stderr or stdout}"
             )
 
-        # Wait for VRAM/process stabilization
+        # Wait for model inventory to confirm unload. Resource values are diagnostic;
+        # capacity for the next model is checked against its exact LM Studio estimate.
         start_unload = asyncio.get_running_loop().time()
         while True:
             remaining = await get_loaded_models(lms_path=lms_path, runner=runner)
             if not remaining:
                 snapshot = collect_resource_snapshot()
-                ram_ready = snapshot.ram_pct is not None and snapshot.ram_pct < max_ram_pct
-                headroom_ready = (required_headroom is None or (
-                    snapshot.ram_available_bytes is not None
-                    and snapshot.ram_available_bytes >= required_headroom
-                ))
-                gpu_ready = (snapshot.gpu_memory_used_bytes is None or snapshot.gpu_memory_total_bytes is None
-                             or snapshot.gpu_memory_total_bytes - snapshot.gpu_memory_used_bytes
-                             >= GPU_MEMORY_RESERVE_BYTES)
-                memory_ready = ram_ready and headroom_ready and gpu_ready
                 logger.info(
-                    "Post-unload resource check target=%s loaded_models=0 ram_pct=%s ram_available_bytes=%s "
-                    "gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s",
+                    "Post-unload resource observation target=%s loaded_models=0 ram_pct=%s ram_available_bytes=%s "
+                    "gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s expected_model_size_bytes=%s",
                     target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
-                    snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes,
-                    extra={"event_type": "MODEL_UNLOAD_VERIFIED" if memory_ready else "MODEL_MEMORY_RELEASE_WAIT"},
+                    snapshot.gpu_memory_used_bytes, snapshot.gpu_memory_total_bytes, expected_model_size_bytes,
+                    extra={"event_type": "MODEL_UNLOAD_VERIFIED"},
                 )
-                if memory_ready:
-                    break
+                break
             if asyncio.get_running_loop().time() - start_unload > unload_timeout:
                 raise ModelTransitionError(
-                    f"Timed out waiting for loaded-model inventory and measured RAM/VRAM headroom "
-                    f"after unload ({unload_timeout}s). No next model load was attempted."
+                    f"Timed out waiting for loaded-model inventory to clear after unload ({unload_timeout}s). "
+                    "No next model load was attempted."
                 )
             await asyncio.sleep(poll_interval)
 
     snapshot = collect_resource_snapshot()
-    insufficient_headroom = (
-        required_headroom is not None
-        and snapshot.ram_available_bytes is not None
-        and snapshot.ram_available_bytes < required_headroom
-    )
-    unknown_headroom = required_headroom is not None and snapshot.ram_available_bytes is None
-    at_ram_limit = snapshot.ram_pct is not None and snapshot.ram_pct >= max_ram_pct
-    if insufficient_headroom or unknown_headroom or at_ram_limit:
-        logger.error(
-            "Model load blocked by RAM safety guard target=%s ram_pct=%s available_bytes=%s "
-            "expected_model_bytes=%s required_headroom_bytes=%s limit_pct=%.1f",
-            target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes, expected_model_size_bytes,
-            required_headroom, max_ram_pct,
-            extra={"event_type": "MODEL_LOAD_BLOCKED"},
-        )
-        if insufficient_headroom:
-            reason = (
-                f"available RAM is {snapshot.ram_available_bytes} bytes; "
-                f"at least {required_headroom} bytes is required for the model and 25% load headroom"
-            )
-        elif unknown_headroom:
-            reason = "available RAM could not be measured for the expected model size"
-        else:
-            reason = (
-                f"host RAM utilization is {snapshot.ram_pct:.1f}% with "
-                f"{snapshot.ram_available_bytes} bytes available (safety limit {max_ram_pct:.0f}%)"
-            )
-        raise ModelTransitionError(
-            f"Refusing to load model '{target_model_key}': {reason}."
-        )
+    _enforce_ram_percent_limit(target_model_key, snapshot, max_ram_pct)
 
     estimate_cmd = [lms_path, "load", target_model_key, "--estimate-only", "--context-length", str(context_length)]
     estimate_code, estimate_stdout, estimate_stderr = await cmd_exec(estimate_cmd)
@@ -513,8 +474,10 @@ async def transition_model(
 
     # Load target model
     logger.info(
-        "Loading LM Studio model target=%s ram_pct=%s ram_available_bytes=%s",
-        target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes,
+        "Loading LM Studio model target=%s ram_pct=%s ram_available_bytes=%s gpu_memory_used_bytes=%s "
+        "gpu_memory_total_bytes=%s estimated_gpu_bytes=%s estimated_total_bytes=%s expected_model_size_bytes=%s",
+        target_model_key, snapshot.ram_pct, snapshot.ram_available_bytes, snapshot.gpu_memory_used_bytes,
+        snapshot.gpu_memory_total_bytes, estimated_gpu_bytes, estimated_total_bytes, expected_model_size_bytes,
         extra={"event_type": "MODEL_LOAD_START"},
     )
     code, stdout, stderr = await cmd_exec(
@@ -543,6 +506,21 @@ async def transition_model(
                     raise ModelTransitionError(
                         f"LM Studio model '{target_model_key}' loaded but status is '{m.status}', not idle."
                     )
+                loaded_snapshot = collect_resource_snapshot()
+                logger.info(
+                    "Post-load resource observation target=%s ram_pct=%s ram_used_bytes=%s "
+                    "ram_available_bytes=%s gpu_memory_used_bytes=%s gpu_memory_total_bytes=%s "
+                    "ram_used_delta_bytes=%s gpu_memory_used_delta_bytes=%s",
+                    target_model_key, loaded_snapshot.ram_pct, loaded_snapshot.ram_used_bytes,
+                    loaded_snapshot.ram_available_bytes, loaded_snapshot.gpu_memory_used_bytes,
+                    loaded_snapshot.gpu_memory_total_bytes,
+                    (loaded_snapshot.ram_used_bytes - snapshot.ram_used_bytes
+                     if loaded_snapshot.ram_used_bytes is not None and snapshot.ram_used_bytes is not None else None),
+                    (loaded_snapshot.gpu_memory_used_bytes - snapshot.gpu_memory_used_bytes
+                     if (loaded_snapshot.gpu_memory_used_bytes is not None
+                         and snapshot.gpu_memory_used_bytes is not None) else None),
+                    extra={"event_type": "MODEL_LOAD_RESOURCE_OBSERVATION"},
+                )
                 return m
         if asyncio.get_running_loop().time() - start_load > load_timeout:
             raise ModelTransitionError(

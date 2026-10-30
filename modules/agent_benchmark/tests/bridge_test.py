@@ -15,6 +15,13 @@ from agent_benchmark.lifecycle import WorkerHandle
 HANDLE = WorkerHandle("job-1", "session-1", "user-1", Path("C:/owned/trial-1"))
 
 
+@pytest.mark.asyncio
+async def test_bridge_exposes_its_configured_endpoint_for_monitor_handoff():
+    async with httpx.AsyncClient(base_url="http://127.0.0.1:4196") as http:
+        bridge = OpenCodeBridge(lambda *_args: None, http)
+        assert bridge.base_url == "http://127.0.0.1:4196"
+
+
 def messages():
     return [
         {"info": {"id": "user-1", "sessionID": "session-1", "role": "user", "time": {"created": 1}}, "parts": []},

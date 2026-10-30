@@ -288,6 +288,7 @@ async def run_benchmark(
     budget_profile: str = "canonical-120s",
     grace_seconds: float = 10, request_seconds: float = 10, verifier_seconds: float = 10,
     model_identity: ModelIdentity | None = None,
+    inference_profile: dict[str, Any] | None = None,
     connector=connected_bridge,
 ) -> Path:
     resolved_provider, resolved_model = resolve_model_provider_and_key(model, default_provider=provider)
@@ -336,7 +337,8 @@ async def run_benchmark(
              "suite_fingerprint": fingerprint.hexdigest(), "task_order": [task.task_id], "randomization_seed": None,
              "benchmark_version": __version__, "isolation_policy": ISOLATION_POLICY, "scope_policy": SCOPE_POLICY,
              "evidence_limits": asdict(EVIDENCE_LIMITS),
-             "model_identity": model_identity.to_dict() if model_identity else None},
+             "model_identity": model_identity.to_dict() if model_identity else None,
+             "requested_inference_profile": inference_profile},
         )
         save_run(run_dir, info)
         trial = None
@@ -353,7 +355,7 @@ async def run_benchmark(
                         task, bridge, guard, workspace_root=state / "workspaces", evidence_dir=evidence_dir,
                         provider=resolved_provider, model=resolved_model, agent=agent, task_seconds=effective_task_seconds,
                         grace_seconds=effective_grace_seconds, verifier_seconds=verifier_seconds,
-                        model_identity=model_identity,
+                        model_identity=model_identity, inference_profile=inference_profile,
                     )
             runtime = json.loads((evidence_dir / "runtime.json").read_text(encoding="utf-8"))
             info = replace(info, metadata={**info.metadata, "runtime": runtime})
