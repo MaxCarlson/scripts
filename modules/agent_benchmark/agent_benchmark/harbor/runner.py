@@ -41,7 +41,9 @@ def build_harbor_command(
     else:
         raise PreflightCheckError("Neither 'harbor' nor 'uv' CLI binary is available on PATH")
 
-    harbor_ds = "aider-polyglot" if "aider" in plan.dataset.id else "terminal-bench"
+    harbor_ds = plan.dataset.harbor_dataset
+    if not harbor_ds:
+        raise ValueError(f"Dataset {plan.dataset.id!r} has no Harbor registry identity")
     cmd.extend(["--dataset", harbor_ds])
     cmd.extend(["--agent", plan.agent])
     if plan.model and plan.model != "default":

@@ -39,7 +39,11 @@
 - [x] Stage D validation and review
 
 ## Stage E: Terminal-Bench Extension, Documentation & Final Hardening
-- [x] Curate and freeze 5 CPU-compatible Terminal-Bench tasks (`build-cython-ext`, `regex-log`, `sqlite-db-truncate`, `nginx-request-logging`, `log-summary-date-ranges`)
+- [x] Curate five CPU-oriented tasks within Terminal-Bench 2.0 and record the reviewed task resource profile
+- [ ] Before any Terminal-Bench execution, inspect `log-summary-date-ranges` resource and timeout values at the pinned task source revision (not present in the preserved pilot lock)
+- [x] Correctly register Terminal-Bench 2.0 (89 tasks) and Terminal-Bench 4.0.0 (66 tasks) as distinct dataset identities
+- [x] Add regression tests for dataset selection, Harbor registry names, and lock-based source revision attribution
+- [x] Import a corrected derived report for the historical Oracle trial while preserving the original raw and imported evidence
 - [x] Update `modules/agent_benchmark/README.md` with instructions for Harbor setup, Windows 11 / WSL2, Docker, and `agent-bench external` CLI
 - [x] Run full repository regression test suite (`agent_benchmark`: 445 passed, 3 skipped; `benchmark_core`: 116 passed, 1 skipped)
 - [x] Run lint (`ruff`) and static checks: All checks passed
@@ -48,6 +52,10 @@
 ## Live Evaluation Acceptance (Phases A–E)
 - [x] Phase A: Verify Docker Linux engine, Harbor 0.25.0 CLI, LM Studio (`qwen38_23GB`), and `host.docker.internal:1234` routing
 - [x] Phase B: Execute first live local Qwen trial on Aider Polyglot (`polyglot_python_proverb` -> `reports/harbor/pilot-qwen`)
-- [ ] Phase C: Execute 10-task deterministic Python baseline (`--language python -n 10 -s 42` -> `reports/harbor/qwen-baseline-10`, planned and ready)
+- [x] Phase C: Execute frozen 10-task deterministic Python baseline (7/10, 100% scored coverage; manifest and evidence preserved)
 - [x] Phase D: Audit `codex` and `antigravity-cli` Harbor schemas and credential contracts without paid inference
 - [x] Phase E: Execute live Terminal-Bench trial (`build-cython-ext` with `oracle` -> `reports/harbor/tb-pilot`) and multi-suite report
+
+## Remaining Comparative Evaluations
+- [x] Prepare the identical-task Codex and Antigravity protocol and commands (no cloud inference executed)
+- [ ] Execute Codex and Antigravity against the frozen task set after explicit inference authorization

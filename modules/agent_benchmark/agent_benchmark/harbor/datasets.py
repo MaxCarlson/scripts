@@ -109,6 +109,51 @@ TERMINAL_BENCH_CPU_TASKS: list[str] = [
     "log-summary-date-ranges",
 ]
 
+# Harbor Hub Terminal-Bench 2.0 task inventory, pinned to the source revision
+# recorded by the Harbor registry used by the historical Oracle pilot.
+TERMINAL_BENCH_2_TASKS: tuple[str, ...] = tuple("""\
+make-mips-interpreter circuit-fibsqrt build-pov-ray overfull-hbox video-processing
+distribution-search break-filter-js-from-html protein-assembly path-tracing compile-compcert
+dna-assembly caffe-cifar-10 install-windows-3-11 log-summary-date-ranges vulnerable-secret
+openssl-selfsigned-cert crack-7z-hash feal-linear-cryptanalysis polyglot-rust-c
+cancel-async-tasks dna-insert rstan-to-pystan git-leak-recovery db-wal-recovery
+headless-terminal extract-elf constraints-scheduling winning-avg-corewars
+custom-memory-heap-crash build-cython-ext mteb-leaderboard fix-git regex-chess
+prove-plus-comm pytorch-model-recovery mailman write-compressor chess-best-move
+extract-moves-from-video gcode-to-text multi-source-data-merger merge-diff-arc-agi-task
+kv-store-grpc git-multibranch qemu-alpine-ssh regex-log nginx-request-logging tune-mjcf
+build-pmars sqlite-with-gcov sanitize-git-repo reshard-c4-data train-fasttext
+torch-tensor-parallelism schemelike-metacircular-eval torch-pipeline-parallelism
+count-dataset-tokens cobol-modernization raman-fitting pypi-server
+model-extraction-relu-logits hf-model-inference sparql-university filter-js-from-html
+largest-eigenval polyglot-c-py query-optimize fix-ocaml-gc pytorch-model-cli
+bn-fit-modify password-recovery feal-differential-cryptanalysis sam-cell-seg
+sqlite-db-truncate fix-code-vulnerability make-doom-for-mips modernize-scientific-stack
+adaptive-rejection-sampler gpt2-codegolf mcmc-sampling-stan financial-document-processor
+mteb-retrieve large-scale-text-editing code-from-image portfolio-optimization
+path-tracing-reverse llm-inference-batching-scheduler qemu-startup configure-git-webserver
+""".split())
+
+# Terminal-Bench 4.0.0 release task inventory (source tag v4.0.0).
+TERMINAL_BENCH_4_TASKS: tuple[str, ...] = tuple("""\
+layout-config-recreation2 photonic-waveguide-routing mp-checkpoint-consolidation
+biped-contact-dynamics ks-solver-cpp react-lead-form lake-temp-glm takens-embedding-lean
+satb-audio-transcription formal-crypto fin-saccr-rwa embedding-drift-monitor math-eval-grader
+pretrain-shard-corruption freight-dispatch-shift sound-change-cascade cad-model
+glycan-ms2-elucidation coq-block-bound cargo-flight-dispatch payments-pipeline-fix
+heat-pump-warranty foodstuff-beta-activity protein-autointerp-disulfide session-window-debug
+batched-eval-parity wal-recovery-ordering ctr-optimization bun-sourcemap-leak
+legacy-utility-triage mvcc-lsm-compaction risk-scorer-replay atrx-vep-crispr
+nextjs-performance live-database-cutover cumulative-layout-shift data-anonymization
+vba-userform-port freecad-impeller music-harmony telecom-entity-resolution
+distributed-dedup ontology-kg-querying production-planning freecad-platform-drawing
+vpp-loss-divergence gsea-proteomics intrastat-meldung kv-live-surgery html-js-filter
+interleaved-vigenere uefi-bootkit layout-config-recreation shadow-relay
+vllm-deepseek-streaming roy-polymorph-cn rs-archive-clone wdm-design freecad-spring-clip
+fp8-rmsnorm-gemm vf2-speedup-networkx jax-speedrun-gpu medical-claims-processing
+retro-console-soc sglang-qwen-burst hof-topology-interpenetration
+""".split())
+
 
 @dataclass(frozen=True)
 class DatasetDescriptor:
@@ -119,6 +164,10 @@ class DatasetDescriptor:
     supported_languages: tuple[str, ...]
     all_tasks: tuple[str, ...]
     default_scoring_protocol: str
+    harbor_dataset: str | None = None
+    source_repo: str | None = None
+    source_revision: str | None = None
+    default_tasks: tuple[str, ...] = ()
 
 
 # Dataset catalog registry
@@ -131,21 +180,40 @@ DATASETS: dict[str, DatasetDescriptor] = {
         supported_languages=("python", "cpp", "go", "java", "javascript", "rust"),
         all_tasks=tuple(task for lang in AIDER_POLYGLOT_TASKS.values() for task in lang),
         default_scoring_protocol="single-attempt-v1",
+        harbor_dataset="aider-polyglot",
     ),
     "terminal-bench/terminal-bench@4.0.0": DatasetDescriptor(
         id="terminal-bench/terminal-bench@4.0.0",
-        name="Terminal-Bench 4.0.0 (Pinned CPU subset)",
+        name="Terminal-Bench 4.0.0",
         version="4.0.0",
-        description="Deterministic command-line and systems tasks with executable verification",
+        description="Terminal-Bench 4.0.0 release snapshot (66 tasks)",
         supported_languages=("shell", "python"),
-        all_tasks=tuple(TERMINAL_BENCH_CPU_TASKS),
+        all_tasks=TERMINAL_BENCH_4_TASKS,
         default_scoring_protocol="single-attempt-v1",
+        harbor_dataset="terminal-bench/terminal-bench@4.0.0",
+        source_repo="https://github.com/harbor-framework/terminal-bench.git",
+        source_revision="452bf30",
+    ),
+    "terminal-bench/terminal-bench-2": DatasetDescriptor(
+        id="terminal-bench/terminal-bench-2",
+        name="Terminal-Bench 2.0",
+        version="2.0",
+        description="Terminal-Bench 2.0 Harbor dataset (89 tasks, source commit pinned)",
+        supported_languages=("shell", "python"),
+        all_tasks=TERMINAL_BENCH_2_TASKS,
+        default_scoring_protocol="single-attempt-v1",
+        harbor_dataset="terminal-bench/terminal-bench-2",
+        source_repo="https://github.com/laude-institute/terminal-bench-2.git",
+        source_revision="69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+        default_tasks=tuple(TERMINAL_BENCH_CPU_TASKS),
     ),
 }
 # Aliases
 DATASETS["aider-polyglot"] = DATASETS["aider/aider-polyglot"]
-DATASETS["terminal-bench"] = DATASETS["terminal-bench/terminal-bench@4.0.0"]
-DATASETS["terminal-bench-cpu-only"] = DATASETS["terminal-bench/terminal-bench@4.0.0"]
+DATASETS["terminal-bench-2"] = DATASETS["terminal-bench/terminal-bench-2"]
+DATASETS["terminal-bench"] = DATASETS["terminal-bench/terminal-bench-2"]
+DATASETS["terminal-bench-2-cpu-only"] = DATASETS["terminal-bench/terminal-bench-2"]
+DATASETS["terminal-bench-cpu-only"] = DATASETS["terminal-bench/terminal-bench-2"]
 
 
 def resolve_dataset(dataset_name: str) -> DatasetDescriptor:
@@ -181,6 +249,8 @@ def select_tasks(
     - Returns sorted list if no seed is specified.
     """
     candidates = list(descriptor.all_tasks)
+    if not task_ids and not language and descriptor.default_tasks:
+        candidates = list(descriptor.default_tasks)
 
     # 1. Filter by language if specified
     if language:

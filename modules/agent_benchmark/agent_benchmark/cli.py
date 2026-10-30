@@ -854,8 +854,12 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
                 "id": desc.id,
                 "name": desc.name,
                 "version": desc.version,
+                "harbor_dataset": desc.harbor_dataset,
+                "source_repo": desc.source_repo,
+                "source_revision": desc.source_revision,
                 "languages": list(desc.supported_languages),
                 "total_tasks": len(desc.all_tasks),
+                "default_tasks": list(desc.default_tasks),
                 "scoring_protocol": desc.default_scoring_protocol,
             })
 

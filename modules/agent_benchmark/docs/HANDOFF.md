@@ -1,18 +1,18 @@
-# Current checkpoint: Harbor Integration and Live Deterministic Evaluation (2026-10-29)
+# Current checkpoint: Harbor baseline complete and dataset provenance corrected (2026-10-30)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
 baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.
 Active plan & full handoff: [`plans/20261029-1755_harbor-integration/HANDOFF.md`](plans/20261029-1755_harbor-integration/HANDOFF.md)
 and [`STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
 
-Implementation and hardening across `agent_benchmark.harbor` (`models`, `datasets`, `planner`, `runner`, `importer`, `reporting`)
-and `agent-bench external {list,plan,run,import,report}` are complete and verified:
-- **Offline verification**: 34 Harbor tests pass; 445 Agent Benchmark tests pass (3 skipped); 116 Benchmark Core tests pass (1 skipped); `ruff check` passes.
-- **Live Phase A (Preflight)**: Verified Docker Desktop Linux engine (`29.9.2`), `harbor==0.25.0`, LM Studio (`qwen38_23GB`, Q4_K_M, 98k context), and container-to-host routing (`http://host.docker.internal:1234/v1`).
-- **Live Phase B (Single-Task Local Qwen Pilot)**: Executed `polyglot_python_proverb` on `aider-polyglot` with `qwen-coder` / `qwen38_23GB` (Job `442fe010-32d4-41eb-b00b-0d69c2e1f5ea`, 267.4s, 185,195 input tokens, 16,218 output tokens, 0 exceptions; 5/8 pytest checks passed in container -> binary reward `0.0`, imported to `reports/harbor/pilot-qwen`).
-- **Live Phase D (Cloud Adapter Audit)**: Verified `codex` and `antigravity-cli` option schemas via `harbor agent schema` without invoking paid cloud endpoints.
-- **Live Phase E (Terminal-Bench Pilot)**: Executed `build-cython-ext` on `terminal-bench` with `oracle` (Job `76bdf6c9-0ec9-4336-82e7-2f3431cdfea7`, 87.9s, 0 exceptions; 10/11 pytest checks passed in container, imported to `reports/harbor/tb-pilot`).
-- **Remaining Next Action (Phase C)**: Execute the planned 10-task deterministic Python baseline (`--language python -n 10 -s 42`) with `qwen-coder` / `qwen38_23GB` into `reports/harbor/qwen-baseline-10` (~35–45m runtime).
+Current tracked changes in this worktree include the dataset identity fix and regression coverage; baseline evidence remains untracked under `.harbor-jobs/` and `reports/` and is intentionally preserved.
+
+- **Phase C baseline:** 7/10 points (70%), 10/10 scored coverage, zero canonical infrastructure errors; sequential separate jobs, one attempt, zero retries. Frozen task/config provenance is in `reports/harbor/qwen-baseline-10/baseline-manifest.json`; outcomes and token analysis are in `baseline-summary.md`.
+- **Interrupted aggregate attempt:** one Qwen React task failed in Harbor's UTF-8 session parsing and nine tasks were pending. Its native job and import are retained but excluded from the baseline. The ten canonical runs completed separately.
+- **Terminal-Bench catalog:** the 89-task pilot used Terminal-Bench 2.0 from `laude-institute/terminal-bench-2` at commit `69671fbaac6d67a7ef0dfec016cc38a64ef7a77c`; the genuine 66-task 4.0 release is separately registered. The original Oracle job/report remain unchanged. Corrected derived report is `reports/harbor/tb-pilot-corrected/` and identifies the actual 2.0 source.
+- **Oracle limitation:** `build-cython-ext` returned reward 0 due the upstream pyknotid test failing (`test_reconstructed_space_curve`; inner suite 17 passed/1 failed, task verifier 10 passed/1 failed). This matches the upstream `planarity` dependency regression report; this run did not retain the installed package version, so do not use it as an agent capability score.
+- **Validation:** Harbor-focused suite: 37 passed after the provenance changes. The earlier baseline regression evidence is documented in the plan status. Do not claim a fresh full package regression or lint run for this addendum.
+- **Next action:** compare Codex and Antigravity on the frozen Aider set only after explicit authorization for their external inference. Protocol and commands are in `reports/harbor/qwen-baseline-10/comparison-protocol.md`.
 
 # Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 

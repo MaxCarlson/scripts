@@ -120,7 +120,9 @@ class HarborImporter:
             "wall_time_ms": [],
         }
 
-        # Suite identifier and version resolution (strictly decoupled from harbor_version)
+        # Resolve the dataset identity from immutable task-lock provenance first.
+        # Harbor's `source` field is not sufficient: both Terminal-Bench 2.0 and
+        # later releases can report the generic value `terminal-bench`.
         raw_source: str | None = None
         for ht in sorted_harbor_trials:
             if ht.source:
@@ -138,8 +140,52 @@ class HarborImporter:
                     raw_source = t_lock.task.source
                     break
 
+        task_locks = []
+        if job_lock:
+            task_locks = (
+                job_lock.trials
+                if isinstance(job_lock.trials, list)
+                else list(job_lock.trials.values())
+            )
+        lock_tasks = [trial.task for trial in task_locks if trial.task]
+        locked_repos = {task.git_url.rstrip("/") for task in lock_tasks if task.git_url}
+        locked_revisions = {task.git_commit_id for task in lock_tasks if task.git_commit_id}
+        from .datasets import DATASETS
+
+        identity = None
+        if len(locked_repos) == 1 and len(locked_revisions) == 1:
+            identity = next(
+                (
+                    descriptor
+                    for descriptor in DATASETS.values()
+                    if descriptor.source_repo
+                    and descriptor.source_repo.rstrip("/") in locked_repos
+                    and (
+                        not descriptor.source_revision
+                        or any(
+                            revision.startswith(descriptor.source_revision)
+                            or descriptor.source_revision.startswith(revision)
+                            for revision in locked_revisions
+                        )
+                    )
+                ),
+                None,
+            )
+
         raw_source = raw_source or "harbor-benchmark"
-        if "@" in raw_source:
+        if not identity:
+            identity = next(
+                (
+                    descriptor
+                    for descriptor in DATASETS.values()
+                    if raw_source == descriptor.id or raw_source == descriptor.harbor_dataset
+                ),
+                None,
+            )
+        if identity:
+            suite_id = identity.id.rsplit("@", 1)[0]
+            suite_version = identity.version
+        elif "@" in raw_source:
             suite_id, suite_version = raw_source.split("@", 1)
         else:
             suite_id = raw_source
@@ -158,15 +204,11 @@ class HarborImporter:
                     break
 
         if not suite_version:
-            from .datasets import DATASETS
-
-            for d_id, d_desc in DATASETS.items():
-                if suite_id in (d_id, d_desc.id, d_id.split("@")[0]):
-                    suite_version = d_desc.version
-                    break
-
-        if not suite_version:
             suite_version = "unversioned"
+
+        dataset_id = identity.id if identity else (f"{suite_id}@{suite_version}" if suite_version != "unversioned" else suite_id)
+        dataset_source_repo = next(iter(locked_repos), None) if len(locked_repos) == 1 else None
+        dataset_source_revision = next(iter(locked_revisions), None) if len(locked_revisions) == 1 else None
 
         for ht in sorted_harbor_trials:
             task_ids_set.add(ht.task_name)
@@ -335,12 +377,17 @@ class HarborImporter:
             environment={
                 "harbor_package_version": harbor_version,
                 "source_job_dir": str(self.job_dir),
+                "dataset_source_repo": dataset_source_repo,
+                "dataset_source_revision": dataset_source_revision,
             },
             metadata={
                 "harbor_job_id": str(job_result.id),
                 "harbor_package_version": harbor_version,
-                "dataset_id": suite_id,
+                "dataset_id": dataset_id,
                 "dataset_version": suite_version,
+                "harbor_dataset": identity.harbor_dataset if identity else None,
+                "dataset_source_repo": dataset_source_repo,
+                "dataset_source_revision": dataset_source_revision,
                 "task_content_fingerprints": task_fingerprints,
                 "n_total_trials": job_result.n_total_trials,
                 "importer": "agent_benchmark.harbor.importer",
@@ -360,7 +407,12 @@ class HarborImporter:
 
         summary_data = {
             "job_id": str(job_result.id),
+            "dataset_id": dataset_id,
             "suite_id": suite_id,
+            "suite_version": suite_version,
+            "harbor_dataset": identity.harbor_dataset if identity else None,
+            "dataset_source_repo": dataset_source_repo,
+            "dataset_source_revision": dataset_source_revision,
             "scoring_basis": "external_verifier_pass_v1",
             "scheduled": stats["scheduled"],
             "completed": stats["completed"],

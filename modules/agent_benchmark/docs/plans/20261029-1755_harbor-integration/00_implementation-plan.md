@@ -46,7 +46,7 @@ Harbor is accessed strictly as an external execution provider via subprocess arg
 ### Stage B: Dataset Catalog & Non-Executing Planner
 - **Dataset Resolvers:**
   - Create `modules/agent_benchmark/agent_benchmark/harbor/datasets.py`:
-    - Metadata and task catalogs for `aider/aider-polyglot` and `terminal-bench/terminal-bench@4.0.0`.
+    - Metadata and task catalogs for `aider/aider-polyglot`, Terminal-Bench 2.0 (`terminal-bench/terminal-bench-2`), and Terminal-Bench 4.0.0 (`terminal-bench/terminal-bench@4.0.0`) with distinct source provenance.
     - Support language filtering for Aider (python, cpp, go, java, javascript, rust).
     - Deterministic pseudo-random subset selection with recorded seed.
     - Exact task selection by ID.
@@ -88,7 +88,7 @@ Harbor is accessed strictly as an external execution provider via subprocess arg
 
 ### Stage E: Terminal-Bench Integration, Documentation & Final Hardening
 - **Terminal-Bench Curation:**
-  - Define CPU-compatible subset of 3–5 tasks with oracle solution verification.
+- Define a five-task CPU-oriented subset of Terminal-Bench 2.0; verify Oracle compatibility and task resource requirements before interpreting scores.
 - **Documentation:**
   - Update `modules/agent_benchmark/README.md`.
   - Add installation, Docker preflight, and usage instructions for Windows 11 / WSL2.

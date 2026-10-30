@@ -19,11 +19,29 @@ def test_resolve_dataset():
 
     d2 = resolve_dataset("terminal-bench/terminal-bench@4.0.0")
     assert d2.id == "terminal-bench/terminal-bench@4.0.0"
-    assert len(d2.all_tasks) == 5
+    assert len(d2.all_tasks) == 66
+
+    tb20 = resolve_dataset("terminal-bench-2")
+    assert tb20.id == "terminal-bench/terminal-bench-2"
+    assert len(tb20.all_tasks) == 89
+    assert tb20.harbor_dataset == "terminal-bench/terminal-bench-2"
+    assert tb20.source_repo == "https://github.com/laude-institute/terminal-bench-2.git"
+    assert set(tb20.default_tasks) == {
+        "build-cython-ext",
+        "regex-log",
+        "sqlite-db-truncate",
+        "nginx-request-logging",
+        "log-summary-date-ranges",
+    }
+    assert set(tb20.default_tasks).issubset(tb20.all_tasks)
+    assert set(d2.all_tasks).isdisjoint(tb20.all_tasks)
+    assert len(select_tasks(tb20)) == 5
+    assert len(select_tasks(tb20, task_ids=["make-mips-interpreter"])) == 1
 
     # Short / alias names
     d3 = resolve_dataset("aider-polyglot")
     assert d3.id == "aider/aider-polyglot"
+    assert resolve_dataset("terminal-bench").id == "terminal-bench/terminal-bench-2"
 
     with pytest.raises(KeyError, match="Unknown dataset"):
         resolve_dataset("nonexistent-dataset-xyz")

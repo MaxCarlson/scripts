@@ -64,6 +64,24 @@ def test_execution_requires_authorization(tmp_path: Path):
         )
 
 
+def test_build_harbor_command_uses_dataset_registry_identity():
+    plan = plan_benchmark("terminal-bench-2", agent="oracle", task_ids=["build-cython-ext"])
+    cmd = build_harbor_command(plan, jobs_dir=Path(".harbor-jobs"))
+    assert cmd[cmd.index("--dataset") + 1] == "terminal-bench/terminal-bench-2"
+    assert "build-cython-ext" in cmd
+
+
+def test_build_harbor_command_keeps_terminal_bench_4_separate():
+    plan = plan_benchmark(
+        "terminal-bench/terminal-bench@4.0.0",
+        agent="oracle",
+        task_ids=["layout-config-recreation2"],
+    )
+    cmd = build_harbor_command(plan, jobs_dir=Path(".harbor-jobs"))
+    assert cmd[cmd.index("--dataset") + 1] == "terminal-bench/terminal-bench@4.0.0"
+    assert "layout-config-recreation2" in cmd
+
+
 def test_execution_fails_closed_when_docker_offline(tmp_path: Path, monkeypatch):
     plan = plan_benchmark("aider/aider-polyglot", count=1)
 

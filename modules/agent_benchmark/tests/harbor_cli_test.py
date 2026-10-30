@@ -17,6 +17,7 @@ def test_cli_external_list(capsys):
     assert "datasets" in data
     assert any(d["id"] == "aider/aider-polyglot" for d in data["datasets"])
     assert any(d["id"] == "terminal-bench/terminal-bench@4.0.0" for d in data["datasets"])
+    assert any(d["id"] == "terminal-bench/terminal-bench-2" and d["total_tasks"] == 89 for d in data["datasets"])
     assert "readiness" in data
 
 

@@ -304,7 +304,7 @@ def test_dataset_identity_with_explicit_version(tmp_path: Path):
                 "id": "bbbb1111-0000-0000-0000-000000000001",
                 "task_name": "terminal-bench/find-large-files",
                 "trial_name": "terminal-bench/find-large-files__oracle",
-                "source": "terminal-bench@4.0.0",
+                "source": "terminal-bench/terminal-bench@4.0.0",
                 "agent_info": {"name": "oracle"},
                 "verifier_result": {"rewards": {"reward": 1.0}},
             }
@@ -316,9 +316,50 @@ def test_dataset_identity_with_explicit_version(tmp_path: Path):
     HarborImporter(job_dir).import_to(out_dir)
 
     run_info = load_run_info(out_dir / "run.json")
-    assert run_info.suite_id == "terminal-bench"
+    assert run_info.suite_id == "terminal-bench/terminal-bench"
     assert run_info.suite_version == "4.0.0"
+    assert run_info.metadata["dataset_id"] == "terminal-bench/terminal-bench@4.0.0"
+    assert run_info.metadata["harbor_dataset"] == "terminal-bench/terminal-bench@4.0.0"
     assert run_info.environment["harbor_package_version"] == "0.25.0"
+
+
+def test_dataset_identity_comes_from_locked_source_repository(tmp_path: Path):
+    job_dir = tmp_path / "harbor_job_tb20"
+    job_dir.mkdir()
+    (job_dir / "result.json").write_text(json.dumps({
+        "id": "33333333-3333-4444-5555-666666666666",
+        "started_at": "2026-10-29T11:00:00Z",
+        "finished_at": "2026-10-29T11:01:00Z",
+        "n_total_trials": 1,
+        "stats": {"n_completed_trials": 1},
+        "trial_results": [{
+            "id": "cccc1111-0000-0000-0000-000000000001",
+            "task_name": "build-cython-ext",
+            "trial_name": "build-cython-ext__oracle",
+            "source": "terminal-bench",
+            "agent_info": {"name": "oracle"},
+            "verifier_result": {"rewards": {"reward": 0.0}},
+        }],
+    }), encoding="utf-8")
+    (job_dir / "lock.json").write_text(json.dumps({
+        "schema_version": 3,
+        "harbor": {"version": "0.25.0"},
+        "trials": [{"task": {
+            "name": "build-cython-ext",
+            "type": "git",
+            "source": "terminal-bench",
+            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+            "digest": "sha256:" + "a" * 64,
+        }}],
+    }), encoding="utf-8")
+
+    out_dir = tmp_path / "corrected_tb20"
+    HarborImporter(job_dir).import_to(out_dir)
+    run_info = load_run_info(out_dir / "run.json")
+    assert run_info.suite_id == "terminal-bench/terminal-bench-2"
+    assert run_info.suite_version == "2.0"
+    assert run_info.metadata["dataset_source_revision"] == "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c"
 
 
 def test_deduplication_in_reporting(tmp_path: Path):

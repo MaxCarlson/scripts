@@ -207,7 +207,7 @@ comparison contract.
 
 Agent Benchmark provides integration with external coding benchmarks using the Harbor evaluation framework (`harbor==0.25.0`):
 1. **Aider Polyglot** (`aider/aider-polyglot`): 225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust.
-2. **Terminal-Bench** (`terminal-bench/terminal-bench@4.0.0` / `terminal-bench-cpu-only`): pinned CPU-only tasks with deterministic executable verifiers.
+2. **Terminal-Bench 2.0** (`terminal-bench/terminal-bench-2`, 89 tasks) and **Terminal-Bench 4.0.0** (`terminal-bench/terminal-bench@4.0.0`, 66 tasks) are separate datasets with distinct task sets and source revisions. The short `terminal-bench` and `terminal-bench-cpu-only` aliases refer to the 2.0 catalog; the default selection is the pinned five-task CPU subset. The subset is `build-cython-ext`, `regex-log`, `sqlite-db-truncate`, `nginx-request-logging`, and `log-summary-date-ranges`.
 
 The architecture separates responsibilities cleanly:
 - **`agent_benchmark`**: CLI, planning, task filtering, deterministic seeds, lifecycle guards, results normalization, and comparison.
@@ -228,11 +228,12 @@ agent-bench external list --format json
 
 # Plan a benchmark run deterministically without execution (zero inference):
 agent-bench external plan -d aider/aider-polyglot --language python -n 5 -s 42
-agent-bench external plan -d terminal-bench-cpu-only -a oracle
+  agent-bench external plan -d terminal-bench-cpu-only -a oracle
+  agent-bench external plan -d terminal-bench/terminal-bench@4.0.0 -a oracle -t layout-config-recreation2
 
 # Execute an authorized external benchmark (requires -x/--execute):
 agent-bench external run -x -d aider/aider-polyglot -a oracle -t python/bank-account
-agent-bench external run -x -d terminal-bench-cpu-only -a oracle
+  agent-bench external run -x -d terminal-bench-cpu-only -a oracle
 
 # Import completed native Harbor jobs into canonical benchmark_core records:
 agent-bench external import -j <harbor-job-dir> -o reports/harbor/<job_id>
