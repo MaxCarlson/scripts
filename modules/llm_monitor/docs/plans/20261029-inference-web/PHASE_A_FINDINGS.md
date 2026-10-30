@@ -46,3 +46,20 @@ Primary sources:
 ## Phase B boundary
 
 The initial standalone monitor can truthfully show server reachability, model inventory, loaded instances, available context metadata, and explicitly unavailable request-capture capabilities. It cannot claim passive request transcripts, stable log correlation, live reasoning, output deltas, or measured request metrics. UI request fixtures are synthetic test inputs and are not seeded into production memory.
+
+## Phase D/D.1 gateway capability update
+
+These are capabilities experimentally observed through the explicitly configured OpenAI-compatible gateway, not passive LM Studio observer capabilities.
+
+| Capability | D.1 evidence | State and limits |
+|---|---|---|
+| Structured input | Real requests were submitted through the gateway and reconciled from authenticated API snapshots. | Available for requests intentionally sent to the gateway; ordinary clients remain invisible. |
+| Request identity/lifecycle | Gateway UUID, provider response ID, live start and terminal states observed. | Stable within the monitor; provider identity may be absent. |
+| Reasoning deltas | Real Qwen requests emitted separate reasoning content, including across dashboard disconnect/reconnect. | Only when the upstream model/runtime emits a supported reasoning field. |
+| Output deltas | Real output-only and mixed reasoning/output requests displayed incrementally. | Only content exposed by the upstream response is captured. |
+| Tool-call deltas | Parser supports observed OpenAI-compatible tool argument deltas. | Tool-call index/name reconstruction and broad API semantics remain incomplete. |
+| Usage | Provider `prompt_tokens`, `completion_tokens`, and reasoning detail fields were captured when emitted. | Completion total semantics preserved; visible output tokens remain null if reasoning accounting is not authoritative. |
+| Timing | Gateway ingress, body, normalization, dispatch, upstream headers/first byte, downstream-yield, completion, event/content update, and finalization monotonic timings recorded. | First downstream time is immediately before ASGI yield, not a socket-level client receipt. Provider TTFT is null unless explicitly emitted. |
+| Transport | Fragmented/mixed LF and CRLF, large frame, malformed JSON side parsing, partial upstream failure, and cancellation verified by deterministic tests. | Upstream bytes remain byte-exact on successful streaming; after a stream failure the gateway emits an explicit SSE error and records failure. |
+| Browser reconnect | Closing the dashboard tab did not cancel inference; a newly authenticated dashboard reconciled request identity and full captured snapshot. | Missing intermediate deltas cannot be reconstructed from a snapshot, although tested reconnects had complete final text without duplication. |
+| Persistence | Default/passive web operation and gateway test execution remain memory-backed. | No full-content persistence was introduced. |

@@ -31,3 +31,22 @@
 - [x] UI-3: implement fixture-only incremental request-event state contract and verify selection stability, incremental segment updates, deduplication and stream-gap behavior.
 - [x] UI-4/5: inspect required viewport screenshots, transcript readability, accessibility structure, packaged assets, and document differences/dependencies.
 - [x] Run final focused validation; commit `00b44a844f5844485a0e81666b84976ecb353a5e` is pushed to the feature branch. No merge, backend collector, or gateway work was performed.
+
+## Phase D — explicitly enabled gateway
+
+- [x] Implement opt-in loopback OpenAI-compatible chat-completions proxy and authenticated browser event stream.
+- [x] Validate real streaming/nonstreaming requests, structured input, reasoning/output, usage, lifecycle, and concurrent-request isolation.
+- [x] Keep default web startup passive and database-free; do not redirect client configuration.
+- [x] Commit/push Phase D baseline; no merge.
+
+## Phase D.1 — performance and transport hardening
+
+- [x] Add optional metadata-only monotonic timing instrumentation and explicit live benchmark harness.
+- [x] Compare identical requests across direct, minimal-forwarder, and observed gateway paths with counterbalanced ordering (40 groups, then a separate 20-group repeat).
+- [x] Forward upstream stream bytes incrementally across fragmented LF/CRLF frames; preserve success bytes and mark parse/upstream gaps.
+- [x] Harden gateway Origin/content-type checks and pin validated loopback `localhost` resolution.
+- [x] Validate partial upstream failures, client iterator cancellation, bounded observer queues, malformed/large SSE and concurrent request isolation.
+- [x] Exercise authenticated browser observer disconnect/reconnect during real reasoning and output generation; confirm inference continues and snapshots reconcile.
+- [x] Update provider capability matrix, status, validation report and benchmark artifacts.
+- [ ] Close performance acceptance: repeat-to-repeat variance and upstream-header stalls remain unexplained; CPU counter resolution is insufficient for per-request attribution.
+- [ ] Do not merge until the performance gate and user review are complete.

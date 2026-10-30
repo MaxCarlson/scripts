@@ -1,6 +1,6 @@
 # LLM Monitor Inference Web Implementation Plan
 
-> **For agentic workers:** Use the executing-plans skill to implement this plan task by task. Do not commit, push, merge, publish, start a gateway, or change inference-client configuration.
+> **For agentic workers:** Phase A/B, the approved frontend workstream, Phase D, and Phase D.1 are separately authorized checkpoints. Preserve the explicit opt-in and loopback-only gateway boundary. Do not merge into `main` or change inference-client configuration.
 
 **Goal:** Add a standalone authenticated local web dashboard that discovers LM Studio inventory and shows truthful model and monitoring capability state without writing telemetry by default.
 
@@ -8,14 +8,14 @@
 
 **Tech Stack:** Python 3.11+ for `llm_monitor`; Python 3.10-compatible `web_ui_tools`; FastAPI/Uvicorn as optional LLM Monitor web dependencies; vanilla JavaScript/CSS; pytest.
 
-**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29. Phase A/B are complete. A separately approved frontend-only workstream, defined in `docs/APPROVED_VISUAL_OUTLINE.md`, extends the plan through UI-1 to UI-5 without authorizing collectors, gateway, persistence, or Runmux UI work.
+**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29, and approved visual and Phase D/D.1 follow-ons. Phase A/B, the approved UI, and Phase D are complete; Phase D.1 validates performance, transport fidelity, security, and browser reconnect behavior.
 
 ## Global Constraints
 
 - `llm_monitor` requires Python 3.11+; `web_ui_tools` and Runmux retain Python 3.10 compatibility.
 - Startup without recording must not create or modify a telemetry database.
 - Passive inventory must not be represented as individual request capture.
-- No gateway, passive collector, production inference request, model load/unload, client reconfiguration, Runmux process control, or merge is in scope. The approved UI workstream authorizes frontend-only commits and pushes to its existing feature branch.
+- No passive collector, persistent transcript storage, model load/unload, client reconfiguration, Runmux process control, or merge is in scope for D.1. The optional gateway is loopback-only and explicitly enabled; live test requests are synthetic and authorized.
 - All monitoring routes and WebSockets use `web_ui_tools` authentication and protections.
 - Existing `create_app` callers retain the `web_ui_session` cookie default.
 - Provider and model labels are untrusted text and must be rendered as text, never HTML.
@@ -91,4 +91,10 @@ The concrete gap audit, implemented state, screenshots, interaction checks and b
 
 The user has separately authorized Phase D on the existing feature branch. This authorization supersedes earlier Phase B/UI stop gates. Implement an optional, loopback-only OpenAI-compatible `/v1/chat/completions` gateway with a fixed loopback upstream, stable ingress UUIDs, bounded in-memory request/event retention, authenticated WebSocket observation, and no automatic client redirection. Ordinary `llm-monitor web` remains passive inventory-only. Do not add persistent transcript storage or other providers.
 
-The implementation and evidence are tracked in `llm_monitor/gateway.py`, `tests/gateway_test.py`, `PHASE_D_VALIDATION.md`, and the genuine-request screenshot under `screenshots/`. A real dashboard vertical slice is demonstrated, but performance remains open because a small alternating trial measured approximately 1.58 seconds additional median latency. Do not claim production performance acceptance until matched repeated trials and the remaining disconnect/reconnect checks are complete.
+The implementation and evidence are tracked in `llm_monitor/gateway.py`, `tests/gateway_test.py`, `PHASE_D_VALIDATION.md`, and the genuine-request screenshot under `screenshots/`. The initial 3-sample +1.58 s result was not reproduced by the 40-group matched benchmark. A separate 20-group repeat showed occasional 2.9–3.4 s waits before upstream response headers, with high variability; performance readiness remains open until that model-side/order effect is independently isolated. D.1 evidence and gate assessment are in `PHASE_D1_VALIDATION.md`.
+
+## Phase D.1 — Gateway performance and transport hardening
+
+The user authorized metadata-only profiling, controlled loopback benchmarks, transport/security hardening, and authenticated browser reconnect validation. The gateway now forwards upstream bytes incrementally even when SSE framing is fragmented, supports opt-in monotonic stage timing without retaining content, rejects cross-origin browser requests and non-JSON content, pins `localhost` validation to a loopback address, and represents upstream interruption as failure. The opt-in benchmark uses identical counterbalanced direct/minimal/observed requests and records only metadata. No transcript persistence or client reconfiguration is part of this phase.
+
+The 40-group run was below the provisional 50 ms median target. A subsequent 20-group repeat exposed high variance and gateway-path stalls before upstream headers, so the target is met in one trial but not established consistently. Do not mark performance-ready; retain this merge-readiness limitation pending a follow-up counterbalanced test that isolates LM Studio scheduling/prompt-cache effects from transport.

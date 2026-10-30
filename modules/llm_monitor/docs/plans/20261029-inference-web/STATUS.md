@@ -1,6 +1,6 @@
 # Status
 
-**State:** Phase D vertical slice implemented and validated; performance/reconnect acceptance gaps remain documented
+**State:** Phase D.1 transport/security/reconnect work validated; performance acceptance remains open due repeat-to-repeat variance
 **Branch:** `codex/llm-monitor-inference-web-20261029`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-inference-web-20261029`
 **Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
@@ -42,6 +42,14 @@ The earlier Phase B stop gate and UI-only scope are historical and superseded by
 
 Final LLM Monitor validation is 157 passed, 1 skipped; `web_ui_tools` is 14 passed; Runmux API/integration is 19 passed; Runmux monitor frontend suites and standalone frontend contract pass. The wheel includes the gateway and optional `httpx` dependency. No database was created. A genuine streaming request screenshot is in `screenshots/phase-d-real-gateway-request.png`.
 
+## Phase D.1 performance and transport checkpoint
+
+Phase D.1 is authorized and implemented. See [`PHASE_D1_VALIDATION.md`](PHASE_D1_VALIDATION.md) and the metadata-only benchmark artifacts. The 40-sample-per-path/mode counterbalanced trial found median observed-vs-direct deltas of −0.76 ms nonstreaming and +2.86 ms streaming, with 40/40 matched 32-token output groups. Incremental forwarding, fragmented/mixed LF/CRLF framing, large events, malformed events, partial upstream failures, cancellation, observer queue overflow, security checks, and concurrent request isolation are covered by tests. Real browser-tab disconnect/reconnect trials during two real synthetic completions retained request identity and reconciled captured reasoning/output from snapshots; inference continued after dashboard disconnect.
+
+A separate 20-sample-per-path/mode run on the same model alias produced occasional 2.94–3.44 s nonstreaming waits on the minimal/observed paths (the delay occurred before upstream response headers), while the direct call in that group was 418 ms. The run had high variance and request order/provider prompt-cache effects are plausible, but not proven. The original three-sample comparison is not reproducible from retained request/config metadata and its generated lengths differed. Performance is therefore **not accepted for merge readiness**, despite the 40-group run meeting the provisional 50 ms median target. A follow-up experiment must isolate LM Studio scheduling/cache effects; no algorithmic regression was found in measured pre-header normalization/dispatch stages.
+
+Current validation: full LLM Monitor suite passes (170 passed, 1 skipped); `web_ui_tools` passes 14 tests; Runmux monitor API/integration passes 19 tests; Runmux monitor frontend and standalone UI contract suites pass. Ruff passes on all changed Python files. Default monitoring did not create a telemetry database. LM Studio and OpenCode configuration were not changed.
+
 ## Publication
 
-Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e` is pushed to `origin/codex/llm-monitor-inference-web-20261029`. The branch remains unmerged.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e` and Phase D baseline are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.1 changes are prepared for the authorized feature-branch commit/push; the branch remains unmerged.
