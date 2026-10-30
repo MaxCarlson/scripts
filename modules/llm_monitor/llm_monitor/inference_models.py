@@ -109,6 +109,8 @@ class InferenceRequest:
     server_instance_id: str
     source: str
     state: str
+    provider_model_id: str | None = None
+    model_name: str | None = None
     model_instance_id: str | None = None
     provider_request_id: str | None = None
     started_at: str | None = None
@@ -116,6 +118,10 @@ class InferenceRequest:
     input_tokens: int | None = None
     reasoning_tokens: int | None = None
     output_tokens: int | None = None
+    generated_tokens: int | None = None
+    usage_source: str | None = None
+    finish_reason: str | None = None
+    elapsed_seconds: float | None = None
     coverage: dict[str, str] = field(default_factory=dict)
     content: tuple[ContentSegment, ...] = ()
 
@@ -128,6 +134,8 @@ class InferenceRequest:
             server_instance_id=str(payload["server_instance_id"]),
             source=str(payload.get("source", "unknown")),
             state=str(payload.get("state", "observed")),
+            provider_model_id=payload.get("provider_model_id") if isinstance(payload.get("provider_model_id"), str) else None,
+            model_name=payload.get("model_name") if isinstance(payload.get("model_name"), str) else None,
             model_instance_id=payload.get("model_instance_id") if isinstance(payload.get("model_instance_id"), str) else None,
             provider_request_id=payload.get("provider_request_id") if isinstance(payload.get("provider_request_id"), str) else None,
             started_at=payload.get("started_at") if isinstance(payload.get("started_at"), str) else None,
@@ -135,6 +143,10 @@ class InferenceRequest:
             input_tokens=_optional_count(payload.get("input_tokens")),
             reasoning_tokens=_optional_count(payload.get("reasoning_tokens")),
             output_tokens=_optional_count(payload.get("output_tokens")),
+            generated_tokens=_optional_count(payload.get("generated_tokens")),
+            usage_source=payload.get("usage_source") if isinstance(payload.get("usage_source"), str) else None,
+            finish_reason=payload.get("finish_reason") if isinstance(payload.get("finish_reason"), str) else None,
+            elapsed_seconds=payload.get("elapsed_seconds") if isinstance(payload.get("elapsed_seconds"), (int, float)) else None,
             coverage={str(key): str(value) for key, value in coverage.items()} if isinstance(coverage, dict) else {},
             content=tuple(ContentSegment.from_dict(item) for item in content if isinstance(item, dict))
             if isinstance(content, list) else (),
@@ -148,11 +160,17 @@ class InferenceRequest:
             "provider_request_id": self.provider_request_id,
             "source": self.source,
             "state": self.state,
+            "provider_model_id": self.provider_model_id,
+            "model_name": self.model_name,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "input_tokens": self.input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "output_tokens": self.output_tokens,
+            "generated_tokens": self.generated_tokens,
+            "usage_source": self.usage_source,
+            "finish_reason": self.finish_reason,
+            "elapsed_seconds": self.elapsed_seconds,
             "coverage": dict(self.coverage),
             "content": [segment.to_dict() for segment in self.content],
         }

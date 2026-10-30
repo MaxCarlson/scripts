@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 from .inference_service import InferenceMonitoringService
 from .inference_web import create_inference_web_app
 from .providers import LMStudioClient
+from .gateway import OpenAIInferenceGateway, RequestEventHub, validate_gateway_upstream
 
 
 def validate_endpoint(endpoint: str) -> str:
@@ -38,6 +39,8 @@ def run_web(
     port: int = 8788,
     no_browser: bool = False,
     refresh_interval: float = 2.0,
+    gateway_enabled: bool = False,
+    gateway_upstream: str | None = None,
 ) -> int:
     """Serve the authenticated overview on loopback. This does not open telemetry storage."""
     if not 1 <= port <= 65535:
@@ -56,10 +59,16 @@ def run_web(
         endpoint=safe_endpoint,
         refresh_interval_seconds=refresh_interval,
     )
-    app = create_inference_web_app(service, login_code=login_code)
+    gateway = None
+    event_hub = RequestEventHub()
+    if gateway_enabled:
+        gateway = OpenAIInferenceGateway(validate_gateway_upstream(gateway_upstream or safe_endpoint), service.store, event_hub, server_instance_id=service.server_instance_id)
+    app = create_inference_web_app(service, login_code=login_code, gateway=gateway, event_hub=event_hub)
     server = create_server(app, host="127.0.0.1", port=port)
     url = f"http://127.0.0.1:{port}"
     print(f"LLM Monitor is listening at {url}")
+    if gateway is not None:
+        print(f"Opt-in inference gateway: {url}/v1/chat/completions -> {gateway.upstream}")
     print(f"Enter this local startup login code in the browser: {login_code}")
     if not no_browser:
         threading.Timer(0.75, webbrowser.open, args=(url,)).start()

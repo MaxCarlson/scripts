@@ -1,9 +1,10 @@
 # Status
 
-**State:** Approved frontend implementation complete; committed and pushed
+**State:** Phase D vertical slice implemented and validated; performance/reconnect acceptance gaps remain documented
 **Branch:** `codex/llm-monitor-inference-web-20261029`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-inference-web-20261029`
 **Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
+**Phase D baseline:** `966c3476a6448fcdbd095390d0c706308d8915ae`
 **Design authority:** [`docs/APPROVED_VISUAL_OUTLINE.md`](../../APPROVED_VISUAL_OUTLINE.md)
 
 ## Completed
@@ -31,9 +32,15 @@ Browser responses used the test-only synthetic fixture; the host itself was auth
 
 The current backend discovers servers/models but does not provide real request capture/content, streaming events, request analytics, GPU samples, historical requests, alert/coverage records or recording controls. Those views show explicit unavailable/no-history states in the production path. Implementing collectors or a gateway is outside this assignment. The next authorized work can define and implement those backend APIs independently, then connect the existing frontend contracts.
 
-## Scope boundary
+## Historical Phase A/B and UI scope boundary
 
-The Phase A/B checkpoint remains intact. This follow-on changes only standalone frontend assets/tests, static-asset packaging metadata and module plan documentation. No inference gateway, passive log collector, persistent transcript store, Runmux process UI, or merge is included.
+The Phase A/B checkpoint remains intact. The earlier UI milestone changed standalone frontend assets/tests, static-asset packaging metadata and plan documentation. Its gateway prohibition applied only to that milestone and has been superseded by the Phase D authorization below. No passive log collector, persistent transcript store, Runmux process UI, or merge is included in Phase D.
+
+## Phase D authorization and result
+
+The earlier Phase B stop gate and UI-only scope are historical and superseded by the explicit Phase D authorization. The opt-in loopback OpenAI chat-completions gateway and authenticated browser event stream are now implemented. Real streaming, nonstreaming, concurrent requests, captured browser display, cancellation, token-limit completion, request isolation, request-body bounds and loopback upstream validation have evidence in [`PHASE_D_VALIDATION.md`](PHASE_D_VALIDATION.md). The repeated small latency trial shows a concerning 1.58 s median gateway delta; matched performance profiling and dedicated browser-observer reconnect trials remain open. This gateway must not be represented as performance-accepted.
+
+Final LLM Monitor validation is 157 passed, 1 skipped; `web_ui_tools` is 14 passed; Runmux API/integration is 19 passed; Runmux monitor frontend suites and standalone frontend contract pass. The wheel includes the gateway and optional `httpx` dependency. No database was created. A genuine streaming request screenshot is in `screenshots/phase-d-real-gateway-request.png`.
 
 ## Publication
 

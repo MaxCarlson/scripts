@@ -15,6 +15,8 @@ let state = createState();
 let pollTimer = null;
 let polling = false;
 let transcriptTextScale = 1;
+let eventSocket = null;
+let eventReconnectTimer = null;
 const preferences = readPreferences();
 state = { ...state, ...preferences };
 
@@ -58,6 +60,10 @@ function clearSensitiveState() {
 function lockDashboard(message = "") {
   if (pollTimer !== null) window.clearTimeout(pollTimer);
   pollTimer = null;
+  if (eventReconnectTimer !== null) window.clearTimeout(eventReconnectTimer);
+  eventReconnectTimer = null;
+  if (eventSocket) eventSocket.close();
+  eventSocket = null;
   dashboard.hidden = true;
   loginPanel.hidden = false;
   loginCode.value = "";
@@ -72,6 +78,7 @@ async function login(code) {
     loginPanel.hidden = true;
     dashboard.hidden = false;
     await refresh();
+    connectEvents();
     scheduleRefresh();
   } catch {
     setLoginError("Login failed. Check the code printed by the local monitor process.");
@@ -310,6 +317,25 @@ function ingestRequestEvent(event) {
     if (request) announce(`${request.request_id} ${event.type === "stream.interrupted" ? "stream interrupted" : stateLabel(request.state)}`);
   }
   return true;
+}
+
+function connectEvents() {
+  if (dashboard.hidden || eventSocket) return;
+  const scheme = location.protocol === "https:" ? "wss:" : "ws:";
+  eventSocket = new WebSocket(`${scheme}//${location.host}/api/inference/v1/stream`);
+  eventSocket.onmessage = (message) => {
+    try { ingestRequestEvent(JSON.parse(message.data)); } catch { /* Ignore malformed observer events. */ }
+  };
+  eventSocket.onclose = () => {
+    eventSocket = null;
+    if (dashboard.hidden) return;
+    eventReconnectTimer = window.setTimeout(async () => {
+      eventReconnectTimer = null;
+      await refresh();
+      connectEvents();
+    }, 1500);
+  };
+  eventSocket.onerror = () => eventSocket?.close();
 }
 
 function announce(message) {

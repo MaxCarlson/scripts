@@ -85,4 +85,10 @@ LM Studio log-event capture, individual request reconstruction, reasoning/output
 
 The approved visual outline is the authority for the standalone dashboard shell, request explorer, transcript inspector, telemetry/timeline tabs, model/server views, responsive layout and keyboard behavior. Implement these frontend contracts against the existing authenticated API and deterministic test-only fixtures. Do not connect synthetic events to the normal production data path. Keep unavailable backend-dependent features visibly unavailable.
 
-The concrete gap audit, implemented state, screenshots, interaction checks and backend dependencies are tracked in `FRONTEND_GAP_ANALYSIS.md`, `STATUS.md` and `checklist.md`. UI work remains limited to frontend assets/tests/package asset metadata and plan documentation; no gateway or passive log collector work is authorized by this follow-on.
+The concrete gap audit, implemented state, screenshots, interaction checks and backend dependencies are tracked in `FRONTEND_GAP_ANALYSIS.md`, `STATUS.md` and `checklist.md`. UI-1 through UI-5 are complete.
+
+## Phase D — Explicitly authorized local gateway
+
+The user has separately authorized Phase D on the existing feature branch. This authorization supersedes earlier Phase B/UI stop gates. Implement an optional, loopback-only OpenAI-compatible `/v1/chat/completions` gateway with a fixed loopback upstream, stable ingress UUIDs, bounded in-memory request/event retention, authenticated WebSocket observation, and no automatic client redirection. Ordinary `llm-monitor web` remains passive inventory-only. Do not add persistent transcript storage or other providers.
+
+The implementation and evidence are tracked in `llm_monitor/gateway.py`, `tests/gateway_test.py`, `PHASE_D_VALIDATION.md`, and the genuine-request screenshot under `screenshots/`. A real dashboard vertical slice is demonstrated, but performance remains open because a small alternating trial measured approximately 1.58 seconds additional median latency. Do not claim production performance acceptance until matched repeated trials and the remaining disconnect/reconnect checks are complete.

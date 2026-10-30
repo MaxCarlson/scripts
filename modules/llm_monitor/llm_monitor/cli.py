@@ -130,6 +130,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("-e", "--endpoint", default="http://127.0.0.1:1234", help="LM Studio HTTP base URL")
     web.add_argument("-i", "--refresh-interval", type=float, default=2.0)
     web.add_argument("-n", "--no-browser", action="store_true", help="Do not open a browser window")
+    web.add_argument("--gateway", action="store_true", help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
+    web.add_argument("--gateway-upstream", default="http://127.0.0.1:1234", help="Fixed loopback inference upstream (gateway mode only)")
 
     tui = sub.add_parser("tui", help="Open the interactive read-only monitoring dashboard")
     selection = tui.add_mutually_exclusive_group()
@@ -196,6 +198,8 @@ def main(argv: list[str] | None = None) -> int:
                 port=args.port,
                 no_browser=args.no_browser,
                 refresh_interval=args.refresh_interval,
+                gateway_enabled=args.gateway,
+                gateway_upstream=args.gateway_upstream,
             )
         if args.command == "tui":
             return _tui(args)

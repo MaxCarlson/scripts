@@ -32,7 +32,7 @@ class LiveInferenceStore:
                 self._requests.popitem(last=False)
             remaining = max(0, self.max_content_bytes - self._content_bytes())
             content = []
-            for segment in request.content:
+            for segment in _coalesce_segments(request.content):
                 text = segment.text
                 if text is None:
                     content.append(segment)
@@ -51,6 +51,39 @@ class LiveInferenceStore:
         with self._lock:
             return tuple(reversed(self._requests.values()))
 
+    def append_content(self, request_id: str, segment: Any) -> None:
+        """Append one captured segment under the same global content budget."""
+        with self._lock:
+            request = self._requests.get(request_id)
+            if request is None:
+                return
+            content = list(request.content)
+            previous = content[-1] if content else None
+            if previous and previous.kind == segment.kind and previous.role == segment.role and previous.source == segment.source and previous.text is not None and segment.text is not None:
+                content[-1] = replace(previous, text=previous.text + segment.text, observed_at=segment.observed_at, sequence=segment.sequence or previous.sequence)
+            else:
+                content.append(segment)
+            self._requests[request_id] = replace(request, content=tuple(content))
+            self._trim_content()
+
+    def _trim_content(self) -> None:
+        remaining = self.max_content_bytes
+        for request_id, request in reversed(self._requests.items()):
+            segments = []
+            for segment in reversed(request.content):
+                if segment.text is None:
+                    segments.append(segment)
+                    continue
+                encoded = segment.text.encode("utf-8")
+                if len(encoded) <= remaining:
+                    remaining -= len(encoded)
+                    segments.append(segment)
+                else:
+                    clipped = encoded[:remaining].decode("utf-8", errors="ignore")
+                    remaining = 0
+                    segments.append(replace(segment, text=clipped, truncated=True))
+            self._requests[request_id] = replace(request, content=tuple(reversed(segments)))
+
     def replace_inventory(self, server: dict[str, Any], models: list[ModelInventoryEntry]) -> None:
         with self._lock:
             self._server = dict(server)
@@ -68,3 +101,14 @@ class LiveInferenceStore:
             for segment in request.content
             if segment.text is not None
         )
+
+
+def _coalesce_segments(segments: tuple[Any, ...]) -> tuple[Any, ...]:
+    result = []
+    for segment in segments:
+        previous = result[-1] if result else None
+        if previous and previous.kind == segment.kind and previous.role == segment.role and previous.source == segment.source and previous.text is not None and segment.text is not None:
+            result[-1] = replace(previous, text=previous.text + segment.text, observed_at=segment.observed_at, sequence=segment.sequence or previous.sequence, truncated=previous.truncated or segment.truncated)
+        else:
+            result.append(segment)
+    return tuple(result)

@@ -5,9 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException
+from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 
 from .inference_service import InferenceMonitoringService
+from .gateway import OpenAIInferenceGateway, RequestEventHub
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SESSION_COOKIE_NAME = "llm_monitor_session"
@@ -18,6 +19,8 @@ def create_inference_web_app(
     *,
     login_code: str,
     static_dir: str | Path = STATIC_DIR,
+    gateway: OpenAIInferenceGateway | None = None,
+    event_hub: RequestEventHub | None = None,
 ) -> FastAPI:
     """Create the standalone UI app without opening a telemetry database."""
     try:
@@ -26,16 +29,20 @@ def create_inference_web_app(
         raise RuntimeError("Install llm-monitor[web] to use the browser dashboard.") from error
 
     router = APIRouter(prefix="/api/inference/v1")
+    events = event_hub or RequestEventHub()
 
     @router.get("/status")
     def status() -> dict[str, Any]:
         snapshot = service.snapshot()
+        capabilities = snapshot["capabilities"]
+        if gateway is not None:
+            capabilities = {**capabilities, "request_lifecycle": {"state": "available", "source": "gateway"}, "structured_input": {"state": "available", "source": "gateway"}, "reasoning_text": {"state": "streaming", "source": "upstream_sse"}, "output_text": {"state": "streaming", "source": "upstream_sse"}, "request_timing": {"state": "available", "source": "gateway_observed"}, "token_usage": {"state": "available", "source": "provider_reported_or_unavailable"}}
         return {
             "schema_version": 1,
             "availability": snapshot["server"]["connection_state"],
             "revision": snapshot["revision"],
             "refreshed_at": snapshot["refreshed_at"],
-            "capabilities": snapshot["capabilities"],
+            "capabilities": capabilities,
             "recording": snapshot["recording"],
         }
 
@@ -62,8 +69,8 @@ def create_inference_web_app(
         snapshot = service.snapshot()
         return {
             "schema_version": 1,
-            "availability": "available",
-            "capture_state": snapshot["capabilities"]["request_lifecycle"]["state"],
+            "availability": "available" if gateway is not None or snapshot["requests"] else "unavailable",
+            "capture_state": "available" if gateway is not None else snapshot["capabilities"]["request_lifecycle"]["state"],
             "requests": snapshot["requests"],
         }
 
@@ -81,7 +88,24 @@ def create_inference_web_app(
         login_code=login_code,
         session_cookie_name=SESSION_COOKIE_NAME,
     )
+    @app.websocket("/api/inference/v1/stream")
+    async def stream(websocket: WebSocket) -> None:
+        await websocket.accept()
+        try:
+            async for event in events.subscribe():
+                await websocket.send_json(event)
+        except WebSocketDisconnect:
+            return
+        except RuntimeError:
+            await websocket.close(code=1013, reason="observer capacity reached")
+
+    if gateway is not None:
+        app.include_router(gateway.router())
     app.add_event_handler("startup", service.start)
     app.add_event_handler("shutdown", service.stop)
     app.state.inference_service = service
+    app.state.inference_event_hub = events
+    app.state.inference_gateway = gateway
+    if gateway is not None:
+        app.add_event_handler("shutdown", gateway.close)
     return app
