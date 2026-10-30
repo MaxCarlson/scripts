@@ -22,6 +22,8 @@ class Worker:
 
     def __init__(self, code=GOOD, *, unresolved=False, uncertain=False, extra=False):
         self.code, self.unresolved, self.uncertain, self.extra = code, unresolved, uncertain, extra
+        self.base_url = "http://127.0.0.1:4096"
+        self.events: list[str] = []
         self.last_history = [{"info": {"id": "assistant-1", "role": "assistant", "sessionID": "session-1",
                                       "parentID": "user-1"}, "parts": [{
             "type": "tool", "tool": "write", "callID": "write-grep",
@@ -32,10 +34,12 @@ class Worker:
         return {"opencode_version": "mock", **kwargs}
 
     async def prepare_session(self, directory, *, project_id):
+        self.events.append("prepared")
         self.project_id = project_id
         return {"id": "session-1", "directory": str(directory), "projectID": project_id}
 
     async def dispatch(self, workspace, prompt, **kwargs):
+        self.events.append("dispatch")
         assert not (workspace / "verifier").exists()
         project_config = json.loads((workspace / "opencode.json").read_text(encoding="utf-8"))
         assert "test-model" in project_config["provider"]["lmstudio"]["models"]
@@ -82,6 +86,27 @@ def test_first_attempt_is_independently_verified_and_has_owned_receipts(tmp_path
     assert journal["workspace"]["path"] == str(result.workspace.path)
     assert journal["grace_seconds"] == 0.03
     assert (tmp_path / "evidence/worker.patch").is_file()
+
+
+def test_before_dispatch_callback_identifies_open_code_target_and_prepared_session(tmp_path):
+    worker = Worker()
+    ready = []
+
+    def announce(details):
+        worker.events.append("ready")
+        ready.append(details)
+
+    attempt(tmp_path, worker, before_dispatch=announce)
+
+    assert worker.events == ["prepared", "ready", "dispatch"]
+    assert ready == [{
+        "endpoint": "http://127.0.0.1:4096",
+        "project_directory": ready[0]["project_directory"],
+        "session_id": "session-1",
+        "model": "test-model",
+        "agent": "benchmark-files",
+    }]
+    assert Path(ready[0]["project_directory"]).is_dir()
 
 
 def test_bad_s1_remains_bad_after_coordinator_repairs_worker(tmp_path):

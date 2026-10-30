@@ -46,6 +46,7 @@ from .attempt import run_attempt, run_cli_attempt
 from .telemetry import ResourceLimitExceeded, RuntimeMemoryGuard
 from .bridge import ModelConfigurationError, connected_bridge
 from .evidence import EVIDENCE_LIMITS, Task, load_task
+from .instruction_overlay import InstructionAppend, apply_instruction_append
 from .tool_profile import FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE
 from .diagnostics import describe_trial
 from .git_workspace import ISOLATION_POLICY
@@ -199,7 +200,7 @@ class ExperimentScheduler:
         reports_dir: Path,
         state_dir: Path,
         allow_model_transitions: bool = False,
-        max_ram_percent: float = 100.0,
+        max_ram_percent: float | None = None,
         base_url: str = "http://127.0.0.1:4096",
         provider: str = "lmstudio",
         agent: str = "local-worker",
@@ -207,6 +208,9 @@ class ExperimentScheduler:
         lms_runner: Optional[CommandRunner] = None,
         trial_executor: Optional[TrialExecutor] = None,
         tool_profile: str | None = None,
+        inference_profile: dict[str, Any] | None = None,
+        instruction_append: InstructionAppend | None = None,
+        before_dispatch: Optional[Callable[[dict[str, Any]], None]] = None,
         on_trial_start: Optional[TrialCallback] = None,
         on_trial_complete: Optional[TrialCallback] = None,
         on_model_start: Optional[Callable[[str], None]] = None,
@@ -225,6 +229,9 @@ class ExperimentScheduler:
         self.lms_path = lms_path
         self.lms_runner = lms_runner
         self.trial_executor = trial_executor
+        self.inference_profile = inference_profile
+        self.instruction_append = instruction_append
+        self.before_dispatch = before_dispatch
         if tool_profile not in {None, FILE_PROFILE, RETRIEVAL_PROFILE, STRUCTURAL_PROFILE}:
             raise ValueError(f"Unsupported experiment tool profile: {tool_profile}")
         self.tool_profile = tool_profile
@@ -314,6 +321,8 @@ class ExperimentScheduler:
                 loaded_model = await transition_model(
                     resolved_model,
                     allow_transitions=self.allow_model_transitions,
+                    max_ram_pct=(self.max_ram_percent
+                                 if self.max_ram_percent is not None and self.max_ram_percent < 100 else None),
                     lms_path=self.lms_path,
                     context_length=context_length,
                     expected_model_size_bytes=(
@@ -373,6 +382,7 @@ class ExperimentScheduler:
                     "evidence_limits": EVIDENCE_LIMITS.to_dict() if hasattr(EVIDENCE_LIMITS, "to_dict") else {},
                     "model_identity": self.model_identities[model_key].to_dict()
                     if model_key in self.model_identities else None,
+                    "requested_inference_profile": self.inference_profile,
                 },
             )
             save_run(run_dir, run_info, overwrite=True)
@@ -385,6 +395,7 @@ class ExperimentScheduler:
                     self.on_trial_start(planned_trial, None)
 
                 task = load_task(self.task_dirs[planned_trial.task_id])
+                task = apply_instruction_append(task, self.instruction_append)
                 if self.tool_profile is not None and resolved_provider == "lmstudio":
                     task = replace(task, opencode_tool_profile=self.tool_profile)
                 evidence_dir = run_dir / "evidence" / f"trial-{planned_trial.trial_index + 1:03d}"
@@ -411,6 +422,8 @@ class ExperimentScheduler:
                         task_seconds,
                         grace_seconds,
                         verifier_seconds,
+                        self.inference_profile,
+                        self.before_dispatch,
                     )
 
                 runtime = ({"kind": "injected", "version": "test-executor"} if self.trial_executor is not None else runtime_conditions(evidence_dir))
@@ -620,11 +633,27 @@ class ExperimentScheduler:
         task_seconds: float,
         grace_seconds: float,
         verifier_seconds: float,
+        inference_profile: dict[str, Any] | None = None,
+        before_dispatch: Optional[Callable[[dict[str, Any]], None]] = None,
     ) -> TrialResult:
         """Run a single live trial via CLI worker (`agy`/`codex`) or OpenCodeBridge (`lmstudio`)."""
         resolved_provider, resolved_model = resolve_model_provider_and_key(
             trial.model_key, default_provider=self.provider
         )
+        dispatch_callback = None
+        if before_dispatch is not None:
+            benchmark_trial_id = f"trial-{trial.trial_index + 1:03d}"
+            monitor_trial_id = f"{trial.run_id}/{benchmark_trial_id}"
+
+            def dispatch_callback(details: dict[str, Any]) -> None:
+                before_dispatch({
+                    **details,
+                    "run_id": trial.run_id,
+                    "trial_id": benchmark_trial_id,
+                    "monitor_trial_id": monitor_trial_id,
+                    "task_id": trial.task_id,
+                })
+
         with reserved_trial(self.state_dir, evidence_dir, lock_held=True) as guard:
             trial_res: Optional[TrialResult] = None
             cancelled = False
@@ -655,10 +684,16 @@ class ExperimentScheduler:
                             model=resolved_model,
                             agent=self.agent,
                             model_identity=self.model_identities.get(trial.model_key),
-                            resource_check=RuntimeMemoryGuard(max_ram_pct=self.max_ram_percent),
+                            resource_check=RuntimeMemoryGuard(
+                                max_ram_pct=(self.max_ram_percent
+                                             if self.max_ram_percent is not None and self.max_ram_percent < 100
+                                             else None)
+                            ),
                             task_seconds=task_seconds,
                             grace_seconds=grace_seconds,
                             verifier_seconds=verifier_seconds,
+                            inference_profile=inference_profile,
+                            before_dispatch=dispatch_callback,
                         )
                 trial_res = trial_from_attempt(
                     evidence,

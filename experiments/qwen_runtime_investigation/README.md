@@ -1,0 +1,26 @@
+# Qwen local runtime investigation
+
+This directory contains small, reusable experimental controls for Agent Benchmark and the optional LM Studio request-capture proxy. Task fixtures and independent verifiers are maintained in `modules/agent_benchmark/agent_benchmark/tasks/`. Generated run reports, session records, runtime snapshots, telemetry databases and raw session data are intentionally excluded from the repository.
+
+## Findings
+
+The investigation used Qwen3.8-27B Q4_K_M with a 98,304-token context and 8,192- or 16,384-token output limits. These are different limits. The tested OpenCode profile was an explicit project-local setting; it did not alter shared runtime configuration.
+
+- OpenCode's alias did not forward selected reasoning effort values by itself. Explicit per-model configuration with a matching variant forwarded the setting in mock-provider capture. `reasoning_effort=none` was observed in direct LM Studio and Monitor inference records; tested numeric `reasoning_budget` and `thinking_budget` fields did not cap reasoning on this GGUF route.
+- Default reasoning sometimes consumed nearly all of an 8K or 16K generation allowance before useful coding work. Explicit `none` suppressed reported reasoning tokens and often reached edits sooner, but did not ensure correct code.
+- The independent file-creation fixture passed twice in the initial smoke screen. Matched T2 and T4 baseline/`none` trials passed; the first matched T5 asynchronous pair also passed. Later T5 repeats split between passes and failures. These small, task-dependent samples do not establish general reliability or a statistical speed advantage.
+- B1's asynchronous polling/lifecycle task remains unsuitable for direct acceptance. An earlier revision 1.0.0 repair passed, but later revision 1.0.1 single-stage, checklist and repair conditions failed. In the final bounded transition follow-up, the invariant-guided first attempt produced invalid JavaScript after 21 inferences (229,438 input, 6,562 output, 0 reported reasoning tokens; 67.4 seconds). Its one fresh verifier-guided repair made no edit and timed out after 60.4 seconds (7 inferences, 39,252 input, 696 output, 0 reported reasoning tokens). Both turns terminated; the first attempt had one failed edit operation but no recorded out-of-scope path change. One historical repair pass is not enough to recommend repeated repair loops.
+- LLM Monitor delivered thousands of session-matched SSE events and text deltas during live trials. Persisted histories were complete with no database gaps. The sticky `telemetry_incomplete` warning reflected an initial activity-only interval; the bounded observer deadline and idle-tail warnings did not demonstrate missing events. An earlier T1 live snapshot was not retained, so its precise warning trigger is unknown.
+- The optional proxy records only allowlisted scalar request settings, model ID, request field names, tool count, provider and observation time. Live request counts and timestamps matched Monitor inference windows, but the proxy does not record session/message IDs; correlation is approximate by timestamp, not exact identity.
+
+## Operating policy
+
+Use local Qwen for bounded, low-risk file creation or localized edits only when an independent verifier can reject incorrect output. Treat `reasoning_effort=none` as a candidate efficiency setting for such tasks, not a correctness setting. Preserve first-attempt scoring separately from any repair result. Allow at most one targeted repair when verifier feedback points to a localized defect and the worker's scope remains inspectable; stop if it makes no edit or cannot address the reported failure. Escalate asynchronous lifecycle, cancellation/concurrency, broad, ambiguous or otherwise high-impact work to Codex or another stronger model.
+
+For each local task, retain the exact project, session and trial identifiers; downloaded model key and loaded/OpenCode identities; requested and effective context/output/reasoning settings with provenance; inference tokens and finish reasons; tool outcomes; first-edit and total duration; strict scope and independent verifier results; termination evidence; and repair outcome. Mark unknown telemetry as unknown rather than zero.
+
+## Reproducibility and privacy
+
+The JSON files in `configs/` are small, explicit inference conditions. `taskset.json` lists the bounded staged task suite and its non-Cartesian execution policy. `request_capture.py` supports mock-provider forwarding checks; `request_capture_proxy.py` is optional instrumentation for isolated local experiments only. Its production listener and upstream are fixed to loopback addresses, model IDs are allowlisted, and the stored record excludes prompts, source contents, tool arguments, completions and credentials. Do not install it in shared OpenCode configuration or make it a normal runtime dependency.
+
+Run the proxy's offline tests from this directory with `python -m pytest tests/test_request_capture_proxy.py`. Run live experiments only through Agent Benchmark's isolated project configuration and the operations in [`docs/agent/LOCAL_LLM_RUNTIME_OPERATIONS.md`](../../docs/agent/LOCAL_LLM_RUNTIME_OPERATIONS.md). The historical source branch preserves detailed local evidence; this curated integration intentionally does not copy it.

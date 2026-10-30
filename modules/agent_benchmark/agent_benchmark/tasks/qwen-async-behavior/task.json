@@ -1,0 +1,10 @@
+{
+  "task_id": "qwen-async-behavior",
+  "suite_version": "1.0.0",
+  "category": "moderate-asynchronous-behavior",
+  "allowed_paths": ["src/async_jobs.py"],
+  "forbidden_paths": ["README.md", "instruction.md", "task.json"],
+  "time_budget_seconds": 120,
+  "verifier": "verifier/check.py",
+  "opencode_tool_profile": "file-tools-v1"
+}

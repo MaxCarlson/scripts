@@ -236,3 +236,19 @@ modules/scheduler/scheduler_history.sqlite3
 # Launcher backups and generated manifests
 .launcher_backup_*
 scripts_manifest.json
+
+# Generated Qwen runtime experiment evidence (keep curated reports and configs trackable)
+experiments/qwen_runtime_investigation/evidence/runs/
+experiments/qwen_runtime_investigation/evidence/repair-fixtures/
+experiments/qwen_runtime_investigation/evidence/plan-execute-fixture/
+experiments/qwen_runtime_investigation/evidence/runtime/
+experiments/qwen_runtime_investigation/evidence/state/
+experiments/qwen_runtime_investigation/evidence/*.json
+experiments/qwen_runtime_investigation/evidence/*.jsonl
+experiments/qwen_runtime_investigation/evidence/*.csv
+experiments/qwen_runtime_investigation/evidence/*.html
+experiments/qwen_runtime_investigation/evidence/*.log
+experiments/qwen_runtime_investigation/evidence/*.sqlite*
+experiments/qwen_runtime_investigation/evidence/*.db
+experiments/qwen_runtime_investigation/evidence/*.wal
+experiments/qwen_runtime_investigation/evidence/*.shm

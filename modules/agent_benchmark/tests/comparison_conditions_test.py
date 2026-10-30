@@ -31,6 +31,19 @@ def test_configured_inference_observations_do_not_become_effective_comparison_se
     assert runtime_conditions(tmp_path)["model_settings"] is None
 
 
+def test_requested_inference_profile_is_retained_as_comparison_provenance(tmp_path):
+    profile = {"schema": "opencode-inference-profile-v1", "context_length": 98304,
+               "output_limit": 8192,
+               "reasoning": {"mode": "effort", "effort": "low", "provenance": "experiment_profile"},
+               "sha256": "b" * 64}
+    evidence = {"opencode_version": "1.19.3", "bridge_version": "3.0.0", "agent": "benchmark-files",
+                "permissions": [{"permission": "*", "pattern": "*", "action": "deny"}],
+                "agent_configuration": {"prompt_sha256": "a" * 64},
+                "requested_inference_profile": profile}
+    (tmp_path / "runtime.json").write_text(json.dumps(evidence), encoding="utf-8")
+    assert runtime_conditions(tmp_path)["requested_inference_profile"] == profile
+
+
 def test_effective_permission_fingerprint_ignores_only_overridden_prefix(tmp_path):
     base = [{"permission": "read", "pattern": "*", "action": "allow"},
             {"permission": "external_directory", "pattern": "C:/skill/a/*", "action": "allow"}]

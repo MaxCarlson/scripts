@@ -286,6 +286,7 @@ class OpenCodeBridge:
     def __init__(self, call_tool: ToolCaller, http: httpx.AsyncClient):
         self.call_tool = call_tool
         self.http = http
+        self.base_url = str(http.base_url).rstrip("/")
         self.last_receipt: dict = {}
         self.last_history: list = []
         self.last_session: object = None

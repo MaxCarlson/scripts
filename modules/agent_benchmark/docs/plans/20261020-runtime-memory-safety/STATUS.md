@@ -1,5 +1,9 @@
 # Runtime memory safety (1.11.0)
 
+> Historical record. Its 85% host-RAM stop and 4 GiB available-memory stop were superseded by
+> `20261029-runtime-resource-policy/STATUS.md`; preserve the incident timeline below, but do not
+> treat those thresholds as current policy.
+
 ## Goal and scope
 
 Protect the host during local inference and retain an attributable partial result when memory
