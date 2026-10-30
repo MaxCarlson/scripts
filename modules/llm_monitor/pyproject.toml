@@ -21,7 +21,7 @@ where = ["."]
 include = ["llm_monitor*"]
 
 [tool.setuptools.package-data]
-llm_monitor = ["web_static/*.html", "web_static/assets/*.css", "web_static/assets/*.js"]
+llm_monitor = ["web_static/*.html", "web_static/assets/*.css", "web_static/assets/*.js", "web_static/assets/js/*.mjs"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

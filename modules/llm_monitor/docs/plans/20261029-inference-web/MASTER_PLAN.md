@@ -8,14 +8,14 @@
 
 **Tech Stack:** Python 3.11+ for `llm_monitor`; Python 3.10-compatible `web_ui_tools`; FastAPI/Uvicorn as optional LLM Monitor web dependencies; vanilla JavaScript/CSS; pytest.
 
-**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29. The accepted work boundary is Phase A plus Phase B, stopping at the Phase B gate.
+**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29. Phase A/B are complete. A separately approved frontend-only workstream, defined in `docs/APPROVED_VISUAL_OUTLINE.md`, extends the plan through UI-1 to UI-5 without authorizing collectors, gateway, persistence, or Runmux UI work.
 
 ## Global Constraints
 
 - `llm_monitor` requires Python 3.11+; `web_ui_tools` and Runmux retain Python 3.10 compatibility.
 - Startup without recording must not create or modify a telemetry database.
 - Passive inventory must not be represented as individual request capture.
-- No gateway, inference request, model load/unload, client reconfiguration, Runmux process control, commit, push, or merge is in scope.
+- No gateway, passive collector, production inference request, model load/unload, client reconfiguration, Runmux process control, or merge is in scope. The approved UI workstream authorizes frontend-only commits and pushes to its existing feature branch.
 - All monitoring routes and WebSockets use `web_ui_tools` authentication and protections.
 - Existing `create_app` callers retain the `web_ui_session` cookie default.
 - Provider and model labels are untrusted text and must be rendered as text, never HTML.
@@ -80,3 +80,9 @@ Inspect and correct only verified source-level contract mismatches identified by
 ## Explicitly deferred
 
 LM Studio log-event capture, individual request reconstruction, reasoning/output capture, inference gateway, persistence/migration, Ollama/llama.cpp/vLLM, historical analytics, recording controls, and Runmux request-oriented integration remain future phases.
+
+## Approved frontend workstream (user-authorized follow-on)
+
+The approved visual outline is the authority for the standalone dashboard shell, request explorer, transcript inspector, telemetry/timeline tabs, model/server views, responsive layout and keyboard behavior. Implement these frontend contracts against the existing authenticated API and deterministic test-only fixtures. Do not connect synthetic events to the normal production data path. Keep unavailable backend-dependent features visibly unavailable.
+
+The concrete gap audit, implemented state, screenshots, interaction checks and backend dependencies are tracked in `FRONTEND_GAP_ANALYSIS.md`, `STATUS.md` and `checklist.md`. UI work remains limited to frontend assets/tests/package asset metadata and plan documentation; no gateway or passive log collector work is authorized by this follow-on.

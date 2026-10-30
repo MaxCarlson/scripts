@@ -1,43 +1,40 @@
 # Status
 
-**State:** Phase A complete; Phase B acceptance gate reached
+**State:** Approved frontend implementation complete; committed and pushed
 **Branch:** `codex/llm-monitor-inference-web-20261029`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-inference-web-20261029`
-**Baseline:** `33040f00e7324d7b6ac02eae4d2e7f6ac281e667` (`main`, 2026-10-29)
-**Supplied reviewed baseline:** `eeb40e8468d5fb33816caa5a8ec45f20b639c4f8` (ancestor of current baseline)
+**Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
+**Design authority:** [`docs/APPROVED_VISUAL_OUTLINE.md`](../../APPROVED_VISUAL_OUTLINE.md)
 
 ## Completed
 
-- Confirmed original checkout was clean on `main`; `pscripts` submodule metadata is inaccessible to normal status, so status checks use `--ignore-submodules=all`.
-- Created this isolated worktree from current `main` and kept the original checkout untouched.
-- Read current LLM Monitor Phase 3D handoff and API/provider/storage contracts.
-- Read the `web_ui_tools` host, HTTP/WebSocket middleware, README, and current tests.
-- Checked LM Studio CLI version/help. Installed `lms` reports CLI commit `dcefd5a`; `log stream --help` supports `--json` newline-delimited output, `--stats`, source selection and input/output filters.
-- Reviewed current official LM Studio REST and CLI documentation; a bounded five-second output-only JSON log watcher produced no event. No inference request or provider log content was captured.
-- `opencode_setup` reported the worker service unreachable; work continues locally without delegation.
-- Completed the Runmux compatibility audit for summary token fields, context samples, session model identity semantics, empty alert state, per-session alert filtering, and Python 3.10 optional imports.
-- Added typed inference capability/request/model contracts, a bounded in-memory store, one cached read-only LM Studio inventory service, authenticated `/api/inference/v1` routes, and `llm-monitor web` on loopback by default.
-- Added a standalone dashboard with truthful request-capture unavailability, safe text rendering, packaged static assets, and an optional `web` dependency extra.
-- Added a configurable `web_ui_tools` session-cookie name while preserving the existing default; added Runmux compatibility fixes and tests.
-- Built the `llm-monitor 0.7.0` wheel and verified its three static assets and `web` extra metadata.
-- Authenticated browser validation against the local LM Studio inventory succeeded at 1920, 1366, and 768 pixel widths; no page errors or horizontal overflow. The dashboard displayed 11 model entries, one provider-reported loaded instance, and request capture unavailable.
-- The app lifecycle test asserts that no SQLite file is created in its temporary application directory. The web service does not construct or import `TelemetryStore`.
+- Audited the original frontend and recorded the three-category gap analysis in `FRONTEND_GAP_ANALYSIS.md`.
+- Rebuilt the standalone shell and responsive dashboard to the approved compact dark workspace layout.
+- Added six provenance-aware KPIs, searchable/filterable request stream, stable selected-request inspector, ordered input/reasoning/output transcript, Telemetry/Event Timeline tabs, GPU and capability panels, model/server selection, and History/Alerts states.
+- Added incremental client-side event reducer contract for append-only deltas, sequence deduplication, interruption/gap signaling and snapshot reconciliation. It is not connected to a production streaming endpoint.
+- Added keyboard navigation/shortcuts, transcript controls, visible synthetic-fixture labeling, and deterministic fixture-only tests. Normal production UI reads only the authenticated API and receives no synthetic fallback data.
+- Captured browser screenshots at 1920×1080, 1440×900, 1280×800, 768×1024 and 390×844, plus model/history/alerts, telemetry/timeline and disconnected states under `screenshots/`.
 
-## Verification
+## Validation
 
-- `modules/llm_monitor`: `python -m pytest -q -o addopts= --basetemp=.pytest_tmp_root` — 148 passed, 1 skipped.
-- `modules/web_ui_tools`: `python -m pytest -q --basetemp=.pytest_tmp_root` — 14 passed.
-- Runmux authenticated API regressions — 9 passed; `node tests/llm_monitor_view_test.js` — all 8 suites passed.
-- Standalone browser contract test — passed; browser screenshots were captured and inspected.
-- `python -m ruff check llm_monitor tests/inference_models_test.py tests/live_store_test.py tests/inference_service_test.py tests/inference_web_test.py tests/web_test.py` — passed.
-- `python -m llm_monitor --help` and `python -m llm_monitor web --help` — passed.
-- `python -m pip wheel . --no-deps --no-build-isolation -w .pytest_tmp_root` — wheel built; package assets and optional extra verified.
-- No request, reasoning stream, or gateway was exercised. Runtime log schema and correlation remain unverified; no telemetry database was created by the web app.
+- `python -m pytest -q -o addopts= --basetemp=.pytest_tmp_root` — 148 passed, 1 skipped.
+- `python -m pytest -q -o addopts= --basetemp=.pytest_tmp_root tests\inference_web_test.py` — 2 passed.
+- `node tests\standalone_web_ui_test.js` — passed fixture isolation, safe rendering, selection, streaming reducer and missing-metric checks.
+- `node --check` on all six packaged `.mjs` files — passed.
+- `python -m pip wheel . --no-deps --no-build-isolation -w .pytest_tmp_root` — built `llm_monitor 0.7.0`; wheel contains all six frontend modules and excludes `ui_scenario_v1.json`.
+- `git diff --check` — passed.
+- Browser screenshots captured at 1920×1080, 1440×900, 1280×800, 768×1024 and 390×844 plus six secondary states. Browser interactions verified selection stability when a new request arrives, incremental content update without replacing the transcript node, reasoning toggle, search/filter, navigation, and disconnected-state presentation; no page errors or mobile page-wide horizontal overflow.
 
-## Next action
+Browser responses used the test-only synthetic fixture; the host itself was authenticated and real. No real inference request was sent, no inference configuration was changed, and no production model was started for this UI work.
 
-Review the uncommitted diff and keep this branch at the Phase B gate. A separate authorization/scope is needed for Phase C passive log collection or Phase D gateway work.
+## Limitations and next dependency
 
-## Gate
+The current backend discovers servers/models but does not provide real request capture/content, streaming events, request analytics, GPU samples, historical requests, alert/coverage records or recording controls. Those views show explicit unavailable/no-history states in the production path. Implementing collectors or a gateway is outside this assignment. The next authorized work can define and implement those backend APIs independently, then connect the existing frontend contracts.
 
-Stop after standalone auth, inventory display, packaging, and no-database-by-default checks. Phase A and Phase B are complete. Await a separately scoped Phase C/D task for passive request-event collection or the gateway.
+## Scope boundary
+
+The Phase A/B checkpoint remains intact. This follow-on changes only standalone frontend assets/tests, static-asset packaging metadata and module plan documentation. No inference gateway, passive log collector, persistent transcript store, Runmux process UI, or merge is included.
+
+## Publication
+
+Frontend milestone commit and matching origin branch publication are recorded in the repository status and commit history. The branch remains unmerged.

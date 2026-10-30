@@ -4,14 +4,15 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0d1119">
     <title>LLM Monitor</title>
     <link rel="stylesheet" href="/assets/app.css">
-    <script src="/assets/app.js" defer></script>
+    <script type="module" src="/assets/js/app.mjs"></script>
   </head>
   <body>
     <section id="login-panel" class="login-shell" aria-labelledby="login-title">
       <form id="login-form" class="login-card">
-        <div class="brand-mark" aria-hidden="true">LM</div>
+        <div class="brand-mark" aria-hidden="true">M</div>
         <p class="eyebrow">Local inference observability</p>
         <h1 id="login-title">LLM Monitor</h1>
         <p class="muted">Enter the one-time code printed by the local monitor process.</p>
@@ -19,79 +20,162 @@
         <input id="login-code" name="code" type="password" autocomplete="current-password" required maxlength="256">
         <button class="button button-primary" type="submit">Unlock dashboard</button>
         <p id="login-error" class="message message-error" role="alert" hidden></p>
-        <p class="privacy-note">This dashboard is served on loopback. Browser content stays in memory unless a future recording option is explicitly enabled.</p>
+        <p class="privacy-note">This dashboard is served on loopback. Live observations remain in process memory unless recording is explicitly enabled.</p>
       </form>
     </section>
 
     <div id="dashboard" class="app-shell" hidden>
       <header class="topbar">
-        <div class="brand-lockup">
-          <div class="brand-mark brand-mark-small" aria-hidden="true">LM</div>
-          <div><strong>LLM Monitor</strong><span>Inference workspace</span></div>
-        </div>
-        <div class="topbar-actions">
-          <span id="refresh-time" class="refresh-time">Waiting for inventory</span>
-          <button id="logout-button" class="button button-quiet" type="button">Lock</button>
+        <a class="brand-lockup" href="#overview" aria-label="LLM Monitor overview">
+          <span class="brand-mark brand-mark-small" aria-hidden="true">M</span>
+          <span class="brand-copy"><strong>LLM Monitor</strong><span>OBSERVABILITY</span></span>
+        </a>
+        <div class="topbar-status" aria-label="Monitor status">
+          <span id="synthetic-badge" class="status-chip status-chip-test" hidden>UI test fixture</span>
+          <span id="server-status" class="status-chip" data-state="unknown"><span class="status-led"></span><span>Checking server</span></span>
+          <span id="server-count" class="header-detail">0 servers</span>
+          <span id="header-recording" class="status-chip status-chip-muted">Recording off</span>
+          <span id="refresh-time" class="header-detail">Waiting for inventory</span>
+          <button id="logout-button" class="icon-button" type="button" aria-label="Lock dashboard" title="Lock dashboard">Lock</button>
         </div>
       </header>
 
-      <div class="workspace">
-        <aside class="sidebar" aria-label="Main navigation">
-          <p class="nav-label">Monitor</p>
-          <a class="nav-item nav-item-active" href="#overview" aria-current="page"><span class="nav-icon">◉</span>Overview</a>
-          <a class="nav-item" href="#models"><span class="nav-icon">▦</span>Models</a>
-          <a class="nav-item" href="#requests"><span class="nav-icon">≋</span>Requests</a>
-          <div class="sidebar-foot"><span class="scope-dot"></span><span>Local process only</span></div>
+      <div class="app-body">
+        <aside class="sidebar" aria-label="Workspace navigation">
+          <nav class="primary-nav" aria-label="Monitor views">
+            <a class="nav-item is-active" href="#overview" data-page="overview" aria-current="page"><span class="nav-icon" aria-hidden="true">◫</span><span>Overview</span></a>
+            <a class="nav-item" href="#requests" data-page="requests"><span class="nav-icon" aria-hidden="true">≋</span><span>Requests</span><span id="active-request-count" class="nav-count" hidden>0</span></a>
+            <a class="nav-item" href="#models" data-page="models"><span class="nav-icon" aria-hidden="true">▦</span><span>Models</span></a>
+            <a class="nav-item" href="#history" data-page="history"><span class="nav-icon" aria-hidden="true">◷</span><span>History</span></a>
+            <a class="nav-item" href="#alerts" data-page="alerts"><span class="nav-icon" aria-hidden="true">◇</span><span>Alerts &amp; coverage</span><span id="alert-count" class="nav-count nav-count-warning" hidden>0</span></a>
+          </nav>
+
+          <section class="sidebar-section" aria-labelledby="servers-label">
+            <div class="sidebar-section-heading"><h2 id="servers-label" class="eyebrow">Servers</h2><span id="sidebar-server-count" class="section-count">—</span></div>
+            <ul id="server-list" class="server-list"><li class="sidebar-empty">Discovering local servers…</li></ul>
+          </section>
+
+          <section class="sidebar-storage" aria-label="Storage and retention status">
+            <p class="eyebrow">Storage</p>
+            <div class="storage-row"><span class="storage-led"></span><span>Live state in memory</span></div>
+            <div id="sidebar-metadata-recording" class="storage-row"><span class="storage-led storage-led-off"></span><span>Metadata recording off</span></div>
+            <div id="sidebar-content-recording" class="storage-row"><span class="storage-led storage-led-off"></span><span>Content recording off</span></div>
+          </section>
         </aside>
 
-        <main class="main-content" id="overview">
-          <div class="page-heading">
-            <div>
-              <p class="eyebrow">Passive inventory</p>
-              <h1>Model overview</h1>
-              <p class="page-subtitle">Read-only visibility into LM Studio availability and loaded model configuration.</p>
+        <main id="main-content" class="main-content" tabindex="-1">
+          <section id="view-overview" class="page-view" data-view="overview" aria-labelledby="page-title">
+            <div class="page-toolbar">
+              <div class="page-title-group">
+                <p class="eyebrow">INFERENCE OBSERVABILITY <span class="breadcrumb-separator">/</span> <span id="page-breadcrumb">OVERVIEW</span></p>
+                <h1 id="page-title">Local model activity</h1>
+                <p id="page-description" class="page-subtitle">Live requests, captured content, and model performance.</p>
+              </div>
+              <div class="toolbar-controls">
+                <label class="control-label" for="model-filter">Model</label>
+                <select id="model-filter" class="select-control" aria-label="Filter by model"><option value="all">All monitored models</option></select>
+                <button id="follow-toggle" class="button button-toggle is-enabled" type="button" aria-pressed="true" title="Follow the newest request (F)"><span class="follow-led"></span>Following live</button>
+                <span id="recording-control" class="button button-disabled" aria-label="Recording controls are unavailable">Recording off</span>
+              </div>
             </div>
-            <div id="server-badge" class="status-badge status-unknown"><span class="status-dot"></span><span>Checking server</span></div>
-          </div>
 
-          <section class="metric-grid" aria-label="Monitor summary">
-            <article class="metric-card"><span class="metric-label">Inference server</span><strong id="metric-server" class="metric-value">—</strong><span id="metric-endpoint" class="metric-detail mono">—</span></article>
-            <article class="metric-card"><span class="metric-label">Model entries</span><strong id="metric-models" class="metric-value">—</strong><span class="metric-detail">Inventory returned by provider</span></article>
-            <article class="metric-card"><span class="metric-label">Loaded instances</span><strong id="metric-loaded" class="metric-value">—</strong><span class="metric-detail">Provider-reported count</span></article>
-            <article class="metric-card"><span class="metric-label">Request capture</span><strong id="metric-capture" class="metric-value metric-value-small">Unavailable</strong><span class="metric-detail">No individual request source is connected</span></article>
+            <section id="kpi-grid" class="kpi-grid" aria-label="Model activity statistics">
+              <article class="kpi-card"><div class="kpi-heading"><span>Requests</span><span class="kpi-icon icon-blue" aria-hidden="true">↗</span></div><strong id="kpi-requests" class="kpi-value">—</strong><span id="kpi-requests-note" class="kpi-note">No request source connected</span></article>
+              <article class="kpi-card"><div class="kpi-heading"><span>Avg input tokens</span><span class="kpi-icon icon-blue" aria-hidden="true">↓</span></div><strong id="kpi-input" class="kpi-value">—</strong><span id="kpi-input-note" class="kpi-note">Reported completed requests</span></article>
+              <article class="kpi-card"><div class="kpi-heading"><span>Avg reasoning</span><span class="kpi-icon icon-purple" aria-hidden="true">✳</span></div><strong id="kpi-reasoning" class="kpi-value">—</strong><span id="kpi-reasoning-note" class="kpi-note">Reported observations only</span></article>
+              <article class="kpi-card"><div class="kpi-heading"><span>Avg output tokens</span><span class="kpi-icon icon-green" aria-hidden="true">↑</span></div><strong id="kpi-output" class="kpi-value">—</strong><span id="kpi-output-note" class="kpi-note">Reported completed requests</span></article>
+              <article class="kpi-card"><div class="kpi-heading"><span>Avg duration</span><span class="kpi-icon icon-orange" aria-hidden="true">◷</span></div><strong id="kpi-duration" class="kpi-value">—</strong><span id="kpi-duration-note" class="kpi-note">Observed request lifecycle</span></article>
+              <article class="kpi-card"><div class="kpi-heading"><span>GPU / VRAM</span><span class="kpi-icon icon-blue" aria-hidden="true">▥</span></div><strong id="kpi-gpu" class="kpi-value">—</strong><span id="kpi-gpu-note" class="kpi-note">Device-level samples unavailable</span></article>
+            </section>
+
+            <div id="provider-message" class="message message-info" role="status" hidden></div>
+
+            <section class="explorer-grid" aria-label="Request investigation workspace">
+              <section class="panel request-panel" aria-labelledby="request-heading">
+                <div class="panel-heading request-heading">
+                  <div class="panel-title"><span class="live-marker" aria-hidden="true"></span><div><h2 id="request-heading">Request stream</h2><p id="request-source-note" class="panel-subtitle">Waiting for request observations</p></div></div>
+                  <span id="request-count" class="count-badge">0</span>
+                </div>
+                <div class="request-filters">
+                  <label class="search-field"><span class="sr-only">Search captured requests</span><span class="search-icon" aria-hidden="true">⌕</span><input id="request-search" type="search" placeholder="Search requests…" autocomplete="off"><kbd>/</kbd></label>
+                  <label class="sr-only" for="status-filter">Filter request state</label>
+                  <select id="status-filter" class="compact-select"><option value="all">All states</option><option value="active">Active</option><option value="completed">Completed</option><option value="failed">Failed</option><option value="cancelled">Cancelled</option></select>
+                  <label class="sr-only" for="time-filter">Filter request time range</label>
+                  <select id="time-filter" class="compact-select"><option value="all">Any time</option><option value="15m">15 minutes</option><option value="1h">1 hour</option><option value="24h">24 hours</option></select>
+                </div>
+                <div id="request-list" class="request-list" role="listbox" tabindex="0" aria-label="Observed inference requests" aria-describedby="request-source-note">
+                  <div class="request-empty"><span class="empty-symbol" aria-hidden="true">≋</span><strong>No individual requests captured</strong><p>Model inventory is available, but no supported request source is connected.</p></div>
+                </div>
+                <div class="request-list-footer"><span id="request-list-status">Request history unavailable</span><div class="footer-actions"><button id="clear-search" class="text-button" type="button" hidden>Clear filters</button><button id="load-more-requests" class="text-button" type="button" hidden>Show more</button></div></div>
+              </section>
+
+              <section class="panel inspector-panel" aria-labelledby="inspector-heading">
+                <div id="inspector-content" class="inspector-empty">
+                  <span class="empty-symbol empty-symbol-large" aria-hidden="true">⌁</span>
+                  <h2 id="inspector-heading">Select a request to inspect</h2>
+                  <p>Captured input, reasoning, output, and telemetry will appear here when the observation source provides them.</p>
+                </div>
+                <div id="inspector-detail" class="inspector-detail" hidden>
+                  <header class="inspector-header">
+                    <div class="inspector-title"><div class="inspector-id-line"><h2 id="inspector-heading-detail">Request</h2><span id="inspector-state" class="state-badge">Unknown</span></div><p id="inspector-model" class="inspector-model">Model unavailable</p></div>
+                    <div class="inspector-actions"><button id="copy-request-id" class="icon-button" type="button" title="Copy request ID">Copy ID</button><button id="return-live" class="button button-live" type="button" hidden>Return to live</button></div>
+                  </header>
+                  <div class="request-meta"><span id="inspector-started">Start time unavailable</span><span id="inspector-source">Source unavailable</span><span id="inspector-gap" class="gap-badge" hidden>Stream gap</span></div>
+                  <div class="mini-kpi-grid" aria-label="Selected request measurements">
+                    <div class="mini-kpi"><span>Input</span><strong id="detail-input">—</strong><small id="detail-input-source">unavailable</small></div>
+                    <div class="mini-kpi"><span>Reasoning</span><strong id="detail-reasoning">—</strong><small id="detail-reasoning-source">unavailable</small></div>
+                    <div class="mini-kpi"><span>Output</span><strong id="detail-output">—</strong><small id="detail-output-source">unavailable</small></div>
+                    <div class="mini-kpi"><span>Duration</span><strong id="detail-duration">—</strong><small>observed</small></div>
+                    <div class="mini-kpi"><span>GPU activity</span><strong id="detail-gpu">—</strong><small>device samples</small></div>
+                  </div>
+                  <div class="inspector-tabs-wrap">
+                    <div class="inspector-tabs" role="tablist" aria-label="Request inspector views">
+                      <button class="inspector-tab is-active" id="tab-transcript" role="tab" aria-selected="true" aria-controls="panel-transcript" data-tab="transcript">Transcript</button>
+                      <button class="inspector-tab" id="tab-telemetry" role="tab" aria-selected="false" aria-controls="panel-telemetry" data-tab="telemetry" tabindex="-1">Telemetry</button>
+                      <button class="inspector-tab" id="tab-timeline" role="tab" aria-selected="false" aria-controls="panel-timeline" data-tab="timeline" tabindex="-1">Event timeline</button>
+                    </div>
+                    <label class="reasoning-toggle"><input id="reasoning-visible" type="checkbox" checked><span>Reasoning</span></label>
+                  </div>
+                  <section id="panel-transcript" class="tab-panel transcript-panel" role="tabpanel" aria-labelledby="tab-transcript" data-panel="transcript">
+                    <div class="transcript-tools"><label class="search-field transcript-search"><span class="search-icon" aria-hidden="true">⌕</span><input id="transcript-search" type="search" placeholder="Find in transcript…" autocomplete="off"></label><label class="follow-scroll"><input id="transcript-follow" type="checkbox" checked>Follow output</label><button id="increase-text" class="icon-button" type="button" aria-label="Increase transcript text size" title="Increase transcript text size">A+</button></div>
+                    <div id="transcript-content" class="transcript-content" aria-live="off"><p class="content-unavailable">Transcript content is unavailable from this observation source.</p></div>
+                  </section>
+                  <section id="panel-telemetry" class="tab-panel telemetry-panel" role="tabpanel" aria-labelledby="tab-telemetry" data-panel="telemetry" hidden>
+                    <div id="telemetry-grid" class="telemetry-grid"></div><div id="telemetry-provenance" class="provenance-panel"></div>
+                  </section>
+                  <section id="panel-timeline" class="tab-panel timeline-panel" role="tabpanel" aria-labelledby="tab-timeline" data-panel="timeline" hidden>
+                    <ol id="event-timeline" class="event-timeline"><li class="content-unavailable">No request event timeline is available.</li></ol>
+                  </section>
+                </div>
+              </section>
+            </section>
+
+            <section id="bottom-grid" class="bottom-grid" aria-label="Hardware and observation coverage">
+              <section class="panel gpu-panel" aria-labelledby="gpu-heading">
+                <div class="panel-heading"><div><p class="eyebrow">DEVICE TELEMETRY</p><h2 id="gpu-heading">GPU activity</h2></div><span id="gpu-device" class="panel-badge">Unavailable</span></div>
+                <div class="gpu-body"><div id="gpu-chart" class="gpu-chart" role="img" aria-label="GPU activity samples unavailable"><p class="chart-empty">GPU samples are unavailable from the current monitor sources.</p></div><div class="gpu-summary"><div><span>Average activity</span><strong id="gpu-average">—</strong></div><div><span>VRAM used</span><strong id="gpu-vram">—</strong></div><p id="gpu-scope" class="scope-note">Device-level activity overlapping requests is not exclusive attribution.</p></div></div>
+              </section>
+              <section class="panel capture-panel" aria-labelledby="capture-heading">
+                <div class="panel-heading"><div><p class="eyebrow">OBSERVATION COVERAGE</p><h2 id="capture-heading">Capture status</h2></div><span id="coverage-summary" class="panel-badge">Inventory only</span></div>
+                <ul id="capability-list" class="capability-list"><li><span>Model inventory</span><b data-capability="model_inventory">Checking</b></li><li><span>Request lifecycle</span><b data-capability="request_lifecycle">Checking</b></li><li><span>Structured input</span><b data-capability="structured_input">Checking</b></li><li><span>Reasoning stream</span><b data-capability="reasoning_text">Checking</b></li><li><span>Output stream</span><b data-capability="output_text">Checking</b></li><li><span>Token usage</span><b data-capability="token_usage">Checking</b></li><li><span>Request timing</span><b data-capability="request_timing">Checking</b></li><li><span>Aggregate metrics</span><b data-capability="aggregate_metrics">Checking</b></li><li><span>GPU samples</span><b data-capability="gpu_samples">Checking</b></li><li><span>Cache metrics</span><b data-capability="cache_metrics">Checking</b></li><li><span>Historical content</span><b data-capability="historical_content">Checking</b></li></ul>
+                <p class="scope-note">A missing observation does not mean the model is idle. Recording is currently disabled.</p>
+              </section>
+            </section>
           </section>
 
-          <div id="provider-message" class="message message-info" role="status" hidden></div>
+          <section id="view-models" class="page-view secondary-view" data-view="models" aria-labelledby="models-title" hidden><div class="page-toolbar"><div><p class="eyebrow">INFERENCE OBSERVABILITY / INVENTORY</p><h1 id="models-title">Models and servers</h1><p class="page-subtitle">Current provider inventory. Historical request statistics are not available yet.</p></div></div><div id="model-cards" class="model-card-grid"></div></section>
+          <section id="view-history" class="page-view secondary-view" data-view="history" aria-labelledby="history-title" hidden><div class="page-toolbar"><div><p class="eyebrow">INFERENCE OBSERVABILITY / HISTORY</p><h1 id="history-title">Request history</h1><p class="page-subtitle">Persisted request history is unavailable because recording has not been implemented.</p></div></div><div class="panel page-empty"><span class="empty-symbol" aria-hidden="true">◷</span><h2>No recorded request history</h2><p>Live observations are held in memory. No historical transcript can be reconstructed from model inventory.</p></div></section>
+          <section id="view-alerts" class="page-view secondary-view" data-view="alerts" aria-labelledby="alerts-title" hidden><div class="page-toolbar"><div><p class="eyebrow">INFERENCE OBSERVABILITY / COVERAGE</p><h1 id="alerts-title">Alerts and coverage</h1><p class="page-subtitle">Monitoring findings are distinct from model health.</p></div></div><div class="alerts-grid"><section class="panel page-empty"><h2>Alerts unavailable</h2><p>No inference alert source is connected. An empty alert list is not a healthy-state signal.</p></section><section class="panel page-empty"><h2>Collection coverage</h2><p>Model inventory is available. Individual request capture, GPU samples, and historical content are unavailable.</p></section></div></section>
 
-          <section id="models" class="panel model-panel">
-            <div class="panel-heading">
-              <div><p class="eyebrow">Server inventory</p><h2>Models</h2></div>
-              <span id="model-count" class="count-badge">—</span>
-            </div>
-            <div class="table-wrap">
-              <table>
-                <thead><tr><th>Model</th><th>State</th><th>Loaded instances</th><th>Loaded context</th><th>Maximum context</th></tr></thead>
-                <tbody id="model-rows"><tr><td colspan="5" class="empty-cell">Waiting for provider inventory…</td></tr></tbody>
-              </table>
-            </div>
-            <p class="panel-footnote">Context values are shown only when the provider reports them. Multiple loaded contexts are listed separately; no single context is inferred.</p>
-          </section>
-
-          <section id="requests" class="panel request-panel">
-            <div class="panel-heading">
-              <div><p class="eyebrow">Observation coverage</p><h2>Recent requests</h2></div>
-              <span class="capability-badge">Unavailable</span>
-            </div>
-            <div class="empty-request-state">
-              <div class="empty-mark" aria-hidden="true">≋</div>
-              <h3>Individual requests are not captured</h3>
-              <p>Passive inventory confirms the server and model configuration, but it cannot reconstruct request transcripts. No inference request has been sent by this monitor.</p>
-            </div>
-          </section>
-
-          <footer class="page-footer"><span>Live observations are kept in process memory.</span><span id="recording-status">Persistent recording: disabled</span></footer>
+          <footer class="page-footer"><span>Live observations stay in process memory.</span><span id="recording-status">Metadata recording: disabled · Content recording: disabled</span></footer>
+          <p id="announcements" class="sr-only" role="status" aria-live="polite"></p>
         </main>
       </div>
     </div>
+
+    <dialog id="keyboard-help" class="help-dialog" aria-labelledby="keyboard-help-title">
+      <div class="help-dialog-header"><h2 id="keyboard-help-title">Keyboard shortcuts</h2><button class="icon-button" type="button" data-close-help aria-label="Close keyboard shortcuts">Close</button></div>
+      <dl><dt><kbd>/</kbd></dt><dd>Focus request search</dd><dt><kbd>↑</kbd> / <kbd>↓</kbd></dt><dd>Move through the request list</dd><dt><kbd>Enter</kbd></dt><dd>Inspect the selected request</dd><dt><kbd>L</kbd></dt><dd>Return to the latest request</dd><dt><kbd>F</kbd></dt><dd>Toggle automatic follow</dd><dt><kbd>R</kbd></dt><dd>Show or hide reasoning</dd><dt><kbd>Esc</kbd></dt><dd>Close this panel or clear search</dd></dl>
+    </dialog>
   </body>
 </html>
