@@ -2,7 +2,8 @@
 
 **Plan:** `20261029-1755_harbor-integration`  
 **Branch:** `harbor-integration-20261029-1755`  
-**Authoritative Baseline:** Agent Benchmark 1.20.0, Benchmark Core 0.2.0  
+**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\harbor-integration-20261029-1755`  
+**Authoritative Baseline:** Agent Benchmark 1.20.0, Benchmark Core 0.2.0, Harbor 0.25.0  
 
 ---
 
@@ -16,15 +17,15 @@
 - [x] Stage A validation and review
 
 ## Stage B: Dataset Catalog and Non-Executing Planning
-- [x] Implement `harbor/datasets.py` (catalogs for `aider/aider-polyglot` and `terminal-bench`)
+- [x] Implement `harbor/datasets.py` (authoritative catalogs for `aider/aider-polyglot` 225 tasks and `terminal-bench` 89 tasks / 5 pinned CPU tasks)
 - [x] Implement language filtering for Aider and deterministic seed subset selection
-- [x] Implement `harbor/planner.py` (preflight readiness checks, resource and trial projections)
+- [x] Implement `harbor/planner.py` (preflight readiness checks, `base_url` routing, resource and trial projections)
 - [x] Implement `external list` and `external plan` CLI subcommands
 - [x] Create unit tests in `tests/harbor_planner_test.py` and `tests/harbor_datasets_test.py`
 - [x] Stage B validation and review
 
 ## Stage C: Controlled Execution
-- [x] Implement `harbor/runner.py` (subprocess invocation with argument array, `-x/--execute` gate)
+- [x] Implement `harbor/runner.py` (subprocess invocation with argument array, `--include-task-name`, `--base-url`, `-x/--execute` gate)
 - [x] Implement Docker daemon connectivity verification (fail closed if unavailable)
 - [x] Integrate with `state.py` command lock and pending receipt recovery
 - [x] Implement `external run` CLI subcommand
@@ -32,14 +33,21 @@
 - [x] Stage C validation and review
 
 ## Stage D: Multi-Agent Evaluation & Comparative Leaderboard
-- [x] Implement `harbor/reporting.py` (dataset-separated leaderboard with points, pass rate, coverage, errors, duration)
+- [x] Implement `harbor/reporting.py` (recursive `rglob("run.json")` discovery, `run_id` deduplication, dataset-separated leaderboard)
 - [x] Implement `external report` CLI subcommand
 - [x] Create tests for multi-agent leaderboard comparisons in `tests/harbor_importer_test.py` and `tests/harbor_cli_test.py`
 - [x] Stage D validation and review
 
 ## Stage E: Terminal-Bench Extension, Documentation & Final Hardening
-- [x] Curate and freeze 5 CPU-compatible Terminal-Bench tasks with oracle baseline
+- [x] Curate and freeze 5 CPU-compatible Terminal-Bench tasks (`build-cython-ext`, `regex-log`, `sqlite-db-truncate`, `nginx-request-logging`, `log-summary-date-ranges`)
 - [x] Update `modules/agent_benchmark/README.md` with instructions for Harbor setup, Windows 11 / WSL2, Docker, and `agent-bench external` CLI
-- [x] Run full repository regression test suite (`agent_benchmark` and `benchmark_core`): 436 passed, 3 skipped
+- [x] Run full repository regression test suite (`agent_benchmark`: 445 passed, 3 skipped; `benchmark_core`: 116 passed, 1 skipped)
 - [x] Run lint (`ruff`) and static checks: All checks passed
 - [x] Update `STATUS.md` and `HANDOFF.md`
+
+## Live Evaluation Acceptance (Phases A–E)
+- [x] Phase A: Verify Docker Linux engine, Harbor 0.25.0 CLI, LM Studio (`qwen38_23GB`), and `host.docker.internal:1234` routing
+- [x] Phase B: Execute first live local Qwen trial on Aider Polyglot (`polyglot_python_proverb` -> `reports/harbor/pilot-qwen`)
+- [ ] Phase C: Execute 10-task deterministic Python baseline (`--language python -n 10 -s 42` -> `reports/harbor/qwen-baseline-10`, planned and ready)
+- [x] Phase D: Audit `codex` and `antigravity-cli` Harbor schemas and credential contracts without paid inference
+- [x] Phase E: Execute live Terminal-Bench trial (`build-cython-ext` with `oracle` -> `reports/harbor/tb-pilot`) and multi-suite report

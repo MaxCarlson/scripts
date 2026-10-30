@@ -1,14 +1,18 @@
-# Current checkpoint: Harbor Integration and Deterministic Coding-Agent Evaluation
+# Current checkpoint: Harbor Integration and Live Deterministic Evaluation (2026-10-29)
 
-Branch `harbor-integration-20261029-1755`, baseline `origin/main` at `33040f00`. Agent Benchmark baseline is 1.20.0.
-Active plan: [`plans/20261029-1755_harbor-integration/STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
-Current stage: Stage A (Harbor Research and Offline Importer).
-Preliminary audit confirmed pinned Harbor version `harbor==0.25.0` on PyPI, exact Pydantic model schemas for
-`JobResult`, `TrialResult`, `JobLock`, and `ErrorPolicy`. Docker engine is currently stopped; preflight checks will
-enforce fail-closed execution safety for live runs while allowing offline planning and import.
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
+baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.
+Active plan & full handoff: [`plans/20261029-1755_harbor-integration/HANDOFF.md`](plans/20261029-1755_harbor-integration/HANDOFF.md)
+and [`STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
 
-All 411 existing Agent Benchmark tests and 114 Benchmark Core tests pass cleanly offline. Historical results and
-B0/B2/B3 experiment methodology remain intact.
+Implementation and hardening across `agent_benchmark.harbor` (`models`, `datasets`, `planner`, `runner`, `importer`, `reporting`)
+and `agent-bench external {list,plan,run,import,report}` are complete and verified:
+- **Offline verification**: 34 Harbor tests pass; 445 Agent Benchmark tests pass (3 skipped); 116 Benchmark Core tests pass (1 skipped); `ruff check` passes.
+- **Live Phase A (Preflight)**: Verified Docker Desktop Linux engine (`29.9.2`), `harbor==0.25.0`, LM Studio (`qwen38_23GB`, Q4_K_M, 98k context), and container-to-host routing (`http://host.docker.internal:1234/v1`).
+- **Live Phase B (Single-Task Local Qwen Pilot)**: Executed `polyglot_python_proverb` on `aider-polyglot` with `qwen-coder` / `qwen38_23GB` (Job `442fe010-32d4-41eb-b00b-0d69c2e1f5ea`, 267.4s, 185,195 input tokens, 16,218 output tokens, 0 exceptions; 5/8 pytest checks passed in container -> binary reward `0.0`, imported to `reports/harbor/pilot-qwen`).
+- **Live Phase D (Cloud Adapter Audit)**: Verified `codex` and `antigravity-cli` option schemas via `harbor agent schema` without invoking paid cloud endpoints.
+- **Live Phase E (Terminal-Bench Pilot)**: Executed `build-cython-ext` on `terminal-bench` with `oracle` (Job `76bdf6c9-0ec9-4336-82e7-2f3431cdfea7`, 87.9s, 0 exceptions; 10/11 pytest checks passed in container, imported to `reports/harbor/tb-pilot`).
+- **Remaining Next Action (Phase C)**: Execute the planned 10-task deterministic Python baseline (`--language python -n 10 -s 42`) with `qwen-coder` / `qwen38_23GB` into `reports/harbor/qwen-baseline-10` (~35–45m runtime).
 
 # Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 
