@@ -1,6 +1,6 @@
 # LLM Monitor Inference Web Implementation Plan
 
-> **For agentic workers:** Phase A/B, the approved frontend workstream, Phase D, and Phase D.1 are separately authorized checkpoints. Preserve the explicit opt-in and loopback-only gateway boundary. Do not merge into `main` or change inference-client configuration.
+> **For agentic workers:** Phase A/B, the approved frontend workstream, Phase D, D.1, and D.2 are separately authorized checkpoints. Preserve the explicit opt-in and loopback-only gateway boundary. Do not merge into `main` or change inference-client configuration.
 
 **Goal:** Add a standalone authenticated local web dashboard that discovers LM Studio inventory and shows truthful model and monitoring capability state without writing telemetry by default.
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Python 3.11+ for `llm_monitor`; Python 3.10-compatible `web_ui_tools`; FastAPI/Uvicorn as optional LLM Monitor web dependencies; vanilla JavaScript/CSS; pytest.
 
-**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29, and approved visual and Phase D/D.1 follow-ons. Phase A/B, the approved UI, and Phase D are complete; Phase D.1 validates performance, transport fidelity, security, and browser reconnect behavior.
+**Spec:** The user-provided “LLM Monitor — Inference Observability Web UI” handoff, dated 2026-10-29, and approved visual and Phase D/D.1/D.2 follow-ons. Phase A/B, the approved UI, Phase D, and gateway performance qualification are complete for merge review.
 
 ## Global Constraints
 
@@ -91,10 +91,16 @@ The concrete gap audit, implemented state, screenshots, interaction checks and b
 
 The user has separately authorized Phase D on the existing feature branch. This authorization supersedes earlier Phase B/UI stop gates. Implement an optional, loopback-only OpenAI-compatible `/v1/chat/completions` gateway with a fixed loopback upstream, stable ingress UUIDs, bounded in-memory request/event retention, authenticated WebSocket observation, and no automatic client redirection. Ordinary `llm-monitor web` remains passive inventory-only. Do not add persistent transcript storage or other providers.
 
-The implementation and evidence are tracked in `llm_monitor/gateway.py`, `tests/gateway_test.py`, `PHASE_D_VALIDATION.md`, and the genuine-request screenshot under `screenshots/`. The initial 3-sample +1.58 s result was not reproduced by the 40-group matched benchmark. A separate 20-group repeat showed occasional 2.9–3.4 s waits before upstream response headers, with high variability; performance readiness remains open until that model-side/order effect is independently isolated. D.1 evidence and gate assessment are in `PHASE_D1_VALIDATION.md`.
+The implementation and evidence are tracked in `llm_monitor/gateway.py`, `tests/gateway_test.py`, `PHASE_D_VALIDATION.md`, and the genuine-request screenshot under `screenshots/`. The initial 3-sample +1.58 s result was not reproduced by the 40-group matched benchmark. A separate 20-group repeat showed occasional 2.9–3.4 s waits before upstream response headers. D.1 and D.2 evidence are in `PHASE_D1_VALIDATION.md` and `PHASE_D2_VALIDATION.md`.
 
 ## Phase D.1 — Gateway performance and transport hardening
 
 The user authorized metadata-only profiling, controlled loopback benchmarks, transport/security hardening, and authenticated browser reconnect validation. The gateway now forwards upstream bytes incrementally even when SSE framing is fragmented, supports opt-in monotonic stage timing without retaining content, rejects cross-origin browser requests and non-JSON content, pins `localhost` validation to a loopback address, and represents upstream interruption as failure. The opt-in benchmark uses identical counterbalanced direct/minimal/observed requests and records only metadata. No transcript persistence or client reconfiguration is part of this phase.
 
-The 40-group run was below the provisional 50 ms median target. A subsequent 20-group repeat exposed high variance and gateway-path stalls before upstream headers, so the target is met in one trial but not established consistently. Do not mark performance-ready; retain this merge-readiness limitation pending a follow-up counterbalanced test that isolates LM Studio scheduling/prompt-cache effects from transport.
+The 40-group run was below the provisional 50 ms median target. A subsequent 20-group repeat exposed high variance and waits before upstream headers. D.1 localized these to the upstream wait interval, not gateway request parsing/dispatch, but did not identify their cause.
+
+## Phase D.2 — Final gateway qualification
+
+D.2 extends the existing metadata-only harness with paired triplet differences, bootstrap median intervals, tails/order reports, device-wide GPU samples, short/long/varied workloads, limited concurrency, and fresh-connection comparisons. The 20-triplet-per-mode principal comparison measured observed-minus-direct medians of −2.33 ms nonstreaming and +2.08 ms streaming; every output group matched, no paired added-latency event exceeded 100 ms, and no request exceeded one second. D.2 diagnostics did not reproduce the earlier multi-second stalls. Exact LM Studio scheduling/cache cause remains unknown because no live queue counter or per-request GPU attribution is available.
+
+The real inference-client TCP disconnect cancelled the monitored request and closed its upstream stream. Previously validated observer-browser reconnect/snapshot behavior is preserved. Performance and functional gates are accepted for merge review under the D.2 acceptance criteria. A final alternating-prompt live run could not execute after the model was no longer confirmed loaded; the harness made no automatic load attempt. See `PHASE_D2_VALIDATION.md` and raw metadata artifacts. Do not merge as part of this qualification; the next implementation priority is GPU/per-request analytics and historical recording.

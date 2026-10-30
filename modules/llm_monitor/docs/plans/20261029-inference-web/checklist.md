@@ -48,5 +48,9 @@
 - [x] Validate partial upstream failures, client iterator cancellation, bounded observer queues, malformed/large SSE and concurrent request isolation.
 - [x] Exercise authenticated browser observer disconnect/reconnect during real reasoning and output generation; confirm inference continues and snapshots reconcile.
 - [x] Update provider capability matrix, status, validation report and benchmark artifacts.
-- [ ] Close performance acceptance: repeat-to-repeat variance and upstream-header stalls remain unexplained; CPU counter resolution is insufficient for per-request attribution.
-- [ ] Do not merge until the performance gate and user review are complete.
+- [x] D.2: extend the existing benchmark with paired triplet statistics, confidence intervals, tail/order reporting, and metadata-only GPU samples.
+- [x] D.2: compare fixed/varied short prompts, longer streaming, limited concurrency, and reused/fresh connections; preserve matched-output checks.
+- [x] D.2: reproduce no gateway-specific >100 ms paired overhead or >1 s absolute request in the qualified runs; document the unresolved cause of D.1 upstream-header stalls.
+- [x] D.2: exercise a real inference-client TCP disconnect and verify cancellation/upstream stream closure; preserve D.1 browser observer reconnect validation.
+- [x] D.2: record performance and functional acceptance in `PHASE_D2_VALIDATION.md`; accepted for merge review, not merged.
+- [ ] Next implementation priority: real GPU/per-request analytics and historical recording. No work on these began in D.2.

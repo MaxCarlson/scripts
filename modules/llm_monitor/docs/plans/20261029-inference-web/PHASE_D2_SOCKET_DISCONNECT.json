@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "probe": "real_inference_client_tcp_disconnect_after_first_text_delta",
+  "model": "qwen38_23GB",
+  "upstream": "http://127.0.0.1:1234",
+  "model_runtime_before": {
+    "available": true,
+    "entry_key": "qwen38-27b-q4km",
+    "selected_model_loaded": true,
+    "loaded_instance_count": 1,
+    "selected_instance": [
+      {
+        "id": "qwen38_23GB",
+        "config": {
+          "context_length": 98304,
+          "parallel": 4,
+          "eval_batch_size": 2048,
+          "flash_attention": true,
+          "offload_kv_cache_to_gpu": true
+        }
+      }
+    ]
+  },
+  "model_runtime_after": {
+    "available": true,
+    "entry_key": "qwen38-27b-q4km",
+    "selected_model_loaded": true,
+    "loaded_instance_count": 1,
+    "selected_instance": [
+      {
+        "id": "qwen38_23GB",
+        "config": {
+          "context_length": 98304,
+          "parallel": 4,
+          "eval_batch_size": 2048,
+          "flash_attention": true,
+          "offload_kv_cache_to_gpu": true
+        }
+      }
+    ]
+  },
+  "request_id": "0216a0ea-b287-4267-808e-d5f1e969b420",
+  "response_status": 200,
+  "client_socket_closed_after_text": true,
+  "response_bytes_before_close": 265,
+  "first_text_observed_ms": 421.48423194885254,
+  "monitor_terminal_state": "cancelled",
+  "upstream_response_stream_closed": true,
+  "event_sequence": 3,
+  "request_content_retained_in_memory": true
+}

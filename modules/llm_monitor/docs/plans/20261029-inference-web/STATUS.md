@@ -1,6 +1,6 @@
 # Status
 
-**State:** Phase D.1 transport/security/reconnect work validated; performance acceptance remains open due repeat-to-repeat variance
+**State:** Phase D.2 gateway performance and transport qualification accepted for merge review; no merge performed
 **Branch:** `codex/llm-monitor-inference-web-20261029`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-inference-web-20261029`
 **Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
@@ -50,6 +50,12 @@ A separate 20-sample-per-path/mode run on the same model alias produced occasion
 
 Current validation: full LLM Monitor suite passes (170 passed, 1 skipped); `web_ui_tools` passes 14 tests; Runmux monitor API/integration passes 19 tests; Runmux monitor frontend and standalone UI contract suites pass. Ruff passes on all changed Python files. Default monitoring did not create a telemetry database. LM Studio and OpenCode configuration were not changed.
 
+## Phase D.2 final gateway qualification
+
+Phase D.2 is complete. See [`PHASE_D2_VALIDATION.md`](PHASE_D2_VALIDATION.md). The principal 20-triplet-per-mode run matched outputs across direct/minimal/observed paths and measured observed-minus-direct median paired deltas of −2.33 ms nonstreaming and +2.08 ms streaming, with no paired outlier above 100 ms or absolute request above one second. Short fixed/varied, longer streaming, limited concurrency, and fresh-connection diagnostics also showed no reproducible gateway-specific regression. The prior D.1 pre-header stalls did not recur; their exact upstream cause remains unknown because LM Studio exposed no live queue counter and the available GPU measurements were device-wide.
+
+The actual inference-client TCP-disconnect probe ended the monitor request as cancelled and confirmed upstream stream closure. Previously validated browser-observer disconnect/reconnect and snapshot reconciliation remain unchanged. The benchmark harness gained alternating-prompt support, but a final alternating live trial was not run because the model was no longer confirmed loaded; no automatic load was attempted. Functional and performance gates are accepted for merge review under the D.2 criteria. Subsequent development priority is GPU/per-request analytics and historical recording. D.2's focused benchmark tests (10 passed), Ruff, and standalone frontend contract pass. Fresh full-suite attempts stalled after initial output and were interrupted without final summaries; D.1's last recorded broad suites were green (LLM Monitor 170 passed/1 skipped, `web_ui_tools` 14 passed, Runmux API/integration 19 passed). This branch remains unmerged.
+
 ## Publication
 
-Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. The branch remains unmerged; performance readiness is still open as documented above.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above; the branch remains unmerged.
