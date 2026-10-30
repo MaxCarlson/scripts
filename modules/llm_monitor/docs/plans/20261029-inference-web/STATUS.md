@@ -37,4 +37,4 @@ The Phase A/B checkpoint remains intact. This follow-on changes only standalone 
 
 ## Publication
 
-Frontend milestone commit and matching origin branch publication are recorded in the repository status and commit history. The branch remains unmerged.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e` is pushed to `origin/codex/llm-monitor-inference-web-20261029`. The branch remains unmerged.
