@@ -163,6 +163,7 @@ class BenchmarkPlan:
     scoring_protocol: str
     projected_trials: int
     readiness: ReadinessCheck
+    base_url: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -177,6 +178,7 @@ class BenchmarkPlan:
             "selected_tasks": list(self.selected_tasks),
             "agent": self.agent,
             "model": self.model,
+            "base_url": self.base_url,
             "repetitions": self.repetitions,
             "seed": self.seed,
             "language_filter": self.language_filter,
@@ -187,10 +189,11 @@ class BenchmarkPlan:
 
 
 def plan_benchmark(
-    dataset_name: str,
+    dataset_name: str = "aider-polyglot",
     *,
-    agent: str = "oracle",
-    model: str = "default",
+    agent: str = "qwen-coder",
+    model: str = "qwen38_23GB",
+    base_url: str | None = "http://host.docker.internal:1234/v1",
     task_ids: Sequence[str] | None = None,
     language: str | None = None,
     count: int | None = None,
@@ -244,6 +247,7 @@ def plan_benchmark(
         selected_tasks=tuple(selected),
         agent=agent,
         model=model,
+        base_url=base_url,
         repetitions=repetitions,
         seed=seed,
         language_filter=language,

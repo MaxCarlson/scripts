@@ -16,10 +16,8 @@ def collect_run_summaries(target_dir: Path | str) -> list[dict[str, Any]]:
 
     if (root / "run.json").is_file():
         candidates.append(root)
-    else:
-        for child in sorted(root.iterdir()):
-            if child.is_dir() and (child / "run.json").is_file():
-                candidates.append(child)
+    elif root.is_dir():
+        candidates = sorted({p.parent for p in root.rglob("run.json")})
 
     summaries: list[dict[str, Any]] = []
     seen_run_ids: set[str] = set()

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -40,13 +41,17 @@ def build_harbor_command(
     else:
         raise PreflightCheckError("Neither 'harbor' nor 'uv' CLI binary is available on PATH")
 
-    cmd.extend(["--dataset", plan.dataset.id])
+    harbor_ds = "aider-polyglot" if "aider" in plan.dataset.id else "terminal-bench"
+    cmd.extend(["--dataset", harbor_ds])
     cmd.extend(["--agent", plan.agent])
     if plan.model and plan.model != "default":
         cmd.extend(["--model", plan.model])
 
+    if plan.base_url and plan.agent != "oracle":
+        cmd.extend(["--base-url", plan.base_url])
+
     for task_id in plan.selected_tasks:
-        cmd.extend(["--task", task_id])
+        cmd.extend(["--include-task-name", task_id])
 
     cmd.extend(["--n-attempts", str(plan.repetitions)])
     cmd.extend(["--n-concurrent", str(n_concurrent)])
@@ -119,31 +124,37 @@ def execute_harbor_run(
         quiet=quiet,
     )
 
+    run_env = os.environ.copy()
+    if "OPENAI_API_KEY" not in run_env:
+        run_env["OPENAI_API_KEY"] = "lm-studio"
+
     with command_lock(state):
         try:
             # Execute Harbor subprocess
             proc = subprocess.run(
                 cmd,
+                env=run_env,
                 text=True,
                 capture_output=False,  # Stream output to terminal for transparency
             )
         except (KeyboardInterrupt, Exception) as exc:
             raise RuntimeError(f"Harbor run interrupted or aborted: {exc}") from exc
 
+    if proc.returncode != 0 and not (job_dir.is_dir() and (job_dir / "result.json").is_file()):
+        raise RuntimeError(
+            f"Harbor evaluation process failed with exit code {proc.returncode}"
+        )
+
     # Validate that job directory exists
     if not job_dir.is_dir():
-        # Fallback to search if harbor slightly altered job_name
-        dirs = [p for p in resolved_jobs_dir.iterdir() if p.is_dir()]
-        if not dirs:
-            raise RuntimeError(
-                f"Harbor process exited with code {proc.returncode}, but no job directory was created in {resolved_jobs_dir}"
-            )
-        job_dir = max(dirs, key=lambda p: p.stat().st_mtime)
+        raise RuntimeError(
+            f"Harbor job directory was not created: {job_dir}"
+        )
 
     result_file = job_dir / "result.json"
-    if not result_file.is_file() and proc.returncode != 0:
+    if not result_file.is_file():
         raise RuntimeError(
-            f"Harbor evaluation process failed with exit code {proc.returncode} and no result.json was produced in {job_dir}"
+            f"No result.json was produced in {job_dir}"
         )
 
     # Import the job artifacts

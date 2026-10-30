@@ -19,7 +19,7 @@ def test_build_harbor_command():
         "aider/aider-polyglot",
         agent="oracle",
         model="test-model",
-        task_ids=["python/bank-account", "python/grep"],
+        task_ids=["polyglot_python_proverb", "polyglot_python_grep"],
         repetitions=2,
     )
 
@@ -36,14 +36,14 @@ def test_build_harbor_command():
     assert "--job-name" in cmd
     assert "test_job_123" in cmd
     assert "--dataset" in cmd
-    assert "aider/aider-polyglot" in cmd
+    assert "aider-polyglot" in cmd
     assert "--agent" in cmd
     assert "oracle" in cmd
     assert "--model" in cmd
     assert "test-model" in cmd
-    assert "--task" in cmd
-    assert "python/bank-account" in cmd
-    assert "python/grep" in cmd
+    assert "--include-task-name" in cmd
+    assert "polyglot_python_proverb" in cmd
+    assert "polyglot_python_grep" in cmd
     assert "--n-attempts" in cmd
     assert "2" in cmd
     assert "--max-retries" in cmd

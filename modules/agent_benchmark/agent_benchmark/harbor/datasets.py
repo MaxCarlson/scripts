@@ -7,94 +7,106 @@ import random
 from typing import Sequence
 
 # Curated catalog of Aider Polyglot tasks across 6 languages
-# Source: Aider Polyglot benchmark (225 total exercism tasks)
+# Source: Harbor official aider-polyglot benchmark (225 total exercism tasks)
 AIDER_POLYGLOT_TASKS: dict[str, list[str]] = {
     "python": [
-        "python/allergies", "python/anagram", "python/armstrong-numbers", "python/bank-account",
-        "python/binary-search", "python/bob", "python/book-store", "python/bowling",
-        "python/circular-buffer", "python/clock", "python/collatz-conjecture", "python/crypto-square",
-        "python/diamond", "python/dnd-character", "python/dominoes", "python/eliuds-eggs",
-        "python/etl", "python/flatten-array", "python/forth", "python/grade-school",
-        "python/grep", "python/hamming", "python/isbn-verifier", "python/isogram",
-        "python/kindergarten-garden", "python/knapsack", "python/largest-series-product",
-        "python/leap", "python/linked-list", "python/list-ops", "python/luhn",
-        "python/matching-brackets", "python/meetup", "python/minesweeper", "python/nth-prime",
-        "python/ocr-numbers", "python/palindrome-products", "python/pangram", "python/pascals-triangle",
-        "python/perfect-numbers", "python/pig-latin", "python/poker", "python/prime-factors",
-        "python/protein-translation", "python/queen-attack", "python/rail-fence-cipher",
-        "python/rational-numbers", "python/react", "python/resistor-color", "python/resistor-color-duo",
-        "python/reverse-string", "python/rna-transcription", "python/robot-name", "python/robot-simulator",
-        "python/rotational-cipher", "python/run-length-encoding", "python/saddle-points",
-        "python/say", "python/scale-generator", "python/scrabble-score", "python/secret-handshake",
-        "python/series", "python/sieve", "python/simple-cipher", "python/simple-linked-list",
-        "python/space-age", "python/sublist", "python/sum-of-multiples", "python/tournament",
-        "python/triangle", "python/twelve-days", "python/two-fer", "python/variable-length-quantity",
-        "python/word-count", "python/wordy", "python/yacht",
+        "polyglot_python_affine-cipher", "polyglot_python_beer-song", "polyglot_python_book-store",
+        "polyglot_python_bottle-song", "polyglot_python_bowling", "polyglot_python_connect",
+        "polyglot_python_dominoes", "polyglot_python_dot-dsl", "polyglot_python_food-chain",
+        "polyglot_python_forth", "polyglot_python_go-counting", "polyglot_python_grade-school",
+        "polyglot_python_grep", "polyglot_python_hangman", "polyglot_python_list-ops",
+        "polyglot_python_paasio", "polyglot_python_phone-number", "polyglot_python_pig-latin",
+        "polyglot_python_poker", "polyglot_python_pov", "polyglot_python_proverb",
+        "polyglot_python_react", "polyglot_python_rest-api", "polyglot_python_robot-name",
+        "polyglot_python_scale-generator", "polyglot_python_sgf-parsing", "polyglot_python_simple-linked-list",
+        "polyglot_python_transpose", "polyglot_python_tree-building", "polyglot_python_two-bucket",
+        "polyglot_python_variable-length-quantity", "polyglot_python_wordy", "polyglot_python_zebra-puzzle",
+        "polyglot_python_zipper",
     ],
     "cpp": [
-        "cpp/allergies", "cpp/anagram", "cpp/armstrong-numbers", "cpp/bank-account",
-        "cpp/binary-search", "cpp/bob", "cpp/circular-buffer", "cpp/clock",
-        "cpp/collatz-conjecture", "cpp/crypto-square", "cpp/diamond", "cpp/dnd-character",
-        "cpp/etl", "cpp/grade-school", "cpp/hamming", "cpp/isbn-verifier",
-        "cpp/isogram", "cpp/leap", "cpp/matching-brackets", "cpp/meetup",
-        "cpp/nth-prime", "cpp/pangram", "cpp/pascals-triangle", "cpp/perfect-numbers",
-        "cpp/queen-attack", "cpp/raindrops", "cpp/reverse-string", "cpp/rna-transcription",
-        "cpp/robot-name", "cpp/robot-simulator", "cpp/rotational-cipher", "cpp/sieve",
-        "cpp/space-age", "cpp/sum-of-multiples", "cpp/triangle", "cpp/two-fer",
+        "polyglot_cpp_all-your-base", "polyglot_cpp_allergies", "polyglot_cpp_bank-account",
+        "polyglot_cpp_binary-search-tree", "polyglot_cpp_circular-buffer", "polyglot_cpp_clock",
+        "polyglot_cpp_complex-numbers", "polyglot_cpp_crypto-square", "polyglot_cpp_diamond",
+        "polyglot_cpp_dnd-character", "polyglot_cpp_gigasecond", "polyglot_cpp_grade-school",
+        "polyglot_cpp_kindergarten-garden", "polyglot_cpp_knapsack", "polyglot_cpp_linked-list",
+        "polyglot_cpp_meetup", "polyglot_cpp_parallel-letter-frequency", "polyglot_cpp_perfect-numbers",
+        "polyglot_cpp_phone-number", "polyglot_cpp_queen-attack", "polyglot_cpp_robot-name",
+        "polyglot_cpp_space-age", "polyglot_cpp_spiral-matrix", "polyglot_cpp_sublist",
+        "polyglot_cpp_yacht", "polyglot_cpp_zebra-puzzle",
     ],
     "go": [
-        "go/allergies", "go/anagram", "go/armstrong-numbers", "go/bank-account",
-        "go/binary-search", "go/bob", "go/circular-buffer", "go/clock",
-        "go/collatz-conjecture", "go/crypto-square", "go/diamond", "go/dnd-character",
-        "go/etl", "go/grade-school", "go/hamming", "go/isbn-verifier",
-        "go/isogram", "go/leap", "go/matching-brackets", "go/meetup",
-        "go/nth-prime", "go/pangram", "go/pascals-triangle", "go/perfect-numbers",
-        "go/queen-attack", "go/raindrops", "go/reverse-string", "go/rna-transcription",
-        "go/robot-name", "go/robot-simulator", "go/rotational-cipher", "go/sieve",
-        "go/space-age", "go/sum-of-multiples", "go/triangle", "go/two-fer",
+        "polyglot_go_alphametics", "polyglot_go_beer-song", "polyglot_go_book-store",
+        "polyglot_go_bottle-song", "polyglot_go_bowling", "polyglot_go_connect",
+        "polyglot_go_counter", "polyglot_go_crypto-square", "polyglot_go_dnd-character",
+        "polyglot_go_dominoes", "polyglot_go_error-handling", "polyglot_go_food-chain",
+        "polyglot_go_forth", "polyglot_go_hexadecimal", "polyglot_go_kindergarten-garden",
+        "polyglot_go_ledger", "polyglot_go_markdown", "polyglot_go_matrix",
+        "polyglot_go_octal", "polyglot_go_paasio", "polyglot_go_palindrome-products",
+        "polyglot_go_pig-latin", "polyglot_go_poker", "polyglot_go_pov",
+        "polyglot_go_protein-translation", "polyglot_go_react", "polyglot_go_robot-simulator",
+        "polyglot_go_say", "polyglot_go_scale-generator", "polyglot_go_simple-linked-list",
+        "polyglot_go_sublist", "polyglot_go_transpose", "polyglot_go_tree-building",
+        "polyglot_go_trinary", "polyglot_go_two-bucket", "polyglot_go_variable-length-quantity",
+        "polyglot_go_word-search", "polyglot_go_wordy", "polyglot_go_zebra-puzzle",
     ],
     "java": [
-        "java/allergies", "java/anagram", "java/armstrong-numbers", "java/bank-account",
-        "java/binary-search", "java/bob", "java/circular-buffer", "java/clock",
-        "java/collatz-conjecture", "java/crypto-square", "java/diamond", "java/dnd-character",
-        "java/etl", "java/grade-school", "java/hamming", "java/isbn-verifier",
-        "java/isogram", "java/leap", "java/matching-brackets", "java/meetup",
-        "java/nth-prime", "java/pangram", "java/pascals-triangle", "java/perfect-numbers",
-        "java/queen-attack", "java/raindrops", "java/reverse-string", "java/rna-transcription",
-        "java/robot-name", "java/robot-simulator", "java/rotational-cipher", "java/sieve",
-        "java/space-age", "java/sum-of-multiples", "java/triangle", "java/two-fer",
+        "polyglot_java_affine-cipher", "polyglot_java_all-your-base", "polyglot_java_alphametics",
+        "polyglot_java_bank-account", "polyglot_java_book-store", "polyglot_java_bottle-song",
+        "polyglot_java_bowling", "polyglot_java_change", "polyglot_java_circular-buffer",
+        "polyglot_java_connect", "polyglot_java_custom-set", "polyglot_java_dominoes",
+        "polyglot_java_food-chain", "polyglot_java_forth", "polyglot_java_go-counting",
+        "polyglot_java_hangman", "polyglot_java_house", "polyglot_java_kindergarten-garden",
+        "polyglot_java_ledger", "polyglot_java_mazy-mice", "polyglot_java_ocr-numbers",
+        "polyglot_java_palindrome-products", "polyglot_java_phone-number", "polyglot_java_pig-latin",
+        "polyglot_java_poker", "polyglot_java_pov", "polyglot_java_protein-translation",
+        "polyglot_java_pythagorean-triplet", "polyglot_java_queen-attack", "polyglot_java_rational-numbers",
+        "polyglot_java_react", "polyglot_java_resistor-color-trio", "polyglot_java_rest-api",
+        "polyglot_java_satellite", "polyglot_java_series", "polyglot_java_sgf-parsing",
+        "polyglot_java_simple-linked-list", "polyglot_java_state-of-tic-tac-toe", "polyglot_java_transpose",
+        "polyglot_java_tree-building", "polyglot_java_twelve-days", "polyglot_java_two-bucket",
+        "polyglot_java_variable-length-quantity", "polyglot_java_word-search", "polyglot_java_wordy",
+        "polyglot_java_zebra-puzzle", "polyglot_java_zipper",
     ],
     "javascript": [
-        "javascript/allergies", "javascript/anagram", "javascript/armstrong-numbers", "javascript/bank-account",
-        "javascript/binary-search", "javascript/bob", "javascript/circular-buffer", "javascript/clock",
-        "javascript/collatz-conjecture", "javascript/crypto-square", "javascript/diamond", "javascript/dnd-character",
-        "javascript/etl", "javascript/grade-school", "javascript/hamming", "javascript/isbn-verifier",
-        "javascript/isogram", "javascript/leap", "javascript/matching-brackets", "javascript/meetup",
-        "javascript/nth-prime", "javascript/pangram", "javascript/pascals-triangle", "javascript/perfect-numbers",
-        "javascript/queen-attack", "javascript/raindrops", "javascript/reverse-string", "javascript/rna-transcription",
-        "javascript/robot-name", "javascript/robot-simulator", "javascript/rotational-cipher", "javascript/sieve",
-        "javascript/space-age", "javascript/sum-of-multiples", "javascript/triangle", "javascript/two-fer",
+        "polyglot_javascript_affine-cipher", "polyglot_javascript_alphametics", "polyglot_javascript_beer-song",
+        "polyglot_javascript_binary", "polyglot_javascript_book-store", "polyglot_javascript_bottle-song",
+        "polyglot_javascript_bowling", "polyglot_javascript_complex-numbers", "polyglot_javascript_connect",
+        "polyglot_javascript_food-chain", "polyglot_javascript_forth", "polyglot_javascript_go-counting",
+        "polyglot_javascript_grade-school", "polyglot_javascript_grep", "polyglot_javascript_house",
+        "polyglot_javascript_killer-sudoku-helper", "polyglot_javascript_ledger", "polyglot_javascript_list-ops",
+        "polyglot_javascript_meetup", "polyglot_javascript_ocr-numbers", "polyglot_javascript_palindrome-products",
+        "polyglot_javascript_parallel-letter-frequency", "polyglot_javascript_phone-number", "polyglot_javascript_pig-latin",
+        "polyglot_javascript_poker", "polyglot_javascript_promises", "polyglot_javascript_queen-attack",
+        "polyglot_javascript_rational-numbers", "polyglot_javascript_react", "polyglot_javascript_rectangles",
+        "polyglot_javascript_resistor-color-trio", "polyglot_javascript_rest-api", "polyglot_javascript_robot-name",
+        "polyglot_javascript_say", "polyglot_javascript_scale-generator", "polyglot_javascript_simple-linked-list",
+        "polyglot_javascript_space-age", "polyglot_javascript_state-of-tic-tac-toe", "polyglot_javascript_sum-of-multiples",
+        "polyglot_javascript_tournament", "polyglot_javascript_transpose", "polyglot_javascript_triangle",
+        "polyglot_javascript_twelve-days", "polyglot_javascript_two-bucket", "polyglot_javascript_variable-length-quantity",
+        "polyglot_javascript_word-search", "polyglot_javascript_wordy", "polyglot_javascript_zebra-puzzle",
+        "polyglot_javascript_zipper",
     ],
     "rust": [
-        "rust/allergies", "rust/anagram", "rust/armstrong-numbers", "rust/bank-account",
-        "rust/binary-search", "rust/bob", "rust/circular-buffer", "rust/clock",
-        "rust/collatz-conjecture", "rust/crypto-square", "rust/diamond", "rust/dnd-character",
-        "rust/etl", "rust/grade-school", "rust/hamming", "rust/isbn-verifier",
-        "rust/isogram", "rust/leap", "rust/matching-brackets", "rust/meetup",
-        "rust/nth-prime", "rust/pangram", "rust/pascals-triangle", "rust/perfect-numbers",
-        "rust/queen-attack", "rust/raindrops", "rust/reverse-string", "rust/rna-transcription",
-        "rust/robot-name", "rust/robot-simulator", "rust/rotational-cipher", "rust/sieve",
-        "rust/space-age", "rust/sum-of-multiples", "rust/triangle", "rust/two-fer",
+        "polyglot_rust_accumulate", "polyglot_rust_acronym", "polyglot_rust_alphametics",
+        "polyglot_rust_book-store", "polyglot_rust_bowling", "polyglot_rust_decimal",
+        "polyglot_rust_dot-dsl", "polyglot_rust_doubly-linked-list", "polyglot_rust_fizzy",
+        "polyglot_rust_forth", "polyglot_rust_gigasecond", "polyglot_rust_grade-school",
+        "polyglot_rust_grep", "polyglot_rust_luhn-from", "polyglot_rust_macros",
+        "polyglot_rust_nucleotide-codons", "polyglot_rust_ocr-numbers", "polyglot_rust_parallel-letter-frequency",
+        "polyglot_rust_pig-latin", "polyglot_rust_poker", "polyglot_rust_react",
+        "polyglot_rust_robot-name", "polyglot_rust_say", "polyglot_rust_scale-generator",
+        "polyglot_rust_simple-cipher", "polyglot_rust_two-bucket", "polyglot_rust_variable-length-quantity",
+        "polyglot_rust_word-count", "polyglot_rust_wordy", "polyglot_rust_xorcism",
     ],
 }
 
 # Curated CPU-only Terminal-Bench candidate tasks (pinned for local evaluation)
 TERMINAL_BENCH_CPU_TASKS: list[str] = [
-    "terminal-bench/find-large-files",
-    "terminal-bench/git-rebase-conflict",
-    "terminal-bench/nginx-access-log-analysis",
-    "terminal-bench/sqlite-schema-migration",
-    "terminal-bench/tar-archive-extraction",
+    "build-cython-ext",
+    "regex-log",
+    "sqlite-db-truncate",
+    "nginx-request-logging",
+    "log-summary-date-ranges",
 ]
 
 
@@ -115,7 +127,7 @@ DATASETS: dict[str, DatasetDescriptor] = {
         id="aider/aider-polyglot",
         name="Aider Polyglot Coding Benchmark",
         version="1.0.0",
-        description="225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust",
+        description="225 coding exercises across six languages (Harbor official aider-polyglot)",
         supported_languages=("python", "cpp", "go", "java", "javascript", "rust"),
         all_tasks=tuple(task for lang in AIDER_POLYGLOT_TASKS.values() for task in lang),
         default_scoring_protocol="single-attempt-v1",
@@ -129,16 +141,11 @@ DATASETS: dict[str, DatasetDescriptor] = {
         all_tasks=tuple(TERMINAL_BENCH_CPU_TASKS),
         default_scoring_protocol="single-attempt-v1",
     ),
-    "terminal-bench-cpu-only": DatasetDescriptor(
-        id="terminal-bench-cpu-only",
-        name="Terminal-Bench CPU-Only",
-        version="1.0.0",
-        description="Lightweight local CPU-only tasks from Terminal-Bench",
-        supported_languages=("shell", "python"),
-        all_tasks=tuple(TERMINAL_BENCH_CPU_TASKS),
-        default_scoring_protocol="single-attempt-v1",
-    ),
 }
+# Aliases
+DATASETS["aider-polyglot"] = DATASETS["aider/aider-polyglot"]
+DATASETS["terminal-bench"] = DATASETS["terminal-bench/terminal-bench@4.0.0"]
+DATASETS["terminal-bench-cpu-only"] = DATASETS["terminal-bench/terminal-bench@4.0.0"]
 
 
 def resolve_dataset(dataset_name: str) -> DatasetDescriptor:
@@ -178,7 +185,7 @@ def select_tasks(
     # 1. Filter by language if specified
     if language:
         lang_norm = language.lower().strip()
-        candidates = [t for t in candidates if t.startswith(f"{lang_norm}/") or lang_norm in t]
+        candidates = [t for t in candidates if f"_{lang_norm}_" in t or t.startswith(f"{lang_norm}/") or lang_norm in t]
         if not candidates:
             raise ValueError(
                 f"No tasks found for language {language!r} in dataset {descriptor.id}. "
@@ -190,8 +197,14 @@ def select_tasks(
         selected: list[str] = []
         for tid in task_ids:
             clean_tid = tid.strip()
-            # Match exact or suffix
-            matches = [t for t in candidates if t == clean_tid or t.endswith(f"/{clean_tid}")]
+            # Match exact, normalized prefix, or suffix
+            matches = [
+                t for t in candidates
+                if t == clean_tid
+                or t == f"polyglot_{clean_tid.replace('/', '_')}"
+                or t.endswith(f"_{clean_tid}")
+                or t.endswith(f"/{clean_tid}")
+            ]
             if not matches:
                 raise ValueError(f"Task ID {tid!r} not found in dataset {descriptor.id}")
             selected.extend(matches)

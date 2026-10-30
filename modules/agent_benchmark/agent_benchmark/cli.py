@@ -405,13 +405,16 @@ def parser() -> argparse.ArgumentParser:
         "plan", help="Resolve tasks, configuration, and projected work without execution"
     )
     ext_plan.add_argument(
-        "-d", "--dataset", default="aider/aider-polyglot", help="Dataset identifier and version"
+        "-d", "--dataset", default="aider-polyglot", help="Dataset identifier and version"
     )
     ext_plan.add_argument(
-        "-a", "--agent", default="oracle", help="Agent implementation (e.g. codex, antigravity-cli, opencode, oracle)"
+        "-a", "--agent", default="qwen-coder", help="Agent implementation (e.g. qwen-coder, codex, antigravity-cli, opencode, oracle)"
     )
     ext_plan.add_argument(
-        "-m", "--model", default="default", help="Exact model identifier"
+        "-m", "--model", default="qwen38_23GB", help="Exact model identifier"
+    )
+    ext_plan.add_argument(
+        "-u", "--base-url", default="http://host.docker.internal:1234/v1", help="Inference API base URL for agent"
     )
     ext_plan.add_argument(
         "-t", "--task", action="append", help="Specific task ID (repeatable)"
@@ -440,13 +443,16 @@ def parser() -> argparse.ArgumentParser:
         "-x", "--execute", action="store_true", help="Explicitly authorize execution (required)"
     )
     ext_run.add_argument(
-        "-d", "--dataset", default="aider/aider-polyglot", help="Dataset identifier and version"
+        "-d", "--dataset", default="aider-polyglot", help="Dataset identifier and version"
     )
     ext_run.add_argument(
-        "-a", "--agent", required=True, help="Agent implementation"
+        "-a", "--agent", default="qwen-coder", help="Agent implementation"
     )
     ext_run.add_argument(
-        "-m", "--model", default="default", help="Exact model identifier"
+        "-m", "--model", default="qwen38_23GB", help="Exact model identifier"
+    )
+    ext_run.add_argument(
+        "-u", "--base-url", default="http://host.docker.internal:1234/v1", help="Inference API base URL for agent"
     )
     ext_run.add_argument(
         "-t", "--task", action="append", help="Specific task ID (repeatable)"
@@ -839,7 +845,11 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
         docker_ok, docker_msg = check_docker_readiness()
 
         suites_info = []
+        seen_ids = set()
         for d_id, desc in DATASETS.items():
+            if desc.id in seen_ids:
+                continue
+            seen_ids.add(desc.id)
             suites_info.append({
                 "id": desc.id,
                 "name": desc.name,
@@ -892,6 +902,7 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
                 args.dataset,
                 agent=args.agent,
                 model=args.model,
+                base_url=getattr(args, "base_url", None),
                 task_ids=args.task,
                 language=getattr(args, "language", None),
                 count=getattr(args, "count", None),
@@ -913,6 +924,8 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             tbl.add_row("Dataset", f"{plan.dataset.id} ({plan.dataset.version})")
             tbl.add_row("Agent", plan.agent)
             tbl.add_row("Model", plan.model)
+            if plan.base_url:
+                tbl.add_row("Base URL", plan.base_url)
             tbl.add_row("Selected Tasks", str(len(plan.selected_tasks)))
             tbl.add_row("Repetitions", str(plan.repetitions))
             tbl.add_row("Total Projected Trials", str(plan.projected_trials))
@@ -930,6 +943,7 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
                 args.dataset,
                 agent=args.agent,
                 model=args.model,
+                base_url=getattr(args, "base_url", None),
                 task_ids=args.task,
                 language=getattr(args, "language", None),
                 count=getattr(args, "count", None),
@@ -1157,3 +1171,7 @@ def main(argv: list[str] | None = None) -> int:
             message = message.replace(password, "***")
         print(f"agent-bench: {message}", file=sys.stderr)
         return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
