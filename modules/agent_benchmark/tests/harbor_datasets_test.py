@@ -61,6 +61,18 @@ def test_select_tasks_language_filter():
         select_tasks(desc, language="brainfuck")
 
 
+def test_select_tasks_language_filter_does_not_match_exercise_names():
+    desc = resolve_dataset("aider/aider-polyglot")
+
+    for language in desc.supported_languages:
+        expected = sorted(
+            task for task in desc.all_tasks if task.startswith(f"polyglot_{language}_")
+        )
+        selected = select_tasks(desc, language=language)
+
+        assert selected == expected
+
+
 def test_select_tasks_explicit_ids():
     desc = resolve_dataset("aider/aider-polyglot")
     selected = select_tasks(desc, task_ids=["polyglot_python_proverb", "polyglot_python_grep"])

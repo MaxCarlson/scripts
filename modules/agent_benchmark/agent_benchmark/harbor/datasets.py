@@ -255,7 +255,11 @@ def select_tasks(
     # 1. Filter by language if specified
     if language:
         lang_norm = language.lower().strip()
-        candidates = [t for t in candidates if f"_{lang_norm}_" in t or t.startswith(f"{lang_norm}/") or lang_norm in t]
+        candidates = [
+            task
+            for task in candidates
+            if task.startswith(f"polyglot_{lang_norm}_") or task.startswith(f"{lang_norm}/")
+        ]
         if not candidates:
             raise ValueError(
                 f"No tasks found for language {language!r} in dataset {descriptor.id}. "
