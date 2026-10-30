@@ -14,4 +14,4 @@
 - [x] Add ignore rules for generated evidence while keeping small reproducibility fixtures trackable.
 - [x] Run focused unit, fixture, proxy, lint/type and diff checks from the integration worktree.
 - [x] Review the exact integration diff and verify excluded artifacts are absent.
-- [ ] Merge into and push `main` only after all gates pass; verify final local and remote state.
+- [x] Merge into and push `main` only after all gates pass; verify final local and remote state.

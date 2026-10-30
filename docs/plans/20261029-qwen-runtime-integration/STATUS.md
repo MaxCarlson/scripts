@@ -12,4 +12,6 @@ Audit result: 138 committed evidence paths included one SQLite database. Structu
 
 Validation passed against the exact curated source tree (`6ece603760417f35c3129a83bb8f8e9a7f4d581b`) in a short-path checkout: Agent Benchmark `411 passed, 3 skipped`; Benchmark Core tests passed; request-capture proxy `6 passed`; Ruff passed. Focused regressions also passed for new CLI aliases, malformed profile/proxy values, Qwen verifier fixtures and the synthetic-Git fixture. Mypy passed for the new profile/overlay/identity modules; broader documented checks still report unrelated existing `benchmark_core`, `termdash` and dynamic `resource_metrics` diagnostics. `git diff --cached --check` passed. No local inference has been run.
 
-Next action: commit the reviewed allowlisted integration, merge it into a clean worktree based on current `origin/main`, push `main`, then verify the remote commit and post-merge tree. The dirty main checkout and source investigation worktree remain untouched.
+Integration commit: `e03bfc529ed8eaf306c983aeb1d6265770b56bb0`.
+
+Merge commit pushed to `origin/main`: `a791c65f28b40e6f89157525c5e42622fb1498e3`. The pushed tree matches the validated integration tree. Post-merge diff and artifact checks passed. The original dirty `main` checkout and source investigation worktree, including raw local evidence, remain preserved and untouched by integration operations.
