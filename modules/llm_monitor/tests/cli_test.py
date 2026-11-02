@@ -153,6 +153,60 @@ def test_web_command_rejects_recording_without_gateway():
         run_web(record_inferences="metadata", gateway_enabled=False)
 
 
+def test_web_command_database_without_recording_is_readonly(tmp_path, monkeypatch):
+    import pytest
+    from llm_monitor.storage import TelemetryStore, TelemetryStoreError
+    from llm_monitor.web import run_web
+
+    nonexistent = tmp_path / "never_created.db"
+    with pytest.raises(TelemetryStoreError, match="telemetry database does not exist"):
+        run_web(database=str(nonexistent), no_browser=True)
+    assert not nonexistent.exists()
+
+    existing = tmp_path / "existing.db"
+    with TelemetryStore(existing) as init_store:
+        init_store.database_info()
+    assert existing.is_file()
+
+    fake_server_created = []
+    class FakeServer:
+        def run(self):
+            pass
+
+    def fake_create_server(app, host, port):
+        assert app.state.inference_history_store is not None
+        assert app.state.inference_history_store.readonly is True
+        assert app.state.inference_recorder is None
+        fake_server_created.append(True)
+        return FakeServer()
+
+    monkeypatch.setattr("web_ui_tools.create_server", fake_create_server)
+    exit_code = run_web(database=str(existing), no_browser=True)
+    assert exit_code == 0
+    assert fake_server_created == [True]
+
+
+def test_web_command_gateway_alone_never_creates_database(tmp_path, monkeypatch):
+    from llm_monitor.web import run_web
+
+    fake_server_created = []
+    class FakeServer:
+        def run(self):
+            pass
+
+    def fake_create_server(app, host, port):
+        assert app.state.inference_history_store is None
+        assert app.state.inference_recorder is None
+        fake_server_created.append(True)
+        return FakeServer()
+
+    monkeypatch.setattr("web_ui_tools.create_server", fake_create_server)
+    exit_code = run_web(gateway_enabled=True, no_browser=True)
+    assert exit_code == 0
+    assert fake_server_created == [True]
+    assert list(tmp_path.glob("*.db*")) == []
+
+
 def test_database_commands_and_historical_report_work_offline(tmp_path, capsys):
     from llm_monitor.cli import main
     from llm_monitor.storage import TelemetryStore

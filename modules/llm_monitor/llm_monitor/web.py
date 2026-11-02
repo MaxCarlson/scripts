@@ -76,7 +76,7 @@ def run_web(
         store = TelemetryStore(db_path)
         recorder = InferenceRecorder(store, mode=record_inferences)
     elif database:
-        store = TelemetryStore(database)
+        store = TelemetryStore(database, readonly=True)
 
     login_code = secrets.token_urlsafe(24)
     service = InferenceMonitoringService(

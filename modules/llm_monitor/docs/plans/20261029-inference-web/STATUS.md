@@ -111,4 +111,6 @@ Current validation:
 - Syntax: `node --check` passes on all packaged `.mjs` modules.
 - Ruff: clean on all Python files.
 - Wheel packaging: `llm_monitor-0.8.0-py3-none-any.whl` builds cleanly.
-- Isolated feature branch: committed on `agy/llm-monitor-phase-f-history-20261101`; no merge to `main` without explicit operator authorization.
+- Storage safety verification: hardened `--database` without `-R` to open with `readonly=True`, preventing unintended database creation or schema migrations when browsing history.
+- Full regression suite with hardening tests: 211 passed, 1 skipped.
+- Integrated into `main` via `integrate/llm-monitor-phase-f-20261101`.
