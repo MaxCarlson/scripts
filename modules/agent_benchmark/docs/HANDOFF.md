@@ -1,3 +1,20 @@
+# Current checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
+baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.
+Active plan & full handoff: [`plans/20261029-1755_harbor-integration/HANDOFF.md`](plans/20261029-1755_harbor-integration/HANDOFF.md)
+and [`STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
+
+Final review hardening completed:
+- **Agent configuration defaults (Issue A)**: Fixed default resolution and configuration validation in planner and runner. Cloud agents (`codex`, `antigravity-cli`) and reference agents (`oracle`, `nop`) do not inherit local Qwen model (`qwen38_23GB`) or local endpoint (`http://host.docker.internal:1234/v1`). Missing cloud credentials block execution. Non-model agents omit `--model` and `--base-url`.
+- **Nonzero Harbor process exits (Issue B)**: Runner validates completed vs incomplete/corrupted trials on nonzero exit codes. Incomplete/unparseable jobs fail closed. Completed runs with nonzero exits log a warning and record `harbor_process_returncode` in run metadata and summary metrics.
+- **Direct dependency (Issue C)**: Declared `pydantic>=2.0,<3` directly in `pyproject.toml`.
+- **Oracle limitation alignment (Issue D)**: Terminal-Bench Oracle failure on `build-cython-ext` documented as consistent with upstream `pyknotid`/`planarity` regression without asserting an unobserved installed version.
+- **Phase C baseline:** 7/10 points (70%), 10/10 scored coverage, zero canonical infrastructure errors; sequential separate jobs, one attempt, zero retries. Frozen task/config provenance is in `reports/harbor/qwen-baseline-10/baseline-manifest.json`; outcomes and token analysis are in `baseline-summary.md`.
+- **Terminal-Bench catalog:** 89-task Terminal-Bench 2.0 and genuine 66-task 4.0 release registered as distinct identities. Corrected derived report is in `reports/harbor/tb-pilot-corrected/`.
+- **Validation:** 47 Harbor-focused tests passed; 458 Agent Benchmark tests passed (3 skipped); 116 Benchmark Core tests passed (1 skipped); Ruff passed; wheel packaging verified; CLI smoke tests verified.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
+
 # Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 
 Worktree `C:/Users/mcarls/src/scripts-agent-benchmark`, branch `agent/benchmark-resume-20261023`,
