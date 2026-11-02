@@ -327,6 +327,8 @@ def create_inference_web_app(
 
     if gateway is not None:
         app.include_router(gateway.router())
+    if recorder is not None:
+        app.add_event_handler("startup", recorder.start)
     app.add_event_handler("startup", service.start)
     app.add_event_handler("shutdown", service.stop)
     app.state.inference_service = service
@@ -336,4 +338,6 @@ def create_inference_web_app(
     app.state.inference_history_store = history_store
     if gateway is not None:
         app.add_event_handler("shutdown", gateway.close)
+    if recorder is not None:
+        app.add_event_handler("shutdown", recorder.stop)
     return app

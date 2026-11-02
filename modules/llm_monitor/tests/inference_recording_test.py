@@ -47,7 +47,8 @@ def test_inference_recorder_metadata_mode_lifecycle(tmp_path: Path):
     assert status["recording_enabled"] is True
     assert status["mode"] == "metadata"
     assert status["persisted_requests_count"] >= 1
-    assert status["is_healthy"] is True
+    assert status["is_healthy"] is False
+    assert status["worker_running"] is False
 
     # Verify database directly: contents MUST be empty
     record = store.get_inference_request("r-start-finish", include_content=True)

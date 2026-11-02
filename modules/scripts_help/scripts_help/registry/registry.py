@@ -291,7 +291,7 @@ REGISTRY: dict = {
                 "path": "modules/agent_benchmark",
                 "desc": "Plan, execute, recover, and report persistent Harbor benchmark cohorts with monitored and compact CLI modes",
                 "help_cmd": ["agent-bench", "--help"],
-                "version": "1.21.0",
+                "version": "1.22.0",
             },
             {
                 "name": "local-agent (module)",
@@ -535,7 +535,7 @@ REGISTRY: dict = {
                 "path": "modules/llm_monitor",
                 "desc": "Read-only local LLM diagnostics, historical telemetry, alerts, and standalone inference overview",
                 "help_cmd": ["python", "-m", "llm_monitor", "--help"],
-                "version": "0.7.0",
+                "version": "0.8.1",
             },
             {
                 "name": "runmux (module)",

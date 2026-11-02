@@ -31,6 +31,26 @@ class FakeService:
         return self.value
 
 
+def test_application_starts_and_stops_recording_worker(tmp_path):
+    from llm_monitor.inference_models import InferenceRequest
+    from llm_monitor.inference_recording import InferenceRecorder
+    from llm_monitor.storage import TelemetryStore
+
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    store = TelemetryStore(tmp_path / "recorder.sqlite3")
+    recorder = InferenceRecorder(store, mode="content")
+    app = create_inference_web_app(FakeService(), login_code="fixture", static_dir=tmp_path, recorder=recorder)
+    assert recorder.status()["healthy"] is False
+    for callback in app.router.on_startup:
+        callback()
+    assert recorder.status()["healthy"] is True
+    recorder.record_request_final(InferenceRequest(request_id="fixture", server_instance_id="s1",
+                                                   source="gateway", state="completed"))
+    recorder.stop()
+    assert store.get_inference_request("fixture") is not None
+
+
 def test_inference_routes_are_authenticated_versioned_and_read_only(tmp_path):
     service = FakeService()
     (tmp_path / "assets").mkdir()

@@ -37,7 +37,11 @@ This smoke verifies one scored task and does not launch the full ten-task cohort
 
 ## Monitored execution
 
-LLM Monitor must already be running with its gateway enabled. Suite preflight queries the gateway `/models` endpoint, the monitor inference status, and recording status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.
+LLM Monitor must already be running with its gateway enabled. Suite preflight queries the authenticated monitor model inventory, inference status, request capture and recorder status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.
+
+On Windows with Docker Desktop, `-U` defaults to `http://host.docker.internal:8788/v1` for the container, while host checks use `http://127.0.0.1:8788`. Use `-H/--monitor-host-url` if the host API has a different address; older run manifests use the same loopback mapping on resume. A session cookie must come from a login to the monitor; keep it private. For example, start the monitor with `llm-monitor web -p 8788 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n`, authenticate locally, and provide the resulting session cookie through `LLM_MONITOR_SESSION_COOKIE` without writing it to run artifacts.
+
+For monitored OpenCode, the suite records the requested `openai/<model>` selector and runs the same model ID under a dedicated `llm-monitor/<model>` provider selector. This avoids OpenCode's built-in `openai` provider selecting the Responses adapter for a Chat Completions-only gateway. Earlier monitored OpenCode runs lack this immutable selector and cannot be resumed; preserve their evidence and create a new run.
 
 Supply `LLM_MONITOR_AUTHORIZATION` or `LLM_MONITOR_SESSION_COOKIE` when the local monitor API requires authentication. These values are used only for the preflight request and are never copied to run evidence. Keep the monitor dashboard bound to its configured local authenticated interface.
 
@@ -85,6 +89,8 @@ Each run directory contains:
 The preserved historical OpenCode evaluation remains untouched under `reports/harbor/opencode-baseline-10/`. Its reclassified outcome is three valid passes and seven infrastructure-invalid attempts; the original raw Harbor failures remain available beside the forensic classification. The suite CLI does not rewrite or silently import that historical record.
 
 Pass rate uses only valid scored attempts. Infrastructure-invalid attempts are separate; coverage is reported against planned tasks. Harbor and LLM Monitor token metrics are reported separately when available, with discrepancies listed rather than silently choosing a source. Coordinator output token reduction is explicitly `not_measured`; it is distinct from model inference token usage. Monitor preflight verifies reachability, effective selected URL/protocol, model inventory, availability, live request capture, and recording health. Around each sequential task, the runner snapshots request IDs and requires at least one new ID before treating its result as captured. This is temporal evidence that the gateway observed a request; exact request-to-task attribution remains unavailable without trustworthy correlation IDs and is not inferred from GPU activity or database row counts.
+
+When recording is required, the runner also checks that observed request IDs reach durable monitor history in the required mode; content mode requires observed user and assistant content. It stops further dispatch after a recording, capture, or source-revision failure. Temporal request matching cannot establish completeness when other clients use the gateway concurrently.
 
 ## Methodology boundary and common setup failures
 

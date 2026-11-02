@@ -50,7 +50,7 @@ class InferenceRecorder:
     @property
     def is_healthy(self) -> bool:
         with self._lock:
-            return self._is_healthy
+            return self._is_healthy and self._thread is not None and self._thread.is_alive()
 
     @property
     def database_path(self) -> str:
@@ -194,26 +194,19 @@ class InferenceRecorder:
     def status(self) -> dict[str, Any]:
         """Return the current recorder configuration and operational health."""
         with self._lock:
+            worker_running = self._thread is not None and self._thread.is_alive()
+            healthy = self._is_healthy and worker_running
             return {
                 "recording_enabled": True,
                 "metadata": True,
                 "content": self.mode == "content",
                 "mode": self.mode,
                 "database_path": str(self.store.path),
-                "is_healthy": self._is_healthy,
-                "healthy": self._is_healthy,
+                "is_healthy": healthy,
+                "healthy": healthy,
+                "worker_running": worker_running,
                 "persisted_requests_count": self._persisted_count,
                 "pending_queue_size": self._queue.qsize(),
                 "dropped_count": self._dropped_count,
-                "last_error": self._last_error,
-            }
-            return {
-                "recording_enabled": True,
-                "mode": self.mode,
-                "database_path": str(self.store.path),
-                "is_healthy": self._is_healthy,
-                "persisted_requests_count": self._persisted_count,
-                "pending_queue_size": self._queue.qsize(),
-                "dropped_count": self._dropped_count,
-                "last_error": self._last_error,
+                "last_error": self._last_error or (None if worker_running else "Recorder worker is not running"),
             }

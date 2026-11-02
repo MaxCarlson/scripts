@@ -62,6 +62,8 @@ def test_manifest_is_deterministic_and_preserves_protocol_provenance():
     )
     assert first["manifest_sha256"] == second["manifest_sha256"]
     assert first["provenance"]["requested_api_format"] == "openai_chat_completions"
+    assert first["provenance"]["effective_agent_model"] == "llm-monitor/qwen38_23GB"
+    assert first["model"] == "openai/qwen38_23GB"
     assert first["tasks"] == list(EXPECTED_PYTHON_10)
 
 
@@ -162,6 +164,45 @@ def test_sequential_execution_preserves_accepted_trials_and_retries_invalid_once
     assert calls.count("polyglot_python_bottle-song") == 2
     row = next(item for item in RunStore(run).read()["tasks"] if item["task_id"].endswith("bottle-song"))
     assert row["attempt_history"]
+
+
+def test_monitor_failure_stops_dispatching_further_tasks(tmp_path: Path):
+    from agent_benchmark.suite import execute_pending
+
+    run = create_run(tmp_path, cohort="aider-python-10", agent="oracle", model=None,
+                     base_url=None, api_format=None, llm_monitor=False, recording="off")
+    calls = []
+
+    def executor(_store, task):
+        calls.append(task)
+        return {"status": "infrastructure_invalid", "error_code": "MONITOR_CAPTURE_FAILED"}
+
+    report = execute_pending(run, execute=True, executor=executor)
+    assert len(calls) == 1
+    assert report["pending"] == 9
+
+
+def test_monitored_opencode_dispatch_uses_distinct_provider_and_same_model_id(tmp_path: Path, monkeypatch):
+    import agent_benchmark.suite as suite
+    import agent_benchmark.suite_monitor as monitor
+
+    run = create_run(tmp_path, cohort="aider-python-10", agent="opencode", model="openai/qwen38_23GB",
+                     base_url=None, api_format=None, llm_monitor=True, recording="content")
+    seen = {}
+    monkeypatch.setattr(monitor, "validate_monitor", lambda **_kwargs: {"dropped_observations": 0})
+    snapshots = iter([{"request_ids": [], "requests": []},
+                      {"request_ids": ["r1"], "requests": [{"request_id": "r1"}]}])
+    monkeypatch.setattr(monitor, "request_snapshot", lambda **_kwargs: next(snapshots))
+    monkeypatch.setattr(monitor, "verify_recorded_requests", lambda **_kwargs: {"recorded_request_ids": ["r1"]})
+    monkeypatch.setattr(suite, "plan_benchmark", lambda *_args, **kwargs: seen.update(kwargs) or object())
+    monkeypatch.setattr(suite, "verify_saved_registry_snapshot", lambda *_args: None)
+    monkeypatch.setattr(suite, "execute_harbor_run", lambda *_args, **_kwargs: (
+        tmp_path, {"passed": 1, "dataset_source_revision": suite.FROZEN_REVISION}
+    ))
+    result = suite._run_one(RunStore(run), "polyglot_python_beer-song")
+    assert seen["model"] == "llm-monitor/qwen38_23GB"
+    assert seen["base_url"] == "http://host.docker.internal:8788/v1"
+    assert result["status"] == "passed"
 
 
 def test_active_worker_lock_prevents_duplicate_dispatch(tmp_path: Path):

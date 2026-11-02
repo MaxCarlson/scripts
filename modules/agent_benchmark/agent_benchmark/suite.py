@@ -67,7 +67,7 @@ def load_cohort(cohort: str | None = None, manifest: Path | None = None) -> dict
 def build_manifest(
     *, cohort: str | None = None, manifest: Path | None = None, agent: str, model: str | None,
     base_url: str | None, api_format: str | None, llm_monitor: bool, recording: str,
-    jobs: int = 1, monitor_url: str | None = None,
+    jobs: int = 1, monitor_url: str | None = None, monitor_host_url: str | None = None,
 ) -> dict[str, Any]:
     if jobs != 1:
         raise ValueError("suite execution currently requires sequential -j/--jobs 1")
@@ -77,6 +77,8 @@ def build_manifest(
         raise ValueError("non-off --recording requires -L/--llm-monitor")
     selected = load_cohort(cohort, manifest)
     effective_url = (monitor_url or DEFAULT_MONITOR_URL) if llm_monitor else base_url
+    from .suite_monitor import host_monitor_origin
+    effective_host_url = host_monitor_origin(effective_url, monitor_host_url) if llm_monitor else None
     effective_format = api_format
     if llm_monitor and agent.lower() == "opencode":
         if model and not model.startswith("openai/"):
@@ -100,6 +102,10 @@ def build_manifest(
          "content_fingerprint": None}
         for task in plan.selected_tasks
     ]
+    effective_agent_model = (
+        "llm-monitor/" + model.split("/", 1)[1]
+        if llm_monitor and agent.lower() == "opencode" and model else plan.model
+    )
     result: dict[str, Any] = {
         "schema": "agent-benchmark-suite-manifest-v1",
         "cohort": selected["id"], "dataset": selected["dataset"],
@@ -111,10 +117,12 @@ def build_manifest(
             "requested_base_url": base_url,
             "effective_base_url": plan.base_url,
             "monitor_url": (monitor_url or DEFAULT_MONITOR_URL) if llm_monitor else None,
+            "monitor_host_url": effective_host_url,
             "llm_monitor_required": llm_monitor,
             "recording_required": recording,
             "requested_api_format": api_format,
             "effective_api_format": plan.model_api_format,
+            "effective_agent_model": effective_agent_model,
             "original_protocol": "openai_responses" if agent.lower() == "opencode" else None,
             "harbor_version": plan.readiness.harbor_version,
             "harbor_dataset": plan.dataset.harbor_dataset,
@@ -145,12 +153,13 @@ def build_manifest(
 def create_run(
     root: Path, *, cohort: str | None, manifest: Path | None = None, agent: str, model: str | None,
     base_url: str | None, api_format: str | None, llm_monitor: bool, recording: str,
-    jobs: int = 1, monitor_url: str | None = None,
+    jobs: int = 1, monitor_url: str | None = None, monitor_host_url: str | None = None,
     planned_manifest: dict[str, Any] | None = None, registry_snapshot: bytes | None = None,
 ) -> Path:
     plan = planned_manifest or build_manifest(cohort=cohort, manifest=manifest, agent=agent, model=model,
                                                base_url=base_url, api_format=api_format, llm_monitor=llm_monitor,
-                                               recording=recording, jobs=jobs, monitor_url=monitor_url)
+                                               recording=recording, jobs=jobs, monitor_url=monitor_url,
+                                               monitor_host_url=monitor_host_url)
     registry_resolution = plan["provenance"].get("registry_resolution")
     if registry_resolution is not None and registry_snapshot is None:
         raise DatasetRevisionError("verified registry snapshot bytes are missing; no inference was dispatched")
@@ -318,7 +327,7 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
 def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     manifest = store.manifest
     from .suite_output import capture_process_output
-    from .suite_monitor import request_snapshot
+    from .suite_monitor import host_monitor_origin, request_snapshot, validate_monitor, verify_recorded_requests
     log_path = store.run_dir / "logs" / f"{task}.log"
     saved: Path | None = None
     started_at = _now()
@@ -326,9 +335,18 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     try:
         monitor_before = None
         if manifest["provenance"]["llm_monitor_required"]:
-            monitor_before = request_snapshot(monitor_url=manifest["provenance"]["monitor_url"])
+            host_url = host_monitor_origin(manifest["provenance"]["monitor_url"],
+                                           manifest["provenance"].get("monitor_host_url"))
+            monitor_health = validate_monitor(
+                agent=manifest["agent"], model=manifest["model"],
+                monitor_url=manifest["provenance"]["monitor_url"], monitor_host_url=host_url,
+                recording=manifest["provenance"]["recording_required"],
+                api_format=manifest["provenance"]["effective_api_format"],
+            )
+            monitor_before = request_snapshot(monitor_url=host_url)
         plan = plan_benchmark(
-            manifest["dataset"], agent=manifest["agent"], model=manifest["model"],
+            manifest["dataset"], agent=manifest["agent"],
+            model=manifest["provenance"].get("effective_agent_model", manifest["model"]),
             base_url=manifest["provenance"]["effective_base_url"],
             model_api_format=manifest["provenance"]["effective_api_format"],
             task_ids=[task], repetitions=1, seed=None,
@@ -365,8 +383,18 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
         else:
             duration = content_fingerprint = None
         request_ids: list[str] = []
+        recording_coverage = None
         if monitor_before is not None:
-            monitor_after = request_snapshot(monitor_url=manifest["provenance"]["monitor_url"])
+            monitor_health_after = validate_monitor(
+                agent=manifest["agent"], model=manifest["model"],
+                monitor_url=manifest["provenance"]["monitor_url"], monitor_host_url=host_url,
+                recording=manifest["provenance"]["recording_required"],
+                api_format=manifest["provenance"]["effective_api_format"],
+            )
+            if monitor_health_after["dropped_observations"] != monitor_health["dropped_observations"]:
+                from .suite_monitor import MonitorPreflightError
+                raise MonitorPreflightError("monitor dropped observations during the task")
+            monitor_after = request_snapshot(monitor_url=host_url)
             previous_ids = set(monitor_before["request_ids"])
             new_requests = [row for row in monitor_after["requests"] if row["request_id"] not in previous_ids]
             request_ids = sorted(row["request_id"] for row in new_requests)
@@ -376,17 +404,25 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                         "summary": summary, "native_artifacts": [str(saved)],
                         "error_code": "MONITOR_REQUEST_UNOBSERVED",
                         "error_detail": "no new LLM Monitor request ID observed around Harbor task"}
+            if manifest["provenance"]["recording_required"] != "off":
+                recording_coverage = verify_recorded_requests(
+                    monitor_url=host_url, request_ids=request_ids,
+                    recording=manifest["provenance"]["recording_required"],
+                )
         return {"status": status, "trial_id": trial_id, "ended_at": _now(),
                 "duration_wall_ms": duration, "content_fingerprint": content_fingerprint,
                 "summary": summary, "native_artifacts": [str(saved)], "error_code": None,
                 "monitor_request_ids": request_ids,
+                "recording_coverage": recording_coverage,
                 "monitor_requests": new_requests if monitor_before is not None else []}
     except Exception as error:  # subprocess and result parsing boundary
         with log_path.open("a", encoding="utf-8", errors="replace") as logfile:
             logfile.write(f"{type(error).__name__}: {error}\n")
         from .suite_monitor import MonitorPreflightError
         return {"status": "infrastructure_invalid", "trial_id": None, "ended_at": _now(),
-                "error_code": "MONITOR_CAPTURE_FAILED" if isinstance(error, MonitorPreflightError) else "HARBOR_EXECUTION_ERROR",
+                "error_code": ("MONITOR_CAPTURE_FAILED" if isinstance(error, MonitorPreflightError) else
+                               "SOURCE_REVISION_MISMATCH" if isinstance(error, DatasetRevisionError) else
+                               "HARBOR_EXECUTION_ERROR"),
                 "error_detail": str(error), "native_artifacts": [str(saved)] if saved else []}
 
 
@@ -430,6 +466,10 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
             for row in store.read()["tasks"]
         )
         if should_dispatch and executor is _run_one:
+            if (store.manifest["provenance"].get("llm_monitor_required")
+                    and store.manifest["agent"].lower() == "opencode"
+                    and not store.manifest["provenance"].get("effective_agent_model")):
+                raise RuntimeError("legacy monitored OpenCode run has no verified provider selector; create a new run")
             verify_saved_registry_snapshot(run_dir, store.manifest)
         store.set_state("running", worker_pid=os.getpid(), started_at=_now())
         for task in store.manifest["tasks"]:
@@ -443,6 +483,9 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
                     on_task({"task": task, "status": task_status,
                              "done": sum(item["status"] in _COMPLETED for item in store.read()["tasks"]),
                              "total": len(store.manifest["tasks"])})
+                error_code = attempt.get("error_code") or ""
+                if error_code.startswith("MONITOR_") or error_code == "SOURCE_REVISION_MISMATCH":
+                    break
         checkpoint = store.read()
         state = "finished" if not any(row["status"] in {"pending", "running"} for row in checkpoint["tasks"]) else "interrupted"
         finished_at = _now() if state == "finished" else None
