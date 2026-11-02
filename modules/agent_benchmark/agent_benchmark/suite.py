@@ -80,14 +80,14 @@ def build_manifest(
     from .suite_monitor import host_monitor_origin
     effective_host_url = host_monitor_origin(effective_url, monitor_host_url) if llm_monitor else None
     effective_format = api_format
-    if llm_monitor and agent.lower() == "opencode":
-        if model and not model.startswith("openai/"):
-            raise ValueError("OpenCode LLM Monitor routing requires an OpenCode openai/<model> provider model")
+    if llm_monitor and agent.lower() in ("opencode", "opencode-v2"):
+        if model and not (model.startswith("openai/") or model.startswith("llm-monitor/")):
+            raise ValueError(f"{agent} LLM Monitor routing requires an OpenCode openai/<model> provider model")
         selected_monitor_url = monitor_url or DEFAULT_MONITOR_URL
         if base_url and base_url.rstrip("/") != selected_monitor_url.rstrip("/"):
             raise ValueError("explicit --base-url conflicts with required --monitor-url")
         if api_format not in (None, "openai_chat_completions"):
-            raise ValueError("OpenCode LLM Monitor routing requires openai_chat_completions")
+            raise ValueError(f"{agent} LLM Monitor routing requires openai_chat_completions")
         effective_format = "openai_chat_completions"
     elif llm_monitor and effective_format is None:
         raise ValueError("monitored routing requires explicit -A/--api-format for this agent")
@@ -104,8 +104,9 @@ def build_manifest(
     ]
     effective_agent_model = (
         "llm-monitor/" + model.split("/", 1)[1]
-        if llm_monitor and agent.lower() == "opencode" and model else plan.model
+        if llm_monitor and agent.lower() in ("opencode", "opencode-v2") and model else plan.model
     )
+    agent_version = "2.2.5" if agent.lower() == "opencode-v2" else ("1.19.5" if agent.lower() == "opencode" else None)
     result: dict[str, Any] = {
         "schema": "agent-benchmark-suite-manifest-v1",
         "cohort": selected["id"], "dataset": selected["dataset"],
@@ -123,7 +124,8 @@ def build_manifest(
             "requested_api_format": api_format,
             "effective_api_format": plan.model_api_format,
             "effective_agent_model": effective_agent_model,
-            "original_protocol": "openai_responses" if agent.lower() == "opencode" else None,
+            "effective_agent_version": agent_version,
+            "original_protocol": "openai_responses" if agent.lower() in ("opencode", "opencode-v2") else None,
             "harbor_version": plan.readiness.harbor_version,
             "harbor_dataset": plan.dataset.harbor_dataset,
             "registry_revision_required": (
@@ -468,7 +470,7 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
         )
         if should_dispatch and executor is _run_one:
             if (store.manifest["provenance"].get("llm_monitor_required")
-                    and store.manifest["agent"].lower() == "opencode"
+                    and store.manifest["agent"].lower() in ("opencode", "opencode-v2")
                     and not store.manifest["provenance"].get("effective_agent_model")):
                 raise RuntimeError("legacy monitored OpenCode run has no verified provider selector; create a new run")
             verify_saved_registry_snapshot(run_dir, store.manifest)
