@@ -1,4 +1,4 @@
-import { fetchSnapshot, loginWithCode, logout, ApiError } from "./api.mjs";
+import { fetchSnapshot, fetchHistory, fetchHistoryDetail, loginWithCode, logout, ApiError } from "./api.mjs";
 import { createRenderer } from "./render.mjs";
 import { applyRequestEvent, createState, followLatest, requestKey, selectRequest, visibleRequests, mergeSnapshot } from "./state.mjs";
 import { stateLabel } from "./formatters.mjs";
@@ -116,10 +116,57 @@ async function refresh() {
   }
 }
 
+
+async function loadHistory() {
+  try {
+    const res = await fetchHistory({
+      model_id: state.historyModelFilter,
+      state: state.historyStatusFilter,
+    });
+    state = {
+      ...state,
+      historyRequests: res.requests || [],
+      historyTotalCount: res.total_count || 0,
+      historyAvailability: res.availability || "available",
+    };
+    if (state.historyRequests.length > 0 && !state.selectedHistoryRequestId) {
+      await chooseHistoryRequest(state.historyRequests[0].request_id);
+    } else if (state.selectedHistoryRequestId) {
+      const exists = state.historyRequests.some((r) => r.request_id === state.selectedHistoryRequestId);
+      if (exists) {
+        await chooseHistoryRequest(state.selectedHistoryRequestId);
+      } else if (state.historyRequests.length > 0) {
+        await chooseHistoryRequest(state.historyRequests[0].request_id);
+      } else {
+        state = { ...state, selectedHistoryRequestId: null, selectedHistoryDetail: null };
+        render();
+      }
+    } else {
+      render();
+    }
+  } catch (err) {
+    console.error("Failed to load history", err);
+  }
+}
+
+async function chooseHistoryRequest(requestId) {
+  state = { ...state, selectedHistoryRequestId: requestId };
+  try {
+    const detail = await fetchHistoryDetail(requestId);
+    state = { ...state, selectedHistoryDetail: detail };
+  } catch (err) {
+    console.error("Failed to fetch history detail", err);
+  }
+  render();
+}
+
 function navigate(page) {
   const supported = ["overview", "requests", "models", "history", "alerts"];
   state = { ...state, page: supported.includes(page) ? page : "overview" };
   if (location.hash !== `#${state.page}`) history.replaceState(null, "", `#${state.page}`);
+  if (state.page === "history") {
+    loadHistory();
+  }
   render();
   byId("main-content").focus({ preventScroll: true });
 }
@@ -366,4 +413,20 @@ window.addEventListener("llm-monitor-auth-expired", () => lockDashboard("Your lo
 
 const initialPage = location.hash.slice(1);
 if (["overview", "requests", "models", "history", "alerts"].includes(initialPage)) state.page = initialPage;
+
+byId("history-refresh-btn")?.addEventListener("click", () => loadHistory());
+byId("history-model-filter")?.addEventListener("change", (e) => {
+  state = { ...state, historyModelFilter: e.target.value };
+  loadHistory();
+});
+byId("history-status-filter")?.addEventListener("change", (e) => {
+  state = { ...state, historyStatusFilter: e.target.value };
+  loadHistory();
+});
+byId("history-requests-list")?.addEventListener("click", (e) => {
+  const card = e.target.closest("[data-request-id]");
+  if (card && card.dataset.requestId) chooseHistoryRequest(card.dataset.requestId);
+});
+
+if (state.page === "history") loadHistory();
 render();

@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 from .events import NormalizedEvent
 
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 DEFAULT_RETENTION_POLICY = "manual_prune_only"
 BASE_REQUIRED_TABLES = {
     "schema_metadata", "provider_instances", "sessions", "jobs", "events", "inferences",
@@ -24,7 +24,8 @@ BASE_REQUIRED_TABLES = {
     "collection_gaps",
 }
 ALERT_TABLES = {"alert_states"}
-REQUIRED_TABLES = BASE_REQUIRED_TABLES | ALERT_TABLES
+INFERENCE_HISTORY_TABLES = {"inference_requests", "inference_contents", "inference_hardware_samples"}
+REQUIRED_TABLES = BASE_REQUIRED_TABLES | ALERT_TABLES | INFERENCE_HISTORY_TABLES
 
 
 class TelemetryStoreError(RuntimeError):
@@ -223,6 +224,10 @@ class TelemetryStore:
                 version = SCHEMA_VERSION
             elif version == 1:
                 self._migrate_v1_to_v2(connection)
+                self._migrate_v2_to_v3(connection)
+                version = SCHEMA_VERSION
+            elif version == 2:
+                self._migrate_v2_to_v3(connection)
                 version = SCHEMA_VERSION
             elif version != SCHEMA_VERSION:
                 raise UnsupportedSchemaError(f"unsupported telemetry schema version {version}")
@@ -235,7 +240,7 @@ class TelemetryStore:
                 raise UnsupportedSchemaError(
                     f"database schema {version} is newer than supported schema {SCHEMA_VERSION}"
                 )
-            if version not in {1, SCHEMA_VERSION}:
+            if version not in {1, 2, SCHEMA_VERSION}:
                 raise TelemetryStoreError(f"unsupported telemetry schema version {version}")
             self._verify_schema_tables(connection, version)
 
@@ -244,7 +249,14 @@ class TelemetryStore:
         tables = {row[0] for row in connection.execute(
             "SELECT name FROM sqlite_master WHERE type='table'"
         )}
-        required = BASE_REQUIRED_TABLES | (ALERT_TABLES if version == SCHEMA_VERSION else set())
+        required = BASE_REQUIRED_TABLES.copy()
+        if version is not None:
+            if version >= 2:
+                required |= ALERT_TABLES
+            if version >= 3:
+                required |= INFERENCE_HISTORY_TABLES
+        else:
+            required |= ALERT_TABLES | INFERENCE_HISTORY_TABLES
         missing = sorted(required - tables)
         if missing:
             raise TelemetryStoreError("telemetry schema is incomplete; missing tables: " + ", ".join(missing))
@@ -267,6 +279,9 @@ class TelemetryStore:
                 "CREATE TABLE collection_checkpoints (session_key TEXT PRIMARY KEY REFERENCES sessions(session_key) ON DELETE CASCADE, last_polled_at TEXT NOT NULL, last_event_at TEXT, coverage_json TEXT NOT NULL, last_error_sources_json TEXT NOT NULL)",
                 "CREATE TABLE collection_gaps (gap_id TEXT PRIMARY KEY, session_key TEXT NOT NULL REFERENCES sessions(session_key) ON DELETE CASCADE, category TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, status TEXT NOT NULL, reason_code TEXT NOT NULL, detail_json TEXT NOT NULL)",
                 "CREATE TABLE alert_states (alert_id TEXT PRIMARY KEY, provider_instance_id TEXT NOT NULL, session_id TEXT NOT NULL, rule_id TEXT NOT NULL, category TEXT NOT NULL, severity TEXT NOT NULL, classification TEXT NOT NULL, status TEXT NOT NULL, summary TEXT NOT NULL, evidence_json TEXT NOT NULL, threshold REAL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, last_notified_at TEXT, acknowledged_at TEXT, resolved_at TEXT, last_updated TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS inference_requests (request_id TEXT PRIMARY KEY, server_instance_id TEXT, model_instance_id TEXT, provider_model_id TEXT, model_name TEXT, provider_request_id TEXT, source TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration_seconds REAL, time_to_first_text_seconds REAL, time_to_first_text_source TEXT, input_tokens REAL, reasoning_tokens REAL, output_tokens REAL, generated_tokens REAL, usage_source TEXT, finish_reason TEXT, generation_tokens_per_second REAL, generation_speed_source TEXT, gpu_average_percent REAL, gpu_peak_percent REAL, gpu_peak_vram_bytes REAL, gpu_scope TEXT, recording_mode TEXT NOT NULL, is_sparse INTEGER NOT NULL DEFAULT 0, coverage_json TEXT, hardware_telemetry_json TEXT, error_message TEXT, created_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS inference_contents (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sequence INTEGER, kind TEXT NOT NULL, role TEXT NOT NULL, text TEXT, content_type TEXT NOT NULL DEFAULT 'text/plain', source TEXT, truncated INTEGER NOT NULL DEFAULT 0, observed_at TEXT)",
+                "CREATE TABLE IF NOT EXISTS inference_hardware_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sample_id INTEGER, timestamp TEXT NOT NULL, timestamp_monotonic REAL, device_id TEXT NOT NULL, device_name TEXT NOT NULL, source TEXT NOT NULL, gpu_utilization_percent REAL, memory_controller_utilization_percent REAL, vram_used_bytes REAL, vram_total_bytes REAL, temperature_celsius REAL, power_watts REAL, validity TEXT NOT NULL DEFAULT 'valid')",
                 "CREATE INDEX ix_alert_states_status_updated ON alert_states(status, last_updated)",
                 "CREATE INDEX ix_events_session_time ON events(session_key, timestamp, event_uid)",
                 "CREATE INDEX ix_events_category_time ON events(category, timestamp)",
@@ -276,6 +291,12 @@ class TelemetryStore:
                 "CREATE INDEX ix_tools_outcome ON tools(outcome, tool_name)",
                 "CREATE INDEX ix_hardware_observed ON hardware_samples(observed_at)",
                 "CREATE INDEX ix_gaps_session_time ON collection_gaps(session_key, started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_started ON inference_requests(started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_model ON inference_requests(provider_model_id, started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_server ON inference_requests(server_instance_id, started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_state ON inference_requests(state)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_contents_req ON inference_contents(request_id, sequence)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_hw_req ON inference_hardware_samples(request_id, timestamp)",
             )
             for statement in statements:
                 connection.execute(statement)
@@ -307,6 +328,34 @@ class TelemetryStore:
                 "ON CONFLICT(key) DO UPDATE SET value='2'"
             )
             connection.execute("PRAGMA user_version=2")
+            connection.commit()
+        except Exception:
+            connection.rollback()
+            raise
+
+    @staticmethod
+    def _migrate_v2_to_v3(connection: sqlite3.Connection) -> None:
+        """Atomically add inference-history tables without modifying existing session rows."""
+        connection.execute("BEGIN IMMEDIATE")
+        try:
+            statements = (
+                "CREATE TABLE IF NOT EXISTS inference_requests (request_id TEXT PRIMARY KEY, server_instance_id TEXT, model_instance_id TEXT, provider_model_id TEXT, model_name TEXT, provider_request_id TEXT, source TEXT NOT NULL, state TEXT NOT NULL, started_at TEXT NOT NULL, ended_at TEXT, duration_seconds REAL, time_to_first_text_seconds REAL, time_to_first_text_source TEXT, input_tokens REAL, reasoning_tokens REAL, output_tokens REAL, generated_tokens REAL, usage_source TEXT, finish_reason TEXT, generation_tokens_per_second REAL, generation_speed_source TEXT, gpu_average_percent REAL, gpu_peak_percent REAL, gpu_peak_vram_bytes REAL, gpu_scope TEXT, recording_mode TEXT NOT NULL, is_sparse INTEGER NOT NULL DEFAULT 0, coverage_json TEXT, hardware_telemetry_json TEXT, error_message TEXT, created_at TEXT NOT NULL)",
+                "CREATE TABLE IF NOT EXISTS inference_contents (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sequence INTEGER, kind TEXT NOT NULL, role TEXT NOT NULL, text TEXT, content_type TEXT NOT NULL DEFAULT 'text/plain', source TEXT, truncated INTEGER NOT NULL DEFAULT 0, observed_at TEXT)",
+                "CREATE TABLE IF NOT EXISTS inference_hardware_samples (id INTEGER PRIMARY KEY AUTOINCREMENT, request_id TEXT NOT NULL REFERENCES inference_requests(request_id) ON DELETE CASCADE, sample_id INTEGER, timestamp TEXT NOT NULL, timestamp_monotonic REAL, device_id TEXT NOT NULL, device_name TEXT NOT NULL, source TEXT NOT NULL, gpu_utilization_percent REAL, memory_controller_utilization_percent REAL, vram_used_bytes REAL, vram_total_bytes REAL, temperature_celsius REAL, power_watts REAL, validity TEXT NOT NULL DEFAULT 'valid')",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_started ON inference_requests(started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_model ON inference_requests(provider_model_id, started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_server ON inference_requests(server_instance_id, started_at)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_req_state ON inference_requests(state)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_contents_req ON inference_contents(request_id, sequence)",
+                "CREATE INDEX IF NOT EXISTS ix_inf_hw_req ON inference_hardware_samples(request_id, timestamp)",
+            )
+            for statement in statements:
+                connection.execute(statement)
+            connection.execute(
+                "INSERT INTO schema_metadata(key, value) VALUES('schema_version', '3') "
+                "ON CONFLICT(key) DO UPDATE SET value='3'"
+            )
+            connection.execute("PRAGMA user_version=3")
             connection.commit()
         except Exception:
             connection.rollback()
@@ -900,6 +949,9 @@ class TelemetryStore:
                 counts[table] = connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
             if "alert_states" in tables:
                 counts["alert_states"] = connection.execute("SELECT COUNT(*) FROM alert_states").fetchone()[0]
+            for inf_table in ("inference_requests", "inference_contents", "inference_hardware_samples"):
+                if inf_table in tables:
+                    counts[inf_table] = connection.execute(f"SELECT COUNT(*) FROM {inf_table}").fetchone()[0]
             span = connection.execute("SELECT MIN(observed_at), MAX(observed_at) FROM events").fetchone()
         file_paths = (self.path, Path(str(self.path) + "-wal"), Path(str(self.path) + "-shm"))
         size_bytes = sum(file.stat().st_size for file in file_paths if file.exists())
@@ -916,7 +968,7 @@ class TelemetryStore:
     def check_integrity(self) -> dict[str, Any]:
         with closing(self._connect(readonly=True)) as connection:
             version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-            if version not in {1, SCHEMA_VERSION}:
+            if version not in {1, 2, SCHEMA_VERSION}:
                 return {"ok": False, "schema_version": version, "integrity": [],
                         "error": f"unsupported schema version {version}"}
             self._verify_schema_tables(connection, version)
@@ -996,6 +1048,7 @@ class TelemetryStore:
 
     def prune_before(self, cutoff: str, *, write: bool = False) -> dict[str, Any]:
         with closing(self._connect(readonly=not write)) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
             affected = connection.execute(
                 "SELECT s.session_key, s.session_id, MIN(e.timestamp) AS first_at, MAX(e.timestamp) AS last_at, COUNT(*) AS count "
                 "FROM events e JOIN sessions s USING(session_key) WHERE e.timestamp < ? GROUP BY s.session_key, s.session_id",
@@ -1003,10 +1056,13 @@ class TelemetryStore:
             ).fetchall()
             hardware_count = connection.execute("SELECT COUNT(*) FROM hardware_samples WHERE observed_at < ?",
                                                 (cutoff,)).fetchone()[0]
+            inf_count = 0
+            if "inference_requests" in tables:
+                inf_count = connection.execute("SELECT COUNT(*) FROM inference_requests WHERE started_at < ?", (cutoff,)).fetchone()[0]
             event_count = sum(row["count"] for row in affected)
             if not write:
                 return {"written": False, "cutoff": cutoff, "events": event_count,
-                        "hardware_samples": hardware_count,
+                        "hardware_samples": hardware_count, "inference_requests": inf_count,
                         "sessions": [{"session_id": row["session_id"], "events": row["count"],
                                       "from": row["first_at"], "to": row["last_at"]} for row in affected]}
         with self._transaction() as connection:
@@ -1020,7 +1076,248 @@ class TelemetryStore:
                 )
             connection.execute("DELETE FROM events WHERE timestamp < ?", (cutoff,))
             connection.execute("DELETE FROM hardware_samples WHERE observed_at < ?", (cutoff,))
+            if "inference_requests" in tables:
+                connection.execute("DELETE FROM inference_requests WHERE started_at < ?", (cutoff,))
         return {"written": True, "cutoff": cutoff, "events": event_count,
-                "hardware_samples": hardware_count,
+                "hardware_samples": hardware_count, "inference_requests": inf_count,
                 "sessions": [{"session_id": row["session_id"], "events": row["count"],
                               "from": row["first_at"], "to": row["last_at"]} for row in affected]}
+
+    def record_inference(
+        self,
+        request: Any,
+        recording_mode: str,
+        *,
+        contents: Any | None = None,
+        hardware_samples: Any | None = None,
+    ) -> None:
+        """Record or update a normalized inference request.
+
+        Privacy rule: If recording_mode == 'metadata', contents are NEVER persisted.
+        Only if recording_mode == 'content' are contents persisted.
+        """
+        if self.readonly:
+            raise TelemetryStoreError("database is open read-only")
+        if recording_mode not in {"metadata", "content"}:
+            raise ValueError(f"invalid recording_mode {recording_mode!r}, must be 'metadata' or 'content'")
+
+        req_dict = request if isinstance(request, dict) else request.__dict__
+        req_id = req_dict["request_id"]
+        started = req_dict.get("started_at") or _utc_now()
+        created = _utc_now()
+
+        cov = req_dict.get("coverage")
+        cov_json = _json(cov) if cov is not None else None
+
+        hw_tel = req_dict.get("hardware_telemetry")
+        hw_tel_json = _json(hw_tel) if hw_tel is not None else None
+
+        is_sparse = 1 if (hw_tel and hw_tel.get("is_sparse")) else 0
+
+        with self._transaction() as connection:
+            connection.execute(
+                """INSERT INTO inference_requests(
+                    request_id, server_instance_id, model_instance_id, provider_model_id,
+                    model_name, provider_request_id, source, state, started_at, ended_at,
+                    duration_seconds, time_to_first_text_seconds, time_to_first_text_source,
+                    input_tokens, reasoning_tokens, output_tokens, generated_tokens,
+                    usage_source, finish_reason, generation_tokens_per_second,
+                    generation_speed_source, gpu_average_percent, gpu_peak_percent,
+                    gpu_peak_vram_bytes, gpu_scope, recording_mode, is_sparse,
+                    coverage_json, hardware_telemetry_json, error_message, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(request_id) DO UPDATE SET
+                    server_instance_id=COALESCE(excluded.server_instance_id, inference_requests.server_instance_id),
+                    model_instance_id=COALESCE(excluded.model_instance_id, inference_requests.model_instance_id),
+                    provider_model_id=COALESCE(excluded.provider_model_id, inference_requests.provider_model_id),
+                    model_name=COALESCE(excluded.model_name, inference_requests.model_name),
+                    provider_request_id=COALESCE(excluded.provider_request_id, inference_requests.provider_request_id),
+                    state=excluded.state,
+                    ended_at=COALESCE(excluded.ended_at, inference_requests.ended_at),
+                    duration_seconds=COALESCE(excluded.duration_seconds, inference_requests.duration_seconds),
+                    time_to_first_text_seconds=COALESCE(excluded.time_to_first_text_seconds, inference_requests.time_to_first_text_seconds),
+                    time_to_first_text_source=COALESCE(excluded.time_to_first_text_source, inference_requests.time_to_first_text_source),
+                    input_tokens=COALESCE(excluded.input_tokens, inference_requests.input_tokens),
+                    reasoning_tokens=COALESCE(excluded.reasoning_tokens, inference_requests.reasoning_tokens),
+                    output_tokens=COALESCE(excluded.output_tokens, inference_requests.output_tokens),
+                    generated_tokens=COALESCE(excluded.generated_tokens, inference_requests.generated_tokens),
+                    usage_source=COALESCE(excluded.usage_source, inference_requests.usage_source),
+                    finish_reason=COALESCE(excluded.finish_reason, inference_requests.finish_reason),
+                    generation_tokens_per_second=COALESCE(excluded.generation_tokens_per_second, inference_requests.generation_tokens_per_second),
+                    generation_speed_source=COALESCE(excluded.generation_speed_source, inference_requests.generation_speed_source),
+                    gpu_average_percent=COALESCE(excluded.gpu_average_percent, inference_requests.gpu_average_percent),
+                    gpu_peak_percent=COALESCE(excluded.gpu_peak_percent, inference_requests.gpu_peak_percent),
+                    gpu_peak_vram_bytes=COALESCE(excluded.gpu_peak_vram_bytes, inference_requests.gpu_peak_vram_bytes),
+                    gpu_scope=COALESCE(excluded.gpu_scope, inference_requests.gpu_scope),
+                    is_sparse=excluded.is_sparse,
+                    coverage_json=COALESCE(excluded.coverage_json, inference_requests.coverage_json),
+                    hardware_telemetry_json=COALESCE(excluded.hardware_telemetry_json, inference_requests.hardware_telemetry_json),
+                    error_message=COALESCE(excluded.error_message, inference_requests.error_message)
+                """,
+                (
+                    req_id, req_dict.get("server_instance_id"), req_dict.get("model_instance_id"),
+                    req_dict.get("provider_model_id"), req_dict.get("model_name"),
+                    req_dict.get("provider_request_id"), req_dict.get("source", "gateway_openai_chat_completions"),
+                    req_dict.get("state", "completed"), started, req_dict.get("ended_at"),
+                    req_dict.get("elapsed_seconds") or req_dict.get("duration_seconds"),
+                    req_dict.get("time_to_first_text_seconds"), req_dict.get("time_to_first_text_source"),
+                    req_dict.get("input_tokens"), req_dict.get("reasoning_tokens"),
+                    req_dict.get("output_tokens"), req_dict.get("generated_tokens"),
+                    req_dict.get("usage_source"), req_dict.get("finish_reason"),
+                    req_dict.get("generation_tokens_per_second"), req_dict.get("generation_speed_source"),
+                    req_dict.get("gpu_average_percent"),
+                    (hw_tel.get("gpu_peak_percent") if hw_tel else None) or req_dict.get("gpu_peak_percent"),
+                    req_dict.get("gpu_peak_vram_bytes"), req_dict.get("gpu_scope"),
+                    recording_mode, is_sparse, cov_json, hw_tel_json,
+                    req_dict.get("error_message"), created,
+                ),
+            )
+
+            # Persist contents ONLY if authorized content mode
+            if recording_mode == "content" and contents:
+                connection.execute("DELETE FROM inference_contents WHERE request_id = ?", (req_id,))
+                c_rows = []
+                for item in contents:
+                    c_dict = item if isinstance(item, dict) else item.__dict__
+                    c_rows.append((
+                        req_id, c_dict.get("sequence"), c_dict.get("kind", "user"),
+                        c_dict.get("role", "user"), c_dict.get("text"),
+                        c_dict.get("content_type", "text/plain"), c_dict.get("source"),
+                        1 if c_dict.get("truncated") else 0, c_dict.get("observed_at"),
+                    ))
+                connection.executemany(
+                    """INSERT INTO inference_contents(
+                        request_id, sequence, kind, role, text, content_type, source, truncated, observed_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    c_rows,
+                )
+
+            # Persist hardware samples if provided
+            if hardware_samples:
+                connection.execute("DELETE FROM inference_hardware_samples WHERE request_id = ?", (req_id,))
+                h_rows = []
+                for item in hardware_samples:
+                    h_dict = item if isinstance(item, dict) else item.__dict__
+                    h_rows.append((
+                        req_id, h_dict.get("sample_id"), h_dict.get("timestamp") or _utc_now(),
+                        h_dict.get("timestamp_monotonic"), h_dict.get("device_id", "gpu-0"),
+                        h_dict.get("device_name", "GPU"), h_dict.get("source", "nvidia-smi"),
+                        h_dict.get("gpu_utilization_percent"),
+                        h_dict.get("memory_controller_utilization_percent"),
+                        h_dict.get("vram_used_bytes"), h_dict.get("vram_total_bytes"),
+                        h_dict.get("temperature_celsius"), h_dict.get("power_watts"),
+                        h_dict.get("validity", "valid"),
+                    ))
+                connection.executemany(
+                    """INSERT INTO inference_hardware_samples(
+                        request_id, sample_id, timestamp, timestamp_monotonic, device_id,
+                        device_name, source, gpu_utilization_percent,
+                        memory_controller_utilization_percent, vram_used_bytes, vram_total_bytes,
+                        temperature_celsius, power_watts, validity
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    h_rows,
+                )
+
+    def get_inference_request(self, request_id: str, *, include_content: bool = True) -> dict[str, Any] | None:
+        """Retrieve a historical inference request by ID."""
+        with closing(self._connect()) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "inference_requests" not in tables:
+                return None
+            row = connection.execute(
+                "SELECT * FROM inference_requests WHERE request_id = ?", (request_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            data = dict(row)
+
+            cov = json.loads(data["coverage_json"]) if data.get("coverage_json") else {}
+            hw_tel = json.loads(data["hardware_telemetry_json"]) if data.get("hardware_telemetry_json") else {}
+            data["coverage"] = cov
+            data["hardware_telemetry"] = hw_tel
+            del data["coverage_json"]
+            del data["hardware_telemetry_json"]
+
+            content_list: list[dict[str, Any]] = []
+            if include_content and data.get("recording_mode") == "content" and "inference_contents" in tables:
+                c_rows = connection.execute(
+                    "SELECT * FROM inference_contents WHERE request_id = ? ORDER BY sequence ASC, id ASC",
+                    (request_id,),
+                ).fetchall()
+                for cr in c_rows:
+                    cd = dict(cr)
+                    cd["truncated"] = bool(cd.get("truncated"))
+                    del cd["id"]
+                    del cd["request_id"]
+                    content_list.append(cd)
+            data["content"] = content_list
+
+            hw_samples: list[dict[str, Any]] = []
+            if "inference_hardware_samples" in tables:
+                h_rows = connection.execute(
+                    "SELECT * FROM inference_hardware_samples WHERE request_id = ? ORDER BY timestamp ASC, id ASC",
+                    (request_id,),
+                ).fetchall()
+                for hr in h_rows:
+                    hd = dict(hr)
+                    del hd["id"]
+                    del hd["request_id"]
+                    hw_samples.append(hd)
+            data["hardware_samples"] = hw_samples
+            return data
+
+    def list_inference_requests(
+        self,
+        *,
+        server_instance_id: str | None = None,
+        model_id: str | None = None,
+        state: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return a paginated list of inference request summaries matching filters."""
+        size = min(max(1, limit), 1000)
+        start = max(0, offset)
+        with closing(self._connect()) as connection:
+            tables = {row[0] for row in connection.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            if "inference_requests" not in tables:
+                return [], 0
+            query = """SELECT request_id, server_instance_id, model_instance_id, provider_model_id,
+                              model_name, provider_request_id, source, state, started_at, ended_at,
+                              duration_seconds, time_to_first_text_seconds, input_tokens, reasoning_tokens,
+                              output_tokens, generated_tokens, finish_reason, generation_tokens_per_second,
+                              gpu_average_percent, gpu_peak_percent, gpu_peak_vram_bytes, gpu_scope,
+                              recording_mode, is_sparse, error_message, created_at
+                       FROM inference_requests"""
+            count_query = "SELECT COUNT(*) FROM inference_requests"
+            filters: list[str] = []
+            values: list[Any] = []
+
+            if server_instance_id and server_instance_id != "all":
+                filters.append("server_instance_id = ?")
+                values.append(server_instance_id)
+            if model_id and model_id != "all":
+                filters.append("(provider_model_id = ? OR model_name = ?)")
+                values.extend([model_id, model_id])
+            if state and state != "all":
+                filters.append("state = ?")
+                values.append(state)
+            if since:
+                filters.append("started_at >= ?")
+                values.append(since)
+            if until:
+                filters.append("started_at <= ?")
+                values.append(until)
+
+            if filters:
+                where_clause = " WHERE " + " AND ".join(filters)
+                query += where_clause
+                count_query += where_clause
+
+            total_count = connection.execute(count_query, values).fetchone()[0]
+            query += " ORDER BY started_at DESC LIMIT ? OFFSET ?"
+            rows = connection.execute(query, (*values, size, start)).fetchall()
+            results = [dict(r) for r in rows]
+            return results, total_count

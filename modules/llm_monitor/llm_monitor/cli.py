@@ -133,6 +133,8 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("--gateway", action="store_true", help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
     web.add_argument("--gateway-upstream", default="http://127.0.0.1:1234", help="Fixed loopback inference upstream (gateway mode only)")
     web.add_argument("-T", "--gateway-timing", action="store_true", help="Log gateway timing metadata without request content")
+    web.add_argument("-R", "--record-inferences", choices=("metadata", "content"), help="Record gateway inference history to SQLite")
+    web.add_argument("-d", "--database", type=Path, help="Custom SQLite database file for inference history")
 
     tui = sub.add_parser("tui", help="Open the interactive read-only monitoring dashboard")
     selection = tui.add_mutually_exclusive_group()
@@ -202,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                 gateway_enabled=args.gateway,
                 gateway_upstream=args.gateway_upstream,
                 gateway_timing=args.gateway_timing,
+                record_inferences=args.record_inferences,
+                database=str(args.database) if args.database else None,
             )
         if args.command == "tui":
             return _tui(args)

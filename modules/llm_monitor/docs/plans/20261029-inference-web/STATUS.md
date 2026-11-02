@@ -88,3 +88,27 @@ Current validation:
 Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above. Phase E was completed on `agy/llm-monitor-phase-e-gpu-analytics-20261101` (`b6c917cb`).
 
 Integration branch `integrate/llm-monitor-phase-e-20261101` merged the complete Phase A–E development lineage with `main` (`168938a1`), validated all regression suites (195 passed / 1 skipped in LLM Monitor, 14 passed in `web_ui_tools`, 12 passed in `resource_metrics`, 19 passed in Runmux), resolved focused review hardening items (thread-safe WebSocket background dispatch, multi-GPU device isolation, sparse sample reporting, optional packaging dependencies), and integrated cleanly into `main`.
+
+
+## Phase F historical inference recording and branch cleanup
+
+Phase F is complete on isolated feature branch `agy/llm-monitor-phase-f-history-20261101`. See [`PHASE_F_VALIDATION.md`](PHASE_F_VALIDATION.md).
+
+Key deliverables:
+- **Merged worktree & branch retirement:** Verified ancestry against `origin/main` (`b36f99e2`) and safely removed worktrees and branches for `codex/llm-monitor-inference-web-20261029`, `agy/llm-monitor-phase-e-gpu-analytics-20261101`, and `integrate/llm-monitor-phase-e-20261101`.
+- **Storage architecture Schema v3:** Extended `TelemetryStore` with `inference_requests`, `inference_contents`, and `inference_hardware_samples` tables, supporting foreign-key cascading deletion, indexing, transactional schema migration from v2, and cascading retention pruning.
+- **InferenceRecorder service:** Implemented asynchronous bounded recording queue with non-blocking gateway hooks, overflow degradation tracking, and affirmative privacy mode enforcement (`metadata` vs `content`).
+- **CLI recording options & zero-disk-write default:** Added `-R, --record-inferences {metadata,content}` and `-d, --database` to `llm-monitor web`. Default monitoring without `-R` never creates or opens any SQLite database file.
+- **Authenticated REST APIs:** Added `/api/inference/v1/recording/status`, `/api/inference/v1/history`, `/api/inference/v1/history/{id}`, and `/api/inference/v1/history/analytics`.
+- **Frontend History UI:** Connected History view to historical APIs with model and state filtering, request selection, full inspector (KPIs, tokens, hardware telemetry, transcripts when permitted), and real recording indicator status in the header, sidebar, and footer.
+
+Current validation:
+- Full LLM Monitor suite passes: 209 passed, 1 skipped.
+- `resource_metrics`: 12 passed.
+- `web_ui_tools`: 14 passed.
+- Runmux integration & API tests: 19 passed.
+- Frontend test: `node tests/standalone_web_ui_test.js` passes.
+- Syntax: `node --check` passes on all packaged `.mjs` modules.
+- Ruff: clean on all Python files.
+- Wheel packaging: `llm_monitor-0.8.0-py3-none-any.whl` builds cleanly.
+- Isolated feature branch: committed on `agy/llm-monitor-phase-f-history-20261101`; no merge to `main` without explicit operator authorization.
