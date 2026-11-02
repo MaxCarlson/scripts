@@ -23,6 +23,9 @@ async function main() {
   assert.match(html, /id="panel-transcript"/);
   assert.match(html, /id="panel-telemetry"/);
   assert.match(html, /id="panel-timeline"/);
+  assert.match(html, /id="view-history"/);
+  assert.match(html, /id="history-requests-list"/);
+  assert.match(html, /id="history-inspector-panel"/);
   assert.match(css, /--lm-bg:\s*#0d1119/i);
   assert.match(css, /grid-template-columns:\s*minmax\(290px, \.9fr\) minmax\(0, 1\.75fr\)/);
   assert.match(css, /max-width:\s*740px/);
@@ -37,6 +40,8 @@ async function main() {
   state = stateModule.mergeSnapshot(state, fixture);
   assert.equal(state.selectedRequestKey, stateModule.requestKey(fixture.requestResult.requests[0]));
   assert.equal(state.captureState, "available");
+  assert.deepEqual(state.historyRequests, []);
+  assert.equal(state.historyAvailability, "unknown");
   assert.equal(state.requests.length, 4);
   assert.equal(formatters.tokenMetric(state.requests[0], "input_tokens").value, "—");
   assert.equal(formatters.tokenMetric(state.requests.find((item) => item.request_id === "synthetic-req-418"), "input_tokens").value, "~80");

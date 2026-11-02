@@ -32,7 +32,7 @@ def test_fresh_database_has_versioned_schema_and_integrity_check(tmp_path):
         info = store.database_info()
         check = store.check_integrity()
 
-    assert info["schema_version"] == 2
+    assert info["schema_version"] == 3
     assert info["counts"]["sessions"] == 0
     assert check["ok"] is True
     assert check["foreign_key_violations"] == []

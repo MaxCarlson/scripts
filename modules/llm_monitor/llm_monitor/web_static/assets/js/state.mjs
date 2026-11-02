@@ -23,6 +23,13 @@ export function createState() {
     transcriptSearch: "",
     statusFilter: "all",
     requestGap: false,
+    historyRequests: [],
+    historyTotalCount: 0,
+    historyAvailability: "unknown",
+    selectedHistoryRequestId: null,
+    selectedHistoryDetail: null,
+    historyModelFilter: "all",
+    historyStatusFilter: "all",
   };
 }
 

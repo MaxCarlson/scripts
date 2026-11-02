@@ -138,3 +138,91 @@ def test_request_telemetry_endpoint_returns_timing_and_hardware(tmp_path):
         assert data["tokens"]["generated_tokens"] == 25
         assert data["hardware"]["gpu_average_percent"] == 68.5
         assert data["hardware"]["gpu_peak_vram_bytes"] == 1024 * 1024 * 1024
+
+
+def test_recording_status_and_disabled_history(tmp_path):
+    service = FakeService()
+    (tmp_path / "assets").mkdir()
+    (tmp_path / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    app = create_inference_web_app(service, login_code="local-code", static_dir=Path(tmp_path))
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "local-code"}, headers={"Origin": "http://localhost"})
+
+        rec = client.get("/api/inference/v1/recording/status", headers={"Origin": "http://localhost"})
+        assert rec.status_code == 200
+        assert rec.json()["schema_version"] == 1
+        assert rec.json()["recording"]["status"] == "disabled"
+
+        hist = client.get("/api/inference/v1/history", headers={"Origin": "http://localhost"})
+        assert hist.status_code == 200
+        assert hist.json()["availability"] == "disabled"
+        assert hist.json()["requests"] == []
+
+        an = client.get("/api/inference/v1/history/analytics", headers={"Origin": "http://localhost"})
+        assert an.status_code == 200
+        assert an.json()["availability"] == "disabled"
+
+        detail_404 = client.get("/api/inference/v1/history/req-xyz", headers={"Origin": "http://localhost"})
+        assert detail_404.status_code == 404
+
+
+def test_history_endpoints_with_recorded_database(tmp_path):
+    from llm_monitor.storage import TelemetryStore
+    from llm_monitor.inference_models import InferenceRequest, ContentSegment, HardwareSample
+
+    db_path = tmp_path / "history_test.db"
+    store = TelemetryStore(db_path)
+    req = InferenceRequest(
+        request_id="hist-123",
+        server_instance_id="srv-hist",
+        source="gateway",
+        state="completed",
+        started_at="2026-11-01T20:00:00Z",
+        ended_at="2026-11-01T20:00:02Z",
+        elapsed_seconds=2.0,
+        model_name="qwen-2.5",
+        input_tokens=10,
+        output_tokens=20,
+    )
+    seg = ContentSegment(kind="user", text="hello historical", role="user", source="client")
+    hw = HardwareSample(
+        sample_id=1,
+        device_id="gpu-0",
+        device_name="RTX 5090",
+        timestamp="2026-11-01T20:00:01Z",
+        timestamp_monotonic=100.0,
+        gpu_utilization_percent=55.0,
+        vram_used_bytes=2 * 1024 * 1024 * 1024,
+        source="nvidia_smi",
+    )
+    store.record_inference(req, recording_mode="content", contents=[seg], hardware_samples=[hw])
+
+    service = FakeService()
+    static_dir = tmp_path / "web_ui"
+    (static_dir / "assets").mkdir(parents=True)
+    (static_dir / "index.html").write_text("<!doctype html>", encoding="utf-8")
+    app = create_inference_web_app(service, login_code="local-code", static_dir=static_dir, history_store=store)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "local-code"}, headers={"Origin": "http://localhost"})
+
+        hist = client.get("/api/inference/v1/history", headers={"Origin": "http://localhost"})
+        assert hist.status_code == 200
+        assert hist.json()["availability"] == "available"
+        assert hist.json()["total_count"] == 1
+        assert hist.json()["requests"][0]["request_id"] == "hist-123"
+
+        detail = client.get("/api/inference/v1/history/hist-123", headers={"Origin": "http://localhost"})
+        assert detail.status_code == 200
+        assert detail.json()["schema_version"] == 1
+        assert detail.json()["request"]["request_id"] == "hist-123"
+        assert len(detail.json()["request"]["content"]) == 1
+        assert detail.json()["request"]["content"][0]["text"] == "hello historical"
+        assert len(detail.json()["request"]["hardware_samples"]) == 1
+        assert detail.json()["request"]["hardware_samples"][0]["gpu_utilization_percent"] == 55.0
+
+        an = client.get("/api/inference/v1/history/analytics", headers={"Origin": "http://localhost"})
+        assert an.status_code == 200
+        assert an.json()["availability"] == "available"
+        assert an.json()["analytics"]["request_counts"]["observed_requests"] == 1

@@ -30,6 +30,7 @@ export function createRenderer() {
       renderGpu(state);
       renderCapabilities(state);
       renderModelCards(state);
+      renderHistory(state);
       renderPage(state);
     },
     renderRequestEvent(state, event) {
@@ -422,6 +423,145 @@ function renderModelCards(state) {
   }
   root.replaceChildren(fragment);
   if (focusedModel) root.querySelector(`[data-model-id="${CSS.escape(focusedModel)}"]`)?.focus({ preventScroll: true });
+}
+
+
+function renderHistory(state) {
+  if (state.page !== "history") return;
+  const emptyEl = byId("history-empty");
+  const contentEl = byId("history-content");
+  if (!emptyEl || !contentEl) return;
+
+  const modelFilter = byId("history-model-filter");
+  if (modelFilter && modelFilter.children.length <= 1) {
+    const currentVal = state.historyModelFilter || "all";
+    const models = Array.from(new Set(state.historyRequests.map((r) => r.model_name || r.provider_model_id).filter(Boolean))).sort();
+    const options = [makeOption("all", "All recorded models")];
+    for (const m of models) {
+      options.push(makeOption(m, m));
+    }
+    modelFilter.replaceChildren(...options);
+    modelFilter.value = currentVal;
+  }
+
+  const hasRequests = Array.isArray(state.historyRequests) && state.historyRequests.length > 0;
+  if (!hasRequests) {
+    emptyEl.hidden = false;
+    contentEl.hidden = true;
+    if (state.historyAvailability === "disabled") {
+      text("history-empty-title", "Inference history recording is not enabled");
+      text("history-empty-desc", "Inference recording is disabled by default to preserve privacy and minimize disk I/O. Use --record-inferences {metadata,content} to persist inference telemetry.");
+    } else {
+      text("history-empty-title", "No recorded request history");
+      text("history-empty-desc", "No inference requests matching the selected filters have been recorded yet.");
+    }
+    return;
+  }
+
+  emptyEl.hidden = true;
+  contentEl.hidden = false;
+  text("history-count-badge", `${state.historyTotalCount || state.historyRequests.length} recorded`);
+
+  const listEl = byId("history-requests-list");
+  if (listEl) {
+    const items = state.historyRequests.map((req) => {
+      const selected = req.request_id === state.selectedHistoryRequestId;
+      const item = make("div", "request-card");
+      item.setAttribute("role", "option");
+      item.setAttribute("aria-selected", selected ? "true" : "false");
+      item.dataset.requestId = req.request_id;
+      item.tabIndex = 0;
+
+      const header = make("div", "request-card-header");
+      const title = make("div", "request-card-title", req.model_name || req.provider_model_id || "Unknown model");
+      const badge = stateBadge(req.state);
+      header.append(title, badge);
+
+      const meta = make("div", "request-card-meta");
+      const idSpan = make("span", "request-id", shortId(req.request_id, 16));
+      const timeSpan = make("span", "request-time", formatShortTime(req.started_at));
+      const durSpan = make("span", "request-duration", formatDuration(req.elapsed_seconds));
+      meta.append(idSpan, timeSpan, durSpan);
+
+      const tokens = make("div", "request-card-tokens");
+      const inp = make("span", "token-pill", `In: ${req.input_tokens ?? "—"}`);
+      const out = make("span", "token-pill", `Out: ${req.output_tokens ?? "—"}`);
+      tokens.append(inp, out);
+      if (req.recording_mode) {
+        tokens.append(make("span", "token-pill", `Rec: ${req.recording_mode}`));
+      }
+
+      item.append(header, meta, tokens);
+      return item;
+    });
+    listEl.replaceChildren(...items);
+  }
+
+  const inspectorBody = byId("history-inspector-body");
+  const inspectorBadge = byId("history-inspector-badge");
+  if (inspectorBody) {
+    const detail = state.selectedHistoryDetail;
+    if (!detail) {
+      if (inspectorBadge) inspectorBadge.textContent = "Select a request";
+      inspectorBody.replaceChildren(make("p", "content-unavailable", "Select a request from the list to inspect historical telemetry and content."));
+      return;
+    }
+    if (inspectorBadge) inspectorBadge.textContent = shortId(detail.request_id, 14);
+
+    const container = make("div", "history-detail-container");
+
+    const metaGrid = make("div", "detail-meta-grid");
+    const addField = (lbl, val) => {
+      const field = make("div", "detail-meta-field");
+      field.append(make("span", "detail-meta-label", lbl));
+      field.append(make("strong", "detail-meta-value", val ?? "—"));
+      metaGrid.append(field);
+    };
+    addField("Model", detail.model_name || detail.provider_model_id);
+    addField("State", detail.state);
+    addField("Duration", formatDuration(detail.elapsed_seconds));
+    addField("Started", formatTimestamp(detail.started_at));
+    addField("Completed", formatTimestamp(detail.ended_at));
+    addField("Tokens in/out", `${detail.input_tokens ?? "—"} / ${detail.output_tokens ?? "—"}`);
+    addField("Speed", formatMetric(detail.generation_tokens_per_second, "tok/s"));
+    addField("TTFT", formatMetric(detail.time_to_first_text_seconds, "s"));
+    container.append(metaGrid);
+
+    const hwList = detail.hardware_samples || [];
+    const hwCard = make("div", "history-hw-card");
+    hwCard.append(make("h3", "history-subheading", "Hardware Telemetry"));
+    if (hwList.length > 0) {
+      const avgGpu = detail.gpu_average_percent != null ? `${detail.gpu_average_percent.toFixed(1)}%` : "—";
+      const peakVram = detail.gpu_peak_vram_bytes != null ? formatBytes(detail.gpu_peak_vram_bytes) : "—";
+      const hwSummary = make("p", "hw-summary-text", `Average GPU: ${avgGpu} · Peak VRAM: ${peakVram} · Samples: ${hwList.length}`);
+      hwCard.append(hwSummary);
+    } else {
+      hwCard.append(make("p", "content-unavailable", "No hardware samples recorded during this request."));
+    }
+    container.append(hwCard);
+
+    const contentCard = make("div", "history-content-card");
+    contentCard.append(make("h3", "history-subheading", "Request & Output Content"));
+    const contents = detail.content || [];
+    if (contents.length > 0) {
+      const msgList = make("div", "history-messages");
+      for (const msg of contents) {
+        const msgEl = make("div", `history-message message-${msg.kind || msg.role || "other"}`);
+        const roleBadge = make("span", "message-role", msg.role || msg.kind || "message");
+        const body = make("div", "message-text", msg.text || "");
+        msgEl.append(roleBadge, body);
+        msgList.append(msgEl);
+      }
+      contentCard.append(msgList);
+    } else if (detail.recording_mode === "metadata") {
+      contentCard.append(make("p", "content-unavailable", "Request content was not persisted in metadata recording mode to guarantee operator privacy."));
+    } else {
+      contentCard.append(make("p", "content-unavailable", "No text content recorded for this request."));
+    }
+    container.append(contentCard);
+
+    inspectorBody.replaceChildren(container);
+  }
 }
 
 function renderPage(state) {
