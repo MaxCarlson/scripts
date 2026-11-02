@@ -19,7 +19,7 @@ def test_harbor_025_factory_and_prompt_renderer(tmp_path):
     frozen = tmp_path / "prompt-template.j2"
     frozen.write_bytes(template)
     code = '''
-import hashlib, importlib.metadata, sys
+import hashlib, importlib.metadata, shlex, sys
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, PropertyMock
@@ -33,7 +33,7 @@ parsed = parse_kwargs(["disable_web_search=true", "prompt_template_path=" + str(
 assert parsed == {"disable_web_search": True, "prompt_template_path": str(p)}
 assert hashlib.sha256(policy.read_bytes()).hexdigest() == expected
 kwargs = dict(import_path="agent_benchmark.harbor.opencode_v1:OpenCodeV1", logs_dir=p.parent)
-base = AgentFactory.create_agent_from_import_path(**kwargs)
+base = AgentFactory.create_agent_from_import_path(**kwargs, disable_web_search=True)
 candidate = AgentFactory.create_agent_from_import_path(**kwargs, prompt_template_path=str(p), disable_web_search=True)
 instruction = "Synthetic task\\r\\n  edge \\u2603\\n"
 assert base.render_instruction(instruction) == instruction
@@ -62,6 +62,35 @@ assert len(seen) == 1
 assert "OPENCODE_FAKE_VCS" not in seen[0]["env"]
 assert "--dangerously-skip-permissions" in seen[0]["command"]
 assert candidate._instruction == result
+reference = OpenCode(logs_dir=p.parent, disable_web_search=True)
+reference.model_name = "openai/test"
+reference._execution_model_name = lambda: "llm-monitor/test"
+reference._build_register_skills_command = lambda: None
+reference._build_register_config_command = lambda: None
+reference.build_cli_flags = lambda: ""
+reference._error_messages = lambda: []
+base.model_name = "openai/test"
+base._execution_model_name = lambda: "llm-monitor/test"
+base._build_register_skills_command = lambda: None
+base._build_register_config_command = lambda: None
+base.build_cli_flags = lambda: ""
+base._error_messages = lambda: []
+commands = []
+async def fake_reference_exec(self, environment, **kwargs):
+    commands.append(kwargs)
+for agent in (reference, base):
+    with patch.object(OpenCode, "model_connection", new_callable=PropertyMock, return_value=SimpleNamespace(env={})):
+        with patch.object(OpenCode, "exec_as_agent", fake_reference_exec):
+            coroutine = agent.run(instruction, None, None)
+            try:
+                coroutine.send(None)
+                raise AssertionError("mocked execution unexpectedly suspended")
+            except StopIteration:
+                pass
+assert len(commands) == 2 and commands[0]["command"] == commands[1]["command"]
+assert base._instruction == reference._instruction == instruction
+assert {k: v for k, v in commands[0]["env"].items() if k != "OPENCODE_FAKE_VCS"} == commands[1]["env"]
+assert commands[0]["command"].replace(shlex.quote(instruction), shlex.quote(result), 1) == seen[0]["command"]
 '''
     env = os.environ.copy()
     env["LITELLM_LOCAL_MODEL_COST_MAP"] = "True"

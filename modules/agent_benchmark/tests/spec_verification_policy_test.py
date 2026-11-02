@@ -173,6 +173,11 @@ def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path,
     monkeypatch.setattr("agent_benchmark.harbor.runner.command_lock", lambda _: nullcontext())
     monkeypatch.setattr("agent_benchmark.harbor.runner.ensure_harbor_opencode_compatibility",
                         lambda: pytest.fail("shared adapter patch was called"))
+    monkeypatch.setattr("agent_benchmark.study_task_integrity.verify_study_task_trees", lambda _: [])
+    registry = tmp_path / "registry" / "registry.json"
+    registry.parent.mkdir()
+    registry.write_text("{}", encoding="utf-8")
+    monkeypatch.setattr("agent_benchmark.suite_revision.verify_saved_registry_snapshot", lambda *_: registry.resolve())
     captured = []
     def run(cmd, **kwargs):
         captured.append((cmd, kwargs["env"]))
@@ -181,7 +186,7 @@ def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path,
     plan = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
     with pytest.raises(RuntimeError, match="produced no job directory"):
         execute_harbor_run(plan, execute=True, output_dir=tmp_path / "out", jobs_dir=tmp_path / "jobs",
-                           state_dir=tmp_path / "state", study_adapter=True)
+                           state_dir=tmp_path / "state", study_adapter=True, study_manifest={}, registry_path=registry)
     assert "agent_benchmark.harbor.opencode_v1:OpenCodeV1" in captured[0][0]
     assert "agent_benchmark" in captured[0][1]["PYTHONPATH"]
     assert "benchmark_core" in captured[0][1]["PYTHONPATH"]

@@ -33,7 +33,7 @@ The proposed order below uses seed 20261102: shuffle the nine task/repetition pa
 
 Use identical agent, model and model file, provider, API, context, sampling, output limits, timeout, permissions, web access, recording, hardware regime, concurrency one and zero retries for both conditions. Record unknown settings as unknown. Declare the policy as the intended intervention in the benchmark-core comparison. Do not treat task IDs or revision-derived keys as content hashes.
 
-The cached task trees were independently hashed offline using Harbor 0.25.0 `Packager.compute_content_hash`; all three match the corresponding historical Harbor lock files, which name the pinned source revision. The verifier hash below is SHA-256 of the sorted sequence of each file's task-relative UTF-8 POSIX path, a NUL byte, and its binary SHA-256 digest, over all files under `tests/`. These hashes describe the inspected cache; they do not prove that a future downloaded task matches it.
+The cached task trees were independently hashed offline using Harbor 0.25.0 `Packager.compute_content_hash`; all three match the corresponding historical Harbor lock files, which name the pinned source revision. The verifier hash below is SHA-256 of the sorted sequence of each file's task-relative UTF-8 POSIX path, a NUL byte, and its binary SHA-256 digest, over all files under `tests/`. Harbor's `GitTaskId.get_local_path()` resolves the verified URL, revision and registry path to these exact cache trees. The study runner checks both hashes immediately before each dispatch and fails closed if a tree is absent or differs. Existing study runs whose saved registry evidence lacks `git_path` must be replanned.
 
 | Task | Harbor task SHA-256 | Verifier tree SHA-256 |
 | --- | --- | --- |
@@ -52,5 +52,21 @@ Harbor 0.25.0 dynamic import and synthetic rendering have been checked in the ca
 | Tools and web | Both study commands request `disable_web_search=true`; Harbor accepts the option. | Verify the native denial and separate shell/network controls. |
 | Recording and resources | One concurrent job and zero retries are planned. A read-only monitor plan could not see a running monitor in the sandbox. | Verify monitor recording readiness, resource regime and absence of dropped observations in the execution environment. |
 | Comparison | Benchmark Core accepts a declared SV0/SV1 prompt intervention only when the remaining contract is complete and equal; missing values are refused. | Supply actual task/verifier digests and observed controls; current planned manifests do not establish equivalence. |
+
+## Non-inference host procedure
+
+Run in PowerShell 7 from the worktree. Replace the interpreter paths if the cache or virtual environment has moved. `-OutputPath` is optional; when provided it must not already exist. The script emits `spec-verification-host-preflight-v1` JSON, runs only synthetic tests and read-only probes, and returns exit 1 for a definite identity or synthetic-contract failure. UNKNOWN checks do not imply readiness. It never emits raw monitor responses, model output, or credentials.
+
+```powershell
+$harborPython = 'C:\Users\mcarls\AppData\Local\uv\cache\archive-v0\6oHf_rWkqYo-3vQ-qABxe\Scripts\python.exe'
+$coordinatorPython = 'C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe'
+pwsh -NoProfile -File .\modules\agent_benchmark\scripts\Invoke-SpecVerificationPreflight.ps1 `
+  -HarborPython $harborPython -CoordinatorPython $coordinatorPython
+$LASTEXITCODE
+```
+
+For a later separately authorized study command, set `$env:HARBOR_025_PYTHON = $harborPython` in that PowerShell process. The runner uses this same Harbor interpreter for cache selection, hashing, and execution. The qualification process sets `LITELLM_LOCAL_MODEL_COST_MAP=True` to use LiteLLM's bundled cost map and avoid a network lookup; it restores the caller's environment afterward.
+
+If the host script reports a loaded alias, inspect its allowlisted metadata with `lms ps --json | ConvertFrom-Json | Select-Object identifier,modelKey,status,contextLength,sizeBytes`, then check `$LASTEXITCODE`. For an independently identified local model file, record only its digest with `Get-FileHash -LiteralPath '<exact model file path>' -Algorithm SHA256 | Select-Object Algorithm,Hash`. These checks do not establish effective sampler or output settings; obtain those from the runtime's read-only configuration and request-provenance evidence. Do not put credentials, raw prompts or full service responses into the evidence file.
 
 Primary outcome is the independent verifier result. A local passing test and an independently failed requirement form a false-green observation; this does not establish an incorrect test oracle. Coverage, oracle correctness, altered expectations and source correction require explicit review. Track test commands and failures, token and request counts by trial ID, tool invocations and wall time separately from canonical scores.

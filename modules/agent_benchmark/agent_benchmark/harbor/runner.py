@@ -123,10 +123,13 @@ def build_harbor_command(
     registry_path: Path | None = None,
     study_adapter: bool = False,
     prompt_template_path: Path | None = None,
+    harbor_python: str | None = None,
 ) -> list[str]:
     """Build an exact subprocess argument list for harbor run (no shell interpolation)."""
     # Prefer native harbor executable, fallback to uv tool run
-    if shutil.which("harbor"):
+    if study_adapter and harbor_python:
+        cmd = [harbor_python, "-B", "-c", "from harbor.cli.main import app; app()", "run"]
+    elif shutil.which("harbor"):
         cmd = ["harbor", "run"]
     elif shutil.which("uv"):
         cmd = ["uv", "tool", "run", "--from", "harbor==0.25.0", "harbor", "run"]
@@ -195,6 +198,7 @@ def execute_harbor_run(
     prompt_template_path: Path | None = None,
     study_policy: dict[str, Any] | None = None,
     study_design: dict[str, Any] | None = None,
+    study_manifest: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -250,6 +254,7 @@ def execute_harbor_run(
         registry_path=registry_path,
         study_adapter=study_adapter,
         prompt_template_path=prompt_template_path,
+        harbor_python=os.environ.get("HARBOR_025_PYTHON") if study_adapter else None,
     )
 
     run_env = os.environ.copy()
@@ -286,6 +291,15 @@ def execute_harbor_run(
         from ..state import command_lock as lock_cm
 
     with lock_cm(state):
+        if study_adapter:
+            from ..study_task_integrity import verify_study_task_trees
+            from ..suite_revision import verify_saved_registry_snapshot
+            if study_manifest is None or registry_path is None:
+                raise PreflightCheckError("study manifest and registry snapshot required for task identity verification")
+            checked_registry = verify_saved_registry_snapshot(registry_path.parent.parent, study_manifest)
+            if checked_registry != registry_path.resolve():
+                raise PreflightCheckError("study registry path does not match the verified snapshot")
+            verify_study_task_trees(study_manifest)
         try:
             # Execute Harbor subprocess
             proc = subprocess.run(

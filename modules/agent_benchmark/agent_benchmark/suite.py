@@ -419,6 +419,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 study_adapter=bool(manifest.get("study_adapter")), prompt_template_path=template_path,
                 study_policy=manifest.get("prompt_policy"),
                 study_design=manifest.get("study_design"),
+                study_manifest=manifest if manifest.get("study_adapter") else None,
             )
         status = ("infrastructure_invalid" if summary.get("infrastructure_error", 0) else
                   "passed" if summary.get("passed", 0) else
