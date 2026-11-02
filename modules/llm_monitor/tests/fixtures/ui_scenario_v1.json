@@ -1,0 +1,91 @@
+{
+  "_notice": "SYNTHETIC UI TEST FIXTURE ONLY. Never serve as collected provider telemetry.",
+  "status": {
+    "schema_version": 1,
+    "availability": "connected",
+    "revision": 17,
+    "refreshed_at": "2026-10-29T12:00:05Z",
+    "recording": {"status": "disabled", "metadata": false, "content": false},
+    "capabilities": {
+      "model_inventory": {"state": "available", "source": "synthetic_fixture"},
+      "aggregate_metrics": {"state": "available", "source": "synthetic_fixture"},
+      "request_lifecycle": {"state": "available", "source": "synthetic_fixture"},
+      "structured_input": {"state": "available", "source": "synthetic_fixture"},
+      "reasoning_text": {"state": "streaming", "source": "synthetic_fixture"},
+      "output_text": {"state": "streaming", "source": "synthetic_fixture"},
+      "token_usage": {"state": "available", "source": "synthetic_fixture"},
+      "request_timing": {"state": "available", "source": "synthetic_fixture"},
+      "gpu_samples": {"state": "available", "source": "synthetic_fixture"},
+      "historical_content": {"state": "unavailable", "source": "synthetic_fixture"}
+    },
+    "hardware_samples": [
+      {"timestamp": "2026-10-29T11:59:55Z", "device_name": "Synthetic GPU", "gpu_utilization_percent": 42, "vram_used_bytes": 8589934592, "vram_total_bytes": 25769803776},
+      {"timestamp": "2026-10-29T12:00:00Z", "device_name": "Synthetic GPU", "gpu_utilization_percent": 68, "vram_used_bytes": 10737418240, "vram_total_bytes": 25769803776},
+      {"timestamp": "2026-10-29T12:00:05Z", "device_name": "Synthetic GPU", "gpu_utilization_percent": 75, "vram_used_bytes": 11811160064, "vram_total_bytes": 25769803776}
+    ]
+  },
+  "servers": {
+    "schema_version": 1,
+    "availability": "connected",
+    "servers": [
+      {"server_instance_id": "synthetic-server-a", "provider_type": "lmstudio", "endpoint": "http://127.0.0.1:1234", "connection_state": "connected"},
+      {"server_instance_id": "synthetic-server-b", "provider_type": "ollama", "endpoint": "http://127.0.0.1:11434", "connection_state": "connected"}
+    ]
+  },
+  "models": {
+    "schema_version": 1,
+    "availability": "available",
+    "models": [
+      {"server_instance_id": "synthetic-server-a", "provider_model_id": "fixture/qwen-coder", "model_instance_id": "fixture/qwen-coder#1", "name": "Synthetic Qwen Coder", "state": "loaded", "loaded_instance_count": 1, "loaded_context_lengths": [32768], "max_context_length": 131072, "quantization": "Q4_K_M"},
+      {"server_instance_id": "synthetic-server-a", "provider_model_id": "fixture/old-model", "name": "Synthetic unloaded model", "state": "not-loaded", "loaded_instance_count": 0},
+      {"server_instance_id": "synthetic-server-b", "provider_model_id": "fixture/ollama-model", "name": "Synthetic Ollama model", "state": "loaded", "loaded_instance_count": 1, "context_length": 8192}
+    ]
+  },
+  "requestResult": {
+    "schema_version": 1,
+    "availability": "available",
+    "capture_state": "available",
+    "requests": [
+      {
+        "request_id": "synthetic-req-421", "server_instance_id": "synthetic-server-a", "model_instance_id": "fixture/qwen-coder#1", "provider_model_id": "fixture/qwen-coder", "model_name": "Synthetic Qwen Coder", "source": "synthetic_fixture", "state": "active", "started_at": "2026-10-29T12:00:03Z", "ended_at": null,
+        "input_tokens": null, "reasoning_tokens": null, "output_tokens": null, "coverage": {"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "streaming", "output_text": "streaming", "token_usage": "unavailable", "request_timing": "gateway_timed"},
+        "content": [
+          {"segment_id": "r421-u1", "kind": "system", "role": "system", "text": "Synthetic system instruction.", "sequence": 1},
+          {"segment_id": "r421-u2", "kind": "user", "role": "user", "text": "Review the fixture-driven dashboard layout.", "sequence": 2},
+          {"segment_id": "r421-r1", "kind": "reasoning", "role": "assistant", "text": "Synthetic reasoning: check layout proportions and unavailable telemetry labels.", "sequence": 3, "streaming": true},
+          {"segment_id": "r421-o1", "kind": "assistant", "role": "assistant", "text": "The request inspector is visible beside the request stream.", "sequence": 4, "streaming": true}
+        ],
+        "events": [
+          {"sequence": 1, "type": "request.observed", "timestamp": "2026-10-29T12:00:03Z", "summary": "Request observed by synthetic UI fixture"},
+          {"sequence": 2, "type": "reasoning.delta", "timestamp": "2026-10-29T12:00:04Z", "summary": "Synthetic reasoning delta"},
+          {"sequence": 3, "type": "output.delta", "timestamp": "2026-10-29T12:00:05Z", "summary": "Synthetic output delta"}
+        ]
+      },
+      {
+        "request_id": "synthetic-req-420", "server_instance_id": "synthetic-server-a", "model_instance_id": "fixture/qwen-coder#1", "provider_model_id": "fixture/qwen-coder", "model_name": "Synthetic Qwen Coder", "source": "synthetic_fixture", "state": "completed", "started_at": "2026-10-29T11:59:40Z", "ended_at": "2026-10-29T11:59:44Z",
+        "input_tokens": 245, "input_tokens_source": "provider_reported", "reasoning_tokens": 31, "reasoning_tokens_source": "provider_reported", "output_tokens": 120, "output_tokens_source": "provider_reported", "usage_source": "provider_reported", "coverage": {"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "completion_only", "output_text": "completion_only", "token_usage": "provider_reported", "request_timing": "source_timed"},
+        "content": [
+          {"segment_id": "r420-u1", "kind": "user", "role": "user", "text": "Summarize the synthetic test data.", "sequence": 1},
+          {"segment_id": "r420-r1", "kind": "reasoning", "role": "assistant", "text": "Synthetic reasoning text from the fixture.", "sequence": 2},
+          {"segment_id": "r420-o1", "kind": "assistant", "role": "assistant", "text": "This response is test data and is labeled as synthetic.", "sequence": 3}
+        ],
+        "time_to_first_text_seconds": 0.7, "queue_seconds": null, "prefill_seconds": 0.42, "decode_seconds": 2.81, "generation_tokens_per_second": 42.7, "cached_input_tokens": null,
+        "events": [
+          {"sequence": 1, "type": "request.observed", "timestamp": "2026-10-29T11:59:40Z", "summary": "Request observed"},
+          {"sequence": 2, "type": "prompt_processing.completed", "timestamp": "2026-10-29T11:59:41Z", "summary": "Prompt processing completed"},
+          {"sequence": 3, "type": "usage.reported", "timestamp": "2026-10-29T11:59:44Z", "summary": "Provider-reported usage received"},
+          {"sequence": 4, "type": "request.completed", "timestamp": "2026-10-29T11:59:44Z", "summary": "Request completed"}
+        ]
+      },
+      {
+        "request_id": "synthetic-req-419", "server_instance_id": "synthetic-server-b", "model_instance_id": null, "provider_model_id": "fixture/ollama-model", "model_name": "Synthetic Ollama model", "source": "synthetic_fixture", "state": "failed", "started_at": "2026-10-29T11:58:00Z", "ended_at": "2026-10-29T11:58:01Z", "input_tokens": null, "reasoning_tokens": null, "output_tokens": null,
+        "coverage": {"request_lifecycle": "complete", "structured_input": "unavailable", "reasoning_text": "unavailable", "output_text": "unavailable", "token_usage": "unavailable", "request_timing": "gateway_timed"}, "content": [], "error_category": "synthetic_transport_error", "events": [{"sequence": 1, "type": "request.failed", "timestamp": "2026-10-29T11:58:01Z", "summary": "Synthetic failure event"}]
+      },
+      {
+        "request_id": "synthetic-req-418", "server_instance_id": "synthetic-server-a", "model_instance_id": "fixture/old-model", "provider_model_id": "fixture/old-model", "model_name": "Synthetic unloaded model", "source": "synthetic_fixture", "state": "cancelled", "started_at": "2026-10-29T11:55:00Z", "ended_at": "2026-10-29T11:55:06Z", "input_tokens": 80, "reasoning_tokens": null, "output_tokens": 12,
+        "coverage": {"request_lifecycle": "complete", "structured_input": "rendered_only", "reasoning_text": "unavailable", "output_text": "completion_only", "token_usage": "estimated", "request_timing": "gateway_timed"}, "content": [{"segment_id": "r418-u1", "kind": "user", "role": "user", "text": "[Rendered input omitted from this synthetic case]", "sequence": 1}, {"segment_id": "r418-o1", "kind": "assistant", "role": "assistant", "text": "Partial synthetic answer", "sequence": 2, "truncated": true}], "stream_gap": true,
+        "events": [{"sequence": 1, "type": "request.observed", "timestamp": "2026-10-29T11:55:00Z", "summary": "Request observed"}, {"sequence": 3, "type": "telemetry.gap", "timestamp": "2026-10-29T11:55:04Z", "summary": "Synthetic sequence gap"}, {"sequence": 4, "type": "request.cancelled", "timestamp": "2026-10-29T11:55:06Z", "summary": "Request cancelled"}]
+      }
+    ]
+  }
+}

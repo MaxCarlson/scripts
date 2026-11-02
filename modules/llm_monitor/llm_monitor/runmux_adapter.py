@@ -122,19 +122,38 @@ class RunmuxMonitoringAdapter:
             return base | {"availability": "unavailable", "reason": type(exc).__name__,
                            "events": [], "next_cursor": None, "coverage": {"status": "unknown"}}
 
-    def alerts(self, *, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def alerts(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        provider_instance_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         """Return persisted local alert states; this method does not evaluate or write alerts."""
         if status not in {None, "active", "acknowledged", "resolved"}:
             raise ValueError("status must be active, acknowledged, resolved, or None")
         if not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
             raise ValueError("limit must be a positive integer")
+        if (provider_instance_id is None) != (session_id is None):
+            raise ValueError("provider_instance_id and session_id must be provided together")
+        if provider_instance_id is not None:
+            _validate_identity(provider_instance_id, session_id or "")
         page_size = min(limit, MAX_ALERT_LIMIT)
         if not self.database_path.is_file():
             return {"schema_version": RUNMUX_API_SCHEMA_VERSION, "availability": "unavailable", "alerts": [],
                     "reason": "telemetry_store_unavailable"}
         try:
             with TelemetryStore(self.database_path, readonly=True) as store:
-                records = store.list_alert_states(status=status, limit=page_size)
+                records = store.list_alert_states(
+                    status=status,
+                    limit=MAX_ALERT_LIMIT if session_id is not None else page_size,
+                    session_id=session_id,
+                )
+            if provider_instance_id is not None:
+                safe_provider = _safe_endpoint(provider_instance_id)
+                records = [row for row in records if _safe_endpoint(row.get("provider_instance_id", "")) == safe_provider]
+                records = records[:page_size]
             return {"schema_version": RUNMUX_API_SCHEMA_VERSION, "availability": "available",
                     "alerts": [_sanitize(record) for record in records], "limit": page_size}
         except (OSError, ValueError, RuntimeError, sqlite3.Error) as exc:

@@ -4,11 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "llm-monitor"
-version = "0.6.0"
+version = "0.8.0"
 description = "Read-only local LLM and OpenCode monitoring"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
+
+[project.optional-dependencies]
+web = ["web-ui-tools>=0.2.0", "httpx>=0.27"]
+gpu = ["resource-metrics>=0.2.0"]
+benchmark = ["httpx>=0.27", "psutil>=5.9", "uvicorn>=0.30"]
+all = ["web-ui-tools>=0.2.0", "httpx>=0.27", "resource-metrics>=0.2.0", "psutil>=5.9", "uvicorn>=0.30"]
 
 [project.scripts]
 llm-monitor = "llm_monitor.cli:main"
@@ -17,6 +23,9 @@ llm-monitor = "llm_monitor.cli:main"
 where = ["."]
 include = ["llm_monitor*"]
 
+[tool.setuptools.package-data]
+llm_monitor = ["web_static/*.html", "web_static/assets/*.css", "web_static/assets/*.js", "web_static/assets/js/*.mjs"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --basetemp=modules/llm_monitor/.pytest_tmp_root"
+addopts = "-q --basetemp=.pytest_tmp_root"

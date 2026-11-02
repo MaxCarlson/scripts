@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 import ipaddress
+import re
 import secrets
 import time
 from collections.abc import Sequence
@@ -47,6 +48,7 @@ def create_app(
     login_code: str,
     allowed_hosts: Sequence[str] = LOOPBACK_HOSTS,
     allow_inline_styles: bool = False,
+    session_cookie_name: str = SESSION_COOKIE,
 ) -> FastAPI:
     """Create an application with explicit routes, static assets, and local session authentication.
 
@@ -56,6 +58,8 @@ def create_app(
 
     if not login_code:
         raise ValueError("login_code must not be empty")
+    if not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", session_cookie_name):
+        raise ValueError("session_cookie_name must be 1-64 ASCII letters, digits, underscores, or hyphens")
     security_headers = SECURITY_HEADERS
     if allow_inline_styles:
         policy = SECURITY_HEADERS["Content-Security-Policy"].replace(
@@ -81,6 +85,7 @@ def create_app(
         WebSocketSessionMiddleware,
         sessions=app.state.sessions,
         allowed_hosts=allowed_hosts,
+        session_cookie_name=session_cookie_name,
     )
     app.include_router(api_router)
 
@@ -94,7 +99,7 @@ def create_app(
         if (protected or auth_route) and not _same_origin(request):
             return Response(status_code=403, headers={**security_headers, "Cache-Control": "no-store"})
         if protected:
-            session_id = request.cookies.get(SESSION_COOKIE)
+            session_id = request.cookies.get(session_cookie_name)
             expires_at = app.state.sessions.get(session_id)
             if expires_at is None or expires_at <= time.time():
                 if session_id:
@@ -114,7 +119,7 @@ def create_app(
         session_id = secrets.token_urlsafe(32)
         app.state.sessions[session_id] = time.time() + SESSION_MAX_AGE
         response.set_cookie(
-            SESSION_COOKIE,
+            session_cookie_name,
             session_id,
             max_age=SESSION_MAX_AGE,
             httponly=True,
@@ -125,10 +130,10 @@ def create_app(
 
     @app.post("/auth/logout", status_code=204)
     async def logout(request: Request, response: Response) -> None:
-        session_id = request.cookies.get(SESSION_COOKIE)
+        session_id = request.cookies.get(session_cookie_name)
         if session_id:
             app.state.sessions.pop(session_id, None)
-        response.delete_cookie(SESSION_COOKIE, path="/", httponly=True, samesite="strict")
+        response.delete_cookie(session_cookie_name, path="/", httponly=True, samesite="strict")
 
     @app.get("/", include_in_schema=False)
     async def index() -> FileResponse:
@@ -198,10 +203,18 @@ def _same_origin_values(origin: str | None, host: str | None, scheme: str) -> bo
 class WebSocketSessionMiddleware:
     """Require the shared local browser session for application API WebSockets."""
 
-    def __init__(self, app: Any, *, sessions: dict[str, float], allowed_hosts: Sequence[str]) -> None:
+    def __init__(
+        self,
+        app: Any,
+        *,
+        sessions: dict[str, float],
+        allowed_hosts: Sequence[str],
+        session_cookie_name: str = SESSION_COOKIE,
+    ) -> None:
         self.app = app
         self.sessions = sessions
         self.allowed_hosts = tuple(allowed_hosts)
+        self.session_cookie_name = session_cookie_name
 
     async def __call__(self, scope: dict[str, Any], receive: Any, send: Any) -> None:
         if scope["type"] != "websocket" or not (
@@ -226,7 +239,7 @@ class WebSocketSessionMiddleware:
             cookies.load(cookie_header)
         except Exception:  # noqa: BLE001 - malformed browser cookies are treated as unauthenticated.
             cookies = SimpleCookie()
-        morsel = cookies.get(SESSION_COOKIE)
+        morsel = cookies.get(self.session_cookie_name)
         session_id = None if morsel is None else morsel.value
         expires_at = self.sessions.get(session_id) if session_id else None
         if expires_at is None or expires_at <= time.time():
