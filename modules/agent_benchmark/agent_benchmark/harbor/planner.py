@@ -63,6 +63,16 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "default_model": "openai/qwen38_23GB",
         "default_base_url": "http://host.docker.internal:1234/v1",
     },
+    "opencode-v2": {
+        "description": "OpenCode v2 candidate agent (@opencode/cli@2.2.5)",
+        "requires_model": True,
+        "requires_docker": True,
+        "requires_credentials": False,
+        "default_model": "openai/qwen38_23GB",
+        "default_base_url": "http://host.docker.internal:1234/v1",
+        "pinned_version": "2.2.5",
+        "package": "@opencode/cli",
+    },
     "qwen-coder": {
         "description": "Qwen Code local agent via OpenAI-compatible endpoint",
         "requires_model": True,
@@ -206,8 +216,8 @@ def check_agent_configuration_blockers(
         if env_var and not os.environ.get(env_var):
             blockers.append(f"Credentials in ${env_var} must be set in environment for {agent_name} cloud execution")
 
-    # 4. Local agents (qwen-coder, opencode) require a base URL
-    if agent_norm in ("qwen-coder", "opencode") and not base_url:
+    # 4. Local agents (qwen-coder, opencode, opencode-v2) require a base URL
+    if agent_norm in ("qwen-coder", "opencode", "opencode-v2") and not base_url:
         blockers.append(f"{agent_name} requires --base-url pointing to an OpenAI-compatible endpoint")
 
     # 5. Agents that do not accept an api-format parameter

@@ -13,7 +13,11 @@ from uuid import uuid4
 import json
 import logging
 import sys
-from ..state import command_lock
+
+try:
+    from ..state import command_lock
+except ImportError:
+    command_lock = None  # type: ignore[assignment]
 from .importer import HarborImporter
 from .models import HarborJobResult, JobStats
 from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readiness
@@ -133,7 +137,12 @@ def build_harbor_command(
     cmd.extend(["--dataset", harbor_ds])
     if registry_path is not None:
         cmd.extend(["--registry-path", str(registry_path.resolve())])
-    cmd.extend(["--agent", plan.agent])
+    agent_arg = (
+        "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
+        if plan.agent == "opencode-v2"
+        else plan.agent
+    )
+    cmd.extend(["--agent", agent_arg])
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
 
@@ -229,13 +238,25 @@ def execute_harbor_run(
     if os.name == "nt":
         run_env["PYTHONUTF8"] = "1"
         run_env["PYTHONIOENCODING"] = "utf-8"
-    if plan.agent in ("qwen-coder", "opencode") and "OPENAI_API_KEY" not in run_env:
+    if plan.agent in ("qwen-coder", "opencode", "opencode-v2") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
+    if plan.agent == "opencode-v2":
+        agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
+        current_pythonpath = run_env.get("PYTHONPATH", "")
+        run_env["PYTHONPATH"] = (
+            f"{agent_bench_root}{os.pathsep}{current_pythonpath}"
+            if current_pythonpath
+            else agent_bench_root
+        )
 
     if plan.agent == "opencode":
         ensure_harbor_opencode_compatibility()
 
-    with command_lock(state):
+    lock_cm = command_lock
+    if lock_cm is None:
+        from ..state import command_lock as lock_cm
+
+    with lock_cm(state):
         try:
             # Execute Harbor subprocess
             proc = subprocess.run(

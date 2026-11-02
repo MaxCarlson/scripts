@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import time
 from typing import Any
 from urllib.parse import quote, urlsplit, urlunsplit
@@ -33,14 +34,38 @@ def host_monitor_origin(gateway_url: str, host_url: str | None = None) -> str:
     return _monitor_origin(gateway_url)
 
 
+def _build_monitor_headers(origin: str) -> dict[str, str]:
+    headers = {"Origin": origin}
+    auth = os.environ.get("LLM_MONITOR_AUTHORIZATION")
+    cookie = os.environ.get("LLM_MONITOR_SESSION_COOKIE")
+    if not cookie:
+        candidates = [
+            Path("reports/agent-bench-suite/monitor_session.env"),
+            Path.cwd() / "reports/agent-bench-suite/monitor_session.env",
+            *(p / "reports/agent-bench-suite/monitor_session.env" for p in Path(__file__).resolve().parents),
+        ]
+        for session_env in candidates:
+            if session_env.is_file():
+                try:
+                    for line in session_env.read_text(encoding="utf-8").splitlines():
+                        if line.startswith("LLM_MONITOR_SESSION_COOKIE="):
+                            cookie = line.split("=", 1)[1].strip()
+                            break
+                except OSError:
+                    pass
+                if cookie:
+                    break
+    if auth:
+        headers["Authorization"] = auth
+    if cookie:
+        headers["Cookie"] = cookie
+    return headers
+
+
 def request_snapshot(*, monitor_url: str, client: httpx.Client | None = None) -> dict[str, Any]:
     """Return request IDs only; callers never persist prompt or response contents."""
     origin = _monitor_origin(monitor_url)
-    headers = {"Origin": origin}
-    if os.environ.get("LLM_MONITOR_AUTHORIZATION"):
-        headers["Authorization"] = os.environ["LLM_MONITOR_AUTHORIZATION"]
-    if os.environ.get("LLM_MONITOR_SESSION_COOKIE"):
-        headers["Cookie"] = os.environ["LLM_MONITOR_SESSION_COOKIE"]
+    headers = _build_monitor_headers(origin)
     own_client = client is None
     active_client = client or httpx.Client(timeout=3.0, follow_redirects=False, trust_env=False)
     try:
@@ -77,11 +102,7 @@ def verify_recorded_requests(*, monitor_url: str, request_ids: list[str], record
                              client: httpx.Client | None = None, timeout_seconds: float = 10) -> dict[str, Any]:
     """Confirm observed request IDs reached durable history without emitting their content."""
     origin = _monitor_origin(monitor_url)
-    headers = {"Origin": origin}
-    if os.environ.get("LLM_MONITOR_AUTHORIZATION"):
-        headers["Authorization"] = os.environ["LLM_MONITOR_AUTHORIZATION"]
-    if os.environ.get("LLM_MONITOR_SESSION_COOKIE"):
-        headers["Cookie"] = os.environ["LLM_MONITOR_SESSION_COOKIE"]
+    headers = _build_monitor_headers(origin)
     own_client = client is None
     active_client = client or httpx.Client(timeout=3.0, follow_redirects=False, trust_env=False)
     deadline = time.monotonic() + timeout_seconds
@@ -119,17 +140,11 @@ def validate_monitor(
 ) -> dict[str, Any]:
     if recording not in {"off", "metadata", "content"}:
         raise MonitorPreflightError(f"unsupported recording mode: {recording}")
-    if agent.lower() == "opencode" and api_format != "openai_chat_completions":
-        raise MonitorPreflightError("OpenCode monitor routing requires openai_chat_completions API format")
+    if agent.lower() in ("opencode", "opencode-v2") and api_format != "openai_chat_completions":
+        raise MonitorPreflightError(f"{agent} monitor routing requires openai_chat_completions API format")
     gateway = monitor_url or DEFAULT_MONITOR_URL
     origin = host_monitor_origin(gateway, monitor_host_url)
-    headers = {"Origin": origin}
-    authorization = os.environ.get("LLM_MONITOR_AUTHORIZATION")
-    if authorization:
-        headers["Authorization"] = authorization
-    cookie = os.environ.get("LLM_MONITOR_SESSION_COOKIE")
-    if cookie:
-        headers["Cookie"] = cookie
+    headers = _build_monitor_headers(origin)
     own_client = client is None
     active_client = client or httpx.Client(timeout=3.0, follow_redirects=False, trust_env=False)
     try:

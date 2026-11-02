@@ -28,14 +28,23 @@ from .planner import (
     verify_agent_readiness,
 )
 from .reporting import collect_run_summaries, render_leaderboard_table
-from .runner import (
-    ExecutionAuthorizationError,
-    PreflightCheckError,
-    build_harbor_command,
-    ensure_harbor_opencode_compatibility,
-    execute_harbor_run,
-    find_harbor_opencode_adapters,
+from .opencode_v2 import (
+    OPENCODE_V2_PACKAGE,
+    PINNED_OPENCODE_V2_VERSION,
+    OpenCodeV2,
+    build_opencode_v2_install_command,
+    build_opencode_v2_run_command,
+    is_harbor_available,
 )
+
+_RUNNER_SYMBOLS = {
+    "ExecutionAuthorizationError",
+    "PreflightCheckError",
+    "build_harbor_command",
+    "ensure_harbor_opencode_compatibility",
+    "execute_harbor_run",
+    "find_harbor_opencode_adapters",
+}
 
 __all__ = [
     "AIDER_POLYGLOT_TASKS",
@@ -68,4 +77,18 @@ __all__ = [
     "ensure_harbor_opencode_compatibility",
     "execute_harbor_run",
     "find_harbor_opencode_adapters",
+    "OPENCODE_V2_PACKAGE",
+    "PINNED_OPENCODE_V2_VERSION",
+    "OpenCodeV2",
+    "build_opencode_v2_install_command",
+    "build_opencode_v2_run_command",
+    "is_harbor_available",
 ]
+
+
+def __getattr__(name: str):
+    if name in _RUNNER_SYMBOLS:
+        from . import runner
+
+        return getattr(runner, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
