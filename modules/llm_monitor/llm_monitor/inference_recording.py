@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 import queue
 import threading
-import time
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
@@ -28,6 +28,7 @@ class InferenceRecorder:
         *,
         mode: str = "metadata",
         queue_size: int = 1000,
+        queue_bytes: int = 8_000_000,
     ) -> None:
         if mode not in {"metadata", "content"}:
             raise ValueError(f"invalid recording mode {mode!r}, must be 'metadata' or 'content'")
@@ -38,6 +39,8 @@ class InferenceRecorder:
         )
         self._active_request_modes: dict[str, str] = {}
         self.queue_size = queue_size
+        self.queue_bytes = queue_bytes
+        self._queued_bytes = 0
         self._queue: queue.Queue[tuple[str, Any, str, Any, Any] | None] = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -70,6 +73,7 @@ class InferenceRecorder:
 
     def start(self) -> None:
         """Start the background writer worker."""
+        self.store.mark_interrupted_inference_requests()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
@@ -82,11 +86,11 @@ class InferenceRecorder:
             self._thread.start()
             _LOGGER.info("Inference recorder started in %s mode (database: %s)", self.mode, self.store.path)
 
-    def stop(self, timeout: float = 5.0) -> None:
-        """Signal worker to stop, drain pending items, and wait."""
+    def stop(self, timeout: float = 5.0) -> bool:
+        """Signal worker to stop and report whether it drained before the deadline."""
         with self._lock:
             if self._thread is None or not self._thread.is_alive():
-                return
+                return True
             self._stop_event.set()
             try:
                 self._queue.put_nowait(None)
@@ -95,15 +99,22 @@ class InferenceRecorder:
             thread = self._thread
 
         thread.join(timeout=timeout)
+        complete = not thread.is_alive() and self._queue.empty()
+        if not complete:
+            with self._lock:
+                self._is_healthy = False
+                self._last_error = "Recorder shutdown flush timed out; pending writes may remain"
         _LOGGER.info("Inference recorder stopped (persisted: %d, dropped: %d)", self._persisted_count, self._dropped_count)
+        return complete
 
-    def flush(self, timeout: float = 5.0) -> None:
-        """Wait until all currently queued items are processed."""
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            if self._queue.empty():
-                return
-            time.sleep(0.02)
+    def flush(self, timeout: float = 5.0) -> bool:
+        """Wait for a FIFO writer barrier; return false if it misses the deadline."""
+        barrier = threading.Event()
+        try:
+            self._queue.put(("barrier", barrier, "", None, None), timeout=max(0, timeout))
+        except queue.Full:
+            return False
+        return barrier.wait(timeout=max(0, timeout))
 
     def record_request_start(self, request: InferenceRequest) -> None:
         """Queue a request start notification."""
@@ -112,8 +123,19 @@ class InferenceRecorder:
         with self._lock:
             self._active_request_modes[request.request_id] = self.mode
             mode_at_start = self.mode
-        # Privacy: Never forward contents at start
-        self._enqueue(request, mode_at_start, None, None)
+        # Store the request row first; content is appended independently below.
+        safe_request = replace(request, content=())
+        self._enqueue(safe_request, mode_at_start, None, None)
+        if mode_at_start == "content":
+            for segment in request.content:
+                self.record_content(request.request_id, segment)
+
+    def record_content(self, request_id: str, segment: ContentSegment) -> None:
+        """Queue one observed segment without retaining the request transcript in memory."""
+        with self._lock:
+            authorized = self._active_request_modes.get(request_id) == "content" and self.mode == "content"
+        if authorized and not self._stop_event.is_set():
+            self._enqueue_content(request_id, segment)
 
     def record_request_final(
         self,
@@ -140,8 +162,13 @@ class InferenceRecorder:
             effective_mode = current_mode
 
         # Privacy guarantee: In metadata mode, discard contents immediately
-        safe_contents = contents if effective_mode == "content" else None
-        self._enqueue(request, effective_mode, safe_contents, hardware_samples)
+        safe_request = replace(request, content=())
+        self._enqueue(safe_request, effective_mode, None, hardware_samples)
+        # Legacy callers may submit a complete transcript only at finalization.
+        # Gateway requests registered at start already appended each segment.
+        if effective_mode == "content" and mode_at_start is None and contents:
+            for segment in contents:
+                self._enqueue_content(request.request_id, segment)
 
     def _enqueue(
         self,
@@ -150,14 +177,29 @@ class InferenceRecorder:
         contents: Sequence[ContentSegment] | None,
         hardware_samples: Sequence[HardwareSample] | None,
     ) -> None:
-        try:
-            self._queue.put_nowait(("record", request, effective_mode, contents, hardware_samples))
-        except queue.Full:
-            with self._lock:
+        size = len(repr(request).encode("utf-8"))
+        self._put_bounded(("record", request, effective_mode, contents, hardware_samples), size, request.request_id)
+
+    def _enqueue_content(self, request_id: str, segment: ContentSegment) -> None:
+        size = len((segment.text or "").encode("utf-8")) + 256
+        self._put_bounded(("content", request_id, "content", segment, None), size, request_id)
+
+    def _put_bounded(self, item: tuple[str, Any, str, Any, Any], size: int, request_id: str) -> None:
+        with self._lock:
+            if size > self.queue_bytes or self._queued_bytes + size > self.queue_bytes:
                 self._dropped_count += 1
                 self._is_healthy = False
-                self._last_error = "Recorder queue capacity exceeded; record dropped"
-            _LOGGER.warning("Inference recorder queue full; dropping observation for request %s", request.request_id)
+                self._last_error = "Recorder byte capacity exceeded; capture incomplete"
+                _LOGGER.error("Recorder byte capacity exceeded for request %s", request_id)
+                return
+            try:
+                self._queue.put_nowait(item)
+            except queue.Full:
+                self._dropped_count += 1
+                self._is_healthy = False
+                self._last_error = "Recorder queue capacity exceeded; capture incomplete"
+                return
+            self._queued_bytes += size
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set() or not self._queue.empty():
@@ -171,8 +213,15 @@ class InferenceRecorder:
                 break
 
             action, request, rec_mode, contents, hw_samples = item
+            item_size = len(repr(request).encode("utf-8")) if action == "record" else (len((contents.text or "").encode("utf-8")) + 256 if action == "content" else 0)
             try:
-                if action == "record":
+                if action == "barrier":
+                    request.set()
+                elif action == "content":
+                    self.store.append_inference_content(request, contents)
+                    with self._lock:
+                        self._persisted_count += 1
+                elif action == "record":
                     self.store.record_inference(
                         request,
                         rec_mode,
@@ -181,14 +230,14 @@ class InferenceRecorder:
                     )
                     with self._lock:
                         self._persisted_count += 1
-                        self._is_healthy = True
-                        self._last_error = None
             except Exception as error:
                 _LOGGER.exception("Failed to persist inference request %s: %s", getattr(request, "request_id", "?"), error)
                 with self._lock:
                     self._is_healthy = False
                     self._last_error = str(error)
             finally:
+                with self._lock:
+                    self._queued_bytes = max(0, self._queued_bytes - item_size)
                 self._queue.task_done()
 
     def status(self) -> dict[str, Any]:
@@ -207,6 +256,7 @@ class InferenceRecorder:
                 "worker_running": worker_running,
                 "persisted_requests_count": self._persisted_count,
                 "pending_queue_size": self._queue.qsize(),
+                "pending_queue_bytes": self._queued_bytes,
                 "dropped_count": self._dropped_count,
                 "last_error": self._last_error or (None if worker_running else "Recorder worker is not running"),
             }

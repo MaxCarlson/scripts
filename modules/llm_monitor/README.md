@@ -37,7 +37,7 @@ llm-monitor web
 
 The web command binds to `127.0.0.1:8788`, prints a one-time browser login code, and opens the dashboard. It reads LM Studio model inventory through the existing GET-only API client. Use `-n/--no-browser` to keep the browser closed, `-p/--port` to select a port, `-e/--endpoint` to set an HTTP(S) endpoint, and `-i/--refresh-interval` to change the shared inventory poll interval.
 
-This initial overview reports server and model inventory only. It does not send inference requests, passively reconstruct request transcripts, capture reasoning/output streams, or access the telemetry database. Individual request capture and historical recording are not implemented in this phase. A reachable server therefore does not imply request-content coverage.
+The dashboard's inventory view is read-only. When the optional OpenAI-compatible gateway is enabled, requests routed through it can be recorded to SQLite. Metadata mode is the default; transcript persistence requires explicit `-R content` authorization. See [inference content recording](docs/INFERENCE_CONTENT_RECORDING.md) for capture, durability, and health behavior. Requests sent directly to LM Studio are not observed by the gateway.
 
 ## Live reasoning diagnostics
 

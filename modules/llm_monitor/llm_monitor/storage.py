@@ -1219,6 +1219,31 @@ class TelemetryStore:
                     h_rows,
                 )
 
+    def append_inference_content(self, request_id: str, segment: Any) -> None:
+        """Durably append one authorized semantic content segment."""
+        data = segment if isinstance(segment, dict) else segment.__dict__
+        with closing(self._connect()) as connection:
+            connection.execute(
+                """INSERT INTO inference_contents(
+                    request_id, sequence, kind, role, text, content_type, source, truncated, observed_at
+                ) SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?
+                WHERE EXISTS (SELECT 1 FROM inference_requests WHERE request_id=? AND recording_mode='content')""",
+                (request_id, data.get("sequence"), data.get("kind", "user"), data.get("role", "user"),
+                 data.get("text"), data.get("content_type", "text/plain"), data.get("source"),
+                 1 if data.get("truncated") else 0, data.get("observed_at"), request_id),
+            )
+
+    def mark_interrupted_inference_requests(self) -> int:
+        """Mark requests left active by a prior process as interrupted."""
+        with closing(self._connect()) as connection:
+            cursor = connection.execute(
+                """UPDATE inference_requests
+                   SET state='interrupted', ended_at=?, error_message=COALESCE(error_message, 'Monitor restarted during inference')
+                   WHERE state IN ('active', 'generating', 'running', 'queued')""",
+                (_utc_now(),),
+            )
+            return cursor.rowcount
+
     def get_inference_request(self, request_id: str, *, include_content: bool = True) -> dict[str, Any] | None:
         """Retrieve a historical inference request by ID."""
         with closing(self._connect()) as connection:

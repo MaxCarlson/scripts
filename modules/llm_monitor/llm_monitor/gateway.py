@@ -199,6 +199,8 @@ class OpenAIInferenceGateway:
 
         @router.post("/chat/completions")
         async def chat_completions(request: Request) -> Response:
+            if self.capture_enabled and self.recorder is not None and not self.recorder.is_healthy:
+                raise HTTPException(status_code=503, detail="Inference recording is unhealthy; dispatch is paused")
             timing = _GatewayTiming(self.timing_sink)
             request_id = str(uuid.uuid4())
             started = time.monotonic()
@@ -532,6 +534,8 @@ class OpenAIInferenceGateway:
 
     def _append_content(self, request_id: str, segment: ContentSegment, timing: _GatewayTiming | None) -> None:
         started_ns = time.perf_counter_ns()
+        if getattr(self, "recorder", None) is not None:
+            self.recorder.record_content(request_id, segment)
         self.store.append_content(request_id, segment)
         if timing is not None:
             timing.add("content_store_update_ms", time.perf_counter_ns() - started_ns)

@@ -109,3 +109,30 @@ def test_inference_recorder_queue_overflow_marks_unhealthy(tmp_path: Path):
     assert status["dropped_count"] == 3
     assert status["is_healthy"] is False
     assert "Recorder queue capacity exceeded" in status["last_error"]
+
+
+def test_incremental_content_exceeds_live_store_budget_and_survives_restart(tmp_path: Path):
+    store = TelemetryStore(tmp_path / "incremental.sqlite3")
+    recorder = InferenceRecorder(store, mode="content")
+    recorder.start()
+    req = InferenceRequest(request_id="large", server_instance_id="s1", source="gateway", state="active")
+    recorder.record_request_start(req)
+    for sequence in range(3):
+        recorder.record_content("large", ContentSegment(
+            sequence=sequence, kind="assistant", role="assistant", text="x" * 1_000_000,
+            source="gateway_sse",
+        ))
+    assert recorder.flush(timeout=10) is True
+    assert recorder.stop(timeout=10) is True
+    record = store.get_inference_request("large", include_content=True)
+    assert record is not None
+    assert sum(len(part["text"]) for part in record["content"]) == 3_000_000
+
+    recovered = InferenceRecorder(store, mode="metadata")
+    recovered.start()
+    recovered.flush(timeout=10)
+    recovered.stop(timeout=10)
+    record = store.get_inference_request("large", include_content=True)
+    assert record is not None
+    assert record["state"] == "interrupted"
+    assert sum(len(part["text"]) for part in record["content"]) == 3_000_000
