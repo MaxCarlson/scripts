@@ -143,7 +143,7 @@ def test_acceptance_harness_live_mode_requires_explicit_authorization():
         AcceptanceHarness(mode="live", allow_live_lmstudio=True, allow_real_miner=False)
 
     harness = AcceptanceHarness(mode="live", allow_live_lmstudio=True, allow_real_miner=True)
-    assert harness.report.verification_level == "live_hardware"
+    assert harness.report.verification_level == "pending_live_verification"
     assert harness.report.process_backend == "windows_miner"
     assert harness.report.upstream_type == "live_lmstudio"
 

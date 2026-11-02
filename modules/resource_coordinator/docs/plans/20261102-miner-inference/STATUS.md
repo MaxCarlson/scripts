@@ -1,12 +1,12 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Independent Argon Adversarial Review & Remediation Complete; Ready for Supervised Acceptance  
-**Timestamp:** 2026-11-02T12:36:00-08:00  
+**Current Phase:** Supervised Hardware Acceptance Readiness Complete; Ready for Operator-Controlled Live Run  
+**Timestamp:** 2026-11-02T12:56:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
-**Branch:** `feature/miner-inference-coordination-20261102` (tracking `origin/main` at `109c7ad0edfb44b18e19505abf1def4ea58fac77`)  
+**Branch:** `feature/miner-inference-coordination-20261102` (branched from `109c7ad0edfb44b18e19505abf1def4ea58fac77`; zero file overlap with `origin/main` at `f98dcdb5`)  
 **Companion Repository:** `C:\Users\mcarls\src\Mining` (branch `master` at `9c36ed042ec68fba956846917ede2d04678c5230`; working copy preserved untouched)  
 
 ---
@@ -15,14 +15,14 @@
 
 | Resource / Process | Observed State | PID / Port / Details | Notes / Invariants |
 |---|---|---|---|
-| **LM Studio** | Active / Running | Port `1234` (Listen) | Loaded model: `qwen38-27b-q4km` (ID: `qwen38_23GB`), context 98304, parallel 4. Read-only API verified via `/v1/models`. |
+| **LM Studio** | Active / Running | Port `1234` (Listen) | Loaded model (`/api/v0/models`): `qwen38_23GB` (`state: "loaded"`, `loaded_context_length: 98304`). Read-only discovery verified. |
 | **LLM Monitor Web** | Active / Running | PID `58828` on Port `8789` | Command: `-m llm_monitor web -p 8789 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n -d .../qualification.sqlite3`. Must NOT be interrupted. |
 | **OpenCode Workers** | Active | PIDs `47108`, `63836` | Local coding worker processes active. Must NOT be disturbed. |
-| **Miner (KRig / SRBMiner)** | Not Running | None | No KRig, SRBMiner, or XMRig processes active on host. |
+| **External Miner (`krig-miner.exe`)** | Active (External) | PID `69988` (Parent `15808`) | Elevated external `krig-miner.exe` session currently running on host. Read-only preflight detects PID `69988` and blocks starting a second miner until operator stops PID `69988`. |
 | **Mining Scheduled Tasks** | None | None | No scheduled tasks for mining detected. |
 | **Mining Windows Services** | None | None | No Windows services for mining detected. |
-| **NVIDIA GPU** | Operational | GeForce RTX 5090 | 600W max power limit, ~50W idle draw, 1% utilization, ~31.5 GB VRAM allocated by LM Studio resident model. |
-| **Resource Coordinator Service**| Inactive on host | Port `1235` (Free) | No host-wide coordinator running. Ephemeral test ports will be used for testing. |
+| **NVIDIA GPU** | Operational | GeForce RTX 5090 | 550W current power limit (~549.8W draw while external PID `69988` mines Pearl), `30,690 MiB` used / `1,498 MiB` free / `32,607 MiB` total VRAM. |
+| **Resource Coordinator Service**| Inactive on host | Port `1235` (Free) | No host-wide coordinator running. Ephemeral test ports used for testing. |
 
 ---
 
@@ -99,5 +99,12 @@
   - **Finding E (`durable_state.py`, `processes.py`, `service.py`, `config.py`):** Persisted `is_manual_override` in `PersistedProcess` across coordinator restarts and prevented `start_miner_on_ready` or normal shutdown `_freeze()` from clobbering operator pause state.
   - Verified full regression suites: **298 passed, 4 skipped** (`resource_coordinator`) and **253 passed, 2 skipped** (`llm_monitor`).
   - Recorded complete audit findings in `ARGON_REVIEW_RESULTS.md`.
+- **Addendum — Supervised Hardware Acceptance Readiness:** COMPLETE.
+  - Refactored `AcceptanceHarness` so every trial executes supervised cleanup in `finally:`, verifying miner and descendant process termination and forcing `status = "FAIL"` if stop verification fails.
+  - Added read-only LM Studio model discovery (`discover_live_model` via `/api/v0/models` with fallback to `/v1/models`), separated mock-only `T05` from live trials (`T01`–`T04`), enforced 10.0s live cooldown, and recorded full PID/create_time/monotonic timing metrics.
+  - Wired per-trial isolated durable journals (`StateCodec.initialize`) and `SingleInstanceLock` ownership into `AcceptanceHarness`.
+  - Added read-only live acceptance preflight (`run_live_acceptance_preflight` and `resource-coordinator preflight --check-live`) checking external miners, lock contention, LM Studio loaded model, and GPU VRAM headroom.
+  - Enforced evidence integrity (`verification_level = "pending_live_verification"` prior to execution; `"live_hardware"` only after un-mocked live execution and verification).
+  - Added 10 fault-injection and readiness tests in `tests/test_supervised_acceptance_readiness.py`; verified full suites: **308 passed, 4 skipped** (`resource_coordinator`) and **253 passed, 2 skipped** (`llm_monitor`).
 
 

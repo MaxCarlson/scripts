@@ -101,6 +101,17 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         help="Use in-memory fake process backends.",
     )
     preflight_parser.add_argument("-j", "--json", action="store_true", help="Output preflight result in JSON format.")
+    preflight_parser.add_argument(
+        "--check-live",
+        action="store_true",
+        help="Run read-only live acceptance preflight (checks external miners, locks, LM Studio model, and GPU VRAM).",
+    )
+    preflight_parser.add_argument(
+        "--min-free-vram-mb",
+        type=float,
+        default=1024.0,
+        help="Minimum free GPU VRAM (MiB) required for live preflight (default: 1024.0).",
+    )
 
     # abort
     abort_parser = subparsers.add_parser(
@@ -479,13 +490,48 @@ def cmd_diagnose(args: argparse.Namespace) -> int:
     return asyncio.run(_async_diagnose(args.config, args.url, args.json))
 
 
-async def _async_preflight(config_path: Optional[str], fake_miner: bool, as_json: bool) -> int:
+async def _async_preflight(
+    config_path: Optional[str],
+    fake_miner: bool,
+    as_json: bool,
+    check_live: bool = False,
+    min_free_vram_mb: float = 1024.0,
+) -> int:
     config = load_config(config_path)
+    if check_live:
+        from resource_coordinator.acceptance_harness import run_live_acceptance_preflight
+
+        live_result = await run_live_acceptance_preflight(config, min_free_vram_mb=min_free_vram_mb)
+        ready = bool(live_result.get("ready_for_supervised_live"))
+        if as_json:
+            print(json.dumps(live_result, indent=2))
+        else:
+            print(f"Live Acceptance Preflight: {'READY' if ready else 'BLOCKED'}")
+            loaded = live_result.get("loaded_model")
+            if loaded:
+                print(
+                    f"  Loaded Model:     {loaded.get('model_id')} "
+                    f"(source: {loaded.get('source')}, context: {loaded.get('loaded_context_length')})"
+                )
+            vram = live_result.get("vram_headroom")
+            if vram:
+                print(
+                    f"  GPU VRAM Free:    {vram.get('free_mb'):.0f} MiB free / "
+                    f"{vram.get('memory_total_mb'):.0f} MiB total "
+                    f"(min required: {vram.get('min_required_free_mb'):.0f} MiB)"
+                )
+            for warn in live_result.get("warnings", []):
+                print(f"  WARNING: {warn}")
+            for reason in live_result.get("blocking_reasons", []):
+                print(f"  BLOCKING: {reason}")
+        return 0 if ready else 1
+
     system = build_system(config, use_fake_processes=fake_miner)
     from resource_coordinator.core.service import CoordinatorService
 
     service = CoordinatorService(system=system)
     passed, messages = service.preflight_check()
+    await system.gateway.close()
     if as_json:
         data = {
             "passed": passed,
@@ -502,7 +548,15 @@ async def _async_preflight(config_path: Optional[str], fake_miner: bool, as_json
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
-    return asyncio.run(_async_preflight(args.config, args.fake_miner, args.json))
+    return asyncio.run(
+        _async_preflight(
+            args.config,
+            args.fake_miner,
+            args.json,
+            check_live=getattr(args, "check_live", False),
+            min_free_vram_mb=getattr(args, "min_free_vram_mb", 1024.0),
+        )
+    )
 
 
 def cmd_abort(args: argparse.Namespace) -> int:

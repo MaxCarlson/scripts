@@ -142,6 +142,8 @@ class MinerManifest:
             cmd = ["pwsh", "-NoProfile", "-File", str(script_path), "-Preview", "-Miner", miner_type]
             if power_limit_watts > 0:
                 cmd.extend(["-PowerLimitWatts", str(power_limit_watts)])
+            if krig_core_clock_mhz > 0 and miner_type == "krig":
+                cmd.extend(["-KrigCoreClockMHz", str(krig_core_clock_mhz)])
             if kryptex_username:
                 cmd.extend(["-KryptexUsername", kryptex_username])
             if worker_name:
@@ -159,7 +161,7 @@ class MinerManifest:
                     proc.stdout,
                     miner_type=miner_type,
                     power_limit_watts=power_limit_watts,
-                    core_clock_mhz=0,
+                    core_clock_mhz=krig_core_clock_mhz if miner_type == "krig" else 0,
                 )
             except Exception as exc:
                 raise RuntimeError(f"Failed running start-prl.ps1 -Preview: {exc}") from exc
@@ -178,6 +180,8 @@ class MinerManifest:
                 "--user",
                 f"{wallet}/{worker}",
             ]
+            if krig_core_clock_mhz > 0:
+                args.extend(["--gpu-cclock", str(krig_core_clock_mhz)])
             if power_limit_watts > 0:
                 args.extend(["--gpu-plimit", str(power_limit_watts)])
         else:
@@ -211,5 +215,5 @@ class MinerManifest:
             arguments=args,
             working_directory=str(exe_path.parent),
             power_limit_watts=power_limit_watts,
-            core_clock_mhz=0,
+            core_clock_mhz=krig_core_clock_mhz if miner_type == "krig" else 0,
         )

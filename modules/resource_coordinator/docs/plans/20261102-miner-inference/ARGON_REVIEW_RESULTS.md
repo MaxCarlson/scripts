@@ -117,11 +117,39 @@ All five defects were:
 | Suite | Command | Result |
 |---|---|---|
 | **Argon Adversarial Review Suite** | `python -m pytest modules/resource_coordinator/tests/test_argon_adversarial_review.py -v` | **10 passed in 8.3s** |
-| **Full Resource Coordinator Suite** | `python -m pytest modules/resource_coordinator/tests` | **298 passed, 4 skipped in 18.15s** |
+| **Supervised Acceptance Readiness Suite** | `python -m pytest modules/resource_coordinator/tests/test_supervised_acceptance_readiness.py -v` | **10 passed in 9.50s** |
+| **Full Resource Coordinator Suite** | `python -m pytest modules/resource_coordinator/tests` | **308 passed, 4 skipped in 25.4s** |
 | **Full LLM Monitor Suite** | `python -m pytest modules/llm_monitor/tests` | **253 passed, 2 skipped in 18.4s** |
 
 ### Host Safety Verification
 - No real `krig-miner.exe` or `SRBMiner-MULTI.exe` processes were launched.
 - No GPU power limits (`nvidia-smi -pl`) or clock settings were modified on the host RTX 5090.
-- Resident LM Studio (`127.0.0.1:1234`), LLM Monitor (`127.0.0.1:8789`, PID `58828`), and OpenCode workers (`47108`, `63836`) remained undisturbed.
+- Resident LM Studio (`127.0.0.1:1234`), LLM Monitor (`127.0.0.1:8789`, PID `58828`), OpenCode workers (`47108`, `63836`), and the user's external `krig-miner.exe` session (PID `69988`) remained undisturbed.
 - Companion repository `C:\Users\mcarls\src\Mining` remained untouched.
+
+---
+
+## 4. Addendum — Supervised Hardware Acceptance Readiness & `origin/main` Divergence Analysis
+
+### 4.1 Six Focused Corrections Implemented
+1. **Guaranteed Cleanup in `finally` (`acceptance_harness.py`):**
+   - Refactored `_run_trial_1` through `_run_trial_5` to always invoke `_cleanup_trial_harness()` inside `finally:`, stopping `CoordinatorService`, verifying `backend.status().state == ProcessState.STOPPED`, and inspecting all recorded Windows `(pid, create_time)` identities and recursive descendants via `psutil`.
+   - Any unverified stop during cleanup forces `t.status = "FAIL"` and records `t.metrics["cleanup_verified_stopped"] = False`.
+2. **Realistic Live Testing & Read-Only Model Discovery (`acceptance_harness.py`):**
+   - Added `discover_live_model()` querying `GET /api/v0/models` first to select a resident `state == "loaded"` LLM/VLM (`qwen38_23GB`), failing closed if no model is loaded so live acceptance never triggers an unintended model swap. Falls back to `GET /v1/models` when `/api/v0/models` returns 404.
+   - Enforced `cooldown_seconds >= 10.0` in `live` mode and separated mock-only synthetic fault injection (`T05`) from live trials (`T01`–`T04`).
+3. **Durable Safety (`acceptance_harness.py`):**
+   - Wired isolated, explicitly initialized per-trial durable journals (`StateCodec.initialize`) and `SingleInstanceLock` ownership into `_build_test_harness()`.
+4. **Correct Failure Behavior & Telemetry (`acceptance_harness.py`):**
+   - Recorded `model_id`, `initial_pid`, `initial_create_time`, `stopped_before_forward_verified`, `observed_exit_during_inference`, `inference_result`, `cooldown_target_seconds`, `cooldown_elapsed_seconds`, `restarted_pid`, `restarted_create_time`, `cleanup_verified_stopped`, and `descendants_verified_stopped` in `TrialEvidence.metrics`.
+5. **Operational Compatibility & Read-Only Live Preflight (`manifest.py`, `acceptance_harness.py`, `cli.py`):**
+   - Updated `MinerManifest.resolve_from_mining_repo()` to pass `-KrigCoreClockMHz` / `--gpu-cclock` when `krig_core_clock_mhz > 0`.
+   - Added `run_live_acceptance_preflight()` and `resource-coordinator preflight --check-live` to perform strictly read-only checks for external miner processes, `SingleInstanceLock` contention, LM Studio loaded models, and GPU VRAM headroom.
+6. **Evidence Integrity (`acceptance_harness.py`):**
+   - Initialized `mode="live"` reports with `verification_level = "pending_live_verification"` and promoted to `"live_hardware"` only after all live trials execute and pass without test overrides.
+
+### 4.2 Remote `origin/main` Divergence Analysis (`109c7ad0..f98dcdb5`)
+- Inspected `origin/main` (10 commits ahead of original base `109c7ad0` from `20261102-managed-monitor-ops`).
+- `git diff --name-status 109c7ad0..origin/main` touches only `modules/llm_monitor/*`, `modules/agent_benchmark/*`, `modules/web_ui_tools/*`, `docs/agent/MANAGED_MONITOR_POLICY.md`, and `docs/plans/20261102-managed-monitor-ops/*`.
+- **Zero overlapping files and zero merge conflicts** exist with `feature/miner-inference-coordination-20261102` (which exclusively modifies `modules/resource_coordinator/*`).
+- No rebase was performed, preserving branch history as instructed.
