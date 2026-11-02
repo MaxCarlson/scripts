@@ -35,6 +35,24 @@ def test_all_suite_read_commands_accept_friendly_flag():
         assert args.llm_friendly is True
 
 
+def test_llm_friendly_plan_preserves_harbor_execution_spec(monkeypatch, capsys):
+    import agent_benchmark.suite_cli as suite_cli
+
+    calls = []
+
+    def fake_build_manifest(**kwargs):
+        calls.append(kwargs)
+        return {"readiness": {"is_runnable": True}}
+
+    monkeypatch.setattr(suite_cli, "build_manifest", fake_build_manifest)
+    base = ["suite", "plan", "-c", "aider-python-10", "-a", "opencode", "-m", "openai/model"]
+    assert main(base) == 0
+    capsys.readouterr()
+    assert main([*base, "-F"]) == 0
+    capsys.readouterr()
+    assert calls[0] == calls[1]
+
+
 def test_external_run_accepts_compact_output_flag():
     args = parser().parse_args(["external", "run", "-F", "-x"])
     assert args.llm_friendly
