@@ -166,7 +166,8 @@ def test_sequential_execution_preserves_accepted_trials_and_retries_invalid_once
     assert row["attempt_history"]
 
 
-def test_monitor_failure_stops_dispatching_further_tasks(tmp_path: Path):
+@pytest.mark.parametrize("error_code", ["MONITOR_CAPTURE_FAILED", "HARBOR_INFRASTRUCTURE_ERROR", "SOURCE_REVISION_MISMATCH"])
+def test_infrastructure_failure_stops_dispatching_further_tasks(tmp_path: Path, error_code: str):
     from agent_benchmark.suite import execute_pending
 
     run = create_run(tmp_path, cohort="aider-python-10", agent="oracle", model=None,
@@ -175,7 +176,7 @@ def test_monitor_failure_stops_dispatching_further_tasks(tmp_path: Path):
 
     def executor(_store, task):
         calls.append(task)
-        return {"status": "infrastructure_invalid", "error_code": "MONITOR_CAPTURE_FAILED"}
+        return {"status": "infrastructure_invalid", "error_code": error_code}
 
     report = execute_pending(run, execute=True, executor=executor)
     assert len(calls) == 1
