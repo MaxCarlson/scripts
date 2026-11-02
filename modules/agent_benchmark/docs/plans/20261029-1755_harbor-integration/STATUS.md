@@ -62,7 +62,7 @@
 - `terminal-bench/terminal-bench@4.0.0` is a separate 66-task release at source tag `v4.0.0` (commit prefix `452bf30`).
 - The five-task default CPU subset belongs to Terminal-Bench 2.0. Published task metadata confirms 1 CPU, 2 GB RAM, and about 10 GB storage for `build-cython-ext`, `regex-log`, `sqlite-db-truncate`, and `nginx-request-logging`. The `log-summary-date-ranges` task page omits resource values; its exact pinned task TOML must be checked before a Terminal-Bench execution. Numeric agent/verifier timeouts are not in the retained native lock.
 - Original Oracle artifacts and original imported report were preserved. Corrected derived report: `reports/harbor/tb-pilot-corrected/`.
-- The Oracle trial scored 0 because `test_pyknotid_repository_tests` failed on inner test `test_reconstructed_space_curve` (17 passed, 1 failed; task verifier 10 passed, 1 failed). This matches the upstream report of `planarity` 1.0.0 breaking pyknotid's `data['pos']` expectation, but this local job did not retain the installed planarity version. Exclude this Oracle score from agent-capability comparisons.
+- The Oracle trial scored 0 because `test_pyknotid_repository_tests` failed on inner test `test_reconstructed_space_curve` (17 passed, 1 failed; task verifier 10 passed, 1 failed). This failure signature is consistent with the known upstream `pyknotid`/`planarity` compatibility problem (where `planarity` 1.0.0 caused pyknotid `KeyError: 'pos'`), but the preserved local trial artifacts did not retain the installed package version. Do not claim an unobserved exact package version; exclude this Oracle score from agent-capability comparisons.
 
 ## Next Action
 - Obtain explicit authorization before any Codex or Antigravity inference that may use cloud or paid service. Then run a one-task compatibility pilot from the frozen ten-task set and, if valid, continue with the remaining tasks under the documented protocol; do not alter the task set or verifier.
@@ -87,3 +87,17 @@
 3. Obtain explicit authorization and freeze OpenCode local-worker settings before any expanded local inference. Begin with one bounded compatibility task; review resource use and multilingual task-image behavior before requesting full-suite authorization.
 4. Obtain separate authorization before Codex or Antigravity inference. Compare first on the exact frozen ten-task cohort, keeping model identity, billing route, tools, and task outcomes explicit.
 5. Do not claim complete 225-task runnability until image builds/verifiers are exercised; do not report a 225-task aggregate until the manifest-scoped cross-batch rollup exists.
+
+## Final Review Hardening and Merge Readiness (2026-11-01)
+- **Issue A (Agent Configuration Defaults)**: Addressed default model and base-url routing in `planner.py`, `runner.py`, and `cli.py`. Prevented cloud and reference agents (`codex`, `antigravity-cli`, `oracle`, `nop`) from silently inheriting local Qwen defaults (`qwen38_23GB` and `http://host.docker.internal:1234/v1`). Preflight checks now detect missing API credentials (e.g., `OPENAI_API_KEY`, `GEMINI_API_KEY`, `ANTHROPIC_API_KEY`) as runnable blockers. Non-model agents (`oracle`, `nop`) omit `--model` and `--base-url`.
+- **Issue B (Nonzero Harbor Process Exits)**: Updated runner exit handling to validate job outcome before accepting artifacts. Exits with nonzero return codes fail closed if trials are incomplete or if `result.json` is missing or unparseable. Successfully completed runs with nonzero exits log a warning and record `harbor_process_returncode` in environment attributes, run metadata, and summary metrics.
+- **Issue C (Dependency Declaration)**: Added explicit direct dependency `pydantic>=2.0,<3` to `modules/agent_benchmark/pyproject.toml`.
+- **Issue D (Oracle Limitation Alignment)**: Documented that the Terminal-Bench Oracle failure on `build-cython-ext` is consistent with the upstream `pyknotid`/`planarity` regression without claiming an unobserved installed version.
+- **Verification Summary**:
+  - Harbor-focused tests: **47 passed, 0 failed**
+  - Full `modules/agent_benchmark` regression: **458 passed, 3 skipped**
+  - Full `modules/benchmark_core` regression: **116 passed, 1 skipped**
+  - Ruff lint: **All checks passed**
+  - Wheel packaging: **agent_benchmark-1.20.0-py3-none-any.whl built successfully**
+  - CLI smoke tests: `external list`, `external plan` (`codex`, `oracle`, `qwen-coder`), and `external report` verified
+- **Merge Readiness Recommendation**: **READY TO MERGE** into `main`. All functional, safety, and documentation requirements are satisfied. Branch is ahead of origin by local hardening commits; awaiting explicit user authorization prior to push or merge.

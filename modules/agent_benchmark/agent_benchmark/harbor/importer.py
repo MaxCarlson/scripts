@@ -84,6 +84,8 @@ class HarborImporter:
         job_result: HarborJobResult,
         job_lock: HarborJobLock | None,
         harbor_trials: list[HarborTrialResult],
+        *,
+        process_returncode: int = 0,
     ) -> tuple[RunInfo, list[TrialResult], dict[str, Any]]:
         """Normalize Harbor data into canonical RunInfo and TrialResult records."""
         task_digests = job_lock.task_digests() if job_lock else {}
@@ -379,6 +381,7 @@ class HarborImporter:
                 "source_job_dir": str(self.job_dir),
                 "dataset_source_repo": dataset_source_repo,
                 "dataset_source_revision": dataset_source_revision,
+                "harbor_process_returncode": process_returncode,
             },
             metadata={
                 "harbor_job_id": str(job_result.id),
@@ -391,6 +394,7 @@ class HarborImporter:
                 "task_content_fingerprints": task_fingerprints,
                 "n_total_trials": job_result.n_total_trials,
                 "importer": "agent_benchmark.harbor.importer",
+                "harbor_process_returncode": process_returncode,
             },
         )
 
@@ -426,18 +430,24 @@ class HarborImporter:
             "pass_rate_pct": round(pass_rate, 2),
             "coverage_pct": round(coverage, 2),
             "median_wall_time_ms": round(median_wall, 2) if median_wall is not None else None,
+            "harbor_process_returncode": process_returncode,
         }
 
         return run_info, canonical_trials, summary_data
 
-    def import_to(self, output_dir: Path | str) -> tuple[Path, dict[str, Any]]:
+    def import_to(
+        self,
+        output_dir: Path | str,
+        *,
+        process_returncode: int = 0,
+    ) -> tuple[Path, dict[str, Any]]:
         """Import Harbor job results to target destination directory idempotently."""
         out_dir = Path(output_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
 
         job_result, job_lock, harbor_trials = self.load_job()
         run_info, canonical_trials, summary_data = self.normalize(
-            job_result, job_lock, harbor_trials
+            job_result, job_lock, harbor_trials, process_returncode=process_returncode
         )
 
         # Save run.json (overwrite allowed for idempotent reimport)

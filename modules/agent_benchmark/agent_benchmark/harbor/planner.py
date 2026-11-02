@@ -17,12 +17,16 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_model": False,
         "requires_docker": True,
         "requires_credentials": False,
+        "default_model": "none",
+        "default_base_url": None,
     },
     "nop": {
         "description": "No-op baseline agent (produces empty/unmodified submission)",
         "requires_model": False,
         "requires_docker": True,
         "requires_credentials": False,
+        "default_model": "none",
+        "default_base_url": None,
     },
     "codex": {
         "description": "OpenAI Codex CLI adapter",
@@ -30,6 +34,8 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": True,
         "env_var": "OPENAI_API_KEY",
+        "default_model": "default",
+        "default_base_url": None,
     },
     "antigravity-cli": {
         "description": "Google Antigravity CLI coding agent",
@@ -37,6 +43,8 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": True,
         "env_var": "GEMINI_API_KEY",
+        "default_model": "default",
+        "default_base_url": None,
     },
     "antigravity-sdk": {
         "description": "Google Antigravity Python SDK agent",
@@ -44,24 +52,32 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": True,
         "env_var": "GEMINI_API_KEY",
+        "default_model": "default",
+        "default_base_url": None,
     },
     "opencode": {
         "description": "OpenCode local bridge worker",
         "requires_model": True,
         "requires_docker": True,
         "requires_credentials": False,
+        "default_model": "default",
+        "default_base_url": None,
     },
     "qwen-coder": {
         "description": "Qwen Code local agent via OpenAI-compatible endpoint",
         "requires_model": True,
         "requires_docker": True,
         "requires_credentials": False,
+        "default_model": "qwen38_23GB",
+        "default_base_url": "http://host.docker.internal:1234/v1",
     },
     "aider": {
         "description": "Aider coding assistant CLI adapter",
         "requires_model": True,
         "requires_docker": True,
         "requires_credentials": True,
+        "default_model": "default",
+        "default_base_url": None,
     },
     "claude-code": {
         "description": "Anthropic Claude Code CLI adapter",
@@ -69,6 +85,8 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
         "requires_docker": True,
         "requires_credentials": True,
         "env_var": "ANTHROPIC_API_KEY",
+        "default_model": "default",
+        "default_base_url": None,
     },
 }
 
@@ -137,7 +155,7 @@ def check_harbor_readiness() -> tuple[bool, str | None]:
 
 
 def verify_agent_readiness(agent_name: str) -> tuple[bool, str]:
-    """Check if agent is supported by Harbor and if required environment settings exist."""
+    """Check if agent is supported by Harbor and describe its configuration requirements."""
     agent_norm = agent_name.lower().strip()
     if agent_norm not in SUPPORTED_HARBOR_AGENTS:
         valid_agents = sorted(SUPPORTED_HARBOR_AGENTS.keys())
@@ -146,9 +164,44 @@ def verify_agent_readiness(agent_name: str) -> tuple[bool, str]:
     meta = SUPPORTED_HARBOR_AGENTS[agent_norm]
     env_var = meta.get("env_var")
     if env_var and not os.environ.get(env_var):
-        return True, f"Agent supported; credentials in ${env_var} not set in host environment (may require auth at runtime)"
+        return True, f"Agent supported; credentials in ${env_var} not set in host environment (required for cloud inference)"
 
     return True, f"Agent supported: {meta['description']}"
+
+
+def check_agent_configuration_blockers(
+    agent_name: str,
+    *,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> list[str]:
+    """Identify invalid or missing configuration parameters for a given agent."""
+    agent_norm = agent_name.lower().strip()
+    if agent_norm not in SUPPORTED_HARBOR_AGENTS:
+        return [f"Unsupported Harbor agent {agent_name!r}"]
+
+    meta = SUPPORTED_HARBOR_AGENTS[agent_norm]
+    blockers: list[str] = []
+
+    # 1. Agents that do not accept a model
+    if not meta.get("requires_model") and model is not None and model not in ("none", "default"):
+        blockers.append(f"Agent {agent_name!r} does not accept a model parameter (received {model!r})")
+
+    # 2. Agents that do not accept a base URL
+    if agent_norm in ("oracle", "nop") and base_url is not None:
+        blockers.append(f"Agent {agent_name!r} does not accept an inference base-url parameter (received {base_url!r})")
+
+    # 3. Agents requiring credentials when not routing to a custom base_url
+    if meta.get("requires_credentials") and not base_url:
+        env_var = meta.get("env_var")
+        if env_var and not os.environ.get(env_var):
+            blockers.append(f"Credentials in ${env_var} must be set in environment for {agent_name} cloud execution")
+
+    # 4. Local qwen-coder requires a base URL
+    if agent_norm == "qwen-coder" and not base_url:
+        blockers.append("qwen-coder requires --base-url pointing to an OpenAI-compatible endpoint")
+
+    return blockers
 
 
 @dataclass(frozen=True)
@@ -196,8 +249,8 @@ def plan_benchmark(
     dataset_name: str = "aider-polyglot",
     *,
     agent: str = "qwen-coder",
-    model: str = "qwen38_23GB",
-    base_url: str | None = "http://host.docker.internal:1234/v1",
+    model: str | None = None,
+    base_url: str | None = None,
     task_ids: Sequence[str] | None = None,
     language: str | None = None,
     count: int | None = None,
@@ -206,6 +259,22 @@ def plan_benchmark(
 ) -> BenchmarkPlan:
     """Resolve tasks, check readiness, and produce an immutable non-executing BenchmarkPlan."""
     descriptor = resolve_dataset(dataset_name)
+
+    agent_norm = agent.lower().strip()
+    if agent_norm not in SUPPORTED_HARBOR_AGENTS:
+        valid_agents = sorted(SUPPORTED_HARBOR_AGENTS.keys())
+        raise ValueError(f"Unsupported Harbor agent {agent!r}. Supported: {valid_agents}")
+
+    meta = SUPPORTED_HARBOR_AGENTS[agent_norm]
+
+    # Resolve agent-appropriate defaults when not explicitly provided
+    effective_model = model if model is not None else meta.get("default_model", "default")
+    effective_base_url = base_url if base_url is not None else meta.get("default_base_url")
+
+    if not meta.get("requires_model") and model is None:
+        effective_model = "none"
+    if agent_norm in ("oracle", "nop") and base_url is None:
+        effective_base_url = None
 
     selected = select_tasks(
         descriptor,
@@ -225,6 +294,9 @@ def plan_benchmark(
     harbor_ok, harbor_ver = check_harbor_readiness()
     docker_ok, docker_msg = check_docker_readiness()
     agent_ok, agent_msg = verify_agent_readiness(agent)
+    agent_blockers = check_agent_configuration_blockers(
+        agent, model=model, base_url=effective_base_url
+    )
 
     blockers: list[str] = []
     if not harbor_ok:
@@ -233,6 +305,7 @@ def plan_benchmark(
         blockers.append(f"Docker is required for external benchmark isolation: {docker_msg}")
     if not agent_ok:
         blockers.append(agent_msg)
+    blockers.extend(agent_blockers)
 
     readiness = ReadinessCheck(
         harbor_installed=harbor_ok,
@@ -250,8 +323,8 @@ def plan_benchmark(
         dataset=descriptor,
         selected_tasks=tuple(selected),
         agent=agent,
-        model=model,
-        base_url=base_url,
+        model=effective_model,
+        base_url=effective_base_url,
         repetitions=repetitions,
         seed=seed,
         language_filter=language,

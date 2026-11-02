@@ -1,18 +1,19 @@
-# Current checkpoint: Harbor baseline complete and dataset provenance corrected (2026-10-30)
+# Current checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
 baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.
 Active plan & full handoff: [`plans/20261029-1755_harbor-integration/HANDOFF.md`](plans/20261029-1755_harbor-integration/HANDOFF.md)
 and [`STATUS.md`](plans/20261029-1755_harbor-integration/STATUS.md).
 
-Current tracked changes in this worktree include the dataset identity fix and regression coverage; baseline evidence remains untracked under `.harbor-jobs/` and `reports/` and is intentionally preserved.
-
+Final review hardening completed:
+- **Agent configuration defaults (Issue A)**: Fixed default resolution and configuration validation in planner and runner. Cloud agents (`codex`, `antigravity-cli`) and reference agents (`oracle`, `nop`) do not inherit local Qwen model (`qwen38_23GB`) or local endpoint (`http://host.docker.internal:1234/v1`). Missing cloud credentials block execution. Non-model agents omit `--model` and `--base-url`.
+- **Nonzero Harbor process exits (Issue B)**: Runner validates completed vs incomplete/corrupted trials on nonzero exit codes. Incomplete/unparseable jobs fail closed. Completed runs with nonzero exits log a warning and record `harbor_process_returncode` in run metadata and summary metrics.
+- **Direct dependency (Issue C)**: Declared `pydantic>=2.0,<3` directly in `pyproject.toml`.
+- **Oracle limitation alignment (Issue D)**: Terminal-Bench Oracle failure on `build-cython-ext` documented as consistent with upstream `pyknotid`/`planarity` regression without asserting an unobserved installed version.
 - **Phase C baseline:** 7/10 points (70%), 10/10 scored coverage, zero canonical infrastructure errors; sequential separate jobs, one attempt, zero retries. Frozen task/config provenance is in `reports/harbor/qwen-baseline-10/baseline-manifest.json`; outcomes and token analysis are in `baseline-summary.md`.
-- **Interrupted aggregate attempt:** one Qwen React task failed in Harbor's UTF-8 session parsing and nine tasks were pending. Its native job and import are retained but excluded from the baseline. The ten canonical runs completed separately.
-- **Terminal-Bench catalog:** the 89-task pilot used Terminal-Bench 2.0 from `laude-institute/terminal-bench-2` at commit `69671fbaac6d67a7ef0dfec016cc38a64ef7a77c`; the genuine 66-task 4.0 release is separately registered. The original Oracle job/report remain unchanged. Corrected derived report is `reports/harbor/tb-pilot-corrected/` and identifies the actual 2.0 source.
-- **Oracle limitation:** `build-cython-ext` returned reward 0 due the upstream pyknotid test failing (`test_reconstructed_space_curve`; inner suite 17 passed/1 failed, task verifier 10 passed/1 failed). This matches the upstream `planarity` dependency regression report; this run did not retain the installed package version, so do not use it as an agent capability score.
-- **Validation:** Harbor-focused suite: 37 passed after the provenance changes. The earlier baseline regression evidence is documented in the plan status. Do not claim a fresh full package regression or lint run for this addendum.
-- **Next action:** compare Codex and Antigravity on the frozen Aider set only after explicit authorization for their external inference. Protocol and commands are in `reports/harbor/qwen-baseline-10/comparison-protocol.md`.
+- **Terminal-Bench catalog:** 89-task Terminal-Bench 2.0 and genuine 66-task 4.0 release registered as distinct identities. Corrected derived report is in `reports/harbor/tb-pilot-corrected/`.
+- **Validation:** 47 Harbor-focused tests passed; 458 Agent Benchmark tests passed (3 skipped); 116 Benchmark Core tests passed (1 skipped); Ruff passed; wheel packaging verified; CLI smoke tests verified.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
 
 # Current checkpoint: safe pending receipt recovery and configurable runtime RAM percentage
 

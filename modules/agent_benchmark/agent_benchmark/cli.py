@@ -411,10 +411,10 @@ def parser() -> argparse.ArgumentParser:
         "-a", "--agent", default="qwen-coder", help="Agent implementation (e.g. qwen-coder, codex, antigravity-cli, opencode, oracle)"
     )
     ext_plan.add_argument(
-        "-m", "--model", default="qwen38_23GB", help="Exact model identifier"
+        "-m", "--model", default=None, help="Exact model identifier (default: qwen38_23GB for qwen-coder)"
     )
     ext_plan.add_argument(
-        "-u", "--base-url", default="http://host.docker.internal:1234/v1", help="Inference API base URL for agent"
+        "-u", "--base-url", default=None, help="Inference API base URL for agent (default: http://host.docker.internal:1234/v1 for qwen-coder)"
     )
     ext_plan.add_argument(
         "-t", "--task", action="append", help="Specific task ID (repeatable)"
@@ -449,10 +449,10 @@ def parser() -> argparse.ArgumentParser:
         "-a", "--agent", default="qwen-coder", help="Agent implementation"
     )
     ext_run.add_argument(
-        "-m", "--model", default="qwen38_23GB", help="Exact model identifier"
+        "-m", "--model", default=None, help="Exact model identifier (default: qwen38_23GB for qwen-coder)"
     )
     ext_run.add_argument(
-        "-u", "--base-url", default="http://host.docker.internal:1234/v1", help="Inference API base URL for agent"
+        "-u", "--base-url", default=None, help="Inference API base URL for agent (default: http://host.docker.internal:1234/v1 for qwen-coder)"
     )
     ext_run.add_argument(
         "-t", "--task", action="append", help="Specific task ID (repeatable)"
@@ -927,9 +927,11 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
             tbl = Table(headers=["Property", "Value"], style="dash")
             tbl.add_row("Dataset", f"{plan.dataset.id} ({plan.dataset.version})")
             tbl.add_row("Agent", plan.agent)
-            tbl.add_row("Model", plan.model)
+            tbl.add_row("Model", plan.model if plan.model != "none" else "None (not required)")
             if plan.base_url:
                 tbl.add_row("Base URL", plan.base_url)
+            else:
+                tbl.add_row("Base URL", "Default (upstream API)")
             tbl.add_row("Selected Tasks", str(len(plan.selected_tasks)))
             tbl.add_row("Repetitions", str(plan.repetitions))
             tbl.add_row("Total Projected Trials", str(plan.projected_trials))

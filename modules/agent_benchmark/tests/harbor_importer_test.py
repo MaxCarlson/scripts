@@ -402,4 +402,17 @@ def test_import_authentic_harbor_artifact(tmp_path: Path):
     assert run_info.suite_version == "1.0.0"
     assert run_info.metadata["harbor_package_version"] == "0.25.0"
 
+def test_import_with_process_returncode(tmp_path: Path):
+    job_dir = _create_mock_harbor_job(tmp_path)
+    out_dir = tmp_path / "imported_rc_run"
 
+    importer = HarborImporter(job_dir)
+    saved_dir, summary = importer.import_to(out_dir, process_returncode=2)
+
+    assert summary["harbor_process_returncode"] == 2
+    run_info = load_run_info(out_dir / "run.json")
+    assert run_info.environment["harbor_process_returncode"] == 2
+    assert run_info.metadata["harbor_process_returncode"] == 2
+
+    hs = json.loads((out_dir / "harbor_summary.json").read_text(encoding="utf-8"))
+    assert hs["harbor_process_returncode"] == 2

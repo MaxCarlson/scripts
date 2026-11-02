@@ -10,9 +10,14 @@ import subprocess
 from typing import Any
 from uuid import uuid4
 
+import json
+import logging
 from ..state import command_lock
 from .importer import HarborImporter
+from .models import HarborJobResult, JobStats
 from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readiness
+
+logger = logging.getLogger(__name__)
 
 
 class ExecutionAuthorizationError(RuntimeError):
@@ -46,10 +51,10 @@ def build_harbor_command(
         raise ValueError(f"Dataset {plan.dataset.id!r} has no Harbor registry identity")
     cmd.extend(["--dataset", harbor_ds])
     cmd.extend(["--agent", plan.agent])
-    if plan.model and plan.model != "default":
+    if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
 
-    if plan.base_url and plan.agent != "oracle":
+    if plan.base_url and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--base-url", plan.base_url])
 
     for task_id in plan.selected_tasks:
@@ -93,6 +98,12 @@ def execute_harbor_run(
             "Use 'agent-bench external plan' to inspect without execution."
         )
 
+    # Preflight 0: Blockers
+    if not plan.readiness.is_runnable:
+        raise PreflightCheckError(
+            f"Cannot execute benchmark due to readiness blockers: {"; ".join(plan.readiness.blockers)}"
+        )
+
     # Preflight 1: Docker
     docker_ok, docker_msg = check_docker_readiness()
     if not docker_ok:
@@ -127,7 +138,7 @@ def execute_harbor_run(
     )
 
     run_env = os.environ.copy()
-    if "OPENAI_API_KEY" not in run_env:
+    if plan.agent == "qwen-coder" and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
 
     with command_lock(state):
@@ -142,26 +153,60 @@ def execute_harbor_run(
         except (KeyboardInterrupt, Exception) as exc:
             raise RuntimeError(f"Harbor run interrupted or aborted: {exc}") from exc
 
-    if proc.returncode != 0 and not (job_dir.is_dir() and (job_dir / "result.json").is_file()):
-        raise RuntimeError(
-            f"Harbor evaluation process failed with exit code {proc.returncode}"
-        )
-
     # Validate that job directory exists
     if not job_dir.is_dir():
         raise RuntimeError(
-            f"Harbor job directory was not created: {job_dir}"
+            f"Harbor evaluation process failed with exit code {proc.returncode} and produced no job directory: {job_dir}"
+            if proc.returncode != 0
+            else f"Harbor job directory was not created: {job_dir}"
         )
 
     result_file = job_dir / "result.json"
     if not result_file.is_file():
         raise RuntimeError(
-            f"No result.json was produced in {job_dir}"
+            f"Harbor evaluation process failed with exit code {proc.returncode} and produced no result.json in {job_dir}"
+            if proc.returncode != 0
+            else f"No result.json was produced in {job_dir}"
+        )
+
+    # If Harbor exited with a nonzero returncode, inspect the result artifact before accepting
+    if proc.returncode != 0:
+        try:
+            job_data = json.loads(result_file.read_text(encoding="utf-8"))
+            job_res = HarborJobResult.model_validate(job_data)
+        except Exception as exc:
+            raise RuntimeError(
+                f"Harbor evaluation process failed with exit code {proc.returncode} "
+                f"and produced an unparseable result.json: {exc}"
+            ) from exc
+
+        actual_trials = len(job_res.trial_results)
+        expected_trials = plan.projected_trials
+        pending_trials = 0
+        running_trials = 0
+        if isinstance(job_res.stats, JobStats):
+            pending_trials = job_res.stats.n_pending_trials
+            running_trials = job_res.stats.n_running_trials
+        elif isinstance(job_res.stats, dict):
+            pending_trials = job_res.stats.get("n_pending_trials", 0)
+            running_trials = job_res.stats.get("n_running_trials", 0)
+
+        if actual_trials < expected_trials or pending_trials > 0 or running_trials > 0:
+            raise RuntimeError(
+                f"Harbor evaluation process failed with exit code {proc.returncode} "
+                f"leaving job incomplete ({actual_trials}/{expected_trials} trials recorded, "
+                f"{pending_trials} pending, {running_trials} running)"
+            )
+
+        logger.warning(
+            "Harbor evaluation process exited with nonzero code %d, but all %d projected trials completed.",
+            proc.returncode,
+            expected_trials,
         )
 
     # Import the job artifacts
     importer = HarborImporter(job_dir)
     target_dir = resolved_output_dir / job_dir.name
-    saved_dir, summary = importer.import_to(target_dir)
+    saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
 
     return saved_dir, summary

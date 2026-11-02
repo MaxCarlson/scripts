@@ -59,3 +59,13 @@
 ## Remaining Comparative Evaluations
 - [x] Prepare the identical-task Codex and Antigravity protocol and commands (no cloud inference executed)
 - [ ] Execute Codex and Antigravity against the frozen task set after explicit inference authorization
+
+## Stage F: Final Review Hardening & Merge Readiness
+- [x] Issue A: Agent-specific configuration defaults and cloud credential validation in planner and runner (prevent silent leakage of local Qwen model/base-url to codex, antigravity-cli, oracle, nop)
+- [x] Issue B: Nonzero Harbor process exit handling (distinguish completed vs incomplete/corrupt runs, fail closed on incomplete/unparseable runs, record harbor_process_returncode in run info/summary)
+- [x] Issue C: Declare explicit direct dependency `pydantic>=2.0,<3` in `pyproject.toml`
+- [x] Issue D: Align Terminal-Bench Oracle documentation regarding pyknotid/planarity upstream failure without claiming unobserved installed version
+- [x] Verify Harbor test suite: 47 passed (0 failed)
+- [x] Full module regression: `agent_benchmark` 458 passed, 3 skipped; `benchmark_core` 116 passed, 1 skipped
+- [x] Static checks: `ruff check` all passed; `git diff --check` passed
+- [x] Packaging verification: Wheel build succeeds cleanly
