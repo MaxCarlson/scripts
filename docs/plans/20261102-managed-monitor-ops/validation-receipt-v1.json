@@ -43,7 +43,17 @@
       "failed": 0
     },
     {
-      "name": "agent_benchmark_suite_tests",
+      "name": "agent_benchmark_full_test_suite",
+      "command": "python -m pytest modules/agent_benchmark/tests -q",
+      "exit_code": 0,
+      "state": "passed",
+      "total": 574,
+      "passed": 568,
+      "skipped": 6,
+      "failed": 0
+    },
+    {
+      "name": "agent_benchmark_managed_ops_focused_tests",
       "command": "python -m pytest modules/agent_benchmark/tests/suite_doctor_test.py modules/agent_benchmark/tests/suite_recovery_test.py modules/agent_benchmark/tests/adversarial_incident_test.py modules/agent_benchmark/tests/suite_cli_test.py modules/agent_benchmark/tests/suite_monitor_test.py -q",
       "exit_code": 0,
       "state": "passed",
@@ -53,6 +63,18 @@
       "failed": 0
     }
   ],
+  "totals_summary": {
+    "modules_tested": [
+      "modules/agent_benchmark",
+      "modules/llm_monitor",
+      "modules/web_ui_tools",
+      "modules/runmux (web lifecycle)"
+    ],
+    "grand_total_passed": 881,
+    "grand_total_skipped": 9,
+    "grand_total_failed": 0,
+    "reconciliation_note": "Reconciled previous 364/365 reporting discrepancy: 364 was the sum of llm_monitor (266) + web_ui_tools (14) + runmux web (33) + focused agent_benchmark suite tests (51). The full agent_benchmark module suite contains 568 passed tests (6 skipped), bringing the grand total across all affected modules to 881 passed and 9 skipped."
+  },
   "adversarial_incidents_verified": [
     {
       "incident": "Foreign listener on port",
