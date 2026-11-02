@@ -1,33 +1,38 @@
-# P03/P04 Handoff
+# P05/P06 Handoff: Feature Registry, Configuration Compiler, and Safe Apply Engine
 
 ## Summary
-- **Goal:** Offline experimental identity and evidence contract foundation.
-- **Branch:** `agent/local-inference-p03p04-20261102`
-- **Base Commit:** `d4c6b1fbbbc71291f6bea6b848e8b309e80d18d7`
-- **Location:** `experiments/local_inference_optimization`
+- **Goal:** Offline feature registry (P05) and deterministic configuration compiler with safe, disabled-by-default application and rollback infrastructure (P06).
+- **Branch:** `agent/local-inference-p05p06-20261102`
+- **Base Commit:** `9273e0c2d85ea9c4ef83319e30c579920ea90974` (local `main` containing integrated P03/P04 contracts at `0c7bfa51c569c2eb8d9ce113ba115fc45a2fbf60`)
+- **Package:** `experiments/local_inference_optimization`
 
-## Implemented Contracts & Adapters
-1. **Experiment Identity (`lio-experiment-v1`):** Versioned, canonical fingerprinting (`experiment_fingerprint`), dimension permutation invariance, study and task-set digest binding, strict control parameter types.
-2. **Variant Identity (`lio-variant-v1`):** Configuration fingerprinting (`variant_fingerprint`), strict separation of path vs content digest, weak vs verified model identity enforcement (`has_verified_model_digest`).
-3. **Trial Identity (`lio-trial-v1`):** Execution identification separate from variant/configuration hashes, run/trial ID validation, git source revision binding.
-4. **Evidence & Provenance (`lio-evidence-v1`):** Distinct lifecycle stages (`requested`, `planned`, `observed`, `effective`), strict verification gating for effective settings (correlated runtime observation, backend identity/version, artifact receipt), explicit unknown/unsupported handling, privacy allowlisting (rejecting credentials, headers, raw prompts/responses).
-5. **Adapters (`adapters.py`):**
-   - `legacy_profile_requests`: Read-only mapping of `opencode-inference-profile-v1` to `requested` stage only.
-   - `monitor_request_observations`: Normalization of correlated `llm_monitor` request telemetry to `observed` stage only.
-   - `benchmark_metric`: Extraction of numerical/quality metrics from `benchmark_core.models.MetricValue`.
+## Implemented Deliverables
 
-## Documentation
-- `README.md`: Module architecture, contract semantics, security and privacy boundaries.
-- `DOWNSTREAM_CONTRACTS.md`: Detailed P05 Feature Registry and P06 Configuration Compiler / Apply specifications.
-- `EXPERIMENT_PROTOCOL.md`: Pre-registration rules, comparison types, and statistical methodology.
-- `COMPARISON_CONDITIONS.md`: Conditions for valid comparative analysis and comparability criteria.
+### 1. P05 Feature Registry (`registry.py`)
+- **Schema:** `lio-feature-def-v1`
+- **Class:** `FeatureRegistry`
+- **Catalog:** Standard definitions for `context`, `output_limit`, `temperature`, `top_p`, `top_k`, `batch_size`, `flash_attention`, `gpu_kv_cache`, `reasoning`, `speculation_mode`, and `max_draft_tokens`.
+- **Validation:** Strict parameter typing, bounds checking, string enums, dependency DAG resolution, conflict prevention, and capability requirements.
 
-## Verification
-- **Test Suite:** 46 passed in `experiments/local_inference_optimization/tests/contracts_test.py`.
-- **Linter & Formatter:** `ruff check` and `ruff format --check` clean.
-- **Safety Invariants:** All tests run offline with synthetic fixtures; socket/subprocess operations blocked; no runtime services, models, or read-only modules modified.
+### 2. P06 Configuration Compiler (`compiler.py`)
+- **Schema:** `lio-plan-v1`
+- **Function:** `compile_plan(variant, backend_info, backend_capabilities)`
+- **Pipeline:** Validates variant against registry, gates on backend capabilities, maps parameters to specific backend APIs (`lmstudio_rest_v1`, `lmstudio_openai_v1`, `opencode_v1`), separates load-time from request-time operations, and computes deterministic canonical plan fingerprint (`plan_sha256`).
+- **Safety Invariant:** All planned operations have `stage: "planned"`. The compiler never emits `stage: "effective"` observations.
+- **Baseline Equivalence:** `is_baseline_equivalent()` proves whether a plan produces no deltas against baseline. Missing baseline reference is explicitly reported.
 
-## Remaining Dependencies
-- P02 untouched baseline capture and manifest sealing remain external prerequisites for live comparisons.
-- P07 live parity recovery and runtime sign-off remain external gates before activating optimization interventions.
-- P05 and P06 owners will implement the feature registry and compiler based on `DOWNSTREAM_CONTRACTS.md`.
+### 3. P06 Safe Offline Apply and Rollback Engine (`apply.py`)
+- **Schema:** `lio-receipt-v1`
+- **Functions:** `apply_plan_to_target()`, `rollback_transaction()`, `validate_receipt()`
+- **Guards:** Disabled by default (`authorized=False`). Tested exclusively against isolated temporary fixture files. Never touches live runtime configs.
+- **Drift Protection:** Detects pre-apply and pre-rollback target state drift and aborts without overwriting external edits.
+
+## Validation Evidence
+- **Total Test Count:** **75 tests passing** (46 P03/P04 baseline + 12 registry + 10 compiler + 7 apply/rollback).
+- **Ruff & Format:** Clean (0 linter errors, all files formatted).
+- **Git Whitespace:** Clean (`git diff --check` passes with 0 errors).
+- **Service Isolation:** Socket and subprocess operations mocked/blocked; LM Studio and OpenCode runtimes completely untouched.
+
+## Remaining Gates & Next Steps
+- **P07 Gate:** No-op parity recovery and runtime sign-off remain required before live execution.
+- **P08+ Work:** Individual parameter optimization modules can now build upon `FeatureRegistry` and `compile_plan()`.
