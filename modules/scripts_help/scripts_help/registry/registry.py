@@ -289,9 +289,9 @@ REGISTRY: dict = {
             {
                 "name": "agent-bench (module)",
                 "path": "modules/agent_benchmark",
-                "desc": "Independently verify local coding workers with guarded execution and canonical reports",
+                "desc": "Plan, execute, recover, and report persistent Harbor benchmark cohorts with monitored and compact CLI modes",
                 "help_cmd": ["agent-bench", "--help"],
-                "version": "1.0.0",
+                "version": "1.21.0",
             },
             {
                 "name": "local-agent (module)",

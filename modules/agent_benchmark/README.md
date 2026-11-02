@@ -249,3 +249,7 @@ agent-bench external report -o reports/harbor --format markdown
 - **Failures & Timeouts**: Budget expirations (`AgentTimeoutError`) are classified as `timed_out` (0.0 points). Container or model-provider crashes are classified as `infrastructure_error` (points `unavailable`).
 - **Isolation Scope**: External verification does not assert internal strict-scope compliance; `scope_compliance` is explicitly recorded as `unavailable`.
 - **Idempotent Import**: Reimporting the same Harbor job updates records cleanly without generating duplicate trial IDs.
+
+### Persistent Suite CLI
+
+See [the suite CLI command reference](docs/suite-cli.md) for cohorts, monitored and unmonitored runs, background status and resume, compact output, evidence paths, and the fully monitored frozen ten-task replay command.

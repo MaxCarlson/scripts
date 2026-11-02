@@ -110,6 +110,16 @@ def test_build_harbor_command_uses_dataset_registry_identity():
     assert "build-cython-ext" in cmd
 
 
+def test_build_harbor_command_uses_the_preverified_registry_snapshot(tmp_path: Path):
+    plan = plan_benchmark("aider/aider-polyglot", agent="oracle", task_ids=["polyglot_python_beer-song"])
+    registry = tmp_path / "registry.json"
+    registry.write_text("{}", encoding="utf-8")
+
+    cmd = build_harbor_command(plan, jobs_dir=tmp_path / "jobs", registry_path=registry)
+
+    assert cmd[cmd.index("--registry-path") + 1] == str(registry.resolve())
+
+
 def test_build_harbor_command_keeps_terminal_bench_4_separate():
     plan = plan_benchmark(
         "terminal-bench/terminal-bench@4.0.0",

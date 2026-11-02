@@ -482,6 +482,8 @@ def parser() -> argparse.ArgumentParser:
     ext_run.add_argument(
         "--format", choices=("table", "json"), default="table"
     )
+    ext_run.add_argument("-F", "--llm-friendly", action="store_true",
+                         help="Suppress live Harbor output and emit a compact summary")
 
     # external import
     ext_import = ext_actions.add_parser(
@@ -516,6 +518,8 @@ def parser() -> argparse.ArgumentParser:
         "--format", choices=("table", "json", "markdown"), default="table"
     )
 
+    from .suite_cli import add_suite_parser
+    add_suite_parser(actions)
     return root
 
 
@@ -956,19 +960,30 @@ def _handle_external(args: argparse.Namespace, parser: argparse.ArgumentParser) 
                 repetitions=args.repetitions,
                 seed=args.seed,
             )
-            saved_dir, summary = execute_harbor_run(
-                plan,
-                execute=args.execute,
-                output_dir=args.output_dir,
-                jobs_dir=args.jobs_dir,
-                state_dir=getattr(args, "state_dir", None),
-            )
+            if args.llm_friendly:
+                from .suite_output import capture_process_output
+                from datetime import datetime, timezone
+                log_path = args.jobs_dir / f"external-run-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%f}.log"
+                with capture_process_output(log_path):
+                    saved_dir, summary = execute_harbor_run(
+                        plan, execute=args.execute, output_dir=args.output_dir,
+                        jobs_dir=args.jobs_dir, state_dir=getattr(args, "state_dir", None), quiet=True,
+                    )
+            else:
+                saved_dir, summary = execute_harbor_run(
+                    plan, execute=args.execute, output_dir=args.output_dir,
+                    jobs_dir=args.jobs_dir, state_dir=getattr(args, "state_dir", None),
+                )
         except Exception as err:
             print(f"agent-bench: {err}", file=sys.stderr)
             return 2
 
         fmt = getattr(args, "format", "table")
-        if fmt == "json":
+        if args.llm_friendly:
+            from .suite_output import emit
+            emit({"event": "finished", "result": summary, "report": str(saved_dir),
+                  "log": str(log_path)}, llm_friendly=True)
+        elif fmt == "json":
             print(json.dumps(summary, indent=2))
         else:
             print(f"Results saved to: {saved_dir}")
@@ -1059,6 +1074,9 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "external":
             return _handle_external(args, argument_parser)
+        elif args.command == "suite":
+            from .suite_cli import handle_suite
+            return handle_suite(args)
         elif args.command == "models":
             return _handle_models(args)
         elif args.command == "experiment":
