@@ -138,7 +138,7 @@ def execute_harbor_run(
     )
 
     run_env = os.environ.copy()
-    if plan.agent == "qwen-coder" and "OPENAI_API_KEY" not in run_env:
+    if plan.agent in ("qwen-coder", "opencode") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
 
     with command_lock(state):

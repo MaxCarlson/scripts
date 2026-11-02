@@ -99,6 +99,12 @@ def test_agent_defaults_and_isolation():
     assert p_agy.model == "default"
     assert p_agy.base_url is None
 
+    # 6. Local opencode defaults
+    p_opencode = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
+    assert p_opencode.agent == "opencode"
+    assert p_opencode.model == "openai/qwen38_23GB"
+    assert p_opencode.base_url == "http://host.docker.internal:1234/v1" 
+
 
 def test_cloud_agent_credential_blockers(monkeypatch):
     monkeypatch.delenv("OPENAI_API_KEY", raising=False)
