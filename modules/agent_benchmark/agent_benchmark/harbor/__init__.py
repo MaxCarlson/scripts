@@ -34,6 +34,7 @@ from .opencode_v2 import (
     OpenCodeV2,
     build_opencode_v2_install_command,
     build_opencode_v2_run_command,
+    is_harbor_available,
 )
 
 _RUNNER_SYMBOLS = {
@@ -77,6 +78,7 @@ __all__ = [
     "OpenCodeV2",
     "build_opencode_v2_install_command",
     "build_opencode_v2_run_command",
+    "is_harbor_available",
 ]
 
 

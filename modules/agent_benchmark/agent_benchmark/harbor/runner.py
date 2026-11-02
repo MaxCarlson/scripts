@@ -12,7 +12,12 @@ from uuid import uuid4
 
 import json
 import logging
-from ..state import command_lock
+
+try:
+    from ..state import command_lock
+except ImportError:
+    command_lock = None  # type: ignore[assignment]
+
 from .importer import HarborImporter
 from .models import HarborJobResult, JobStats
 from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readiness
@@ -165,7 +170,11 @@ def execute_harbor_run(
             else agent_bench_root
         )
 
-    with command_lock(state):
+    lock_cm = command_lock
+    if lock_cm is None:
+        from ..state import command_lock as lock_cm
+
+    with lock_cm(state):
         try:
             # Execute Harbor subprocess
             proc = subprocess.run(

@@ -35,36 +35,40 @@ def build_opencode_v2_run_command(
     """Build the exact container shell command string for OpenCode v2 execution.
 
     Flags used:
-    - --model: provider/model identifier
-    - --format json: structured JSON Lines event stream
-    - --thinking: include reasoning blocks in output
-    - --auto: auto-approve permissions in headless execution (replaces v1's --dangerously-skip-permissions)
-    - --standalone: run private isolated server without background service daemon
+    - --standalone: global flag for running private isolated server without background service daemon
+    - run: subcommand to execute a session
+    - --model: provider/model identifier (flag of `run`)
+    - --format json: structured JSON Lines event stream (flag of `run`)
+    - --thinking: include reasoning blocks in output (flag of `run`)
+    - --auto: auto-approve permissions in headless execution (flag of `run`)
     """
     escaped_instruction = shlex.quote(instruction)
     escaped_output = shlex.quote(output_filename)
     escaped_model = shlex.quote(model_name)
 
-    flags: list[str] = [
-        f"--model={escaped_model}",
+    global_flags: list[str] = []
+    if standalone:
+        global_flags.append("--standalone")
+
+    run_flags: list[str] = [
         "run",
+        f"--model={escaped_model}",
         "--format json",
     ]
     if resume:
-        flags.append("--continue")
+        run_flags.append("--continue")
     if cli_flags:
-        flags.append(cli_flags.strip())
+        run_flags.append(cli_flags.strip())
     if thinking:
-        flags.append("--thinking")
+        run_flags.append("--thinking")
     if auto:
-        flags.append("--auto")
-    if standalone:
-        flags.append("--standalone")
+        run_flags.append("--auto")
 
-    command_str = " ".join(flags)
+    cmd_parts = ["opencode", *global_flags, *run_flags, "--", escaped_instruction]
+    command_str = " ".join(cmd_parts)
     return (
         "[ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; "
-        f"opencode {command_str} -- {escaped_instruction} "
+        f"{command_str} "
         f"2>&1 </dev/null | stdbuf -oL tee {escaped_output}"
     )
 
@@ -79,9 +83,15 @@ def build_opencode_v2_install_command(
         "if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then "
         "node --version && npm --version; "
         "else [ -f ~/.nvm/nvm.sh ] && . ~/.nvm/nvm.sh; fi && "
-        f"npm i -g {package_spec} && "
+        f"(npm i -g --fetch-retries=5 --fetch-retry-mintimeout=2000 --fetch-retry-maxtimeout=30000 {package_spec} || "
+        f"(sleep 3 && npm i -g --fetch-retries=5 {package_spec})) && "
         "opencode --version"
     )
+
+
+def is_harbor_available() -> bool:
+    """Return whether Harbor 0.25.0 base classes are available in the current environment."""
+    return _HARBOR_AVAILABLE
 
 
 # Attempt import of Harbor base classes when running inside Harbor's Python environment
@@ -124,7 +134,8 @@ if _HARBOR_AVAILABLE:
                     "if ldd --version 2>&1 | grep -qi musl || [ -f /etc/alpine-release ]; then "
                     "node --version && npm --version; "
                     f"else {nvm_node_install_snippet()}; fi && "
-                    f"npm i -g {OPENCODE_V2_PACKAGE} && "
+                    f"(npm i -g --fetch-retries=5 --fetch-retry-mintimeout=2000 --fetch-retry-maxtimeout=30000 {OPENCODE_V2_PACKAGE} || "
+                    f"(sleep 3 && npm i -g --fetch-retries=5 {OPENCODE_V2_PACKAGE})) && "
                     "opencode --version"
                 ),
             )

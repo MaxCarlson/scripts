@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from agent_benchmark.harbor import (
     OPENCODE_V2_PACKAGE,
     PINNED_OPENCODE_V2_VERSION,
@@ -15,9 +17,12 @@ from agent_benchmark.harbor import (
     build_opencode_v2_install_command,
     build_opencode_v2_run_command,
     check_agent_configuration_blockers,
+    is_harbor_available,
     plan_benchmark,
 )
 from agent_benchmark.harbor.runner import execute_harbor_run
+from agent_benchmark.suite import build_manifest
+from agent_benchmark.suite_monitor import MonitorPreflightError, validate_monitor
 
 
 def test_opencode_v2_constants():
@@ -67,9 +72,10 @@ def test_build_opencode_v2_run_command_options():
 
 
 def test_build_opencode_v2_install_command():
-    """Verify installation script targets @opencode/cli@2.2.5 and checks version."""
+    """Verify installation script targets @opencode/cli@2.2.5 with retry and checks version."""
     cmd = build_opencode_v2_install_command()
-    assert "npm i -g @opencode/cli@2.2.5" in cmd
+    assert "@opencode/cli@2.2.5" in cmd
+    assert "npm i -g --fetch-retries=5" in cmd
     assert "opencode --version" in cmd
     assert "set -euo pipefail" in cmd
 
@@ -138,7 +144,6 @@ def test_execute_harbor_run_opencode_v2_environment(tmp_path):
 
     def fake_subprocess_run(cmd, env, **kwargs):
         captured_env.update(env)
-        # Create minimal fake job_dir and result.json to satisfy runner post-execution
         job_dir = tmp_path / "jobs" / cmd[cmd.index("--job-name") + 1]
         job_dir.mkdir(parents=True, exist_ok=True)
         (job_dir / "result.json").write_text('{"evaluations": []}', encoding="utf-8")
@@ -167,3 +172,150 @@ def test_execute_harbor_run_opencode_v2_environment(tmp_path):
 
     assert captured_env.get("OPENAI_API_KEY") == "lm-studio"
     assert "agent_benchmark" in captured_env.get("PYTHONPATH", "")
+
+
+# ---------------------------------------------------------------------------
+# Real Harbor 0.25.0 Runtime Import & Construction Tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not is_harbor_available(),
+    reason="Harbor 0.25.0 not installed in current environment; run with --with harbor to verify real adapter",
+)
+def test_opencode_v2_real_harbor_subclass():
+    """Verify OpenCodeV2 is an authentic subclass of Harbor's OpenCode adapter."""
+    from harbor.agents.installed.opencode import OpenCode
+
+    assert issubclass(OpenCodeV2, OpenCode)
+
+
+@pytest.mark.skipif(
+    not is_harbor_available(),
+    reason="Harbor 0.25.0 not installed in current environment; run with --with harbor to verify real adapter",
+)
+def test_opencode_v2_harbor_agent_factory_resolution(tmp_path):
+    """Verify Harbor's AgentFactory dynamically resolves and instantiates OpenCodeV2."""
+    from harbor.agents.factory import AgentFactory
+    from harbor.models.trial.config import AgentConfig
+
+    cfg = AgentConfig(
+        name="agent_benchmark.harbor.opencode_v2:OpenCodeV2",
+        model_name="llm-monitor/qwen38_23GB",
+        base_url="http://host.docker.internal:8789/v1",
+    )
+    cls = AgentFactory.get_agent_class_from_config(cfg)
+    assert cls is OpenCodeV2
+
+    agent = AgentFactory.create_agent_from_config(cfg, logs_dir=tmp_path)
+    assert isinstance(agent, OpenCodeV2)
+    assert agent.name() == "opencode-v2"
+    assert agent.version() == "2.2.5"
+
+
+@pytest.mark.skipif(
+    not is_harbor_available(),
+    reason="Harbor 0.25.0 not installed in current environment; run with --with harbor to verify real adapter",
+)
+def test_opencode_v2_harbor_provider_config_generation(tmp_path):
+    """Verify OpenCodeV2 generates provider config targeting LLM Monitor via OpenAI-compatible SDK."""
+    from harbor.agents.factory import AgentFactory
+    from harbor.models.model_api_format import ModelApiFormat
+    from harbor.models.trial.config import AgentConfig
+
+    cfg = AgentConfig(
+        name="agent_benchmark.harbor.opencode_v2:OpenCodeV2",
+        model_name="llm-monitor/qwen38_23GB",
+        base_url="http://host.docker.internal:8789/v1",
+        model_api_format=ModelApiFormat.OPENAI_CHAT_COMPLETIONS,
+    )
+    agent = AgentFactory.create_agent_from_config(cfg, logs_dir=tmp_path)
+    config_cmd = agent._build_register_config_command()
+    assert config_cmd is not None
+    assert "@ai-sdk/openai-compatible" in config_cmd
+    assert "http://host.docker.internal:8789/v1" in config_cmd
+    assert "qwen38_23GB" in config_cmd
+    assert "responses" not in config_cmd.lower()
+
+
+# ---------------------------------------------------------------------------
+# Monitored Suite Integration Tests for OpenCode v2
+# ---------------------------------------------------------------------------
+
+
+def test_build_manifest_monitored_opencode_v2_sets_provider_and_protocol():
+    """Verify build_manifest sets llm-monitor provider, 2.2.5 version, and openai_chat_completions for opencode-v2."""
+    manifest = build_manifest(
+        cohort="aider-python-10",
+        agent="opencode-v2",
+        model="openai/qwen38_23GB",
+        base_url=None,
+        api_format="openai_chat_completions",
+        llm_monitor=True,
+        recording="content",
+        monitor_url="http://host.docker.internal:8789/v1",
+        monitor_host_url="http://127.0.0.1:8789",
+    )
+    assert manifest["agent"] == "opencode-v2"
+    assert manifest["model"] == "openai/qwen38_23GB"
+    provenance = manifest["provenance"]
+    assert provenance["effective_agent_model"] == "llm-monitor/qwen38_23GB"
+    assert provenance["effective_agent_version"] == "2.2.5"
+    assert provenance["effective_api_format"] == "openai_chat_completions"
+    assert provenance["original_protocol"] == "openai_responses"
+    assert provenance["monitor_url"] == "http://host.docker.internal:8789/v1"
+    assert provenance["monitor_host_url"] == "http://127.0.0.1:8789"
+
+
+def test_build_manifest_monitored_opencode_v2_rejects_responses_format():
+    """Verify build_manifest fails closed if incompatible API format is supplied for opencode-v2."""
+    with pytest.raises(ValueError, match="requires openai_chat_completions"):
+        build_manifest(
+            cohort="aider-python-10",
+            agent="opencode-v2",
+            model="openai/qwen38_23GB",
+            base_url=None,
+            api_format="openai_responses",
+            llm_monitor=True,
+            recording="content",
+        )
+
+
+def test_build_manifest_monitored_opencode_v2_rejects_non_openai_model():
+    """Verify build_manifest fails closed if model is not an openai/ prefix."""
+    with pytest.raises(ValueError, match="requires an OpenCode openai/<model> provider model"):
+        build_manifest(
+            cohort="aider-python-10",
+            agent="opencode-v2",
+            model="anthropic/claude-3-opus",
+            base_url=None,
+            api_format="openai_chat_completions",
+            llm_monitor=True,
+            recording="content",
+        )
+
+
+def test_build_manifest_monitored_opencode_v2_rejects_conflicting_base_url():
+    """Verify build_manifest fails closed if explicit base-url conflicts with monitor-url."""
+    with pytest.raises(ValueError, match="explicit --base-url conflicts with required --monitor-url"):
+        build_manifest(
+            cohort="aider-python-10",
+            agent="opencode-v2",
+            model="openai/qwen38_23GB",
+            base_url="http://host.docker.internal:1234/v1",
+            api_format="openai_chat_completions",
+            llm_monitor=True,
+            recording="content",
+            monitor_url="http://host.docker.internal:8789/v1",
+        )
+
+
+def test_suite_monitor_preflight_opencode_v2_enforces_chat_completions():
+    """Verify validate_monitor enforces openai_chat_completions for opencode-v2."""
+    with pytest.raises(MonitorPreflightError, match="requires openai_chat_completions API format"):
+        validate_monitor(
+            agent="opencode-v2",
+            model="openai/qwen38_23GB",
+            api_format="openai_responses",
+            recording="content",
+        )
