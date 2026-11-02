@@ -192,6 +192,14 @@ def test_broken_agent_output_pipe_is_infrastructure_invalid_despite_failing_veri
     assert result.points_awarded is None
 
 
+def test_broken_pipe_mentioned_only_in_prompt_is_not_an_agent_pipe_error():
+    trial = _make_trial(
+        rewards={"reward": 0.0}, exception_type="NonZeroAgentExitCodeError",
+        exception_msg="prompt: EPIPE broken pipe\nstdout: ordinary agent output\nstderr: None",
+    )
+    assert evaluate_trial_status(trial).canonical_status == "failed"
+
+
 def test_evaluate_status_nonzero_agent_exit_code_missing_verifier():
     trial = _make_trial(
         rewards=None,
