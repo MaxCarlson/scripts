@@ -43,7 +43,7 @@ def _query(fields: str, timeout: float = 1.5, *, binary_name: str = "nvidia-smi"
 
 
 def nvidia_gpus(
-    *, timeout: float = 1.5, binary_name: str = "nvidia-smi", include_power: bool = False
+    *, timeout: float = 1.5, binary_name: str = "nvidia-smi", include_power: bool = False, include_uuid: bool = False
 ) -> list[dict[str, Any]]:
     """Discover NVIDIA GPUs and report utilization, memory bytes, temperature, and power when available.
 
@@ -52,13 +52,21 @@ def nvidia_gpus(
     fields = "name,index,utilization.gpu,utilization.memory,memory.used,memory.free,memory.total,temperature.gpu"
     if include_power:
         fields += ",power.draw"
+    if include_uuid:
+        fields = "uuid," + fields
     rows = _query(fields, timeout, binary_name=binary_name)
     devices = []
+    expected_len = 8 + (1 if include_power else 0) + (1 if include_uuid else 0)
     for row in rows:
-        if len(row) != (9 if include_power else 8):
+        if len(row) != expected_len:
             continue
-        name, index, util, mem_util, used, free, total, temp = (item.strip() for item in row[:8])
-        power = row[8].strip() if include_power else "N/A"
+        idx_offset = 0
+        gpu_uuid = None
+        if include_uuid:
+            gpu_uuid = row[0].strip() or None
+            idx_offset = 1
+        name, index, util, mem_util, used, free, total, temp = (item.strip() for item in row[idx_offset : idx_offset + 8])
+        power = row[idx_offset + 8].strip() if include_power else "N/A"
         try:
             device: dict[str, Any] = {
                 "name": name or None,
@@ -71,6 +79,8 @@ def nvidia_gpus(
                 "temp": _number(temp),
                 "power_w": _number(power),
             }
+            if include_uuid:
+                device["uuid"] = gpu_uuid
         except ValueError:
             continue
         devices.append(device)

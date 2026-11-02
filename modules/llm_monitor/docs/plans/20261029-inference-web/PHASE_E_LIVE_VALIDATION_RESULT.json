@@ -1,0 +1,352 @@
+{
+  "initial_status": {
+    "schema_version": 1,
+    "availability": "connected",
+    "revision": 2,
+    "refreshed_at": "2026-11-02T04:52:13.214308+00:00",
+    "capabilities": {
+      "model_inventory": {
+        "state": "available",
+        "source": "lmstudio_model_inventory",
+        "note": null
+      },
+      "aggregate_metrics": {
+        "state": "available",
+        "source": "in_memory_analytics"
+      },
+      "request_lifecycle": {
+        "state": "available",
+        "source": "gateway"
+      },
+      "structured_input": {
+        "state": "available",
+        "source": "gateway"
+      },
+      "reasoning_text": {
+        "state": "streaming",
+        "source": "upstream_sse"
+      },
+      "output_text": {
+        "state": "streaming",
+        "source": "upstream_sse"
+      },
+      "token_usage": {
+        "state": "available",
+        "source": "provider_reported_or_unavailable"
+      },
+      "request_timing": {
+        "state": "available",
+        "source": "gateway_observed"
+      },
+      "gpu_samples": {
+        "state": "available",
+        "source": "resource_metrics.nvidia_smi"
+      },
+      "historical_content": {
+        "state": "unavailable",
+        "source": "not_collected",
+        "note": "No supported source is connected in this phase."
+      }
+    },
+    "recording": {
+      "metadata": false,
+      "content": false,
+      "status": "disabled"
+    },
+    "hardware_samples": [
+      {
+        "sample_id": 1,
+        "timestamp": "2026-11-02T04:52:12.205944+00:00",
+        "timestamp_monotonic": 214920.125,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 6.0,
+        "memory_controller_utilization_percent": 2.0,
+        "vram_used_bytes": 33363591168.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 38.11,
+        "power_watts": 56.94,
+        "validity": "valid",
+        "error": null
+      }
+    ]
+  },
+  "nonstreaming_response": {
+    "id": "chatcmpl-8ubjg8j8pga3zy2bv7ciqq",
+    "object": "chat.completion",
+    "created": 1793595133,
+    "model": "qwen38_23GB",
+    "choices": [
+      {
+        "index": 0,
+        "message": {
+          "role": "assistant",
+          "content": "",
+          "reasoning_content": "We need to respond to user: \"Reply with exactly one color word: amber",
+          "tool_calls": []
+        },
+        "logprobs": null,
+        "finish_reason": "length"
+      }
+    ],
+    "usage": {
+      "prompt_tokens": 61,
+      "completion_tokens": 16,
+      "total_tokens": 77,
+      "completion_tokens_details": {
+        "reasoning_tokens": 16
+      }
+    },
+    "stats": {
+      "total_draft_tokens_count": 11,
+      "accepted_draft_tokens_count": 11,
+      "rejected_draft_tokens_count": 0
+    },
+    "system_fingerprint": "qwen38_23GB"
+  },
+  "streaming_chunks_count": 31,
+  "requests": [
+    {
+      "request_id": "e43ae4b6-f894-4149-bb92-261f68454961",
+      "state": "completed",
+      "elapsed_seconds": 0.4539999999979045,
+      "input_tokens": null,
+      "reasoning_tokens": null,
+      "output_tokens": null,
+      "generated_tokens": null,
+      "time_to_first_text_seconds": 0.157,
+      "generation_tokens_per_second": null,
+      "gpu_average_percent": null,
+      "gpu_peak_vram_bytes": null,
+      "gpu_scope": "Device samples unavailable",
+      "hardware_telemetry": {
+        "gpu_average_percent": null,
+        "gpu_peak_percent": null,
+        "gpu_average_vram_bytes": null,
+        "gpu_peak_vram_bytes": null,
+        "gpu_average_memory_controller_percent": null,
+        "gpu_average_power_watts": null,
+        "sample_count": 0,
+        "covered_duration_seconds": 0.0,
+        "coverage_fraction": 0.0,
+        "device_id": null,
+        "attribution_scope": "device_during_request",
+        "is_sparse": true
+      }
+    },
+    {
+      "request_id": "bb48ec10-6f88-4c46-888c-51b89ccb4153",
+      "state": "completed",
+      "elapsed_seconds": 0.34299999999348074,
+      "input_tokens": 61,
+      "reasoning_tokens": 16,
+      "output_tokens": null,
+      "generated_tokens": 16,
+      "time_to_first_text_seconds": 0.343,
+      "generation_tokens_per_second": 46.65,
+      "gpu_average_percent": null,
+      "gpu_peak_vram_bytes": null,
+      "gpu_scope": "Device samples unavailable",
+      "hardware_telemetry": {
+        "gpu_average_percent": null,
+        "gpu_peak_percent": null,
+        "gpu_average_vram_bytes": null,
+        "gpu_peak_vram_bytes": null,
+        "gpu_average_memory_controller_percent": null,
+        "gpu_average_power_watts": null,
+        "sample_count": 0,
+        "covered_duration_seconds": 0.0,
+        "coverage_fraction": 0.0,
+        "device_id": null,
+        "attribution_scope": "device_during_request",
+        "is_sparse": true
+      }
+    }
+  ],
+  "hardware_api": {
+    "schema_version": 1,
+    "availability": "available",
+    "source": "resource_metrics.nvidia_smi",
+    "device_count": 1,
+    "devices": [
+      {
+        "device_id": "gpu-0",
+        "device_index": 0,
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "vram_total_bytes": 34190917632.0
+      }
+    ],
+    "samples": [
+      {
+        "sample_id": 1,
+        "timestamp": "2026-11-02T04:52:12.205944+00:00",
+        "timestamp_monotonic": 214920.125,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 6.0,
+        "memory_controller_utilization_percent": 2.0,
+        "vram_used_bytes": 33363591168.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 38.11,
+        "power_watts": 56.94,
+        "validity": "valid",
+        "error": null
+      },
+      {
+        "sample_id": 2,
+        "timestamp": "2026-11-02T04:52:16.262036+00:00",
+        "timestamp_monotonic": 214924.171,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 4.0,
+        "memory_controller_utilization_percent": 1.0,
+        "vram_used_bytes": 33367785472.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 43.37,
+        "power_watts": 185.48,
+        "validity": "valid",
+        "error": null
+      }
+    ]
+  },
+  "analytics_api": {
+    "schema_version": 1,
+    "server_instance_id": "all",
+    "model_id": "all",
+    "window_seconds": null,
+    "analytics": {
+      "request_counts": {
+        "observed_requests": 2,
+        "active_requests": 0,
+        "completed_requests": 2,
+        "failed_requests": 0,
+        "cancelled_requests": 0,
+        "token_measured_requests": 1,
+        "hardware_covered_requests": 0
+      },
+      "tokens": {
+        "input_tokens": {
+          "mean": 61.0,
+          "median": 61.0,
+          "total": 61,
+          "sample_count": 1,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "reasoning_tokens": {
+          "mean": 16.0,
+          "median": 16.0,
+          "total": 16,
+          "sample_count": 1,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "output_tokens": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "generated_tokens": {
+          "mean": 16.0,
+          "median": 16.0,
+          "total": 16,
+          "sample_count": 1,
+          "unit": "tokens",
+          "source": "provider_reported"
+        }
+      },
+      "timing": {
+        "duration_seconds": {
+          "mean": 0.4,
+          "median": 0.4,
+          "total": null,
+          "sample_count": 2,
+          "unit": "seconds",
+          "source": "observed_lifecycle",
+          "p90": null,
+          "p95": null
+        },
+        "time_to_first_text_seconds": {
+          "mean": 0.25,
+          "median": 0.25,
+          "total": null,
+          "sample_count": 2,
+          "unit": "seconds",
+          "source": "gateway_observed"
+        },
+        "generation_tokens_per_second": {
+          "mean": 46.65,
+          "median": 46.65,
+          "total": null,
+          "sample_count": 1,
+          "unit": "tok/s",
+          "source": "end_to_end_approx"
+        }
+      },
+      "hardware": {
+        "gpu_average_percent": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "%",
+          "source": "device_during_request"
+        },
+        "gpu_peak_vram_bytes": {
+          "max": null,
+          "sample_count": 0,
+          "unit": "bytes",
+          "source": "device_during_request"
+        }
+      }
+    }
+  },
+  "telemetry_api": {
+    "schema_version": 1,
+    "request_id": "e43ae4b6-f894-4149-bb92-261f68454961",
+    "timing": {
+      "started_at": "2026-11-02T04:52:15.136022+00:00",
+      "ended_at": "2026-11-02T04:52:15.592623+00:00",
+      "elapsed_seconds": 0.4539999999979045,
+      "time_to_first_text_seconds": 0.157,
+      "time_to_first_text_source": "gateway_observed",
+      "generation_tokens_per_second": null,
+      "generation_speed_source": null
+    },
+    "tokens": {
+      "input_tokens": null,
+      "reasoning_tokens": null,
+      "output_tokens": null,
+      "generated_tokens": null,
+      "usage_source": null
+    },
+    "hardware": {
+      "gpu_average_percent": null,
+      "gpu_peak_percent": null,
+      "gpu_average_vram_bytes": null,
+      "gpu_peak_vram_bytes": null,
+      "gpu_average_memory_controller_percent": null,
+      "gpu_average_power_watts": null,
+      "sample_count": 0,
+      "covered_duration_seconds": 0.0,
+      "coverage_fraction": 0.0,
+      "device_id": null,
+      "attribution_scope": "device_during_request",
+      "is_sparse": true
+    },
+    "coverage": {
+      "request_lifecycle": "complete",
+      "structured_input": "available",
+      "reasoning_text": "streaming",
+      "output_text": "streaming",
+      "token_usage": "unavailable",
+      "request_timing": "gateway_timed"
+    }
+  }
+}

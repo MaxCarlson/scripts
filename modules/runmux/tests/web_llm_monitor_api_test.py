@@ -26,6 +26,7 @@ class FakeMonitoringAdapter:
         self.detail_calls = 0
         self.timeline_calls = 0
         self.alerts_calls = 0
+        self.alert_filters = None
         self.provider_status = "connected"
         self.provider_error = None
         self._cached_snapshot: dict[str, Any] | None = None
@@ -96,8 +97,16 @@ class FakeMonitoringAdapter:
             "limit": limit,
         }
 
-    def alerts(self, *, status: str | None = None, limit: int = 100) -> dict[str, Any]:
+    def alerts(
+        self,
+        *,
+        status: str | None = None,
+        limit: int = 100,
+        provider_instance_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
         self.alerts_calls += 1
+        self.alert_filters = (provider_instance_id, session_id)
         return {
             "schema_version": 1,
             "availability": "available",
@@ -216,6 +225,27 @@ def test_monitor_session_detail_and_unavailable_separation(tmp_path: Path) -> No
         )
         assert res503.status_code == 503
         assert "OpenCode provider is offline" in res503.json()["detail"]
+
+
+def test_monitor_alert_route_supports_provider_scoped_session_filters(tmp_path: Path) -> None:
+    fake_adapter = FakeMonitoringAdapter()
+    integration = LLMMonitorIntegration(config=LLMMonitorConfig(enabled=True), adapter=fake_adapter)
+    app = create_runmux_web_app(tmp_path / "state", login_code="test-login", llm_monitor_integration=integration)
+
+    with TestClient(app, base_url="http://localhost") as client:
+        client.post("/auth/login", json={"code": "test-login"}, headers={"Origin": "http://localhost"})
+        response = client.get(
+            "/api/llm-monitor/v1/alerts?status=active&limit=20&"
+            "provider_instance_id=http%3A%2F%2F127.0.0.1%3A4096&session_id=sess-live",
+            headers={"Origin": "http://localhost"},
+        )
+        assert response.status_code == 200
+        assert fake_adapter.alert_filters == ("http://127.0.0.1:4096", "sess-live")
+
+        partial_filter = client.get(
+            "/api/llm-monitor/v1/alerts?session_id=sess-live", headers={"Origin": "http://localhost"}
+        )
+        assert partial_filter.status_code == 400
 
 
 def test_monitor_instance_ownership_isolation(tmp_path: Path) -> None:
