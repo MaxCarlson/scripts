@@ -262,3 +262,115 @@ def test_evaluate_status_endpoint_failure_via_trial_dir_log(tmp_path: Path):
     res = evaluate_trial_status(trial, trial_dir=trial_dir)
     assert res.canonical_status == "infrastructure_error"
     assert res.failure_cause == "model_provider_failed"
+
+
+def test_synthetic_subprocess_deterministic_pipe_failure_handling(tmp_path: Path):
+    """Verify that deterministic synthetic subprocesses exhibiting EPIPE or clean exits
+    are classified according to benchmark error policy and that output is fully preserved.
+
+    Policy Contract:
+    Under Section 7.1 and 8 of the specification, when an external verifier confirms
+    passing work (raw reward == 1.0), the trial is considered passed (points_awarded=1.0)
+    even if the agent process terminates abnormally (e.g., via non-fatal broken pipe
+    / EPIPE on exit). However, when the verifier fails or has no reward (reward < 1.0),
+    an abnormal exit with broken pipe is strictly treated as an infrastructure error
+    (points_awarded=None, canonical_status='infrastructure_error') rather than a valid
+    zero-point agent model failure.
+    """
+    import subprocess
+    import sys
+
+    # 1. Synthetic clean exit (exit 0) with stream output
+    clean_script = tmp_path / "clean_agent.py"
+    clean_script.write_text(
+        'import sys\n'
+        'sys.stdout.write("step 1: read file\\nstep 2: write code\\nstep 3: stop\\n")\n'
+        'sys.stdout.flush()\n'
+        'sys.exit(0)\n',
+        encoding="utf-8",
+    )
+    proc_clean = subprocess.run(
+        [sys.executable, str(clean_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc_clean.returncode == 0
+    assert "step 3: stop" in proc_clean.stdout
+    trial_clean = _make_trial(rewards={"reward": 1.0})
+    res_clean = evaluate_trial_status(trial_clean)
+    assert res_clean.canonical_status == "passed"
+    assert res_clean.points_awarded == 1.0
+
+    # 2. Synthetic subprocess emitting Bun/Node EPIPE stack trace and exiting 1
+    epipe_script = tmp_path / "epipe_agent.py"
+    epipe_script.write_text(
+        'import sys\n'
+        '# Simulate Bun unhandled EPIPE exception on startup stream write\n'
+        'sys.stdout.write("error: EPIPE: broken pipe, write\\n'
+        '      at emitError (node:events:50:13)\\n'
+        '      at emitErrorNT (internal:streams/destroy:88:12)\\n")\n'
+        '# Streamed output continues despite the unhandled startup error\n'
+        'sys.stdout.write("step 1: read file\\nstep 2: write code\\nstep 3: stop\\n")\n'
+        'sys.stdout.flush()\n'
+        'sys.exit(1)\n',
+        encoding="utf-8",
+    )
+    proc_epipe = subprocess.run(
+        [sys.executable, str(epipe_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc_epipe.returncode == 1
+    assert "error: EPIPE: broken pipe, write" in proc_epipe.stdout
+    assert "step 3: stop" in proc_epipe.stdout
+
+    # When unrewarded, EPIPE is strictly classified as infrastructure_error
+    trial_epipe_failed = _make_trial(
+        rewards={"reward": 0.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg=f"Command failed (exit 1):\nstdout: {proc_epipe.stdout}\nstderr: None",
+    )
+    res_epipe_failed = evaluate_trial_status(trial_epipe_failed)
+    assert res_epipe_failed.canonical_status == "infrastructure_error"
+    assert res_epipe_failed.points_awarded is None
+    assert res_epipe_failed.failure_cause == FailureCause.HARBOR_FAILED.value
+    assert "broken pipe" in res_epipe_failed.diagnostics
+
+    # When rewarded (reward=1.0), solution is counted as passed despite the pipe error
+    trial_epipe_passed = _make_trial(
+        rewards={"reward": 1.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg=f"Command failed (exit 1):\nstdout: {proc_epipe.stdout}\nstderr: None",
+    )
+    res_epipe_passed = evaluate_trial_status(trial_epipe_passed)
+    assert res_epipe_passed.canonical_status == "passed"
+    assert res_epipe_passed.points_awarded == 1.0
+
+    # 3. Synthetic ordinary agent failure exit (exit 1 without EPIPE or model failure)
+    err_script = tmp_path / "error_agent.py"
+    err_script.write_text(
+        'import sys\n'
+        'sys.stdout.write("syntax error or model confusion\\n")\n'
+        'sys.stdout.flush()\n'
+        'sys.exit(1)\n',
+        encoding="utf-8",
+    )
+    proc_err = subprocess.run(
+        [sys.executable, str(err_script)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc_err.returncode == 1
+    trial_ordinary_err = _make_trial(
+        rewards={"reward": 0.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg=f"Command failed (exit 1):\nstdout: {proc_err.stdout}\nstderr: None",
+    )
+    res_ordinary_err = evaluate_trial_status(trial_ordinary_err)
+    assert res_ordinary_err.canonical_status == "failed"
+    assert res_ordinary_err.points_awarded == 0.0
+    assert res_ordinary_err.failure_cause == "agent_failed"
+
