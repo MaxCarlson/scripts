@@ -128,6 +128,31 @@ def test_web_command_parses_local_host_options_without_database_flags():
     assert args.refresh_interval == 3
 
 
+
+def test_web_command_parses_recording_options():
+    args = build_parser().parse_args([
+        "web", "--gateway", "-R", "metadata", "-d", "custom_telemetry.db"
+    ])
+    assert args.command == "web"
+    assert args.gateway is True
+    assert args.record_inferences == "metadata"
+    assert args.database == Path("custom_telemetry.db")
+
+    args_content = build_parser().parse_args([
+        "web", "--gateway", "-R", "content"
+    ])
+    assert args_content.record_inferences == "content"
+    assert args_content.database is None
+
+
+def test_web_command_rejects_recording_without_gateway():
+    import pytest
+    from llm_monitor.web import run_web
+
+    with pytest.raises(ValueError, match="--record-inferences requires --gateway"):
+        run_web(record_inferences="metadata", gateway_enabled=False)
+
+
 def test_database_commands_and_historical_report_work_offline(tmp_path, capsys):
     from llm_monitor.cli import main
     from llm_monitor.storage import TelemetryStore

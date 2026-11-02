@@ -9,10 +9,13 @@ import threading
 import webbrowser
 from urllib.parse import urlsplit
 
+from pathlib import Path
+from .inference_recording import InferenceRecorder
 from .inference_service import InferenceMonitoringService
 from .inference_web import create_inference_web_app
 from .providers import LMStudioClient
 from .gateway import OpenAIInferenceGateway, RequestEventHub, validate_gateway_upstream
+from .storage import TelemetryStore, default_database_path
 
 
 def validate_endpoint(endpoint: str) -> str:
@@ -44,25 +47,43 @@ def run_web(
     gateway_enabled: bool = False,
     gateway_upstream: str | None = None,
     gateway_timing: bool = False,
+    record_inferences: str | None = None,
+    database: str | None = None,
 ) -> int:
-    """Serve the authenticated overview on loopback. This does not open telemetry storage."""
+    """Serve the authenticated overview on loopback. This does not open telemetry storage unless requested."""
     if not 1 <= port <= 65535:
         raise ValueError("port must be between 1 and 65535")
     if refresh_interval <= 0:
         raise ValueError("refresh_interval must be greater than zero")
     if gateway_timing and not gateway_enabled:
         raise ValueError("--gateway-timing requires --gateway")
+    if record_inferences and record_inferences not in {"metadata", "content"}:
+        raise ValueError("record_inferences must be \x27metadata\x27 or \x27content\x27")
+    if record_inferences and not gateway_enabled:
+        raise ValueError("--record-inferences requires --gateway")
+
     safe_endpoint = validate_endpoint(endpoint)
     try:
         from web_ui_tools import create_server
     except ImportError as error:
         raise RuntimeError("Install llm-monitor[web] to use the browser dashboard.") from error
 
+    store = None
+    recorder = None
+    if record_inferences:
+        db_path = database or str(default_database_path())
+        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        store = TelemetryStore(db_path)
+        recorder = InferenceRecorder(store, mode=record_inferences)
+    elif database:
+        store = TelemetryStore(database)
+
     login_code = secrets.token_urlsafe(24)
     service = InferenceMonitoringService(
         LMStudioClient(safe_endpoint),
         endpoint=safe_endpoint,
         refresh_interval_seconds=refresh_interval,
+        recorder=recorder,
     )
     gateway = None
     event_hub = RequestEventHub()
@@ -75,13 +96,31 @@ def run_web(
                 logging.getLogger("llm_monitor.gateway.timing").info(
                     "gateway_timing %s", json.dumps(record, separators=(",", ":"))
                 )
-        gateway = OpenAIInferenceGateway(validate_gateway_upstream(gateway_upstream or safe_endpoint), service.store, event_hub, server_instance_id=service.server_instance_id, timing_sink=timing_sink)
-    app = create_inference_web_app(service, login_code=login_code, gateway=gateway, event_hub=event_hub)
+        gateway = OpenAIInferenceGateway(
+            validate_gateway_upstream(gateway_upstream or safe_endpoint),
+            service.store,
+            event_hub,
+            server_instance_id=service.server_instance_id,
+            timing_sink=timing_sink,
+            recorder=recorder,
+        )
+    app = create_inference_web_app(
+        service,
+        login_code=login_code,
+        gateway=gateway,
+        event_hub=event_hub,
+        recorder=recorder,
+        history_store=store,
+    )
+    if recorder is not None:
+        app.add_event_handler("shutdown", recorder.stop)
     server = create_server(app, host="127.0.0.1", port=port)
     url = f"http://127.0.0.1:{port}"
     print(f"LLM Monitor is listening at {url}")
     if gateway is not None:
         print(f"Opt-in inference gateway: {url}/v1/chat/completions -> {gateway.upstream}")
+    if recorder is not None and store is not None:
+        print(f"Inference recording enabled: {record_inferences} mode ({store.path})")
     print(f"Enter this local startup login code in the browser: {login_code}")
     if not no_browser:
         threading.Timer(0.75, webbrowser.open, args=(url,)).start()

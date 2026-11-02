@@ -24,6 +24,7 @@ class InferenceMonitoringService:
         refresh_interval_seconds: float = 2.0,
         store: LiveInferenceStore | None = None,
         gpu_sampler: GpuSampler | None = None,
+        recorder: Any | None = None,
     ) -> None:
         if refresh_interval_seconds <= 0:
             raise ValueError("refresh_interval_seconds must be positive")
@@ -32,6 +33,7 @@ class InferenceMonitoringService:
         self.refresh_interval_seconds = refresh_interval_seconds
         self.store = store or LiveInferenceStore()
         self.gpu_sampler = gpu_sampler or GpuSampler(self.store, is_active_fn=self.store.has_active_requests)
+        self.recorder = recorder
         self._refresh_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._stop = threading.Event()
@@ -67,7 +69,7 @@ class InferenceMonitoringService:
                     "capabilities": capabilities,
                     "models": [model.to_dict() for model in models],
                     "requests": [request.to_dict() for request in self.store.requests()],
-                    "recording": {"metadata": False, "content": False, "status": "disabled"},
+                    "recording": self._recording_status(),
                 }
                 self.store.replace_inventory(server, models)
                 return _copy_snapshot(self._state)
@@ -79,6 +81,7 @@ class InferenceMonitoringService:
             snapshot["hardware_samples"] = [s.to_dict() for s in self.store.hardware_samples(limit=60)]
             if self.gpu_sampler.is_available:
                 snapshot["capabilities"]["gpu_samples"] = {"state": "available", "source": "resource_metrics.nvidia_smi"}
+            snapshot["recording"] = self._recording_status()
             return snapshot
 
     def start(self) -> None:
@@ -122,6 +125,11 @@ class InferenceMonitoringService:
             "error_code": error_code,
         }
 
+    def _recording_status(self) -> dict[str, Any]:
+        if getattr(self, "recorder", None) is not None:
+            return self.recorder.status()
+        return {"metadata": False, "content": False, "status": "disabled", "healthy": True, "dropped_count": 0}
+
     def _unavailable_state(self, error_code: str) -> dict[str, Any]:
         checked_at = _now()
         return {
@@ -132,7 +140,7 @@ class InferenceMonitoringService:
             "capabilities": CaptureCapabilities.passive_inventory(available=False).to_dict(),
             "models": [],
             "requests": [],
-            "recording": {"metadata": False, "content": False, "status": "disabled"},
+            "recording": self._recording_status(),
         }
 
 

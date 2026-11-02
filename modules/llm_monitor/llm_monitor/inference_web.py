@@ -9,6 +9,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSock
 
 from .gateway import OpenAIInferenceGateway, RequestEventHub
 from .inference_analysis import compute_model_analytics
+from .inference_models import InferenceRequest
 from .inference_service import InferenceMonitoringService
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
@@ -22,6 +23,8 @@ def create_inference_web_app(
     static_dir: str | Path = STATIC_DIR,
     gateway: OpenAIInferenceGateway | None = None,
     event_hub: RequestEventHub | None = None,
+    recorder: Any | None = None,
+    history_store: Any | None = None,
 ) -> FastAPI:
     """Create the standalone UI app without opening a telemetry database."""
     try:
@@ -171,6 +174,108 @@ def create_inference_web_app(
             "analytics": summary,
         }
 
+    @router.get("/recording/status")
+    def recording_status() -> dict[str, Any]:
+        rec = recorder or getattr(service, "recorder", None) or getattr(gateway, "recorder", None)
+        if rec is not None:
+            rec_status = rec.status()
+        else:
+            rec_status = {"metadata": False, "content": False, "status": "disabled", "healthy": True, "dropped_count": 0}
+        return {
+            "schema_version": 1,
+            "recording": rec_status,
+        }
+
+    @router.get("/history")
+    def history(
+        limit: int = Query(default=50, ge=1, le=500),
+        offset: int = Query(default=0, ge=0),
+        model_id: str | None = None,
+        state: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+    ) -> dict[str, Any]:
+        target_store = history_store or (recorder.store if recorder is not None else None)
+        if target_store is None:
+            return {
+                "schema_version": 1,
+                "availability": "disabled",
+                "requests": [],
+                "total_count": 0,
+                "limit": limit,
+                "offset": offset,
+            }
+        reqs, total = target_store.list_inference_requests(
+            model_id=model_id,
+            state=state,
+            since=since,
+            until=until,
+            limit=limit,
+            offset=offset,
+        )
+        return {
+            "schema_version": 1,
+            "availability": "available",
+            "requests": reqs,
+            "total_count": total,
+            "limit": limit,
+            "offset": offset,
+        }
+
+    @router.get("/history/analytics")
+    def history_analytics(
+        server_instance_id: str | None = None,
+        model_id: str | None = None,
+        since: str | None = None,
+        until: str | None = None,
+        window_seconds: float | None = Query(default=None, gt=0),
+    ) -> dict[str, Any]:
+        target_store = history_store or (recorder.store if recorder is not None else None)
+        if target_store is None:
+            return {
+                "schema_version": 1,
+                "availability": "disabled",
+                "server_instance_id": server_instance_id or "all",
+                "model_id": model_id or "all",
+                "analytics": {},
+            }
+        reqs, _ = target_store.list_inference_requests(
+            server_instance_id=server_instance_id,
+            model_id=model_id,
+            since=since,
+            until=until,
+            limit=1000,
+        )
+        req_objects = [InferenceRequest.from_dict(r) for r in reqs]
+        summary = compute_model_analytics(
+            req_objects,
+            [],
+            server_instance_id=server_instance_id,
+            model_id=model_id,
+            time_window_seconds=window_seconds,
+        )
+        return {
+            "schema_version": 1,
+            "availability": "available",
+            "server_instance_id": server_instance_id or "all",
+            "model_id": model_id or "all",
+            "window_seconds": window_seconds,
+            "analytics": summary,
+        }
+
+    @router.get("/history/{request_id}")
+    def history_detail(request_id: str) -> dict[str, Any]:
+        target_store = history_store or (recorder.store if recorder is not None else None)
+        if target_store is None:
+            raise HTTPException(status_code=404, detail="Inference history recording is not enabled")
+        data = target_store.get_inference_request(request_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Historical inference request not found")
+        return {
+            "schema_version": 1,
+            "request": data,
+        }
+
     app = create_app(
         api_router=router,
         static_dir=static_dir,
@@ -196,6 +301,8 @@ def create_inference_web_app(
     app.state.inference_service = service
     app.state.inference_event_hub = events
     app.state.inference_gateway = gateway
+    app.state.inference_recorder = recorder
+    app.state.inference_history_store = history_store
     if gateway is not None:
         app.add_event_handler("shutdown", gateway.close)
     return app
