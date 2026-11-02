@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Final Acceptance Preparation & Deployment Readiness Complete; Supervised Live Workflow Ready  
-**Timestamp:** 2026-11-02T15:10:00-08:00  
+**Current Phase:** Live Hardware Acceptance Stage 3 (T01) Validated; Ready for Operator Authorization of Remaining Trials (T02–T04)  
+**Timestamp:** 2026-11-02T15:35:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -119,5 +119,20 @@
   - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
   - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
   - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
+- **Stage 3 Live Hardware Acceptance (Trial T01):** COMPLETE (PASS).
+  - Operator explicitly authorized bounded T01 execution under verified preflight conditions.
+  - Executed live run: `20261102_233303_5a9bdae3` in `modules/resource_coordinator/.live_acceptance_work/runs/20261102_233303_5a9bdae3`.
+  - Process backend: `windows_miner` (`krig-miner.exe`).
+  - Upstream backend: `live_lmstudio` (`qwen38_23GB` on `:1234`).
+  - Invariant Verification:
+    - Initial process launch: Verified PID `7020` (create_time `1793662383.41`).
+    - Stop barrier: Verified KRig termination at monotonic `282172.093` strictly before request dispatch at `282172.421` (`stopped_before_forward_verified = true`).
+    - Inference execution: Real HTTP 200 response from `qwen38_23GB` in 1,937 ms; zero coordinator-owned miner activity during inference (`observed_exit_during_inference = true`).
+    - Idle cooldown: Completed full 10.016-second idle quiet period before restart.
+    - Process restart: Verified distinct new coordinator-owned PID `66428` launched at monotonic `282182.438`.
+    - Supervised cleanup: `cleanup_verified_stopped = true`, `descendants_verified_stopped = true`; zero orphan processes remaining.
+    - Evidence durability: `manifest.json`, `journal_t01.json`, and `acceptance_report.json` preserved and pointed to by `latest_run.json`.
+    - Verdict: `PASS`, `verification_level = "live_hardware_partial_stage"`.
+    - Branch ready for operator-authorized execution of remaining trials (`T02 T03 T04`).
 
 
