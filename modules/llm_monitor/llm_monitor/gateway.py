@@ -181,7 +181,7 @@ class RequestEventHub:
 class OpenAIInferenceGateway:
     """Forward chat completions to a fixed loopback upstream and observe this request."""
 
-    def __init__(self, upstream: str, store: LiveInferenceStore, events: RequestEventHub, *, server_instance_id: str = "lmstudio-gateway", client: httpx.AsyncClient | None = None, timing_sink: Callable[[dict[str, Any]], None] | None = None, capture_enabled: bool = True) -> None:
+    def __init__(self, upstream: str, store: LiveInferenceStore, events: RequestEventHub, *, server_instance_id: str = "lmstudio-gateway", client: httpx.AsyncClient | None = None, timing_sink: Callable[[dict[str, Any]], None] | None = None, capture_enabled: bool = True, recorder: Any | None = None) -> None:
         self.upstream = validate_gateway_upstream(upstream)
         self.store = store
         self.events = events
@@ -189,6 +189,7 @@ class OpenAIInferenceGateway:
         self._client = client or httpx.AsyncClient(timeout=None, follow_redirects=False, trust_env=False)
         self.timing_sink = timing_sink
         self.capture_enabled = capture_enabled
+        self.recorder = recorder
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -233,6 +234,8 @@ class OpenAIInferenceGateway:
             segments = tuple(ContentSegment(kind=str(message.get("role", "other")), role=str(message.get("role", "other")), text=_message_text(message.get("content")), source="gateway_client") for message in payload["messages"] if isinstance(message, dict))
             record = InferenceRequest(request_id=request_id, server_instance_id=self.server_instance_id, model_instance_id=model_id, provider_model_id=model_id, model_name=model_id, source="gateway_openai_chat_completions", state="active", started_at=started_at, started_monotonic=started, coverage={"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "streaming", "output_text": "streaming", "token_usage": "unavailable", "request_timing": "gateway_timed"}, content=segments)
             self.store.add_request(record)
+            if getattr(self, "recorder", None) is not None:
+                self.recorder.record_request_start(record)
             self._publish({"type": "request.started", "request": identity, "timestamp": started_at, "content": [segment.to_dict() for segment in segments]}, timing)
             url = f"{self.upstream}/v1/chat/completions"
             headers = {key: value for key, value in request.headers.items() if key.lower() in {"authorization", "content-type", "accept"}}
@@ -480,6 +483,12 @@ class OpenAIInferenceGateway:
                 "hardware_telemetry": hw_info,
             })
             self.store.add_request(updated_record)
+            if getattr(self, "recorder", None) is not None:
+                self.recorder.record_request_final(
+                    updated_record,
+                    contents=candidate.content,
+                    hardware_samples=samples,
+                )
         event = {"type": kind, "request": identity, "timestamp": ended, "elapsed_seconds": elapsed}
         if hw_info and hw_info.get("sample_count", 0) > 0:
             event["hardware"] = {
