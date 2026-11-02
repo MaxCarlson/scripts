@@ -21,7 +21,7 @@
 - Read repository Python/CLI guidance and existing Harbor/LLM Monitor interfaces.
 - Plan recorded in `plan.md`.
 - Added frozen cohort manifests, per-task Harbor orchestration, checkpoint/report storage, monitor preflight, output capture, detached worker and CLI wiring.
-- Added 39 focused suite, monitor and CLI tests covering manifests, flags, classification, authorization, resume/retry, output capture, monitoring preflight and background operation.
+- Added 40 focused suite, monitor and CLI tests covering manifests, flags, classification, authorization, resume/retry, output capture, monitoring preflight, background operation and workload fidelity under `-F`.
 - The Windows detached worker lifecycle passed a real subprocess fixture with all tasks already completed; it produced the report and exited without inference.
 - Benchmark Core tests passed. LLM Monitor recording tests passed. Relevant Agent Benchmark CLI/planner tests passed.
 - Full module suites were attempted but not completed: existing Harbor runner checks rely on Docker Desktop access, and LLM Monitor's TestClient loopback test stalls under this Windows sandbox. These limits do not affect the mocked gateway suite checks.
