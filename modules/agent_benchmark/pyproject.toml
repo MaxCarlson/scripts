@@ -8,7 +8,7 @@ version = "1.23.0"
 description = "Independent evaluation of coding workers through the existing OpenCode bridge"
 readme = "README.md"
 requires-python = ">=3.12"
-dependencies = ["benchmark-core>=0.2.0,<0.3", "script-logging>=0.1.0,<0.2", "mcp>=1.30,<2", "httpx>=0.28,<1", "psutil>=5.9", "resource-metrics>=0.1.0", "termdash>=0.9.0", "pydantic>=2.0,<3"]
+dependencies = ["benchmark-core>=0.3.0,<0.4", "script-logging>=0.1.0,<0.2", "mcp>=1.30,<2", "httpx>=0.28,<1", "psutil>=5.9", "resource-metrics>=0.1.0", "termdash>=0.9.0", "pydantic>=2.0,<3", "jinja2>=3.1,<4"]
 
 [tool.setuptools.packages.find]
 where = ["."]

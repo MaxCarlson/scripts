@@ -466,3 +466,17 @@ def test_import_endpoint_404_failure_classified_as_infrastructure_error(tmp_path
     assert trials[0].status == "infrastructure_error"
     assert trials[0].details["original_verifier_reward"] == 0.0
     assert trials[0].details["failure_cause"] == "model_provider_failed"
+
+
+def test_import_records_policy_provenance_without_changing_scores(tmp_path: Path):
+    job = _create_mock_harbor_job(tmp_path)
+    output = tmp_path / "imported"
+    policy = {"id": "sv1-specification-verification-v1", "sha256": "a" * 64}
+    design = {"id": "spec-verification-pilot-v1", "repetition": 2, "randomization_seed": 20261102}
+    _, summary = HarborImporter(job).import_to(output, study_policy=policy, study_design=design)
+    assert load_run_info(output / "run.json").metadata["planned_prompt_policy"] == policy
+    assert load_run_info(output / "run.json").metadata["prompt_intervention"]["assignment"] == "SV1"
+    trials = load_trials(output / "trials.jsonl")
+    assert all(trial.details["planned_prompt_policy"] == policy for trial in trials)
+    assert all(trial.details["study_design"] == design for trial in trials)
+    assert summary["passed"] == 1

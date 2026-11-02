@@ -69,12 +69,17 @@ def build_manifest(
     base_url: str | None, api_format: str | None, llm_monitor: bool, recording: str,
     jobs: int = 1, monitor_url: str | None = None, monitor_host_url: str | None = None,
     study_adapter: bool = False, prompt_policy_file: Path | None = None,
+    study_repetition: int | None = None, study_seed: int | None = None,
 ) -> dict[str, Any]:
     from .spec_verification_policy import BASELINE_ID, load_policy
     if prompt_policy_file is not None:
         study_adapter = True
     if study_adapter and agent.lower() != "opencode":
         raise ValueError("specification verification study requires opencode")
+    if study_repetition is not None and study_repetition < 1:
+        raise ValueError("study repetition must be positive")
+    if not study_adapter and (study_repetition is not None or study_seed is not None):
+        raise ValueError("study repetition and seed require the study adapter")
     policy = load_policy(prompt_policy_file)[2] if prompt_policy_file else {"id": BASELINE_ID}
     if jobs != 1:
         raise ValueError("suite execution currently requires sequential -j/--jobs 1")
@@ -131,7 +136,8 @@ def build_manifest(
             "requested_api_format": api_format,
             "effective_api_format": plan.model_api_format,
             "effective_agent_model": effective_agent_model,
-            "effective_agent_version": agent_version,
+            "effective_agent_version": None if study_adapter else agent_version,
+            **({"requested_agent_version": "1.19.5"} if study_adapter else {}),
             "original_protocol": "openai_responses" if agent.lower() in ("opencode", "opencode-v2") else None,
             "harbor_version": plan.readiness.harbor_version,
             "harbor_dataset": plan.dataset.harbor_dataset,
@@ -142,11 +148,13 @@ def build_manifest(
         },
         "readiness": {
             "is_runnable": plan.readiness.is_runnable and (
-                selected["revision"] != FROZEN_REVISION or "0.25.0" in str(plan.readiness.harbor_version)
+                (selected["revision"] != FROZEN_REVISION and not study_adapter)
+                or "0.25.0" in str(plan.readiness.harbor_version)
             ),
             "blockers": list(plan.readiness.blockers) + (
                 [f"Frozen aider-python-10 requires Harbor 0.25.0; found {plan.readiness.harbor_version!r}"]
-                if selected["revision"] == FROZEN_REVISION and "0.25.0" not in str(plan.readiness.harbor_version)
+                if (selected["revision"] == FROZEN_REVISION or study_adapter)
+                and "0.25.0" not in str(plan.readiness.harbor_version)
                 else []
             ),
             "harbor_installed": plan.readiness.harbor_installed,
@@ -157,6 +165,9 @@ def build_manifest(
     if study_adapter:
         result["prompt_policy"] = policy
         result["study_adapter"] = "opencode-v1-isolated-v1"
+        result["study_web_access"] = {"native_web_tools": "deny-requested", "network_enforcement": None}
+        result["study_design"] = {"id": "spec-verification-pilot-v1", "repetition": study_repetition,
+                                  "randomization_seed": study_seed}
     digest_payload = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     result["manifest_sha256"] = hashlib.sha256(digest_payload).hexdigest()
     return result
@@ -167,12 +178,15 @@ def create_run(
     base_url: str | None, api_format: str | None, llm_monitor: bool, recording: str,
     jobs: int = 1, monitor_url: str | None = None, monitor_host_url: str | None = None,
     planned_manifest: dict[str, Any] | None = None, registry_snapshot: bytes | None = None,
-    prompt_policy_file: Path | None = None,
+    prompt_policy_file: Path | None = None, study_adapter: bool = False,
+    study_repetition: int | None = None, study_seed: int | None = None,
 ) -> Path:
     plan = planned_manifest or build_manifest(cohort=cohort, manifest=manifest, agent=agent, model=model,
                                                base_url=base_url, api_format=api_format, llm_monitor=llm_monitor,
                                                recording=recording, jobs=jobs, monitor_url=monitor_url,
-                                               monitor_host_url=monitor_host_url)
+                                               monitor_host_url=monitor_host_url, study_adapter=study_adapter,
+                                               prompt_policy_file=prompt_policy_file,
+                                               study_repetition=study_repetition, study_seed=study_seed)
     registry_resolution = plan["provenance"].get("registry_resolution")
     if registry_resolution is not None and registry_snapshot is None:
         raise DatasetRevisionError("verified registry snapshot bytes are missing; no inference was dispatched")
@@ -206,7 +220,7 @@ def create_run(
         "schema": "agent-benchmark-suite-checkpoint-v1", "run_id": run_id, "state": "planned",
         "created_at": _now(), "updated_at": _now(), "run_dir": str(run_dir),
         "manifest_sha256": plan["manifest_sha256"], "source_revision": plan["source_revision"],
-        "study_adapter": plan.get("study_adapter"),
+        **({"study_adapter": plan["study_adapter"]} if plan.get("study_adapter") else {}),
         "cohort": plan["cohort"], "agent": plan["agent"], "model": plan["model"],
         "effective_endpoint": plan["provenance"]["effective_base_url"],
         "effective_api_format": plan["provenance"]["effective_api_format"],
@@ -359,7 +373,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     log_path = store.run_dir / "logs" / f"{task}.log"
     saved: Path | None = None
     started_at = _now()
-    store.update_task(task, status="running", started_at=started_at, log=str(log_path))
+    store.update_task(task, status="running", started_at=started_at, log=str(log_path),
+                      **({"prompt_policy": manifest["prompt_policy"]} if manifest.get("study_adapter") else {}))
     try:
         monitor_before = None
         if manifest["provenance"]["llm_monitor_required"]:
@@ -391,6 +406,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 plan, execute=True, output_dir=output_dir, jobs_dir=jobs_dir,
                 n_concurrent=1, quiet=True, registry_path=registry_path,
                 study_adapter=bool(manifest.get("study_adapter")), prompt_template_path=template_path,
+                study_policy=manifest.get("prompt_policy"),
+                study_design=manifest.get("study_design"),
             )
         status = ("infrastructure_invalid" if summary.get("infrastructure_error", 0) else
                   "passed" if summary.get("passed", 0) else
@@ -508,10 +525,10 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
                 and len(row.get("attempt_history", [])) + bool(row.get("error_code")) < 2)
             for row in store.read()["tasks"]
         )
+        if should_dispatch and store.manifest.get("study_adapter"):
+            from .spec_verification_policy import verify_frozen_policy
+            verify_frozen_policy(run_dir, store.manifest["prompt_policy"])
         if should_dispatch and executor is _run_one:
-            if store.manifest.get("study_adapter"):
-                from .spec_verification_policy import verify_frozen_policy
-                verify_frozen_policy(run_dir, store.manifest["prompt_policy"])
             if (store.manifest["provenance"].get("llm_monitor_required")
                     and store.manifest["agent"].lower() in ("opencode", "opencode-v2")
                     and not store.manifest["provenance"].get("effective_agent_model")):

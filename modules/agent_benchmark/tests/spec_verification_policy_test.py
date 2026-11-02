@@ -13,7 +13,7 @@ def test_policy_bytes_are_frozen_in_template(tmp_path):
     path.write_bytes(content)
     raw, template, identity = load_policy(path)
     assert raw == content
-    assert template == b"{{ instruction }}\n\n" + content + b"{{ '' }}"
+    assert template == b'{{ instruction }}\n\n{{ "check the specification\\n" }}'
     assert identity["sha256"] == hashlib.sha256(content).hexdigest()
     assert identity["template_sha256"] == hashlib.sha256(template).hexdigest()
 
@@ -37,7 +37,7 @@ def test_frozen_run_ignores_original_and_detects_drift(tmp_path):
     run = create_run(tmp_path, **args, planned_manifest=plan, prompt_policy_file=source)
     source.write_bytes(b"changed")
     template = verify_frozen_policy(run, plan["prompt_policy"])
-    assert template.read_bytes().endswith(b"verify requirements\n{{ '' }}")
+    assert template.read_bytes().endswith(b'"verify requirements\\n" }}')
     (run / "policy" / "source.md").write_bytes(b"changed")
     with pytest.raises(ValueError, match="changed"):
         verify_frozen_policy(run, plan["prompt_policy"])
@@ -68,19 +68,20 @@ def test_prompt_template_command_is_opt_in(tmp_path, monkeypatch):
     intervention = build_harbor_command(plan, jobs_dir=tmp_path, study_adapter=True,
                                         prompt_template_path=template)
     assert "agent_benchmark.harbor.opencode_v1:OpenCodeV1" in baseline
-    assert "--ak" not in baseline
+    assert "disable_web_search=true" in baseline
+    assert not any(arg.startswith("prompt_template_path=") for arg in baseline)
     assert f"prompt_template_path={template.resolve()}" in intervention
 
 
 def test_literal_render_preserves_whitespace(tmp_path):
     jinja = pytest.importorskip("jinja2")
     source = tmp_path / "source.md"
-    source.write_bytes(b"policy\n\n")
+    source.write_bytes("policy\r\n😀\n\n".encode())
     _, template, _ = load_policy(source)
     rendered = jinja.Environment(undefined=jinja.StrictUndefined).from_string(template.decode()).render(
         instruction="  task\n"
     )
-    assert rendered == "  task\n\n\npolicy\n\n"
+    assert rendered == "  task\n\n\npolicy\r\n😀\n\n"
 
 
 def test_policy_requires_opencode_and_baseline_has_explicit_identity(tmp_path):
@@ -92,6 +93,20 @@ def test_policy_requires_opencode_and_baseline_has_explicit_identity(tmp_path):
     assert baseline["prompt_policy"]["id"] == "sv0-unmodified-v1"
     with pytest.raises(ValueError, match="requires opencode"):
         build_manifest(**args, agent="qwen-coder", study_adapter=True)
+
+
+def test_planned_conditions_differ_only_in_declared_policy(tmp_path):
+    from agent_benchmark.suite import build_manifest
+
+    source = tmp_path / "policy.md"
+    source.write_text("verify requirements", encoding="utf-8")
+    args = dict(cohort="aider-python-10", model="openai/model", base_url=None,
+                api_format=None, llm_monitor=False, recording="off", agent="opencode",
+                study_adapter=True, study_repetition=1, study_seed=20261102)
+    left = build_manifest(**args)
+    right = build_manifest(**args, prompt_policy_file=source)
+    assert {key for key in left if left[key] != right[key]} == {"prompt_policy", "manifest_sha256"}
+    assert all(row["content_fingerprint"] is None for row in left["task_fingerprints"])
 
 
 def test_adapter_strips_forced_vcs_and_pins_version(monkeypatch):
@@ -169,3 +184,20 @@ def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path,
                            state_dir=tmp_path / "state", study_adapter=True)
     assert "agent_benchmark.harbor.opencode_v1:OpenCodeV1" in captured[0][0]
     assert "agent_benchmark" in captured[0][1]["PYTHONPATH"]
+
+
+def test_resume_refuses_modified_template_before_executor(tmp_path):
+    from agent_benchmark.suite import build_manifest, create_run, execute_pending
+
+    source = tmp_path / "policy.md"
+    source.write_text("verify", encoding="utf-8")
+    args = dict(cohort="aider-python-10", agent="opencode", model="openai/model",
+                base_url=None, api_format=None, llm_monitor=False, recording="off")
+    plan = build_manifest(**args, prompt_policy_file=source)
+    run = create_run(tmp_path, **args, planned_manifest=plan, prompt_policy_file=source)
+    source.write_text("changed original", encoding="utf-8")
+    (run / "policy" / "prompt-template.j2").write_text("changed", encoding="utf-8")
+    called = []
+    with pytest.raises(ValueError, match="changed"):
+        execute_pending(run, execute=True, executor=lambda *args: called.append(args))
+    assert not called

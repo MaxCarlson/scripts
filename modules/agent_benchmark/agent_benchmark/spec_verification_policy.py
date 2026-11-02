@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
+
+from jinja2 import StrictUndefined
+from jinja2.sandbox import SandboxedEnvironment
 
 from .instruction_overlay import load_instruction_append
 
@@ -20,9 +24,15 @@ def load_policy(path: Path) -> tuple[bytes, bytes, dict[str, str | int]]:
         raise ValueError("prompt policy exceeds 16384 bytes")
     if any(delimiter in addition.text for delimiter in ("{{", "}}", "{%", "%}", "{#", "#}")):
         raise ValueError("prompt policy must not contain Jinja delimiters")
-    # Jinja drops a final template newline by default; a final empty expression
-    # keeps the source policy's trailing newline in the rendered instruction.
-    template = b"{{ instruction }}\n\n" + raw + b"{{ '' }}"
+    # A quoted literal prevents Jinja from normalizing CRLF or dropping a
+    # final newline. JSON escaping produces a valid Jinja string literal.
+    template = ("{{ instruction }}\n\n{{ " + json.dumps(addition.text, ensure_ascii=False) + " }}").encode("utf-8")
+    sentinel = "task instruction\r\n"
+    rendered = SandboxedEnvironment(undefined=StrictUndefined).from_string(template.decode("utf-8")).render(
+        instruction=sentinel
+    )
+    if rendered != sentinel + "\n\n" + addition.text:
+        raise ValueError("prompt template does not preserve policy text exactly")
     return raw, template, {
         "id": INTERVENTION_ID,
         "sha256": addition.sha256,

@@ -41,6 +41,8 @@ def add_suite_parser(actions: Any) -> None:
         parser.add_argument("-P", "--prompt-policy-file", type=Path, help="UTF-8 specification policy for the isolated OpenCode study")
         parser.add_argument("-Q", "--expected-policy-sha256", help="Policy digest from the previously reviewed plan")
         parser.add_argument("-S", "--spec-verification-study", action="store_true", help="Use the isolated OpenCode v1 study adapter")
+        parser.add_argument("-I", "--study-repetition", type=int, help="Study repetition index")
+        parser.add_argument("-Z", "--study-seed", type=int, help="Study randomization seed")
         parser.add_argument("-r", "--recover-local", action="store_true", help="Authorize bounded start of absent local managed LLM Monitor")
         parser.add_argument("-F", "--llm-friendly", action="store_true")
         if execution:
@@ -154,7 +156,10 @@ def handle_suite(args: argparse.Namespace) -> int:
                                   model=args.model, base_url=args.base_url, api_format=args.api_format,
                                   llm_monitor=args.llm_monitor, recording=args.recording,
                                   jobs=args.jobs, monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url,
-                                  study_adapter=args.spec_verification_study, prompt_policy_file=args.prompt_policy_file)
+                                  study_adapter=args.spec_verification_study, prompt_policy_file=args.prompt_policy_file,
+                                  study_repetition=args.study_repetition, study_seed=args.study_seed)
+            if command == "run" and plan.get("study_adapter") and (args.study_repetition is None or args.study_seed is None):
+                raise ValueError("study runs require -I/--study-repetition and -Z/--study-seed")
             if command == "run" and args.prompt_policy_file and not args.expected_policy_sha256:
                 raise ValueError("policy run requires -Q/--expected-policy-sha256 from the reviewed plan")
             if args.expected_policy_sha256 and args.expected_policy_sha256 != plan.get("prompt_policy", {}).get("sha256"):

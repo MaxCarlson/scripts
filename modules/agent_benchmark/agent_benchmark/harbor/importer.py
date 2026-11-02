@@ -463,6 +463,8 @@ class HarborImporter:
         output_dir: Path | str,
         *,
         process_returncode: int = 0,
+        study_policy: dict[str, Any] | None = None,
+        study_design: dict[str, Any] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         """Import Harbor job results to target destination directory idempotently."""
         out_dir = Path(output_dir).resolve()
@@ -472,6 +474,19 @@ class HarborImporter:
         run_info, canonical_trials, summary_data = self.normalize(
             job_result, job_lock, harbor_trials, process_returncode=process_returncode
         )
+        if study_policy is not None:
+            run_info.metadata["planned_prompt_policy"] = dict(study_policy)
+            run_info.metadata["study_design"] = dict(study_design or {})
+            assignments = {"sv0-unmodified-v1": "SV0", "sv1-specification-verification-v1": "SV1"}
+            assignment = assignments.get(study_policy.get("id"))
+            if assignment and study_design and study_design.get("id"):
+                run_info.metadata["prompt_intervention"] = {
+                    "schema": "declared-prompt-intervention-v1",
+                    "design_id": study_design["id"], "assignment": assignment,
+                }
+            for trial in canonical_trials:
+                trial.details["planned_prompt_policy"] = dict(study_policy)
+                trial.details["study_design"] = dict(study_design or {})
 
         # Save run.json (overwrite allowed for idempotent reimport)
         save_run(out_dir, run_info, overwrite=True)

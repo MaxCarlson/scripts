@@ -151,6 +151,8 @@ def build_harbor_command(
         else plan.agent
     )
     cmd.extend(["--agent", agent_arg])
+    if study_adapter:
+        cmd.extend(["--ak", "disable_web_search=true"])
     if prompt_template_path is not None:
         cmd.extend(["--ak", f"prompt_template_path={prompt_template_path.resolve(strict=True)}"])
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
@@ -191,6 +193,8 @@ def execute_harbor_run(
     registry_path: Path | None = None,
     study_adapter: bool = False,
     prompt_template_path: Path | None = None,
+    study_policy: dict[str, Any] | None = None,
+    study_design: dict[str, Any] | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -266,6 +270,18 @@ def execute_harbor_run(
     if plan.agent == "opencode" and not study_adapter:
         ensure_harbor_opencode_compatibility()
 
+    if study_policy is not None:
+        from ..spec_verification_policy import BASELINE_ID, INTERVENTION_ID
+        policy_id = study_policy.get("id")
+        if (not study_adapter or policy_id not in (BASELINE_ID, INTERVENTION_ID)
+                or (policy_id == INTERVENTION_ID) != (prompt_template_path is not None)):
+            raise PreflightCheckError("study policy and template selection do not match")
+    if study_adapter and study_policy is not None and prompt_template_path is not None:
+        from ..spec_verification_policy import verify_frozen_policy
+        actual_template = verify_frozen_policy(prompt_template_path.parent.parent, study_policy)
+        if actual_template != prompt_template_path.resolve(strict=True):
+            raise PreflightCheckError("frozen policy path does not match the verified template")
+
     lock_cm = command_lock
     if lock_cm is None:
         from ..state import command_lock as lock_cm
@@ -336,6 +352,10 @@ def execute_harbor_run(
     # Import the job artifacts
     importer = HarborImporter(job_dir)
     target_dir = resolved_output_dir / job_dir.name
-    saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
+    if study_policy is None:
+        saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
+    else:
+        saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode,
+                                                study_policy=study_policy, study_design=study_design)
 
     return saved_dir, summary
