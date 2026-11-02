@@ -10,6 +10,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Any, Sequence
 
 from .inference_models import ContentSegment, HardwareSample, InferenceRequest
@@ -32,8 +33,12 @@ class InferenceRecorder:
             raise ValueError(f"invalid recording mode {mode!r}, must be 'metadata' or 'content'")
         self.store = store
         self.mode = mode
+        self._content_authorized_at: str | None = (
+            datetime.now(timezone.utc).isoformat() if mode == "content" else None
+        )
+        self._active_request_modes: dict[str, str] = {}
         self.queue_size = queue_size
-        self._queue: queue.Queue[tuple[str, Any, Any, Any] | None] = queue.Queue(maxsize=queue_size)
+        self._queue: queue.Queue[tuple[str, Any, str, Any, Any] | None] = queue.Queue(maxsize=queue_size)
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
         self._is_healthy = True
@@ -50,6 +55,18 @@ class InferenceRecorder:
     @property
     def database_path(self) -> str:
         return str(self.store.path)
+
+    def set_mode(self, mode: str) -> None:
+        """Switch recording mode at runtime (metadata vs content)."""
+        if mode not in {"metadata", "content"}:
+            raise ValueError(f"invalid recording mode {mode!r}, must be 'metadata' or 'content'")
+        with self._lock:
+            if mode == "content" and self.mode != "content":
+                self._content_authorized_at = datetime.now(timezone.utc).isoformat()
+            elif mode == "metadata":
+                self._content_authorized_at = None
+            self.mode = mode
+            _LOGGER.info("Inference recorder mode changed to %s", self.mode)
 
     def start(self) -> None:
         """Start the background writer worker."""
@@ -92,8 +109,11 @@ class InferenceRecorder:
         """Queue a request start notification."""
         if self._stop_event.is_set():
             return
+        with self._lock:
+            self._active_request_modes[request.request_id] = self.mode
+            mode_at_start = self.mode
         # Privacy: Never forward contents at start
-        self._enqueue(request, None, None)
+        self._enqueue(request, mode_at_start, None, None)
 
     def record_request_final(
         self,
@@ -106,18 +126,32 @@ class InferenceRecorder:
         if self._stop_event.is_set():
             return
 
+        with self._lock:
+            # Privacy invariant: Check mode authorized when this request began.
+            mode_at_start = self._active_request_modes.pop(request.request_id, None)
+            current_mode = self.mode
+
+        if current_mode == "metadata":
+            effective_mode = "metadata"
+        elif mode_at_start is not None:
+            # If registered at start, respect the mode that was active when request started
+            effective_mode = mode_at_start
+        else:
+            effective_mode = current_mode
+
         # Privacy guarantee: In metadata mode, discard contents immediately
-        safe_contents = contents if self.mode == "content" else None
-        self._enqueue(request, safe_contents, hardware_samples)
+        safe_contents = contents if effective_mode == "content" else None
+        self._enqueue(request, effective_mode, safe_contents, hardware_samples)
 
     def _enqueue(
         self,
         request: InferenceRequest,
+        effective_mode: str,
         contents: Sequence[ContentSegment] | None,
         hardware_samples: Sequence[HardwareSample] | None,
     ) -> None:
         try:
-            self._queue.put_nowait(("record", request, contents, hardware_samples))
+            self._queue.put_nowait(("record", request, effective_mode, contents, hardware_samples))
         except queue.Full:
             with self._lock:
                 self._dropped_count += 1
@@ -136,12 +170,12 @@ class InferenceRecorder:
                 self._queue.task_done()
                 break
 
-            action, request, contents, hw_samples = item
+            action, request, rec_mode, contents, hw_samples = item
             try:
                 if action == "record":
                     self.store.record_inference(
                         request,
-                        self.mode,
+                        rec_mode,
                         contents=contents,
                         hardware_samples=hw_samples,
                     )
@@ -160,6 +194,19 @@ class InferenceRecorder:
     def status(self) -> dict[str, Any]:
         """Return the current recorder configuration and operational health."""
         with self._lock:
+            return {
+                "recording_enabled": True,
+                "metadata": True,
+                "content": self.mode == "content",
+                "mode": self.mode,
+                "database_path": str(self.store.path),
+                "is_healthy": self._is_healthy,
+                "healthy": self._is_healthy,
+                "persisted_requests_count": self._persisted_count,
+                "pending_queue_size": self._queue.qsize(),
+                "dropped_count": self._dropped_count,
+                "last_error": self._last_error,
+            }
             return {
                 "recording_enabled": True,
                 "mode": self.mode,

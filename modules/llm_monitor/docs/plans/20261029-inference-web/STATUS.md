@@ -114,3 +114,48 @@ Current validation:
 - Storage safety verification: hardened `--database` without `-R` to open with `readonly=True`, preventing unintended database creation or schema migrations when browsing history.
 - Full regression suite with hardening tests: 211 passed, 1 skipped.
 - Integrated into `main` via `integrate/llm-monitor-phase-f-20261101`.
+
+## Final UI Completion, Model Identity Fixes & Abandoned Ingress Cleanup
+
+**State:** UI Completion and Model Identity Fixes integrated and merged into `main`
+**Integration branch:** `integrate/llm-monitor-ui-completion-20261101`  
+**Source branch:** `agy/llm-monitor-ui-completion-20261101` (`c64261a8`)  
+**Target:** `main` (`d1337238`)  
+**Status:** Integrated and verified.
+
+### Key Deliverables:
+1. **Model Identity Reconciliation & Filtering Fix:**
+   - Grounded relational mapping between client aliases (`openai/qwen3.8_23GB`), LM Studio runtime instances (`qwen38_23GB`), and inventory model keys (`qwen38-27b-q4km`).
+   - `ModelInventoryEntry` and `InferenceRequest` track `loaded_instance_ids`, `client_model_id`, and `resolved_model_id`.
+   - Dynamic reconciliation in `gateway.py` maps upstream responses to inventory models and emits WebSocket `request.updated` events.
+   - Frontend `matchesModel(request, selectedModelId, models)` in `state.mjs` and `formatters.mjs` allows selecting a loaded model without dropping attributable requests. No heuristic string fuzzy matching.
+2. **Accessible Custom Combobox & Dropdown Ordering:**
+   - Model options ordered deterministically: (1) All monitored models, (2) Loaded models (alphabetical), (3) Not-loaded models (alphabetical), (4) Unknown-state models (alphabetical).
+   - High-contrast status pills: Loaded (`#65d9ae` green), Not-loaded (`#6d7a8d` muted), Unknown (`#f4c27d` amber).
+   - Accessible combobox (`role="combobox"`, `role="listbox"`, `role="option"`, keyboard navigation `ArrowUp`/`ArrowDown`/`Enter`/`Space`/`Escape`/`Home`/`End`, click-outside handler) with hidden `<select id="model-filter">` kept in sync.
+3. **Scroll Trapping Fix:**
+   - Replaced `overscroll-behavior: contain;` with `overscroll-behavior: auto;` on `.request-list` in `app.css`, restoring natural outer page wheel scrolling.
+4. **Alerts & Coverage Truthful Findings:**
+   - Replaced static placeholder in `#view-alerts` with dynamic runtime findings cards: server connectivity, failed requests & stream integrity, GPU / VRAM hardware sampling via NVML, recording persistence mode, and an exhaustive telemetry capability matrix.
+   - Added dynamic warning indicator to sidebar navigation.
+5. **Recording Mode Mutation & History UI Completion:**
+   - Added authenticated `POST /api/inference/v1/recording/mode` with thread-safe recorder mode switching between `metadata` and `content`.
+   - Added interactive dashboard recording switcher with modal confirmation dialog (`#recording-confirm-dialog`) before switching to full content mode.
+   - Added `#history-server-filter` and `#history-time-filter` to History toolbar with full API integration.
+   - Added styled recording mode badges (`.mode-badge-metadata`, `.mode-badge-content`) on historical request cards and detail inspector.
+6. **Targeted Privacy Invariant & Disabled State Explanation:**
+   - Enforced runtime mode transition invariant in `InferenceRecorder`: requests initiated under `metadata` mode do not retroactively persist prompt, reasoning, or output when mode transitions to `content` while in-flight.
+   - Mode switching to `metadata` takes effect immediately for active requests (immediate revocation).
+   - SQLite `inference_requests.recording_mode` column accurately updated upon completion.
+   - UI controls for disabled recording explain that `-R/--record-inferences` is required, with informative alerts and tooltip warnings rather than misleading success reporting.
+7. **Abandoned Ingress Cleanup:**
+   - Preserved `agy/llm-monitor-container-ingress-20261101` untouched at baseline `5e26de5f` in `.worktrees/llm-monitor-phase-ingress-20261101`. Kept completely isolated from `main`.
+
+### Validation:
+- Full LLM Monitor suite: 221 passed, 1 skipped.
+- Multi-module regression: `resource_metrics` (12 passed), `web_ui_tools` (14 passed), `runmux` (19 passed) — 331 passed, 2 skipped overall.
+- Standalone UI test: `node tests/standalone_web_ui_test.js` passes all assertions.
+- Live inference test: Verified live streaming chat completion (`stream: true`) against running LM Studio instance (`127.0.0.1:1234`), demonstrating client alias `openai/qwen3.8_23GB` reconciliation to `qwen38-27b-q4km` via runtime instance `qwen38_23GB`.
+- Ruff: Clean on all Python files.
+- Node.js syntax check: `node --check` clean on all 6 `.mjs` files.
+- Package build: Wheel and sdist built cleanly.

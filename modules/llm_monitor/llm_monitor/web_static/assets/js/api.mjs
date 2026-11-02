@@ -36,6 +36,7 @@ export async function fetchHistory(params = {}, signal) {
   const query = new URLSearchParams();
   if (params.limit) query.set("limit", String(params.limit));
   if (params.offset) query.set("offset", String(params.offset));
+  if (params.server_instance_id && params.server_instance_id !== "all") query.set("server_instance_id", params.server_instance_id);
   if (params.model_id && params.model_id !== "all") query.set("model_id", params.model_id);
   if (params.state && params.state !== "all") query.set("state", params.state);
   if (params.since) query.set("since", params.since);
@@ -43,6 +44,28 @@ export async function fetchHistory(params = {}, signal) {
   const qs = query.toString();
   const path = qs ? `${API_ROOT}/history?${qs}` : `${API_ROOT}/history`;
   return getJson(path, signal);
+}
+
+export async function updateRecordingMode(mode, signal) {
+  let response;
+  try {
+    response = await fetch(`${API_ROOT}/recording/mode`, {
+      method: "POST",
+      credentials: "same-origin",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode }),
+      signal,
+    });
+  } catch (error) {
+    if (error.name === "AbortError") throw error;
+    throw new ApiError("Failed to update recording mode.");
+  }
+  if (response.status === 401) throw new ApiError("The browser session has expired.", { status: 401 });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    throw new ApiError(data.detail || "The local monitor API returned an error.", { status: response.status });
+  }
+  return await response.json();
 }
 
 export async function fetchHistoryDetail(requestId, signal) {

@@ -72,10 +72,23 @@
                 <p id="page-description" class="page-subtitle">Live requests, captured content, and model performance.</p>
               </div>
               <div class="toolbar-controls">
-                <label class="control-label" for="model-filter">Model</label>
-                <select id="model-filter" class="select-control" aria-label="Filter by model"><option value="all">All monitored models</option></select>
+                <label class="control-label" id="model-select-label" for="model-select-trigger">Model</label>
+                <div class="combobox-container" id="model-combobox">
+                  <button id="model-select-trigger" class="combobox-trigger" type="button" role="combobox" aria-haspopup="listbox" aria-expanded="false" aria-labelledby="model-select-label model-select-text" aria-controls="model-select-popup">
+                    <span id="model-trigger-pill" class="combobox-status-pill status-pill-all"></span>
+                    <span id="model-select-text" class="combobox-label">All monitored models</span>
+                    <span class="combobox-arrow" aria-hidden="true">▾</span>
+                  </button>
+                  <ul id="model-select-popup" class="combobox-popup" role="listbox" aria-labelledby="model-select-label" tabindex="-1" hidden></ul>
+                  <select id="model-filter" class="sr-only" aria-hidden="true" tabindex="-1"><option value="all">All monitored models</option></select>
+                </div>
                 <button id="follow-toggle" class="button button-toggle is-enabled" type="button" aria-pressed="true" title="Follow the newest request (F)"><span class="follow-led"></span>Following live</button>
-                <span id="recording-control" class="button button-disabled" aria-label="Recording controls are unavailable">Recording off</span>
+                <div class="recording-mode-control" id="recording-mode-control">
+                  <button id="recording-mode-btn" class="recording-mode-btn" type="button" aria-haspopup="dialog" title="Change recording mode">
+                    <span id="recording-mode-dot" class="recording-mode-dot"></span>
+                    <span id="recording-mode-label">Recording: Off</span>
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -172,7 +185,14 @@
                 <p class="page-subtitle" id="history-subtitle">Persisted inference history from local SQLite database.</p>
               </div>
               <div class="toolbar-controls">
+                <select id="history-server-filter" class="input-select" aria-label="Filter historical requests by server"><option value="all">All servers</option></select>
                 <select id="history-model-filter" class="input-select" aria-label="Filter historical requests by model"><option value="all">All recorded models</option></select>
+                <select id="history-time-filter" class="input-select" aria-label="Filter historical requests by time">
+                  <option value="all">All time</option>
+                  <option value="15m">Last 15 minutes</option>
+                  <option value="1h">Last hour</option>
+                  <option value="24h">Last 24 hours</option>
+                </select>
                 <select id="history-status-filter" class="input-select" aria-label="Filter historical requests by state">
                   <option value="all">All states</option>
                   <option value="completed">Completed</option>
@@ -213,13 +233,25 @@
               </section>
             </div>
           </section>
-          <section id="view-alerts" class="page-view secondary-view" data-view="alerts" aria-labelledby="alerts-title" hidden><div class="page-toolbar"><div><p class="eyebrow">INFERENCE OBSERVABILITY / COVERAGE</p><h1 id="alerts-title">Alerts and coverage</h1><p class="page-subtitle">Monitoring findings are distinct from model health.</p></div></div><div class="alerts-grid"><section class="panel page-empty"><h2>Alerts unavailable</h2><p>No inference alert source is connected. An empty alert list is not a healthy-state signal.</p></section><section class="panel page-empty"><h2>Collection coverage</h2><p>Model inventory is available. Individual request capture, GPU samples, and historical content are unavailable.</p></section></div></section>
+          <section id="view-alerts" class="page-view secondary-view" data-view="alerts" aria-labelledby="alerts-title" hidden><div class="page-toolbar"><div><p class="eyebrow">INFERENCE OBSERVABILITY / COVERAGE</p><h1 id="alerts-title">Alerts and coverage</h1><p class="page-subtitle">Truthful runtime findings and dynamic telemetry capability coverage.</p></div></div><div id="alerts-container" class="alerts-grid"></div></section>
 
           <footer class="page-footer"><span>Live observations stay in process memory.</span><span id="recording-status">Metadata recording: disabled · Content recording: disabled</span></footer>
           <p id="announcements" class="sr-only" role="status" aria-live="polite"></p>
         </main>
       </div>
     </div>
+
+    <dialog id="recording-confirm-dialog" class="confirm-dialog" aria-labelledby="recording-confirm-title">
+      <h2 id="recording-confirm-title" class="confirm-dialog-title">Enable Content Recording?</h2>
+      <p id="recording-confirm-body" class="confirm-dialog-body">
+        Full content recording persists complete prompt text, reasoning, and completion output to local SQLite storage.
+        Ensure you have authorization to retain model inputs and outputs.
+      </p>
+      <div class="confirm-dialog-actions">
+        <button id="recording-confirm-cancel" class="button button-subtle" type="button">Cancel</button>
+        <button id="recording-confirm-accept" class="button button-primary" type="button">Enable Content Recording</button>
+      </div>
+    </dialog>
 
     <dialog id="keyboard-help" class="help-dialog" aria-labelledby="keyboard-help-title">
       <div class="help-dialog-header"><h2 id="keyboard-help-title">Keyboard shortcuts</h2><button class="icon-button" type="button" data-close-help aria-label="Close keyboard shortcuts">Close</button></div>

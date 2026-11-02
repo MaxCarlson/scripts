@@ -147,7 +147,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .search-field input::placeholder { color: var(--lm-subtle); }
 .search-field kbd { padding: 1px 4px; border: 1px solid var(--lm-border); border-radius: 3px; color: var(--lm-subtle); font-size: 9px; }
 .compact-select { min-height: 29px; padding-right: 20px; font-size: 9px; }
-.request-list { min-height: 0; overflow: auto; overscroll-behavior: contain; scrollbar-color: #344156 transparent; scrollbar-width: thin; }
+.request-list { min-height: 0; overflow: auto; overscroll-behavior: auto; scrollbar-color: #344156 transparent; scrollbar-width: thin; }
 .request-row { position: relative; display: grid; width: 100%; gap: 6px; padding: 10px 11px 9px 13px; border: 0; border-bottom: 1px solid var(--lm-border-soft); border-left: 2px solid transparent; background: transparent; color: var(--lm-text); text-align: left; cursor: pointer; }
 .request-row:hover { background: var(--lm-panel-raised); }
 .request-row[aria-selected="true"] { border-left-color: var(--lm-blue); background: rgba(118, 186, 255, .09); }
@@ -284,6 +284,229 @@ input[type="checkbox"] { width: 12px; height: 12px; margin: 0; accent-color: var
 .help-dialog dt { color: var(--lm-blue); }
 .help-dialog dd { margin: 0; color: var(--lm-muted); font-size: 11px; }
 .help-dialog kbd { padding: 2px 5px; border: 1px solid var(--lm-border); border-radius: 4px; background: var(--lm-input); font-size: 10px; }
+
+/* Custom Accessible Combobox */
+.combobox-container { position: relative; display: inline-flex; align-items: center; }
+.combobox-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 29px;
+  padding: 0 9px;
+  background: var(--lm-input);
+  border: 1px solid var(--lm-border);
+  border-radius: 5px;
+  color: var(--lm-text);
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s ease;
+}
+.combobox-trigger:hover, .combobox-trigger:focus-visible {
+  border-color: var(--lm-blue);
+  outline: none;
+}
+.combobox-status-pill {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.status-pill-loaded { background: var(--lm-green); box-shadow: 0 0 5px rgba(101, 217, 174, 0.4); }
+.status-pill-not-loaded { background: var(--lm-subtle); }
+.status-pill-unknown { background: var(--lm-orange); }
+.status-pill-all { background: var(--lm-blue); }
+
+.combobox-label { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.combobox-arrow { font-size: 8px; color: var(--lm-subtle); margin-left: 2px; }
+.combobox-popup {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 100;
+  min-width: 260px;
+  max-width: 380px;
+  max-height: 280px;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--lm-panel-raised);
+  border: 1px solid var(--lm-border);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+  scrollbar-color: #344156 transparent;
+  scrollbar-width: thin;
+}
+.combobox-popup[hidden] { display: none; }
+.combobox-group-label {
+  padding: 6px 8px 3px 8px;
+  font-size: 8px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--lm-subtle);
+}
+.combobox-option {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 6px 8px;
+  border-radius: 4px;
+  color: var(--lm-text);
+  font-size: 10px;
+  cursor: pointer;
+}
+.combobox-option:hover, .combobox-option.is-focused {
+  background: var(--lm-panel-hover);
+}
+.combobox-option[aria-selected="true"] {
+  background: rgba(118, 186, 255, 0.12);
+  color: var(--lm-blue);
+  font-weight: 500;
+}
+.combobox-option-text {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.combobox-option-badge {
+  font-size: 9px;
+  font-family: var(--lm-mono);
+  padding: 1px 5px;
+  border-radius: 3px;
+}
+.badge-loaded { color: var(--lm-green); background: rgba(101, 217, 174, 0.1); }
+.badge-not-loaded { color: var(--lm-muted); background: rgba(148, 162, 181, 0.1); }
+.badge-unknown { color: var(--lm-orange); background: rgba(244, 194, 125, 0.1); }
+
+/* Alerts & Coverage View */
+.alerts-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 14px;
+  padding: 14px 0;
+}
+.alert-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px;
+  background: var(--lm-panel);
+  border: 1px solid var(--lm-border);
+  border-radius: 6px;
+  border-left: 3px solid var(--lm-subtle);
+}
+.alert-card.alert-healthy { border-left-color: var(--lm-green); }
+.alert-card.alert-warning { border-left-color: var(--lm-orange); }
+.alert-card.alert-critical { border-left-color: var(--lm-red); }
+.alert-card.alert-info { border-left-color: var(--lm-blue); }
+.alert-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.alert-card-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--lm-text);
+  margin: 0;
+}
+.alert-card-badge {
+  font-size: 9px;
+  font-family: var(--lm-mono);
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+.badge-healthy { color: var(--lm-green); background: rgba(101, 217, 174, 0.1); }
+.badge-warning { color: var(--lm-orange); background: rgba(244, 194, 125, 0.1); }
+.badge-critical { color: var(--lm-red); background: rgba(240, 142, 153, 0.1); }
+.badge-info { color: var(--lm-blue); background: rgba(118, 186, 255, 0.1); }
+.alert-card-body {
+  font-size: 11px;
+  color: var(--lm-muted);
+  line-height: 1.45;
+  margin: 0;
+}
+.alert-card-meta {
+  font-size: 9px;
+  color: var(--lm-subtle);
+  font-family: var(--lm-mono);
+  margin-top: 2px;
+}
+.coverage-matrix-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+.coverage-matrix-table th, .coverage-matrix-table td {
+  padding: 6px 8px;
+  text-align: left;
+  border-bottom: 1px solid var(--lm-border-soft);
+}
+.coverage-matrix-table th {
+  color: var(--lm-subtle);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 8px;
+  letter-spacing: 0.5px;
+}
+
+/* Recording Mode Controls & Badges */
+.recording-mode-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 9px;
+  min-height: 29px;
+  font-size: 9px;
+  font-family: var(--lm-mono);
+  border: 1px solid var(--lm-border);
+  border-radius: 5px;
+  background: var(--lm-input);
+  color: var(--lm-text);
+  cursor: pointer;
+  transition: border-color .15s ease;
+}
+.recording-mode-btn:hover { border-color: var(--lm-blue); }
+.recording-mode-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--lm-subtle);
+}
+.recording-mode-dot.is-metadata { background: var(--lm-blue); }
+.recording-mode-dot.is-content { background: var(--lm-green); box-shadow: 0 0 6px rgba(101, 217, 174, 0.4); }
+.recording-mode-dot.is-disabled { background: var(--lm-muted); opacity: 0.5; }
+
+.mode-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font: 9px var(--lm-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+}
+.mode-badge-metadata { background: rgba(118, 186, 255, 0.12); color: var(--lm-blue); border: 1px solid rgba(118, 186, 255, 0.3); }
+.mode-badge-content { background: rgba(101, 217, 174, 0.12); color: var(--lm-green); border: 1px solid rgba(101, 217, 174, 0.3); }
+
+/* Confirmation Dialog */
+.confirm-dialog {
+  border: 1px solid var(--lm-border);
+  border-radius: 8px;
+  background: var(--lm-panel);
+  color: var(--lm-text);
+  padding: 18px;
+  max-width: 440px;
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.6);
+}
+.confirm-dialog::backdrop { background: rgba(3, 6, 11, .72); }
+.confirm-dialog-title { margin: 0 0 8px 0; font-size: 13px; font-weight: 600; color: var(--lm-orange); }
+.confirm-dialog-body { margin: 0 0 14px 0; font-size: 11px; color: var(--lm-muted); line-height: 1.5; }
+.confirm-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 @media (min-width: 1900px) {
   .main-content { padding-right: 22px; padding-left: 22px; }

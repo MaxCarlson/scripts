@@ -26,7 +26,16 @@ async function main() {
   assert.match(html, /id="view-history"/);
   assert.match(html, /id="history-requests-list"/);
   assert.match(html, /id="history-inspector-panel"/);
+  assert.match(html, /id="model-combobox"/);
+  assert.match(html, /id="model-select-trigger"/);
+  assert.match(html, /id="model-select-popup"/);
+  assert.match(html, /id="alerts-container"/);
+  assert.match(html, /id="recording-mode-control"/);
+  assert.match(html, /id="recording-confirm-dialog"/);
+  assert.match(html, /id="history-server-filter"/);
+  assert.match(html, /id="history-time-filter"/);
   assert.match(css, /--lm-bg:\s*#0d1119/i);
+  assert.match(css, /overscroll-behavior:\s*auto/);
   assert.match(css, /grid-template-columns:\s*minmax\(290px, \.9fr\) minmax\(0, 1\.75fr\)/);
   assert.match(css, /max-width:\s*740px/);
   assert.match(css, /prefers-reduced-motion/);
@@ -82,7 +91,60 @@ async function main() {
   assert.ok(state.requests.find((item) => item.request_id === active.request_id).content.at(-1).text.endsWith("Additional text."), "snapshot reconciliation must retain a local appended delta until the server snapshot catches up");
   assert.equal(stateModule.visibleRequests({ ...state, search: "review the fixture" }).length, 1);
 
-  console.log("Standalone UI structure, fixture isolation, safe rendering, selection, streaming reducer, and missing-metric checks passed.");
+  // Model identity reconciliation and filtering test
+  const mockModels = [
+    {
+      model_id: "qwen38-27b-q4km",
+      id: "qwen38-27b-q4km",
+      name: "Qwen 2.5 27B Q4_K_M",
+      state: "loaded",
+      loaded_instance_ids: ["qwen38_23GB"],
+    },
+    {
+      model_id: "llama3-8b",
+      id: "llama3-8b",
+      name: "Llama 3 8B",
+      state: "not_loaded",
+      loaded_instance_ids: [],
+    },
+  ];
+  const reqWithRuntimeInstance = {
+    request_id: "req-1",
+    model_id: "qwen38_23GB",
+    model_instance_id: "qwen38_23GB",
+    resolved_model_id: "qwen38-27b-q4km",
+    client_model_id: "openai/qwen3.8_23GB",
+    state: "completed",
+    started_at: "2026-11-01T12:00:00Z",
+    ended_at: "2026-11-01T12:00:05Z",
+    input_tokens: 15,
+    output_tokens: 30,
+    coverage: {},
+  };
+  // Selecting the inventory model key must match request executed against runtime instance
+  assert.ok(stateModule.matchesModel(reqWithRuntimeInstance, "qwen38-27b-q4km", mockModels));
+  // Selecting runtime instance matches
+  assert.ok(stateModule.matchesModel(reqWithRuntimeInstance, "qwen38_23GB", mockModels));
+  // Selecting all matches
+  assert.ok(stateModule.matchesModel(reqWithRuntimeInstance, "all", mockModels));
+  // Selecting a different model does not match
+  assert.ok(!stateModule.matchesModel(reqWithRuntimeInstance, "llama3-8b", mockModels));
+
+  // Test visibleRequests with selectedModelId
+  const testState = {
+    ...state,
+    models: mockModels,
+    requests: [reqWithRuntimeInstance],
+    selectedModelId: "qwen38-27b-q4km",
+    selectedServerId: "all",
+    search: "",
+    timeRange: "all",
+    statusFilter: "all",
+  };
+  assert.equal(stateModule.visibleRequests(testState).length, 1);
+  assert.equal(formatters.aggregateSummary(testState.requests, "available", "qwen38-27b-q4km", mockModels).requestCount, "1");
+
+  console.log("Standalone UI structure, fixture isolation, safe rendering, selection, streaming reducer, missing-metric, and model reconciliation checks passed.");
 }
 
 function pathToFileURL(value) {
