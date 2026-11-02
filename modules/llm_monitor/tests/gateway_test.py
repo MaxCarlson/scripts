@@ -377,6 +377,26 @@ async def test_gateway_persists_large_nonstream_transcript_beyond_live_budget(tm
     assert recorder.stop(timeout=10)
 
 
+def test_nonstream_json_tool_arguments_are_captured():
+    from llm_monitor.inference_models import InferenceRequest
+
+    store = LiveInferenceStore()
+    gateway = OpenAIInferenceGateway("http://127.0.0.1:1234", store, RequestEventHub())
+    store.add_request(InferenceRequest(request_id="json-tool", server_instance_id="s1", source="gateway", state="active"))
+    arguments = json.dumps({"marker": "tool-live-ok"}, separators=(",", ":"))
+    raw = json.dumps({"id": "provider-tool", "model": "m", "choices": [{
+        "finish_reason": "tool_calls",
+        "message": {"role": "assistant", "tool_calls": [{"id": "call-1", "type": "function", "function": {
+            "name": "record_marker", "arguments": arguments
+        }}]},
+    }]}).encode()
+    gateway._capture_json("json-tool", {"request_id": "json-tool", "server_instance_id": "s1"}, raw)
+    segments = store.get_request("json-tool").content
+    assert [(item.kind, item.text, item.source) for item in segments] == [
+        ("tool_call", '{"marker":"tool-live-ok"}', "gateway_json")
+    ]
+
+
 def test_gateway_rejects_oversized_request_before_upstream_forwarding():
     store = LiveInferenceStore()
     gateway = OpenAIInferenceGateway("http://127.0.0.1:1234", store, RequestEventHub(), client=httpx.AsyncClient(transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError("must not forward")))))

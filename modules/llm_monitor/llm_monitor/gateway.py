@@ -474,6 +474,14 @@ class OpenAIInferenceGateway:
                                 self._update_fields(request_id, time_to_first_text_seconds=round(time.monotonic() - started, 4), time_to_first_text_source="gateway_observed")
                         emitted = self._publish({"type": kind, "request": identity, "timestamp": _now(), "delta": message[field]}, timing)
                         self._append_content(request_id, ContentSegment(kind="reasoning" if field == "reasoning_content" else "assistant", role="assistant", text=message[field], observed_at=emitted["timestamp"], sequence=emitted["sequence"], source="gateway_json"), timing)
+                tool_calls = message.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    for tool_call in tool_calls:
+                        function = tool_call.get("function") if isinstance(tool_call, dict) else None
+                        arguments = function.get("arguments") if isinstance(function, dict) else None
+                        if isinstance(arguments, str) and arguments:
+                            emitted = self._publish({"type": "tool_call.delta", "request": identity, "timestamp": _now(), "delta": arguments}, timing)
+                            self._append_content(request_id, ContentSegment(kind="tool_call", role="assistant", text=arguments, observed_at=emitted["timestamp"], sequence=emitted["sequence"], source="gateway_json"), timing)
             if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
                 self._update_fields(request_id, finish_reason=choice["finish_reason"])
         if isinstance(result, dict) and isinstance(result.get("id"), str):
