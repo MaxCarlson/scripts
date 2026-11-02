@@ -1,0 +1,111 @@
+{
+  "schema_version": "validation-receipt-v1",
+  "repository": "MaxCarlson/scripts",
+  "branch": "agent/managed-monitor-ops-20261102",
+  "base_commit": "109c7ad0edfb44b18e19505abf1def4ea58fac77",
+  "phase": "05",
+  "validated_at": "2026-11-02T12:01:30-08:00",
+  "platform": {
+    "os": "Windows",
+    "release": "11",
+    "python": "3.12.10",
+    "shell": "PowerShell 7+"
+  },
+  "checks": [
+    {
+      "name": "llm_monitor_test_suite",
+      "command": "python -m pytest modules/llm_monitor/tests -q",
+      "exit_code": 0,
+      "state": "passed",
+      "total": 268,
+      "passed": 266,
+      "skipped": 2,
+      "failed": 0
+    },
+    {
+      "name": "web_ui_tools_test_suite",
+      "command": "python -m pytest modules/web_ui_tools/tests -q",
+      "exit_code": 0,
+      "state": "passed",
+      "total": 14,
+      "passed": 14,
+      "skipped": 0,
+      "failed": 0
+    },
+    {
+      "name": "runmux_web_lifecycle_tests",
+      "command": "python -m pytest modules/runmux/tests/web_server_lifecycle_test.py modules/runmux/tests/web_cli_test.py -q",
+      "exit_code": 0,
+      "state": "passed",
+      "total": 34,
+      "passed": 33,
+      "skipped": 1,
+      "failed": 0
+    },
+    {
+      "name": "agent_benchmark_suite_tests",
+      "command": "python -m pytest modules/agent_benchmark/tests/suite_doctor_test.py modules/agent_benchmark/tests/suite_recovery_test.py modules/agent_benchmark/tests/adversarial_incident_test.py modules/agent_benchmark/tests/suite_cli_test.py modules/agent_benchmark/tests/suite_monitor_test.py -q",
+      "exit_code": 0,
+      "state": "passed",
+      "total": 51,
+      "passed": 51,
+      "skipped": 0,
+      "failed": 0
+    }
+  ],
+  "adversarial_incidents_verified": [
+    {
+      "incident": "Foreign listener on port",
+      "mechanism": "Unmanaged listener detected on port without descriptor",
+      "outcome": "MONITOR_UNMANAGED_LISTENER; no kill or silent attach",
+      "status": "verified"
+    },
+    {
+      "incident": "PID recycling",
+      "mechanism": "PID reused but creation timestamp differs",
+      "outcome": "MONITOR_IDENTITY_MISMATCH; stale descriptor rejected",
+      "status": "verified"
+    },
+    {
+      "incident": "Forged challenge HMAC",
+      "mechanism": "Client receives altered HMAC signature",
+      "outcome": "Instance verification fails closed; returns None",
+      "status": "verified"
+    },
+    {
+      "incident": "Docker Desktop pipe permission denied",
+      "mechanism": "WinError 5 Access is denied on \\\\.\\pipe\\docker_engine",
+      "outcome": "DOCKER_PIPE_ACCESS_DENIED; suggested action USE_APPROVED_HOST_CONTEXT; no repeat loop",
+      "status": "verified"
+    },
+    {
+      "incident": "Secret scrubbing",
+      "mechanism": "Inspect serialized preflight receipts, exception traces, and command logs",
+      "outcome": "Zero tokens, cookies, or credentials leaked",
+      "status": "verified"
+    },
+    {
+      "incident": "Configured OpenCode Responses API format",
+      "mechanism": "Monitored OpenCode passed api_format=openai_responses",
+      "outcome": "Rejected with error; requires openai_chat_completions",
+      "status": "verified"
+    },
+    {
+      "incident": "Recorder degradation mid-run",
+      "mechanism": "Dropped observations count increases at task boundary",
+      "outcome": "Task marked infrastructure_invalid; subsequent dispatch halted; checkpoint preserved",
+      "status": "verified"
+    }
+  ],
+  "security_review": {
+    "local_ipc_acl": "Windows SID SDDL DACL with SYSTEM access and PIPE_REJECT_REMOTE_CLIENTS; POSIX mode 0600 socket in 0700 dir",
+    "capabilities": "Cryptographic tokens, 120s TTL, memory-only verifier, constant-time comparison, revoked on restart",
+    "browser_protection": "Browser code, cookie, Origin, and Host validation remain strict; mutating endpoints forbid bearer token",
+    "evidence_preservation": "Task checkpoints and SQLite DB retained under failure; immutable manifests and frozen dataset revisions verified"
+  },
+  "live_smoke": {
+    "authorized": false,
+    "state": "skipped",
+    "reason": "Full benchmark inference requires explicit user request with specific model/task authorization; non-mutating qualification complete"
+  }
+}

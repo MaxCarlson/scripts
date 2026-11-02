@@ -10,3 +10,10 @@ _agent_benchmark_root = _worktree_root / "modules" / "agent_benchmark"
 for path in [_agent_benchmark_root, _llm_monitor_root, _web_ui_tools_src]:
     if path.is_dir() and str(path) not in sys.path:
         sys.path.insert(0, str(path))
+
+
+def pytest_configure(config):
+    import os
+    if config.option.basetemp is None:
+        config.option.basetemp = str(Path(__file__).resolve().parents[1] / ".pytest_tmp_root" / f"run-{os.getpid()}")
+    Path(config.option.basetemp).parent.mkdir(parents=True, exist_ok=True)
