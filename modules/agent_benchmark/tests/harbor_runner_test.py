@@ -339,3 +339,39 @@ def test_execute_harbor_run_nonzero_exit_all_completed(tmp_path: Path, monkeypat
     assert out_dir.is_dir()
     assert summary["completed"] == 2
     assert summary["harbor_process_returncode"] == 2
+
+
+def test_build_harbor_command_api_format():
+    # 1. Explicit model_api_format forwarded to harbor
+    plan_format = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        count=1,
+        model_api_format="openai_chat_completions",
+    )
+    cmd_format = build_harbor_command(plan_format, jobs_dir=Path(".harbor-jobs"))
+    assert "--api-format" in cmd_format
+    fmt_idx = cmd_format.index("--api-format")
+    assert cmd_format[fmt_idx + 1] == "openai_chat_completions"
+    assert "--base-url" in cmd_format
+    assert "http://host.docker.internal:1234/v1" in cmd_format
+
+    # 2. Default plan without model_api_format omits --api-format
+    plan_no_fmt = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
+    cmd_no_fmt = build_harbor_command(plan_no_fmt, jobs_dir=Path(".harbor-jobs"))
+    assert "--api-format" not in cmd_no_fmt
+    assert "--base-url" in cmd_no_fmt
+
+    # 3. Custom base_url preserved alongside explicit api-format
+    plan_gateway = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        count=1,
+        base_url="http://host.docker.internal:8788/v1",
+        model_api_format="openai_chat_completions",
+    )
+    cmd_gateway = build_harbor_command(plan_gateway, jobs_dir=Path(".harbor-jobs"))
+    assert "--api-format" in cmd_gateway
+    assert cmd_gateway[cmd_gateway.index("--api-format") + 1] == "openai_chat_completions"
+    assert "--base-url" in cmd_gateway
+    assert cmd_gateway[cmd_gateway.index("--base-url") + 1] == "http://host.docker.internal:8788/v1"

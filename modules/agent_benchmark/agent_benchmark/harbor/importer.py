@@ -43,7 +43,7 @@ class HarborImporter:
             raise HarborImportError(f"Missing root result.json in {self.job_dir}")
 
         try:
-            job_data = json.loads(result_file.read_text(encoding="utf-8"))
+            job_data = json.loads(result_file.read_text(encoding="utf-8", errors="replace"))
             job_result = HarborJobResult.model_validate(job_data)
         except Exception as exc:
             raise HarborImportError(f"Failed to parse job result.json in {self.job_dir}: {exc}") from exc
@@ -53,7 +53,7 @@ class HarborImporter:
         lock_file = self.job_dir / "lock.json"
         if lock_file.is_file():
             try:
-                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8", errors="replace"))
                 job_lock = HarborJobLock.model_validate(lock_data)
             except Exception:
                 job_lock = None
@@ -67,7 +67,7 @@ class HarborImporter:
         for child in self.job_dir.iterdir():
             if child.is_dir() and (child / "result.json").is_file():
                 try:
-                    trial_data = json.loads((child / "result.json").read_text(encoding="utf-8"))
+                    trial_data = json.loads((child / "result.json").read_text(encoding="utf-8", errors="replace"))
                     trial = HarborTrialResult.model_validate(trial_data)
                     trials_by_id[str(trial.id)] = trial
                 except Exception:
@@ -240,8 +240,15 @@ class HarborImporter:
             repetition = rep_counters.get(rep_key, 0)
             rep_counters[rep_key] = repetition + 1
 
+            # Discover trial subdirectory if present
+            trial_sub_dir = (
+                (self.job_dir / ht.trial_name)
+                if (self.job_dir / ht.trial_name).is_dir()
+                else None
+            )
+
             # Evaluate status
-            eval_res = evaluate_trial_status(ht)
+            eval_res = evaluate_trial_status(ht, trial_dir=trial_sub_dir)
 
             # Record stats
             stats["completed"] += 1
@@ -352,6 +359,17 @@ class HarborImporter:
             if ht.trial_uri:
                 details["trial_uri"] = ht.trial_uri
 
+            raw_rew = None
+            if ht.verifier_result and ht.verifier_result.rewards:
+                for k in ("reward", "score", "acc", "accuracy"):
+                    if k in ht.verifier_result.rewards:
+                        raw_rew = ht.verifier_result.rewards[k]
+                        break
+                if raw_rew is None and len(ht.verifier_result.rewards) == 1:
+                    raw_rew = next(iter(ht.verifier_result.rewards.values()))
+            if raw_rew is not None:
+                details["original_verifier_reward"] = raw_rew
+
             trial_rec = TrialResult(
                 run_id=str(job_result.id),
                 trial_id=str(ht.id),
@@ -431,6 +449,11 @@ class HarborImporter:
             "coverage_pct": round(coverage, 2),
             "median_wall_time_ms": round(median_wall, 2) if median_wall is not None else None,
             "harbor_process_returncode": process_returncode,
+            "valid_model_trials": stats["scored"],
+            "valid_model_passes": stats["passed"],
+            "infrastructure_invalid_trials": stats["infrastructure_error"],
+            "valid_scored_coverage_pct": round(coverage, 2),
+            "valid_pass_rate_pct": round(pass_rate, 2),
         }
 
         return run_info, canonical_trials, summary_data

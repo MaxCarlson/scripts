@@ -36,7 +36,7 @@ def collect_run_summaries(target_dir: Path | str) -> list[dict[str, Any]]:
         hs_file = rdir / "harbor_summary.json"
         if hs_file.is_file():
             try:
-                json.loads(hs_file.read_text(encoding="utf-8"))
+                json.loads(hs_file.read_text(encoding="utf-8", errors="replace"))
             except Exception:
                 pass
 

@@ -20,7 +20,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]")
+LOOPBACK_HOSTS = ("127.0.0.1", "localhost", "[::1]", "host.docker.internal")
 SESSION_COOKIE = "web_ui_session"
 SESSION_MAX_AGE = 8 * 60 * 60
 SECURITY_HEADERS = {

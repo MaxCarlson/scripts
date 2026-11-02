@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 import math
+from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -21,6 +22,7 @@ class FailureCause(StrEnum):
     UNCLASSIFIED = "unclassified"
     AGENT_EXHAUSTED_BUDGET = "agent_exhausted_budget"
     AGENT_REFUSED_TASK = "agent_refused_task"
+    AGENT_FAILED = "agent_failed"
     VERIFIER_FAILED = "verifier_failed"
     CANCELLED = "cancelled"
 
@@ -85,6 +87,8 @@ ERROR_TYPE_TO_CAUSE: dict[str, FailureCause] = {
     # Agent refusal
     "AgentSafetyRefusalError": FailureCause.AGENT_REFUSED_TASK,
     "ContentPolicyViolationError": FailureCause.AGENT_REFUSED_TASK,
+    # Agent execution / non-zero exit
+    "NonZeroAgentExitCodeError": FailureCause.AGENT_FAILED,
     # Verifier failure
     "VerifierTimeoutError": FailureCause.VERIFIER_FAILED,
     "RewardFileNotFoundError": FailureCause.VERIFIER_FAILED,
@@ -309,9 +313,96 @@ class StatusEvaluation:
     failure_cause: str | None
 
 
-def evaluate_trial_status(trial: HarborTrialResult) -> StatusEvaluation:
+def detect_endpoint_or_protocol_failure(
+    trial: HarborTrialResult,
+    trial_dir: Path | None = None,
+) -> tuple[bool, str | None]:
+    """Detect whether an agent failure was caused by inference endpoint or protocol disconnect."""
+    exc = trial.exception_info
+    if exc is None and trial.step_results:
+        for s in trial.step_results:
+            if s.exception_info is not None:
+                exc = s.exception_info
+                break
+
+    msg = exc.exception_message if exc and exc.exception_message else ""
+    type_name = exc.exception_type if exc and exc.exception_type else ""
+
+    if ERROR_TYPE_TO_CAUSE.get(type_name) == FailureCause.MODEL_PROVIDER_FAILED:
+        return True, f"Model provider exception: {type_name}"
+
+    msg_lower = msg.lower()
+    if (
+        'statuscode": 404' in msg_lower
+        or 'statuscode":404' in msg_lower
+        or "status_code=404" in msg_lower
+        or "http 404" in msg_lower
+        or "404 not found" in msg_lower
+        or 'detail":"not found' in msg_lower
+        or "apierror: not found" in msg_lower
+    ):
+        return True, "Inference endpoint returned HTTP 404 Not Found (endpoint or protocol mismatch)"
+
+    if (
+        "econnrefused" in msg_lower
+        or "connection refused" in msg_lower
+        or "failed to connect to host" in msg_lower
+        or "enotfound" in msg_lower
+    ):
+        return True, "Connection to inference endpoint refused or unreachable"
+
+    if "ai_apicallerror" in msg_lower:
+        return True, "AI API call error communicating with inference endpoint"
+
+    if trial_dir is not None and trial_dir.is_dir():
+        log_candidates = [
+            trial_dir / "agent" / "opencode.txt",
+            trial_dir / "agent" / "opencode" / "xdg-data" / "opencode" / "log" / "opencode.log",
+            trial_dir / "trial.log",
+        ]
+        for log_path in log_candidates:
+            if log_path.is_file():
+                try:
+                    content = log_path.read_text(encoding="utf-8", errors="replace").lower()
+                    if (
+                        'statuscode": 404' in content
+                        or 'statuscode":404' in content
+                        or "404 not found" in content
+                        or 'detail":"not found' in content
+                    ):
+                        return True, "Inference endpoint returned HTTP 404 Not Found in agent log"
+                    if "econnrefused" in content or "connection refused" in content:
+                        return True, "Connection to inference endpoint refused in agent log"
+                except Exception:
+                    pass
+
+    return False, None
+
+
+def evaluate_trial_status(
+    trial: HarborTrialResult,
+    trial_dir: Path | None = None,
+) -> StatusEvaluation:
     """Evaluate authoritative outcome according to Section 7.1 and 8 of the specification."""
     scoring_basis = "external_verifier_pass_v1"
+
+    # Extract raw verifier reward if available
+    raw_reward: float | None = None
+    v_res = trial.verifier_result
+    if v_res and v_res.rewards:
+        authoritative_keys = ("reward", "score", "acc", "accuracy")
+        for key in authoritative_keys:
+            if key in v_res.rewards:
+                try:
+                    raw_reward = float(v_res.rewards[key])
+                except (ValueError, TypeError):
+                    pass
+                break
+        if raw_reward is None and len(v_res.rewards) == 1:
+            try:
+                raw_reward = float(next(iter(v_res.rewards.values())))
+            except (ValueError, TypeError):
+                pass
 
     # 1. Check for trial-level or step-level exceptions
     exc = trial.exception_info
@@ -322,6 +413,20 @@ def evaluate_trial_status(trial: HarborTrialResult) -> StatusEvaluation:
                 break
 
     if exc is not None:
+        # Check for inference endpoint/protocol failure before classifying as normal agent failure
+        is_endpoint_err, endpoint_diag = detect_endpoint_or_protocol_failure(trial, trial_dir)
+        if is_endpoint_err:
+            diag_str = endpoint_diag or "Inference endpoint or protocol failure"
+            return StatusEvaluation(
+                canonical_status="infrastructure_error",
+                points_awarded=None,
+                primary_reward=None,
+                scoring_basis=scoring_basis,
+                diagnostics=f"Infrastructure failure (model_provider_failed): {diag_str}"
+                + (f" (original verifier reward: {raw_reward})" if raw_reward is not None else ""),
+                failure_cause=FailureCause.MODEL_PROVIDER_FAILED.value,
+            )
+
         cause = exc.failure_cause
         if cause == FailureCause.AGENT_EXHAUSTED_BUDGET:
             return StatusEvaluation(
@@ -348,6 +453,36 @@ def evaluate_trial_status(trial: HarborTrialResult) -> StatusEvaluation:
                 primary_reward=None,
                 scoring_basis=scoring_basis,
                 diagnostics=f"Trial cancelled: {exc.exception_type}",
+                failure_cause=cause.value,
+            )
+        elif cause == FailureCause.AGENT_FAILED:
+            # Agent process exited non-zero (agent error/crash/EPIPE).
+            # Check if the authoritative verifier ran and evaluated the outcome.
+            if raw_reward is not None and not (math.isnan(raw_reward) or math.isinf(raw_reward)):
+                if raw_reward >= 1.0:
+                    return StatusEvaluation(
+                        canonical_status="passed",
+                        points_awarded=1.0,
+                        primary_reward=raw_reward,
+                        scoring_basis=scoring_basis,
+                        diagnostics="Verifier confirmed success",
+                        failure_cause=None,
+                    )
+                else:
+                    return StatusEvaluation(
+                        canonical_status="failed",
+                        points_awarded=0.0,
+                        primary_reward=raw_reward,
+                        scoring_basis=scoring_basis,
+                        diagnostics=f"Verifier confirmed failure (reward={raw_reward})",
+                        failure_cause=cause.value,
+                    )
+            return StatusEvaluation(
+                canonical_status="failed",
+                points_awarded=0.0,
+                primary_reward=0.0,
+                scoring_basis=scoring_basis,
+                diagnostics=f"Agent command failed: {exc.exception_type} - {exc.exception_message}",
                 failure_cause=cause.value,
             )
         else:

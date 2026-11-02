@@ -57,6 +57,9 @@ def build_harbor_command(
     if plan.base_url and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--base-url", plan.base_url])
 
+    if plan.model_api_format and plan.agent not in ("oracle", "nop"):
+        cmd.extend(["--api-format", plan.model_api_format])
+
     for task_id in plan.selected_tasks:
         cmd.extend(["--include-task-name", task_id])
 
@@ -138,7 +141,7 @@ def execute_harbor_run(
     )
 
     run_env = os.environ.copy()
-    if plan.agent == "qwen-coder" and "OPENAI_API_KEY" not in run_env:
+    if plan.agent in ("qwen-coder", "opencode") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
 
     with command_lock(state):
@@ -172,7 +175,7 @@ def execute_harbor_run(
     # If Harbor exited with a nonzero returncode, inspect the result artifact before accepting
     if proc.returncode != 0:
         try:
-            job_data = json.loads(result_file.read_text(encoding="utf-8"))
+            job_data = json.loads(result_file.read_text(encoding="utf-8", errors="replace"))
             job_res = HarborJobResult.model_validate(job_data)
         except Exception as exc:
             raise RuntimeError(
