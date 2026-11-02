@@ -172,6 +172,21 @@ def test_background_retry_policy_is_forwarded_to_detached_worker(tmp_path, monke
     assert "--retry-invalid" in args_seen["args"]
 
 
+def test_background_resume_clears_previous_worker_pid(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import agent_benchmark.suite as suite
+
+    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="model",
+                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    suite.RunStore(run).set_state("interrupted", worker_pid=999999)
+    def fake_popen(_args, **_kwargs):
+        assert suite.RunStore(run).read()["worker_pid"] is None
+        suite.RunStore(run).set_state("running", worker_pid=os.getpid())
+        return SimpleNamespace(pid=os.getpid())
+    monkeypatch.setattr(suite.subprocess, "Popen", fake_popen)
+    assert suite.launch_background(run) == os.getpid()
+
+
 def test_detached_worker_lifecycle_reconciles_a_completed_fixture_without_inference(tmp_path):
     import time
     import agent_benchmark.suite as suite

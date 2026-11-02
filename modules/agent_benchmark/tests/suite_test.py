@@ -37,6 +37,61 @@ def test_frozen_cohort_identity_and_order():
     assert tuple(cohort["tasks"]) == EXPECTED_PYTHON_10
 
 
+def test_atomic_checkpoint_retries_transient_permission_error(tmp_path, monkeypatch):
+    import agent_benchmark.suite as suite
+    path = tmp_path / "checkpoint.json"
+    path.write_text('{"old": true}', encoding="utf-8")
+    real_replace = suite.os.replace
+    attempts = []
+    def replace(source, target):
+        attempts.append(source)
+        if len(attempts) < 3:
+            raise PermissionError("sharing violation")
+        real_replace(source, target)
+    monkeypatch.setattr(suite.os, "replace", replace)
+    monkeypatch.setattr(suite.time, "sleep", lambda _: None)
+    suite._write_json_atomic(path, {"new": True})
+    assert len(attempts) == 3
+    assert json.loads(path.read_text(encoding="utf-8")) == {"new": True}
+
+
+def test_starting_worker_uses_launcher_identity(tmp_path, monkeypatch):
+    import agent_benchmark.suite as suite
+    import psutil
+    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="model",
+                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    suite.RunStore(run).set_state("starting", launcher_pid=42)
+    (run / "launcher.lock").write_text(json.dumps({"pid": 1234}), encoding="utf-8")
+    monkeypatch.setattr(psutil, "pid_exists", lambda pid: pid == 1234)
+    status = suite.status_run(run)
+    assert status["state"] == "starting"
+    assert status["worker_alive"] is True
+
+
+def test_starting_without_launcher_lock_is_interrupted(tmp_path, monkeypatch):
+    import agent_benchmark.suite as suite
+    import psutil
+    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="model",
+                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    suite.RunStore(run).set_state("starting", launcher_pid=42)
+    monkeypatch.setattr(psutil, "pid_exists", lambda _pid: True)
+    assert suite.status_run(run)["state"] == "interrupted"
+
+
+def test_atomic_checkpoint_preserves_existing_file_on_persistent_failure(tmp_path, monkeypatch):
+    import agent_benchmark.suite as suite
+    path = tmp_path / "checkpoint.json"
+    path.write_text('{"old": true}', encoding="utf-8")
+    def denied(*_args):
+        raise PermissionError("persistent denial")
+    monkeypatch.setattr(suite.os, "replace", denied)
+    monkeypatch.setattr(suite.time, "sleep", lambda _: None)
+    with pytest.raises(PermissionError, match="persistent denial"):
+        suite._write_json_atomic(path, {"new": True})
+    assert json.loads(path.read_text(encoding="utf-8")) == {"old": True}
+    assert list(tmp_path.glob(".checkpoint.json.*.tmp")) == []
+
+
 def test_user_manifest_preserves_order_and_rejects_duplicate_tasks(tmp_path: Path):
     path = tmp_path / "custom.json"
     path.write_text(json.dumps({"id": "custom", "dataset": "aider/aider-polyglot",

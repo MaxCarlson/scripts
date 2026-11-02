@@ -260,11 +260,10 @@ def execute_harbor_run(
         run_env["OPENAI_API_KEY"] = "lm-studio"
     if plan.agent == "opencode-v2" or study_adapter:
         agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
+        benchmark_core_root = str(Path(agent_bench_root).parent / "benchmark_core")
         current_pythonpath = run_env.get("PYTHONPATH", "")
-        run_env["PYTHONPATH"] = (
-            f"{agent_bench_root}{os.pathsep}{current_pythonpath}"
-            if current_pythonpath
-            else agent_bench_root
+        run_env["PYTHONPATH"] = os.pathsep.join(
+            item for item in (agent_bench_root, benchmark_core_root, current_pythonpath) if item
         )
 
     if plan.agent == "opencode" and not study_adapter:

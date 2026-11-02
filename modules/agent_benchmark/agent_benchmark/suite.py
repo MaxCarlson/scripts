@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 from typing import Any, Callable
 from uuid import uuid4
 
@@ -43,7 +44,17 @@ def _write_json_atomic(path: Path, value: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temp = path.with_name(f".{path.name}.{uuid4().hex}.tmp")
     temp.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-    os.replace(temp, path)
+    try:
+        for attempt in range(11):
+            try:
+                os.replace(temp, path)
+                break
+            except PermissionError:
+                if attempt == 10:
+                    raise
+                time.sleep(0.02)
+    finally:
+        temp.unlink(missing_ok=True)
 
 
 def load_cohort(cohort: str | None = None, manifest: Path | None = None) -> dict[str, Any]:
@@ -612,9 +623,8 @@ def launch_background(run_dir: Path, *, retry_invalid: bool = False) -> int:
         kwargs["creationflags"] = subprocess.DETACHED_PROCESS | subprocess.CREATE_NEW_PROCESS_GROUP
     else:
         kwargs["start_new_session"] = True
-    RunStore(run_dir).set_state("starting", launcher_pid=os.getpid())
     try:
-        RunStore(run_dir).set_state("starting", launcher_pid=os.getpid())
+        RunStore(run_dir).set_state("starting", launcher_pid=os.getpid(), worker_pid=None)
         command = [sys.executable, "-m", "agent_benchmark.suite_worker", str(run_dir), "--execute"]
         if retry_invalid:
             command.append("--retry-invalid")
@@ -626,7 +636,6 @@ def launch_background(run_dir: Path, *, retry_invalid: bool = False) -> int:
     finally:
         stdout.close()
         stderr.close()
-    import time
     deadline = time.monotonic() + 1.0
     checkpoint = RunStore(run_dir)
     while time.monotonic() < deadline:
@@ -641,6 +650,14 @@ def status_run(run_dir: Path) -> dict[str, Any]:
     checkpoint = store.read()
     result = summarize_run(checkpoint)
     pid = checkpoint.get("worker_pid")
+    if not pid and checkpoint.get("state") == "starting":
+        try:
+            launcher = json.loads((Path(run_dir) / "launcher.lock").read_text(encoding="utf-8"))
+            pid = launcher.get("pid") or checkpoint.get("launcher_pid")
+        except FileNotFoundError:
+            pid = None
+        except (OSError, ValueError, TypeError):
+            pid = checkpoint.get("launcher_pid")
     alive = False
     if pid:
         try:

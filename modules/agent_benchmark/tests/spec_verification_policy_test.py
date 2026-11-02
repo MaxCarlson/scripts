@@ -184,6 +184,7 @@ def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path,
                            state_dir=tmp_path / "state", study_adapter=True)
     assert "agent_benchmark.harbor.opencode_v1:OpenCodeV1" in captured[0][0]
     assert "agent_benchmark" in captured[0][1]["PYTHONPATH"]
+    assert "benchmark_core" in captured[0][1]["PYTHONPATH"]
 
 
 def test_resume_refuses_modified_template_before_executor(tmp_path):
