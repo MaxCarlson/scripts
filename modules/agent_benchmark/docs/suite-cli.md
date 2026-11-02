@@ -11,6 +11,8 @@ agent-bench suite plan -c aider-python-10 -a opencode -m openai/qwen38_23GB
 
 `aider-python-10` is frozen in its original order at Harbor dataset source revision `f30b14415dd733c83627204bad0af69a89ceb46f`. The plan includes the agent/model, endpoint and API format, retry policy, task identities and a stable manifest SHA-256. Harbor's own lock supplies authoritative source task checksums after a job completes; the pre-run task identity key is explicitly labeled as an identity hash, not a content digest. `-M/--manifest` accepts JSON with `id`, `dataset`, `source_revision`, and an ordered, unique `tasks` array.
 
+The current shared Harbor runner does not expose the task Git commit override in its execution API. The suite therefore verifies the exact source revision from Harbor's lock after each one-task job and classifies any mismatch as infrastructure-invalid. A registry drift could consume inference before that mismatch is detected; use a controlled preflight or a runner with an explicit pre-dispatch commit pin when that risk is unacceptable.
+
 ## Monitored execution
 
 LLM Monitor must already be running with its gateway enabled. Suite preflight queries the gateway `/models` endpoint, the monitor inference status, and recording status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.

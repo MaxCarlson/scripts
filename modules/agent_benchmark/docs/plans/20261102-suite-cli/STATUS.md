@@ -29,3 +29,4 @@
 - Commit: `ce9250154f7519eb637c2c59451cd420f8e5f7c3` (`feat(agent-benchmark): add persistent suite CLI`).
 - Final diff review passed; the feature branch is clean. The primary checkout remains on `main` at the required base with its pre-existing untracked Harbor evidence untouched.
 - Remaining validation: live routing and recording need a controlled monitored smoke; the full ten-task cohort remains deliberately unrun. Do not merge or push.
+- Known interface boundary: the shared runner cannot pass a task Git commit override before dispatch. Revision mismatches are detected from Harbor lock evidence after the task and excluded from scores, but could consume inference before rejection.
