@@ -191,11 +191,16 @@ def probe_managed_monitor(
         )
 
     # Check config fingerprint
-    config_match = compare_config_fingerprint(
+    match_result = compare_config_fingerprint(
         descriptor,
         gateway_enabled=expected_gateway,
         recording_mode=expected_recording,
     )
+    if isinstance(match_result, tuple):
+        config_match = match_result[0]
+        details["config_diff"] = match_result[1]
+    else:
+        config_match = bool(match_result)
     details["config_match"] = config_match
     if not config_match:
         return (

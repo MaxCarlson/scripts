@@ -118,26 +118,29 @@ def compute_config_fingerprint(
 
 def compare_config_fingerprint(
     descriptor: ServerDescriptor,
-    requested: dict[str, Any],
+    requested: dict[str, Any] | None = None,
+    **kwargs: Any,
 ) -> tuple[bool, dict[str, tuple[Any, Any]]]:
     """Compare a running server descriptor against requested config. Returns (is_match, diff_dict)."""
     diff: dict[str, tuple[Any, Any]] = {}
+    req = dict(requested or {})
+    req.update(kwargs)
 
-    req_port = requested.get("port")
+    req_port = req.get("port")
     if req_port is not None and descriptor.port != req_port:
         diff["port"] = (descriptor.port, req_port)
 
-    req_gateway = requested.get("gateway_enabled")
+    req_gateway = req.get("gateway_enabled")
     if req_gateway is True and not descriptor.gateway_enabled:
         diff["gateway_enabled"] = (descriptor.gateway_enabled, True)
 
-    req_mode = requested.get("recording_mode")
+    req_mode = req.get("recording_mode")
     if req_mode is not None:
         desc_mode = descriptor.recording_mode or "off"
         if desc_mode != req_mode:
             diff["recording_mode"] = (descriptor.recording_mode, req_mode)
 
-    req_db = requested.get("database_path")
+    req_db = req.get("database_path")
     if req_db is not None:
         desc_db = descriptor.database_path
         if desc_db and str(Path(desc_db).resolve()) != str(Path(req_db).resolve()):

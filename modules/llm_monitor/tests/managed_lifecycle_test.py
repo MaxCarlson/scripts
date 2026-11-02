@@ -94,6 +94,11 @@ def test_compare_config_fingerprint(tmp_path: Path):
     assert match is True
     assert diff == {}
 
+    # Keyword argument form
+    match_kw, diff_kw = compare_config_fingerprint(desc, gateway_enabled=True, recording_mode="content")
+    assert match_kw is True
+    assert diff_kw == {}
+
     # Mismatch recording mode
     match_bad, diff_bad = compare_config_fingerprint(
         desc,
