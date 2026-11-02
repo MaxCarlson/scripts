@@ -80,6 +80,17 @@ def add_suite_parser(actions: Any) -> None:
     archive.add_argument("-p", "--archive", dest="archive", type=Path, help="Archive path to verify")
     archive.add_argument("-F", "--llm-friendly", action="store_true", help="Compact JSON output")
 
+    doctor = commands.add_parser("doctor", help="Inspect execution context and service readiness without mutation")
+    doctor.add_argument("-F", "--full", action="store_true", help="Enable additional bounded diagnostic probes")
+    doctor.add_argument("-f", "--format", choices=("text", "json"), default="text", help="Output format (default: text)")
+    doctor.add_argument("-L", "--llm-monitor", action="store_true", help="Check LLM Monitor readiness")
+    doctor.add_argument("-U", "--monitor-url", default=DEFAULT_MONITOR_URL, help="Container-facing monitor gateway URL")
+    doctor.add_argument("-H", "--monitor-host-url", default=None, help="Host-reachable LLM Monitor URL")
+    doctor.add_argument("-e", "--endpoint", default=None, help="Inference provider endpoint (e.g. LM Studio)")
+    doctor.add_argument("-R", "--recording", choices=("off", "metadata", "content"), default="off", help="Expected recording mode")
+    doctor.add_argument("-a", "--agent", default=None, help="Agent profile to diagnose")
+    doctor.add_argument("-m", "--model", default=None, help="Model selector to verify in provider")
+
 
 def _run_dir(runs_dir: Path, run_id: str) -> Path:
     candidate = Path(run_id)
@@ -123,6 +134,9 @@ def handle_suite(args: argparse.Namespace) -> int:
     command = args.suite_command
     friendly = bool(getattr(args, "llm_friendly", False))
     try:
+        if command == "doctor":
+            from .suite_doctor import run_doctor
+            return run_doctor(args)
         if command == "list":
             rows = [{"id": key, "dataset": value["dataset"], "source_revision": value["revision"],
                      "tasks": len(value["tasks"])} for key, value in COHORTS.items()]
