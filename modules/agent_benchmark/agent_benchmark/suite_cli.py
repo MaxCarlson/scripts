@@ -63,6 +63,22 @@ def add_suite_parser(actions: Any) -> None:
     report.add_argument("-r", "--run-id", required=True)
     report.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     report.add_argument("-F", "--llm-friendly", action="store_true")
+    archive = commands.add_parser("archive", help="Archive and verify LLM Monitor evidence for suite runs")
+    archive.add_argument("action", nargs="?", choices=("create", "verify"), default="create",
+                         help="Archive action: create (default) or verify")
+    archive.add_argument("-r", "--run", "--run-id", dest="run", help="Run ID or path to run directory")
+    archive.add_argument("-R", "--runs-root", "--runs-dir", dest="runs_root", type=Path, default=DEFAULT_RUNS,
+                         help="Suite runs root directory")
+    archive.add_argument("-d", "--database", type=Path, help="Path to SQLite recording database")
+    archive.add_argument("-H", "--monitor-host-url", help="Host-reachable LLM Monitor URL")
+    archive.add_argument("-o", "--output", type=Path, help="Target archive output directory")
+    archive.add_argument("-t", "--drain-timeout", type=float, default=30.0, help="Seconds to wait for recorder drain")
+    archive.add_argument("-i", "--poll-interval", type=float, default=1.0, help="Seconds between drain polls")
+    archive.add_argument("-P", "--allow-partial", action="store_true", help="Allow incomplete or live evidence")
+    archive.add_argument("-N", "--include-native", action="store_true", help="Include native Harbor job artifacts and logs")
+    archive.add_argument("-x", "--execute", action="store_true", help="Required authorization to create archive; default is dry-run")
+    archive.add_argument("-p", "--archive", dest="archive", type=Path, help="Archive path to verify")
+    archive.add_argument("-F", "--llm-friendly", action="store_true", help="Compact JSON output")
 
 
 def _run_dir(runs_dir: Path, run_id: str) -> Path:
@@ -98,6 +114,8 @@ def _error_code(error: Exception) -> str:
         return "RUN_NOT_FOUND"
     if isinstance(error, ValueError):
         return "INVALID_SUITE_CONFIGURATION"
+    if type(error).__name__ == "ArchiveError":
+        return "ARCHIVE_FAILED"
     return "SUITE_COMMAND_FAILED"
 
 
@@ -196,7 +214,22 @@ def handle_suite(args: argparse.Namespace) -> int:
             )
             _emit_event("finished", friendly=friendly, **_finished_payload(summary, run_dir))
             return 0 if summary["infrastructure_invalid"] == 0 else 1
-        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report")
+        if command == "archive":
+            action = getattr(args, "action", "create")
+            if getattr(args, "archive", None) and not getattr(args, "run", None):
+                action = "verify"
+            if action == "create":
+                if not getattr(args, "run", None):
+                    raise ValueError("archive create requires -r/--run")
+                from .suite_archive import create_archive
+                return create_archive(args)
+            if action == "verify":
+                if not getattr(args, "archive", None):
+                    raise ValueError("archive verify requires -p/--archive")
+                from .suite_archive import verify_archive
+                return verify_archive(args)
+            raise ValueError(f"unknown archive action: {action}")
+        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report, archive")
     except Exception as error:
         if friendly:
             _emit_event("error", friendly=True, code=_error_code(error), detail=str(error))

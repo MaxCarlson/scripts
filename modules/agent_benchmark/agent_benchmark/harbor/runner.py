@@ -12,12 +12,92 @@ from uuid import uuid4
 
 import json
 import logging
+import sys
 from ..state import command_lock
 from .importer import HarborImporter
 from .models import HarborJobResult, JobStats
 from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readiness
 
 logger = logging.getLogger(__name__)
+
+
+def find_harbor_opencode_adapters() -> list[Path]:
+    """Find installed or cached Harbor opencode adapter script paths."""
+    candidates: list[Path] = []
+    uv_cache = os.environ.get("UV_CACHE_DIR")
+    if uv_cache and os.path.isdir(uv_cache):
+        candidates.append(Path(uv_cache))
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            candidates.append(Path(local_app_data) / "uv" / "cache")
+    else:
+        candidates.append(Path.home() / ".cache" / "uv")
+
+    try:
+        import site
+        for sp in site.getsitepackages():
+            candidates.append(Path(sp))
+    except Exception:
+        pass
+    candidates.append(Path(sys.prefix))
+
+    found: set[Path] = set()
+    for base in candidates:
+        if base.is_dir():
+            try:
+                for p in base.glob("**/harbor/agents/installed/opencode.py"):
+                    found.add(p.resolve())
+            except Exception:
+                pass
+    return sorted(found)
+
+
+def ensure_harbor_opencode_compatibility(adapter_paths: list[Path] | None = None) -> list[Path]:
+    """Ensure installed or cached Harbor OpenCode adapters do not crash with EPIPE on non-git repos.
+
+    Harbor 0.25.0 unconditionally sets OPENCODE_FAKE_VCS="git" on agent execution.
+    In benchmark environments where the workspace is not a git repository (such as
+    Aider Polyglot benchmark tasks), OpenCode 1.19.5's internal git operations fail
+    with exit 128 (fatal: not a git repository). The abrupt closure of git's stream
+    triggers an unhandled EPIPE exception in Node/Bun stream lifecycle on stdout write,
+    scheduling process exit code 1 (NonZeroAgentExitCodeError) even when all agent steps
+    succeed.
+
+    This function searches the uv cache and Python environment for
+    harbor/agents/installed/opencode.py and ensures OPENCODE_FAKE_VCS is only set
+    if explicitly passed in the environment.
+    """
+    targets = adapter_paths if adapter_paths is not None else find_harbor_opencode_adapters()
+    patched: list[Path] = []
+    target_needle = 'env["OPENCODE_FAKE_VCS"] = "git"'
+    replacement = (
+        '        # Compatibility fix for issue #4019 (uncaught EPIPE broken pipe crash):\n'
+        '        # Do not force OPENCODE_FAKE_VCS="git" on non-git directories.\n'
+        '        if os.environ.get("OPENCODE_FAKE_VCS"):\n'
+        '            env["OPENCODE_FAKE_VCS"] = os.environ["OPENCODE_FAKE_VCS"]'
+    )
+    for path in targets:
+        if not path.is_file():
+            continue
+        try:
+            content = path.read_text(encoding="utf-8", errors="replace")
+            needs_patch = target_needle in content
+            needs_import_os = "import os" not in content
+            modified = False
+            if needs_patch:
+                content = content.replace(target_needle, replacement)
+                modified = True
+            if needs_import_os and (needs_patch or 'if os.environ.get("OPENCODE_FAKE_VCS"):' in content):
+                content = "import os\n" + content
+                modified = True
+            if modified:
+                path.write_text(content, encoding="utf-8")
+                patched.append(path)
+                logger.info("Patched Harbor OpenCode adapter for non-git compatibility: %s", path)
+        except Exception as exc:
+            logger.warning("Could not patch Harbor OpenCode adapter %s: %s", path, exc)
+    return patched
 
 
 class ExecutionAuthorizationError(RuntimeError):
@@ -151,6 +231,9 @@ def execute_harbor_run(
         run_env["PYTHONIOENCODING"] = "utf-8"
     if plan.agent in ("qwen-coder", "opencode") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
+
+    if plan.agent == "opencode":
+        ensure_harbor_opencode_compatibility()
 
     with command_lock(state):
         try:

@@ -32,7 +32,9 @@ from .runner import (
     ExecutionAuthorizationError,
     PreflightCheckError,
     build_harbor_command,
+    ensure_harbor_opencode_compatibility,
     execute_harbor_run,
+    find_harbor_opencode_adapters,
 )
 
 __all__ = [
@@ -63,5 +65,7 @@ __all__ = [
     "ExecutionAuthorizationError",
     "PreflightCheckError",
     "build_harbor_command",
+    "ensure_harbor_opencode_compatibility",
     "execute_harbor_run",
+    "find_harbor_opencode_adapters",
 ]

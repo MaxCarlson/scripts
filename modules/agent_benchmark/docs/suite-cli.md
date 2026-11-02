@@ -110,3 +110,74 @@ agent-bench suite report -r <RUN_ID> -F
 ```
 
 For a compact external single-dataset run, `agent-bench external run ... -F` writes verbose Harbor output under the selected jobs directory and emits the imported summary.
+
+## Evidence archiving and verification
+
+`agent-bench suite archive` preserves consistent SQLite snapshots, monitor telemetry, API observations, and optional native Harbor run logs and artifacts for completed or in-progress benchmark suite runs.
+
+### Create an archive
+
+By default, `archive` runs in dry-run mode, printing the resolved run configuration, database path, and planned archive location without writing files:
+
+```powershell
+agent-bench suite archive -r <RUN_ID> -F
+```
+
+To execute the archive creation, supply `-x/--execute`:
+
+```powershell
+# Archive using live monitor database discovery and recorder drain checks
+agent-bench suite archive -r <RUN_ID> -x
+
+# Include native Harbor logs, trial trajectories, and verifier outputs
+agent-bench suite archive -r <RUN_ID> -N -x
+
+# Archive an offline database or in-progress run without failing on gaps
+agent-bench suite archive -r <RUN_ID> -d path/to/monitor.sqlite3 -P -x
+```
+
+Options for `create`:
+- `-r, --run, --run-id`: Suite run ID or path to the run directory.
+- `-d, --database`: Optional explicit path to the source SQLite database. If omitted, the database path is queried from the live LLM Monitor API.
+- `-H, --monitor-host-url`: Host URL for the LLM Monitor instance (e.g. `http://127.0.0.1:8789`).
+- `-o, --output`: Target archive output directory. If omitted, evidence is saved to `reports/agent-bench-suite/<RUN_ID>/evidence/<TIMESTAMP>-<UUID>`.
+- `-P, --allow-partial`: Permit archiving incomplete, live, or gap-containing runs without raising an error. The resulting archive will be labeled `partial` rather than `verified`.
+- `-N, --include-native`: Copy native Harbor trial directories (`harbor-jobs/`, `logs/`, `results/`), including OpenCode's native state database and trajectories.
+- `-x, --execute`: Authorize writing the archive; default is dry-run.
+- `-F, --llm-friendly`: Emit compact, machine-readable JSON output.
+
+### Verify an archive
+
+The `verify` action validates an existing archive offline:
+
+```powershell
+agent-bench suite archive verify -p reports/agent-bench-suite/<RUN_ID>/evidence/<ARCHIVE_DIR> -F
+# or shorthand
+agent-bench suite archive -p reports/agent-bench-suite/<RUN_ID>/evidence/<ARCHIVE_DIR> -F
+```
+
+Verification performs:
+1. Directory traversal bounds checks ensuring all files reside within the archive root.
+2. File existence and size matching against `archive_manifest.json`.
+3. Streaming SHA-256 cryptographic hash verification for every archived file.
+4. Offline SQLite database checks: `PRAGMA integrity_check`, `PRAGMA foreign_key_check`, and table row-count validation against the recorded manifest.
+
+### Completeness and transcript truncation detection
+
+An archive is only marked **`verified`** if all of the following conditions hold:
+- Every planned task in the suite reached a terminal state.
+- Every task's observed monitor request IDs exist in `inference_requests`.
+- In `content` mode, every request contains non-empty recorded content segments in `inference_contents`.
+- Zero content segments have `truncated != 0`.
+- The live monitor recorder reported zero dropped observations, healthy worker status, and a fully drained queue.
+- SQLite passes foreign key and database integrity checks.
+
+If any of these conditions are unmet (e.g., if LLM Monitor's in-memory live buffer truncated segments or if requests lack content), the archiver explicitly records each defect under `gaps` and designates the archive **`partial`**. Database integrity checks alone never establish transcript completeness.
+
+### Security and privacy
+
+Evidence archives contain full prompts, assistant reasoning, generated source code, and tool calls.
+- Archives must be stored exclusively in private, Git-ignored storage (such as under `reports/`).
+- Do not commit evidence databases, raw transcripts, or API snapshots to Git.
+- Session credentials (`LLM_MONITOR_SESSION_COOKIE`, `LLM_MONITOR_AUTHORIZATION`) are read strictly from the process environment and are never written to `archive_manifest.json` or `EVIDENCE_INDEX.md`.
+

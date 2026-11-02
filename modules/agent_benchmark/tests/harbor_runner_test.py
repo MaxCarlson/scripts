@@ -11,7 +11,9 @@ from agent_benchmark.harbor import (
     ExecutionAuthorizationError,
     PreflightCheckError,
     build_harbor_command,
+    ensure_harbor_opencode_compatibility,
     execute_harbor_run,
+    find_harbor_opencode_adapters,
     plan_benchmark,
 )
 
@@ -389,3 +391,37 @@ def test_build_harbor_command_api_format():
     assert cmd_gateway[cmd_gateway.index("--api-format") + 1] == "openai_chat_completions"
     assert "--base-url" in cmd_gateway
     assert cmd_gateway[cmd_gateway.index("--base-url") + 1] == "http://host.docker.internal:8788/v1"
+
+def test_ensure_harbor_opencode_compatibility_patches_target_and_is_idempotent(tmp_path: Path):
+    adapter_file = tmp_path / "opencode.py"
+    adapter_file.write_text(
+        'class OpenCode:\n'
+        '    def run(self):\n'
+        '        env = {}\n'
+        '        env["OPENCODE_FAKE_VCS"] = "git"\n'
+        '        return env\n',
+        encoding="utf-8",
+    )
+
+    # 1. First run patches target and injects import os
+    patched = ensure_harbor_opencode_compatibility([adapter_file])
+    assert adapter_file in patched
+    updated_text = adapter_file.read_text(encoding="utf-8")
+    assert "import os" in updated_text
+    assert 'if os.environ.get("OPENCODE_FAKE_VCS"):' in updated_text
+    assert 'env["OPENCODE_FAKE_VCS"] = "git"' not in updated_text
+
+    # 2. Second run is a no-op (idempotent)
+    patched_second = ensure_harbor_opencode_compatibility([adapter_file])
+    assert patched_second == []
+    assert adapter_file.read_text(encoding="utf-8") == updated_text
+
+
+def test_find_harbor_opencode_adapters_smoke():
+    # Should run without error and return a list of Path objects
+    found = find_harbor_opencode_adapters()
+    assert isinstance(found, list)
+    for p in found:
+        assert isinstance(p, Path)
+        assert p.name == "opencode.py"
+
