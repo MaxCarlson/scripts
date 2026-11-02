@@ -230,9 +230,73 @@ class OpenAIInferenceGateway:
                 return await self._forward_request(request, body, payload)
             timing.mark("normalization_ms")
             model_id = payload.get("model") if isinstance(payload.get("model"), str) else None
-            identity = {"request_id": request_id, "server_instance_id": self.server_instance_id, "model_instance_id": model_id, "provider_model_id": model_id, "model_name": model_id}
-            segments = tuple(ContentSegment(kind=str(message.get("role", "other")), role=str(message.get("role", "other")), text=_message_text(message.get("content")), source="gateway_client") for message in payload["messages"] if isinstance(message, dict))
-            record = InferenceRequest(request_id=request_id, server_instance_id=self.server_instance_id, model_instance_id=model_id, provider_model_id=model_id, model_name=model_id, source="gateway_openai_chat_completions", state="active", started_at=started_at, started_monotonic=started, coverage={"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "streaming", "output_text": "streaming", "token_usage": "unavailable", "request_timing": "gateway_timed"}, content=segments)
+            server_info, inventory_models = self.store.inventory()
+            canonical_server_id = (
+                server_info.get("server_instance_id")
+                if isinstance(server_info, dict) and server_info.get("server_instance_id")
+                else self.server_instance_id
+            )
+            resolved_entry = None
+            if model_id:
+                for m in inventory_models:
+                    if m.provider_model_id == model_id or m.name == model_id:
+                        resolved_entry = m
+                        break
+                    if m.model_instance_id == model_id or model_id in m.loaded_instance_ids:
+                        resolved_entry = m
+                        break
+
+            client_model_id = model_id
+            if resolved_entry is not None:
+                provider_model_id = resolved_entry.provider_model_id
+                model_instance_id = resolved_entry.model_instance_id or model_id
+                resolved_model_id = resolved_entry.provider_model_id
+            else:
+                provider_model_id = model_id
+                model_instance_id = None
+                resolved_model_id = None
+
+            identity = {
+                "request_id": request_id,
+                "server_instance_id": canonical_server_id,
+                "model_instance_id": model_instance_id,
+                "provider_model_id": provider_model_id,
+                "model_name": client_model_id or provider_model_id,
+                "client_model_id": client_model_id,
+                "resolved_model_id": resolved_model_id,
+            }
+            segments = tuple(
+                ContentSegment(
+                    kind=str(message.get("role", "other")),
+                    role=str(message.get("role", "other")),
+                    text=_message_text(message.get("content")),
+                    source="gateway_client",
+                )
+                for message in payload["messages"]
+                if isinstance(message, dict)
+            )
+            record = InferenceRequest(
+                request_id=request_id,
+                server_instance_id=canonical_server_id,
+                model_instance_id=model_instance_id,
+                provider_model_id=provider_model_id,
+                model_name=client_model_id or provider_model_id,
+                client_model_id=client_model_id,
+                resolved_model_id=resolved_model_id,
+                source="gateway_openai_chat_completions",
+                state="active",
+                started_at=started_at,
+                started_monotonic=started,
+                coverage={
+                    "request_lifecycle": "complete",
+                    "structured_input": "available",
+                    "reasoning_text": "streaming",
+                    "output_text": "streaming",
+                    "token_usage": "unavailable",
+                    "request_timing": "gateway_timed",
+                },
+                content=segments,
+            )
             self.store.add_request(record)
             if getattr(self, "recorder", None) is not None:
                 self.recorder.record_request_start(record)
@@ -384,6 +448,8 @@ class OpenAIInferenceGateway:
                         self._publish({"type": "request.updated", "request": identity, "timestamp": _now(), "payload": {"finish_reason": choice["finish_reason"]}}, timing)
             if isinstance(event, dict) and isinstance(event.get("id"), str):
                 self._update_fields(request_id, provider_request_id=event["id"])
+            if isinstance(event, dict) and isinstance(event.get("model"), str):
+                self._reconcile_model(request_id, event["model"])
             usage = event.get("usage") if isinstance(event, dict) else None
             if isinstance(usage, dict):
                 self._publish({"type": "usage.reported", "request": identity, "timestamp": _now(), "source": "provider_reported", "payload": _usage_payload(usage)}, timing)
@@ -410,10 +476,52 @@ class OpenAIInferenceGateway:
                 self._update_fields(request_id, finish_reason=choice["finish_reason"])
         if isinstance(result, dict) and isinstance(result.get("id"), str):
             self._update_fields(request_id, provider_request_id=result["id"])
+        if isinstance(result, dict) and isinstance(result.get("model"), str):
+            self._reconcile_model(request_id, result["model"])
         usage = result.get("usage") if isinstance(result, dict) else None
         if isinstance(usage, dict):
             self._update_usage(request_id, usage)
             self._publish({"type": "usage.reported", "request": identity, "timestamp": _now(), "source": "provider_reported", "payload": _usage_payload(usage)}, timing)
+
+    def _reconcile_model(self, request_id: str, upstream_model: str) -> None:
+        existing = next((item for item in self.store.requests() if item.request_id == request_id), None)
+        if not existing or not upstream_model:
+            return
+        if existing.model_instance_id == upstream_model and existing.resolved_model_id is not None:
+            return
+        _, inventory_models = self.store.inventory()
+        matched = None
+        for m in inventory_models:
+            if m.model_instance_id == upstream_model or upstream_model in m.loaded_instance_ids:
+                matched = m
+                break
+            if m.provider_model_id == upstream_model or m.name == upstream_model:
+                matched = m
+                break
+
+        updates: dict[str, Any] = {}
+        if matched is not None:
+            updates["resolved_model_id"] = matched.provider_model_id
+            updates["provider_model_id"] = matched.provider_model_id
+            updates["model_name"] = matched.name
+            updates["model_instance_id"] = matched.model_instance_id or upstream_model
+        else:
+            updates["model_instance_id"] = upstream_model
+
+        self._update_fields(request_id, **updates)
+        self._publish(
+            {
+                "type": "request.updated",
+                "request": {
+                    "request_id": request_id,
+                    "server_instance_id": existing.server_instance_id,
+                    **updates,
+                },
+                "timestamp": _now(),
+                "payload": updates,
+            },
+            None,
+        )
 
     def _publish(self, event: dict[str, Any], timing: _GatewayTiming | None) -> dict[str, Any]:
         started_ns = time.perf_counter_ns()

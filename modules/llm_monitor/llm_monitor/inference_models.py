@@ -70,9 +70,28 @@ class ModelInventoryEntry:
     model_instance_id: str | None = None
     identity_quality: str = "provider_model_id_only"
     context_source: str = "unavailable"
+    loaded_instance_ids: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> ModelInventoryEntry:
+        return cls(
+            server_instance_id=str(payload.get("server_instance_id", "")),
+            provider_model_id=str(payload.get("provider_model_id", "")),
+            name=str(payload.get("name", "")),
+            state=str(payload.get("state", "unknown")),
+            loaded_instance_count=payload.get("loaded_instance_count"),
+            context_length=payload.get("context_length"),
+            loaded_context_lengths=tuple(payload.get("loaded_context_lengths", ())),
+            max_context_length=payload.get("max_context_length"),
+            quantization=payload.get("quantization"),
+            model_instance_id=payload.get("model_instance_id"),
+            identity_quality=str(payload.get("identity_quality", "provider_model_id_only")),
+            context_source=str(payload.get("context_source", "unavailable")),
+            loaded_instance_ids=tuple(payload.get("loaded_instance_ids", ())),
+        )
 
 
 @dataclass(frozen=True)
@@ -168,6 +187,8 @@ class InferenceRequest:
     model_name: str | None = None
     model_instance_id: str | None = None
     provider_request_id: str | None = None
+    client_model_id: str | None = None
+    resolved_model_id: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
     started_monotonic: float | None = None
@@ -204,6 +225,8 @@ class InferenceRequest:
             model_name=payload.get("model_name") if isinstance(payload.get("model_name"), str) else None,
             model_instance_id=payload.get("model_instance_id") if isinstance(payload.get("model_instance_id"), str) else None,
             provider_request_id=payload.get("provider_request_id") if isinstance(payload.get("provider_request_id"), str) else None,
+            client_model_id=payload.get("client_model_id") if isinstance(payload.get("client_model_id"), str) else None,
+            resolved_model_id=payload.get("resolved_model_id") if isinstance(payload.get("resolved_model_id"), str) else None,
             started_at=payload.get("started_at") if isinstance(payload.get("started_at"), str) else None,
             ended_at=payload.get("ended_at") if isinstance(payload.get("ended_at"), str) else None,
             started_monotonic=_optional_float(payload.get("started_monotonic")),
@@ -238,6 +261,8 @@ class InferenceRequest:
             "state": self.state,
             "provider_model_id": self.provider_model_id,
             "model_name": self.model_name,
+            "client_model_id": self.client_model_id,
+            "resolved_model_id": self.resolved_model_id,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
             "started_monotonic": self.started_monotonic,

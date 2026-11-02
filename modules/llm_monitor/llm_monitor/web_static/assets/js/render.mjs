@@ -31,6 +31,7 @@ export function createRenderer() {
       renderCapabilities(state);
       renderModelCards(state);
       renderHistory(state);
+      renderAlerts(state);
       renderPage(state);
     },
     renderRequestEvent(state, event) {
@@ -113,17 +114,114 @@ function renderSidebar(state) {
 }
 
 function renderToolbar(state) {
-  const select = byId("model-filter");
   const current = state.selectedModelId;
-  const options = [makeOption("all", "All monitored models")];
+
+  // Categorize models: loaded, not loaded, unknown
+  const loadedModels = [];
+  const notLoadedModels = [];
+  const unknownModels = [];
+
   for (const model of state.models) {
-    const id = model.model_instance_id || model.provider_model_id;
+    const id = model.model_id || model.id || model.model_instance_id || model.provider_model_id;
     if (!id) continue;
-    const suffix = model.state === "loaded" ? " · loaded" : " · not loaded";
-    options.push(makeOption(id, `${model.name || model.provider_model_id || "Unknown model"}${suffix}`));
+    const name = model.name || model.provider_model_id || "Unknown model";
+    const item = { id, name, model, state: model.state };
+    if (model.state === "loaded") loadedModels.push(item);
+    else if (model.state === "not_loaded") notLoadedModels.push(item);
+    else unknownModels.push(item);
   }
-  select.replaceChildren(...options);
-  select.value = options.some((option) => option.value === current) ? current : "all";
+
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" });
+  loadedModels.sort(byName);
+  notLoadedModels.sort(byName);
+  unknownModels.sort(byName);
+
+  // Hidden native select (for form/test backwards compatibility)
+  const select = byId("model-filter");
+  if (select) {
+    const options = [makeOption("all", "All monitored models")];
+    for (const m of loadedModels) options.push(makeOption(m.id, `${m.name} · loaded`));
+    for (const m of notLoadedModels) options.push(makeOption(m.id, `${m.name} · not loaded`));
+    for (const m of unknownModels) options.push(makeOption(m.id, `${m.name} · unknown`));
+    select.replaceChildren(...options);
+    select.value = options.some((option) => option.value === current) ? current : "all";
+  }
+
+  // Accessible custom combobox popup listbox
+  const popup = byId("model-select-popup");
+  if (popup) {
+    const fragment = document.createDocumentFragment();
+
+    const allOpt = make("li", "combobox-option");
+    allOpt.setAttribute("role", "option");
+    allOpt.id = "model-opt-all";
+    allOpt.dataset.value = "all";
+    allOpt.setAttribute("aria-selected", current === "all" ? "true" : "false");
+    allOpt.tabIndex = -1;
+    const allPill = make("span", "combobox-status-pill status-pill-all");
+    const allText = make("span", "combobox-option-text", "All monitored models");
+    allOpt.append(allPill, allText);
+    fragment.append(allOpt);
+
+    const addGroup = (groupLabel, items, pillClass, badgeClass, badgeLabel) => {
+      if (!items.length) return;
+      const labelEl = make("li", "combobox-group-label", groupLabel);
+      labelEl.setAttribute("role", "presentation");
+      fragment.append(labelEl);
+      for (const item of items) {
+        const isSelected = item.id === current;
+        const opt = make("li", "combobox-option");
+        opt.setAttribute("role", "option");
+        opt.id = `model-opt-${item.id}`;
+        opt.dataset.value = item.id;
+        opt.setAttribute("aria-selected", isSelected ? "true" : "false");
+        opt.tabIndex = -1;
+        const pill = make("span", `combobox-status-pill ${pillClass}`);
+        const textSpan = make("span", "combobox-option-text", item.name);
+        const badge = make("span", `combobox-option-badge ${badgeClass}`, badgeLabel);
+        opt.append(pill, textSpan, badge);
+        fragment.append(opt);
+      }
+    };
+
+    addGroup("Loaded models", loadedModels, "status-pill-loaded", "badge-loaded", "Loaded");
+    addGroup("Not loaded", notLoadedModels, "status-pill-not-loaded", "badge-not-loaded", "Not loaded");
+    addGroup("Unknown state", unknownModels, "status-pill-unknown", "badge-unknown", "Unknown");
+
+    popup.replaceChildren(fragment);
+  }
+
+  // Update custom combobox trigger label and status indicator
+  const triggerText = byId("model-select-text");
+  const triggerPill = byId("model-trigger-pill");
+  if (triggerText && triggerPill) {
+    if (current === "all" || !current) {
+      triggerText.textContent = "All monitored models";
+      triggerPill.className = "combobox-status-pill status-pill-all";
+    } else {
+      const allItems = [...loadedModels, ...notLoadedModels, ...unknownModels];
+      const selectedItem = allItems.find((m) => m.id === current);
+      if (selectedItem) {
+        triggerText.textContent = selectedItem.name;
+        const pClass = selectedItem.state === "loaded" ? "status-pill-loaded" : selectedItem.state === "not_loaded" ? "status-pill-not-loaded" : "status-pill-unknown";
+        triggerPill.className = `combobox-status-pill ${pClass}`;
+      } else {
+        triggerText.textContent = "All monitored models";
+        triggerPill.className = "combobox-status-pill status-pill-all";
+      }
+    }
+  }
+
+  // Recording mode control
+  const recMode = state.status?.recording?.mode || (state.status?.recording?.enabled ? "metadata" : "off");
+  const recLabel = recMode === "content" ? "Recording: Content" : recMode === "metadata" ? "Recording: Metadata" : "Recording: Off";
+  const recDot = byId("recording-mode-dot");
+  if (recDot) {
+    recDot.className = "recording-mode-dot" + (recMode === "content" ? " is-content" : recMode === "metadata" ? " is-metadata" : "");
+  }
+  const recBtnLabel = byId("recording-mode-label");
+  if (recBtnLabel) replaceText(recBtnLabel, recLabel);
+
   const auto = byId("follow-toggle");
   auto.classList.toggle("is-enabled", state.autoFollow);
   auto.setAttribute("aria-pressed", String(state.autoFollow));
@@ -139,7 +237,7 @@ function renderToolbar(state) {
 }
 
 function renderKpis(state) {
-  const summary = aggregateSummary(state.requests, state.captureState, state.selectedModelId);
+  const summary = aggregateSummary(state.requests, state.captureState, state.selectedModelId, state.models);
   text("kpi-requests", summary.requestCount);
   text("kpi-requests-note", summary.requestNote);
   setAverage("input", summary.input, "tokens");
@@ -432,6 +530,24 @@ function renderHistory(state) {
   const contentEl = byId("history-content");
   if (!emptyEl || !contentEl) return;
 
+  const serverFilter = byId("history-server-filter");
+  if (serverFilter && (serverFilter.children.length <= 1 || state.servers.length > 0)) {
+    const currentServer = state.historyServerFilter || "all";
+    const serverOptions = [makeOption("all", "All servers")];
+    for (const s of state.servers) {
+      const sId = s.server_instance_id || s.id;
+      if (!sId) continue;
+      serverOptions.push(makeOption(sId, s.name || s.server_instance_id || sId));
+    }
+    serverFilter.replaceChildren(...serverOptions);
+    serverFilter.value = currentServer;
+  }
+
+  const timeFilter = byId("history-time-filter");
+  if (timeFilter) {
+    timeFilter.value = state.historyTimeFilter || "all";
+  }
+
   const modelFilter = byId("history-model-filter");
   if (modelFilter && modelFilter.children.length <= 1) {
     const currentVal = state.historyModelFilter || "all";
@@ -488,7 +604,9 @@ function renderHistory(state) {
       const out = make("span", "token-pill", `Out: ${req.output_tokens ?? "—"}`);
       tokens.append(inp, out);
       if (req.recording_mode) {
-        tokens.append(make("span", "token-pill", `Rec: ${req.recording_mode}`));
+        const isContent = req.recording_mode === "content";
+        const modeBadge = make("span", `mode-badge ${isContent ? "mode-badge-content" : "mode-badge-metadata"}`, isContent ? "Content" : "Metadata");
+        tokens.append(modeBadge);
       }
 
       item.append(header, meta, tokens);
@@ -518,7 +636,9 @@ function renderHistory(state) {
       metaGrid.append(field);
     };
     addField("Model", detail.model_name || detail.provider_model_id);
+    addField("Server", detail.server_instance_id || "—");
     addField("State", detail.state);
+    addField("Recording", detail.recording_mode ? (detail.recording_mode === "content" ? "Content (Full)" : "Metadata (Redacted)") : "—");
     addField("Duration", formatDuration(detail.elapsed_seconds));
     addField("Started", formatTimestamp(detail.started_at));
     addField("Completed", formatTimestamp(detail.ended_at));
@@ -562,6 +682,226 @@ function renderHistory(state) {
 
     inspectorBody.replaceChildren(container);
   }
+}
+
+function renderAlerts(state) {
+  const container = byId("alerts-container");
+  if (!container) return;
+
+  const cards = [];
+  let warningCount = 0;
+
+  // 1. Server Connectivity
+  const connectedServers = state.servers.filter((s) => s.connection_state === "connected");
+  const totalServers = state.servers.length;
+  let serverCard;
+  if (connectedServers.length > 0) {
+    const names = connectedServers.map((s) => s.name || s.server_instance_id || "Server").join(", ");
+    serverCard = createAlertCard(
+      "Server Connectivity",
+      "Healthy",
+      "alert-healthy",
+      "badge-healthy",
+      `Connected to ${connectedServers.length} local inference server(s): ${names}. Inventory discovery and endpoint communication active.`,
+      `Endpoints verified · ${totalServers} configured`
+    );
+  } else if (totalServers > 0) {
+    warningCount++;
+    serverCard = createAlertCard(
+      "Server Connectivity",
+      "Critical",
+      "alert-critical",
+      "badge-critical",
+      `${totalServers} local server(s) configured, but none are currently reachable. Verify the LM Studio process is running.`,
+      "Connection state: offline / unreachable"
+    );
+  } else {
+    warningCount++;
+    serverCard = createAlertCard(
+      "Server Connectivity",
+      "Warning",
+      "alert-warning",
+      "badge-warning",
+      "No inference servers discovered or registered. Monitoring cannot inspect models or capture requests without an active server.",
+      "Discovery status: zero servers detected"
+    );
+  }
+  cards.push(serverCard);
+
+  // 2. Request Stream & Reliability
+  const failedRequests = state.requests.filter((r) => r.state === "failed");
+  const hasGaps = state.requestGap || state.requests.some((r) => r.stream_gap);
+  let streamCard;
+  if (failedRequests.length > 0) {
+    warningCount++;
+    streamCard = createAlertCard(
+      "Inference Reliability",
+      "Warning",
+      "alert-warning",
+      "badge-warning",
+      `${failedRequests.length} inference request(s) failed out of ${state.requests.length} observed in active window. Inspect request stream for error causes.`,
+      `Failed: ${failedRequests.length} · Total: ${state.requests.length}`
+    );
+  } else if (hasGaps) {
+    warningCount++;
+    streamCard = createAlertCard(
+      "Observation Integrity",
+      "Warning",
+      "alert-warning",
+      "badge-warning",
+      "Stream sequence gap detected. Some live tokens or telemetry events were interrupted or lost in transit.",
+      "Integrity status: sequence gap observed"
+    );
+  } else if (state.requests.length > 0) {
+    streamCard = createAlertCard(
+      "Inference Reliability",
+      "Healthy",
+      "alert-healthy",
+      "badge-healthy",
+      `All ${state.requests.length} observed request(s) completed without observation gaps or client errors.`,
+      "Stream integrity: continuous"
+    );
+  } else {
+    streamCard = createAlertCard(
+      "Inference Stream",
+      "Info",
+      "alert-info",
+      "badge-info",
+      "Gateway is listening and ready. Waiting for inference requests from clients (e.g. OpenCode, Aider, or curl).",
+      "Observation status: awaiting requests"
+    );
+  }
+  cards.push(streamCard);
+
+  // 3. Hardware Telemetry & GPU Sampling
+  const hwSamples = Array.isArray(state.status?.hardware_samples) ? state.status.hardware_samples : [];
+  const hasGpu = hwSamples.some((s) => Number.isFinite(s.gpu_utilization_percent) && s.gpu_utilization_percent >= 0);
+  let gpuCard;
+  if (hasGpu) {
+    const latestGpu = hwSamples.at(-1);
+    const util = latestGpu?.gpu_utilization_percent != null ? `${latestGpu.gpu_utilization_percent.toFixed(0)}%` : "—";
+    const vram = latestGpu?.vram_used_bytes != null ? formatBytes(latestGpu.vram_used_bytes) : "—";
+    gpuCard = createAlertCard(
+      "Hardware Telemetry",
+      "Healthy",
+      "alert-healthy",
+      "badge-healthy",
+      `Real NVIDIA GPU telemetry active via NVML. Real-time GPU load: ${util}, VRAM in use: ${vram}. Request-hardware correlation enabled.`,
+      `Samples collected: ${hwSamples.length}`
+    );
+  } else {
+    gpuCard = createAlertCard(
+      "Hardware Telemetry",
+      "Info",
+      "alert-info",
+      "badge-info",
+      "NVIDIA GPU hardware metrics are currently unavailable. Ensure nvidia-smi / NVML is accessible if hardware sampling is expected.",
+      "Hardware provider: unavailable or uninitialized"
+    );
+  }
+  cards.push(gpuCard);
+
+  // 4. Persistence & Storage Health
+  const recInfo = state.status?.recording;
+  const recMode = recInfo?.mode || (recInfo?.enabled ? "metadata" : "off");
+  let storageCard;
+  if (recMode === "content") {
+    storageCard = createAlertCard(
+      "Inference Recording",
+      "Active (Content)",
+      "alert-healthy",
+      "badge-healthy",
+      "Full content recording is active. Request prompts, reasoning text, assistant outputs, and hardware metrics are persisted to SQLite.",
+      `Database: ${recInfo?.database_path || "configured SQLite"} · Retention: persistent`
+    );
+  } else if (recMode === "metadata") {
+    storageCard = createAlertCard(
+      "Inference Recording",
+      "Active (Metadata)",
+      "alert-info",
+      "badge-info",
+      "Metadata recording is active. Request timing, token counts, and GPU correlation are persisted. Content payloads are stripped for privacy.",
+      `Database: ${recInfo?.database_path || "configured SQLite"} · Privacy: content redacted`
+    );
+  } else {
+    storageCard = createAlertCard(
+      "Inference Recording",
+      "Disabled",
+      "alert-info",
+      "badge-info",
+      "Persistent recording is disabled by default. Inference requests are tracked in-memory only and will be cleared upon process restart.",
+      "Mode: memory-only"
+    );
+  }
+  cards.push(storageCard);
+
+  // 5. Capability Matrix Card
+  const matrixCard = make("div", "alert-card alert-info");
+  const matrixHeader = make("div", "alert-card-header");
+  matrixHeader.append(make("h2", "alert-card-title", "Collection & Telemetry Capability Matrix"));
+  matrixHeader.append(make("span", "alert-card-badge badge-info", "Runtime"));
+  matrixCard.append(matrixHeader);
+
+  const table = make("table", "coverage-matrix-table");
+  const thead = make("thead");
+  const headRow = make("tr");
+  headRow.append(make("th", "", "Capability"));
+  headRow.append(make("th", "", "State"));
+  headRow.append(make("th", "", "Observation Channel"));
+  thead.append(headRow);
+  table.append(thead);
+
+  const tbody = make("tbody");
+  const caps = [
+    { name: "Model inventory", state: state.servers.length ? "Available" : "Unavailable", channel: "LM Studio /api/v1/models" },
+    { name: "Request lifecycle", state: state.requests.length ? "Streaming" : "Available", channel: "OpenAI Gateway /v1/chat/completions" },
+    { name: "Structured input", state: recMode === "content" ? "Available" : "Rendered only", channel: "Gateway request body parser" },
+    { name: "Reasoning stream", state: "Streaming", channel: "Live SSE chunk analyzer" },
+    { name: "Output stream", state: "Streaming", channel: "Live SSE chunk analyzer" },
+    { name: "Token usage", state: "Available", channel: "Provider reported & calculated" },
+    { name: "Request timing", state: "Available", channel: "High-resolution monotonic timer" },
+    { name: "Aggregate metrics", state: "Available", channel: "In-memory rolling accumulator" },
+    { name: "GPU / VRAM samples", state: hasGpu ? "Available" : "Unavailable", channel: "NVIDIA Management Library (NVML)" },
+    { name: "Historical persistence", state: recMode !== "off" ? "Active" : "Disabled", channel: "SQLite inference store" },
+  ];
+
+  for (const cap of caps) {
+    const row = make("tr");
+    row.append(make("td", "", cap.name));
+    const badgeTd = make("td");
+    const stBadge = make("span", `combobox-option-badge ${cap.state === "Available" || cap.state === "Streaming" || cap.state === "Active" ? "badge-loaded" : "badge-not-loaded"}`, cap.state);
+    badgeTd.append(stBadge);
+    row.append(badgeTd);
+    row.append(make("td", "", cap.channel));
+    tbody.append(row);
+  }
+  table.append(tbody);
+  matrixCard.append(table);
+  cards.push(matrixCard);
+
+  container.replaceChildren(...cards);
+
+  // Update navigation alert counter
+  const navAlertCount = byId("alert-count");
+  if (navAlertCount) {
+    if (warningCount > 0) {
+      navAlertCount.textContent = String(warningCount);
+      navAlertCount.hidden = false;
+    } else {
+      navAlertCount.hidden = true;
+    }
+  }
+}
+
+function createAlertCard(title, badgeText, cardClass, badgeClass, bodyText, metaText) {
+  const card = make("div", `alert-card ${cardClass}`);
+  const header = make("div", "alert-card-header");
+  header.append(make("h2", "alert-card-title", title));
+  header.append(make("span", `alert-card-badge ${badgeClass}`, badgeText));
+  card.append(header);
+  card.append(make("p", "alert-card-body", bodyText));
+  if (metaText) card.append(make("span", "alert-card-meta", metaText));
+  return card;
 }
 
 function renderPage(state) {

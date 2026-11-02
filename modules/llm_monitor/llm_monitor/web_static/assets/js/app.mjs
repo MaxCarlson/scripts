@@ -1,4 +1,4 @@
-import { fetchSnapshot, fetchHistory, fetchHistoryDetail, loginWithCode, logout, ApiError } from "./api.mjs";
+import { fetchSnapshot, fetchHistory, fetchHistoryDetail, updateRecordingMode, loginWithCode, logout, ApiError } from "./api.mjs";
 import { createRenderer } from "./render.mjs";
 import { applyRequestEvent, createState, followLatest, requestKey, selectRequest, visibleRequests, mergeSnapshot } from "./state.mjs";
 import { stateLabel } from "./formatters.mjs";
@@ -117,11 +117,20 @@ async function refresh() {
 }
 
 
+function historyTimeFilterToSince(timeFilter) {
+  if (!timeFilter || timeFilter === "all") return null;
+  const now = Date.now();
+  const ms = timeFilter === "15m" ? 15 * 60_000 : timeFilter === "1h" ? 60 * 60_000 : 24 * 60 * 60_000;
+  return new Date(now - ms).toISOString();
+}
+
 async function loadHistory() {
   try {
     const res = await fetchHistory({
+      server_instance_id: state.historyServerFilter,
       model_id: state.historyModelFilter,
       state: state.historyStatusFilter,
+      since: historyTimeFilterToSince(state.historyTimeFilter),
     });
     state = {
       ...state,
@@ -200,10 +209,154 @@ for (const link of document.querySelectorAll("[data-page]")) {
 
 window.addEventListener("hashchange", () => navigate(location.hash.slice(1)));
 
-byId("model-filter").addEventListener("change", (event) => {
+byId("model-filter")?.addEventListener("change", (event) => {
   state = { ...state, selectedModelId: event.target.value, requestLimit: 100 };
   updateVisibleSelection();
 });
+
+const comboboxTrigger = byId("model-select-trigger");
+const comboboxPopup = byId("model-select-popup");
+
+function openCombobox() {
+  if (!comboboxPopup || !comboboxTrigger) return;
+  comboboxPopup.hidden = false;
+  comboboxTrigger.setAttribute("aria-expanded", "true");
+  const selectedOpt = comboboxPopup.querySelector('[aria-selected="true"]') || comboboxPopup.querySelector(".combobox-option");
+  if (selectedOpt) selectedOpt.focus();
+}
+
+function closeCombobox() {
+  if (!comboboxPopup || !comboboxTrigger) return;
+  comboboxPopup.hidden = true;
+  comboboxTrigger.setAttribute("aria-expanded", "false");
+}
+
+function selectComboboxOption(val) {
+  state = { ...state, selectedModelId: val, requestLimit: 100 };
+  const hiddenSelect = byId("model-filter");
+  if (hiddenSelect) hiddenSelect.value = val;
+  closeCombobox();
+  updateVisibleSelection();
+  comboboxTrigger?.focus();
+}
+
+if (comboboxTrigger) {
+  comboboxTrigger.addEventListener("click", () => {
+    if (comboboxPopup.hidden) openCombobox();
+    else closeCombobox();
+  });
+
+  comboboxTrigger.addEventListener("keydown", (e) => {
+    if (["ArrowDown", "ArrowUp", "Enter", " "].includes(e.key)) {
+      e.preventDefault();
+      openCombobox();
+    }
+  });
+}
+
+if (comboboxPopup) {
+  comboboxPopup.addEventListener("click", (e) => {
+    const opt = e.target.closest(".combobox-option[data-value]");
+    if (opt) selectComboboxOption(opt.dataset.value);
+  });
+
+  comboboxPopup.addEventListener("keydown", (e) => {
+    const options = Array.from(comboboxPopup.querySelectorAll(".combobox-option"));
+    if (!options.length) return;
+    const currentIndex = options.indexOf(document.activeElement);
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      const nextIndex = currentIndex < options.length - 1 ? currentIndex + 1 : 0;
+      options[nextIndex]?.focus();
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      const prevIndex = currentIndex > 0 ? currentIndex - 1 : options.length - 1;
+      options[prevIndex]?.focus();
+    } else if (e.key === "Home") {
+      e.preventDefault();
+      options[0]?.focus();
+    } else if (e.key === "End") {
+      e.preventDefault();
+      options[options.length - 1]?.focus();
+    } else if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      if (document.activeElement?.dataset?.value) {
+        selectComboboxOption(document.activeElement.dataset.value);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      closeCombobox();
+      comboboxTrigger?.focus();
+    } else if (e.key === "Tab") {
+      closeCombobox();
+    }
+  });
+}
+
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#model-combobox")) {
+    closeCombobox();
+  }
+});
+
+const recordingModeBtn = byId("recording-mode-btn");
+const recordingConfirmDialog = byId("recording-confirm-dialog");
+const recordingConfirmCancel = byId("recording-confirm-cancel");
+const recordingConfirmAccept = byId("recording-confirm-accept");
+
+if (recordingModeBtn) {
+  recordingModeBtn.addEventListener("click", async () => {
+    const currentMode = state.status?.recording?.mode || (state.status?.recording?.enabled ? "metadata" : "off");
+    if (currentMode === "off" || currentMode === "disabled") {
+      try {
+        await updateRecordingMode("metadata");
+        await refresh();
+      } catch (err) {
+        console.error("Failed to enable metadata recording", err);
+      }
+    } else if (currentMode === "metadata") {
+      if (recordingConfirmDialog?.showModal) {
+        recordingConfirmDialog.showModal();
+      } else {
+        const ok = window.confirm("Enable Full Content Recording? This persists complete user prompts, reasoning, and model outputs to SQLite.");
+        if (ok) {
+          try {
+            await updateRecordingMode("content");
+            await refresh();
+          } catch (err) {
+            console.error("Failed to enable content recording", err);
+          }
+        }
+      }
+    } else {
+      try {
+        await updateRecordingMode("metadata");
+        await refresh();
+      } catch (err) {
+        console.error("Failed to switch recording to metadata", err);
+      }
+    }
+  });
+}
+
+if (recordingConfirmCancel && recordingConfirmDialog) {
+  recordingConfirmCancel.addEventListener("click", () => {
+    recordingConfirmDialog.close();
+  });
+}
+
+if (recordingConfirmAccept && recordingConfirmDialog) {
+  recordingConfirmAccept.addEventListener("click", async () => {
+    recordingConfirmDialog.close();
+    try {
+      await updateRecordingMode("content");
+      await refresh();
+    } catch (err) {
+      console.error("Failed to enable content recording", err);
+    }
+  });
+}
 
 byId("server-list").addEventListener("click", (event) => {
   const button = event.target.closest("button[data-server-id]");
@@ -415,8 +568,16 @@ const initialPage = location.hash.slice(1);
 if (["overview", "requests", "models", "history", "alerts"].includes(initialPage)) state.page = initialPage;
 
 byId("history-refresh-btn")?.addEventListener("click", () => loadHistory());
+byId("history-server-filter")?.addEventListener("change", (e) => {
+  state = { ...state, historyServerFilter: e.target.value };
+  loadHistory();
+});
 byId("history-model-filter")?.addEventListener("change", (e) => {
   state = { ...state, historyModelFilter: e.target.value };
+  loadHistory();
+});
+byId("history-time-filter")?.addEventListener("change", (e) => {
+  state = { ...state, historyTimeFilter: e.target.value };
   loadHistory();
 });
 byId("history-status-filter")?.addEventListener("change", (e) => {

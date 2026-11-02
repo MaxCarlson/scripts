@@ -1,4 +1,4 @@
-import { isActive } from "./state.mjs";
+import { isActive, matchesModel } from "./state.mjs";
 
 export function safeCount(value) {
   return Number.isSafeInteger(value) && value >= 0 ? new Intl.NumberFormat().format(value) : "—";
@@ -47,8 +47,8 @@ export function tokenMetric(request, field) {
   return { value: source === "estimated" ? `~${safeCount(value)}` : safeCount(value), source };
 }
 
-export function aggregateSummary(requests, captureState, selectedModelId = "all") {
-  const subset = requests.filter((request) => selectedModelId === "all" || (request.model_instance_id || request.provider_model_id) === selectedModelId);
+export function aggregateSummary(requests, captureState, selectedModelId = "all", models = []) {
+  const subset = requests.filter((request) => matchesModel(request, selectedModelId, models));
   if (captureState === "unavailable" && subset.length === 0) {
     return { requestCount: "—", requestNote: "No request source connected", input: null, reasoning: null, output: null, duration: null, gpu: null };
   }
