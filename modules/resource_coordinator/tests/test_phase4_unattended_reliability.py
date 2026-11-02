@@ -239,6 +239,7 @@ async def test_gateway_persists_lifecycle_in_journal(tmp_path: Path):
     in the durable state file.
     """
     state_file = tmp_path / "gateway_journal.json"
+    StateCodec.initialize(state_file)
     lease_mgr = LeaseManager()
     gateway = LMStudioGateway(lease_manager=lease_mgr, state_persistence_path=str(state_file), standalone=True)
 
@@ -284,6 +285,7 @@ async def test_gateway_persists_uncertain_on_truncated_stream(tmp_path: Path):
     Test 8: On truncated stream without [DONE], gateway persists UNCERTAIN and inhibits restart.
     """
     state_file = tmp_path / "stream_journal.json"
+    StateCodec.initialize(state_file)
     lease_mgr = LeaseManager()
     gateway = LMStudioGateway(lease_manager=lease_mgr, state_persistence_path=str(state_file), standalone=True)
 
@@ -396,6 +398,7 @@ async def test_operator_recover_clears_inhibition_in_journal(tmp_path: Path):
     Test 10: Authenticated operator recovery clears the hold in both memory and the durable state file.
     """
     state_file = tmp_path / "recovery_journal.json"
+    StateCodec.initialize(state_file)
     lease_mgr = LeaseManager()
     await lease_mgr.inhibit_restart("gpu.inference", "manual_test_hold", "op1")
     StateCodec.record_inhibition(state_file, "gpu.inference", "manual_test_hold", "op1")

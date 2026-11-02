@@ -305,10 +305,11 @@ async def test_recovery_resolves_persistent_unresolved_requests(tmp_path: Path):
 
     await service1.stop()
 
-    # Verify journal on disk has terminalized the request
+    # Verify journal on disk has resolved the request as OPERATOR_RESOLVED
     loaded = StateCodec.load(state_file)
     req = loaded.requests["req-persisted-crash"]
-    assert req.phase == RequestPhase.TERMINAL_VERIFIED
+    assert req.phase == RequestPhase.OPERATOR_RESOLVED
+    assert req.details.get("previous_phase") == RequestPhase.POSSIBLY_FORWARDED.value
     assert "lead_operator" in req.details.get("resolved_by", "")
 
     # Second boot: journal has NO unresolved requests, so no restart inhibition is placed!

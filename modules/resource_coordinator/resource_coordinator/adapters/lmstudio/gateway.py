@@ -319,16 +319,28 @@ class LMStudioGateway:
                 {"error": "Terminal or unready service requires independent reconciliation"}, status_code=409
             )
         resource = request.query_params.get("resource", "gpu.inference")
+        resolved_requests: list[str] = []
+
+        def _persist_resolution() -> None:
+            nonlocal resolved_requests
+            if self.state_persistence_path:
+                _, resolved_requests = StateCodec.resolve_unresolved_requests(
+                    self.state_persistence_path, resource, operator, reason
+                )
+
         try:
             cleared = await self.lease_mgr.clear_inhibition(
-                resource, origin=f"operator_override:{operator}:{reason}", require_all_idle=True
+                resource,
+                origin=f"operator_override:{operator}:{reason}",
+                require_all_idle=True,
+                before_clear=_persist_resolution,
             )
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
-        resolved_requests = []
-        if self.state_persistence_path:
-            _, resolved_requests = StateCodec.resolve_unresolved_requests(
-                self.state_persistence_path, resource, operator, reason
+        except (OSError, ValueError) as exc:
+            logger.error("Failed persisting operator recovery for '%s': %s", resource, exc)
+            return JSONResponse(
+                {"error": f"Durable state persistence failed during recovery: {exc}"}, status_code=500
             )
         if service is not None and service.state == ServiceState.RECONCILIATION_REQUIRED:
             # If all resources are now uninhibited and not claimed, restore service readiness
@@ -439,6 +451,7 @@ class LMStudioGateway:
         completed = False
         response_owns_cleanup = False
         cleaned = False
+        reserved_in_journal = False
 
         async def cleanup() -> None:
             nonlocal cleaned
@@ -454,7 +467,7 @@ class LMStudioGateway:
                             request_id,
                             {"model": model_name, "path": path},
                         )
-                    if self.state_persistence_path:
+                    if self.state_persistence_path and (reserved_in_journal or forwarded):
                         try:
                             if completed:
                                 StateCodec.record_request_phase(
@@ -486,6 +499,12 @@ class LMStudioGateway:
                                 )
                         except Exception as log_exc:
                             logger.error("Failed recording terminal phase in state journal: %s", log_exc)
+                            await self.lease_mgr.inhibit_restart(
+                                resource,
+                                f"Journal persistence failure during request cleanup: {log_exc}",
+                                request_id,
+                                {"model": model_name, "path": path},
+                            )
                     await self.dispatcher.emit(
                         finish_event,
                         {
@@ -512,6 +531,7 @@ class LMStudioGateway:
                     model=model_name,
                     path=path,
                 )
+                reserved_in_journal = True
             if not self.admission_controller.evaluate(request.method, path).allowed:
                 raise VetoOperation("Admission closed before blocking actions")
             await self.dispatcher.emit_blocking(event_name, event_data, origin="lmstudio_gateway")

@@ -299,7 +299,11 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
                 adopt_external=p_cfg.adopt_external,
                 allow_force_termination=p_cfg.allow_force_termination,
             )
-        supervisor = ProcessSupervisor(backend=backend, event_dispatcher=dispatcher)
+        supervisor = ProcessSupervisor(
+            backend=backend,
+            event_dispatcher=dispatcher,
+            state_persistence_path=config.service.state_persistence_path,
+        )
         supervisors[name] = supervisor
 
         # By default create miner adapter for miner-like processes

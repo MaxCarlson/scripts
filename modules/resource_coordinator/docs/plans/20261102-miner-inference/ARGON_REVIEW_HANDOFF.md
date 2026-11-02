@@ -135,13 +135,14 @@ The independent review identified several critical edge cases in concurrency, pe
 | `POSSIBLY_FORWARDED` | Immediately before forwarding to LM Studio | Replayed on boot as `RestartInhibition` on resource |
 | `TERMINAL_VERIFIED` | After receipt of `[DONE]`, complete body, or verified upstream error | Resource remains restart-eligible |
 | `UNCERTAIN` | On premature socket disconnect or truncated stream | Latches `RestartInhibition`; requires authenticated operator recovery |
+| `OPERATOR_RESOLVED` | On authenticated `POST /_coordinator/recover` | Preserves `previous_phase` and operator attribution; clears startup inhibition |
 | `RestartInhibition` | Latched on crash, abort, or uncertain completion | Persisted to journal; blocks all automatic process restarts |
 
 ### Recovery Flow
 1. **Operator Override:** Operator inspects LM Studio / hardware, then issues:
    `POST /_coordinator/recover?resource=gpu.inference`
-   with Bearer token, `operator`, and `reason`.
-2. **Atomic Resolution:** The lease manager clears in-memory holds, and `StateCodec.resolve_unresolved_requests()` terminalizes records on disk.
+   with Bearer token, `override: true`, `operator`, and `reason`.
+2. **Atomic Resolution:** Inside `LeaseManager.clear_inhibition(before_clear=...)`, `StateCodec.resolve_unresolved_requests()` transitions unresolved records to `OPERATOR_RESOLVED` on disk **before** clearing the in-memory hold or starting cooldown. If disk persistence fails, the in-memory inhibition remains latched.
 3. **Clean Restart:** Future coordinator reboots read a clean journal without re-imposing stale inhibitions.
 
 ---
@@ -197,9 +198,10 @@ python -m pytest modules/resource_coordinator/tests
 ```
 
 ### Verified Test Suite Results
-- Total Tests: **288 passed, 4 skipped in 10.06s**
+- `modules/resource_coordinator`: **298 passed, 4 skipped in 18.15s** (including 10 Argon adversarial review tests in `test_argon_adversarial_review.py`).
+- `modules/llm_monitor`: **253 passed, 2 skipped in 10.96s**.
 - Zero Failures, Zero Errors.
-- Skipped tests (4): Host GPU monitor integration tests requiring elevated hardware privileges and missing hardware mock fixture in unit mode.
+- Complete adversarial review report recorded in `ARGON_REVIEW_RESULTS.md`.
 
 ---
 

@@ -40,6 +40,7 @@ class RequestPhase(str, Enum):
     POSSIBLY_FORWARDED = "possibly_forwarded"  # Bytes committed to upstream dispatch
     TERMINAL_VERIFIED = "terminal_verified"  # Stream completed with [DONE] or non-stream completed
     UNCERTAIN = "uncertain"  # Stream ended abruptly, network failure, or error
+    OPERATOR_RESOLVED = "operator_resolved"  # Explicitly overridden by authenticated operator recovery
 
 
 def _valid_time(value: Any) -> bool:
@@ -95,6 +96,7 @@ class PersistedProcess:
     create_time: Optional[float] = None
     lifecycle_owner: str = ProcessLifecycleOwner.UNMANAGED.value
     was_stopped_by_coordinator: bool = False
+    is_manual_override: bool = False
     last_stopped_at: Optional[float] = None
     last_started_at: Optional[float] = None
 
@@ -109,6 +111,8 @@ class PersistedProcess:
             raise ValueError("Unknown process fields or missing process name")
         if type(data.get("was_stopped_by_coordinator", False)) is not bool:
             raise ValueError("Restart ownership must be a boolean")
+        if type(data.get("is_manual_override", False)) is not bool:
+            raise ValueError("Manual override must be a boolean")
         pid, created = data.get("pid"), data.get("create_time")
         if pid is not None and (type(pid) is not int or pid <= 0 or not _valid_time(created)):
             raise ValueError("A persisted PID requires a valid exact creation time")
@@ -348,10 +352,7 @@ class StateCodec:
         target = Path(target_path)
         phase_str = phase.value if isinstance(phase, RequestPhase) else str(phase)
         now = time.time()
-        if target.exists():
-            state = cls.load(target)
-        else:
-            state = CoordinatorState()
+        state = cls.load(target)
 
         existing = state.requests.get(request_id)
         if existing:
@@ -387,15 +388,18 @@ class StateCodec:
         create_time: Optional[float],
         lifecycle_owner: str,
         was_stopped_by_coordinator: bool,
+        is_manual_override: Optional[bool] = None,
     ) -> CoordinatorState:
         target = Path(target_path)
         now = time.time()
-        state = cls.load(target) if target.exists() else CoordinatorState()
+        state = cls.load(target)
         proc = state.processes.get(name) or PersistedProcess(name=name)
         proc.pid = pid
         proc.create_time = create_time
         proc.lifecycle_owner = lifecycle_owner
         proc.was_stopped_by_coordinator = was_stopped_by_coordinator
+        if is_manual_override is not None:
+            proc.is_manual_override = is_manual_override
         if was_stopped_by_coordinator:
             proc.last_stopped_at = now
         elif pid is not None:
@@ -416,7 +420,7 @@ class StateCodec:
     ) -> CoordinatorState:
         target = Path(target_path)
         now = time.time()
-        state = cls.load(target) if target.exists() else CoordinatorState()
+        state = cls.load(target)
         state.inhibitions[resource] = {
             "resource": resource,
             "reason": reason,
@@ -436,7 +440,7 @@ class StateCodec:
     ) -> CoordinatorState:
         target = Path(target_path)
         now = time.time()
-        state = cls.load(target) if target.exists() else CoordinatorState()
+        state = cls.load(target)
         state.inhibitions.pop(resource, None)
         state.updated_at = now
         cls.save_atomic(state, target)
@@ -452,12 +456,12 @@ class StateCodec:
     ) -> tuple[CoordinatorState, list[str]]:
         """
         Durably resolve in-flight and uncertain requests for a resource upon operator override.
-        Transitions unresolved requests to TERMINAL_VERIFIED with attribution metadata and
+        Transitions unresolved requests to OPERATOR_RESOLVED with attribution metadata and
         clears the resource inhibition.
         """
         target = Path(target_path)
         now = time.time()
-        state = cls.load(target) if target.exists() else CoordinatorState()
+        state = cls.load(target)
         resolved_ids: list[str] = []
         UNRESOLVED_PHASES = {
             RequestPhase.RESERVED.value,
@@ -466,7 +470,8 @@ class StateCodec:
         }
         for req_id, req in list(state.requests.items()):
             if req.resource == resource and req.phase in UNRESOLVED_PHASES:
-                req.phase = RequestPhase.TERMINAL_VERIFIED.value
+                req.details["previous_phase"] = req.phase
+                req.phase = RequestPhase.OPERATOR_RESOLVED.value
                 req.updated_at = now
                 req.details["resolved_by"] = f"operator_override:{operator}:{reason}"
                 req.details["resolved_at"] = now
@@ -559,6 +564,11 @@ async def reconcile_startup_state(
         query_fn = _default_query
 
     for proc_name, proc in state.processes.items():
+        if supervisors and proc_name in supervisors:
+            sup = supervisors[proc_name]
+            sup.was_stopped_by_coordinator = proc.was_stopped_by_coordinator
+            if proc.is_manual_override:
+                sup.set_manual_override(True, persist=False)
         outcome = reconcile_pid(proc.pid, proc.create_time, query_fn)
         audit["reconciled_processes"][proc_name] = {
             "pid": proc.pid,

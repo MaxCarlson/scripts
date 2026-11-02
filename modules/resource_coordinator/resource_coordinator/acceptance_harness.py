@@ -101,14 +101,20 @@ class AcceptanceHarness:
         allow_live_lmstudio: bool = False,
         allow_real_miner: bool = False,
         lmstudio_url: str = "http://127.0.0.1:1234",
+        miner_process_config: Optional[ProcessConfig] = None,
     ) -> None:
+        import os
+
+        if mode not in {"simulated", "disposable_helper", "live"}:
+            raise ValueError(f"Unsupported acceptance harness mode: {mode!r}")
+
         self.mode = mode
         self.cooldown_seconds = cooldown_seconds
         self.allow_live_lmstudio = allow_live_lmstudio
         self.allow_real_miner = allow_real_miner
         self.lmstudio_url = lmstudio_url
+        self.miner_process_config = miner_process_config
 
-        import os
         if mode == "live":
             if not allow_live_lmstudio or not allow_real_miner:
                 raise ValueError(
@@ -118,7 +124,9 @@ class AcceptanceHarness:
             upstream_type = "live_lmstudio"
             verification_level = "live_hardware"
         elif mode == "disposable_helper":
-            process_backend = "windows_cscript" if os.name == "nt" else "fake"
+            if os.name != "nt":
+                raise RuntimeError("Disposable helper acceptance mode requires Windows (os.name == 'nt')")
+            process_backend = "windows_cscript"
             upstream_type = "mock"
             verification_level = "os_process_contract"
         else:
@@ -136,6 +144,13 @@ class AcceptanceHarness:
     async def run_all(self, output_file: Optional[str | Path] = None) -> AcceptanceReport:
         """Run all test sequence trials and return the structured acceptance report."""
         logger.info("Starting Acceptance Test Sequence in mode: %s", self.mode)
+        if self.mode == "live" and (
+            self.miner_process_config is None or self.miner_process_config.backend != "windows"
+        ):
+            raise RuntimeError(
+                "Live acceptance mode requires an explicit Windows miner_process_config; "
+                "refusing to fall back to simulated backend"
+            )
 
         await self._run_trial_1_single_request()
         await self._run_trial_2_cooldown_interruption()
@@ -195,7 +210,39 @@ class AcceptanceHarness:
         )
 
         import os
-        if self.mode == "disposable_helper" and os.name == "nt":
+        if self.mode == "live":
+            if self.miner_process_config is None or self.miner_process_config.backend != "windows":
+                raise RuntimeError(
+                    "Live acceptance mode requires an explicit Windows miner_process_config; "
+                    "refusing to fall back to simulated backend"
+                )
+            cfg = CoordinatorConfig(
+                service=ServiceConfig(upstream_url=self.lmstudio_url),
+                processes={self.miner_process_config.name: self.miner_process_config},
+                policies=[
+                    PolicyConfig(
+                        name="stop-miner-live",
+                        trigger_event="lmstudio.inference_requested",
+                        target_process=self.miner_process_config.name,
+                        stop_process=True,
+                        restart_process=True,
+                        resource="gpu.inference",
+                        lease_type="shared",
+                        cooldown_seconds=cooldown_seconds,
+                        only_if_stopped_by_coordinator=True,
+                    )
+                ],
+            )
+            system = build_system(cfg, use_fake_processes=False)
+            service = CoordinatorService(
+                system,
+                start_process_on_ready=self.miner_process_config.name,
+                stop_process_on_shutdown=self.miner_process_config.name,
+            )
+            backend = system.supervisors[self.miner_process_config.name].backend
+        elif self.mode == "disposable_helper":
+            if os.name != "nt":
+                raise RuntimeError("Disposable helper acceptance mode requires Windows (os.name == 'nt')")
             vbs_path = Path(__file__).parent / "adapters" / "miners" / "windows_miner_helper.vbs"
             cscript_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cscript.exe")
             proc_cfg = ProcessConfig(
@@ -259,6 +306,7 @@ class AcceptanceHarness:
             backend.lifecycle_owner = ProcessLifecycleOwner.COORDINATOR
             backend.is_coordinator_owned = True
             system.supervisors["krig"].was_stopped_by_coordinator = False
+            system.supervisors["krig"]._has_started = True
 
         gateway_app = system.gateway.create_app(service)
         coordinator_client = httpx.AsyncClient(
@@ -267,6 +315,13 @@ class AcceptanceHarness:
         )
 
         return service, system, coordinator_client, backend
+
+    async def _wait_for_restart(self, backend: Any, cooldown: float) -> None:
+        await asyncio.sleep(cooldown + 0.05)
+        for _ in range(20):
+            if backend.running:
+                return
+            await asyncio.sleep(0.05)
 
     async def _run_trial_1_single_request(self) -> None:
         """Trial 1: Single request stop-before-forward and exact idle cooldown restart."""
@@ -292,7 +347,7 @@ class AcceptanceHarness:
             t.metrics["request_duration_ms"] = (t_req_end - t_req_start) * 1000.0
 
             # Wait for cooldown to expire
-            await asyncio.sleep(cooldown + 0.05)
+            await self._wait_for_restart(backend, cooldown)
 
             # Miner must now be restarted!
             assert backend.running is True
@@ -336,7 +391,7 @@ class AcceptanceHarness:
             t.metrics["cooldown_cancelled_on_arrival"] = True
 
             # Wait for second cooldown to expire
-            await asyncio.sleep(cooldown + 0.05)
+            await self._wait_for_restart(backend, cooldown)
             assert backend.running is True
 
             t.status = "PASS"
@@ -392,7 +447,7 @@ class AcceptanceHarness:
             assert system.lease_mgr.is_cooling_down("gpu.inference") is True
 
             # Wait for cooldown to expire
-            await asyncio.sleep(cooldown + 0.05)
+            await self._wait_for_restart(backend, cooldown)
             assert backend.running is True
 
             t.status = "PASS"
@@ -421,7 +476,7 @@ class AcceptanceHarness:
 
             # Stream finished cleanly with [DONE]
             assert system.lease_mgr.is_cooling_down("gpu.inference") is True
-            await asyncio.sleep(cooldown + 0.05)
+            await self._wait_for_restart(backend, cooldown)
             assert backend.running is True
 
             t.status = "PASS"

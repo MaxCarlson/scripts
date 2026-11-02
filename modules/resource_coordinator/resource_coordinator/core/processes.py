@@ -477,19 +477,52 @@ class ProcessSupervisor:
         event_dispatcher: Optional[EventDispatcher] = None,
         allow_external_stop: Optional[bool] = None,
         allow_external_restart: Optional[bool] = None,
+        state_persistence_path: str = "",
     ) -> None:
         self.backend = backend
         self.dispatcher = event_dispatcher or EventDispatcher()
+        self.state_persistence_path = state_persistence_path
         self.was_stopped_by_coordinator = False
         self._stopped_external = False
         self.is_manual_override = False
         self.consecutive_unexpected_exits = 0
+        self._has_started = bool(getattr(backend, "running", False))
         self._lock = asyncio.Lock()
 
         if allow_external_stop is not None:
             self.backend.allow_external_stop = allow_external_stop
         if allow_external_restart is not None:
             self.backend.allow_external_restart = allow_external_restart
+
+    def _persist_state(self, info: Optional[ProcessInfo] = None) -> None:
+        if not self.state_persistence_path:
+            return
+        try:
+            from resource_coordinator.core.durable_state import StateCodec
+
+            if info is not None:
+                is_running = info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}
+                pid = info.pid if is_running else None
+                create_time = info.create_time if is_running else None
+                owner = info.lifecycle_owner.value
+            else:
+                state = StateCodec.load(self.state_persistence_path)
+                existing = state.processes.get(self.name)
+                pid = existing.pid if existing else None
+                create_time = existing.create_time if existing else None
+                owner = existing.lifecycle_owner if existing else ProcessLifecycleOwner.UNMANAGED.value
+
+            StateCodec.record_process_state(
+                self.state_persistence_path,
+                self.name,
+                pid=pid,
+                create_time=create_time,
+                lifecycle_owner=owner,
+                was_stopped_by_coordinator=self.was_stopped_by_coordinator,
+                is_manual_override=self.is_manual_override,
+            )
+        except Exception as exc:
+            logger.error("Failed persisting process state for '%s': %s", self.name, exc)
 
     @property
     def name(self) -> str:
@@ -504,11 +537,18 @@ class ProcessSupervisor:
         return getattr(self.backend, "allow_external_restart", False)
 
     async def status(self) -> ProcessInfo:
-        return await self.backend.status()
+        info = await self.backend.status()
+        if info.state == ProcessState.RUNNING or info.last_started_at is not None:
+            self._has_started = True
+        return info
 
-    def set_manual_override(self, paused: bool) -> None:
+    def set_manual_override(self, paused: bool, *, persist: bool = True) -> None:
         """Set or clear manual pause override."""
         self.is_manual_override = paused
+        if paused:
+            self.consecutive_unexpected_exits = 0
+        if persist:
+            self._persist_state()
         logger.info("Process '%s' manual override set to %s", self.name, paused)
 
     async def stop(self, timeout: float = 10.0, origin: str = "coordinator") -> bool:
@@ -516,6 +556,8 @@ class ProcessSupervisor:
         async with self._lock:
             info = await self.backend.status()
             if info.state == ProcessState.STOPPED:
+                if self.state_persistence_path:
+                    self._persist_state(info)
                 return True
 
             if info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_stop:
@@ -534,7 +576,12 @@ class ProcessSupervisor:
             if success:
                 if origin == "coordinator":
                     self.was_stopped_by_coordinator = True
+                    self.consecutive_unexpected_exits = 0
                     self._stopped_external = info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL
+                elif origin == "shutdown":
+                    self.was_stopped_by_coordinator = False
+                if self.state_persistence_path:
+                    self._persist_state(await self.backend.status())
                 await self.dispatcher.emit(
                     "process.stopped",
                     {
@@ -568,6 +615,7 @@ class ProcessSupervisor:
 
             info = await self.backend.status()
             if info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
+                self._has_started = True
                 return True
             if info.state != ProcessState.STOPPED:
                 return False
@@ -588,7 +636,10 @@ class ProcessSupervisor:
 
             success = await self.backend.start()
             if success:
+                self._has_started = True
                 self.was_stopped_by_coordinator = False
+                if self.state_persistence_path:
+                    self._persist_state(await self.backend.status())
                 await self.dispatcher.emit(
                     "process.started",
                     {"name": self.name, "origin": origin},
@@ -614,15 +665,18 @@ class ProcessSupervisor:
         Inspect process status. If coordinator-owned process exited unexpectedly while
         system is safe idle, attempt bounded backoff restart or inhibit further attempts.
         """
+        exhausted_count: Optional[int] = None
         async with self._lock:
             if self.is_manual_override or self.was_stopped_by_coordinator:
                 return False
 
-            # Check if resource is safe idle
+            # Check if resource is safe idle (including active cooldown or global restart block)
             if (
                 lease_manager.active_count(resource) > 0
                 or lease_manager.pending_count(resource) > 0
                 or lease_manager.is_restart_inhibited(resource)
+                or ( hasattr(lease_manager, "is_cooling_down") and lease_manager.is_cooling_down(resource) )
+                or getattr(lease_manager, "restarts_blocked", False)
             ):
                 return False
 
@@ -633,70 +687,76 @@ class ProcessSupervisor:
             # Process unexpectedly exited while safe idle!
             self.consecutive_unexpected_exits += 1
             if self.consecutive_unexpected_exits > max_retries:
-                logger.error(
-                    "Process '%s' exceeded maximum consecutive unexpected exits (%d); inhibiting restart",
+                exhausted_count = self.consecutive_unexpected_exits
+            else:
+                backoff = base_backoff_seconds * (2 ** (self.consecutive_unexpected_exits - 1))
+                logger.warning(
+                    "Process '%s' exited unexpectedly (crash #%d); waiting %.1fs backoff before restart",
                     self.name,
-                    max_retries,
-                )
-                await lease_manager.inhibit_restart(
-                    resource=resource,
-                    reason=f"process_crash_loop_exhausted:{self.name}",
-                    holder_id=f"watchdog:{self.name}",
-                    details={"consecutive_exits": self.consecutive_unexpected_exits, "process": self.name},
+                    self.consecutive_unexpected_exits,
+                    backoff,
                 )
                 await self.dispatcher.emit(
-                    "process.crash_loop_inhibited",
-                    {"name": self.name, "consecutive_exits": self.consecutive_unexpected_exits},
+                    "process.crashed_restarting",
+                    {"name": self.name, "attempt": self.consecutive_unexpected_exits, "backoff": backoff},
                 )
-                return False
 
-            backoff = base_backoff_seconds * (2 ** (self.consecutive_unexpected_exits - 1))
-            logger.warning(
-                "Process '%s' exited unexpectedly (crash #%d); waiting %.1fs backoff before restart",
+        if exhausted_count is not None:
+            # Release self._lock before acquiring lease_manager._lock to preserve canonical lock order
+            logger.error(
+                "Process '%s' exceeded maximum consecutive unexpected exits (%d); inhibiting restart",
                 self.name,
-                self.consecutive_unexpected_exits,
-                backoff,
+                max_retries,
+            )
+            await lease_manager.inhibit_restart(
+                resource=resource,
+                reason=f"process_crash_loop_exhausted:{self.name}",
+                holder_id=f"watchdog:{self.name}",
+                details={"consecutive_exits": exhausted_count, "process": self.name},
             )
             await self.dispatcher.emit(
-                "process.crashed_restarting",
-                {"name": self.name, "attempt": self.consecutive_unexpected_exits, "backoff": backoff},
+                "process.crash_loop_inhibited",
+                {"name": self.name, "consecutive_exits": exhausted_count},
             )
+            return False
 
         # Release lock during backoff sleep so incoming reservations or stop() are not blocked
         await asyncio.sleep(backoff)
 
-        # Re-acquire lock and verify all safety invariants before starting
-        async with self._lock:
-            if self.is_manual_override or self.was_stopped_by_coordinator:
-                logger.info(
-                    "Process '%s' restart cancelled: manual override or coordinator stop occurred during backoff",
-                    self.name,
-                )
-                return False
+        # Serialize final safety check and restart under lease_manager.run_if_idle -> self._lock
+        started_result = False
+        cancelled_by_override_or_stop = False
 
-            if (
-                lease_manager.active_count(resource) > 0
-                or lease_manager.pending_count(resource) > 0
-                or lease_manager.is_restart_inhibited(resource)
-                or getattr(lease_manager, "restarts_blocked", False)
-            ):
-                logger.info(
-                    "Process '%s' restart cancelled: resource '%s' no longer safe idle after backoff "
-                    "(active=%d, pending=%d, inhibited=%s)",
-                    self.name,
-                    resource,
-                    lease_manager.active_count(resource),
-                    lease_manager.pending_count(resource),
-                    lease_manager.is_restart_inhibited(resource),
-                )
-                return False
+        async def _restart_if_still_stopped() -> None:
+            nonlocal started_result, cancelled_by_override_or_stop
+            async with self._lock:
+                if self.is_manual_override or self.was_stopped_by_coordinator:
+                    cancelled_by_override_or_stop = True
+                    return
+                info_now = await self.backend.status()
+                if info_now.state != ProcessState.STOPPED:
+                    return
+                started_result = await self.backend.start()
+                if started_result:
+                    self._has_started = True
+                    self.was_stopped_by_coordinator = False
+                    if self.state_persistence_path:
+                        self._persist_state(await self.backend.status())
+                    await self.dispatcher.emit(
+                        "process.started", {"name": self.name, "origin": "crash_recovery"}
+                    )
 
-            info = await self.backend.status()
-            if info.state != ProcessState.STOPPED:
-                return False
+        ran_idle = await lease_manager.run_if_idle(
+            resource, _restart_if_still_stopped, check_self_cooldown=True
+        )
+        if not ran_idle or cancelled_by_override_or_stop:
+            async with self._lock:
+                self.consecutive_unexpected_exits = max(0, self.consecutive_unexpected_exits - 1)
+            logger.info(
+                "Process '%s' restart cancelled after backoff: resource '%s' busy/cooling/inhibited or override active",
+                self.name,
+                resource,
+            )
+            return False
 
-            started = await self.backend.start()
-            if started:
-                self.was_stopped_by_coordinator = False
-                await self.dispatcher.emit("process.started", {"name": self.name, "origin": "crash_recovery"})
-            return started
+        return started_result

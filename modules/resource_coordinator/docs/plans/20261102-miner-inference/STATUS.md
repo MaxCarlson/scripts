@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Remediation Complete; Prepared for Independent Argon Adversarial Review  
-**Timestamp:** 2026-11-02T12:05:00-08:00  
+**Current Phase:** Independent Argon Adversarial Review & Remediation Complete; Ready for Supervised Acceptance  
+**Timestamp:** 2026-11-02T12:36:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -79,7 +79,7 @@
 - **Phase 5 (Client Adoption & Operational Runbook):** COMPLETE.
   - Produced operational runbook `RUNBOOK.md` covering port topologies, client migration paths, CLI commands, emergency abort, and rollback instructions.
   - Full regression suite verified.
-- **Independent Review Remediation:** COMPLETE (Commit Pending).
+- **Independent Review Remediation:** COMPLETE (Commit `d097f1c6`).
   - Addressed all findings from independent review across concurrency, persistence, and process supervision.
   - Hardened durable journal initialization (`StateCodec.initialize`), missing-state refusal on normal startup (`first_boot=True` requirement), and reservation cleanup on write failures.
   - Enabled persistent operator recovery (`resolve_unresolved_requests`) terminalizing crash records on disk.
@@ -90,5 +90,14 @@
   - Corrected CLI keyword arguments and operational documentation.
   - Suite: 288 passed, 4 skipped across `modules/resource_coordinator`.
   - Authored comprehensive `ARGON_REVIEW_HANDOFF.md` package for independent adversarial review.
+- **Independent Argon Adversarial Review & Hardening:** COMPLETE.
+  - Conducted line-by-line adversarial source audit and added 10 deterministic regression tests in `modules/resource_coordinator/tests/test_argon_adversarial_review.py`.
+  - **Finding A (`acceptance_harness.py`):** Rejected invalid modes (`ValueError`), enforced Windows requirement for `disposable_helper`, refused simulated `FakeProcessBackend` fallback in `live` mode, and verified all 5 trials against real Windows `cscript.exe` OS processes (`verification_level="os_process_contract"`).
+  - **Finding B (`gateway.py`, `leases.py`, `durable_state.py`):** Executed durable journal resolution inside `LeaseManager.clear_inhibition(before_clear=...)` under `self._condition` before clearing in-memory inhibition or starting cooldown; introduced distinct `RequestPhase.OPERATOR_RESOLVED` (`operator_resolved`) preserving `previous_phase`.
+  - **Finding C (`processes.py`, `service.py`, `leases.py`):** Serialized post-backoff watchdog restart through `lease_manager.run_if_idle(..., check_self_cooldown=True)`, enforced cooldown respect in watchdog supervision, removed lock-order inversion on crash-loop exhaustion, prevented spurious launch of never-started processes, and rolled back retry count when pre-empted by inference.
+  - **Finding D (`durable_state.py`, `gateway.py`):** Removed silent `CoordinatorState()` recreation when an initialized journal disappears at runtime, and latched in-memory `RestartInhibition` if terminal journal persistence (`TERMINAL_VERIFIED` / `UNCERTAIN`) fails during request cleanup.
+  - **Finding E (`durable_state.py`, `processes.py`, `service.py`, `config.py`):** Persisted `is_manual_override` in `PersistedProcess` across coordinator restarts and prevented `start_miner_on_ready` or normal shutdown `_freeze()` from clobbering operator pause state.
+  - Verified full regression suites: **298 passed, 4 skipped** (`resource_coordinator`) and **253 passed, 2 skipped** (`llm_monitor`).
+  - Recorded complete audit findings in `ARGON_REVIEW_RESULTS.md`.
 
 

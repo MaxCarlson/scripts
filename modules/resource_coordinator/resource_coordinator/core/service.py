@@ -115,7 +115,7 @@ class CoordinatorService:
         # No await before all restart protections are latched. Do not acquire a
         # supervisor mutex here: startup/stop may already be waiting inside one.
         for supervisor in self.system.supervisors.values():
-            supervisor.set_manual_override(True)
+            supervisor.set_manual_override(True, persist=False)
         tasks = self.system.lease_mgr.block_restarts(reason)
         startup = self._startup_task
         if startup is not None and startup is not asyncio.current_task() and not startup.done():
@@ -213,6 +213,9 @@ class CoordinatorService:
                 except Exception as exc:
                     raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
                 await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
+                for supervisor in self.system.supervisors.values():
+                    if not supervisor.state_persistence_path:
+                        supervisor.state_persistence_path = str(state_path)
             for supervisor in self.system.supervisors.values():
                 info = await supervisor.status()
                 if info.state not in {ProcessState.STOPPED, ProcessState.RUNNING}:
@@ -226,6 +229,8 @@ class CoordinatorService:
                         "Miner launch on ready skipped: restart on gpu.inference is currently inhibited (hold=%s)",
                         self.system.lease_mgr.get_inhibition("gpu.inference"),
                     )
+                elif self.system.miner_adapter.is_manual_override:
+                    logger.warning("Miner launch on ready skipped: manual override is active")
                 else:
                     # Initial explicit launch is distinct from resuming a process we paused.
                     success = await self.system.miner_adapter.resume(only_if_stopped_by_coordinator=False)
@@ -233,13 +238,18 @@ class CoordinatorService:
                     if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
                         raise RuntimeError("Requested miner launch was not verified coordinator-owned RUNNING")
             if self.start_process_on_ready:
+                supervisor = self.system.supervisors[self.start_process_on_ready]
                 if self.system.lease_mgr.is_restart_inhibited("gpu.inference"):
                     logger.warning(
                         "Process '%s' launch on ready skipped: restart on gpu.inference is inhibited",
                         self.start_process_on_ready,
                     )
+                elif supervisor.is_manual_override:
+                    logger.warning(
+                        "Process '%s' launch on ready skipped: manual override is active",
+                        self.start_process_on_ready,
+                    )
                 else:
-                    supervisor = self.system.supervisors[self.start_process_on_ready]
                     success = await supervisor.start(only_if_stopped_by_coordinator=False)
                     info = await supervisor.status()
                     if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
@@ -307,7 +317,9 @@ class CoordinatorService:
                         if not info.is_coordinator_owned:
                             uncertain = True  # Never mutate an external process during shutdown.
                         else:
-                            stopped = await asyncio.wait_for(self.system.miner_adapter.pause(timeout=5.0), timeout=7.0)
+                            stopped = await asyncio.wait_for(
+                                self.system.miner_adapter.pause(timeout=5.0, origin="shutdown"), timeout=7.0
+                            )
                             uncertain = uncertain or not stopped
                             uncertain = (
                                 uncertain or (await self.system.miner_adapter.status()).state != ProcessState.STOPPED
@@ -323,7 +335,7 @@ class CoordinatorService:
                                 self.stop_process_on_shutdown
                             ].stop_timeout_seconds
                             stopped = await asyncio.wait_for(
-                                supervisor.stop(timeout=stop_timeout), timeout=stop_timeout + 2.0
+                                supervisor.stop(timeout=stop_timeout, origin="shutdown"), timeout=stop_timeout + 2.0
                             )
                             uncertain = uncertain or not stopped
                             uncertain = uncertain or (await supervisor.status()).state != ProcessState.STOPPED
@@ -395,7 +407,11 @@ class CoordinatorService:
                     if supervisor is None:
                         continue
 
-                    if not supervisor.is_manual_override and not supervisor.was_stopped_by_coordinator:
+                    if (
+                        supervisor._has_started
+                        and not supervisor.is_manual_override
+                        and not supervisor.was_stopped_by_coordinator
+                    ):
                         info = await supervisor.status()
                         if info.state == ProcessState.STOPPED:
                             res = policy.resource
@@ -403,6 +419,7 @@ class CoordinatorService:
                                 not self.system.lease_mgr.active_count(res)
                                 and not self.system.lease_mgr.pending_count(res)
                                 and not self.system.lease_mgr.is_restart_inhibited(res)
+                                and not self.system.lease_mgr.is_cooling_down(res)
                                 and not self.system.lease_mgr.restarts_blocked
                             ):
                                 await supervisor.handle_unexpected_exit_backoff(
