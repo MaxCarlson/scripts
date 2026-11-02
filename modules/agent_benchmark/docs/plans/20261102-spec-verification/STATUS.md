@@ -1,35 +1,101 @@
 # Specification verification study status
 
-Branch `agent/spec-verification-policy-20261102`; implementation checkpoints `3626ed71`, `175a7ebf`, and `4c29cb4d`. No inference or scored trials were run.
+Branch `agent/spec-verification-policy-20261102`; implementation/runtime
+qualification checkpoint `ee63bb32a6828952ad8ffdb6069b3e6f184a1254`. This
+status update records the November 2, 2026 host preflight supplied by the user
+and subsequent read-only sandbox checks. No inference, scored trial, service
+start/restart, network change, merge, or push occurred.
 
-The suite has a repository-owned OpenCode v1 route, frozen SV0/SV1 policy provenance, policy digest checking, persisted template verification, requested native web-tool denial, repetition and seed metadata, and an offline test-activity review helper. Benchmark Core has an explicit prompt intervention comparison gate.
+## Current result
 
-The exploratory 18-trial order and limitations are in `../../spec-verification-study.md`. Cached task trees match historical Harbor locks at the pinned dataset revision, and verifier-tree hashes were computed independently. Confirm the actual execution trees match these values. Effective model settings, model-file identity, native web-tool enforcement, network isolation, monitor recording readiness, and baseline/no-op gates remain unverified. Do not dispatch the study until those gates and separate live authorization are satisfied.
+The policy implementation, frozen artifacts, run/resume integrity, Harbor
+0.25.0 OpenCode v1 integration, content identities and native web-tool denial
+are qualified offline or by the reported host preflight. A separate
+two-trial beer-song SV0/SV1 acceptance procedure and one-task manifest are
+prepared in `../../spec-verification-study.md` and
+`../../spec-verification-beer-song-acceptance.json`.
 
-The detached-worker fixture exposed two failures: a concurrent Windows file replacement raised access denied, and `starting` was marked interrupted before the child published `worker_pid`. Atomic writes now retry bounded permission failures, and startup status checks the launcher lock identity. Deterministic tests cover transient and persistent denial, a live launcher and a missing launcher lock; the real detached fixture passed five consecutive repetitions.
+The procedure is **not ready for live dispatch** under the stated
+no-unauthorized-external-research control: the selected Harbor task declares
+no network policy and Harbor 0.25.0 defaults an unspecified Docker network
+policy to `PUBLIC`. The current suite does not pass a restrictive per-task
+network policy into Harbor. Native web tool denial does not block shell egress.
+Do not change Docker/host networking under this work item. A common, approved
+egress regime that permits task setup and the local Monitor/model gateway but
+prevents unauthorized task research is required before the smoke.
 
-Harbor 0.25.0 was found in the existing uv cache and invoked with bytecode writes disabled. Its factory dynamically imported the study adapter, accepted the prompt-template and web-tool options, and its renderer preserved synthetic SV0/SV1 instructions exactly. A mocked actual adapter run checked the rendered prompt and removed fake VCS environment value; no model was invoked. The Harbor subprocess needed the `benchmark_core` sibling on `PYTHONPATH`, now supplied by the runner. The cached environments were not modified. A prior read-only monitored plan returned `MONITOR_NOT_RUNNING` for `127.0.0.1:8788`; no recovery was requested. Planning still leaves actual task content fingerprints unknown and Docker readiness was denied.
+Effective decoding/output settings and in-memory model file binding remain
+`RUNTIME_OBSERVATION_REQUIRED`, not implementation defects. Capture them from
+SV0 request evidence and require the same values before proceeding to SV1.
 
-Validation: with `HARBOR_025_PYTHON` set to the cached Harbor 0.25.0 interpreter, `python -m pytest tests/harbor_prompt_runtime_test.py tests/spec_verification_policy_test.py tests/test_quality_review_test.py tests/suite_test.py tests/suite_cli_test.py tests/harbor_importer_test.py tests/harbor_runner_test.py -q -p no:cacheprovider --basetemp=.pytest_tmp_root/qualification-final5` passed 79 tests. Eight separate invocations of the detached-worker fixture passed. In `modules/benchmark_core`, `python -m pytest -q -p no:cacheprovider --basetemp=.pytest_tmp_root/qualify-core3` passed with one skip. Ruff passed for the affected Python files in both modules. The existing Docker-offline fixture now mocks planning readiness so it tests the intended execution preflight even when the host's Docker pipe is inaccessible.
+## Final gate matrix
 
-One initial synthetic agent construction with a model name caused LiteLLM to attempt fetching its public model-cost map; DNS failed and no model inference occurred. Subsequent qualification set `LITELLM_LOCAL_MODEL_COST_MAP=True` and constructed agents without a model. This prevents that external lookup during the synthetic runtime test.
+| Gate | Class | Result | Evidence | Blocks dispatch? | Remaining action |
+| --- | --- | --- | --- | --- | --- |
+| Frozen tasks and verifier trees | Mandatory | PASS | User-reported PS7 host preflight; recorded task/verifier fingerprints and current runner rehash | No | Runner rechecks exact selected tree before each trial |
+| SV0/SV1 policy identities and persisted hashes | Mandatory | PASS | `sv0-unmodified-v1`; SV1 policy SHA `9874fc38201f32c215c212c8e5302bb9323fa575ca564b0f25db4e8dea3cbea3`; template SHA `f8db40dd1c1503fa482b40c5c7534fd4cf88327dfe4ed0ac029c789f0563f81a`; offline drift/resume tests | No | Each run revalidates artifacts before dispatch/resume |
+| Harbor 0.25.0 and OpenCode v1 adapter | Mandatory | PASS implementation; task container version pending | Actual cached Harbor factory/render/runtime tests; host OpenCode 1.19.5 reported; adapter pins 1.19.5 | Container evidence required during trial | Verify Harbor install/version output before accepting result |
+| Docker and host execution readiness | Mandatory | PASS per host preflight | User-reported Docker PASS; sandbox named-pipe check is denied | Recheck at actual run | Host suite run fails closed if unavailable |
+| LLM Monitor content recording | Mandatory | PASS per host preflight | User reports gateway enabled, content recorder healthy, zero drops; current DB path preserved | Recheck before and after every task | Stop on unavailable gateway, unhealthy recorder, dropped observations, or incomplete capture |
+| Model alias/provider/API route | Mandatory | PASS requested/host identity; effective request pending | Alias `qwen38_23GB`; key `qwen38-27b-q4km`; route is intended through Monitor; Chat Completions is explicitly requested | Runtime route must be checked before SV1 | Match Monitor content request and Harbor trial metadata |
+| Model file candidate | Measurement | PASS candidate hash; loaded binding UNKNOWN | Candidate path/size/SHA in study doc; host inventory reports alias/key/size | Not alone | Correlate in-memory model identity to file if available; record unknown otherwise |
+| Context, sampling, output and reasoning | Measurement | RUNTIME_OBSERVATION_REQUIRED | Context 98,304 reported by model inventory; adapter pins no temperature/top-p/top-k/model sampling seed/output limit/stops; UI default 32,768 is not effective state | Do not run SV1 until SV0 request and SV1 request settings are equal | Capture request parameters, context and reasoning controls; no assumed defaults |
+| Native web tools | Mandatory | PASS for generated config; runtime confirmation pending | Actual Harbor 0.25.0 factory produced identical deny config for `websearch` and `webfetch` in SV0/SV1 | Confirm each trial's effective config | Check task-local generated OpenCode config or equivalent native evidence |
+| Shell/container outbound network | Mandatory | FAIL | Harbor task has no network policy; pinned Harbor `DockerEnvironment` defaults unspecified policy to PUBLIC; suite does not select egress policy | **Yes** | Establish common authorized egress before dispatch; keep local gateway and required setup reachable |
+| Concurrency/retries and evidence separation | Mandatory | PASS for procedure | `-j 1`, one task, zero Harbor retries; separate SV0/SV1 run roots; stop before SV1 if SV0 infra-invalid | No | Follow separate commands and inspect SV0 report before SV1 |
+| Baseline/no-op equivalence | Validity | PASS simulated only | Actual Harbor renderer, mocked adapter and generated tool config compare as expected | Actual runtime comparison still required | Compare agent instruction, route, settings and tools in both artifacts |
+| Independent score and complete evidence | Validity | UNKNOWN until run | No acceptance trial exists; host recorder preflight is healthy | Yes if evidence incomplete or infrastructure-invalid | Preserve Harbor raw job evidence and Monitor records, reconcile by trial ID |
 
-## Non-inference readiness gate matrix
+## Evidence and exact checks
 
-| Gate | Result | Evidence and limit |
-| --- | --- | --- |
-| Task and verifier trees | PASS for selected cache | Harbor 0.25.0 resolved the saved historical registry's Git URL, revision and task paths to the three cache paths. Their task and verifier hashes match the study table. The runner rechecks the selected cache before each dispatch and fails closed on drift. |
-| Baseline and policy | PASS, synthetic | Actual Harbor renderer and mocked actual OpenCode v1 adapter produced the same SV0 instruction and command as the installed adapter; SV1 appended the exact frozen policy. The study's common web-tool denial and removal of forced fake VCS remain intentional controls. Live equivalence is not established. |
-| Policy freeze and resume | PASS, synthetic | Policy bytes, template hashes, manifest digest, changed source, changed frozen file, and resume checks are covered by `spec_verification_policy_test.py`. |
-| Host OpenCode | PASS, host only | `opencode --version` returned 1.19.5. Container installation is not observed. |
-| Docker | UNKNOWN | Read-only `docker info` returned exit 1 due to sandbox pipe access; no service was started. |
-| Monitor | UNKNOWN | Read-only monitor preflight returned `MonitorPreflightError`; no recovery or restart was requested. |
-| Loaded model and effective settings | UNKNOWN | Read-only `lms ps --json` timed out in the sandbox. Model-file digest, quantization, context, sampling and output limits are not established. |
-| Web and network | UNKNOWN | Native web-tool denial is requested in both arms, but its actual enforcement and shell/network restrictions have not been verified. |
-| Comparison | PASS for synthetic complete contracts; UNKNOWN for the study | Benchmark Core accepts only the declared prompt change when all other conditions are complete and equal. Effective study settings are not yet known. |
+The latest host preflight is operator-reported from PowerShell 7 on
+2026-11-02. It reported task/verifier, synthetic contract, Docker, OpenCode,
+model alias and Monitor PASS. Its raw JSON was not provided in the worktree;
+the source procedure is
+[`Invoke-SpecVerificationPreflight.ps1`](../../../scripts/Invoke-SpecVerificationPreflight.ps1).
+Keep the already running Monitor and recording DB unchanged. No repeated live
+smoke was run.
 
-The copyable host command is in `../../spec-verification-study.md`; its JSON reports PASS/FAIL/UNKNOWN and carries command exit codes without raw service output. On the sandbox run, task identity and synthetic contract passed; Docker, Monitor, loaded model, effective settings and network controls remained unknown. No inference or scored trial was run. The study is not ready for live execution until the unknown controls and applicable baseline/no-op gates are established and live authorization is separate.
+Read-only model file hash:
 
-Readiness hardening validation: with `HARBOR_025_PYTHON` pointing at the cached 0.25.0 interpreter, `python -m pytest tests/harbor_prompt_runtime_test.py tests/spec_verification_policy_test.py tests/study_task_integrity_test.py tests/suite_revision_test.py -q -p no:cacheprovider --basetemp=.pytest_tmp_root/study-readiness-final4` passed 29 tests. `python -m ruff check agent_benchmark/study_task_integrity.py agent_benchmark/harbor/runner.py agent_benchmark/suite.py agent_benchmark/suite_revision.py tests/study_task_integrity_test.py tests/harbor_prompt_runtime_test.py tests/spec_verification_policy_test.py` passed. The host preflight script returned exit 0 in the sandbox with the expected UNKNOWN gates; its ignored evidence file is `modules/agent_benchmark/.pytest_tmp_root/host-preflight-d498b1991cc14612aed02b69bd3cd73c.json`. Host `opencode --version` returned 1.19.5. LiteLLM's local cost-map option was enabled during all new offline Harbor checks.
+```powershell
+Get-FileHash -LiteralPath "$HOME\.lmstudio\models\local\qwen38-27b-q4km\Qwen3.8-27B-Q4_K_M.gguf" -Algorithm SHA256
+```
 
-Harbor's `DatasetConfig.get_task_configs()` resolved all three entries from the preserved historical snapshot `C:\Users\mcarls\src\scripts\reports\agent-bench-suite\suite-20261102T185345-11c8981230\registry\registry.json` to the recorded Git repository, revision and `datasets/aider_polyglot/<task>` paths. `GitTaskId.get_local_path()` selected the exact cached directories whose fingerprints match the study table. This snapshot is historical evidence, not a new control trial; its contents were not modified.
+Observed SHA-256 was
+`e00082f779fa385cee8c68a3ec8833a75778cc87272240b942f74e0b8243e520` for
+16,810,714,336 bytes. This identifies the on-disk candidate, not the loaded
+memory mapping. `$HOME\.lmstudio\settings.json` showed UI `defaultContextLength`
+32,768; it is not treated as the model inventory's 98,304 context.
+
+Actual Harbor native web-config construction (cached Harbor interpreter,
+factory-created SV0 and SV1 agents, no inference): PASS, exit 0. Both generated
+identical per-job config with `websearch` and `webfetch` denied.
+
+CLI help check `python -m agent_benchmark suite plan --help`: PASS, exit 0.
+Structural one-task `suite plan` preview without Monitor mode emitted both
+policy plans and same task/revision/model/API values, but returned exit 1 due
+Docker named-pipe permission denial in sandbox. It is not the monitored plan:
+the test has `llm_monitor_required=false` and recording off. The exact
+monitored preview was also attempted with `-L` and no recovery flag; both arms
+returned exit 2 `MONITOR_NOT_RUNNING` in the sandbox. No service was started.
+These sandbox limitations do not contradict the later user-reported host
+preflight.
+
+Earlier focused checks remain recorded at checkpoint `ee63bb32`: 29 targeted
+Agent Benchmark tests and Ruff passed; previous qualification recorded 79
+Agent Benchmark tests and complete Benchmark Core tests (one skip). They were
+not repeated because this update only changes documentation and adds the
+one-task manifest.
+
+## Live acceptance
+
+Exact PowerShell 7 environment setup, default non-inference preview commands,
+and two separate `suite run -x` commands are in
+[`spec-verification-study.md`](../../spec-verification-study.md). The preview
+requires Docker and Monitor availability but does not start them. The execution
+commands must not be issued until the egress blocker is resolved and separate
+live authorization is given. SV0 runs first. A valid scored failure is an
+acceptable outcome; if SV0 is infrastructure-invalid or lacks complete
+recording, stop and do not dispatch SV1. No retries or automatic continuation
+are part of this procedure.
