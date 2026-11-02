@@ -12,7 +12,7 @@ from .suite import (
     COHORTS, DEFAULT_MONITOR_URL, RunStore, build_manifest, create_run,
     execute_pending, launch_background, status_run, summarize_run,
 )
-from .suite_monitor import MonitorPreflightError, validate_monitor
+from .suite_monitor import MonitorPreflightError, host_monitor_origin, validate_monitor
 from .suite_output import emit
 from .suite_revision import DatasetRevisionError, include_registry_resolution, resolve_frozen_registry_snapshot
 

@@ -206,3 +206,40 @@ def test_finished_event_omits_repeated_per_task_details(tmp_path):
     assert payload["passed"] == 7
     assert "tasks" not in payload
     assert payload["report"].endswith("report.json")
+
+
+def test_suite_plan_with_monitor_resolves_host_monitor_origin(monkeypatch, capsys):
+    import agent_benchmark.suite_cli as suite_cli
+
+    def fake_build_manifest(**kwargs):
+        return {
+            "agent": kwargs.get("agent"),
+            "model": kwargs.get("model"),
+            "provenance": {"effective_api_format": "openai_chat_completions"},
+            "readiness": {"is_runnable": True},
+        }
+
+    recovered = []
+
+    def fake_recover_managed_monitor(**kwargs):
+        recovered.append(kwargs)
+        return {"status": "ready"}
+
+    def fake_validate_monitor(**kwargs):
+        return {"status": "ready"}
+
+    monkeypatch.setattr(suite_cli, "build_manifest", fake_build_manifest)
+    monkeypatch.setattr("agent_benchmark.suite_recovery.recover_managed_monitor", fake_recover_managed_monitor)
+    monkeypatch.setattr(suite_cli, "validate_monitor", fake_validate_monitor)
+
+    cmd = [
+        "suite", "plan", "-c", "aider-python-10", "-a", "opencode", "-m", "openai/model",
+        "-L", "-U", "http://host.docker.internal:8788/v1", "-H", "http://127.0.0.1:8788", "-F",
+    ]
+    code = main(cmd)
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "plan_ready" in out
+    assert len(recovered) == 1
+    assert recovered[0]["host_origin"] == "http://127.0.0.1:8788"
+
