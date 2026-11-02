@@ -39,3 +39,7 @@
 - Host and Docker container reached the loopback monitor. The gateway deliberately has no `/v1/models` endpoint; the authenticated monitor API requires a same-origin header and publishes inventory at `/api/inference/v1/models`.
 - Host preflight and per-task snapshots use the loopback API, while Harbor retains the container-facing gateway URL. Monitor and source failures stop further dispatch.
 - Focused validation: 62 tests passed, one Docker-dependent test deselected; Ruff and local wheel build passed. Live one-task smoke and cohort replay remain pending.
+- First smoke `suite-20261102T091234-9884b456ca` reached Harbor but OpenCode exited before inference because the built-in `openai` provider selected an incompatible Responses adapter. It is infrastructure-invalid, with no gateway request; preserve its evidence.
+- A bounded OpenCode probe using `llm-monitor/qwen38_23GB` reached the gateway. The first monitor exposed a recorder lifecycle defect: its writer was not started despite healthy status. Its process and queued evidence remain preserved on port 8788.
+- A second loopback monitor on port 8789 uses the repaired recorder and dedicated `reports/agent-bench-suite/monitor-integration-20261102-v2.sqlite3`. The provider probe completed with persisted request and assistant streaming records. Per-task checks now require recorded request IDs and content coverage before accepting a score.
+- Next: validate the corrected provider and recorder through the one-task Harbor smoke; proceed to the ten-task replay only if that smoke passes.

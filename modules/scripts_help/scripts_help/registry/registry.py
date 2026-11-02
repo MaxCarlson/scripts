@@ -535,7 +535,7 @@ REGISTRY: dict = {
                 "path": "modules/llm_monitor",
                 "desc": "Read-only local LLM diagnostics, historical telemetry, alerts, and standalone inference overview",
                 "help_cmd": ["python", "-m", "llm_monitor", "--help"],
-                "version": "0.7.0",
+                "version": "0.8.1",
             },
             {
                 "name": "runmux (module)",

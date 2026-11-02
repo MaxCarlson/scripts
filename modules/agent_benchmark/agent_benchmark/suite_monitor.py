@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import os
+import time
 from typing import Any
-from urllib.parse import urlsplit, urlunsplit
+from urllib.parse import quote, urlsplit, urlunsplit
 
 import httpx
 
@@ -67,6 +68,46 @@ def request_snapshot(*, monitor_url: str, client: httpx.Client | None = None) ->
         raise MonitorPreflightError(
             f"LLM Monitor request capture check failed at {origin}: {type(error).__name__}: {error}"
         ) from error
+    finally:
+        if own_client:
+            active_client.close()
+
+
+def verify_recorded_requests(*, monitor_url: str, request_ids: list[str], recording: str,
+                             client: httpx.Client | None = None, timeout_seconds: float = 10) -> dict[str, Any]:
+    """Confirm observed request IDs reached durable history without emitting their content."""
+    origin = _monitor_origin(monitor_url)
+    headers = {"Origin": origin}
+    if os.environ.get("LLM_MONITOR_AUTHORIZATION"):
+        headers["Authorization"] = os.environ["LLM_MONITOR_AUTHORIZATION"]
+    if os.environ.get("LLM_MONITOR_SESSION_COOKIE"):
+        headers["Cookie"] = os.environ["LLM_MONITOR_SESSION_COOKIE"]
+    own_client = client is None
+    active_client = client or httpx.Client(timeout=3.0, follow_redirects=False, trust_env=False)
+    deadline = time.monotonic() + timeout_seconds
+    try:
+        while True:
+            recorded = []
+            roles: set[str] = set()
+            for request_id in request_ids:
+                response = active_client.get(f"{origin}/api/inference/v1/history/{quote(request_id, safe='')}", headers=headers)
+                if response.status_code == 404:
+                    continue
+                response.raise_for_status()
+                row = response.json().get("request", {})
+                if (row.get("request_id") == request_id and row.get("recording_mode") == recording
+                        and row.get("state") in {"completed", "failed", "cancelled"}):
+                    recorded.append(request_id)
+                    roles.update(item.get("role") for item in row.get("content", []) if isinstance(item, dict))
+            complete = len(recorded) == len(request_ids) and bool(request_ids)
+            if complete and (recording != "content" or {"user", "assistant"}.issubset(roles)):
+                return {"recorded_request_ids": recorded, "input_observed": "user" in roles,
+                        "output_observed": "assistant" in roles}
+            if time.monotonic() >= deadline:
+                raise MonitorPreflightError("observed monitor requests or required content were not persisted")
+            time.sleep(0.25)
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise MonitorPreflightError(f"monitor recording verification failed at {origin}: {type(error).__name__}") from error
     finally:
         if own_client:
             active_client.close()

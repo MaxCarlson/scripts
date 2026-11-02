@@ -102,6 +102,10 @@ def build_manifest(
          "content_fingerprint": None}
         for task in plan.selected_tasks
     ]
+    effective_agent_model = (
+        "llm-monitor/" + model.split("/", 1)[1]
+        if llm_monitor and agent.lower() == "opencode" and model else plan.model
+    )
     result: dict[str, Any] = {
         "schema": "agent-benchmark-suite-manifest-v1",
         "cohort": selected["id"], "dataset": selected["dataset"],
@@ -118,6 +122,7 @@ def build_manifest(
             "recording_required": recording,
             "requested_api_format": api_format,
             "effective_api_format": plan.model_api_format,
+            "effective_agent_model": effective_agent_model,
             "original_protocol": "openai_responses" if agent.lower() == "opencode" else None,
             "harbor_version": plan.readiness.harbor_version,
             "harbor_dataset": plan.dataset.harbor_dataset,
@@ -322,7 +327,7 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
 def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     manifest = store.manifest
     from .suite_output import capture_process_output
-    from .suite_monitor import host_monitor_origin, request_snapshot, validate_monitor
+    from .suite_monitor import host_monitor_origin, request_snapshot, validate_monitor, verify_recorded_requests
     log_path = store.run_dir / "logs" / f"{task}.log"
     saved: Path | None = None
     started_at = _now()
@@ -340,7 +345,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
             )
             monitor_before = request_snapshot(monitor_url=host_url)
         plan = plan_benchmark(
-            manifest["dataset"], agent=manifest["agent"], model=manifest["model"],
+            manifest["dataset"], agent=manifest["agent"],
+            model=manifest["provenance"].get("effective_agent_model", manifest["model"]),
             base_url=manifest["provenance"]["effective_base_url"],
             model_api_format=manifest["provenance"]["effective_api_format"],
             task_ids=[task], repetitions=1, seed=None,
@@ -377,6 +383,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
         else:
             duration = content_fingerprint = None
         request_ids: list[str] = []
+        recording_coverage = None
         if monitor_before is not None:
             monitor_health_after = validate_monitor(
                 agent=manifest["agent"], model=manifest["model"],
@@ -397,17 +404,25 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                         "summary": summary, "native_artifacts": [str(saved)],
                         "error_code": "MONITOR_REQUEST_UNOBSERVED",
                         "error_detail": "no new LLM Monitor request ID observed around Harbor task"}
+            if manifest["provenance"]["recording_required"] != "off":
+                recording_coverage = verify_recorded_requests(
+                    monitor_url=host_url, request_ids=request_ids,
+                    recording=manifest["provenance"]["recording_required"],
+                )
         return {"status": status, "trial_id": trial_id, "ended_at": _now(),
                 "duration_wall_ms": duration, "content_fingerprint": content_fingerprint,
                 "summary": summary, "native_artifacts": [str(saved)], "error_code": None,
                 "monitor_request_ids": request_ids,
+                "recording_coverage": recording_coverage,
                 "monitor_requests": new_requests if monitor_before is not None else []}
     except Exception as error:  # subprocess and result parsing boundary
         with log_path.open("a", encoding="utf-8", errors="replace") as logfile:
             logfile.write(f"{type(error).__name__}: {error}\n")
         from .suite_monitor import MonitorPreflightError
         return {"status": "infrastructure_invalid", "trial_id": None, "ended_at": _now(),
-                "error_code": "MONITOR_CAPTURE_FAILED" if isinstance(error, MonitorPreflightError) else "HARBOR_EXECUTION_ERROR",
+                "error_code": ("MONITOR_CAPTURE_FAILED" if isinstance(error, MonitorPreflightError) else
+                               "SOURCE_REVISION_MISMATCH" if isinstance(error, DatasetRevisionError) else
+                               "HARBOR_EXECUTION_ERROR"),
                 "error_detail": str(error), "native_artifacts": [str(saved)] if saved else []}
 
 
@@ -451,6 +466,10 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
             for row in store.read()["tasks"]
         )
         if should_dispatch and executor is _run_one:
+            if (store.manifest["provenance"].get("llm_monitor_required")
+                    and store.manifest["agent"].lower() == "opencode"
+                    and not store.manifest["provenance"].get("effective_agent_model")):
+                raise RuntimeError("legacy monitored OpenCode run has no verified provider selector; create a new run")
             verify_saved_registry_snapshot(run_dir, store.manifest)
         store.set_state("running", worker_pid=os.getpid(), started_at=_now())
         for task in store.manifest["tasks"]:

@@ -174,6 +174,11 @@ def handle_suite(args: argparse.Namespace) -> int:
             run_dir = _run_dir(args.runs_dir, args.run_id)
             store = RunStore(run_dir)
             if store.manifest["provenance"]["llm_monitor_required"]:
+                if (store.manifest["agent"].lower() == "opencode"
+                        and not store.manifest["provenance"].get("effective_agent_model")):
+                    raise MonitorPreflightError(
+                        "legacy monitored OpenCode run has no verified provider selector; create a new run"
+                    )
                 validate_monitor(agent=store.manifest["agent"], model=store.manifest["model"],
                                  monitor_url=store.manifest["provenance"]["monitor_url"],
                                  monitor_host_url=store.manifest["provenance"].get("monitor_host_url"),

@@ -112,8 +112,6 @@ def run_web(
         recorder=recorder,
         history_store=store,
     )
-    if recorder is not None:
-        app.add_event_handler("shutdown", recorder.stop)
     server = create_server(app, host="127.0.0.1", port=port)
     url = f"http://127.0.0.1:{port}"
     print(f"LLM Monitor is listening at {url}")

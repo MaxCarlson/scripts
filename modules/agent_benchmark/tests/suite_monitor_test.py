@@ -3,7 +3,9 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_benchmark.suite_monitor import MonitorPreflightError, host_monitor_origin, request_snapshot, validate_monitor
+from agent_benchmark.suite_monitor import (
+    MonitorPreflightError, host_monitor_origin, request_snapshot, validate_monitor, verify_recorded_requests,
+)
 
 
 def test_legacy_container_url_resolves_to_windows_host_loopback():
@@ -42,6 +44,26 @@ def test_missing_monitor_reports_endpoint_and_cause():
         with pytest.raises(MonitorPreflightError, match="127.0.0.1:8788"):
             validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
                              monitor_host_url="http://127.0.0.1:8788", client=client)
+
+
+def test_recording_coverage_requires_completed_persisted_request_and_response():
+    def handler(request):
+        assert request.headers["origin"] == "http://127.0.0.1:8788"
+        return httpx.Response(200, json={"request": {"request_id": "r1", "state": "completed",
+            "recording_mode": "content", "content": [{"role": "user", "text": "private"},
+                                                     {"role": "assistant", "text": "private"}]}})
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = verify_recorded_requests(monitor_url="http://127.0.0.1:8788", request_ids=["r1"],
+                                          recording="content", client=client)
+    assert result == {"recorded_request_ids": ["r1"], "input_observed": True, "output_observed": True}
+    assert "private" not in str(result)
+
+
+def test_recording_coverage_fails_closed_when_history_is_missing():
+    with httpx.Client(transport=httpx.MockTransport(lambda _request: httpx.Response(404))) as client:
+        with pytest.raises(MonitorPreflightError, match="not persisted"):
+            verify_recorded_requests(monitor_url="http://127.0.0.1:8788", request_ids=["r1"],
+                                     recording="content", client=client, timeout_seconds=0)
 
 
 def _client(recording: dict, availability: str = "available", model_id: str = "model") -> httpx.Client:
