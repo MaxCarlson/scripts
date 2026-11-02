@@ -307,15 +307,21 @@ const recordingConfirmAccept = byId("recording-confirm-accept");
 
 if (recordingModeBtn) {
   recordingModeBtn.addEventListener("click", async () => {
-    const currentMode = state.status?.recording?.mode || (state.status?.recording?.enabled ? "metadata" : "off");
-    if (currentMode === "off" || currentMode === "disabled") {
-      try {
-        await updateRecordingMode("metadata");
-        await refresh();
-      } catch (err) {
-        console.error("Failed to enable metadata recording", err);
+    const recStatus = state.status?.recording;
+    const currentMode = recStatus?.mode || (recStatus?.enabled ? "metadata" : "disabled");
+    const isRecDisabled = currentMode === "off" || currentMode === "disabled" || !recStatus?.metadata;
+
+    if (isRecDisabled) {
+      if (typeof window !== "undefined" && typeof window.alert === "function") {
+        window.alert(
+          "Inference recording is disabled on this server instance.\n\n" +
+          "To enable SQLite request history and content persistence, start LLM Monitor with the -R or --record-inferences flag."
+        );
       }
-    } else if (currentMode === "metadata") {
+      return;
+    }
+
+    if (currentMode === "metadata") {
       if (recordingConfirmDialog?.showModal) {
         recordingConfirmDialog.showModal();
       } else {

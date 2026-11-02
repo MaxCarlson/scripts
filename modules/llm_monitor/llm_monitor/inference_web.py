@@ -185,7 +185,15 @@ def create_inference_web_app(
         if rec is not None:
             rec_status = rec.status()
         else:
-            rec_status = {"metadata": False, "content": False, "status": "disabled", "healthy": True, "dropped_count": 0}
+            rec_status = {
+                "recording_enabled": False,
+                "metadata": False,
+                "content": False,
+                "mode": "disabled",
+                "status": "disabled",
+                "healthy": True,
+                "dropped_count": 0,
+            }
         return {
             "schema_version": 1,
             "recording": rec_status,

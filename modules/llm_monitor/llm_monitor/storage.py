@@ -1149,6 +1149,7 @@ class TelemetryStore:
                     gpu_peak_percent=COALESCE(excluded.gpu_peak_percent, inference_requests.gpu_peak_percent),
                     gpu_peak_vram_bytes=COALESCE(excluded.gpu_peak_vram_bytes, inference_requests.gpu_peak_vram_bytes),
                     gpu_scope=COALESCE(excluded.gpu_scope, inference_requests.gpu_scope),
+                    recording_mode=excluded.recording_mode,
                     is_sparse=excluded.is_sparse,
                     coverage_json=COALESCE(excluded.coverage_json, inference_requests.coverage_json),
                     hardware_telemetry_json=COALESCE(excluded.hardware_telemetry_json, inference_requests.hardware_telemetry_json),

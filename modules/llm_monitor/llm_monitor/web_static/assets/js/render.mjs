@@ -214,13 +214,24 @@ function renderToolbar(state) {
 
   // Recording mode control
   const recMode = state.status?.recording?.mode || (state.status?.recording?.enabled ? "metadata" : "off");
-  const recLabel = recMode === "content" ? "Recording: Content" : recMode === "metadata" ? "Recording: Metadata" : "Recording: Off";
+  const isRecDisabled = recMode === "off" || recMode === "disabled" || !state.status?.recording?.metadata;
+  const recLabel = recMode === "content" ? "Recording: Content" : recMode === "metadata" ? "Recording: Metadata" : "Recording: Disabled";
   const recDot = byId("recording-mode-dot");
   if (recDot) {
-    recDot.className = "recording-mode-dot" + (recMode === "content" ? " is-content" : recMode === "metadata" ? " is-metadata" : "");
+    recDot.className = "recording-mode-dot" + (recMode === "content" ? " is-content" : recMode === "metadata" ? " is-metadata" : " is-disabled");
   }
   const recBtnLabel = byId("recording-mode-label");
   if (recBtnLabel) replaceText(recBtnLabel, recLabel);
+  const recBtn = byId("recording-mode-btn");
+  if (recBtn) {
+    if (isRecDisabled) {
+      recBtn.title = "Inference recording is disabled on this server. Start LLM Monitor with -R/--record-inferences to enable SQLite persistence.";
+      recBtn.setAttribute("aria-disabled", "true");
+    } else {
+      recBtn.title = `Current recording mode: ${recMode}. Click to switch.`;
+      recBtn.removeAttribute("aria-disabled");
+    }
+  }
 
   const auto = byId("follow-toggle");
   auto.classList.toggle("is-enabled", state.autoFollow);

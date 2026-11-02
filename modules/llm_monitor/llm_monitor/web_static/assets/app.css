@@ -479,6 +479,7 @@ input[type="checkbox"] { width: 12px; height: 12px; margin: 0; accent-color: var
 }
 .recording-mode-dot.is-metadata { background: var(--lm-blue); }
 .recording-mode-dot.is-content { background: var(--lm-green); box-shadow: 0 0 6px rgba(101, 217, 174, 0.4); }
+.recording-mode-dot.is-disabled { background: var(--lm-muted); opacity: 0.5; }
 
 .mode-badge {
   display: inline-flex;
