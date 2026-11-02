@@ -64,12 +64,14 @@ class CoordinatorService:
         self._startup_task: Optional[asyncio.Task] = None
         self._stop_lock = asyncio.Lock()
         self._aborted = False
-        self._instance_lock: Optional[SingleInstanceLock] = None
-        lock_path = kwargs.get("lock_path")
-        if not lock_path and getattr(self.system.config.service, "state_persistence_path", ""):
-            lock_path = Path(self.system.config.service.state_persistence_path).with_suffix(".lock")
-        if lock_path:
-            self._instance_lock = SingleInstanceLock(lock_path)
+        self._instance_lock: Optional[SingleInstanceLock] = kwargs.get("instance_lock")
+        self._owns_instance_lock = self._instance_lock is None
+        if self._instance_lock is None:
+            lock_path = kwargs.get("lock_path")
+            if not lock_path and getattr(self.system.config.service, "state_persistence_path", ""):
+                lock_path = Path(self.system.config.service.state_persistence_path).with_suffix(".lock")
+            if lock_path:
+                self._instance_lock = SingleInstanceLock(lock_path)
         self.system.gateway.set_service(self)
 
     def has_model_load_policy(self) -> bool:
@@ -179,7 +181,7 @@ class CoordinatorService:
         if self._state != ServiceState.CREATED:
             return self.is_ready
         if self._instance_lock is not None:
-            if not self._instance_lock.acquire():
+            if not self._instance_lock.is_acquired and not self._instance_lock.acquire():
                 self._state = ServiceState.FAILED
                 self._failure_reason = (
                     f"Coordinator instance lock at '{self._instance_lock.lock_path}' is already held"
@@ -255,7 +257,7 @@ class CoordinatorService:
                     if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
                         raise RuntimeError("Requested process launch was not verified coordinator-owned RUNNING")
             if self._state != ServiceState.PREFLIGHT or self.system.lease_mgr.restarts_blocked:
-                if self._instance_lock is not None:
+                if self._instance_lock is not None and self._owns_instance_lock:
                     self._instance_lock.release()
                 return False
             self._state = ServiceState.READY
@@ -265,14 +267,14 @@ class CoordinatorService:
             self._state = ServiceState.RECONCILIATION_REQUIRED
             self._failure_reason = "Startup cancelled; external execution state requires reconciliation"
             self._freeze(self._failure_reason)
-            if self._instance_lock is not None:
+            if self._instance_lock is not None and self._owns_instance_lock:
                 self._instance_lock.release()
             raise
         except Exception as exc:
             self._state = ServiceState.FAILED
             self._failure_reason = str(exc)
             self._freeze(self._failure_reason)
-            if self._instance_lock is not None:
+            if self._instance_lock is not None and self._owns_instance_lock:
                 self._instance_lock.release()
             logger.error("Startup failed closed: %s", exc)
             return False
@@ -354,7 +356,7 @@ class CoordinatorService:
             self._failure_reason = f"Shutdown failed: {exc}"
             logger.error(self._failure_reason)
         finally:
-            if self._instance_lock is not None:
+            if self._instance_lock is not None and self._owns_instance_lock:
                 self._instance_lock.release()
 
     async def emergency_abort(self, reason: str) -> Dict[str, Any]:

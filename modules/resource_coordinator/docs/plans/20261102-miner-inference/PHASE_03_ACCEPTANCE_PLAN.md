@@ -81,72 +81,80 @@ Every trial records:
 
 ---
 
-## 4. Operator-Ready Step-by-Step Live Acceptance Checklist
+## 4. Operator-Controlled 6-Stage Live Acceptance Procedure
 
-### Step 1 — Stop Any External Miner Session
-If an external `krig-miner.exe` or `start-prl.ps1` session is running (such as PID `69988`), press `Ctrl+C` in its console window and confirm it has exited.
+The acceptance procedure is partitioned into 6 operator-controlled stages to ensure complete safety and verification at every boundary:
 
-### Step 2 — Prepare Local Supervised Configuration
-Copy [`config.supervised-template.yaml`](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/config.supervised-template.yaml) to an untracked local file (e.g. `modules/resource_coordinator/config.live-local.yaml`) with:
-- `executable`: `"C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6\\krig-miner.exe"`
-- `working_directory`: `"C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6"`
-- `arguments`: `["--coin", "pearl", "--url", "stratum+ssl://prl-us.kryptex.network:8048", "--user", "krxXPVG8JN/Xeres", "--devices", "0", "--no-tui", "--gpu-no-reset-oc"]`
-- `allow_force_termination`: `true` (recommended fallback if console `CTRL_BREAK_EVENT` times out after `stop_timeout_seconds: 10.0`)
-
-### Step 3 — Run Read-Only Live Acceptance Preflight
-From `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`:
+### Stage 1 — Read-Only Preflight Verification
+Verify that the configuration, lock availability, LM Studio model, and GPU VRAM headroom meet all acceptance requirements without touching running processes:
 ```powershell
 $env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
 python -m resource_coordinator.cli preflight -c modules/resource_coordinator/config.live-local.yaml --check-live
 ```
-**Expected Output:**
-- `Live Acceptance Preflight: READY`
-- `Loaded Model: qwen38_23GB (source: /api/v0/models, context: 98304)`
-- `GPU VRAM Free: ~1498 MiB free / 32607 MiB total (min required: 1024 MiB)`
-- Exit code `0` (zero `BLOCKING:` lines).
+**Acceptance Checkpoint:**
+- Preflight reports `Loaded Model: qwen38_23GB` (source `/api/v0/models`, context `98304`).
+- Free VRAM >= 1024 MiB (e.g., ~1498–2687 MiB free).
+- If external miner PID `69988` is active, it is safely identified in `BLOCKING:` without being interrupted.
 
-### Step 4 — Execute Disposable Windows Helper Rehearsal (Optional Pre-Check)
-Verify real Windows process-group stop/cooldown/restart and fault-injection cleanup using `cscript.exe` (no GPU or miner touched):
+### Stage 2 — Operator-Controlled Preparation
+The operator manually terminates any external miner session and verifies preflight transitions to `READY`:
+1. Press `Ctrl+C` in the external `start-prl.ps1` / `krig-miner.exe` console (PID `69988`).
+2. Verify process exit:
+   ```powershell
+   Get-Process -Name "krig-miner" -ErrorAction SilentlyContinue
+   ```
+3. Re-run preflight:
+   ```powershell
+   python -m resource_coordinator.cli preflight -c modules/resource_coordinator/config.live-local.yaml --check-live
+   ```
+**Acceptance Checkpoint:**
+- Preflight reports `Live Acceptance Preflight: READY`.
+- Zero blocking reasons reported. Exit code `0`.
+
+### Stage 3 — First Live Test (Single Request Cycle)
+Execute only the first live trial (`T01`) under full coordinator ownership and supervision:
 ```powershell
-$env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
-pytest modules/resource_coordinator/tests/test_supervised_acceptance_readiness.py -v
+python -m resource_coordinator.cli accept -c modules/resource_coordinator/config.live-local.yaml -m live --allow-live-lmstudio --allow-real-miner --trials T01 -w modules/resource_coordinator/.live_acceptance_work
 ```
+**Acceptance Checkpoint:**
+- `T01: Single Request Stop Before Forward and Cooldown` completes with `[PASS]`.
+- Partial stage verification level recorded: `"verification_level": "live_hardware_partial_stage"`.
+- Collision-resistant directory created under `.live_acceptance_work/runs/<run_id>/`.
 
-### Step 5 — Execute Supervised Live Acceptance Sequence
-When authorized to launch `krig-miner.exe` under coordinator ownership:
+### Stage 4 — Evidence Review
+Inspect the generated trial evidence before authorizing multi-request or streaming trials:
+1. Read the latest run summary:
+   ```powershell
+   Get-Content modules/resource_coordinator/.live_acceptance_work/latest_run.json
+   ```
+2. Verify in `.live_acceptance_work/runs/<run_id>/acceptance_report.json`:
+   - `initial_pid`: coordinator-owned `krig-miner.exe` PID recorded.
+   - `stopped_before_forward_verified`: `true` (`stop_verified_monotonic <= upstream_dispatch_monotonic`).
+   - `observed_exit_during_inference`: `true` (miner remained stopped during inference).
+   - `inference_result`: status code `200` from LM Studio.
+   - `cooldown_elapsed_seconds`: >= `9.85` seconds.
+   - `restarted_pid`: distinct PID recorded on post-cooldown restart.
+   - `cleanup_verified_stopped`: `true`.
+
+### Stage 5 — Remaining Acceptance Trials (Concurrency & Streaming)
+Execute the remaining trials (`T02`, `T03`, `T04`) covering cooldown cancellation, overlapping concurrent inference, and SSE stream termination:
 ```powershell
-$env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
-python -c "
-import asyncio
-from pathlib import Path
-from resource_coordinator.acceptance_harness import AcceptanceHarness
-from resource_coordinator.adapters.miners.manifest import MinerManifest
-
-manifest = MinerManifest.resolve_from_mining_repo(r'C:\Users\mcarls\src\Mining', miner_type='krig')
-proc_cfg = manifest.to_process_config(name='krig_miner', stop_timeout_seconds=10.0, allow_force_termination=True)
-harness = AcceptanceHarness(
-    mode='live',
-    cooldown_seconds=10.0,
-    allow_live_lmstudio=True,
-    allow_real_miner=True,
-    lmstudio_url='http://127.0.0.1:1234',
-    miner_process_config=proc_cfg,
-    work_dir=Path('modules/resource_coordinator/.live_acceptance_work'),
-)
-report = asyncio.run(harness.run_all(output_file='modules/resource_coordinator/acceptance_evidence_live.json'))
-print(report.summary)
-"
+python -m resource_coordinator.cli accept -c modules/resource_coordinator/config.live-local.yaml -m live --allow-live-lmstudio --allow-real-miner --trials T02 T03 T04 -w modules/resource_coordinator/.live_acceptance_work
 ```
+**Acceptance Checkpoint:**
+- All three trials pass (`T02: PASS`, `T03: PASS`, `T04: PASS`).
+- Cooldown debounce cancels restart immediately on incoming inference.
+- Concurrent overlapping requests share the inference lease without restarting miner between requests.
+- Streaming SSE inference maintains stop barrier until `[DONE]` token is emitted.
+- All coordinator-owned processes are verified terminated during `finally` cleanup.
 
-### Step 6 — Inspect Evidence & Verify Post-Run Clean State
-1. Open `modules/resource_coordinator/acceptance_evidence_live.json` and verify:
-   - `"verification_level": "live_hardware"`
-   - `"all_passed": true` (`"passed": 4, "failed": 0, "mock_only_trials_skipped": 1`)
-   - Every trial (`T01`–`T04`) shows `"stopped_before_forward_verified": true`, `"observed_exit_during_inference": true`, `"cooldown_elapsed_seconds" >= 9.85`, and `"cleanup_verified_stopped": true`.
-2. Run read-only diagnostics to confirm no leftover `krig-miner.exe` process remains running after harness exit:
+### Stage 6 — Deployment Decision & Client Migration
+1. Review combined trial artifacts across all executed runs.
+2. Confirm zero orphan `krig-miner.exe` processes:
    ```powershell
    python -m resource_coordinator.cli diagnose -c modules/resource_coordinator/config.live-local.yaml
    ```
+3. When ready for production routing, follow [Section 5 of RUNBOOK.md](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/docs/plans/20261102-miner-inference/RUNBOOK.md#5-client-migration--rollout-guide) to migrate client inference traffic to `http://127.0.0.1:1235`.
 
 ---
 

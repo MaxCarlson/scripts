@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Supervised Hardware Acceptance Readiness Complete; Ready for Operator-Controlled Live Run  
-**Timestamp:** 2026-11-02T12:56:00-08:00  
+**Current Phase:** Final Acceptance Preparation & Deployment Readiness Complete; Supervised Live Workflow Ready  
+**Timestamp:** 2026-11-02T15:10:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -106,5 +106,18 @@
   - Added read-only live acceptance preflight (`run_live_acceptance_preflight` and `resource-coordinator preflight --check-live`) checking external miners, lock contention, LM Studio loaded model, and GPU VRAM headroom.
   - Enforced evidence integrity (`verification_level = "pending_live_verification"` prior to execution; `"live_hardware"` only after un-mocked live execution and verification).
   - Added 10 fault-injection and readiness tests in `tests/test_supervised_acceptance_readiness.py`; verified full suites: **308 passed, 4 skipped** (`resource_coordinator`) and **253 passed, 2 skipped** (`llm_monitor`).
+- **Final Acceptance Preparation & Deployment Readiness:** COMPLETE.
+  - Resolved all remaining operational items:
+    1. **Correction A (Align Preflight and Real Execution):** Implemented unified acceptance configuration shared by preflight and live runner (`AcceptanceHarness.from_config()`, `validate_acceptance_config_equivalence()`), shared host `SingleInstanceLock` covering entire acceptance run, immediate pre-launch safety re-check, and `lmstudio.inference_forwarded` event before `client.send` to differentiate actual dispatch from lease acquisition.
+    2. **Correction B (Repeatable, Evidence-Preserving Acceptance):** Implemented collision-resistant per-run directory layout (`.live_acceptance_work/runs/<run_id>/`) with `manifest.json`, per-trial journals (`journal_tXX.json`), `acceptance_report.json`, and deterministic pointer `latest_run.json`. Guaranteed evidence preservation on interruption (`finally`), and supported partial trial sets via `--trials` (e.g. `--trials T01` yielding `verification_level = "live_hardware_partial_stage"`).
+    3. **Correction C (Reconcile Mining Launcher Compatibility):** Implemented `launcher_declares_parameter` scanning script parameter block before `Set-StrictMode`; fail closed with clear `ValueError` if unsupported parameter is requested instead of silent fallback. Default coordinator configuration requests zero clock/power flags, preserving host GPU state.
+  - Added CLI `accept` subcommand (`resource-coordinator accept`) and updated `.gitignore`.
+  - Added 9 regression tests in `test_final_acceptance_readiness.py`.
+  - Full test suites passed:
+    - `resource_coordinator`: **320 passed, 4 skipped**.
+    - `llm_monitor`: **253 passed, 2 skipped**.
+  - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
+  - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
+  - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
 
 

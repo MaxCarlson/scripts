@@ -88,6 +88,25 @@ policies:
 
 ## 3. Operations & Lifecycle Commands
 
+### Running Supervised Acceptance Trials
+The coordinator CLI provides automated acceptance testing across three modes:
+1. **Simulated (`simulated`):** In-memory fake process backend and mock upstream:
+   ```powershell
+   python -m resource_coordinator.cli accept -m simulated
+   ```
+2. **Disposable Windows Helper (`disposable_helper`):** Real Windows OS processes via `cscript.exe` helper:
+   ```powershell
+   python -m resource_coordinator.cli accept -m disposable_helper
+   ```
+3. **Live Hardware Acceptance (`live`):** Controlled hardware acceptance with real KRig + LM Studio:
+   ```powershell
+   # Stage 3: Single request trial
+   python -m resource_coordinator.cli accept -c modules/resource_coordinator/config.live-local.yaml -m live --allow-live-lmstudio --allow-real-miner --trials T01
+
+   # Stage 5: Concurrency and streaming trials
+   python -m resource_coordinator.cli accept -c modules/resource_coordinator/config.live-local.yaml -m live --allow-live-lmstudio --allow-real-miner --trials T02 T03 T04
+   ```
+
 ### Starting the Coordinator Service
 From the repository root or worktree:
 ```powershell

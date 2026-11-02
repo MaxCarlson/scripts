@@ -272,3 +272,84 @@ async def test_child_process_cleanup_verification(tmp_path: Path):
     assert not parent_proc.is_running()
     for child in children:
         assert not child.is_running()
+
+
+def test_manifest_reconciles_committed_mining_launcher_compatibility(tmp_path: Path):
+    """
+    Required Correction C:
+    Committed 9c36ed0 start-prl.ps1 does not declare KrigCoreClockMHz.
+    - Requesting krig_core_clock_mhz > 0 raises ValueError rather than failing silently or with unhandled pwsh error.
+    - Requesting krig_core_clock_mhz == 0 resolves clean baseline args matching committed launcher.
+    """
+    from resource_coordinator.adapters.miners.manifest import launcher_declares_parameter
+
+    # Create dummy script mimicking committed 9c36ed0 launcher parameter block
+    committed_script = tmp_path / "start-prl.ps1"
+    committed_script.write_text(
+        """param(
+    [ValidateScript({ $_ -eq 0 -or ($_ -ge 250 -and $_ -le 600) })]
+    [int] $PowerLimitWatts = 0,
+    [string] $KryptexUsername = 'krxXPVG8JN',
+    [string] $WorkerName = 'Xeres',
+    [switch] $ElevatedInvocation,
+    [switch] $SkipConfirmation,
+    [ValidateSet('krig', 'srbminer')]
+    [string] $Miner = 'krig',
+    [ValidateRange(0, 32)]
+    [int] $SrbGpu = 1,
+    [switch] $SrbPearlK1,
+    [switch] $Preview
+)
+Set-StrictMode -Version Latest
+$minerPath = "C:\\dummy\\vendor\\krig-miner-1.5.6\\krig-miner.exe"
+$minerArgs = @('--coin', 'pearl', '--url', 'stratum+ssl://prl-us.kryptex.network:8048', '--user', "$KryptexUsername/$WorkerName")
+if ($Preview) {
+    Write-Host "Executable: $minerPath"
+    Write-Host ('Arguments: ' + ($minerArgs -join ' '))
+    exit 0
+}
+""",
+        encoding="utf-8",
+    )
+
+    assert not launcher_declares_parameter(committed_script, "KrigCoreClockMHz")
+    assert launcher_declares_parameter(committed_script, "PowerLimitWatts")
+
+    # 1. krig_core_clock_mhz > 0 must raise ValueError explicitly in preview mode
+    with pytest.raises(ValueError, match="does not declare parameter '-KrigCoreClockMHz'"):
+        MinerManifest.resolve_from_mining_repo(
+            mining_repo=tmp_path,
+            miner_type="krig",
+            krig_core_clock_mhz=2400,
+            use_preview_invocation=True,
+        )
+
+    # 2. krig_core_clock_mhz > 0 must also raise ValueError in static mode when script exists
+    with pytest.raises(ValueError, match="does not declare parameter '-KrigCoreClockMHz'"):
+        MinerManifest.resolve_from_mining_repo(
+            mining_repo=tmp_path,
+            miner_type="krig",
+            krig_core_clock_mhz=2400,
+            use_preview_invocation=False,
+        )
+
+    # 3. Default (krig_core_clock_mhz == 0) succeeds in preview mode without clock flags
+    manifest = MinerManifest.resolve_from_mining_repo(
+        mining_repo=tmp_path,
+        miner_type="krig",
+        krig_core_clock_mhz=0,
+        power_limit_watts=0,
+        use_preview_invocation=True,
+    )
+    assert manifest.miner_type == "krig"
+    assert manifest.arguments == [
+        "--coin",
+        "pearl",
+        "--url",
+        "stratum+ssl://prl-us.kryptex.network:8048",
+        "--user",
+        "krxXPVG8JN/Xeres",
+    ]
+    assert "--gpu-cclock" not in manifest.arguments
+    assert "--gpu-plimit" not in manifest.arguments
+

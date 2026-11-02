@@ -555,6 +555,7 @@ class LMStudioGateway:
                     path=path,
                 )
             forwarded = True  # send may have reached upstream even if it raises/cancels
+            await self.dispatcher.emit("lmstudio.inference_forwarded", event_data)
             upstream_resp = await client.send(upstream_req, stream=True)
             content_type = upstream_resp.headers.get("content-type", "")
             clean_headers = self._clean_headers(upstream_resp.headers, request_id)

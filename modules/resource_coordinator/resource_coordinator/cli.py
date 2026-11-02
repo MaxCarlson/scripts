@@ -203,6 +203,61 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
     diag_parser.add_argument("-j", "--json", action="store_true", help="Output diagnostics in JSON format.")
 
+    # accept
+    accept_parser = subparsers.add_parser(
+        "accept",
+        help="Run automated supervised acceptance trials for miner/LLM coordination.",
+    )
+    accept_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
+    accept_parser.add_argument(
+        "-m",
+        "--mode",
+        choices=["simulated", "disposable_helper", "live"],
+        default="simulated",
+        help="Execution mode (default: simulated).",
+    )
+    accept_parser.add_argument(
+        "--allow-live-lmstudio",
+        action="store_true",
+        help="Explicitly authorize connection to live LM Studio upstream.",
+    )
+    accept_parser.add_argument(
+        "--allow-real-miner",
+        action="store_true",
+        help="Explicitly authorize launching the configured real miner process.",
+    )
+    accept_parser.add_argument(
+        "-u",
+        "--upstream",
+        default=None,
+        help="Upstream LM Studio URL override.",
+    )
+    accept_parser.add_argument(
+        "-w",
+        "--work-dir",
+        default=None,
+        help="Work directory for isolated run evidence (default: creates temp dir or uses .live_acceptance_work).",
+    )
+    accept_parser.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Optional destination path to write acceptance_report.json.",
+    )
+    accept_parser.add_argument(
+        "--trials",
+        nargs="+",
+        default=None,
+        help="Specific trials to run (e.g. --trials T01 or --trials T02 T03 T04).",
+    )
+    accept_parser.add_argument(
+        "--cooldown",
+        type=float,
+        default=None,
+        help="Override cooldown seconds (live mode enforces >= 10.0s).",
+    )
+    accept_parser.add_argument("-j", "--json", action="store_true", help="Output acceptance report in JSON format.")
+
     return parser.parse_args(args)
 
 
@@ -548,15 +603,83 @@ async def _async_preflight(
 
 
 def cmd_preflight(args: argparse.Namespace) -> int:
+    config_path = args.config
+    if config_path is None and getattr(args, "check_live", False) and os.path.exists("config.live-local.yaml"):
+        config_path = "config.live-local.yaml"
     return asyncio.run(
         _async_preflight(
-            args.config,
+            config_path,
             args.fake_miner,
             args.json,
             check_live=getattr(args, "check_live", False),
             min_free_vram_mb=getattr(args, "min_free_vram_mb", 1024.0),
         )
     )
+
+
+async def _async_accept(args: argparse.Namespace) -> int:
+    from resource_coordinator.acceptance_harness import AcceptanceHarness
+
+    config_path = args.config
+    if config_path is None and args.mode == "live" and os.path.exists("config.live-local.yaml"):
+        config_path = "config.live-local.yaml"
+
+    trials_to_run = None
+    if getattr(args, "trials", None):
+        raw_trials = args.trials
+        if isinstance(raw_trials, list):
+            trials_to_run = []
+            for item in raw_trials:
+                for part in str(item).split(","):
+                    p = part.strip()
+                    if p:
+                        trials_to_run.append(p)
+        elif isinstance(raw_trials, str):
+            trials_to_run = [p.strip() for p in raw_trials.split(",") if p.strip()]
+
+    harness = AcceptanceHarness.from_config(
+        config=config_path,
+        mode=args.mode,
+        allow_live_lmstudio=getattr(args, "allow_live_lmstudio", False),
+        allow_real_miner=getattr(args, "allow_real_miner", False),
+        work_dir=getattr(args, "work_dir", None),
+        trials_to_run=trials_to_run,
+    )
+    if getattr(args, "upstream", None):
+        harness.lmstudio_url = args.upstream
+    if getattr(args, "cooldown", None) is not None:
+        harness.cooldown_seconds = float(args.cooldown)
+
+    try:
+        report = await harness.run_all(output_file=getattr(args, "output", None))
+        if getattr(args, "json", False):
+            print(json.dumps(report.to_dict(), indent=2))
+        else:
+            print(f"=== Resource Coordinator Acceptance Run: {report.run_id} ===")
+            print(f"Mode:               {report.mode}")
+            print(f"Process Backend:    {report.process_backend}")
+            print(f"Upstream Type:      {report.upstream_type}")
+            print(f"Verification Level: {report.verification_level}")
+            print(f"Run Directory:      {report.run_dir}")
+            print(f"Trials executed:    {len(report.trials)}")
+            for t in report.trials:
+                print(f"  [{t.status}] {t.trial_id}: {t.name}")
+                if getattr(t, "error", None):
+                    print(f"      Error: {t.error}")
+            summary = report.summary
+            all_passed = bool(summary.get("all_passed"))
+            print(f"Result:             {'PASS' if all_passed else 'FAIL'}")
+            print(f"Passed:             {summary.get('passed', 0)} / {summary.get('total_trials', 0)}")
+            if summary.get("mock_only_trials_skipped"):
+                print(f"Mock trials skipped:{summary.get('mock_only_trials_skipped')}")
+        return 0 if report.summary.get("all_passed") else 1
+    except Exception as exc:
+        print(f"Acceptance run failed: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_accept(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_accept(args))
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
@@ -617,6 +740,8 @@ def main(argv: Optional[List[str]] = None) -> None:
         code = cmd_diagnose(args)
     elif args.command == "preflight":
         code = cmd_preflight(args)
+    elif args.command == "accept":
+        code = cmd_accept(args)
     elif args.command == "abort":
         code = cmd_abort(args)
 

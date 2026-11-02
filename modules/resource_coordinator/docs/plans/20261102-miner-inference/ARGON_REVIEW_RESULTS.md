@@ -153,3 +153,31 @@ All five defects were:
 - `git diff --name-status 109c7ad0..origin/main` touches only `modules/llm_monitor/*`, `modules/agent_benchmark/*`, `modules/web_ui_tools/*`, `docs/agent/MANAGED_MONITOR_POLICY.md`, and `docs/plans/20261102-managed-monitor-ops/*`.
 - **Zero overlapping files and zero merge conflicts** exist with `feature/miner-inference-coordination-20261102` (which exclusively modifies `modules/resource_coordinator/*`).
 - No rebase was performed, preserving branch history as instructed.
+
+---
+
+## 5. Final Acceptance Preparation & Deployment Readiness
+
+### 5.1 Operational Corrections Implemented
+1. **Correction A — Align Preflight and Real Execution:**
+   - Implemented `AcceptanceHarness.from_config()` ensuring identical configuration is executed by runner as validated in preflight.
+   - Added `validate_acceptance_config_equivalence()` enforcing identical executable, working directory, arguments, backend, and external adoption flags (`ConfigurationMismatchError`).
+   - Extended host `SingleInstanceLock` ownership across the entire acceptance run, preventing competing coordinators from operating during live trials.
+   - Added immediate pre-launch safety re-check in `run_all()` to abort before launch if an unmanaged external miner appears in the OS process table.
+   - Added `lmstudio.inference_forwarded` dispatcher event emitted immediately prior to upstream HTTP forward in `gateway.py`, validating `stop_verified_monotonic <= upstream_dispatch_monotonic`.
+2. **Correction B — Repeatable, Evidence-Preserving Acceptance Runner:**
+   - Introduced collision-resistant run directories (`.live_acceptance_work/runs/<run_id>/`) with `manifest.json`, per-trial journals (`journal_tXX.json`), and `acceptance_report.json`.
+   - Maintained deterministic `latest_run.json` pointer file.
+   - Guaranteed evidence preservation on trial cancellation or interruption in `run_all()` `finally:`, recording `status = "INTERRUPTED"`.
+   - Supported partial trial sets via `--trials` (e.g. `--trials T01` yielding `verification_level = "live_hardware_partial_stage"`).
+3. **Correction C — Mining Launcher Compatibility Reconciliation:**
+   - Implemented `launcher_declares_parameter()` scanning PowerShell script parameter block before `Set-StrictMode`.
+   - Validated that target launcher declares `-KrigCoreClockMHz` before emitting preview flags; fails closed with explicit `ValueError` if an unsupported flag is requested.
+   - Ensured default coordinator configuration requests zero clock/power flags, preserving host GPU state.
+
+### 5.2 Verification Evidence
+- **New Regression Suite:** `modules/resource_coordinator/tests/test_final_acceptance_readiness.py`: **9 passed in 3.5s**.
+- **Full Resource Coordinator Suite:** **320 passed, 4 skipped**.
+- **Full LLM Monitor Suite:** **253 passed, 2 skipped**.
+- **Real Windows Disposable Helper:** `resource-coordinator accept -m disposable_helper` verified with **5/5 trials passed (`os_process_contract`)**.
+- **Dry-run Merge Tree:** `git merge-tree --write-tree origin/main HEAD` confirmed clean zero-conflict merge tree (`9a1d0427`).

@@ -42,6 +42,20 @@ def redact_miner_args(args: Sequence[str]) -> List[str]:
     return redacted
 
 
+def launcher_declares_parameter(script_path: Path | str, param_name: str) -> bool:
+    """Inspect whether a PowerShell script's parameter block declares a given parameter."""
+    try:
+        path = Path(script_path)
+        if not path.is_file():
+            return False
+        content = path.read_text(encoding="utf-8", errors="replace")
+        strict_idx = content.find("Set-StrictMode")
+        param_section = content[:strict_idx] if strict_idx != -1 else content
+        return bool(re.search(rf"\${re.escape(param_name)}\b", param_section, re.IGNORECASE))
+    except Exception:
+        return False
+
+
 @dataclass(frozen=True)
 class MinerManifest:
     """Stable, non-interactive manifest for launching a coordinator-owned miner process."""
@@ -141,8 +155,18 @@ class MinerManifest:
         if use_preview_invocation and script_path.exists():
             cmd = ["pwsh", "-NoProfile", "-File", str(script_path), "-Preview", "-Miner", miner_type]
             if power_limit_watts > 0:
+                if not launcher_declares_parameter(script_path, "PowerLimitWatts"):
+                    raise ValueError(
+                        f"The Mining launcher at '{script_path}' does not declare parameter '-PowerLimitWatts'; "
+                        f"requested power limit ({power_limit_watts} W) is not supported by this launcher."
+                    )
                 cmd.extend(["-PowerLimitWatts", str(power_limit_watts)])
             if krig_core_clock_mhz > 0 and miner_type == "krig":
+                if not launcher_declares_parameter(script_path, "KrigCoreClockMHz"):
+                    raise ValueError(
+                        f"The Mining launcher at '{script_path}' does not declare parameter '-KrigCoreClockMHz'; "
+                        f"requested core clock lock ({krig_core_clock_mhz} MHz) is not supported by this launcher."
+                    )
                 cmd.extend(["-KrigCoreClockMHz", str(krig_core_clock_mhz)])
             if kryptex_username:
                 cmd.extend(["-KryptexUsername", kryptex_username])
@@ -167,6 +191,18 @@ class MinerManifest:
                 raise RuntimeError(f"Failed running start-prl.ps1 -Preview: {exc}") from exc
 
         # Direct static resolution fallback
+        if script_path.exists():
+            if power_limit_watts > 0 and not launcher_declares_parameter(script_path, "PowerLimitWatts"):
+                raise ValueError(
+                    f"The Mining launcher at '{script_path}' does not declare parameter '-PowerLimitWatts'; "
+                    f"requested power limit ({power_limit_watts} W) is not supported by this launcher."
+                )
+            if krig_core_clock_mhz > 0 and miner_type == "krig" and not launcher_declares_parameter(script_path, "KrigCoreClockMHz"):
+                raise ValueError(
+                    f"The Mining launcher at '{script_path}' does not declare parameter '-KrigCoreClockMHz'; "
+                    f"requested core clock lock ({krig_core_clock_mhz} MHz) is not supported by this launcher."
+                )
+
         if miner_type == "krig":
             rel_exe = Path("vendor") / "krig-miner-1.5.6" / "krig-miner.exe"
             exe_path = repo_path / rel_exe

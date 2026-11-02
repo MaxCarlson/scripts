@@ -5,5 +5,8 @@ __pycache__/
 *.egg-info/
 config.supervised.private.yaml
 config.local.yaml
+config.live-local.yaml
+.live_acceptance_work/
+acceptance_evidence_*.json
 dist/
 build/

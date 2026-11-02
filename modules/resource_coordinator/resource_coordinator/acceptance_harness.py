@@ -10,22 +10,33 @@ Executes and benchmarks the canonical test sequence:
 6. Error handling, truncated streams, and restart inhibition latching (T05, mock-only)
 7. Guaranteed supervised cleanup in `finally` with miner & descendant stop verification
 
-Outputs machine-readable evidence log (acceptance_evidence_<timestamp>.json)
-with high-resolution monotonic timestamps, duration metrics, PID/create_time records,
-and status snapshots.
+Repeatable, Evidence-Preserving Layout:
+Each execution runs in an isolated, collision-resistant directory:
+    <work_dir>/runs/<unique-run-id>/
+        manifest.json
+        journal_t01.json
+        journal_t02.json
+        ...
+        acceptance_report.json
+A deterministic pointer `<work_dir>/latest_run.json` always records the most recent run.
 """
 
 from __future__ import annotations
 
 import asyncio
+import copy
+import hashlib
 import json
 import logging
 import os
+import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Sequence
+import uuid
 
 import httpx
 import psutil
@@ -33,6 +44,7 @@ from starlette.applications import Starlette
 from starlette.responses import JSONResponse, StreamingResponse
 from starlette.routing import Route
 
+from resource_coordinator.adapters.miners.manifest import MinerManifest, redact_miner_args
 from resource_coordinator.config import (
     CoordinatorConfig,
     CoordinatorSystem,
@@ -40,9 +52,10 @@ from resource_coordinator.config import (
     ProcessConfig,
     ServiceConfig,
     build_system,
+    load_config,
 )
 from resource_coordinator.core.durable_state import StateCodec
-from resource_coordinator.core.lock import SingleInstanceLock
+from resource_coordinator.core.lock import SingleInstanceLock, SingleInstanceLockError
 from resource_coordinator.core.processes import (
     ProcessInfo,
     ProcessLifecycleOwner,
@@ -64,6 +77,96 @@ KNOWN_MINER_EXECUTABLES = {
     "t-rex.exe",
     "gminer.exe",
 }
+
+
+class ConfigurationMismatchError(ValueError):
+    """Raised when an acceptance runner configuration does not match the preflight/base configuration."""
+
+
+def get_git_commit(repo_dir: Optional[str | Path] = None) -> str:
+    """Read the current Git commit SHA if git is available."""
+    try:
+        proc = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=str(repo_dir) if repo_dir else None,
+            capture_output=True,
+            text=True,
+            timeout=3.0,
+            check=True,
+        )
+        return proc.stdout.strip()
+    except Exception:
+        return ""
+
+
+def redact_config_dict(config_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Return a deep copy of a configuration dictionary with sensitive credentials redacted."""
+    redacted = copy.deepcopy(config_dict)
+    processes = redacted.get("processes", {})
+    if isinstance(processes, dict):
+        for proc in processes.values():
+            if isinstance(proc, dict) and "arguments" in proc and isinstance(proc["arguments"], list):
+                proc["arguments"] = redact_miner_args(proc["arguments"])
+    return redacted
+
+
+def compute_config_fingerprint(config_dict: Dict[str, Any]) -> str:
+    """Compute a deterministic SHA-256 fingerprint of a configuration dictionary."""
+    redacted = redact_config_dict(config_dict)
+    data = json.dumps(redacted, sort_keys=True)
+    return hashlib.sha256(data.encode("utf-8")).hexdigest()
+
+
+def validate_acceptance_config_equivalence(
+    config: CoordinatorConfig,
+    proc_config: ProcessConfig,
+    target_process_name: Optional[str] = None,
+) -> None:
+    """
+    Ensure the exact process configuration executed by the runner is identical
+    to the configuration verified during preflight.
+    """
+    proc_name = target_process_name or proc_config.name
+    if proc_name not in config.processes:
+        raise ConfigurationMismatchError(
+            f"Process '{proc_name}' from runner is not present in base configuration processes: {list(config.processes)}"
+        )
+    base_proc = config.processes[proc_name]
+
+    mismatches: List[str] = []
+
+    # 1. Executable normalized path
+    base_exe = os.path.normcase(os.path.realpath(base_proc.executable)) if base_proc.executable else ""
+    run_exe = os.path.normcase(os.path.realpath(proc_config.executable)) if proc_config.executable else ""
+    if base_exe != run_exe:
+        mismatches.append(f"executable mismatch: base={base_proc.executable!r} vs runner={proc_config.executable!r}")
+
+    # 2. Working directory normalized path
+    base_cwd = os.path.normcase(os.path.realpath(base_proc.working_directory)) if base_proc.working_directory else ""
+    run_cwd = os.path.normcase(os.path.realpath(proc_config.working_directory)) if proc_config.working_directory else ""
+    if base_cwd != run_cwd:
+        mismatches.append(f"working_directory mismatch: base={base_proc.working_directory!r} vs runner={proc_config.working_directory!r}")
+
+    # 3. Arguments
+    if list(base_proc.arguments) != list(proc_config.arguments):
+        mismatches.append(f"arguments mismatch: base={base_proc.arguments} vs runner={proc_config.arguments}")
+
+    # 4. Backend
+    if base_proc.backend != proc_config.backend:
+        mismatches.append(f"backend mismatch: base={base_proc.backend} vs runner={proc_config.backend}")
+
+    # 5. Ownership & external adoption permissions
+    if base_proc.adopt_external != proc_config.adopt_external:
+        mismatches.append(f"adopt_external mismatch: base={base_proc.adopt_external} vs runner={proc_config.adopt_external}")
+    if base_proc.allow_external_stop != proc_config.allow_external_stop:
+        mismatches.append(f"allow_external_stop mismatch: base={base_proc.allow_external_stop} vs runner={proc_config.allow_external_stop}")
+    if base_proc.allow_external_restart != proc_config.allow_external_restart:
+        mismatches.append(f"allow_external_restart mismatch: base={base_proc.allow_external_restart} vs runner={proc_config.allow_external_restart}")
+
+    if mismatches:
+        raise ConfigurationMismatchError(
+            f"Acceptance configuration mismatch between preflight config and runner execution: {'; '.join(mismatches)}"
+        )
 
 
 async def discover_live_model(client: httpx.AsyncClient) -> Dict[str, Any]:
@@ -143,8 +246,33 @@ async def discover_live_model(client: httpx.AsyncClient) -> Dict[str, Any]:
     }
 
 
+def scan_external_miners(
+    configured_exe_names: Optional[set[str]] = None,
+) -> List[Dict[str, Any]]:
+    """Inspect OS process table for any running miner processes."""
+    all_names = set(KNOWN_MINER_EXECUTABLES)
+    if configured_exe_names:
+        all_names.update(configured_exe_names)
+    external_miners: List[Dict[str, Any]] = []
+    for proc in psutil.process_iter(["pid", "name", "exe"]):
+        try:
+            pname = (proc.info.get("name") or "").strip()
+            pexe = (proc.info.get("exe") or "").strip()
+            if pname.casefold() in all_names or (pexe and Path(pexe).name.casefold() in all_names):
+                external_miners.append(
+                    {
+                        "pid": proc.info.get("pid"),
+                        "name": pname,
+                        "exe": pexe,
+                    }
+                )
+        except (psutil.NoSuchProcess, psutil.AccessDenied):
+            continue
+    return external_miners
+
+
 async def run_live_acceptance_preflight(
-    config: CoordinatorConfig,
+    config: CoordinatorConfig | str | Path,
     http_client: Optional[httpx.AsyncClient] = None,
     lock_path: Optional[str | Path] = None,
     gpu_metrics_override: Optional[List[GpuDeviceMetrics]] = None,
@@ -162,6 +290,11 @@ async def run_live_acceptance_preflight(
     4. LM Studio upstream reachability and currently loaded LLM/VLM model (`/api/v0/models`).
     5. GPU VRAM headroom (`free_mb >= min_free_vram_mb`).
     """
+    if isinstance(config, (str, Path)):
+        resolved_config = load_config(config)
+    else:
+        resolved_config = config
+
     blocking_reasons: List[str] = []
     warnings: List[str] = []
 
@@ -170,24 +303,9 @@ async def run_live_acceptance_preflight(
         external_miners = list(external_miners_override)
     else:
         configured_exe_names = {
-            Path(p.executable).name.casefold() for p in config.processes.values() if p.executable
+            Path(p.executable).name.casefold() for p in resolved_config.processes.values() if p.executable
         }
-        miner_names = KNOWN_MINER_EXECUTABLES | configured_exe_names
-        external_miners = []
-        for proc in psutil.process_iter(["pid", "name", "exe"]):
-            try:
-                pname = (proc.info.get("name") or "").strip()
-                pexe = (proc.info.get("exe") or "").strip()
-                if pname.casefold() in miner_names or (pexe and Path(pexe).name.casefold() in miner_names):
-                    external_miners.append(
-                        {
-                            "pid": proc.info.get("pid"),
-                            "name": pname,
-                            "exe": pexe,
-                        }
-                    )
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
-                continue
+        external_miners = scan_external_miners(configured_exe_names)
 
     if external_miners:
         blocking_reasons.append(
@@ -197,8 +315,8 @@ async def run_live_acceptance_preflight(
 
     # 2. Probe SingleInstanceLock availability without holding it
     resolved_lock_path = lock_path
-    if not resolved_lock_path and getattr(config.service, "state_persistence_path", ""):
-        resolved_lock_path = Path(config.service.state_persistence_path).with_suffix(".lock")
+    if not resolved_lock_path and getattr(resolved_config.service, "state_persistence_path", ""):
+        resolved_lock_path = Path(resolved_config.service.state_persistence_path).with_suffix(".lock")
     lock_available = True
     if resolved_lock_path:
         probe_lock = SingleInstanceLock(resolved_lock_path)
@@ -211,7 +329,7 @@ async def run_live_acceptance_preflight(
             )
 
     # 3. Validate coordinator configuration and ownership flags
-    system = build_system(config, use_fake_processes=False)
+    system = build_system(resolved_config, use_fake_processes=False)
     try:
         service = CoordinatorService(system=system)
         config_passed, config_messages = service.preflight_check()
@@ -222,7 +340,7 @@ async def run_live_acceptance_preflight(
             if msg.startswith("ERROR"):
                 blocking_reasons.append(msg)
 
-    for pname, pcfg in config.processes.items():
+    for pname, pcfg in resolved_config.processes.items():
         if pcfg.adopt_external or pcfg.allow_external_stop or pcfg.allow_external_restart:
             blocking_reasons.append(
                 f"Process '{pname}' enables external adoption/stop/restart, which is forbidden for supervised acceptance."
@@ -240,7 +358,7 @@ async def run_live_acceptance_preflight(
     close_client = False
     client = http_client
     if client is None:
-        client = httpx.AsyncClient(base_url=config.service.upstream_url, timeout=5.0)
+        client = httpx.AsyncClient(base_url=resolved_config.service.upstream_url, timeout=5.0)
         close_client = True
     try:
         loaded_model = await discover_live_model(client)
@@ -314,6 +432,12 @@ class TrialEvidence:
 @dataclass
 class AcceptanceReport:
     timestamp: float = field(default_factory=time.time)
+    iso_timestamp: str = ""
+    run_id: str = ""
+    run_dir: str = ""
+    git_commit: str = ""
+    configuration_fingerprint: str = ""
+    effective_configuration: Dict[str, Any] = field(default_factory=dict)
     mode: str = "simulated"  # "simulated", "disposable_helper", "live"
     process_backend: str = "fake"  # "fake", "windows_cscript", "windows_miner"
     upstream_type: str = "mock"  # "mock", "live_lmstudio"
@@ -324,6 +448,12 @@ class AcceptanceReport:
     def to_dict(self) -> Dict[str, Any]:
         return {
             "timestamp": self.timestamp,
+            "iso_timestamp": self.iso_timestamp,
+            "run_id": self.run_id,
+            "run_dir": self.run_dir,
+            "git_commit": self.git_commit,
+            "configuration_fingerprint": self.configuration_fingerprint,
+            "effective_configuration": self.effective_configuration,
             "mode": self.mode,
             "process_backend": self.process_backend,
             "upstream_type": self.upstream_type,
@@ -346,15 +476,18 @@ class AcceptanceHarness:
     def __init__(
         self,
         mode: str = "simulated",
+        config: Optional[CoordinatorConfig | str | Path] = None,
         cooldown_seconds: Optional[float] = None,
         allow_live_lmstudio: bool = False,
         allow_real_miner: bool = False,
-        lmstudio_url: str = "http://127.0.0.1:1234",
+        lmstudio_url: Optional[str] = None,
         miner_process_config: Optional[ProcessConfig] = None,
         work_dir: Optional[str | Path] = None,
         lock_path: Optional[str | Path] = None,
+        trials_to_run: Optional[List[str]] = None,
         _allow_short_cooldown_for_test: bool = False,
         _upstream_app_override_for_test: Any = None,
+        _external_miners_override_for_test: Optional[List[Dict[str, Any]]] = None,
     ) -> None:
         if mode not in {"simulated", "disposable_helper", "live"}:
             raise ValueError(f"Unsupported acceptance harness mode: {mode!r}")
@@ -362,11 +495,20 @@ class AcceptanceHarness:
         self.mode = mode
         self.allow_live_lmstudio = allow_live_lmstudio
         self.allow_real_miner = allow_real_miner
-        self.lmstudio_url = lmstudio_url
-        self.miner_process_config = miner_process_config
         self._allow_short_cooldown_for_test = _allow_short_cooldown_for_test
         self._upstream_app_override_for_test = _upstream_app_override_for_test
+        self._external_miners_override_for_test = _external_miners_override_for_test
+        self.trials_to_run = [t.strip().upper() for t in trials_to_run] if trials_to_run else None
 
+        # Resolve base configuration
+        self.base_config: Optional[CoordinatorConfig] = None
+        if config is not None:
+            if isinstance(config, (str, Path)):
+                self.base_config = load_config(config)
+            else:
+                self.base_config = config
+
+        # Base working directory setup
         if work_dir is not None:
             self._base_work_dir = Path(work_dir)
             self._base_work_dir.mkdir(parents=True, exist_ok=True)
@@ -375,29 +517,70 @@ class AcceptanceHarness:
             self._temp_dir_obj = tempfile.TemporaryDirectory(prefix="rc_acceptance_")
             self._base_work_dir = Path(self._temp_dir_obj.name)
 
-        self.lock_path = Path(lock_path) if lock_path is not None else (self._base_work_dir / "coordinator.lock")
+        # Resolve miner process configuration and validate equivalence
+        resolved_proc_cfg = miner_process_config
+        if self.base_config is not None:
+            if resolved_proc_cfg is None:
+                # Discover process with inference policy or take the first process
+                target_name = None
+                for p in self.base_config.policies:
+                    if p.trigger_event == "lmstudio.inference_requested" and p.target_process:
+                        target_name = p.target_process
+                        break
+                if not target_name and self.base_config.processes:
+                    target_name = next(iter(self.base_config.processes))
+                if target_name and target_name in self.base_config.processes:
+                    resolved_proc_cfg = self.base_config.processes[target_name]
+            else:
+                validate_acceptance_config_equivalence(self.base_config, resolved_proc_cfg)
+
+        self.miner_process_config = resolved_proc_cfg
+
+        # Resolve LM Studio URL
+        if lmstudio_url is not None:
+            self.lmstudio_url = lmstudio_url
+        elif self.base_config is not None and self.base_config.service.upstream_url:
+            self.lmstudio_url = self.base_config.service.upstream_url
+        else:
+            self.lmstudio_url = "http://127.0.0.1:1234"
+
+        # Resolve lock path
+        if lock_path is not None:
+            self.lock_path = Path(lock_path)
+        elif self.base_config is not None and getattr(self.base_config.service, "state_persistence_path", ""):
+            self.lock_path = Path(self.base_config.service.state_persistence_path).with_suffix(".lock")
+        else:
+            self.lock_path = self._base_work_dir / "coordinator.lock"
+
+        # Resolve cooldown
+        if cooldown_seconds is not None:
+            effective_cooldown = float(cooldown_seconds)
+        elif self.base_config is not None and self.base_config.policies:
+            effective_cooldown = float(self.base_config.policies[0].cooldown_seconds)
+        elif mode == "live":
+            effective_cooldown = 10.0
+        elif mode == "disposable_helper":
+            effective_cooldown = 0.2
+        else:
+            effective_cooldown = 0.1
 
         if mode == "live":
             if not allow_live_lmstudio or not allow_real_miner:
                 raise ValueError(
                     "Live acceptance mode requires both allow_live_lmstudio=True and allow_real_miner=True"
                 )
-            effective_cooldown = 10.0 if cooldown_seconds is None else float(cooldown_seconds)
             if effective_cooldown < 10.0 and not _allow_short_cooldown_for_test:
                 raise ValueError("Live acceptance mode requires cooldown_seconds >= 10.0 seconds")
             process_backend = "windows_miner"
             upstream_type = "live_lmstudio"
-            # Focused Correction #6: Never label a report "live_hardware" before actual live execution
             verification_level = "pending_live_verification"
         elif mode == "disposable_helper":
             if os.name != "nt":
                 raise RuntimeError("Disposable helper acceptance mode requires Windows (os.name == 'nt')")
-            effective_cooldown = 0.2 if cooldown_seconds is None else float(cooldown_seconds)
             process_backend = "windows_cscript"
             upstream_type = "mock"
             verification_level = "os_process_contract"
         else:
-            effective_cooldown = 0.1 if cooldown_seconds is None else float(cooldown_seconds)
             process_backend = "fake"
             upstream_type = "mock"
             verification_level = "unit_simulation"
@@ -410,6 +593,89 @@ class AcceptanceHarness:
             verification_level=verification_level,
         )
 
+        self.current_run_id: str = ""
+        self.current_run_dir: Optional[Path] = None
+        self.host_lock: Optional[SingleInstanceLock] = None
+
+    @classmethod
+    def from_config(
+        cls,
+        config: CoordinatorConfig | str | Path,
+        mode: str = "simulated",
+        work_dir: Optional[str | Path] = None,
+        allow_live_lmstudio: bool = False,
+        allow_real_miner: bool = False,
+        lock_path: Optional[str | Path] = None,
+        trials_to_run: Optional[List[str]] = None,
+        _allow_short_cooldown_for_test: bool = False,
+        _upstream_app_override_for_test: Any = None,
+    ) -> AcceptanceHarness:
+        """Construct AcceptanceHarness directly from a verified CoordinatorConfig or path."""
+        return cls(
+            mode=mode,
+            config=config,
+            allow_live_lmstudio=allow_live_lmstudio,
+            allow_real_miner=allow_real_miner,
+            work_dir=work_dir,
+            lock_path=lock_path,
+            trials_to_run=trials_to_run,
+            _allow_short_cooldown_for_test=_allow_short_cooldown_for_test,
+            _upstream_app_override_for_test=_upstream_app_override_for_test,
+        )
+
+    def _generate_effective_config_dict(self) -> Dict[str, Any]:
+        """Produce the exact dictionary representation of the effective configuration."""
+        if self.base_config is not None:
+            raw = {
+                "version": self.base_config.version,
+                "service": self.base_config.service.__dict__,
+                "resources": self.base_config.resources,
+                "processes": {k: v.__dict__ for k, v in self.base_config.processes.items()},
+                "policies": [p.__dict__ for p in self.base_config.policies],
+            }
+        else:
+            proc_dict = self.miner_process_config.__dict__ if self.miner_process_config else {}
+            raw = {
+                "version": "1.0",
+                "service": {
+                    "listen_host": "127.0.0.1",
+                    "listen_port": 1235,
+                    "upstream_url": self.lmstudio_url,
+                },
+                "resources": {"gpu.inference": {"cooldown_seconds": self.cooldown_seconds}},
+                "processes": {proc_dict.get("name", "miner"): proc_dict},
+                "policies": [
+                    {
+                        "name": "acceptance-stop",
+                        "trigger_event": "lmstudio.inference_requested",
+                        "target_process": proc_dict.get("name", "miner"),
+                        "stop_process": True,
+                        "restart_process": True,
+                        "cooldown_seconds": self.cooldown_seconds,
+                    }
+                ],
+            }
+        return redact_config_dict(raw)
+
+    def _ensure_run_dir(self) -> Path:
+        """Ensure per-run directory and report run metadata are initialized."""
+        if self.current_run_dir is None:
+            now_dt = datetime.now(timezone.utc)
+            self.current_run_id = f"{now_dt.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+            runs_parent = self._base_work_dir / "runs"
+            runs_parent.mkdir(parents=True, exist_ok=True)
+            self.current_run_dir = runs_parent / self.current_run_id
+            self.current_run_dir.mkdir(parents=True, exist_ok=False)
+
+            self.report.run_id = self.current_run_id
+            self.report.run_dir = str(self.current_run_dir)
+            self.report.iso_timestamp = now_dt.isoformat()
+            self.report.git_commit = get_git_commit(self._base_work_dir)
+            effective_cfg = self._generate_effective_config_dict()
+            self.report.effective_configuration = effective_cfg
+            self.report.configuration_fingerprint = compute_config_fingerprint(effective_cfg)
+        return self.current_run_dir
+
     async def run_all(self, output_file: Optional[str | Path] = None) -> AcceptanceReport:
         """Run all applicable test sequence trials and return the structured acceptance report."""
         logger.info("Starting Acceptance Test Sequence in mode: %s", self.mode)
@@ -421,47 +687,168 @@ class AcceptanceHarness:
                 "refusing to fall back to simulated backend"
             )
 
-        await self._run_trial_1_single_request()
-        await self._run_trial_2_cooldown_interruption()
-        await self._run_trial_3_concurrent_requests()
-        await self._run_trial_4_streaming_sse()
+        # 1. Initialize collision-resistant run directory
+        self._ensure_run_dir()
+        assert self.current_run_dir is not None
 
-        mock_only_skipped = 0
-        if self.mode != "live":
-            await self._run_trial_5_error_inhibition()
-        else:
-            mock_only_skipped = 1
-
-        total = len(self.report.trials)
-        passed = sum(1 for t in self.report.trials if t.status == "PASS")
-        failed = sum(1 for t in self.report.trials if t.status == "FAIL")
-        all_passed = passed == total and total > 0
-
-        # Focused Correction #6: Promote verification_level to "live_hardware" ONLY after
-        # actual live execution and verification of all live trials against real hardware & upstream.
-        if self.mode == "live":
-            is_test_override = (
-                self._allow_short_cooldown_for_test or self._upstream_app_override_for_test is not None
-            )
-            if all_passed and total >= 4 and not is_test_override:
-                self.report.verification_level = "live_hardware"
-            elif all_passed and is_test_override:
-                self.report.verification_level = "live_contract_rehearsal"
-            else:
-                self.report.verification_level = "failed_live_verification"
-
-        self.report.summary = {
-            "total_trials": total,
-            "passed": passed,
-            "failed": failed,
-            "mock_only_trials_skipped": mock_only_skipped,
-            "all_passed": all_passed,
-            "verification_level": self.report.verification_level,
+        # Write manifest.json inside run directory
+        manifest_data = {
+            "run_id": self.current_run_id,
+            "timestamp": time.time(),
+            "iso_timestamp": self.report.iso_timestamp,
+            "git_commit": self.report.git_commit,
+            "mode": self.mode,
+            "process_backend": self.report.process_backend,
+            "upstream_type": self.report.upstream_type,
+            "effective_configuration": self.report.effective_configuration,
+            "configuration_fingerprint": self.report.configuration_fingerprint,
+            "lock_path": str(self.lock_path),
+            "trials_requested": self.trials_to_run,
         }
+        (self.current_run_dir / "manifest.json").write_text(json.dumps(manifest_data, indent=2), encoding="utf-8")
 
-        if output_file:
-            self.report.save(output_file)
-            logger.info("Saved acceptance report to %s", output_file)
+        # Update latest_run.json pointer
+        latest_pointer_data = {
+            "latest_run_id": self.current_run_id,
+            "run_dir": str(self.current_run_dir),
+            "mode": self.mode,
+            "timestamp": time.time(),
+            "status": "IN_PROGRESS",
+            "trials_requested": self.trials_to_run,
+        }
+        (self._base_work_dir / "latest_run.json").write_text(
+            json.dumps(latest_pointer_data, indent=2), encoding="utf-8"
+        )
+
+        # 2. Acquire shared host SingleInstanceLock in live mode
+        interrupted = False
+        self.host_lock = SingleInstanceLock(self.lock_path)
+        if self.mode == "live":
+            if not self.host_lock.acquire():
+                latest_pointer_data["status"] = "BLOCKED_LOCK_HELD"
+                (self._base_work_dir / "latest_run.json").write_text(
+                    json.dumps(latest_pointer_data, indent=2), encoding="utf-8"
+                )
+                raise SingleInstanceLockError(
+                    f"Cannot run live acceptance: coordinator instance lock at '{self.lock_path}' is already held by another process."
+                )
+
+        try:
+            # 3. Safety re-check immediately before launching any trial in live mode
+            if self.mode == "live":
+                configured_exe_names = (
+                    {Path(self.miner_process_config.executable).name.casefold()}
+                    if self.miner_process_config and self.miner_process_config.executable
+                    else None
+                )
+                if self._external_miners_override_for_test is not None:
+                    external_miners = list(self._external_miners_override_for_test)
+                else:
+                    external_miners = scan_external_miners(configured_exe_names)
+                if external_miners:
+                    raise RuntimeError(
+                        f"Cannot start live acceptance: external miner process(es) currently running: {external_miners}. "
+                        "Stop external miners manually before starting supervised acceptance."
+                    )
+
+            # 4. Execute requested trials
+            to_run = self.trials_to_run
+
+            if to_run is None or "T01" in to_run:
+                await self._run_trial_1_single_request()
+            if to_run is None or "T02" in to_run:
+                await self._run_trial_2_cooldown_interruption()
+            if to_run is None or "T03" in to_run:
+                await self._run_trial_3_concurrent_requests()
+            if to_run is None or "T04" in to_run:
+                await self._run_trial_4_streaming_sse()
+
+            mock_only_skipped = 0
+            if self.mode != "live":
+                if to_run is None or "T05" in to_run:
+                    await self._run_trial_5_error_inhibition()
+            else:
+                if to_run is None or "T05" in to_run:
+                    mock_only_skipped = 1
+
+            total = len(self.report.trials)
+            passed = sum(1 for t in self.report.trials if t.status == "PASS")
+            failed = sum(1 for t in self.report.trials if t.status == "FAIL")
+            all_passed = passed == total and total > 0
+
+            # Promote verification_level to "live_hardware" ONLY after actual live execution of all live trials
+            if self.mode == "live":
+                is_test_override = (
+                    self._allow_short_cooldown_for_test or self._upstream_app_override_for_test is not None
+                )
+                if all_passed and not is_test_override:
+                    if total >= 4 and (to_run is None or len(to_run) >= 4):
+                        self.report.verification_level = "live_hardware"
+                    else:
+                        self.report.verification_level = f"live_hardware_partial_stage"
+                elif all_passed and is_test_override:
+                    self.report.verification_level = "live_contract_rehearsal"
+                else:
+                    self.report.verification_level = "failed_live_verification"
+
+            self.report.summary = {
+                "run_id": self.current_run_id,
+                "total_trials": total,
+                "passed": passed,
+                "failed": failed,
+                "mock_only_trials_skipped": mock_only_skipped,
+                "trials_executed": [t.trial_id for t in self.report.trials],
+                "all_passed": all_passed,
+                "verification_level": self.report.verification_level,
+                "run_dir": str(self.current_run_dir),
+            }
+        except (KeyboardInterrupt, asyncio.CancelledError) as exc:
+            interrupted = True
+            self.report.summary = {
+                "run_id": self.current_run_id,
+                "status": "INTERRUPTED",
+                "error": str(exc) or type(exc).__name__,
+                "total_trials": len(self.report.trials),
+                "passed": sum(1 for t in self.report.trials if t.status == "PASS"),
+                "failed": sum(1 for t in self.report.trials if t.status == "FAIL"),
+                "all_passed": False,
+                "run_dir": str(self.current_run_dir),
+            }
+            raise
+        except Exception as exc:
+            self.report.summary = {
+                "run_id": self.current_run_id,
+                "status": "FAILED",
+                "error": str(exc),
+                "total_trials": len(self.report.trials),
+                "passed": sum(1 for t in self.report.trials if t.status == "PASS"),
+                "failed": sum(1 for t in self.report.trials if t.status == "FAIL"),
+                "all_passed": False,
+                "run_dir": str(self.current_run_dir),
+            }
+            raise
+        finally:
+            # Always save acceptance_report.json inside run directory preserving evidence
+            report_file_in_run = self.current_run_dir / "acceptance_report.json"
+            self.report.save(report_file_in_run)
+            logger.info("Saved acceptance report to %s", report_file_in_run)
+
+            # Update latest_run.json
+            final_status = "INTERRUPTED" if interrupted else "COMPLETED" if self.report.summary.get("all_passed") else "FAILED"
+            latest_pointer_data["status"] = final_status
+            latest_pointer_data["report_file"] = str(report_file_in_run)
+            latest_pointer_data["summary"] = self.report.summary
+            (self._base_work_dir / "latest_run.json").write_text(
+                json.dumps(latest_pointer_data, indent=2), encoding="utf-8"
+            )
+
+            # If user requested explicit output_file, copy report there too
+            if output_file:
+                self.report.save(output_file)
+
+            # Release host single instance lock
+            if self.host_lock is not None and self.host_lock.is_acquired:
+                self.host_lock.release()
 
         return self.report
 
@@ -472,16 +859,18 @@ class AcceptanceHarness:
         mock_handler: Optional[Callable] = None,
     ):
         """Build isolated per-trial environment with durable journal, single-instance lock, and telemetry."""
-        trial_dir = self._base_work_dir / trial_id.lower()
+        run_dir = self._ensure_run_dir()
+        trial_dir = run_dir / trial_id.lower()
         trial_dir.mkdir(parents=True, exist_ok=True)
-        journal_path = trial_dir / f"journal_{trial_id.lower()}.json"
+        journal_path = run_dir / f"journal_{trial_id.lower()}.json"
         StateCodec.initialize(journal_path)
 
         telemetry: Dict[str, Any] = {
             "journal_path": str(journal_path),
             "lock_path": str(self.lock_path),
             "stop_verified_monotonic": None,
-            "first_forward_monotonic": None,
+            "lease_acquired_monotonic": None,
+            "upstream_dispatch_monotonic": None,
             "stopped_before_forward_verified": False,
             "observed_running_during_inference": False,
             "cooldown_started_monotonic": None,
@@ -506,8 +895,8 @@ class AcceptanceHarness:
 
         async def instrumented_mock_handler(request):
             now_mono = time.monotonic()
-            if telemetry["first_forward_monotonic"] is None:
-                telemetry["first_forward_monotonic"] = now_mono
+            if telemetry["upstream_dispatch_monotonic"] is None:
+                telemetry["upstream_dispatch_monotonic"] = now_mono
             info = await supervisor.status()
             if info.state != ProcessState.STOPPED:
                 telemetry["observed_running_during_inference"] = True
@@ -587,12 +976,12 @@ class AcceptanceHarness:
             else:
                 await_close = upstream_client
                 upstream_client = None
-                # Close unused mock client asynchronously when loop runs
                 asyncio.create_task(await_close.aclose())
             service = CoordinatorService(
                 system,
                 start_process_on_ready=target_proc_name,
                 stop_process_on_shutdown=target_proc_name,
+                instance_lock=self.host_lock,
                 lock_path=self.lock_path,
             )
             supervisor = system.supervisors[target_proc_name]
@@ -637,6 +1026,7 @@ class AcceptanceHarness:
                 system,
                 start_process_on_ready="krig",
                 stop_process_on_shutdown="krig",
+                instance_lock=self.host_lock,
                 lock_path=self.lock_path,
             )
             supervisor = system.supervisors["krig"]
@@ -668,6 +1058,7 @@ class AcceptanceHarness:
                 system,
                 start_process_on_ready="krig",
                 stop_process_on_shutdown="krig",
+                instance_lock=self.host_lock,
                 lock_path=self.lock_path,
             )
             supervisor = system.supervisors["krig"]
@@ -689,9 +1080,12 @@ class AcceptanceHarness:
                 telemetry["stop_verified_monotonic"] = time.monotonic()
 
         async def on_resource_acquired(event: Any) -> None:
+            telemetry["lease_acquired_monotonic"] = time.monotonic()
+
+        async def on_inference_forwarded(event: Any) -> None:
             now_mono = time.monotonic()
-            if telemetry["first_forward_monotonic"] is None:
-                telemetry["first_forward_monotonic"] = now_mono
+            if telemetry["upstream_dispatch_monotonic"] is None:
+                telemetry["upstream_dispatch_monotonic"] = now_mono
             info = await supervisor.status()
             if info.state != ProcessState.STOPPED:
                 telemetry["observed_running_during_inference"] = True
@@ -707,6 +1101,7 @@ class AcceptanceHarness:
         system.dispatcher.on("process.started", on_process_started)
         system.dispatcher.on("process.stopped", on_process_stopped)
         system.dispatcher.on("resource.acquired", on_resource_acquired)
+        system.dispatcher.on("lmstudio.inference_forwarded", on_inference_forwarded)
         system.dispatcher.on("resource.cooldown_started", on_cooldown_started)
 
         gateway_app = system.gateway.create_app(service)
@@ -729,7 +1124,6 @@ class AcceptanceHarness:
         telemetry: Optional[Dict[str, Any]],
     ) -> None:
         """
-        Focused Correction #1 & #4:
         Guaranteed supervised cleanup executed in `finally` of every trial.
         Verifies miner and descendant termination. Overrides trial status to FAIL
         if process stop cannot be verified.
@@ -844,6 +1238,12 @@ class AcceptanceHarness:
         if telemetry.get("restarted_pid") is not None:
             t.metrics["restarted_pid"] = telemetry.get("restarted_pid")
             t.metrics["restarted_create_time"] = telemetry.get("restarted_create_time")
+        if telemetry.get("upstream_dispatch_monotonic") is not None:
+            t.metrics["upstream_dispatch_monotonic"] = telemetry["upstream_dispatch_monotonic"]
+        if telemetry.get("stop_verified_monotonic") is not None:
+            t.metrics["stop_verified_monotonic"] = telemetry["stop_verified_monotonic"]
+        if telemetry.get("lease_acquired_monotonic") is not None:
+            t.metrics["lease_acquired_monotonic"] = telemetry["lease_acquired_monotonic"]
 
     async def _run_trial_1_single_request(
         self,
