@@ -16,4 +16,6 @@ def pytest_configure(config):
     import os
     if config.option.basetemp is None:
         config.option.basetemp = str(Path(__file__).resolve().parents[1] / ".pytest_tmp_root" / f"run-{os.getpid()}")
-    Path(config.option.basetemp).parent.mkdir(parents=True, exist_ok=True)
+    state_dir = Path(config.option.basetemp) / "llm_monitor_state"
+    state_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["LLM_MONITOR_STATE_DIR"] = str(state_dir)

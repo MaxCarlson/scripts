@@ -27,7 +27,8 @@ def initialize_git(workspace: Path) -> GitIdentity:
     env = {k: v for k, v in os.environ.items() if not k.upper().startswith("GIT_")}
     env.update(GIT_CONFIG_NOSYSTEM="1", GIT_CONFIG_GLOBAL=os.devnull,
                GIT_ATTR_NOSYSTEM="1", GIT_TERMINAL_PROMPT="0")
-    command = ["git", "-c", "user.name=Benchmark Worker", "-c", "user.email=benchmark@trial.local",
+    command = ["git", "-c", "core.longpaths=true",
+               "-c", "user.name=Benchmark Worker", "-c", "user.email=benchmark@trial.local",
                "-c", "commit.gpgSign=false", "-c", "core.autocrlf=false",
                "-c", f"core.hooksPath={workspace / '.git/disabled-hooks'}"]
 

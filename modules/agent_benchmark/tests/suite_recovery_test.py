@@ -59,7 +59,9 @@ def test_recovery_with_recover_local_starts_monitor_once():
         config_fingerprint="sha256:test", instance_id="inst-1234"
     )
 
-    with patch("agent_benchmark.suite_recovery.subprocess.Popen", side_effect=fake_spawn), \
+    with patch("agent_benchmark.suite_doctor.find_active_server", return_value=None), \
+         patch("agent_benchmark.suite_doctor._is_port_listening", return_value=False), \
+         patch("agent_benchmark.suite_recovery.subprocess.Popen", side_effect=fake_spawn), \
          patch("agent_benchmark.suite_recovery._poll_for_server_ready", return_value=mock_desc), \
          patch("agent_benchmark.suite_recovery.ManagedMonitorClient.acquire_capability_token", return_value="tok_rec_123"):
         

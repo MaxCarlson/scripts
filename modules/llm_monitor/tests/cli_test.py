@@ -158,9 +158,10 @@ def test_web_command_database_without_recording_is_readonly(tmp_path, monkeypatc
     from llm_monitor.storage import TelemetryStore, TelemetryStoreError
     from llm_monitor.web import run_web
 
+    test_port = 58788
     nonexistent = tmp_path / "never_created.db"
     with pytest.raises(TelemetryStoreError, match="telemetry database does not exist"):
-        run_web(database=str(nonexistent), no_browser=True)
+        run_web(port=test_port, database=str(nonexistent), no_browser=True)
     assert not nonexistent.exists()
 
     existing = tmp_path / "existing.db"
@@ -181,7 +182,7 @@ def test_web_command_database_without_recording_is_readonly(tmp_path, monkeypatc
         return FakeServer()
 
     monkeypatch.setattr("web_ui_tools.create_server", fake_create_server)
-    exit_code = run_web(database=str(existing), no_browser=True)
+    exit_code = run_web(port=test_port, database=str(existing), no_browser=True)
     assert exit_code == 0
     assert fake_server_created == [True]
 
@@ -189,6 +190,7 @@ def test_web_command_database_without_recording_is_readonly(tmp_path, monkeypatc
 def test_web_command_gateway_alone_never_creates_database(tmp_path, monkeypatch):
     from llm_monitor.web import run_web
 
+    test_port = 58788
     fake_server_created = []
     class FakeServer:
         def run(self):
@@ -201,7 +203,7 @@ def test_web_command_gateway_alone_never_creates_database(tmp_path, monkeypatch)
         return FakeServer()
 
     monkeypatch.setattr("web_ui_tools.create_server", fake_create_server)
-    exit_code = run_web(gateway_enabled=True, no_browser=True)
+    exit_code = run_web(port=test_port, gateway_enabled=True, no_browser=True)
     assert exit_code == 0
     assert fake_server_created == [True]
     assert list(tmp_path.glob("*.db*")) == []

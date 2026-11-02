@@ -400,3 +400,13 @@ def test_failed_edit_is_exempt_only_for_versioned_proven_pre_mutation_error(tmp_
         assert audit.mutated_paths == ()
         assert audit.mutation_events[0].safety_outcome == "failed_before_mutation"
         assert audit.to_dict()["mutation_events"][0]["safety_outcome"] == "failed_before_mutation"
+
+
+def test_initialize_git_configures_core_longpaths(tmp_path):
+    from agent_benchmark.git_workspace import initialize_git
+    workspace = tmp_path / "trial_ws"
+    workspace.mkdir()
+    (workspace / "sample.txt").write_text("hello", encoding="utf-8")
+    identity = initialize_git(workspace)
+    assert identity.trial_id
+    assert (workspace / ".git").is_dir()

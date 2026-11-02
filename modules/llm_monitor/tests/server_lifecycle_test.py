@@ -260,7 +260,7 @@ def test_control_routes_shutdown_security():
 
 
 def test_status_server_not_running(tmp_path: Path, capsys: pytest.CaptureFixture[str]):
-    rc = status_server(port=8788, state_dir=tmp_path)
+    rc = status_server(port=58788, state_dir=tmp_path)
     assert rc == 0
     out = capsys.readouterr().out
     assert "Status: Not running" in out
