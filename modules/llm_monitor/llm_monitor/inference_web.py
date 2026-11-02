@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from pydantic import BaseModel
 
 from .gateway import OpenAIInferenceGateway, RequestEventHub
 from .inference_analysis import compute_model_analytics
@@ -14,6 +15,10 @@ from .inference_service import InferenceMonitoringService
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SESSION_COOKIE_NAME = "llm_monitor_session"
+
+
+class RecordingModePayload(BaseModel):
+    mode: str
 
 
 def create_inference_web_app(
@@ -186,10 +191,27 @@ def create_inference_web_app(
             "recording": rec_status,
         }
 
+    @router.post("/recording/mode")
+    def set_recording_mode(payload: RecordingModePayload) -> dict[str, Any]:
+        rec = recorder or getattr(service, "recorder", None) or getattr(gateway, "recorder", None)
+        if rec is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Inference recording is disabled on this server instance. Run with -R/--record-inferences to enable persistence.",
+            )
+        if payload.mode not in {"metadata", "content"}:
+            raise HTTPException(status_code=400, detail="Recording mode must be 'metadata' or 'content'")
+        rec.set_mode(payload.mode)
+        return {
+            "schema_version": 1,
+            "recording": rec.status(),
+        }
+
     @router.get("/history")
     def history(
         limit: int = Query(default=50, ge=1, le=500),
         offset: int = Query(default=0, ge=0),
+        server_instance_id: str | None = None,
         model_id: str | None = None,
         state: str | None = None,
         since: str | None = None,
@@ -206,6 +228,7 @@ def create_inference_web_app(
                 "offset": offset,
             }
         reqs, total = target_store.list_inference_requests(
+            server_instance_id=server_instance_id,
             model_id=model_id,
             state=state,
             since=since,

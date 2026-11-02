@@ -51,6 +51,14 @@ class InferenceRecorder:
     def database_path(self) -> str:
         return str(self.store.path)
 
+    def set_mode(self, mode: str) -> None:
+        """Switch recording mode at runtime (metadata vs content)."""
+        if mode not in {"metadata", "content"}:
+            raise ValueError(f"invalid recording mode {mode!r}, must be 'metadata' or 'content'")
+        with self._lock:
+            self.mode = mode
+            _LOGGER.info("Inference recorder mode changed to %s", self.mode)
+
     def start(self) -> None:
         """Start the background writer worker."""
         with self._lock:

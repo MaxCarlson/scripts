@@ -123,9 +123,13 @@ def _normalize_v1_model(model: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(loaded_instances, list):
         loaded_instances = []
     contexts = []
+    instance_ids = []
     for instance in loaded_instances:
         if not isinstance(instance, dict):
             continue
+        inst_id = instance.get("id")
+        if isinstance(inst_id, str) and inst_id:
+            instance_ids.append(inst_id)
         config = instance.get("config") if isinstance(instance.get("config"), dict) else {}
         context = _positive(config.get("context_length"))
         if context is not None:
@@ -144,6 +148,8 @@ def _normalize_v1_model(model: dict[str, Any]) -> dict[str, Any]:
         "context_length": unique_contexts[0] if len(unique_contexts) == 1 else None,
         "loaded_context_lengths": unique_contexts,
         "loaded_instance_count": len(loaded_instances),
+        "model_instance_id": instance_ids[0] if instance_ids else None,
+        "loaded_instance_ids": instance_ids,
         "max_context_length": _positive(model.get("max_context_length")),
         "context_source": "loaded_instance_config" if len(unique_contexts) == 1 else "unavailable",
         "reasoning_capabilities": safe_reasoning_choices,
@@ -152,12 +158,16 @@ def _normalize_v1_model(model: dict[str, Any]) -> dict[str, Any]:
 
 
 def _normalize_v0_model(model: dict[str, Any]) -> dict[str, Any]:
+    state = model.get("state") if isinstance(model.get("state"), str) else None
+    model_id = model.get("id") if isinstance(model.get("id"), str) else None
     return {
-        "id": model.get("id") if isinstance(model.get("id"), str) else None,
-        "state": model.get("state") if isinstance(model.get("state"), str) else None,
+        "id": model_id,
+        "state": state,
         "context_length": None,
         "loaded_context_lengths": [],
-        "loaded_instance_count": None,
+        "loaded_instance_count": 1 if state == "loaded" else 0,
+        "model_instance_id": model_id if state == "loaded" else None,
+        "loaded_instance_ids": [model_id] if state == "loaded" and model_id else [],
         "max_context_length": _positive(model.get("max_context_length")),
         "context_source": "model_maximum_only" if model.get("max_context_length") else "unavailable",
         "api_version": "v0",

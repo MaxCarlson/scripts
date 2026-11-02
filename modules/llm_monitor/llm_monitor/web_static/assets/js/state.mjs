@@ -29,6 +29,8 @@ export function createState() {
     selectedHistoryRequestId: null,
     selectedHistoryDetail: null,
     historyModelFilter: "all",
+    historyServerFilter: "all",
+    historyTimeFilter: "all",
     historyStatusFilter: "all",
   };
 }
@@ -124,10 +126,57 @@ export function applyRequestEvent(state, event) {
   return next;
 }
 
+export function matchesModel(request, selectedModelId, models = []) {
+  if (!selectedModelId || selectedModelId === "all" || selectedModelId === "__all__") return true;
+  if (!request) return false;
+
+  if (
+    request.model_id === selectedModelId ||
+    request.model_instance_id === selectedModelId ||
+    request.resolved_model_id === selectedModelId ||
+    request.provider_model_id === selectedModelId ||
+    request.client_model_id === selectedModelId
+  ) {
+    return true;
+  }
+
+  if (Array.isArray(models) && models.length > 0) {
+    const targetModel = models.find((m) =>
+      m.model_id === selectedModelId ||
+      m.id === selectedModelId ||
+      m.model_instance_id === selectedModelId ||
+      m.provider_model_id === selectedModelId ||
+      (Array.isArray(m.loaded_instance_ids) && m.loaded_instance_ids.includes(selectedModelId))
+    );
+
+    if (targetModel) {
+      const matchIds = new Set([
+        targetModel.model_id,
+        targetModel.id,
+        targetModel.model_instance_id,
+        targetModel.provider_model_id,
+        ...(Array.isArray(targetModel.loaded_instance_ids) ? targetModel.loaded_instance_ids : []),
+      ].filter(Boolean));
+
+      if (
+        (request.resolved_model_id && matchIds.has(request.resolved_model_id)) ||
+        (request.model_id && matchIds.has(request.model_id)) ||
+        (request.model_instance_id && matchIds.has(request.model_instance_id)) ||
+        (request.client_model_id && matchIds.has(request.client_model_id)) ||
+        (request.provider_model_id && matchIds.has(request.provider_model_id))
+      ) {
+        return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 export function visibleRequests(state) {
   const query = state.search.trim().toLocaleLowerCase();
   return state.requests.filter((request) => {
-    if (state.selectedModelId !== "all" && (request.model_instance_id || request.provider_model_id) !== state.selectedModelId) return false;
+    if (!matchesModel(request, state.selectedModelId, state.models)) return false;
     if (state.selectedServerId !== "all" && request.server_instance_id !== state.selectedServerId) return false;
     if (state.timeRange !== "all") {
       const started = Date.parse(request.started_at || "");

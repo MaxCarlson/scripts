@@ -158,6 +158,11 @@ def _normalize_model(raw: dict[str, Any], server_instance_id: str) -> ModelInven
         count = None
     maximum = raw.get("max_context_length") if _positive_int(raw.get("max_context_length")) else None
     state = raw.get("state") if raw.get("state") in {"loaded", "not-loaded"} else "unknown"
+    instance_id = raw.get("model_instance_id")
+    if not isinstance(instance_id, str):
+        instance_id = None
+    loaded_inst_ids = raw.get("loaded_instance_ids")
+    inst_ids = tuple(str(x) for x in loaded_inst_ids if isinstance(x, str)) if isinstance(loaded_inst_ids, list) else ()
     return ModelInventoryEntry(
         server_instance_id=server_instance_id,
         provider_model_id=model_id,
@@ -168,9 +173,10 @@ def _normalize_model(raw: dict[str, Any], server_instance_id: str) -> ModelInven
         loaded_context_lengths=contexts,
         max_context_length=maximum,
         quantization=None,
-        model_instance_id=None,
-        identity_quality="provider_model_id_only",
+        model_instance_id=instance_id,
+        identity_quality="model_instance_id_resolved" if instance_id else "provider_model_id_only",
         context_source=str(raw.get("context_source", "unavailable")),
+        loaded_instance_ids=inst_ids,
     )
 
 
