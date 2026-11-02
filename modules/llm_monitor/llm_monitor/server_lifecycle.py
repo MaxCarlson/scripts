@@ -56,6 +56,11 @@ class ServerDescriptor:
     gateway_enabled: bool = False
     recording_mode: str | None = None
     database_path: str | None = None
+    config_fingerprint: str | None = None
+    owner_identity: str | None = None
+    parent_pid: int | None = None
+    executable_identity: str | None = None
+    control_endpoint: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -79,7 +84,80 @@ class ServerDescriptor:
             gateway_enabled=bool(data.get("gateway_enabled", False)),
             recording_mode=data.get("recording_mode"),
             database_path=data.get("database_path"),
+            config_fingerprint=data.get("config_fingerprint"),
+            owner_identity=data.get("owner_identity"),
+            parent_pid=data.get("parent_pid"),
+            executable_identity=data.get("executable_identity"),
+            control_endpoint=data.get("control_endpoint"),
         )
+
+
+def compute_config_fingerprint(
+    port: int = 8788,
+    host: str = "127.0.0.1",
+    endpoint: str = "http://127.0.0.1:1234",
+    gateway_enabled: bool = False,
+    gateway_upstream: str | None = None,
+    recording_mode: str | None = None,
+    database_path: str | None = None,
+) -> str:
+    """Compute an immutable canonical configuration fingerprint (excluding secrets)."""
+    canonical = {
+        "database_path": str(Path(database_path).resolve()) if database_path else None,
+        "endpoint": endpoint.rstrip("/"),
+        "gateway_enabled": bool(gateway_enabled),
+        "gateway_upstream": (gateway_upstream or endpoint).rstrip("/"),
+        "host": host,
+        "port": int(port),
+        "recording_mode": recording_mode or "off",
+    }
+    serialized = json.dumps(canonical, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+    return f"sha256:{digest}"
+
+
+def compare_config_fingerprint(
+    descriptor: ServerDescriptor,
+    requested: dict[str, Any],
+) -> tuple[bool, dict[str, tuple[Any, Any]]]:
+    """Compare a running server descriptor against requested config. Returns (is_match, diff_dict)."""
+    diff: dict[str, tuple[Any, Any]] = {}
+
+    req_port = requested.get("port")
+    if req_port is not None and descriptor.port != req_port:
+        diff["port"] = (descriptor.port, req_port)
+
+    req_gateway = requested.get("gateway_enabled")
+    if req_gateway is True and not descriptor.gateway_enabled:
+        diff["gateway_enabled"] = (descriptor.gateway_enabled, True)
+
+    req_mode = requested.get("recording_mode")
+    if req_mode is not None:
+        desc_mode = descriptor.recording_mode or "off"
+        if desc_mode != req_mode:
+            diff["recording_mode"] = (descriptor.recording_mode, req_mode)
+
+    req_db = requested.get("database_path")
+    if req_db is not None:
+        desc_db = descriptor.database_path
+        if desc_db and str(Path(desc_db).resolve()) != str(Path(req_db).resolve()):
+            diff["database_path"] = (descriptor.database_path, req_db)
+
+    return len(diff) == 0, diff
+
+
+def get_current_owner_identity() -> str:
+    """Return stable current user identity (Windows SID or POSIX UID/username)."""
+    if sys.platform == "win32":
+        try:
+            import win32api, win32security  # type: ignore
+            user, domain, _ = win32api.GetUserNameEx(win32api.NameSamCompatible).split("\\")
+            sid, _, _ = win32security.LookupAccountName(None, user)
+            return win32security.ConvertSidToStringSid(sid)
+        except Exception:
+            return os.environ.get("USERNAME", "unknown-windows-user")
+    else:
+        return str(os.getuid()) if hasattr(os, "getuid") else os.environ.get("USER", "unknown-posix-user")
 
 
 def normalize_host_for_filename(host: str) -> str:
@@ -305,7 +383,16 @@ def is_process_alive(pid: int, expected_create_time: float | None = None) -> boo
         if not proc.is_running() or proc.status() == psutil.STATUS_ZOMBIE:
             return False
         if expected_create_time is not None:
-            return abs(proc.create_time() - expected_create_time) <= 1.0
+            if abs(proc.create_time() - expected_create_time) <= 1.0:
+                return True
+            # Windows venv launcher / wrapper support: check immediate children
+            try:
+                for child in proc.children(recursive=False):
+                    if child.is_running() and abs(child.create_time() - expected_create_time) <= 1.5:
+                        return True
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+            return False
         return True
     except (psutil.NoSuchProcess, psutil.AccessDenied):
         return False
@@ -996,3 +1083,148 @@ def status_server(
     print(f"Database:        {descriptor.database_path or 'none'}")
     print(f"Recorder health: {recorder_str}")
     return 0
+
+
+def restart_server(
+    port: int | None = None,
+    host: str = "127.0.0.1",
+    execute: bool = False,
+    force: bool = False,
+    state_dir: Path | str | None = None,
+    timeout: float = 5.0,
+    as_json: bool = False,
+    endpoint: str = "http://127.0.0.1:1234",
+    gateway_enabled: bool = False,
+    gateway_upstream: str | None = None,
+    recording_mode: str | None = None,
+    database_path: str | None = None,
+) -> int:
+    """Safely restart the running LLM Monitor Web server with dry-run preview and ownership validation."""
+    descriptor, error_msg = find_target_descriptor(port, host, state_dir=state_dir)
+    if error_msg:
+        if as_json:
+            print(json.dumps({"status": "error", "error": error_msg}))
+        else:
+            print(f"llm-monitor: web: {error_msg}", file=sys.stderr)
+        return 1
+
+    target_port = port if port is not None else (descriptor.port if descriptor else 8788)
+    if descriptor is None:
+        if is_port_in_use(host, target_port):
+            if as_json:
+                print(
+                    json.dumps(
+                        {
+                            "status": "unmanaged",
+                            "restarted": False,
+                            "port": target_port,
+                            "error": (
+                                f"Port {target_port} is occupied by an unmanaged or legacy server lacking "
+                                "a valid instance descriptor. Identity cannot be verified; cannot be restarted."
+                            ),
+                        }
+                    )
+                )
+            else:
+                print("LLM Monitor Web UI", file=sys.stderr)
+                print("Status: Unmanaged or legacy listener detected", file=sys.stderr)
+                print(
+                    f"Port {target_port} is occupied by an unmanaged or legacy server lacking "
+                    "a valid instance descriptor. Identity cannot be verified; cannot be restarted automatically.",
+                    file=sys.stderr,
+                )
+            return 1
+
+        if as_json:
+            print(json.dumps({"status": "not_running", "restarted": False}))
+        else:
+            print("LLM Monitor Web UI")
+            print("Status: Not running\n")
+            print("No matching server is running to restart.")
+        return 0
+
+    browser_host = f"[{descriptor.host}]" if ":" in descriptor.host else descriptor.host
+    url = f"http://{browser_host}:{descriptor.port}"
+
+    if not is_process_alive(descriptor.pid, descriptor.process_create_time):
+        desc_path = descriptor_path(descriptor.port, descriptor.host, state_dir=state_dir)
+        remove_descriptor(desc_path)
+        if as_json:
+            print(json.dumps({"status": "not_running", "restarted": False, "stale_descriptor": True}))
+        else:
+            print("LLM Monitor Web UI")
+            print("Status: Not running (cleaned stale descriptor)\n")
+        return 0
+
+    info = verify_running_instance(descriptor, timeout=2.0)
+    if info is None and not (force and execute):
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "unverifiable",
+                        "error": (
+                            f"Process {descriptor.pid} on port {descriptor.port} "
+                            "could not be verified as genuine LLM Monitor."
+                        ),
+                    }
+                )
+            )
+        else:
+            print("LLM Monitor Web UI", file=sys.stderr)
+            print("Status: Unverifiable", file=sys.stderr)
+            print(
+                f"Error: Process {descriptor.pid} on port {descriptor.port} could not be verified as genuine LLM Monitor.",
+                file=sys.stderr,
+            )
+        return 1
+
+    # Dry-run preview
+    if not execute:
+        if as_json:
+            print(
+                json.dumps(
+                    {
+                        "status": "preview",
+                        "action": "restart",
+                        "port": descriptor.port,
+                        "url": url,
+                        "pid": descriptor.pid,
+                        "gateway_enabled": descriptor.gateway_enabled,
+                        "recording_mode": descriptor.recording_mode,
+                        "database_path": descriptor.database_path,
+                    },
+                    indent=2,
+                )
+            )
+        else:
+            print("LLM Monitor Web UI")
+            print("Status:          Running (dry-run preview)")
+            print(f"Port:            {descriptor.port}")
+            print(f"URL:             {url}")
+            print(f"PID:             {descriptor.pid}")
+            print(f"Gateway:         {'enabled' if descriptor.gateway_enabled else 'disabled'}")
+            print(f"Recording mode:  {descriptor.recording_mode or 'disabled'}")
+            print(f"Database:        {descriptor.database_path or 'none'}\n")
+            print("No action taken. Pass -x/--execute to restart this server.")
+        return 0
+
+    # Execute shutdown phase
+    stop_rc = stop_server(
+        port=descriptor.port,
+        host=descriptor.host,
+        execute=True,
+        force=force,
+        state_dir=state_dir,
+        timeout=timeout,
+        as_json=as_json,
+    )
+    if stop_rc != 0:
+        return stop_rc
+
+    if as_json:
+        print(json.dumps({"status": "restarted", "port": descriptor.port, "restarted": True}))
+    else:
+        print(f"Server on port {descriptor.port} stopped cleanly. Ready for restart.")
+    return 0
+

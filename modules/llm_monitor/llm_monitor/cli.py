@@ -126,7 +126,7 @@ def build_parser() -> argparse.ArgumentParser:
     visualize.add_argument("-v", "--verbose", action="store_true")
 
     web = sub.add_parser("web", help="Open the standalone local inference overview or manage server lifecycle")
-    web.add_argument("action", nargs="?", choices=("start", "status", "stop"), default="start", help="Server lifecycle action (default: start)")
+    web.add_argument("action", nargs="?", choices=("start", "status", "stop", "restart"), default="start", help="Server lifecycle action (default: start)")
     web.add_argument("-p", "--port", type=int, default=None, help="Port to bind, inspect, or stop (default: 8788)")
     web.add_argument("-x", "--execute", action="store_true", help="Execute the stop action (without -x, stop runs in preview dry-run mode)")
     web.add_argument("-f", "--force", action="store_true", help="Force termination if graceful shutdown fails (requires -x/--execute)")
@@ -214,6 +214,23 @@ def main(argv: list[str] | None = None) -> int:
                     execute=args.execute,
                     force=args.force,
                     as_json=as_json,
+                )
+            if args.action == "restart":
+                if args.force and not args.execute:
+                    print("llm-monitor: web: --force requires -x/--execute", file=sys.stderr)
+                    return 2
+                from .server_lifecycle import restart_server
+
+                return restart_server(
+                    port=args.port,
+                    execute=args.execute,
+                    force=args.force,
+                    as_json=as_json,
+                    endpoint=args.endpoint,
+                    gateway_enabled=args.gateway,
+                    gateway_upstream=args.gateway_upstream,
+                    recording_mode=args.record_inferences,
+                    database_path=str(args.database) if args.database else None,
                 )
 
             from .web import run_web

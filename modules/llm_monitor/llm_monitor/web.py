@@ -24,9 +24,13 @@ from .inference_service import InferenceMonitoringService
 from .inference_web import create_inference_web_app
 from .providers import LMStudioClient
 from .server_lifecycle import (
+    LLMMonitorWebServer,
     ServerDescriptor,
     bind_loopback_socket,
+    compare_config_fingerprint,
+    compute_config_fingerprint,
     descriptor_path,
+    get_current_owner_identity,
     is_port_in_use,
     is_process_alive,
     mount_control_routes,
@@ -92,6 +96,16 @@ def run_web(
     desc_path = descriptor_path(port, "127.0.0.1", state_dir=state_dir)
     url = f"http://127.0.0.1:{port}"
 
+    requested_config = {
+        "port": port,
+        "host": "127.0.0.1",
+        "endpoint": safe_endpoint,
+        "gateway_enabled": gateway_enabled,
+        "gateway_upstream": gateway_upstream,
+        "recording_mode": record_inferences,
+        "database_path": database,
+    }
+
     # Step 1: Check if an instance is already registered for this host and port
     existing = read_descriptor(desc_path)
     if (
@@ -99,6 +113,20 @@ def run_web(
         and is_process_alive(existing.pid, existing.process_create_time)
         and verify_running_instance(existing)
     ):
+        is_match, diff = compare_config_fingerprint(existing, requested_config)
+        if not is_match:
+            print("LLM Monitor Web UI", file=sys.stderr)
+            print("Status: Configuration mismatch", file=sys.stderr)
+            print(
+                f"Error: An LLM Monitor server is already running on port {port} (PID {existing.pid}), "
+                "but its configuration differs from requested:",
+                file=sys.stderr,
+            )
+            for k, (act, exp) in diff.items():
+                print(f"  {k}: running={act!r}, requested={exp!r}", file=sys.stderr)
+            print("Refusing to silently mutate or overwrite the running server.", file=sys.stderr)
+            return 1
+
         print("LLM Monitor Web UI")
         print("Status: Already running")
         print(f"URL:    {url}")
@@ -120,6 +148,20 @@ def run_web(
                 and is_process_alive(cand.pid, cand.process_create_time)
                 and verify_running_instance(cand)
             ):
+                is_match, diff = compare_config_fingerprint(cand, requested_config)
+                if not is_match:
+                    print("LLM Monitor Web UI", file=sys.stderr)
+                    print("Status: Configuration mismatch", file=sys.stderr)
+                    print(
+                        f"Error: An LLM Monitor server is already running on port {port} (PID {cand.pid}), "
+                        "but its configuration differs from requested:",
+                        file=sys.stderr,
+                    )
+                    for k, (act, exp) in diff.items():
+                        print(f"  {k}: running={act!r}, requested={exp!r}", file=sys.stderr)
+                    print("Refusing to silently mutate or overwrite the running server.", file=sys.stderr)
+                    return 1
+
                 print("LLM Monitor Web UI")
                 print("Status: Already running")
                 print(f"URL:    {url}")
@@ -185,6 +227,19 @@ def run_web(
             recorder=recorder,
         )
 
+    fingerprint = compute_config_fingerprint(
+        port=port,
+        host="127.0.0.1",
+        endpoint=safe_endpoint,
+        gateway_enabled=gateway_enabled,
+        gateway_upstream=gateway_upstream,
+        recording_mode=record_inferences,
+        database_path=str(store.path) if store is not None else None,
+    )
+    owner_id = get_current_owner_identity()
+    parent_pid = os.getppid() if hasattr(os, "getppid") else None
+    executable_id = str(Path(sys.executable).resolve())
+
     descriptor = ServerDescriptor(
         instance_id=instance_id,
         version=1,
@@ -198,6 +253,10 @@ def run_web(
         gateway_enabled=gateway_enabled,
         recording_mode=record_inferences,
         database_path=str(store.path) if store is not None else None,
+        config_fingerprint=fingerprint,
+        owner_identity=owner_id,
+        parent_pid=parent_pid,
+        executable_identity=executable_id,
     )
 
     try:
@@ -231,8 +290,26 @@ def run_web(
         live_store=service.store,
     )
 
+    def _print_ready() -> None:
+        print(f"LLM Monitor is listening at {url}")
+        if gateway is not None:
+            print(f"Opt-in inference gateway: {url}/v1/chat/completions -> {gateway.upstream}")
+        if recorder is not None and store is not None:
+            print(f"Inference recording enabled: {record_inferences} mode ({store.path})")
+        print(f"Enter this local startup login code in the browser: {login_code}")
+        print(f"PID: {my_pid}")
+        if not no_browser:
+            threading.Timer(0.75, webbrowser.open, args=(url,)).start()
+
     try:
+        import uvicorn
+        from web_ui_tools import create_server
+
         server = create_server(app, host="127.0.0.1", port=port)
+        if isinstance(server, uvicorn.Server) and not isinstance(server, LLMMonitorWebServer):
+            server = LLMMonitorWebServer(server.config, on_ready=_print_ready)
+        elif not isinstance(server, uvicorn.Server):
+            _print_ready()
     except Exception as err:
         sock.close()
         remove_descriptor(desc_path, expected_instance_id=instance_id)
@@ -240,17 +317,6 @@ def run_web(
         return 1
 
     app.state.server = server
-
-    print(f"LLM Monitor is listening at {url}")
-    if gateway is not None:
-        print(f"Opt-in inference gateway: {url}/v1/chat/completions -> {gateway.upstream}")
-    if recorder is not None and store is not None:
-        print(f"Inference recording enabled: {record_inferences} mode ({store.path})")
-    print(f"Enter this local startup login code in the browser: {login_code}")
-    print(f"PID: {my_pid}")
-
-    if not no_browser:
-        threading.Timer(0.75, webbrowser.open, args=(url,)).start()
 
     try:
         params = inspect.signature(server.run).parameters
