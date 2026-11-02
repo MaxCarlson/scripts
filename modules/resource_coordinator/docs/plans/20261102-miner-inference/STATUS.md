@@ -1,7 +1,7 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Phase 00 — Discovery and Reconciliation (Complete); Proceeding to Phase 01  
+**Current Phase:** All Phases 00 through 05 Complete (Ready for Supervised Host Deployment)  
 **Timestamp:** 2026-11-02T11:00:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
@@ -60,14 +60,23 @@
   - Added end-to-end test for `LLM Monitor gateway -> Resource Coordinator -> Mock LM Studio`.
   - Verified concurrent requests, streaming completion, and upstream failure handling.
   - Suite: 260 tests passed.
-- **Phase 2 (Miner Process Integration):** COMPLETE.
+- **Phase 2 (Miner Process Integration):** COMPLETE (Commit `49e89a3f`).
   - Developed `MinerManifest` and `redact_miner_args` in `resource_coordinator.adapters.miners.manifest`.
   - Supported manifest resolution via `start-prl.ps1 -Preview` and known vendor executable paths without elevating wrappers.
   - Enhanced `WindowsProcessBackend` child process tree termination when force termination is allowed, while keeping safe verified failure when force termination is disallowed.
   - Tested process ownership, PID + creation-time verification, child tree termination, and disposable helper lifecycle.
   - Suite: 268 tests passed.
-- **Phase 3 (Supervised Acceptance Preparation):** IN PROGRESS.
-  - Prepare executable validation harness and acceptance evidence checklist.
-  - Document operational boundary operations requiring explicit live authorization.
-- **Phase 4 (Unattended Reliability & Durable State):** PENDING.
+- **Phase 3 (Supervised Acceptance Preparation):** COMPLETE (Commit `8df99dd2`).
+  - Implemented `AcceptanceHarness` executing 5 canonical trials (single request, debounce, concurrency, SSE stream, and error inhibition) with high-resolution monotonic timestamps.
+  - Produced `PHASE_03_ACCEPTANCE_PLAN.md` documenting operational boundaries, authorization requirements, and rollback procedures.
+- **Phase 4 (Unattended Reliability & Durable State):** COMPLETE (Commit `72ea1715`).
+  - Implemented OS-visible `SingleInstanceLock` via `msvcrt` (Windows) and `fcntl` (POSIX) to prevent dual ownership and duplicate coordinators.
+  - Added `RequestPhase` and `PersistedRequest` journal to `CoordinatorState` and `StateCodec`.
+  - Wired atomic pre-forward intent commit (`POSSIBLY_FORWARDED`) and terminal verification into `LMStudioGateway`.
+  - Wired crash-recovery startup reconciliation replaying unresolved requests into restart inhibitions in `CoordinatorService`.
+  - Added bounded backoff restart and crash loop exhaustion watchdog for unexpected miner exits in `ProcessSupervisor`.
+  - Suite: 278 passed across all resource coordinator tests.
+- **Phase 5 (Client Adoption & Operational Runbook):** COMPLETE.
+  - Produced operational runbook `RUNBOOK.md` covering port topologies, client migration paths, CLI commands, emergency abort, and rollback instructions.
+  - Full regression suite verified.
 
