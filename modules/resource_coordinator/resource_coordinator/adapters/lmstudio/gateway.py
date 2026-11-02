@@ -28,6 +28,7 @@ from resource_coordinator.adapters.lmstudio.admission import (
 from resource_coordinator.core.durable_state import RequestPhase, StateCodec
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
+from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
 
@@ -324,8 +325,19 @@ class LMStudioGateway:
             )
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
+        resolved_requests = []
         if self.state_persistence_path:
-            StateCodec.clear_inhibition(self.state_persistence_path, resource)
+            _, resolved_requests = StateCodec.resolve_unresolved_requests(
+                self.state_persistence_path, resource, operator, reason
+            )
+        if service is not None and service.state == ServiceState.RECONCILIATION_REQUIRED:
+            # If all resources are now uninhibited and not claimed, restore service readiness
+            if not self.lease_mgr.restarts_blocked and not any(
+                self.lease_mgr.is_restart_inhibited(r) for r in self.lease_mgr.tracked_resources()
+            ):
+                service._state = ServiceState.READY
+                service._aborted = False
+                service._failure_reason = None
         return JSONResponse(
             {
                 "status": "cleared" if cleared else "none",
@@ -333,6 +345,7 @@ class LMStudioGateway:
                 "previous_inhibition": cleared.to_dict() if cleared else None,
                 "operator": operator,
                 "reason": reason,
+                "resolved_request_ids": resolved_requests,
                 "upstream_verified_idle": False,
             }
         )
@@ -420,16 +433,7 @@ class LMStudioGateway:
         }
 
         reservation_cm = self.lease_mgr.reserve(resource, lease_type, request_id, {"model": model_name, "path": path})
-        reservation = await reservation_cm.__aenter__()
-        if self.state_persistence_path:
-            StateCodec.record_request_phase(
-                self.state_persistence_path,
-                request_id,
-                resource,
-                RequestPhase.RESERVED,
-                model=model_name,
-                path=path,
-            )
+        reservation = None
         upstream_resp: Optional[httpx.Response] = None
         forwarded = False
         completed = False
@@ -451,34 +455,37 @@ class LMStudioGateway:
                             {"model": model_name, "path": path},
                         )
                     if self.state_persistence_path:
-                        if completed:
-                            StateCodec.record_request_phase(
-                                self.state_persistence_path,
-                                request_id,
-                                resource,
-                                RequestPhase.TERMINAL_VERIFIED,
-                                model=model_name,
-                                path=path,
-                            )
-                        elif forwarded:
-                            StateCodec.record_request_phase(
-                                self.state_persistence_path,
-                                request_id,
-                                resource,
-                                RequestPhase.UNCERTAIN,
-                                model=model_name,
-                                path=path,
-                            )
-                        else:
-                            StateCodec.record_request_phase(
-                                self.state_persistence_path,
-                                request_id,
-                                resource,
-                                RequestPhase.TERMINAL_VERIFIED,
-                                model=model_name,
-                                path=path,
-                                details={"cancelled": True},
-                            )
+                        try:
+                            if completed:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.TERMINAL_VERIFIED,
+                                    model=model_name,
+                                    path=path,
+                                )
+                            elif forwarded:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.UNCERTAIN,
+                                    model=model_name,
+                                    path=path,
+                                )
+                            else:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.TERMINAL_VERIFIED,
+                                    model=model_name,
+                                    path=path,
+                                    details={"cancelled": True},
+                                )
+                        except Exception as log_exc:
+                            logger.error("Failed recording terminal phase in state journal: %s", log_exc)
                     await self.dispatcher.emit(
                         finish_event,
                         {
@@ -491,9 +498,20 @@ class LMStudioGateway:
                         if upstream_resp is not None:
                             await upstream_resp.aclose()
                     finally:
-                        await reservation_cm.__aexit__(None, None, None)
+                        if reservation is not None:
+                            await reservation_cm.__aexit__(None, None, None)
 
         try:
+            reservation = await reservation_cm.__aenter__()
+            if self.state_persistence_path:
+                StateCodec.record_request_phase(
+                    self.state_persistence_path,
+                    request_id,
+                    resource,
+                    RequestPhase.RESERVED,
+                    model=model_name,
+                    path=path,
+                )
             if not self.admission_controller.evaluate(request.method, path).allowed:
                 raise VetoOperation("Admission closed before blocking actions")
             await self.dispatcher.emit_blocking(event_name, event_data, origin="lmstudio_gateway")

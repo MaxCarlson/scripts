@@ -271,6 +271,33 @@ class StateCodec:
                     pass
 
     @classmethod
+    def initialize(
+        cls,
+        target_path: Path | str,
+        force: bool = False,
+    ) -> CoordinatorState:
+        """
+        Explicitly initialize a new, clean durable state journal.
+
+        Fails if the journal already exists unless force=True.
+        """
+        path = Path(target_path)
+        if path.exists() and not force:
+            raise FileExistsError(
+                f"Cannot initialize durable state journal at '{path}': file already exists"
+            )
+        state = CoordinatorState(
+            version="1.0",
+            updated_at=time.time(),
+            inhibitions={},
+            processes={},
+            requests={},
+        )
+        cls.save_atomic(state, path)
+        logger.info("Initialized new durable state journal at '%s'", path)
+        return state
+
+    @classmethod
     def load(cls, target_path: Path | str) -> CoordinatorState:
         """Load validated state. Missing, unreadable or corrupt state must block recovery.
 
@@ -414,6 +441,47 @@ class StateCodec:
         state.updated_at = now
         cls.save_atomic(state, target)
         return state
+
+    @classmethod
+    def resolve_unresolved_requests(
+        cls,
+        target_path: Path | str,
+        resource: str,
+        operator: str,
+        reason: str,
+    ) -> tuple[CoordinatorState, list[str]]:
+        """
+        Durably resolve in-flight and uncertain requests for a resource upon operator override.
+        Transitions unresolved requests to TERMINAL_VERIFIED with attribution metadata and
+        clears the resource inhibition.
+        """
+        target = Path(target_path)
+        now = time.time()
+        state = cls.load(target) if target.exists() else CoordinatorState()
+        resolved_ids: list[str] = []
+        UNRESOLVED_PHASES = {
+            RequestPhase.RESERVED.value,
+            RequestPhase.POSSIBLY_FORWARDED.value,
+            RequestPhase.UNCERTAIN.value,
+        }
+        for req_id, req in list(state.requests.items()):
+            if req.resource == resource and req.phase in UNRESOLVED_PHASES:
+                req.phase = RequestPhase.TERMINAL_VERIFIED.value
+                req.updated_at = now
+                req.details["resolved_by"] = f"operator_override:{operator}:{reason}"
+                req.details["resolved_at"] = now
+                resolved_ids.append(req_id)
+        state.inhibitions.pop(resource, None)
+        state.updated_at = now
+        cls.save_atomic(state, target)
+        logger.info(
+            "Resolved %d requests and cleared inhibition for resource '%s' (operator=%s, reason=%s)",
+            len(resolved_ids),
+            resource,
+            operator,
+            reason,
+        )
+        return state, resolved_ids
 
 
 async def reconcile_startup_state(

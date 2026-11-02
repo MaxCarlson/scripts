@@ -241,6 +241,10 @@ class WindowsProcessBackend:
         self._last_started_at: Optional[float] = None
         self._last_stopped_at: Optional[float] = None
 
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
+
     def _same_executable(self, process: psutil.Process) -> bool:
         try:
             # Ignore inaccessible unrelated processes, but fail closed for a matching name.
@@ -657,7 +661,40 @@ class ProcessSupervisor:
                 "process.crashed_restarting",
                 {"name": self.name, "attempt": self.consecutive_unexpected_exits, "backoff": backoff},
             )
-            await asyncio.sleep(backoff)
+
+        # Release lock during backoff sleep so incoming reservations or stop() are not blocked
+        await asyncio.sleep(backoff)
+
+        # Re-acquire lock and verify all safety invariants before starting
+        async with self._lock:
+            if self.is_manual_override or self.was_stopped_by_coordinator:
+                logger.info(
+                    "Process '%s' restart cancelled: manual override or coordinator stop occurred during backoff",
+                    self.name,
+                )
+                return False
+
+            if (
+                lease_manager.active_count(resource) > 0
+                or lease_manager.pending_count(resource) > 0
+                or lease_manager.is_restart_inhibited(resource)
+                or getattr(lease_manager, "restarts_blocked", False)
+            ):
+                logger.info(
+                    "Process '%s' restart cancelled: resource '%s' no longer safe idle after backoff "
+                    "(active=%d, pending=%d, inhibited=%s)",
+                    self.name,
+                    resource,
+                    lease_manager.active_count(resource),
+                    lease_manager.pending_count(resource),
+                    lease_manager.is_restart_inhibited(resource),
+                )
+                return False
+
+            info = await self.backend.status()
+            if info.state != ProcessState.STOPPED:
+                return False
+
             started = await self.backend.start()
             if started:
                 self.was_stopped_by_coordinator = False

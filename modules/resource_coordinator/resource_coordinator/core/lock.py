@@ -41,6 +41,7 @@ class SingleInstanceLock:
             return True
 
         self.lock_path.parent.mkdir(parents=True, exist_ok=True)
+        fd: Optional[int] = None
         try:
             if os.name == "nt":
                 import msvcrt
@@ -51,7 +52,8 @@ class SingleInstanceLock:
                 self._fd = fd
                 self._acquired = True
                 # Record PID in lock file for diagnostics
-                os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, f"{os.getpid():<10}\n".encode("utf-8"))
                 return True
             else:
                 import fcntl
@@ -60,16 +62,17 @@ class SingleInstanceLock:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 self._fd = fd
                 self._acquired = True
-                os.write(fd, f"{os.getpid()}\n".encode("utf-8"))
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.write(fd, f"{os.getpid():<10}\n".encode("utf-8"))
                 return True
         except (OSError, IOError, PermissionError) as exc:
             logger.warning("Single-instance lock at '%s' is held by another process: %s", self.lock_path, exc)
-            if self._fd is not None:
+            if fd is not None:
                 try:
-                    os.close(self._fd)
+                    os.close(fd)
                 except OSError:
                     pass
-                self._fd = None
+            self._fd = None
             self._acquired = False
             return False
 
@@ -100,11 +103,6 @@ class SingleInstanceLock:
         finally:
             self._fd = None
             self._acquired = False
-            try:
-                if self.lock_path.exists():
-                    self.lock_path.unlink()
-            except OSError:
-                pass
 
     def __enter__(self) -> SingleInstanceLock:
         if not self.acquire():

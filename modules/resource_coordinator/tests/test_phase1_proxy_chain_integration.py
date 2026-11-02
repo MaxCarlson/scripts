@@ -231,7 +231,10 @@ async def test_chained_non_streaming_inference():
 
         # Coordinator cooldown started and miner resumes after cooldown
         assert lease_mgr.is_cooling_down("gpu.inference")
-        await asyncio.sleep(0.08)
+        for _ in range(15):
+            await asyncio.sleep(0.02)
+            if (await supervisor.status()).state == ProcessState.RUNNING:
+                break
         assert (await supervisor.status()).state == ProcessState.RUNNING
 
     await coord_service.stop()
@@ -273,7 +276,10 @@ async def test_chained_streaming_inference():
         assert len(upstream_calls) == 1
 
         # Coordinator cooldown completed and miner resumes
-        await asyncio.sleep(0.08)
+        for _ in range(15):
+            await asyncio.sleep(0.02)
+            if (await supervisor.status()).state == ProcessState.RUNNING:
+                break
         assert (await supervisor.status()).state == ProcessState.RUNNING
 
     await coord_service.stop()

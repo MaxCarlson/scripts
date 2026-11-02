@@ -89,6 +89,6 @@ Containing high-resolution monotonic timestamps, metrics, process IDs, and trial
 ## 5. Rollback and Recovery
 
 If an issue occurs during testing:
-1. **Emergency Abort:** Call authenticated endpoint `POST /coordinator/abort` with operator token. Admission is immediately closed and restarts latched.
-2. **Clear Holds:** Call `POST /coordinator/recover?resource=gpu.inference` with explicit operator reason.
+1. **Emergency Abort:** Call authenticated endpoint `POST /_coordinator/abort` with operator token. Admission is immediately closed and restarts latched.
+2. **Clear Holds:** Call `POST /_coordinator/recover?resource=gpu.inference` with explicit operator reason.
 3. **Service Shutdown:** Send SIGINT (CTRL+C) or call `service.stop()`. The single-instance lock is freed, and the process exits cleanly.

@@ -92,12 +92,13 @@ policies:
 From the repository root or worktree:
 ```powershell
 $env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
-python -m resource_coordinator.cli start --config modules/resource_coordinator/config.supervised-template.yaml
+python -m resource_coordinator.cli serve --config modules/resource_coordinator/config.supervised-template.yaml
 ```
+*Note: On a brand new deployment without an existing state journal, add `--first-boot` to explicitly initialize the journal file.*
 
 ### Inspecting Service Health & Status
 ```powershell
-curl http://127.0.0.1:1235/coordinator/status
+curl http://127.0.0.1:1235/_coordinator/status
 ```
 Example Response:
 ```json
@@ -121,7 +122,7 @@ Halts traffic admission immediately and locks all mining restarts:
 ```powershell
 $headers = @{ "Authorization" = "Bearer $env:RESOURCE_COORDINATOR_RECOVERY_TOKEN" }
 $body = @{ "operator" = "admin"; "reason" = "Unscheduled maintenance" } | ConvertTo-Json
-Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/coordinator/abort" -Headers $headers -Body $body -ContentType "application/json"
+Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/_coordinator/abort" -Headers $headers -Body $body -ContentType "application/json"
 ```
 
 ### Clearing Holds & Operator Recovery
@@ -129,7 +130,7 @@ Clears restart inhibition after verifying upstream idle:
 ```powershell
 $headers = @{ "Authorization" = "Bearer $env:RESOURCE_COORDINATOR_RECOVERY_TOKEN" }
 $body = @{ "override" = $true; "operator" = "admin"; "reason" = "LM Studio confirmed idle" } | ConvertTo-Json
-Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/coordinator/recover?resource=gpu.inference" -Headers $headers -Body $body -ContentType "application/json"
+Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/_coordinator/recover?resource=gpu.inference" -Headers $headers -Body $body -ContentType "application/json"
 ```
 
 ---

@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** All Phases 00 through 05 Complete (Ready for Supervised Host Deployment)  
-**Timestamp:** 2026-11-02T11:00:00-08:00  
+**Current Phase:** Remediation Complete; Prepared for Independent Argon Adversarial Review  
+**Timestamp:** 2026-11-02T12:05:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -79,4 +79,16 @@
 - **Phase 5 (Client Adoption & Operational Runbook):** COMPLETE.
   - Produced operational runbook `RUNBOOK.md` covering port topologies, client migration paths, CLI commands, emergency abort, and rollback instructions.
   - Full regression suite verified.
+- **Independent Review Remediation:** COMPLETE (Commit Pending).
+  - Addressed all findings from independent review across concurrency, persistence, and process supervision.
+  - Hardened durable journal initialization (`StateCodec.initialize`), missing-state refusal on normal startup (`first_boot=True` requirement), and reservation cleanup on write failures.
+  - Enabled persistent operator recovery (`resolve_unresolved_requests`) terminalizing crash records on disk.
+  - Eliminated single-instance lock file unlinking race and descriptor leaks.
+  - Fixed watchdog backoff cancellation so arrival of an inference request during sleep immediately aborts restart.
+  - Wired continuous process supervision loop into `CoordinatorService`.
+  - Aligned `MinerManifest` with committed `Mining\start-prl.ps1` and created `windows_miner_helper.vbs` for genuine OS-level disposable helper acceptance testing.
+  - Corrected CLI keyword arguments and operational documentation.
+  - Suite: 288 passed, 4 skipped across `modules/resource_coordinator`.
+  - Authored comprehensive `ARGON_REVIEW_HANDOFF.md` package for independent adversarial review.
+
 

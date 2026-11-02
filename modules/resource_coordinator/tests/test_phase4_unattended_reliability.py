@@ -48,6 +48,8 @@ from resource_coordinator.core.service import CoordinatorService, ServiceState
 
 
 def _make_config(state_file: Path) -> CoordinatorConfig:
+    if not state_file.exists():
+        StateCodec.initialize(state_file)
     return CoordinatorConfig(
         service=ServiceConfig(state_persistence_path=str(state_file)),
         processes={"krig": ProcessConfig(name="krig", backend="fake")},

@@ -81,6 +81,11 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         default=30.0,
         help="Timeout in seconds for draining active requests during shutdown (default: 30.0).",
     )
+    serve_parser.add_argument(
+        "--first-boot",
+        action="store_true",
+        help="Initialize a fresh durable state journal if it does not already exist.",
+    )
 
     # preflight
     preflight_parser = subparsers.add_parser(
@@ -204,11 +209,12 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
     service = CoordinatorService(
         system=system,
-        start_miner_on_startup=getattr(args, "start_miner", False),
+        start_miner_on_ready=getattr(args, "start_miner", False),
         stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
         start_process_on_ready=getattr(args, "start_process", None),
         stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
-        drain_timeout=getattr(args, "drain_timeout", 30.0),
+        drain_timeout_seconds=getattr(args, "drain_timeout", 30.0),
+        first_boot=getattr(args, "first_boot", False),
     )
     app = system.gateway.create_app(service)
 

@@ -56,6 +56,9 @@ class CoordinatorService:
         self.stop_miner_on_shutdown = stop_miner_on_shutdown
         self.start_process_on_ready = start_process_on_ready
         self.stop_process_on_shutdown = stop_process_on_shutdown
+        self.first_boot = bool(kwargs.get("first_boot", False))
+        self.supervision_poll_interval = float(kwargs.get("supervision_poll_interval", 1.0))
+        self._supervision_task: Optional[asyncio.Task] = None
         self._state = ServiceState.CREATED
         self._failure_reason: Optional[str] = None
         self._startup_task: Optional[asyncio.Task] = None
@@ -117,6 +120,9 @@ class CoordinatorService:
         startup = self._startup_task
         if startup is not None and startup is not asyncio.current_task() and not startup.done():
             startup.cancel()
+        if self._supervision_task is not None and not self._supervision_task.done():
+            self._supervision_task.cancel()
+            tasks.append(self._supervision_task)
         return tasks
 
     def preflight_check(self) -> Tuple[bool, List[str]]:
@@ -192,12 +198,21 @@ class CoordinatorService:
             # Reconcile durable state if configured
             if getattr(self.system.config.service, "state_persistence_path", ""):
                 state_path = Path(self.system.config.service.state_persistence_path)
-                if state_path.exists():
-                    try:
-                        loaded_state = StateCodec.load(state_path)
-                    except Exception as exc:
-                        raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
-                    await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
+                if not state_path.exists():
+                    if self.first_boot:
+                        StateCodec.initialize(state_path)
+                        logger.info("First-boot initialization created clean state journal at '%s'", state_path)
+                    else:
+                        raise RuntimeError(
+                            f"Missing required durable state journal at '{state_path}'. "
+                            "Refusing normal startup to prevent unrecorded crash recovery; "
+                            "run with explicit first-boot initialization if this is a fresh deployment."
+                        )
+                try:
+                    loaded_state = StateCodec.load(state_path)
+                except Exception as exc:
+                    raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
+                await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
             for supervisor in self.system.supervisors.values():
                 info = await supervisor.status()
                 if info.state not in {ProcessState.STOPPED, ProcessState.RUNNING}:
@@ -207,33 +222,48 @@ class CoordinatorService:
             if self.start_miner_on_ready:
                 assert self.system.miner_adapter is not None
                 if self.system.lease_mgr.is_restart_inhibited("gpu.inference"):
-                    raise RuntimeError("Cannot start miner on ready: restart on gpu.inference is inhibited")
-                # Initial explicit launch is distinct from resuming a process we paused.
-                success = await self.system.miner_adapter.resume(only_if_stopped_by_coordinator=False)
-                info = await self.system.miner_adapter.status()
-                if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
-                    raise RuntimeError("Requested miner launch was not verified coordinator-owned RUNNING")
+                    logger.warning(
+                        "Miner launch on ready skipped: restart on gpu.inference is currently inhibited (hold=%s)",
+                        self.system.lease_mgr.get_inhibition("gpu.inference"),
+                    )
+                else:
+                    # Initial explicit launch is distinct from resuming a process we paused.
+                    success = await self.system.miner_adapter.resume(only_if_stopped_by_coordinator=False)
+                    info = await self.system.miner_adapter.status()
+                    if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                        raise RuntimeError("Requested miner launch was not verified coordinator-owned RUNNING")
             if self.start_process_on_ready:
                 if self.system.lease_mgr.is_restart_inhibited("gpu.inference"):
-                    raise RuntimeError("Cannot start process on ready: restart on gpu.inference is inhibited")
-                supervisor = self.system.supervisors[self.start_process_on_ready]
-                success = await supervisor.start(only_if_stopped_by_coordinator=False)
-                info = await supervisor.status()
-                if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
-                    raise RuntimeError("Requested process launch was not verified coordinator-owned RUNNING")
+                    logger.warning(
+                        "Process '%s' launch on ready skipped: restart on gpu.inference is inhibited",
+                        self.start_process_on_ready,
+                    )
+                else:
+                    supervisor = self.system.supervisors[self.start_process_on_ready]
+                    success = await supervisor.start(only_if_stopped_by_coordinator=False)
+                    info = await supervisor.status()
+                    if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                        raise RuntimeError("Requested process launch was not verified coordinator-owned RUNNING")
             if self._state != ServiceState.PREFLIGHT or self.system.lease_mgr.restarts_blocked:
+                if self._instance_lock is not None:
+                    self._instance_lock.release()
                 return False
             self._state = ServiceState.READY
+            self._supervision_task = asyncio.create_task(self._run_supervision_loop())
             return True
         except asyncio.CancelledError:
             self._state = ServiceState.RECONCILIATION_REQUIRED
             self._failure_reason = "Startup cancelled; external execution state requires reconciliation"
             self._freeze(self._failure_reason)
+            if self._instance_lock is not None:
+                self._instance_lock.release()
             raise
         except Exception as exc:
             self._state = ServiceState.FAILED
             self._failure_reason = str(exc)
             self._freeze(self._failure_reason)
+            if self._instance_lock is not None:
+                self._instance_lock.release()
             logger.error("Startup failed closed: %s", exc)
             return False
         finally:
@@ -346,3 +376,41 @@ class CoordinatorService:
             "resources": resources,
             "managed_processes": list(self.system.supervisors),
         }
+
+    async def _run_supervision_loop(self) -> None:
+        """
+        Continuous supervision loop: inspects managed processes configured for restart.
+        If a process unexpectedly stopped while safe idle, initiates backoff recovery.
+        """
+        while self.is_ready:
+            try:
+                await asyncio.sleep(self.supervision_poll_interval)
+                if not self.is_ready:
+                    break
+
+                for policy in self.system.config.policies:
+                    if not policy.restart_process:
+                        continue
+                    supervisor = self.system.supervisors.get(policy.target_process)
+                    if supervisor is None:
+                        continue
+
+                    if not supervisor.is_manual_override and not supervisor.was_stopped_by_coordinator:
+                        info = await supervisor.status()
+                        if info.state == ProcessState.STOPPED:
+                            res = policy.resource
+                            if (
+                                not self.system.lease_mgr.active_count(res)
+                                and not self.system.lease_mgr.pending_count(res)
+                                and not self.system.lease_mgr.is_restart_inhibited(res)
+                                and not self.system.lease_mgr.restarts_blocked
+                            ):
+                                await supervisor.handle_unexpected_exit_backoff(
+                                    lease_manager=self.system.lease_mgr,
+                                    resource=res,
+                                    base_backoff_seconds=min(self.supervision_poll_interval, 1.0),
+                                )
+            except asyncio.CancelledError:
+                break
+            except Exception as exc:
+                logger.error("Error in process supervision loop: %s", exc)

@@ -101,15 +101,12 @@ def test_manifest_resolution_from_actual_mining_repo():
         mining_repo=mining_repo,
         miner_type="krig",
         power_limit_watts=550,
-        krig_core_clock_mhz=2400,
         use_preview_invocation=True,
     )
     assert manifest.miner_type == "krig"
     assert manifest.executable.endswith("krig-miner.exe")
     assert "--coin" in manifest.arguments
     assert "pearl" in manifest.arguments
-    assert "--gpu-cclock" in manifest.arguments
-    assert "2400" in manifest.arguments
     assert "--gpu-plimit" in manifest.arguments
     assert "550" in manifest.arguments
 

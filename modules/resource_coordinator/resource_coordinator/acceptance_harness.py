@@ -66,6 +66,9 @@ class TrialEvidence:
 class AcceptanceReport:
     timestamp: float = field(default_factory=time.time)
     mode: str = "simulated"  # "simulated", "disposable_helper", "live"
+    process_backend: str = "fake"  # "fake", "windows_cscript", "windows_miner"
+    upstream_type: str = "mock"  # "mock", "live_lmstudio"
+    verification_level: str = "unit_simulation"  # "unit_simulation", "os_process_contract", "live_hardware"
     trials: List[TrialEvidence] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
 
@@ -73,6 +76,9 @@ class AcceptanceReport:
         return {
             "timestamp": self.timestamp,
             "mode": self.mode,
+            "process_backend": self.process_backend,
+            "upstream_type": self.upstream_type,
+            "verification_level": self.verification_level,
             "trials": [asdict(t) for t in self.trials],
             "summary": self.summary,
         }
@@ -101,7 +107,31 @@ class AcceptanceHarness:
         self.allow_live_lmstudio = allow_live_lmstudio
         self.allow_real_miner = allow_real_miner
         self.lmstudio_url = lmstudio_url
-        self.report = AcceptanceReport(mode=mode)
+
+        import os
+        if mode == "live":
+            if not allow_live_lmstudio or not allow_real_miner:
+                raise ValueError(
+                    "Live acceptance mode requires both allow_live_lmstudio=True and allow_real_miner=True"
+                )
+            process_backend = "windows_miner"
+            upstream_type = "live_lmstudio"
+            verification_level = "live_hardware"
+        elif mode == "disposable_helper":
+            process_backend = "windows_cscript" if os.name == "nt" else "fake"
+            upstream_type = "mock"
+            verification_level = "os_process_contract"
+        else:
+            process_backend = "fake"
+            upstream_type = "mock"
+            verification_level = "unit_simulation"
+
+        self.report = AcceptanceReport(
+            mode=mode,
+            process_backend=process_backend,
+            upstream_type=upstream_type,
+            verification_level=verification_level,
+        )
 
     async def run_all(self, output_file: Optional[str | Path] = None) -> AcceptanceReport:
         """Run all test sequence trials and return the structured acceptance report."""
@@ -164,34 +194,71 @@ class AcceptanceHarness:
             base_url="http://mock-upstream",
         )
 
-        cfg = CoordinatorConfig(
-            service=ServiceConfig(upstream_url="http://mock-upstream"),
-            processes={"krig": ProcessConfig(name="krig", backend="fake")},
-            policies=[
-                PolicyConfig(
-                    name="stop-krig",
-                    trigger_event="lmstudio.inference_requested",
-                    target_process="krig",
-                    stop_process=True,
-                    restart_process=True,
-                    resource="gpu.inference",
-                    lease_type="shared",
-                    cooldown_seconds=cooldown_seconds,
-                    only_if_stopped_by_coordinator=True,
-                )
-            ],
-        )
+        import os
+        if self.mode == "disposable_helper" and os.name == "nt":
+            vbs_path = Path(__file__).parent / "adapters" / "miners" / "windows_miner_helper.vbs"
+            cscript_exe = os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), "System32", "cscript.exe")
+            proc_cfg = ProcessConfig(
+                name="krig",
+                backend="windows",
+                executable=cscript_exe,
+                arguments=["//NoLogo", str(vbs_path)],
+                stop_timeout_seconds=5.0,
+                allow_force_termination=True,
+            )
+            cfg = CoordinatorConfig(
+                service=ServiceConfig(upstream_url="http://mock-upstream"),
+                processes={"krig": proc_cfg},
+                policies=[
+                    PolicyConfig(
+                        name="stop-krig",
+                        trigger_event="lmstudio.inference_requested",
+                        target_process="krig",
+                        stop_process=True,
+                        restart_process=True,
+                        resource="gpu.inference",
+                        lease_type="shared",
+                        cooldown_seconds=cooldown_seconds,
+                        only_if_stopped_by_coordinator=True,
+                    )
+                ],
+            )
+            system = build_system(cfg, use_fake_processes=False)
+            system.gateway._http_client = upstream_client
+            service = CoordinatorService(
+                system,
+                start_process_on_ready="krig",
+                stop_process_on_shutdown="krig",
+            )
+            backend = system.supervisors["krig"].backend
+        else:
+            cfg = CoordinatorConfig(
+                service=ServiceConfig(upstream_url="http://mock-upstream"),
+                processes={"krig": ProcessConfig(name="krig", backend="fake")},
+                policies=[
+                    PolicyConfig(
+                        name="stop-krig",
+                        trigger_event="lmstudio.inference_requested",
+                        target_process="krig",
+                        stop_process=True,
+                        restart_process=True,
+                        resource="gpu.inference",
+                        lease_type="shared",
+                        cooldown_seconds=cooldown_seconds,
+                        only_if_stopped_by_coordinator=True,
+                    )
+                ],
+            )
+            system = build_system(cfg, use_fake_processes=True)
+            system.gateway._http_client = upstream_client
+            service = CoordinatorService(system)
 
-        system = build_system(cfg, use_fake_processes=True)
-        system.gateway._http_client = upstream_client
-        service = CoordinatorService(system)
-
-        # Start supervisor with running miner
-        backend: FakeProcessBackend = system.supervisors["krig"].backend  # type: ignore
-        backend.running = True
-        backend.lifecycle_owner = ProcessLifecycleOwner.COORDINATOR
-        backend.is_coordinator_owned = True
-        system.supervisors["krig"].was_stopped_by_coordinator = False
+            # Start supervisor with running miner
+            backend = system.supervisors["krig"].backend
+            backend.running = True
+            backend.lifecycle_owner = ProcessLifecycleOwner.COORDINATOR
+            backend.is_coordinator_owned = True
+            system.supervisors["krig"].was_stopped_by_coordinator = False
 
         gateway_app = system.gateway.create_app(service)
         coordinator_client = httpx.AsyncClient(
