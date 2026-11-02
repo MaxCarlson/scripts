@@ -30,5 +30,5 @@
 - Commit: `ce9250154f7519eb637c2c59451cd420f8e5f7c3` (`feat(agent-benchmark): add persistent suite CLI`).
 - Focused correction validation: 57 relevant Agent Benchmark tests passed; Ruff passed. The Agent Benchmark wheel built with `pip wheel --no-build-isolation --no-deps`; CLI run help was inspected. One unrelated Docker readiness test was excluded after Docker Desktop pipe access was denied in this sandbox.
 - Registry behavior was inspected in Harbor 0.25.0 `DatasetConfig`: registry resolution yields each task's Git URL and commit, and `registry_path` selects the local snapshot. The same snapshot is supplied to Harbor execution; post-run lock verification remains enabled.
-- The feature correction is ready to commit and fast-forward into local `main`; the primary checkout remains on `main` at the required base with its pre-existing untracked Harbor evidence untouched. No push is authorized or planned.
+- Correction commit `399e62db` is validated and ready to merge into current local `main`; the primary checkout's untracked Harbor evidence remains untouched. No push is authorized or planned.
 - Remaining operational validation: run the documented one-task monitored smoke after Docker and LLM Monitor are available; verify gateway request evidence and recording health. The full ten-task cohort remains deliberately unrun.
