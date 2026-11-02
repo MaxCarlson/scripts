@@ -479,6 +479,19 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
             row = next(item for item in store.read()["tasks"] if item["task_id"] == task)
             retry_count = len(row.get("attempt_history", [])) + bool(row.get("error_code"))
             if row["status"] == "pending" or (retry_invalid and row["status"] == "infrastructure_invalid" and retry_count < 2):
+                if store.manifest["provenance"].get("llm_monitor_required"):
+                    try:
+                        from .suite_recovery import check_task_boundary_recorder
+                        monitor_url = store.manifest["provenance"]["monitor_url"]
+                        check_task_boundary_recorder(monitor_url=monitor_url)
+                    except Exception as rec_err:
+                        store.update_task(
+                            task,
+                            status="infrastructure_invalid",
+                            error_code="MONITOR_RECORDER_UNHEALTHY",
+                            error_detail=str(rec_err),
+                        )
+                        break
                 attempt = executor(store, task)
                 task_status = attempt.pop("status")
                 store.update_task(task, status=task_status, **attempt)
