@@ -172,7 +172,7 @@ def execute_harbor_run(
     # If Harbor exited with a nonzero returncode, inspect the result artifact before accepting
     if proc.returncode != 0:
         try:
-            job_data = json.loads(result_file.read_text(encoding="utf-8"))
+            job_data = json.loads(result_file.read_text(encoding="utf-8", errors="replace"))
             job_res = HarborJobResult.model_validate(job_data)
         except Exception as exc:
             raise RuntimeError(

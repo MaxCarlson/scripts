@@ -43,7 +43,7 @@ class HarborImporter:
             raise HarborImportError(f"Missing root result.json in {self.job_dir}")
 
         try:
-            job_data = json.loads(result_file.read_text(encoding="utf-8"))
+            job_data = json.loads(result_file.read_text(encoding="utf-8", errors="replace"))
             job_result = HarborJobResult.model_validate(job_data)
         except Exception as exc:
             raise HarborImportError(f"Failed to parse job result.json in {self.job_dir}: {exc}") from exc
@@ -53,7 +53,7 @@ class HarborImporter:
         lock_file = self.job_dir / "lock.json"
         if lock_file.is_file():
             try:
-                lock_data = json.loads(lock_file.read_text(encoding="utf-8"))
+                lock_data = json.loads(lock_file.read_text(encoding="utf-8", errors="replace"))
                 job_lock = HarborJobLock.model_validate(lock_data)
             except Exception:
                 job_lock = None
@@ -67,7 +67,7 @@ class HarborImporter:
         for child in self.job_dir.iterdir():
             if child.is_dir() and (child / "result.json").is_file():
                 try:
-                    trial_data = json.loads((child / "result.json").read_text(encoding="utf-8"))
+                    trial_data = json.loads((child / "result.json").read_text(encoding="utf-8", errors="replace"))
                     trial = HarborTrialResult.model_validate(trial_data)
                     trials_by_id[str(trial.id)] = trial
                 except Exception:
