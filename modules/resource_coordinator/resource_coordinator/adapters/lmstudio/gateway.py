@@ -25,6 +25,7 @@ from resource_coordinator.adapters.lmstudio.admission import (
     OperationClassifier,
     OperationKind,
 )
+from resource_coordinator.core.durable_state import RequestPhase, StateCodec
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
 
@@ -162,12 +163,14 @@ class LMStudioGateway:
         recovery_token: Optional[str] = None,
         admission_controller: Optional[AdmissionController] = None,
         standalone: bool = False,
+        state_persistence_path: Optional[str] = None,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
         self.lease_mgr = lease_manager or LeaseManager(event_dispatcher=self.dispatcher)
         self.timeout_seconds = timeout_seconds
         self.bounded_drain_seconds = bounded_drain_seconds
+        self.state_persistence_path = state_persistence_path or ""
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
         self.admission_controller = admission_controller or AdmissionController(
@@ -281,6 +284,13 @@ class LMStudioGateway:
         ):
             return JSONResponse({"error": "Nonempty bounded reason and operator are required"}, status_code=400)
         res = await svc.emergency_abort(reason=f"{body['operator']}: {body['reason']}")
+        if self.state_persistence_path:
+            StateCodec.record_inhibition(
+                self.state_persistence_path,
+                "gpu.inference",
+                reason=f"abort:{body['operator']}:{body['reason']}",
+                holder_id=body["operator"],
+            )
         return JSONResponse(res)
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
@@ -314,6 +324,8 @@ class LMStudioGateway:
             )
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
+        if self.state_persistence_path:
+            StateCodec.clear_inhibition(self.state_persistence_path, resource)
         return JSONResponse(
             {
                 "status": "cleared" if cleared else "none",
@@ -409,6 +421,15 @@ class LMStudioGateway:
 
         reservation_cm = self.lease_mgr.reserve(resource, lease_type, request_id, {"model": model_name, "path": path})
         reservation = await reservation_cm.__aenter__()
+        if self.state_persistence_path:
+            StateCodec.record_request_phase(
+                self.state_persistence_path,
+                request_id,
+                resource,
+                RequestPhase.RESERVED,
+                model=model_name,
+                path=path,
+            )
         upstream_resp: Optional[httpx.Response] = None
         forwarded = False
         completed = False
@@ -429,6 +450,35 @@ class LMStudioGateway:
                             request_id,
                             {"model": model_name, "path": path},
                         )
+                    if self.state_persistence_path:
+                        if completed:
+                            StateCodec.record_request_phase(
+                                self.state_persistence_path,
+                                request_id,
+                                resource,
+                                RequestPhase.TERMINAL_VERIFIED,
+                                model=model_name,
+                                path=path,
+                            )
+                        elif forwarded:
+                            StateCodec.record_request_phase(
+                                self.state_persistence_path,
+                                request_id,
+                                resource,
+                                RequestPhase.UNCERTAIN,
+                                model=model_name,
+                                path=path,
+                            )
+                        else:
+                            StateCodec.record_request_phase(
+                                self.state_persistence_path,
+                                request_id,
+                                resource,
+                                RequestPhase.TERMINAL_VERIFIED,
+                                model=model_name,
+                                path=path,
+                                details={"cancelled": True},
+                            )
                     await self.dispatcher.emit(
                         finish_event,
                         {
@@ -457,6 +507,15 @@ class LMStudioGateway:
                 raise VetoOperation("Admission closed before forwarding")
             client = self.get_http_client()
             upstream_req = self._build_upstream_request(client, request, path, body, request_id)
+            if self.state_persistence_path:
+                StateCodec.record_request_phase(
+                    self.state_persistence_path,
+                    request_id,
+                    resource,
+                    RequestPhase.POSSIBLY_FORWARDED,
+                    model=model_name,
+                    path=path,
+                )
             forwarded = True  # send may have reached upstream even if it raises/cancels
             upstream_resp = await client.send(upstream_req, stream=True)
             content_type = upstream_resp.headers.get("content-type", "")

@@ -479,6 +479,7 @@ class ProcessSupervisor:
         self.was_stopped_by_coordinator = False
         self._stopped_external = False
         self.is_manual_override = False
+        self.consecutive_unexpected_exits = 0
         self._lock = asyncio.Lock()
 
         if allow_external_stop is not None:
@@ -597,3 +598,68 @@ class ProcessSupervisor:
 
     async def wait_stopped(self, timeout: float = 10.0) -> bool:
         return await self.backend.wait_stopped(timeout=timeout)
+
+    async def handle_unexpected_exit_backoff(
+        self,
+        lease_manager: Any,
+        resource: str = "gpu.inference",
+        max_retries: int = 3,
+        base_backoff_seconds: float = 1.0,
+    ) -> bool:
+        """
+        Inspect process status. If coordinator-owned process exited unexpectedly while
+        system is safe idle, attempt bounded backoff restart or inhibit further attempts.
+        """
+        async with self._lock:
+            if self.is_manual_override or self.was_stopped_by_coordinator:
+                return False
+
+            # Check if resource is safe idle
+            if (
+                lease_manager.active_count(resource) > 0
+                or lease_manager.pending_count(resource) > 0
+                or lease_manager.is_restart_inhibited(resource)
+            ):
+                return False
+
+            info = await self.backend.status()
+            if info.state != ProcessState.STOPPED:
+                return False
+
+            # Process unexpectedly exited while safe idle!
+            self.consecutive_unexpected_exits += 1
+            if self.consecutive_unexpected_exits > max_retries:
+                logger.error(
+                    "Process '%s' exceeded maximum consecutive unexpected exits (%d); inhibiting restart",
+                    self.name,
+                    max_retries,
+                )
+                await lease_manager.inhibit_restart(
+                    resource=resource,
+                    reason=f"process_crash_loop_exhausted:{self.name}",
+                    holder_id=f"watchdog:{self.name}",
+                    details={"consecutive_exits": self.consecutive_unexpected_exits, "process": self.name},
+                )
+                await self.dispatcher.emit(
+                    "process.crash_loop_inhibited",
+                    {"name": self.name, "consecutive_exits": self.consecutive_unexpected_exits},
+                )
+                return False
+
+            backoff = base_backoff_seconds * (2 ** (self.consecutive_unexpected_exits - 1))
+            logger.warning(
+                "Process '%s' exited unexpectedly (crash #%d); waiting %.1fs backoff before restart",
+                self.name,
+                self.consecutive_unexpected_exits,
+                backoff,
+            )
+            await self.dispatcher.emit(
+                "process.crashed_restarting",
+                {"name": self.name, "attempt": self.consecutive_unexpected_exits, "backoff": backoff},
+            )
+            await asyncio.sleep(backoff)
+            started = await self.backend.start()
+            if started:
+                self.was_stopped_by_coordinator = False
+                await self.dispatcher.emit("process.started", {"name": self.name, "origin": "crash_recovery"})
+            return started

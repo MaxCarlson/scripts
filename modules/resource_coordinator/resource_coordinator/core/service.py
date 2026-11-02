@@ -9,9 +9,12 @@ import logging
 import math
 import time
 from enum import Enum
-
-from resource_coordinator.core.processes import ProcessState, ProcessLifecycleOwner, WindowsProcessBackend
+from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
+from resource_coordinator.core.durable_state import StateCodec, reconcile_startup_state
+from resource_coordinator.core.lock import SingleInstanceLock
+from resource_coordinator.core.processes import ProcessState, ProcessLifecycleOwner, WindowsProcessBackend
 
 if TYPE_CHECKING:
     from resource_coordinator.config import CoordinatorSystem
@@ -58,6 +61,12 @@ class CoordinatorService:
         self._startup_task: Optional[asyncio.Task] = None
         self._stop_lock = asyncio.Lock()
         self._aborted = False
+        self._instance_lock: Optional[SingleInstanceLock] = None
+        lock_path = kwargs.get("lock_path")
+        if not lock_path and getattr(self.system.config.service, "state_persistence_path", ""):
+            lock_path = Path(self.system.config.service.state_persistence_path).with_suffix(".lock")
+        if lock_path:
+            self._instance_lock = SingleInstanceLock(lock_path)
         self.system.gateway.set_service(self)
 
     def has_model_load_policy(self) -> bool:
@@ -163,6 +172,15 @@ class CoordinatorService:
     async def start(self) -> bool:
         if self._state != ServiceState.CREATED:
             return self.is_ready
+        if self._instance_lock is not None:
+            if not self._instance_lock.acquire():
+                self._state = ServiceState.FAILED
+                self._failure_reason = (
+                    f"Coordinator instance lock at '{self._instance_lock.lock_path}' is already held"
+                )
+                self._freeze(self._failure_reason)
+                logger.error(self._failure_reason)
+                return False
         self._startup_task = asyncio.current_task()
         self._state = ServiceState.INITIALIZING
         try:
@@ -170,6 +188,16 @@ class CoordinatorService:
             passed, messages = self.preflight_check()
             if not passed:
                 raise RuntimeError("Preflight checks failed: " + "; ".join(messages))
+
+            # Reconcile durable state if configured
+            if getattr(self.system.config.service, "state_persistence_path", ""):
+                state_path = Path(self.system.config.service.state_persistence_path)
+                if state_path.exists():
+                    try:
+                        loaded_state = StateCodec.load(state_path)
+                    except Exception as exc:
+                        raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
+                    await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
             for supervisor in self.system.supervisors.values():
                 info = await supervisor.status()
                 if info.state not in {ProcessState.STOPPED, ProcessState.RUNNING}:
@@ -178,12 +206,16 @@ class CoordinatorService:
                     raise RuntimeError("Running process is not coordinator-owned")
             if self.start_miner_on_ready:
                 assert self.system.miner_adapter is not None
+                if self.system.lease_mgr.is_restart_inhibited("gpu.inference"):
+                    raise RuntimeError("Cannot start miner on ready: restart on gpu.inference is inhibited")
                 # Initial explicit launch is distinct from resuming a process we paused.
                 success = await self.system.miner_adapter.resume(only_if_stopped_by_coordinator=False)
                 info = await self.system.miner_adapter.status()
                 if not success or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
                     raise RuntimeError("Requested miner launch was not verified coordinator-owned RUNNING")
             if self.start_process_on_ready:
+                if self.system.lease_mgr.is_restart_inhibited("gpu.inference"):
+                    raise RuntimeError("Cannot start process on ready: restart on gpu.inference is inhibited")
                 supervisor = self.system.supervisors[self.start_process_on_ready]
                 success = await supervisor.start(only_if_stopped_by_coordinator=False)
                 info = await supervisor.status()
@@ -279,6 +311,9 @@ class CoordinatorService:
             self._state = ServiceState.RECONCILIATION_REQUIRED
             self._failure_reason = f"Shutdown failed: {exc}"
             logger.error(self._failure_reason)
+        finally:
+            if self._instance_lock is not None:
+                self._instance_lock.release()
 
     async def emergency_abort(self, reason: str) -> Dict[str, Any]:
         self._aborted = True

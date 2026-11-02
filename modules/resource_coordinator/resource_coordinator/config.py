@@ -190,7 +190,8 @@ class CoordinatorConfig:
         if not 0 < svc.listen_port < 65536:
             raise ValueError("Listen port is out of range")
         if svc.state_persistence_path:
-            raise ValueError("State persistence is not implemented")
+            if not isinstance(svc.state_persistence_path, str) or not svc.state_persistence_path.strip():
+                raise ValueError("Invalid state_persistence_path: must be a non-empty string path")
         if svc.bounded_drain_seconds:
             raise ValueError("Bounded drain is disabled pending cancellation-safe implementation")
         return cls(
@@ -346,6 +347,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
         bounded_drain_seconds=config.service.bounded_drain_seconds,
+        state_persistence_path=config.service.state_persistence_path,
     )
 
     return CoordinatorSystem(
