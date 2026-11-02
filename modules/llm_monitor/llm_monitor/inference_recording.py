@@ -38,6 +38,9 @@ class InferenceRecorder:
             datetime.now(timezone.utc).isoformat() if mode == "content" else None
         )
         self._active_request_modes: dict[str, str] = {}
+        self._active_request_mode_generations: dict[str, int] = {}
+        self._mode_generation = 0
+        self._incremental_request_ids: set[str] = set()
         self.queue_size = queue_size
         self.queue_bytes = queue_bytes
         self._queued_bytes = 0
@@ -48,6 +51,7 @@ class InferenceRecorder:
         self._last_error: str | None = None
         self._persisted_count = 0
         self._dropped_count = 0
+        self._failure_count = 0
         self._lock = threading.Lock()
 
     @property
@@ -68,15 +72,17 @@ class InferenceRecorder:
                 self._content_authorized_at = datetime.now(timezone.utc).isoformat()
             elif mode == "metadata":
                 self._content_authorized_at = None
+            if mode != self.mode:
+                self._mode_generation += 1
             self.mode = mode
             _LOGGER.info("Inference recorder mode changed to %s", self.mode)
 
     def start(self) -> None:
         """Start the background writer worker."""
-        self.store.mark_interrupted_inference_requests()
         with self._lock:
             if self._thread is not None and self._thread.is_alive():
                 return
+            self.store.mark_interrupted_inference_requests()
             self._stop_event.clear()
             self._thread = threading.Thread(
                 target=self._worker_loop,
@@ -108,13 +114,17 @@ class InferenceRecorder:
         return complete
 
     def flush(self, timeout: float = 5.0) -> bool:
-        """Wait for a FIFO writer barrier; return false if it misses the deadline."""
+        """Wait for preceding writes to finish and report whether they all committed."""
         barrier = threading.Event()
+        with self._lock:
+            failure_count = self._failure_count
         try:
-            self._queue.put(("barrier", barrier, "", None, None), timeout=max(0, timeout))
+            self._queue.put(("barrier", (barrier, failure_count), "", None, None), timeout=max(0, timeout))
         except queue.Full:
             return False
-        return barrier.wait(timeout=max(0, timeout))
+        if not barrier.wait(timeout=max(0, timeout)):
+            return False
+        return bool(getattr(barrier, "result", False))
 
     def record_request_start(self, request: InferenceRequest) -> None:
         """Queue a request start notification."""
@@ -122,6 +132,7 @@ class InferenceRecorder:
             return
         with self._lock:
             self._active_request_modes[request.request_id] = self.mode
+            self._active_request_mode_generations[request.request_id] = self._mode_generation
             mode_at_start = self.mode
         # Store the request row first; content is appended independently below.
         safe_request = replace(request, content=())
@@ -134,6 +145,8 @@ class InferenceRecorder:
         """Queue one observed segment without retaining the request transcript in memory."""
         with self._lock:
             authorized = self._active_request_modes.get(request_id) == "content" and self.mode == "content"
+            if authorized:
+                self._incremental_request_ids.add(request_id)
         if authorized and not self._stop_event.is_set():
             self._enqueue_content(request_id, segment)
 
@@ -151,13 +164,15 @@ class InferenceRecorder:
         with self._lock:
             # Privacy invariant: Check mode authorized when this request began.
             mode_at_start = self._active_request_modes.pop(request.request_id, None)
+            mode_generation = self._active_request_mode_generations.pop(request.request_id, None)
+            incremental = request.request_id in self._incremental_request_ids
+            self._incremental_request_ids.discard(request.request_id)
             current_mode = self.mode
 
-        if current_mode == "metadata":
-            effective_mode = "metadata"
+        if mode_at_start == "content" and (incremental or mode_generation == self._mode_generation):
+            effective_mode = "content"
         elif mode_at_start is not None:
-            # If registered at start, respect the mode that was active when request started
-            effective_mode = mode_at_start
+            effective_mode = "metadata"
         else:
             effective_mode = current_mode
 
@@ -166,7 +181,7 @@ class InferenceRecorder:
         self._enqueue(safe_request, effective_mode, None, hardware_samples)
         # Legacy callers may submit a complete transcript only at finalization.
         # Gateway requests registered at start already appended each segment.
-        if effective_mode == "content" and mode_at_start is None and contents:
+        if effective_mode == "content" and not incremental and contents:
             for segment in contents:
                 self._enqueue_content(request.request_id, segment)
 
@@ -188,6 +203,7 @@ class InferenceRecorder:
         with self._lock:
             if size > self.queue_bytes or self._queued_bytes + size > self.queue_bytes:
                 self._dropped_count += 1
+                self._failure_count += 1
                 self._is_healthy = False
                 self._last_error = "Recorder byte capacity exceeded; capture incomplete"
                 _LOGGER.error("Recorder byte capacity exceeded for request %s", request_id)
@@ -196,6 +212,7 @@ class InferenceRecorder:
                 self._queue.put_nowait(item)
             except queue.Full:
                 self._dropped_count += 1
+                self._failure_count += 1
                 self._is_healthy = False
                 self._last_error = "Recorder queue capacity exceeded; capture incomplete"
                 return
@@ -216,7 +233,10 @@ class InferenceRecorder:
             item_size = len(repr(request).encode("utf-8")) if action == "record" else (len((contents.text or "").encode("utf-8")) + 256 if action == "content" else 0)
             try:
                 if action == "barrier":
-                    request.set()
+                    barrier, failure_count = request
+                    with self._lock:
+                        barrier.result = self._failure_count == failure_count
+                    barrier.set()
                 elif action == "content":
                     self.store.append_inference_content(request, contents)
                     with self._lock:
@@ -235,6 +255,7 @@ class InferenceRecorder:
                 with self._lock:
                     self._is_healthy = False
                     self._last_error = str(error)
+                    self._failure_count += 1
             finally:
                 with self._lock:
                     self._queued_bytes = max(0, self._queued_bytes - item_size)

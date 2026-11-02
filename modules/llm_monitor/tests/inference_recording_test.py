@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 import pytest
 
 from llm_monitor.inference_models import ContentSegment, InferenceRequest
@@ -130,9 +131,71 @@ def test_incremental_content_exceeds_live_store_budget_and_survives_restart(tmp_
 
     recovered = InferenceRecorder(store, mode="metadata")
     recovered.start()
-    recovered.flush(timeout=10)
-    recovered.stop(timeout=10)
+    assert recovered.flush(timeout=10)
+    assert recovered.stop(timeout=10)
     record = store.get_inference_request("large", include_content=True)
     assert record is not None
     assert record["state"] == "interrupted"
     assert sum(len(part["text"]) for part in record["content"]) == 3_000_000
+
+
+def test_mode_transitions_preserve_start_authorization_and_capture_boundary(tmp_path: Path):
+    store = TelemetryStore(tmp_path / "modes.sqlite3")
+    recorder = InferenceRecorder(store, mode="content")
+    recorder.start()
+    req = InferenceRequest(request_id="revoke", server_instance_id="s1", source="gateway", state="active")
+    recorder.record_request_start(req)
+    recorder.record_content("revoke", ContentSegment(sequence=1, kind="assistant", role="assistant", text="allowed"))
+    recorder.set_mode("metadata")
+    recorder.record_content("revoke", ContentSegment(sequence=2, kind="assistant", role="assistant", text="blocked"))
+    recorder.record_request_final(replace(req, state="completed"))
+
+    req2 = InferenceRequest(request_id="grant", server_instance_id="s1", source="gateway", state="active")
+    recorder.record_request_start(req2)
+    recorder.set_mode("content")
+    recorder.record_content("grant", ContentSegment(sequence=1, kind="assistant", role="assistant", text="not authorized"))
+    recorder.record_request_final(replace(req2, state="completed"))
+    assert recorder.flush(timeout=5)
+    recorder.stop()
+
+    revoked = store.get_inference_request("revoke", include_content=True)
+    granted = store.get_inference_request("grant", include_content=True)
+    assert revoked["recording_mode"] == "content"
+    assert [item["text"] for item in revoked["content"]] == ["allowed"]
+    assert granted["recording_mode"] == "metadata"
+    assert granted["content"] == []
+
+
+def test_repeat_start_does_not_interrupt_active_request(tmp_path: Path):
+    store = TelemetryStore(tmp_path / "repeat-start.sqlite3")
+    recorder = InferenceRecorder(store, mode="metadata")
+    recorder.start()
+    req = InferenceRequest(request_id="live", server_instance_id="s1", source="gateway", state="active")
+    recorder.record_request_start(req)
+    assert recorder.flush(timeout=5)
+    recorder.start()
+    record = store.get_inference_request("live", include_content=False)
+    assert record is not None and record["state"] == "active"
+    recorder.stop()
+
+
+def test_flush_reports_preceding_write_failure_and_byte_saturation(tmp_path: Path):
+    class FailingStore(TelemetryStore):
+        def append_inference_content(self, request_id, segment):
+            raise OSError("synthetic sqlite failure")
+
+    store = FailingStore(tmp_path / "failed-write.sqlite3")
+    recorder = InferenceRecorder(store, mode="content")
+    recorder.start()
+    req = InferenceRequest(request_id="failure", server_instance_id="s1", source="gateway", state="active")
+    recorder.record_request_start(req)
+    recorder.record_content("failure", ContentSegment(sequence=1, kind="assistant", role="assistant", text="x"))
+    assert recorder.flush(timeout=5) is False
+    assert recorder.status()["is_healthy"] is False
+    recorder.stop()
+
+    saturated = InferenceRecorder(TelemetryStore(tmp_path / "saturated.sqlite3"), mode="content", queue_bytes=100)
+    saturated.record_request_start(req)
+    saturated.record_content("failure", ContentSegment(sequence=1, kind="assistant", role="assistant", text="x" * 1000))
+    assert saturated.status()["dropped_count"] >= 1
+    assert saturated.status()["is_healthy"] is False

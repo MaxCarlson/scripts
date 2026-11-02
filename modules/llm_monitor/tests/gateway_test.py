@@ -341,6 +341,42 @@ async def test_concurrent_requests_keep_inputs_and_outputs_isolated():
     assert requests["provider-beta"].content[-1].text == "reply-beta"
 
 
+@pytest.mark.asyncio
+async def test_gateway_persists_large_nonstream_transcript_beyond_live_budget(tmp_path):
+    from fastapi import FastAPI
+    from llm_monitor.inference_recording import InferenceRecorder
+    from llm_monitor.storage import TelemetryStore
+
+    output = "z" * 2_100_000
+    response_body = json.dumps({"id": "large-provider", "choices": [{"message": {"content": output}}]}).encode()
+
+    async def upstream(request):
+        return httpx.Response(200, content=response_body, headers={"content-type": "application/json"}, request=request)
+
+    store = LiveInferenceStore(max_content_bytes=128)
+    recorder = InferenceRecorder(TelemetryStore(tmp_path / "gateway-large.sqlite3"), mode="content")
+    recorder.start()
+    gateway = OpenAIInferenceGateway(
+        "http://127.0.0.1:1234", store, RequestEventHub(),
+        client=httpx.AsyncClient(transport=httpx.MockTransport(upstream)), recorder=recorder,
+    )
+    app = FastAPI()
+    app.include_router(gateway.router())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"model": "m", "stream": False, "messages": [{"role": "user", "content": "prompt"}]},
+        )
+    assert response.content == response_body
+    assert recorder.flush(timeout=10)
+    request_id = store.requests()[0].request_id
+    persisted = recorder.store.get_inference_request(request_id, include_content=True)
+    assert persisted is not None
+    assert [item["text"] for item in persisted["content"]] == ["prompt", output]
+    assert any(item.truncated for item in store.requests()[0].content)
+    assert recorder.stop(timeout=10)
+
+
 def test_gateway_rejects_oversized_request_before_upstream_forwarding():
     store = LiveInferenceStore()
     gateway = OpenAIInferenceGateway("http://127.0.0.1:1234", store, RequestEventHub(), client=httpx.AsyncClient(transport=httpx.MockTransport(lambda request: (_ for _ in ()).throw(AssertionError("must not forward")))))
