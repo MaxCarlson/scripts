@@ -209,12 +209,15 @@ def compile_plan(
                     "stage": "planned",
                 }
             )
-        if "flash_attention" in requested_settings:
+        if (
+            "flash_attention" in requested_settings
+            and requested_settings["flash_attention"] is True
+        ):
             load_ops.append(
                 {
                     "target": "lmstudio_load",
                     "field": "flash_attention",
-                    "value": requested_settings["flash_attention"],
+                    "value": True,
                     "stage": "planned",
                 }
             )
@@ -227,19 +230,24 @@ def compile_plan(
                     "stage": "planned",
                 }
             )
+        if "speculation_mode" in requested_settings:
+            spec_mode = requested_settings["speculation_mode"]
+            if spec_mode == "mtp":
+                # LM Studio native REST load API has no MTP runtime control
+                blockers.append(
+                    "runtime_control_unsupported: backend does not provide an MTP runtime control"
+                )
+                plan_status = "unsupported"
+            elif spec_mode == "draft_model":
+                blockers.append(
+                    "speculation_unsupported: draft_model requires verified draft model pairing"
+                )
+                plan_status = "unsupported"
         if (
-            "speculation_mode" in requested_settings
-            and requested_settings["speculation_mode"] != "off"
+            "max_draft_tokens" in requested_settings
+            and requested_settings.get("speculation_mode", "off") != "off"
+            and plan_status == "compiled"
         ):
-            load_ops.append(
-                {
-                    "target": "lmstudio_load",
-                    "field": "speculation_mode",
-                    "value": requested_settings["speculation_mode"],
-                    "stage": "planned",
-                }
-            )
-        if "max_draft_tokens" in requested_settings:
             load_ops.append(
                 {
                     "target": "lmstudio_load",
@@ -289,15 +297,21 @@ def compile_plan(
                     "stage": "planned",
                 }
             )
-        if "top_k" in requested_settings:
-            request_ops.append(
-                {
-                    "target": target_chat,
-                    "field": "top_k",
-                    "value": requested_settings["top_k"],
-                    "stage": "planned",
-                }
-            )
+        if "top_k" in requested_settings and requested_settings["top_k"] > 0:
+            if api_type == "lmstudio_openai_v1":
+                blockers.append(
+                    "sampling_unsupported: top_k is not supported by openai_chat completions API"
+                )
+                plan_status = "unsupported"
+            else:
+                request_ops.append(
+                    {
+                        "target": target_chat,
+                        "field": "top_k",
+                        "value": requested_settings["top_k"],
+                        "stage": "planned",
+                    }
+                )
         if requested_settings.get("reasoning") != "off":
             request_ops.append(
                 {
@@ -318,7 +332,7 @@ def compile_plan(
                 "stage": "planned",
             }
         )
-        request_ops.append(
+        load_ops.append(
             {
                 "target": "opencode_model",
                 "field": "context_length",
@@ -352,6 +366,26 @@ def compile_plan(
                     "stage": "planned",
                 }
             )
+        if "top_k" in requested_settings and requested_settings["top_k"] > 0:
+            blockers.append(
+                "sampling_unsupported: top_k is not supported by opencode_model"
+            )
+            plan_status = "unsupported"
+        if "top_p" in requested_settings and requested_settings["top_p"] != 1.0:
+            blockers.append(
+                "sampling_unsupported: top_p is not supported by opencode_model"
+            )
+            plan_status = "unsupported"
+        if (
+            requested_settings.get("flash_attention") is True
+            or requested_settings.get("speculation_mode", "off") != "off"
+            or "batch_size" in requested_settings
+            or requested_settings.get("gpu_kv_cache") is False
+        ):
+            blockers.append(
+                "backend_unsupported: host load-time features cannot be configured via opencode_v1"
+            )
+            plan_status = "unsupported"
 
     # Deterministic sorting
     load_ops.sort(key=lambda op: (op["target"], op["field"]))
@@ -408,6 +442,19 @@ def compile_plan(
     return validate_plan(plan_body)
 
 
+DEFAULT_CATALOG_VALUES: dict[str, Any] = {
+    "flash_attention": False,
+    "speculation_mode": "off",
+    "max_draft_tokens": 4,
+    "top_k": 0,
+    "reasoning": "off",
+    "batch_size": 512,
+    "gpu_kv_cache": True,
+    "temperature": 0.0,
+    "top_p": 1.0,
+}
+
+
 def is_baseline_equivalent(
     plan: dict[str, Any],
     baseline_variant: dict[str, Any] | None,
@@ -440,6 +487,8 @@ def is_baseline_equivalent(
             field = ev["field"]
             val = ev["value"]
             base_val = baseline_settings.get(field)
+            if base_val is None:
+                base_val = DEFAULT_CATALOG_VALUES.get(field)
             if val != base_val:
                 deltas.append(
                     {

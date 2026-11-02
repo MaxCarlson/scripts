@@ -48,8 +48,11 @@ def validate_parameter_spec(name: str, spec: dict[str, Any]) -> None:
                 raise ValueError(f"numeric bounds must be a (min, max) pair for {name}")
             min_val, max_val = bounds
             expected_type = int if param_type == "int" else (int, float)
-            if not isinstance(min_val, expected_type) or not isinstance(
-                max_val, expected_type
+            if (
+                not isinstance(min_val, expected_type)
+                or isinstance(min_val, bool)
+                or not isinstance(max_val, expected_type)
+                or isinstance(max_val, bool)
             ):
                 raise ValueError(f"bounds type mismatch for {name}")
             if min_val > max_val:
@@ -471,11 +474,27 @@ class FeatureRegistry:
 
         return settings
 
+    def is_feature_active(self, feature_id: str, settings: dict[str, Any]) -> bool:
+        """Determine whether a feature is actively enabled (non-default / active)."""
+        if feature_id not in self._features:
+            return False
+        if feature_id == "flash_attention":
+            return bool(settings.get("flash_attention", False))
+        if feature_id == "speculation_mode":
+            return settings.get("speculation_mode", "off") != "off"
+        if feature_id == "max_draft_tokens":
+            return settings.get("speculation_mode", "off") != "off"
+        if feature_id == "gpu_kv_cache":
+            return bool(settings.get("gpu_kv_cache", True))
+        if feature_id == "reasoning":
+            return settings.get("reasoning", "off") != "off"
+        return True
+
     def get_required_capabilities(self, settings: dict[str, Any]) -> list[str]:
         required: set[str] = set()
         for name in settings:
             feat = self.get_feature_for_param(name)
-            if feat:
+            if feat and self.is_feature_active(feat["feature_id"], settings):
                 required.update(feat["backend_capabilities"])
         return sorted(required)
 
@@ -483,5 +502,6 @@ class FeatureRegistry:
         for name in settings:
             feat = self.get_feature_for_param(name)
             if feat and feat.get("reload_required", False):
-                return True
+                if self.is_feature_active(feat["feature_id"], settings):
+                    return True
         return False

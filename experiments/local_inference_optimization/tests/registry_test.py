@@ -165,3 +165,36 @@ def test_registry_capability_extraction_and_reload():
 
     assert reg.requires_reload({"context": 16384}) is True
     assert reg.requires_reload({"temperature": 0.5}) is False
+
+
+def test_parameter_spec_rejects_bool_bounds():
+    feat = copy.deepcopy(SAMPLE_FEATURE)
+    feat["parameters"]["test_param"]["type"] = "int"
+    feat["parameters"]["test_param"]["bounds"] = [False, True]
+    with pytest.raises(ValueError, match="bounds type mismatch"):
+        validate_feature_def(feat)
+
+
+def test_disabled_features_do_not_require_capabilities():
+    reg = FeatureRegistry(include_defaults=True)
+    # flash_attention=False should NOT require flash_attention capability
+    assert reg.get_required_capabilities({"flash_attention": False}) == []
+    # speculation_mode="off" should NOT require speculative_decoding capability
+    assert reg.get_required_capabilities({"speculation_mode": "off"}) == []
+    # gpu_kv_cache=False (running on CPU) should NOT require gpu_kv_cache capability
+    assert reg.get_required_capabilities({"gpu_kv_cache": False}) == []
+
+
+def test_inactive_max_draft_tokens_does_not_require_capabilities():
+    reg = FeatureRegistry(include_defaults=True)
+    # When speculation_mode is off, max_draft_tokens is inactive and requires no capabilities
+    assert (
+        reg.get_required_capabilities(
+            {"speculation_mode": "off", "max_draft_tokens": 4}
+        )
+        == []
+    )
+    # When speculation_mode is active, max_draft_tokens is active and requires capability
+    assert reg.get_required_capabilities(
+        {"speculation_mode": "mtp", "max_draft_tokens": 4}
+    ) == ["speculative_decoding"]

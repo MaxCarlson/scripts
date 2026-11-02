@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import stat
 from typing import Any
 import uuid
 
@@ -20,6 +21,42 @@ from .contracts import (
 )
 
 RECEIPT_SCHEMA = "lio-receipt-v1"
+DISALLOWED_TARGET_PATTERNS = (".lmstudio", ".config/opencode", ".opencode")
+
+
+def _check_target_safety(
+    target_file: Path | str,
+    allowed_root: Path | str | None = None,
+) -> Path:
+    raw_target = Path(target_file)
+    if raw_target.is_symlink():
+        raise ValueError(
+            f"Target path cannot be a symlink (symlinks are forbidden): {target_file}"
+        )
+
+    target_path = raw_target.resolve()
+    if not target_path.exists() or not target_path.is_file():
+        raise FileNotFoundError(
+            f"Target file does not exist or is not a regular file: {target_path}"
+        )
+
+    if allowed_root is not None:
+        resolved_root = Path(allowed_root).resolve()
+        try:
+            target_path.relative_to(resolved_root)
+        except ValueError as exc:
+            raise PermissionError(
+                f"Target file {target_path} is outside allowed root {resolved_root}"
+            ) from exc
+
+    normalized = str(target_path).replace("\\", "/").lower()
+    for pattern in DISALLOWED_TARGET_PATTERNS:
+        if pattern in normalized:
+            raise PermissionError(
+                f"Target file path refers to live production/user config and is forbidden: {target_path}"
+            )
+
+    return target_path
 
 
 def validate_receipt(receipt: dict[str, Any]) -> dict[str, Any]:
@@ -73,6 +110,7 @@ def apply_plan_to_target(
     expected_before_sha256: str,
     *,
     authorized: bool = False,
+    allowed_root: Path | str | None = None,
     receipt_dir: Path | str | None = None,
 ) -> dict[str, Any]:
     """Apply a compiled plan to a target file in an isolated test fixture with receipt generation.
@@ -90,16 +128,13 @@ def apply_plan_to_target(
             f"Cannot apply uncompiled plan (status: {plan['status']}, blockers: {plan['blockers']})"
         )
 
-    target_path = Path(target_file).resolve()
-    if not target_path.exists() or not target_path.is_file():
-        raise FileNotFoundError(
-            f"Target file does not exist or is not a regular file: {target_path}"
-        )
+    target_path = _check_target_safety(target_file, allowed_root=allowed_root)
 
     # 1. Inspect existing state and check for drift
     original_bytes = target_path.read_bytes()
     original_content = original_bytes.decode("utf-8")
     actual_before_sha256 = hashlib.sha256(original_bytes).hexdigest()
+    original_mode = target_path.stat().st_mode
 
     if actual_before_sha256 != expected_before_sha256:
         raise ValueError(
@@ -121,6 +156,10 @@ def apply_plan_to_target(
         )
         try:
             tmp_target.write_bytes(new_bytes)
+            try:
+                os.chmod(tmp_target, stat.S_IMODE(original_mode))
+            except OSError:
+                pass
             os.replace(tmp_target, target_path)
         except Exception:
             if tmp_target.exists():
@@ -148,7 +187,24 @@ def apply_plan_to_target(
         r_dir = Path(receipt_dir).resolve()
         r_dir.mkdir(parents=True, exist_ok=True)
         receipt_file = r_dir / f"receipt-{tx_id}.json"
-        receipt_file.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        try:
+            receipt_file.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
+        except Exception as exc:
+            # Revert target_path to original content if receipt writing fails
+            if actual_before_sha256 != after_sha256:
+                try:
+                    target_path.write_bytes(original_bytes)
+                    os.chmod(target_path, stat.S_IMODE(original_mode))
+                except Exception:
+                    pass
+            if receipt_file.exists():
+                try:
+                    receipt_file.unlink()
+                except OSError:
+                    pass
+            raise RuntimeError(
+                f"Failed to persist transaction receipt; rolled back target file: {target_path}"
+            ) from exc
 
     return receipt
 
@@ -158,6 +214,7 @@ def rollback_transaction(
     target_file: Path | str,
     *,
     authorized: bool = False,
+    allowed_root: Path | str | None = None,
 ) -> dict[str, Any]:
     """Rollback a previously applied transaction safely without overwriting concurrent edits."""
     if not authorized:
@@ -165,8 +222,9 @@ def rollback_transaction(
             "Rollback not authorized: rollback requires explicit authorized=True operator consent"
         )
 
+    receipt_path: Path | None = None
     if isinstance(receipt_data, (str, Path)):
-        receipt_path = Path(receipt_data)
+        receipt_path = Path(receipt_data).resolve()
         receipt = json.loads(receipt_path.read_text(encoding="utf-8"))
     else:
         receipt = dict(receipt_data)
@@ -175,9 +233,7 @@ def rollback_transaction(
     if receipt["status"] != "applied":
         raise ValueError(f"Cannot rollback receipt with status: {receipt['status']!r}")
 
-    target_path = Path(target_file).resolve()
-    if not target_path.exists() or not target_path.is_file():
-        raise FileNotFoundError(f"Target file does not exist: {target_path}")
+    target_path = _check_target_safety(target_file, allowed_root=allowed_root)
 
     # 1. External modification / drift detection
     current_bytes = target_path.read_bytes()
@@ -191,12 +247,17 @@ def rollback_transaction(
         )
 
     # 2. Atomic restoration of backup snapshot
+    original_mode = target_path.stat().st_mode
     backup_bytes = receipt["backup_content"].encode("utf-8")
     tmp_target = target_path.with_name(
         f"{target_path.name}.tmp-rollback-{uuid.uuid4().hex[:8]}"
     )
     try:
         tmp_target.write_bytes(backup_bytes)
+        try:
+            os.chmod(tmp_target, stat.S_IMODE(original_mode))
+        except OSError:
+            pass
         os.replace(tmp_target, target_path)
     except Exception:
         if tmp_target.exists():
@@ -216,5 +277,8 @@ def rollback_transaction(
     receipt["status"] = "rolled_back"
     receipt["timestamp"] = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     validate_receipt(receipt)
+
+    if receipt_path is not None and receipt_path.exists():
+        receipt_path.write_text(json.dumps(receipt, indent=2), encoding="utf-8")
 
     return receipt
