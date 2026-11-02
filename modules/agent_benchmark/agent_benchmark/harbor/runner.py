@@ -121,6 +121,8 @@ def build_harbor_command(
     max_retries: int = 0,
     quiet: bool = False,
     registry_path: Path | None = None,
+    study_adapter: bool = False,
+    prompt_template_path: Path | None = None,
 ) -> list[str]:
     """Build an exact subprocess argument list for harbor run (no shell interpolation)."""
     # Prefer native harbor executable, fallback to uv tool run
@@ -137,12 +139,20 @@ def build_harbor_command(
     cmd.extend(["--dataset", harbor_ds])
     if registry_path is not None:
         cmd.extend(["--registry-path", str(registry_path.resolve())])
+    if (study_adapter or prompt_template_path is not None) and plan.agent != "opencode":
+        raise ValueError("the policy study adapter requires opencode")
+    if prompt_template_path is not None and not study_adapter:
+        raise ValueError("prompt template requires the policy study adapter")
     agent_arg = (
+        "agent_benchmark.harbor.opencode_v1:OpenCodeV1"
+        if study_adapter else
         "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
         if plan.agent == "opencode-v2"
         else plan.agent
     )
     cmd.extend(["--agent", agent_arg])
+    if prompt_template_path is not None:
+        cmd.extend(["--ak", f"prompt_template_path={prompt_template_path.resolve(strict=True)}"])
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
 
@@ -179,6 +189,8 @@ def execute_harbor_run(
     n_concurrent: int = 1,
     quiet: bool = False,
     registry_path: Path | None = None,
+    study_adapter: bool = False,
+    prompt_template_path: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -232,6 +244,8 @@ def execute_harbor_run(
         max_retries=0,
         quiet=quiet,
         registry_path=registry_path,
+        study_adapter=study_adapter,
+        prompt_template_path=prompt_template_path,
     )
 
     run_env = os.environ.copy()
@@ -240,7 +254,7 @@ def execute_harbor_run(
         run_env["PYTHONIOENCODING"] = "utf-8"
     if plan.agent in ("qwen-coder", "opencode", "opencode-v2") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
-    if plan.agent == "opencode-v2":
+    if plan.agent == "opencode-v2" or study_adapter:
         agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
         current_pythonpath = run_env.get("PYTHONPATH", "")
         run_env["PYTHONPATH"] = (
@@ -249,7 +263,7 @@ def execute_harbor_run(
             else agent_bench_root
         )
 
-    if plan.agent == "opencode":
+    if plan.agent == "opencode" and not study_adapter:
         ensure_harbor_opencode_compatibility()
 
     lock_cm = command_lock

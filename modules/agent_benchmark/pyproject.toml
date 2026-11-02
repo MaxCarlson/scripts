@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "agent-benchmark"
-version = "1.22.0"
+version = "1.23.0"
 description = "Independent evaluation of coding workers through the existing OpenCode bridge"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -29,7 +29,7 @@ agent-benchmark = "agent_benchmark.cli:main"
 agent_benchmark = "agent_benchmark.cli:main"
 
 [tool.setuptools.package-data]
-agent_benchmark = ["tasks/**/*"]
+agent_benchmark = ["tasks/**/*", "policies/*.md"]
 
 [tool.setuptools.exclude-package-data]
 agent_benchmark = ["**/__pycache__/*", "**/*.pyc"]
