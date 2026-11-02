@@ -1,5 +1,16 @@
 # Local agent setup handoff
 
+## P15a MTP structural inspection — 2026-11-02
+
+Branch: `agent/local-inference-p15a-20261102`. The read-only inspector validates every descriptor payload range for overlap,
+native ordering, padding and bounds, and its synthetic regressions cover supported
+Qwen35 MTP shapes, local fallbacks, and conventional multipart GGUF. The installed Q4_K_M and Q6_K files have MTP
+structure present. Runtime compatibility and separate-file pairing remain
+unverified. See [P15a inspection report](P15A_MTP_INSPECTION.md) for dimensions,
+limits, and the P15b preflight boundary. Next: use the result only with the
+frozen P15b contract and independently verified backend capability.
+
+
 ## Setup status synchronization audit — 2026-10-29
 
 Branch: `codex/local-agent-setup-status-sync-20261029`, based on fetched
@@ -245,7 +256,7 @@ still deferred; do not retire their existing wiring prematurely.
 ## Completed stage: Stage 3 Evaluation Harness & Stage 5 Symlink Audit (Argon)
 
 - Created disposable evaluation git repository at `modules/local_agent_bridge/.pytest_tmp_root/eval_workspace` (commit `b53168d`, tagged `baseline`) with `AGENTS.md`, `src/retry_policy.py` (2 intentional bugs), `src/forbidden_guard.py` (scope sentinel), and `tests/retry_policy_test.py`.
-- Authored [03_flash-execution-runbook.md](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md) containing exact copy-pasteable `opencode_worker` MCP JSON payloads, shell verification commands, pass/fail criteria for Scenarios A–D, and the complete Stage 5 symlink retirement audit.
+- Authored [03_flash-execution-runbook.md](plans/20261017-1650_host-adoption-and-runtime-handoff/03_flash-execution-runbook.md) containing exact copy-pasteable `opencode_worker` MCP JSON payloads, shell verification commands, pass/fail criteria for Scenarios Aâ€“D, and the complete Stage 5 symlink retirement audit.
 
 ## Completed stage: Stage 4 Live Delegation Benchmark Execution
 
