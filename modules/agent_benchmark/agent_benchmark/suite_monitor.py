@@ -34,11 +34,29 @@ def host_monitor_origin(gateway_url: str, host_url: str | None = None) -> str:
     return _monitor_origin(gateway_url)
 
 
+def resolve_managed_monitor_auth(origin: str) -> str | None:
+    """Attempt to acquire a scoped read capability token for a local managed Monitor."""
+    parsed = urlsplit(origin)
+    if parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
+        port = parsed.port or 8788
+        try:
+            from llm_monitor.local_client import ManagedMonitorClient
+            client = ManagedMonitorClient(port=port, host=parsed.hostname)
+            return client.acquire_capability_token()
+        except Exception:
+            return None
+    return None
+
+
 def _build_monitor_headers(origin: str) -> dict[str, str]:
     headers = {"Origin": origin}
     auth = os.environ.get("LLM_MONITOR_AUTHORIZATION")
+    if not auth:
+        token = resolve_managed_monitor_auth(origin)
+        if token:
+            auth = f"Bearer {token}"
     cookie = os.environ.get("LLM_MONITOR_SESSION_COOKIE")
-    if not cookie:
+    if not cookie and not auth:
         candidates = [
             Path("reports/agent-bench-suite/monitor_session.env"),
             Path.cwd() / "reports/agent-bench-suite/monitor_session.env",

@@ -22,6 +22,7 @@ from .gateway import OpenAIInferenceGateway, RequestEventHub, validate_gateway_u
 from .inference_recording import InferenceRecorder
 from .inference_service import InferenceMonitoringService
 from .inference_web import create_inference_web_app
+from .local_control import LocalCapabilityManager, LocalControlServer
 from .providers import LMStudioClient
 from .server_lifecycle import (
     LLMMonitorWebServer,
@@ -240,6 +241,10 @@ def run_web(
     parent_pid = os.getppid() if hasattr(os, "getppid") else None
     executable_id = str(Path(sys.executable).resolve())
 
+    capability_manager = LocalCapabilityManager(instance_id=instance_id)
+    control_server = LocalControlServer(instance_id=instance_id, capability_manager=capability_manager, state_dir=state_dir)
+    control_server.start()
+
     descriptor = ServerDescriptor(
         instance_id=instance_id,
         version=1,
@@ -257,11 +262,13 @@ def run_web(
         owner_identity=owner_id,
         parent_pid=parent_pid,
         executable_identity=executable_id,
+        control_endpoint=control_server.endpoint,
     )
 
     try:
         write_descriptor(desc_path, descriptor)
     except Exception as err:
+        control_server.stop()
         sock.close()
         print(f"llm-monitor: web: failed to write instance descriptor: {err}", file=sys.stderr)
         return 1
@@ -274,8 +281,10 @@ def run_web(
             event_hub=event_hub,
             recorder=recorder,
             history_store=store,
+            capability_manager=capability_manager,
         )
     except Exception as err:
+        control_server.stop()
         sock.close()
         remove_descriptor(desc_path, expected_instance_id=instance_id)
         print(f"llm-monitor: web: application initialization failed: {err}", file=sys.stderr)
@@ -328,6 +337,7 @@ def run_web(
     except KeyboardInterrupt:
         return 130
     finally:
+        control_server.stop()
         with contextlib.suppress(OSError):
             sock.close()
         remove_descriptor(desc_path, expected_instance_id=instance_id)

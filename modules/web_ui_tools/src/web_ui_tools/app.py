@@ -99,12 +99,19 @@ def create_app(
         if (protected or auth_route) and not _same_origin(request):
             return Response(status_code=403, headers={**security_headers, "Cache-Control": "no-store"})
         if protected:
-            session_id = request.cookies.get(session_cookie_name)
-            expires_at = app.state.sessions.get(session_id)
-            if expires_at is None or expires_at <= time.time():
-                if session_id:
-                    app.state.sessions.pop(session_id, None)
-                return Response(status_code=401, headers={**security_headers, "Cache-Control": "no-store"})
+            auth_header = request.headers.get("authorization", "")
+            if auth_header.startswith("Bearer ") and hasattr(app.state, "capability_verifier"):
+                token = auth_header[7:].strip()
+                verifier = getattr(app.state, "capability_verifier", None)
+                if not (callable(verifier) and verifier(token, request)):
+                    return Response(status_code=401, headers={**security_headers, "Cache-Control": "no-store"})
+            else:
+                session_id = request.cookies.get(session_cookie_name)
+                expires_at = app.state.sessions.get(session_id)
+                if expires_at is None or expires_at <= time.time():
+                    if session_id:
+                        app.state.sessions.pop(session_id, None)
+                    return Response(status_code=401, headers={**security_headers, "Cache-Control": "no-store"})
 
         response = await call_next(request)
         response.headers.update(security_headers)

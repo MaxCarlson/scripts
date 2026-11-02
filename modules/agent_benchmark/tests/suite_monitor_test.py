@@ -140,3 +140,22 @@ def test_request_snapshot_keeps_correlation_and_token_metadata_without_content()
     assert result["request_ids"] == ["r-1"]
     assert result["requests"][0]["input_tokens"] == 12
     assert "content" not in result["requests"][0]
+
+
+def test_build_monitor_headers_auto_bootstraps_managed_capability(monkeypatch):
+    from agent_benchmark.suite_monitor import _build_monitor_headers
+
+    monkeypatch.delenv("LLM_MONITOR_AUTHORIZATION", raising=False)
+    monkeypatch.delenv("LLM_MONITOR_SESSION_COOKIE", raising=False)
+
+    # Mock resolve_managed_monitor_auth
+    monkeypatch.setattr(
+        "agent_benchmark.suite_monitor.resolve_managed_monitor_auth",
+        lambda origin: "token-managed-xyz-123",
+    )
+
+    headers = _build_monitor_headers("http://127.0.0.1:8788")
+    assert headers["Origin"] == "http://127.0.0.1:8788"
+    assert headers["Authorization"] == "Bearer token-managed-xyz-123"
+    assert "Cookie" not in headers
+

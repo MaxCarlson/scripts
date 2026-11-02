@@ -30,6 +30,7 @@ def create_inference_web_app(
     event_hub: RequestEventHub | None = None,
     recorder: Any | None = None,
     history_store: Any | None = None,
+    capability_manager: Any | None = None,
 ) -> FastAPI:
     """Create the standalone UI app without opening a telemetry database."""
     try:
@@ -313,6 +314,28 @@ def create_inference_web_app(
         login_code=login_code,
         session_cookie_name=SESSION_COOKIE_NAME,
     )
+
+    if capability_manager is not None:
+        def verify_capability(token: str, request: Request) -> bool:
+            if request.method != "GET":
+                return False
+            path = request.url.path
+            if path == "/api/inference/v1/models":
+                scope = "inference:models:read"
+            elif path == "/api/inference/v1/status":
+                scope = "inference:status:read"
+            elif path == "/api/inference/v1/recording/status":
+                scope = "recording:health:read"
+            elif path == "/api/inference/v1/requests":
+                scope = "requests:summary:read"
+            elif path.startswith("/api/inference/v1/history"):
+                scope = "history:verification:read"
+            else:
+                return False
+            return capability_manager.verify_token(token, scope, capability_manager.instance_id)
+
+        app.state.capability_verifier = verify_capability
+        app.state.capability_manager = capability_manager
 
     @app.websocket("/api/inference/v1/stream")
     async def stream(websocket: WebSocket) -> None:
