@@ -1,0 +1,243 @@
+{
+  "request": {
+    "request_id": "40dbc9e2-bfbc-4b4e-92e3-4253c91a8bc4",
+    "server_instance_id": "lmstudio-5c9902e1c4eb5b70",
+    "model_instance_id": "qwen38_23GB",
+    "provider_request_id": "chatcmpl-zk0mf15i3ngdxcao1m1jmd",
+    "source": "gateway_openai_chat_completions",
+    "state": "completed",
+    "provider_model_id": "qwen38_23GB",
+    "model_name": "qwen38_23GB",
+    "started_at": "2026-11-02T04:52:40.958098+00:00",
+    "ended_at": "2026-11-02T04:52:42.504701+00:00",
+    "started_monotonic": 214948.875,
+    "ended_monotonic": 214950.421,
+    "input_tokens": null,
+    "reasoning_tokens": null,
+    "output_tokens": null,
+    "generated_tokens": null,
+    "usage_source": null,
+    "finish_reason": "length",
+    "elapsed_seconds": 1.5460000000020955,
+    "time_to_first_text_seconds": 0.171,
+    "time_to_first_text_source": "gateway_observed",
+    "generation_tokens_per_second": null,
+    "generation_speed_source": null,
+    "gpu_average_percent": 90.0,
+    "gpu_peak_vram_bytes": 33367785472.0,
+    "gpu_scope": "Device measurement \u00b7 n=1 (64% cov)",
+    "hardware_telemetry": {
+      "gpu_average_percent": 90.0,
+      "gpu_peak_percent": 90.0,
+      "gpu_average_vram_bytes": 33367785472.0,
+      "gpu_peak_vram_bytes": 33367785472.0,
+      "gpu_average_memory_controller_percent": 52.0,
+      "gpu_average_power_watts": 296.89,
+      "sample_count": 1,
+      "covered_duration_seconds": 1.0,
+      "coverage_fraction": 0.647,
+      "device_id": "gpu-0",
+      "attribution_scope": "device_point_sample",
+      "is_sparse": true
+    },
+    "coverage": {
+      "request_lifecycle": "complete",
+      "structured_input": "available",
+      "reasoning_text": "streaming",
+      "output_text": "streaming",
+      "token_usage": "unavailable",
+      "request_timing": "gateway_timed"
+    },
+    "content": [
+      {
+        "kind": "user",
+        "text": "Write three interesting facts about deep sea marine biology. Write in complete sentences.",
+        "role": "user",
+        "observed_at": null,
+        "content_type": "text/plain",
+        "source": "gateway_client",
+        "sequence": null,
+        "truncated": false
+      },
+      {
+        "kind": "reasoning",
+        "text": "We need to respond to user: \"Write three interesting facts about deep sea marine biology. Write in complete sentences.\" Simple. Need final with three complete sentences, each a fact. Ensure accurate. Could mention bioluminescence, hydrothermal vents chemosynthesis, giant isopods/pressure adaptations. Keep concise.",
+        "role": "assistant",
+        "observed_at": "2026-11-02T04:52:41.816872+00:00",
+        "content_type": "text/plain",
+        "source": "gateway_sse",
+        "sequence": 65,
+        "truncated": false
+      },
+      {
+        "kind": "assistant",
+        "text": "Many deep-sea animals produce their own light through bioluminescence to communicate, attract prey, or avoid predators. Some organisms near hydrothermal vents survive by using bacteria that convert chemicals from the ocean floor into energy instead of relying on sunlight. Deep-sea creatures",
+        "role": "assistant",
+        "observed_at": "2026-11-02T04:52:42.504701+00:00",
+        "content_type": "text/plain",
+        "source": "gateway_sse",
+        "sequence": 118,
+        "truncated": false
+      }
+    ]
+  },
+  "analytics": {
+    "schema_version": 1,
+    "server_instance_id": "all",
+    "model_id": "all",
+    "window_seconds": null,
+    "analytics": {
+      "request_counts": {
+        "observed_requests": 1,
+        "active_requests": 0,
+        "completed_requests": 1,
+        "failed_requests": 0,
+        "cancelled_requests": 0,
+        "token_measured_requests": 0,
+        "hardware_covered_requests": 1
+      },
+      "tokens": {
+        "input_tokens": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "reasoning_tokens": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "output_tokens": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tokens",
+          "source": "provider_reported"
+        },
+        "generated_tokens": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tokens",
+          "source": "provider_reported"
+        }
+      },
+      "timing": {
+        "duration_seconds": {
+          "mean": 1.55,
+          "median": 1.55,
+          "total": null,
+          "sample_count": 1,
+          "unit": "seconds",
+          "source": "observed_lifecycle",
+          "p90": null,
+          "p95": null
+        },
+        "time_to_first_text_seconds": {
+          "mean": 0.17,
+          "median": 0.17,
+          "total": null,
+          "sample_count": 1,
+          "unit": "seconds",
+          "source": "gateway_observed"
+        },
+        "generation_tokens_per_second": {
+          "mean": null,
+          "median": null,
+          "total": null,
+          "sample_count": 0,
+          "unit": "tok/s",
+          "source": "end_to_end_approx"
+        }
+      },
+      "hardware": {
+        "gpu_average_percent": {
+          "mean": 90.0,
+          "median": 90.0,
+          "total": null,
+          "sample_count": 1,
+          "unit": "%",
+          "source": "device_during_request"
+        },
+        "gpu_peak_vram_bytes": {
+          "max": 33367785472.0,
+          "sample_count": 1,
+          "unit": "bytes",
+          "source": "device_during_request"
+        }
+      }
+    }
+  },
+  "hardware": {
+    "schema_version": 1,
+    "availability": "available",
+    "source": "resource_metrics.nvidia_smi",
+    "device_count": 1,
+    "devices": [
+      {
+        "device_id": "gpu-0",
+        "device_index": 0,
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "vram_total_bytes": 34190917632.0
+      }
+    ],
+    "samples": [
+      {
+        "sample_id": 1,
+        "timestamp": "2026-11-02T04:52:39.892214+00:00",
+        "timestamp_monotonic": 214947.812,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 4.0,
+        "memory_controller_utilization_percent": 2.0,
+        "vram_used_bytes": 33367785472.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 38.05,
+        "power_watts": 55.16,
+        "validity": "valid",
+        "error": null
+      },
+      {
+        "sample_id": 2,
+        "timestamp": "2026-11-02T04:52:41.948251+00:00",
+        "timestamp_monotonic": 214949.859,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 90.0,
+        "memory_controller_utilization_percent": 52.0,
+        "vram_used_bytes": 33367785472.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 53.38,
+        "power_watts": 296.89,
+        "validity": "valid",
+        "error": null
+      },
+      {
+        "sample_id": 3,
+        "timestamp": "2026-11-02T04:52:42.505704+00:00",
+        "timestamp_monotonic": 214950.421,
+        "device_id": "gpu-0",
+        "device_name": "NVIDIA GeForce RTX 5090",
+        "source": "resource_metrics.nvidia_smi",
+        "gpu_utilization_percent": 90.0,
+        "memory_controller_utilization_percent": 55.0,
+        "vram_used_bytes": 33367785472.0,
+        "vram_total_bytes": 34190917632.0,
+        "temperature_celsius": 56.73,
+        "power_watts": 432.42,
+        "validity": "valid",
+        "error": null
+      }
+    ]
+  }
+}

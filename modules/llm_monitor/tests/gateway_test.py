@@ -350,3 +350,54 @@ def test_gateway_rejects_oversized_request_before_upstream_forwarding():
         result = test_client.post("/v1/chat/completions", content=b"{}", headers={"content-type": "application/json", "content-length": str(MAX_REQUEST_BYTES + 1)})
     assert result.status_code == 413
     assert store.requests() == ()
+
+
+def test_completed_request_correlates_hardware_samples_and_timing():
+    from llm_monitor.inference_models import HardwareSample
+    import time
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    store = LiveInferenceStore()
+    now_mono = time.monotonic()
+    sample = HardwareSample(
+        sample_id=1,
+        timestamp="2026-11-01T20:00:00.000000+00:00",
+        timestamp_monotonic=now_mono,
+        device_id="GPU-test-1",
+        device_name="RTX 5090",
+        source="nvidia_smi",
+        gpu_utilization_percent=72.5,
+        memory_controller_utilization_percent=18.0,
+        vram_used_bytes=10000.0 * 1024 * 1024,
+        vram_total_bytes=32000.0 * 1024 * 1024,
+        temperature_celsius=52.0,
+        power_watts=150.0,
+    )
+    store.add_hardware_sample(sample)
+
+    payload = {
+        "id": "chatcmpl-test",
+        "choices": [{"message": {"role": "assistant", "content": "hello world"}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    }
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json=payload, headers={"content-type": "application/json"})))
+    events = RequestEventHub()
+    gateway = OpenAIInferenceGateway("http://127.0.0.1:1234", store, events, client=mock_client)
+
+    app = FastAPI()
+    app.include_router(gateway.router())
+    with TestClient(app) as test_client:
+        res = test_client.post("/v1/chat/completions", json={"model": "test-m", "messages": [{"role": "user", "content": "hi"}]})
+        assert res.status_code == 200
+
+    requests = store.requests()
+    assert len(requests) == 1
+    req = requests[0]
+    assert req.state == "completed"
+    assert req.gpu_average_percent == 72.5
+    assert req.gpu_peak_vram_bytes == 10000.0 * 1024 * 1024
+    assert req.hardware_telemetry is not None
+    assert req.hardware_telemetry["sample_count"] == 1
+    assert req.time_to_first_text_seconds is not None
+    assert req.generation_tokens_per_second is not None

@@ -2,26 +2,36 @@
 
 from __future__ import annotations
 
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from dataclasses import replace
 from threading import RLock
 from typing import Any
 
-from .inference_models import InferenceRequest, ModelInventoryEntry
+from .inference_models import HardwareSample, InferenceRequest, ModelInventoryEntry
 
 
 class LiveInferenceStore:
-    """Retain bounded request content and the latest inventory in memory only."""
+    """Retain bounded request content, hardware samples, and the latest inventory in memory only."""
 
-    def __init__(self, *, max_requests: int = 500, max_content_bytes: int = 2_000_000) -> None:
+    def __init__(
+        self,
+        *,
+        max_requests: int = 500,
+        max_content_bytes: int = 2_000_000,
+        max_hardware_samples: int = 2000,
+    ) -> None:
         if max_requests < 1:
             raise ValueError("max_requests must be at least 1")
         if max_content_bytes < 0:
             raise ValueError("max_content_bytes must not be negative")
+        if max_hardware_samples < 1:
+            raise ValueError("max_hardware_samples must be at least 1")
         self.max_requests = max_requests
         self.max_content_bytes = max_content_bytes
+        self.max_hardware_samples = max_hardware_samples
         self._lock = RLock()
         self._requests: OrderedDict[str, InferenceRequest] = OrderedDict()
+        self._hardware_samples: deque[HardwareSample] = deque(maxlen=max_hardware_samples)
         self._server: dict[str, Any] | None = None
         self._models: tuple[ModelInventoryEntry, ...] = ()
 
@@ -50,6 +60,52 @@ class LiveInferenceStore:
     def requests(self) -> tuple[InferenceRequest, ...]:
         with self._lock:
             return tuple(reversed(self._requests.values()))
+
+    def get_request(self, request_id: str) -> InferenceRequest | None:
+        with self._lock:
+            return self._requests.get(request_id)
+
+    def active_request_count(self) -> int:
+        with self._lock:
+            return sum(
+                1
+                for r in self._requests.values()
+                if r.state in {"active", "generating", "running", "queued"}
+            )
+
+    def has_active_requests(self) -> bool:
+        return self.active_request_count() > 0
+
+    def add_hardware_sample(self, sample: HardwareSample) -> None:
+        with self._lock:
+            self._hardware_samples.append(sample)
+
+    def hardware_samples(
+        self,
+        *,
+        device_id: str | None = None,
+        limit: int | None = None,
+        since_timestamp: str | None = None,
+        since_monotonic: float | None = None,
+    ) -> list[HardwareSample]:
+        with self._lock:
+            samples = list(self._hardware_samples)
+        if device_id is not None:
+            samples = [s for s in samples if s.device_id == device_id]
+        if since_timestamp is not None:
+            samples = [s for s in samples if s.timestamp >= since_timestamp]
+        if since_monotonic is not None:
+            samples = [s for s in samples if s.timestamp_monotonic >= since_monotonic]
+        if limit is not None and limit > 0:
+            samples = samples[-limit:]
+        return samples
+
+    def latest_hardware_sample(self, device_id: str | None = None) -> HardwareSample | None:
+        with self._lock:
+            for s in reversed(self._hardware_samples):
+                if device_id is None or s.device_id == device_id:
+                    return s
+            return None
 
     def append_content(self, request_id: str, segment: Any) -> None:
         """Append one captured segment under the same global content budget."""

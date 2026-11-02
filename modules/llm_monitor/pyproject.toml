@@ -26,4 +26,4 @@ llm_monitor = ["web_static/*.html", "web_static/assets/*.css", "web_static/asset
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "-q --basetemp=modules/llm_monitor/.pytest_tmp_root"
+addopts = "-q --basetemp=.pytest_tmp_root"

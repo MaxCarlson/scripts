@@ -45,6 +45,12 @@ export function createRenderer() {
         lastSelectedKey = state.selectedRequestKey;
       }
     },
+    renderHardware(state) {
+      if (state.page === "overview") {
+        renderKpis(state);
+        renderGpu(state);
+      }
+    },
   };
 }
 
@@ -146,11 +152,16 @@ function renderKpis(state) {
     text("kpi-duration-note", "Observed request lifecycle");
   }
   text("kpi-gpu", "—");
-  const gpuSamples = Array.isArray(state.status?.hardware_samples) ? state.status.hardware_samples.map((sample) => sample.gpu_utilization_percent).filter((value) => Number.isFinite(value) && value >= 0 && value <= 100) : [];
-  if (gpuSamples.length) {
-    text("kpi-gpu", `${(gpuSamples.reduce((sum, value) => sum + value, 0) / gpuSamples.length).toFixed(1)}%`);
-    text("kpi-gpu-note", `Device average · not per-request · n=${gpuSamples.length}`);
-  } else text("kpi-gpu-note", "Device-level samples unavailable");
+  if (summary.gpu) {
+    text("kpi-gpu", `${summary.gpu.value.toFixed(1)}%`);
+    text("kpi-gpu-note", `Req average · n=${summary.gpu.samples}`);
+  } else {
+    const gpuSamples = Array.isArray(state.status?.hardware_samples) ? state.status.hardware_samples.map((sample) => sample.gpu_utilization_percent).filter((value) => Number.isFinite(value) && value >= 0 && value <= 100) : [];
+    if (gpuSamples.length) {
+      text("kpi-gpu", `${(gpuSamples.reduce((sum, value) => sum + value, 0) / gpuSamples.length).toFixed(1)}%`);
+      text("kpi-gpu-note", `Device average · not per-request · n=${gpuSamples.length}`);
+    } else text("kpi-gpu-note", "Device-level samples unavailable");
+  }
 }
 
 function setAverage(name, metric, unit) {

@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from .gpu_sampler import GpuSampler
 from .inference_models import CaptureCapabilities, ModelInventoryEntry
 from .live_store import LiveInferenceStore
 
@@ -22,6 +23,7 @@ class InferenceMonitoringService:
         endpoint: str,
         refresh_interval_seconds: float = 2.0,
         store: LiveInferenceStore | None = None,
+        gpu_sampler: GpuSampler | None = None,
     ) -> None:
         if refresh_interval_seconds <= 0:
             raise ValueError("refresh_interval_seconds must be positive")
@@ -29,6 +31,7 @@ class InferenceMonitoringService:
         self.endpoint = endpoint.rstrip("/")
         self.refresh_interval_seconds = refresh_interval_seconds
         self.store = store or LiveInferenceStore()
+        self.gpu_sampler = gpu_sampler or GpuSampler(self.store, is_active_fn=self.store.has_active_requests)
         self._refresh_lock = threading.Lock()
         self._state_lock = threading.RLock()
         self._stop = threading.Event()
@@ -48,6 +51,8 @@ class InferenceMonitoringService:
                 self._first_observed_at = self._first_observed_at or checked_at
                 server = self._server("connected", checked_at, None)
                 capabilities = CaptureCapabilities.passive_inventory(available=True).to_dict()
+                if self.gpu_sampler.is_available:
+                    capabilities["gpu_samples"] = {"state": "available", "source": "resource_metrics.nvidia_smi"}
             except (OSError, RuntimeError, ValueError, TypeError) as error:
                 models = []
                 server = self._server("unavailable", checked_at, type(error).__name__)
@@ -71,6 +76,9 @@ class InferenceMonitoringService:
         with self._state_lock:
             snapshot = _copy_snapshot(self._state)
             snapshot["requests"] = [request.to_dict() for request in self.store.requests()]
+            snapshot["hardware_samples"] = [s.to_dict() for s in self.store.hardware_samples(limit=60)]
+            if self.gpu_sampler.is_available:
+                snapshot["capabilities"]["gpu_samples"] = {"state": "available", "source": "resource_metrics.nvidia_smi"}
             return snapshot
 
     def start(self) -> None:
@@ -79,11 +87,13 @@ class InferenceMonitoringService:
                 return
             self._stop.clear()
             self.refresh()
+            self.gpu_sampler.start()
             self._thread = threading.Thread(target=self._poll, name="llm-monitor-inventory", daemon=True)
             self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        self.gpu_sampler.stop()
         thread = self._thread
         if thread is not None and thread.is_alive():
             thread.join(timeout=max(1.0, self.refresh_interval_seconds + 0.5))

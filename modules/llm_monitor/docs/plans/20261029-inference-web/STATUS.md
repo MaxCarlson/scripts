@@ -1,8 +1,9 @@
 # Status
 
-**State:** Phase D.2 gateway performance and transport qualification accepted for merge review; no merge performed
-**Branch:** `codex/llm-monitor-inference-web-20261029`
-**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-inference-web-20261029`
+**State:** Phase E real GPU telemetry and per-request inference analytics completed; accepted for merge review; no merge performed
+**Branch:** `agy/llm-monitor-phase-e-gpu-analytics-20261101`
+**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-phase-e-agy-20261101`
+**Base feature branch:** `codex/llm-monitor-inference-web-20261029` (`a8e00f80`)
 **Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
 **Phase D baseline:** `966c3476a6448fcdbd095390d0c706308d8915ae`
 **Design authority:** [`docs/APPROVED_VISUAL_OUTLINE.md`](../../APPROVED_VISUAL_OUTLINE.md)
@@ -56,6 +57,31 @@ Phase D.2 is complete. See [`PHASE_D2_VALIDATION.md`](PHASE_D2_VALIDATION.md). T
 
 The actual inference-client TCP-disconnect probe ended the monitor request as cancelled and confirmed upstream stream closure. Previously validated browser-observer disconnect/reconnect and snapshot reconciliation remain unchanged. The benchmark harness gained alternating-prompt support, but a final alternating live trial was not run because the model was no longer confirmed loaded; no automatic load was attempted. Functional and performance gates are accepted for merge review under the D.2 criteria. Subsequent development priority is GPU/per-request analytics and historical recording. D.2's focused benchmark tests (10 passed), Ruff, and standalone frontend contract pass. Fresh full-suite attempts stalled after initial output and were interrupted without final summaries; D.1's last recorded broad suites were green (LLM Monitor 170 passed/1 skipped, `web_ui_tools` 14 passed, Runmux API/integration 19 passed). This branch remains unmerged.
 
+## Phase E real GPU telemetry and per-request inference analytics
+
+Phase E is complete and verified against real LM Studio runtime (`qwen38_23GB`) and NVIDIA GeForce RTX 5090 hardware. See [`PHASE_E_VALIDATION.md`](PHASE_E_VALIDATION.md).
+
+Key deliverables:
+- **Pytest stall resolved:** Root-caused the test suite stall from Phase D.2 to nested `--basetemp` path recursion in `pyproject.toml`; fixed to `--basetemp=.pytest_tmp_root`.
+- **Shared GPU sampling service:** Implemented `GpuSampler` reusing `resource_metrics.gpu` with adaptive 0.8s active / 4.0s idle cadence, 1.5s timeout, 1,000-sample ring buffer, and throttled WebSocket events.
+- **Per-request hardware correlation:** Implemented `correlate_request_hardware` tracking time-weighted average GPU %, peak %, peak VRAM, coverage fraction, and sparse sample labeling without blocking gateway finalization.
+- **Pure inference analytics service:** Implemented `compute_model_analytics` for model/server/window filters with exact percentiles (p90 at n≥5, p95 at n≥10) and zero falsified metrics (no zero-substitution for missing provider token usage).
+- **Authenticated APIs & WebSocket:** Implemented `GET /api/inference/v1/hardware`, `GET /api/inference/v1/analytics`, `GET /api/inference/v1/requests/{id}/telemetry`, updated `/status`, and wired live `hardware.sample` WebSocket broadcasting.
+- **Frontend dashboard integration:** Connected real metrics to the approved dark technical dashboard: live KPI cards (request-correlated GPU average and peak VRAM), request inspector Telemetry tab, and GPU activity panel.
+- **Performance qualification:** Paired benchmark showed median observed-vs-direct overhead of +4.26 ms nonstreaming and +4.30 ms streaming with zero outliers > 100 ms.
+- **Live validation:** Captured full multi-turn/long-form generation telemetry and Playwright 1920×1080 screenshot in `screenshots/phase-e-real-gpu-telemetry.png`.
+
+Current validation:
+- Full LLM Monitor suite passes: 192 passed, 1 skipped.
+- `web_ui_tools`: 14 passed.
+- `resource_metrics`: 12 passed.
+- Runmux monitor API & integration: 19 passed.
+- Frontend test: `node tests/standalone_web_ui_test.js` passes.
+- Syntax: `node --check` passes on all packaged `.mjs` modules.
+- Ruff: clean on all modified Python modules (`llm_monitor`, `resource_metrics`).
+- Wheel packaging: `llm-monitor-0.8.0-py3-none-any.whl` builds cleanly.
+- Memory boundary: in-memory only; no SQLite database created.
+
 ## Publication
 
-Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above; the branch remains unmerged.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above. Phase E is completed and committed on isolated branch `agy/llm-monitor-phase-e-gpu-analytics-20261101` and is ready for merge review; no merge into `main` or the base feature branch has been performed.

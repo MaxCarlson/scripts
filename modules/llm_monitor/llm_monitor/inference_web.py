@@ -5,10 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
 
-from .inference_service import InferenceMonitoringService
 from .gateway import OpenAIInferenceGateway, RequestEventHub
+from .inference_analysis import compute_model_analytics
+from .inference_service import InferenceMonitoringService
 
 STATIC_DIR = Path(__file__).resolve().parent / "web_static"
 SESSION_COOKIE_NAME = "llm_monitor_session"
@@ -30,13 +31,26 @@ def create_inference_web_app(
 
     router = APIRouter(prefix="/api/inference/v1")
     events = event_hub or RequestEventHub()
+    if hasattr(service, "gpu_sampler") and service.gpu_sampler is not None:
+        service.gpu_sampler.event_hub = events
 
     @router.get("/status")
     def status() -> dict[str, Any]:
         snapshot = service.snapshot()
         capabilities = snapshot["capabilities"]
         if gateway is not None:
-            capabilities = {**capabilities, "request_lifecycle": {"state": "available", "source": "gateway"}, "structured_input": {"state": "available", "source": "gateway"}, "reasoning_text": {"state": "streaming", "source": "upstream_sse"}, "output_text": {"state": "streaming", "source": "upstream_sse"}, "request_timing": {"state": "available", "source": "gateway_observed"}, "token_usage": {"state": "available", "source": "provider_reported_or_unavailable"}}
+            capabilities = {
+                **capabilities,
+                "request_lifecycle": {"state": "available", "source": "gateway"},
+                "structured_input": {"state": "available", "source": "gateway"},
+                "reasoning_text": {"state": "streaming", "source": "upstream_sse"},
+                "output_text": {"state": "streaming", "source": "upstream_sse"},
+                "request_timing": {"state": "available", "source": "gateway_observed"},
+                "token_usage": {"state": "available", "source": "provider_reported_or_unavailable"},
+                "aggregate_metrics": {"state": "available", "source": "in_memory_analytics"},
+            }
+        if hasattr(service, "gpu_sampler") and service.gpu_sampler and service.gpu_sampler.is_available:
+            capabilities["gpu_samples"] = {"state": "available", "source": "resource_metrics.nvidia_smi"}
         return {
             "schema_version": 1,
             "availability": snapshot["server"]["connection_state"],
@@ -44,6 +58,7 @@ def create_inference_web_app(
             "refreshed_at": snapshot["refreshed_at"],
             "capabilities": capabilities,
             "recording": snapshot["recording"],
+            "hardware_samples": snapshot.get("hardware_samples", []),
         }
 
     @router.get("/servers")
@@ -82,12 +97,87 @@ def create_inference_web_app(
             raise HTTPException(status_code=404, detail="Inference request not found")
         return {"schema_version": 1, "request": request}
 
+    @router.get("/requests/{request_id}/telemetry")
+    def request_telemetry(request_id: str) -> dict[str, Any]:
+        snapshot = service.snapshot()
+        request = next((item for item in snapshot["requests"] if item["request_id"] == request_id), None)
+        if request is None:
+            raise HTTPException(status_code=404, detail="Inference request not found")
+        return {
+            "schema_version": 1,
+            "request_id": request_id,
+            "timing": {
+                "started_at": request.get("started_at"),
+                "ended_at": request.get("ended_at"),
+                "elapsed_seconds": request.get("elapsed_seconds"),
+                "time_to_first_text_seconds": request.get("time_to_first_text_seconds"),
+                "time_to_first_text_source": request.get("time_to_first_text_source"),
+                "generation_tokens_per_second": request.get("generation_tokens_per_second"),
+                "generation_speed_source": request.get("generation_speed_source"),
+            },
+            "tokens": {
+                "input_tokens": request.get("input_tokens"),
+                "reasoning_tokens": request.get("reasoning_tokens"),
+                "output_tokens": request.get("output_tokens"),
+                "generated_tokens": request.get("generated_tokens"),
+                "usage_source": request.get("usage_source"),
+            },
+            "hardware": request.get("hardware_telemetry") or {
+                "gpu_average_percent": request.get("gpu_average_percent"),
+                "gpu_peak_vram_bytes": request.get("gpu_peak_vram_bytes"),
+                "gpu_scope": request.get("gpu_scope"),
+            },
+            "coverage": request.get("coverage", {}),
+        }
+
+    @router.get("/hardware")
+    def hardware(
+        device_id: str | None = None,
+        limit: int = Query(default=100, ge=1, le=500),
+        since: str | None = None,
+    ) -> dict[str, Any]:
+        status_info = service.gpu_sampler.status() if hasattr(service, "gpu_sampler") and service.gpu_sampler else {}
+        is_avail = bool(service.gpu_sampler.is_available) if hasattr(service, "gpu_sampler") and service.gpu_sampler else False
+        samples = service.store.hardware_samples(device_id=device_id, limit=limit, since_timestamp=since) if hasattr(service, "store") else []
+        return {
+            "schema_version": 1,
+            "availability": "available" if is_avail else "unavailable",
+            "source": "resource_metrics.nvidia_smi",
+            "device_count": status_info.get("device_count", 0),
+            "devices": status_info.get("devices", []),
+            "samples": [s.to_dict() for s in samples],
+        }
+
+    @router.get("/analytics")
+    def analytics(
+        server_instance_id: str | None = None,
+        model_id: str | None = None,
+        window_seconds: float | None = Query(default=None, gt=0),
+    ) -> dict[str, Any]:
+        all_requests = service.store.requests() if hasattr(service, "store") else []
+        all_samples = service.store.hardware_samples() if hasattr(service, "store") else []
+        summary = compute_model_analytics(
+            all_requests,
+            all_samples,
+            server_instance_id=server_instance_id,
+            model_id=model_id,
+            time_window_seconds=window_seconds,
+        )
+        return {
+            "schema_version": 1,
+            "server_instance_id": server_instance_id or "all",
+            "model_id": model_id or "all",
+            "window_seconds": window_seconds,
+            "analytics": summary,
+        }
+
     app = create_app(
         api_router=router,
         static_dir=static_dir,
         login_code=login_code,
         session_cookie_name=SESSION_COOKIE_NAME,
     )
+
     @app.websocket("/api/inference/v1/stream")
     async def stream(websocket: WebSocket) -> None:
         await websocket.accept()

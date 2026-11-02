@@ -50,10 +50,11 @@ export function tokenMetric(request, field) {
 export function aggregateSummary(requests, captureState, selectedModelId = "all") {
   const subset = requests.filter((request) => selectedModelId === "all" || (request.model_instance_id || request.provider_model_id) === selectedModelId);
   if (captureState === "unavailable" && subset.length === 0) {
-    return { requestCount: "—", requestNote: "No request source connected", input: null, reasoning: null, output: null, duration: null };
+    return { requestCount: "—", requestNote: "No request source connected", input: null, reasoning: null, output: null, duration: null, gpu: null };
   }
   const completed = subset.filter((request) => ["completed", "complete"].includes(String(request.state).toLowerCase()));
   const measured = (field) => average(completed.filter((request) => tokenMetric(request, field).source === "provider_reported").map((request) => request[field]));
+  const gpuAvg = average(completed.map((request) => request.gpu_average_percent).filter((value) => Number.isFinite(value) && value >= 0));
   return {
     requestCount: captureState === "unavailable" ? "—" : safeCount(subset.length),
     requestNote: captureState === "unavailable" ? "Request history unavailable" : `${subset.length} observed requests · in-memory window`,
@@ -61,5 +62,6 @@ export function aggregateSummary(requests, captureState, selectedModelId = "all"
     reasoning: average(completed.filter((request) => tokenMetric(request, "reasoning_tokens").source === "provider_reported").map((request) => request.reasoning_tokens)),
     output: measured("output_tokens"),
     duration: average(completed.map((request) => durationSeconds(request)).filter((value) => value !== null)),
+    gpu: gpuAvg,
   };
 }

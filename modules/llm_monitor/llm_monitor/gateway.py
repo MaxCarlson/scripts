@@ -20,6 +20,7 @@ import httpx
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
 
+from .inference_analysis import correlate_request_hardware
 from .inference_models import ContentSegment, InferenceRequest
 from .live_store import LiveInferenceStore
 
@@ -216,7 +217,7 @@ class OpenAIInferenceGateway:
             model_id = payload.get("model") if isinstance(payload.get("model"), str) else None
             identity = {"request_id": request_id, "server_instance_id": self.server_instance_id, "model_instance_id": model_id, "provider_model_id": model_id, "model_name": model_id}
             segments = tuple(ContentSegment(kind=str(message.get("role", "other")), role=str(message.get("role", "other")), text=_message_text(message.get("content")), source="gateway_client") for message in payload["messages"] if isinstance(message, dict))
-            record = InferenceRequest(request_id=request_id, server_instance_id=self.server_instance_id, model_instance_id=model_id, provider_model_id=model_id, model_name=model_id, source="gateway_openai_chat_completions", state="active", started_at=started_at, coverage={"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "streaming", "output_text": "streaming", "token_usage": "unavailable", "request_timing": "gateway_timed"}, content=segments)
+            record = InferenceRequest(request_id=request_id, server_instance_id=self.server_instance_id, model_instance_id=model_id, provider_model_id=model_id, model_name=model_id, source="gateway_openai_chat_completions", state="active", started_at=started_at, started_monotonic=started, coverage={"request_lifecycle": "complete", "structured_input": "available", "reasoning_text": "streaming", "output_text": "streaming", "token_usage": "unavailable", "request_timing": "gateway_timed"}, content=segments)
             self.store.add_request(record)
             self._publish({"type": "request.started", "request": identity, "timestamp": started_at, "content": [segment.to_dict() for segment in segments]}, timing)
             url = f"{self.upstream}/v1/chat/completions"
@@ -255,7 +256,7 @@ class OpenAIInferenceGateway:
                 finally:
                     await upstream.aclose()
                 timing.mark("body_complete_ms")
-                self._capture_json(request_id, identity, raw, timing=timing)
+                self._capture_json(request_id, identity, raw, timing=timing, started=started)
                 self._terminal(request_id, identity, "request.completed", started, started_at, timing=timing)
                 return Response(raw, status_code=upstream.status_code, headers=_response_headers(upstream.headers), media_type=upstream.headers.get("content-type"))
             return StreamingResponse(self._stream(upstream, request_id, identity, started, started_at, timing), status_code=upstream.status_code, headers=_response_headers(upstream.headers), media_type=upstream.headers.get("content-type", "text/event-stream"))
@@ -302,7 +303,7 @@ class OpenAIInferenceGateway:
                 while (boundary := _frame_boundary(pending)) is not None:
                     frame = bytes(pending[:boundary])
                     del pending[:boundary]
-                    self._capture_sse(request_id, identity, frame, timing=timing)
+                    self._capture_sse(request_id, identity, frame, timing=timing, started=started)
                 if len(pending) > MAX_CAPTURE_FRAME_BYTES:
                     self._publish({"type": "telemetry.gap", "request": identity, "timestamp": _now(), "reason": "upstream_event_too_large"}, timing)
                     pending.clear()
@@ -311,7 +312,7 @@ class OpenAIInferenceGateway:
                 # Forward exact upstream bytes immediately; parsing is an independent bounded side path.
                 yield chunk
             if pending:
-                self._capture_sse(request_id, identity, bytes(pending), timing=timing)
+                self._capture_sse(request_id, identity, bytes(pending), timing=timing, started=started)
             timing.mark("body_complete_ms")
             self._terminal(request_id, identity, "request.completed", started, started_at, timing=timing)
         except asyncio.CancelledError:
@@ -325,7 +326,7 @@ class OpenAIInferenceGateway:
         finally:
             await upstream.aclose()
 
-    def _capture_sse(self, request_id: str, identity: dict[str, Any], frame: bytes, *, timing: _GatewayTiming | None = None) -> None:
+    def _capture_sse(self, request_id: str, identity: dict[str, Any], frame: bytes, *, timing: _GatewayTiming | None = None, started: float | None = None) -> None:
         if len(frame) > MAX_EVENT_BYTES:
             self._publish({"type": "telemetry.gap", "request": identity, "timestamp": _now(), "reason": "upstream_event_too_large"}, timing)
             return
@@ -348,6 +349,10 @@ class OpenAIInferenceGateway:
                         for field, kind in (("reasoning_content", "reasoning.delta"), ("content", "output.delta")):
                             value = delta.get(field)
                             if isinstance(value, str) and value:
+                                if started is not None:
+                                    existing_req = next((item for item in self.store.requests() if item.request_id == request_id), None)
+                                    if existing_req and existing_req.time_to_first_text_seconds is None:
+                                        self._update_fields(request_id, time_to_first_text_seconds=round(time.monotonic() - started, 4), time_to_first_text_source="gateway_observed")
                                 segment_kind = "reasoning" if field == "reasoning_content" else "assistant"
                                 emitted = self._publish({"type": kind, "request": identity, "timestamp": _now(), "delta": value}, timing)
                                 self._append_content(request_id, ContentSegment(kind=segment_kind, role="assistant", text=value, observed_at=emitted["timestamp"], sequence=emitted["sequence"], source="gateway_sse"), timing)
@@ -367,7 +372,7 @@ class OpenAIInferenceGateway:
                 self._publish({"type": "usage.reported", "request": identity, "timestamp": _now(), "source": "provider_reported", "payload": _usage_payload(usage)}, timing)
                 self._update_usage(request_id, usage)
 
-    def _capture_json(self, request_id: str, identity: dict[str, Any], raw: bytes, *, timing: _GatewayTiming | None = None) -> None:
+    def _capture_json(self, request_id: str, identity: dict[str, Any], raw: bytes, *, timing: _GatewayTiming | None = None, started: float | None = None) -> None:
         try:
             result = json.loads(raw)
         except (UnicodeDecodeError, json.JSONDecodeError):
@@ -378,6 +383,10 @@ class OpenAIInferenceGateway:
             if isinstance(message, dict):
                 for field, kind in (("reasoning_content", "reasoning.delta"), ("content", "output.delta")):
                     if isinstance(message.get(field), str) and message[field]:
+                        if started is not None:
+                            existing_req = next((item for item in self.store.requests() if item.request_id == request_id), None)
+                            if existing_req and existing_req.time_to_first_text_seconds is None:
+                                self._update_fields(request_id, time_to_first_text_seconds=round(time.monotonic() - started, 4), time_to_first_text_source="gateway_observed")
                         emitted = self._publish({"type": kind, "request": identity, "timestamp": _now(), "delta": message[field]}, timing)
                         self._append_content(request_id, ContentSegment(kind="reasoning" if field == "reasoning_content" else "assistant", role="assistant", text=message[field], observed_at=emitted["timestamp"], sequence=emitted["sequence"], source="gateway_json"), timing)
             if isinstance(choice, dict) and isinstance(choice.get("finish_reason"), str):
@@ -417,13 +426,48 @@ class OpenAIInferenceGateway:
 
     def _terminal(self, request_id: str, identity: dict[str, Any], kind: str, started: float, started_at: str, error: str | None = None, timing: _GatewayTiming | None = None) -> None:
         ended = _now()
+        ended_monotonic = time.monotonic()
+        elapsed = max(0.000001, ended_monotonic - started)
         existing = next((item for item in self.store.requests() if item.request_id == request_id), None)
+        hw_info: dict[str, Any] = {}
         if existing:
-            elapsed = time.monotonic() - started
-            self.store.add_request(InferenceRequest(**{**existing.__dict__, "state": kind.removeprefix("request."), "ended_at": ended, "elapsed_seconds": elapsed}))
-        else:
-            elapsed = time.monotonic() - started
+            samples = self.store.hardware_samples(since_monotonic=started - 1.0)
+            candidate = InferenceRequest(**{
+                **existing.__dict__,
+                "state": kind.removeprefix("request."),
+                "ended_at": ended,
+                "started_monotonic": started,
+                "ended_monotonic": ended_monotonic,
+                "elapsed_seconds": elapsed,
+            })
+            hw_info = correlate_request_hardware(candidate, samples)
+            tps = None
+            tps_src = None
+            if candidate.generated_tokens is not None and elapsed > 0:
+                tps = round(candidate.generated_tokens / elapsed, 2)
+                tps_src = "end_to_end_approx"
+
+            n_samples = hw_info.get("sample_count", 0)
+            cov_pct = int((hw_info.get("coverage_fraction", 0.0)) * 100)
+            gpu_scope = f"Device measurement · n={n_samples} ({cov_pct}% cov)" if n_samples > 0 else "Device samples unavailable"
+
+            updated_record = InferenceRequest(**{
+                **candidate.__dict__,
+                "generation_tokens_per_second": tps or candidate.generation_tokens_per_second,
+                "generation_speed_source": tps_src or candidate.generation_speed_source,
+                "gpu_average_percent": hw_info.get("gpu_average_percent"),
+                "gpu_peak_vram_bytes": hw_info.get("gpu_peak_vram_bytes"),
+                "gpu_scope": gpu_scope,
+                "hardware_telemetry": hw_info,
+            })
+            self.store.add_request(updated_record)
         event = {"type": kind, "request": identity, "timestamp": ended, "elapsed_seconds": elapsed}
+        if hw_info and hw_info.get("sample_count", 0) > 0:
+            event["hardware"] = {
+                "gpu_average_percent": hw_info.get("gpu_average_percent"),
+                "gpu_peak_vram_bytes": hw_info.get("gpu_peak_vram_bytes"),
+                "sample_count": hw_info.get("sample_count"),
+            }
         if error:
             event["error_category"] = error
         self._publish(event, timing)

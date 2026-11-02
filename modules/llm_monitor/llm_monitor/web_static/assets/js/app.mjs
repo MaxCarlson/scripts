@@ -324,7 +324,14 @@ function connectEvents() {
   const scheme = location.protocol === "https:" ? "wss:" : "ws:";
   eventSocket = new WebSocket(`${scheme}//${location.host}/api/inference/v1/stream`);
   eventSocket.onmessage = (message) => {
-    try { ingestRequestEvent(JSON.parse(message.data)); } catch { /* Ignore malformed observer events. */ }
+    try {
+      const data = JSON.parse(message.data);
+      if (data && data.type === "hardware.sample" && data.sample) {
+        handleHardwareSample(data.sample);
+        return;
+      }
+      ingestRequestEvent(data);
+    } catch { /* Ignore malformed observer events. */ }
   };
   eventSocket.onclose = () => {
     eventSocket = null;
@@ -336,6 +343,16 @@ function connectEvents() {
     }, 1500);
   };
   eventSocket.onerror = () => eventSocket?.close();
+}
+
+function handleHardwareSample(sample) {
+  if (!state.status) state.status = {};
+  if (!Array.isArray(state.status.hardware_samples)) state.status.hardware_samples = [];
+  state.status.hardware_samples.push(sample);
+  if (state.status.hardware_samples.length > 60) {
+    state.status.hardware_samples.shift();
+  }
+  renderer.renderHardware(state);
 }
 
 function announce(message) {

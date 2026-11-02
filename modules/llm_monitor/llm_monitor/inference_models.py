@@ -104,6 +104,61 @@ class ContentSegment:
 
 
 @dataclass(frozen=True)
+class HardwareSample:
+    sample_id: int
+    timestamp: str
+    timestamp_monotonic: float
+    device_id: str
+    device_name: str
+    source: str
+    gpu_utilization_percent: float | None = None
+    memory_controller_utilization_percent: float | None = None
+    vram_used_bytes: float | None = None
+    vram_total_bytes: float | None = None
+    temperature_celsius: float | None = None
+    power_watts: float | None = None
+    validity: str = "valid"
+    error: str | None = None
+
+    @classmethod
+    def from_dict(cls, payload: dict[str, Any]) -> HardwareSample:
+        return cls(
+            sample_id=int(payload.get("sample_id", 0)),
+            timestamp=str(payload.get("timestamp", "")),
+            timestamp_monotonic=float(payload.get("timestamp_monotonic", 0.0)),
+            device_id=str(payload.get("device_id", "unknown")),
+            device_name=str(payload.get("device_name", "Unknown GPU")),
+            source=str(payload.get("source", "unknown")),
+            gpu_utilization_percent=_optional_float(payload.get("gpu_utilization_percent")),
+            memory_controller_utilization_percent=_optional_float(payload.get("memory_controller_utilization_percent")),
+            vram_used_bytes=_optional_float(payload.get("vram_used_bytes")),
+            vram_total_bytes=_optional_float(payload.get("vram_total_bytes")),
+            temperature_celsius=_optional_float(payload.get("temperature_celsius")),
+            power_watts=_optional_float(payload.get("power_watts")),
+            validity=str(payload.get("validity", "valid")),
+            error=payload.get("error") if isinstance(payload.get("error"), str) else None,
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "sample_id": self.sample_id,
+            "timestamp": self.timestamp,
+            "timestamp_monotonic": self.timestamp_monotonic,
+            "device_id": self.device_id,
+            "device_name": self.device_name,
+            "source": self.source,
+            "gpu_utilization_percent": self.gpu_utilization_percent,
+            "memory_controller_utilization_percent": self.memory_controller_utilization_percent,
+            "vram_used_bytes": self.vram_used_bytes,
+            "vram_total_bytes": self.vram_total_bytes,
+            "temperature_celsius": self.temperature_celsius,
+            "power_watts": self.power_watts,
+            "validity": self.validity,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
 class InferenceRequest:
     request_id: str
     server_instance_id: str
@@ -115,6 +170,8 @@ class InferenceRequest:
     provider_request_id: str | None = None
     started_at: str | None = None
     ended_at: str | None = None
+    started_monotonic: float | None = None
+    ended_monotonic: float | None = None
     input_tokens: int | None = None
     reasoning_tokens: int | None = None
     output_tokens: int | None = None
@@ -122,6 +179,14 @@ class InferenceRequest:
     usage_source: str | None = None
     finish_reason: str | None = None
     elapsed_seconds: float | None = None
+    time_to_first_text_seconds: float | None = None
+    time_to_first_text_source: str | None = None
+    generation_tokens_per_second: float | None = None
+    generation_speed_source: str | None = None
+    gpu_average_percent: float | None = None
+    gpu_peak_vram_bytes: float | None = None
+    gpu_scope: str | None = None
+    hardware_telemetry: dict[str, Any] | None = None
     coverage: dict[str, str] = field(default_factory=dict)
     content: tuple[ContentSegment, ...] = ()
 
@@ -129,6 +194,7 @@ class InferenceRequest:
     def from_dict(cls, payload: dict[str, Any]) -> InferenceRequest:
         content = payload.get("content")
         coverage = payload.get("coverage")
+        hw_tel = payload.get("hardware_telemetry")
         return cls(
             request_id=str(payload["request_id"]),
             server_instance_id=str(payload["server_instance_id"]),
@@ -140,13 +206,23 @@ class InferenceRequest:
             provider_request_id=payload.get("provider_request_id") if isinstance(payload.get("provider_request_id"), str) else None,
             started_at=payload.get("started_at") if isinstance(payload.get("started_at"), str) else None,
             ended_at=payload.get("ended_at") if isinstance(payload.get("ended_at"), str) else None,
+            started_monotonic=_optional_float(payload.get("started_monotonic")),
+            ended_monotonic=_optional_float(payload.get("ended_monotonic")),
             input_tokens=_optional_count(payload.get("input_tokens")),
             reasoning_tokens=_optional_count(payload.get("reasoning_tokens")),
             output_tokens=_optional_count(payload.get("output_tokens")),
             generated_tokens=_optional_count(payload.get("generated_tokens")),
             usage_source=payload.get("usage_source") if isinstance(payload.get("usage_source"), str) else None,
             finish_reason=payload.get("finish_reason") if isinstance(payload.get("finish_reason"), str) else None,
-            elapsed_seconds=payload.get("elapsed_seconds") if isinstance(payload.get("elapsed_seconds"), (int, float)) else None,
+            elapsed_seconds=_optional_float(payload.get("elapsed_seconds")),
+            time_to_first_text_seconds=_optional_float(payload.get("time_to_first_text_seconds")),
+            time_to_first_text_source=payload.get("time_to_first_text_source") if isinstance(payload.get("time_to_first_text_source"), str) else None,
+            generation_tokens_per_second=_optional_float(payload.get("generation_tokens_per_second")),
+            generation_speed_source=payload.get("generation_speed_source") if isinstance(payload.get("generation_speed_source"), str) else None,
+            gpu_average_percent=_optional_float(payload.get("gpu_average_percent")),
+            gpu_peak_vram_bytes=_optional_float(payload.get("gpu_peak_vram_bytes")),
+            gpu_scope=payload.get("gpu_scope") if isinstance(payload.get("gpu_scope"), str) else None,
+            hardware_telemetry=dict(hw_tel) if isinstance(hw_tel, dict) else None,
             coverage={str(key): str(value) for key, value in coverage.items()} if isinstance(coverage, dict) else {},
             content=tuple(ContentSegment.from_dict(item) for item in content if isinstance(item, dict))
             if isinstance(content, list) else (),
@@ -164,6 +240,8 @@ class InferenceRequest:
             "model_name": self.model_name,
             "started_at": self.started_at,
             "ended_at": self.ended_at,
+            "started_monotonic": self.started_monotonic,
+            "ended_monotonic": self.ended_monotonic,
             "input_tokens": self.input_tokens,
             "reasoning_tokens": self.reasoning_tokens,
             "output_tokens": self.output_tokens,
@@ -171,6 +249,14 @@ class InferenceRequest:
             "usage_source": self.usage_source,
             "finish_reason": self.finish_reason,
             "elapsed_seconds": self.elapsed_seconds,
+            "time_to_first_text_seconds": self.time_to_first_text_seconds,
+            "time_to_first_text_source": self.time_to_first_text_source,
+            "generation_tokens_per_second": self.generation_tokens_per_second,
+            "generation_speed_source": self.generation_speed_source,
+            "gpu_average_percent": self.gpu_average_percent,
+            "gpu_peak_vram_bytes": self.gpu_peak_vram_bytes,
+            "gpu_scope": self.gpu_scope,
+            "hardware_telemetry": self.hardware_telemetry,
             "coverage": dict(self.coverage),
             "content": [segment.to_dict() for segment in self.content],
         }
@@ -180,3 +266,13 @@ def _optional_count(value: Any) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         return None
     return value
+
+
+def _optional_float(value: Any) -> float | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        parsed = float(value)
+        return parsed if (not parsed != parsed) else None
+    except (TypeError, ValueError):
+        return None
