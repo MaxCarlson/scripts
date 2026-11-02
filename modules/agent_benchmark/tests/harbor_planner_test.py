@@ -136,3 +136,49 @@ def test_unsupported_agent_configurations():
     p_oracle_u = plan_benchmark("aider/aider-polyglot", agent="oracle", base_url="http://localhost:1234/v1", count=1)
     assert any("does not accept an inference base-url parameter" in b for b in p_oracle_u.readiness.blockers)
     assert p_oracle_u.readiness.is_runnable is False
+
+
+def test_model_api_format_planning():
+    # 1. Accepted canonical format
+    p = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        count=1,
+        model_api_format="openai_chat_completions",
+    )
+    assert p.model_api_format == "openai_chat_completions"
+    assert p.to_dict()["model_api_format"] == "openai_chat_completions"
+
+    # 2. Canonicalization from hyphen to underscore
+    p_hyphen = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        count=1,
+        model_api_format="openai-chat-completions",
+    )
+    assert p_hyphen.model_api_format == "openai_chat_completions"
+
+    # 3. Default without override is None
+    p_default = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
+    assert p_default.model_api_format is None
+    assert p_default.to_dict()["model_api_format"] is None
+
+    # 4. Invalid format raises ValueError
+    import pytest
+    with pytest.raises(ValueError, match="Unsupported model API format"):
+        plan_benchmark(
+            "aider/aider-polyglot",
+            agent="opencode",
+            count=1,
+            model_api_format="unsupported_format_xyz",
+        )
+
+    # 5. Blocked for agents that do not accept api-format (oracle / nop)
+    p_oracle = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="oracle",
+        count=1,
+        model_api_format="openai_chat_completions",
+    )
+    assert any("does not accept an api-format parameter" in b for b in p_oracle.readiness.blockers)
+    assert p_oracle.readiness.is_runnable is False

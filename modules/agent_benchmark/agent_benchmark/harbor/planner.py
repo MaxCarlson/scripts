@@ -90,6 +90,14 @@ SUPPORTED_HARBOR_AGENTS: dict[str, dict[str, Any]] = {
     },
 }
 
+SUPPORTED_MODEL_API_FORMATS: set[str] = {
+    "openai_chat_completions",
+    "openai_responses",
+    "anthropic_messages",
+    "google_generate_content",
+    "bedrock_converse",
+}
+
 
 @dataclass(frozen=True)
 class ReadinessCheck:
@@ -174,6 +182,7 @@ def check_agent_configuration_blockers(
     *,
     model: str | None = None,
     base_url: str | None = None,
+    model_api_format: str | None = None,
 ) -> list[str]:
     """Identify invalid or missing configuration parameters for a given agent."""
     agent_norm = agent_name.lower().strip()
@@ -201,6 +210,10 @@ def check_agent_configuration_blockers(
     if agent_norm in ("qwen-coder", "opencode") and not base_url:
         blockers.append(f"{agent_name} requires --base-url pointing to an OpenAI-compatible endpoint")
 
+    # 5. Agents that do not accept an api-format parameter
+    if agent_norm in ("oracle", "nop") and model_api_format is not None:
+        blockers.append(f"Agent {agent_name!r} does not accept an api-format parameter (received {model_api_format!r})")
+
     return blockers
 
 
@@ -217,6 +230,7 @@ class BenchmarkPlan:
     projected_trials: int
     readiness: ReadinessCheck
     base_url: str | None = None
+    model_api_format: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -236,6 +250,7 @@ class BenchmarkPlan:
             "agent": self.agent,
             "model": self.model,
             "base_url": self.base_url,
+            "model_api_format": self.model_api_format,
             "repetitions": self.repetitions,
             "seed": self.seed,
             "language_filter": self.language_filter,
@@ -251,6 +266,7 @@ def plan_benchmark(
     agent: str = "qwen-coder",
     model: str | None = None,
     base_url: str | None = None,
+    model_api_format: str | None = None,
     task_ids: Sequence[str] | None = None,
     language: str | None = None,
     count: int | None = None,
@@ -266,6 +282,16 @@ def plan_benchmark(
         raise ValueError(f"Unsupported Harbor agent {agent!r}. Supported: {valid_agents}")
 
     meta = SUPPORTED_HARBOR_AGENTS[agent_norm]
+
+    canonical_format: str | None = None
+    if model_api_format is not None:
+        format_norm = model_api_format.strip().lower().replace("-", "_")
+        if format_norm not in SUPPORTED_MODEL_API_FORMATS:
+            valid_formats = sorted(SUPPORTED_MODEL_API_FORMATS)
+            raise ValueError(
+                f"Unsupported model API format {model_api_format!r}. Supported: {valid_formats}"
+            )
+        canonical_format = format_norm
 
     # Resolve agent-appropriate defaults when not explicitly provided
     effective_model = model if model is not None else meta.get("default_model", "default")
@@ -295,7 +321,7 @@ def plan_benchmark(
     docker_ok, docker_msg = check_docker_readiness()
     agent_ok, agent_msg = verify_agent_readiness(agent)
     agent_blockers = check_agent_configuration_blockers(
-        agent, model=model, base_url=effective_base_url
+        agent, model=model, base_url=effective_base_url, model_api_format=canonical_format
     )
 
     blockers: list[str] = []
@@ -325,6 +351,7 @@ def plan_benchmark(
         agent=agent,
         model=effective_model,
         base_url=effective_base_url,
+        model_api_format=canonical_format,
         repetitions=repetitions,
         seed=seed,
         language_filter=language,

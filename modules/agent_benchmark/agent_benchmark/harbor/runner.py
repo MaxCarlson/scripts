@@ -57,6 +57,9 @@ def build_harbor_command(
     if plan.base_url and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--base-url", plan.base_url])
 
+    if plan.model_api_format and plan.agent not in ("oracle", "nop"):
+        cmd.extend(["--api-format", plan.model_api_format])
+
     for task_id in plan.selected_tasks:
         cmd.extend(["--include-task-name", task_id])
 

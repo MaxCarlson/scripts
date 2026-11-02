@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from agent_benchmark.harbor.models import (
     AgentInfo,
     ExceptionInfo,
@@ -191,3 +193,54 @@ def test_evaluate_status_nonzero_agent_exit_code_missing_verifier():
     assert res.points_awarded == 0.0
     assert res.primary_reward == 0.0
     assert res.failure_cause == "agent_failed"
+
+
+def test_evaluate_status_endpoint_404_failure_classified_as_infrastructure_error():
+    # Matches the observed OpenCode 404 failure pattern on /v1/responses
+    trial = _make_trial(
+        rewards={"reward": 0.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg=(
+            'Command failed (exit 1): opencode --model=openai/qwen38_23GB run ...\n'
+            '{"name":"APIError","data":{"message":"Not Found: {\\"detail\\":\\"Not Found\\"}","statusCode":404},'
+            '"metadata":{"url":"http://host.docker.internal:8788/v1/responses"}}'
+        ),
+    )
+    res = evaluate_trial_status(trial)
+    assert res.canonical_status == "infrastructure_error"
+    assert res.points_awarded is None
+    assert res.primary_reward is None
+    assert res.failure_cause == "model_provider_failed"
+    assert "404 Not Found" in res.diagnostics
+    assert "original verifier reward: 0.0" in res.diagnostics
+
+
+def test_evaluate_status_connection_refused_classified_as_infrastructure_error():
+    trial = _make_trial(
+        rewards={"reward": 0.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg="Command failed (exit 1): connect ECONNREFUSED 127.0.0.1:1234",
+    )
+    res = evaluate_trial_status(trial)
+    assert res.canonical_status == "infrastructure_error"
+    assert res.points_awarded is None
+    assert res.failure_cause == "model_provider_failed"
+
+
+def test_evaluate_status_endpoint_failure_via_trial_dir_log(tmp_path: Path):
+    trial = _make_trial(
+        rewards={"reward": 0.0},
+        exception_type="NonZeroAgentExitCodeError",
+        exception_msg="Command failed (exit 1)",
+    )
+    # Put 404 in trial log directory
+    trial_dir = tmp_path / "trial_run"
+    agent_log_dir = trial_dir / "agent"
+    agent_log_dir.mkdir(parents=True)
+    (agent_log_dir / "opencode.txt").write_text(
+        'APIError: Not Found (statusCode": 404)',
+        encoding="utf-8",
+    )
+    res = evaluate_trial_status(trial, trial_dir=trial_dir)
+    assert res.canonical_status == "infrastructure_error"
+    assert res.failure_cause == "model_provider_failed"

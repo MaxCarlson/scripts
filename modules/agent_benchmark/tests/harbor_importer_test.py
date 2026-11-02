@@ -416,3 +416,53 @@ def test_import_with_process_returncode(tmp_path: Path):
 
     hs = json.loads((out_dir / "harbor_summary.json").read_text(encoding="utf-8"))
     assert hs["harbor_process_returncode"] == 2
+
+
+def test_import_endpoint_404_failure_classified_as_infrastructure_error(tmp_path: Path):
+    job_dir = tmp_path / "harbor_job_endpoint_404"
+    job_dir.mkdir(parents=True)
+
+    trial_data = {
+        "id": "11111111-2222-3333-4444-555555555555",
+        "task_name": "polyglot_python_dot-dsl",
+        "trial_name": "polyglot_python_dot-dsl__trial1",
+        "agent_info": {"name": "opencode", "version": "1.19.5"},
+        "verifier_result": {"rewards": {"reward": 0.0}},
+        "exception_info": {
+            "exception_type": "NonZeroAgentExitCodeError",
+            "exception_message": (
+                'Command failed (exit 1): opencode --model=openai/qwen38_23GB run ... '
+                '{"name":"APIError","data":{"message":"Not Found: {\\"detail\\":\\"Not Found\\"}","statusCode":404},'
+                '"metadata":{"url":"http://host.docker.internal:8788/v1/responses"}}'
+            ),
+        },
+    }
+
+    job_data = {
+        "id": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        "started_at": "2026-11-02T06:27:42Z",
+        "n_total_trials": 1,
+        "trial_results": [trial_data],
+    }
+    (job_dir / "result.json").write_text(json.dumps(job_data, indent=2), encoding="utf-8")
+
+    out_dir = tmp_path / "imported_404"
+    importer = HarborImporter(job_dir)
+    saved_dir, summary = importer.import_to(out_dir)
+
+    assert saved_dir == out_dir
+    assert summary["scheduled"] == 1
+    assert summary["completed"] == 1
+    assert summary["scored"] == 0  # Excluded from scored denominator
+    assert summary["passed"] == 0
+    assert summary["failed"] == 0
+    assert summary["infrastructure_error"] == 1
+    assert summary["valid_model_trials"] == 0
+    assert summary["infrastructure_invalid_trials"] == 1
+    assert summary["pass_rate_pct"] == 0.0
+
+    trials = load_trials(out_dir / "trials.jsonl")
+    assert len(trials) == 1
+    assert trials[0].status == "infrastructure_error"
+    assert trials[0].details["original_verifier_reward"] == 0.0
+    assert trials[0].details["failure_cause"] == "model_provider_failed"
