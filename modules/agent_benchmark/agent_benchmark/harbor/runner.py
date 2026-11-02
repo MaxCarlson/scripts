@@ -146,6 +146,9 @@ def execute_harbor_run(
     )
 
     run_env = os.environ.copy()
+    if os.name == "nt":
+        run_env["PYTHONUTF8"] = "1"
+        run_env["PYTHONIOENCODING"] = "utf-8"
     if plan.agent in ("qwen-coder", "opencode") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
 

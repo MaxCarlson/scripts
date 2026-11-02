@@ -207,6 +207,10 @@ def test_execute_harbor_run_nonzero_exit_without_result(tmp_path: Path, monkeypa
     plan = plan_benchmark("aider/aider-polyglot", agent="oracle", count=1)
 
     def mock_subprocess_run(cmd, **kwargs):
+        import os
+        if os.name == "nt":
+            assert kwargs["env"]["PYTHONUTF8"] == "1"
+            assert kwargs["env"]["PYTHONIOENCODING"] == "utf-8"
         if "--job-name" in cmd:
             job_name = cmd[cmd.index("--job-name") + 1]
             jdir = jobs_dir / job_name
