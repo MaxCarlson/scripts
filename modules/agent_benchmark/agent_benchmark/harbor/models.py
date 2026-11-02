@@ -413,6 +413,15 @@ def evaluate_trial_status(
                 break
 
     if exc is not None:
+        output = exc.exception_message.rpartition("\nstdout:")[2].lower()
+        if (exc.exception_type == "NonZeroAgentExitCodeError" and "epipe" in output
+                and "broken pipe" in output and (raw_reward is None or raw_reward < 1.0)):
+            return StatusEvaluation(
+                canonical_status="infrastructure_error", points_awarded=None, primary_reward=None,
+                scoring_basis=scoring_basis,
+                diagnostics="Agent process output failed with a broken pipe; verifier failure is not a valid score",
+                failure_cause=FailureCause.HARBOR_FAILED.value,
+            )
         # Check for inference endpoint/protocol failure before classifying as normal agent failure
         is_endpoint_err, endpoint_diag = detect_endpoint_or_protocol_failure(trial, trial_dir)
         if is_endpoint_err:
