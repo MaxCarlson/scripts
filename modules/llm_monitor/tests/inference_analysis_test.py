@@ -206,3 +206,37 @@ def test_compute_model_analytics_percentiles_with_large_sample():
     assert duration["median"] == 5.5
     assert duration["p90"] is not None
     assert duration["p95"] is not None
+
+
+def test_correlate_request_hardware_multi_gpu_isolation():
+    req = InferenceRequest(
+        request_id="r1",
+        server_instance_id="s1",
+        source="gateway",
+        state="completed",
+        started_monotonic=10.0,
+        ended_monotonic=12.0,
+        elapsed_seconds=2.0,
+    )
+    # Samples interleaved from GPU-0 and GPU-1
+    samples = [
+        _make_sample(1, 10.0, util=80.0, vram=10000.0, dev_id="GPU-0"),
+        _make_sample(2, 10.0, util=10.0, vram=2000.0, dev_id="GPU-1"),
+        _make_sample(3, 11.0, util=85.0, vram=10500.0, dev_id="GPU-0"),
+        _make_sample(4, 11.0, util=12.0, vram=2100.0, dev_id="GPU-1"),
+        _make_sample(5, 12.0, util=90.0, vram=11000.0, dev_id="GPU-0"),
+        _make_sample(6, 12.0, util=15.0, vram=2200.0, dev_id="GPU-1"),
+    ]
+    # By default, isolates to first device (GPU-0)
+    result_default = correlate_request_hardware(req, samples)
+    assert result_default["device_id"] == "GPU-0"
+    assert result_default["gpu_peak_percent"] == 90.0
+    assert result_default["gpu_average_percent"] > 70.0
+    assert result_default["sample_count"] == 3
+
+    # Explicit target device GPU-1
+    result_gpu1 = correlate_request_hardware(req, samples, device_id="GPU-1")
+    assert result_gpu1["device_id"] == "GPU-1"
+    assert result_gpu1["gpu_peak_percent"] == 15.0
+    assert result_gpu1["gpu_average_percent"] < 20.0
+    assert result_gpu1["sample_count"] == 3

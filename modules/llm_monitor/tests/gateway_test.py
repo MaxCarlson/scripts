@@ -1,3 +1,6 @@
+import threading
+from fastapi import FastAPI
+from starlette.testclient import TestClient
 import json
 import asyncio
 import time
@@ -401,3 +404,48 @@ def test_completed_request_correlates_hardware_samples_and_timing():
     assert req.hardware_telemetry["sample_count"] == 1
     assert req.time_to_first_text_seconds is not None
     assert req.generation_tokens_per_second is not None
+
+
+
+
+def test_request_event_hub_thread_safe_publish():
+    import asyncio
+    hub = RequestEventHub()
+
+    async def run_test():
+        gen = hub.subscribe()
+        received = []
+
+        def background_publisher():
+            time.sleep(0.05)
+            hub.publish({"type": "hardware.sample", "data": 123})
+
+        t = threading.Thread(target=background_publisher)
+        t.start()
+        item = await asyncio.wait_for(gen.__anext__(), timeout=1.0)
+        received.append(item)
+        t.join()
+        assert len(received) == 1
+        assert received[0]["type"] == "hardware.sample"
+
+    asyncio.run(run_test())
+
+
+def test_completed_request_sparse_scope_labeling():
+    store = LiveInferenceStore()
+    events = RequestEventHub()
+    mock_client = httpx.AsyncClient(transport=httpx.MockTransport(lambda req: httpx.Response(200, json={
+        "id": "chatcmpl-test",
+        "choices": [{"message": {"role": "assistant", "content": "hi"}, "finish_reason": "stop"}],
+    }, headers={"content-type": "application/json"})))
+    gateway = OpenAIInferenceGateway("http://127.0.0.1:1234", store, events, client=mock_client)
+    app = FastAPI()
+    app.include_router(gateway.router())
+    with TestClient(app) as test_client:
+        res = test_client.post("/v1/chat/completions", json={"model": "m", "messages": [{"role": "user", "content": "hi"}]})
+        assert res.status_code == 200
+
+    requests = store.requests()
+    assert len(requests) == 1
+    # When no samples are in the store, gpu_scope should be None (unavailable)
+    assert requests[0].gpu_scope is None

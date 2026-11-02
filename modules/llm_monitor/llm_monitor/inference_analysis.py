@@ -24,6 +24,7 @@ def correlate_request_hardware(
     request: InferenceRequest,
     samples: Sequence[HardwareSample],
     *,
+    device_id: str | None = None,
     max_gap_seconds: float = 5.0,
 ) -> dict[str, Any]:
     """Correlate hardware observations during a request's active lifetime.
@@ -47,6 +48,11 @@ def correlate_request_hardware(
             "attribution_scope": "device_during_request",
             "is_sparse": True,
         }
+
+    # Multi-GPU sample isolation: filter to targeted or primary device
+    target_device = device_id or samples[0].device_id
+    if target_device is not None:
+        samples = [s for s in samples if s.device_id == target_device]
 
     # Determine start and end reference times
     use_monotonic = request.started_monotonic is not None

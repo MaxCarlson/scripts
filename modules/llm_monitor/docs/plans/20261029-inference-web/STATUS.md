@@ -1,9 +1,10 @@
 # Status
 
-**State:** Phase E real GPU telemetry and per-request inference analytics completed; accepted for merge review; no merge performed
-**Branch:** `agy/llm-monitor-phase-e-gpu-analytics-20261101`
-**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\llm-monitor-phase-e-agy-20261101`
+**State:** Phase A–E integrated and merged into `main`
+**Integration branch:** `integrate/llm-monitor-phase-e-20261101`
+**Source branch:** `agy/llm-monitor-phase-e-gpu-analytics-20261101` (`b6c917cb`)
 **Base feature branch:** `codex/llm-monitor-inference-web-20261029` (`a8e00f80`)
+**Target branch:** `main` (`168938a1`)
 **Phase A/B checkpoint:** `cbe67c6168188a0a5e61de2013f442c775e75acb` (pushed)
 **Phase D baseline:** `966c3476a6448fcdbd095390d0c706308d8915ae`
 **Design authority:** [`docs/APPROVED_VISUAL_OUTLINE.md`](../../APPROVED_VISUAL_OUTLINE.md)
@@ -82,6 +83,8 @@ Current validation:
 - Wheel packaging: `llm-monitor-0.8.0-py3-none-any.whl` builds cleanly.
 - Memory boundary: in-memory only; no SQLite database created.
 
-## Publication
+## Publication and Integration
 
-Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above. Phase E is completed and committed on isolated branch `agy/llm-monitor-phase-e-gpu-analytics-20261101` and is ready for merge review; no merge into `main` or the base feature branch has been performed.
+Frontend milestone `00b44a844f5844485a0e81666b84976ecb353a5e`, Phase D baseline, and Phase D.1 commit `4749fe40` are on `origin/codex/llm-monitor-inference-web-20261029`. Phase D.2 qualification is recorded above. Phase E was completed on `agy/llm-monitor-phase-e-gpu-analytics-20261101` (`b6c917cb`).
+
+Integration branch `integrate/llm-monitor-phase-e-20261101` merged the complete Phase A–E development lineage with `main` (`168938a1`), validated all regression suites (195 passed / 1 skipped in LLM Monitor, 14 passed in `web_ui_tools`, 12 passed in `resource_metrics`, 19 passed in Runmux), resolved focused review hardening items (thread-safe WebSocket background dispatch, multi-GPU device isolation, sparse sample reporting, optional packaging dependencies), and integrated cleanly into `main`.

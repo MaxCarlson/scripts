@@ -126,6 +126,20 @@ class RequestEventHub:
         self._request_sequences: OrderedDict[str, int] = OrderedDict()
         self._queues: set[asyncio.Queue[dict[str, Any]]] = set()
 
+    def _deliver_to_queue(self, queue: asyncio.Queue[dict[str, Any]], item: dict[str, Any]) -> None:
+        if queue.full():
+            try:
+                queue.get_nowait()
+            except asyncio.QueueEmpty:
+                pass
+            gap = {"type": "telemetry.gap", "sequence": self.sequence, "request": item.get("request"), "reason": "observer_queue_overflow"}
+            try:
+                queue.put_nowait(gap)
+            except asyncio.QueueFull:
+                pass
+            return
+        queue.put_nowait(item)
+
     def publish(self, event: dict[str, Any]) -> dict[str, Any]:
         self.sequence += 1
         identity = event.get("request") or {}
@@ -138,18 +152,18 @@ class RequestEventHub:
                 self._request_sequences.popitem(last=False)
         item = {**event, "sequence": request_sequence, "revision": self.sequence}
         for queue in tuple(self._queues):
-            if queue.full():
+            loop = getattr(queue, "_loop", None)
+            try:
+                running_loop = asyncio.get_running_loop()
+            except RuntimeError:
+                running_loop = None
+            if loop is not None and running_loop is not loop and loop.is_running():
                 try:
-                    queue.get_nowait()
-                except asyncio.QueueEmpty:
+                    loop.call_soon_threadsafe(self._deliver_to_queue, queue, item)
+                except RuntimeError:
                     pass
-                gap = {"type": "telemetry.gap", "sequence": self.sequence, "request": item.get("request"), "reason": "observer_queue_overflow"}
-                try:
-                    queue.put_nowait(gap)
-                except asyncio.QueueFull:
-                    pass
-                continue
-            queue.put_nowait(item)
+            else:
+                self._deliver_to_queue(queue, item)
         return item
 
     async def subscribe(self) -> AsyncIterator[dict[str, Any]]:
@@ -449,7 +463,12 @@ class OpenAIInferenceGateway:
 
             n_samples = hw_info.get("sample_count", 0)
             cov_pct = int((hw_info.get("coverage_fraction", 0.0)) * 100)
-            gpu_scope = f"Device measurement · n={n_samples} ({cov_pct}% cov)" if n_samples > 0 else "Device samples unavailable"
+            if n_samples == 0:
+                gpu_scope = None
+            elif hw_info.get("is_sparse") or n_samples == 1:
+                gpu_scope = f"Device point sample · n={n_samples} ({cov_pct}% cov)"
+            else:
+                gpu_scope = f"Device measurement · n={n_samples} ({cov_pct}% cov)"
 
             updated_record = InferenceRequest(**{
                 **candidate.__dict__,
