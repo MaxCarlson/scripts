@@ -399,11 +399,27 @@ class WindowsProcessBackend:
                     return False
                 logger.warning("Forcefully terminating '%s'; Windows terminate is not graceful", self.name)
                 p.terminate()
+
+            if self.allow_force_termination and children:
+                for child in children:
+                    try:
+                        if child.is_running():
+                            child.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
             stopped = await self.wait_stopped(timeout=timeout)
             if not stopped and self.allow_force_termination:
                 # psutil's Process methods check PID reuse before signalling.
                 if p.is_running() and p.create_time() == st.create_time:
                     p.kill()
+                if children:
+                    for child in children:
+                        try:
+                            if child.is_running():
+                                child.kill()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
                 stopped = await self.wait_stopped(timeout=3.0)
             if not children_stopped():
                 logger.error("Descendant processes remain for '%s'; stop is unverified", self.name)

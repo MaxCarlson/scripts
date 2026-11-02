@@ -55,8 +55,19 @@
 ## 4. Current Phase & Next Action
 
 - **Phase 0 (Discovery):** COMPLETE.
-- **Phase 1 (Request Arbitration & Gateway Integration):** STARTING.
-  - Fix test mocks in `phase_c_safety_review_test.py`.
-  - Add deterministic tests for 10.0-second cooldown and boundary cancellation.
-  - Add end-to-end test for `LLM Monitor gateway -> Resource Coordinator -> Mock LM Studio`.
-  - Verify concurrent requests, streaming completion, and upstream failure handling.
+- **Phase 1 (Request Arbitration & Gateway Integration):** COMPLETE (Commit `e69457c0`).
+  - Added deterministic tests for 10.0-second cooldown and boundary cancellation.
+  - Added end-to-end test for `LLM Monitor gateway -> Resource Coordinator -> Mock LM Studio`.
+  - Verified concurrent requests, streaming completion, and upstream failure handling.
+  - Suite: 260 tests passed.
+- **Phase 2 (Miner Process Integration):** COMPLETE.
+  - Developed `MinerManifest` and `redact_miner_args` in `resource_coordinator.adapters.miners.manifest`.
+  - Supported manifest resolution via `start-prl.ps1 -Preview` and known vendor executable paths without elevating wrappers.
+  - Enhanced `WindowsProcessBackend` child process tree termination when force termination is allowed, while keeping safe verified failure when force termination is disallowed.
+  - Tested process ownership, PID + creation-time verification, child tree termination, and disposable helper lifecycle.
+  - Suite: 268 tests passed.
+- **Phase 3 (Supervised Acceptance Preparation):** IN PROGRESS.
+  - Prepare executable validation harness and acceptance evidence checklist.
+  - Document operational boundary operations requiring explicit live authorization.
+- **Phase 4 (Unattended Reliability & Durable State):** PENDING.
+
