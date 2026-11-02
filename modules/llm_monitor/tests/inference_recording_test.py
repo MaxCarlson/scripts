@@ -148,8 +148,11 @@ def test_mode_transitions_preserve_start_authorization_and_capture_boundary(tmp_
     recorder.record_content("revoke", ContentSegment(sequence=1, kind="assistant", role="assistant", text="allowed"))
     recorder.set_mode("metadata")
     recorder.record_content("revoke", ContentSegment(sequence=2, kind="assistant", role="assistant", text="blocked"))
+    recorder.set_mode("content")
+    recorder.record_content("revoke", ContentSegment(sequence=3, kind="assistant", role="assistant", text="still blocked"))
     recorder.record_request_final(replace(req, state="completed"))
 
+    recorder.set_mode("metadata")
     req2 = InferenceRequest(request_id="grant", server_instance_id="s1", source="gateway", state="active")
     recorder.record_request_start(req2)
     recorder.set_mode("content")

@@ -39,6 +39,7 @@ class InferenceRecorder:
         )
         self._active_request_modes: dict[str, str] = {}
         self._active_request_mode_generations: dict[str, int] = {}
+        self._revoked_request_ids: set[str] = set()
         self._mode_generation = 0
         self._incremental_request_ids: set[str] = set()
         self.queue_size = queue_size
@@ -74,6 +75,11 @@ class InferenceRecorder:
                 self._content_authorized_at = None
             if mode != self.mode:
                 self._mode_generation += 1
+            if mode == "metadata":
+                self._revoked_request_ids.update(
+                    request_id for request_id, start_mode in self._active_request_modes.items()
+                    if start_mode == "content"
+                )
             self.mode = mode
             _LOGGER.info("Inference recorder mode changed to %s", self.mode)
 
@@ -144,7 +150,11 @@ class InferenceRecorder:
     def record_content(self, request_id: str, segment: ContentSegment) -> None:
         """Queue one observed segment without retaining the request transcript in memory."""
         with self._lock:
-            authorized = self._active_request_modes.get(request_id) == "content" and self.mode == "content"
+            authorized = (
+                self._active_request_modes.get(request_id) == "content"
+                and self.mode == "content"
+                and request_id not in self._revoked_request_ids
+            )
             if authorized:
                 self._incremental_request_ids.add(request_id)
         if authorized and not self._stop_event.is_set():
@@ -167,6 +177,7 @@ class InferenceRecorder:
             mode_generation = self._active_request_mode_generations.pop(request.request_id, None)
             incremental = request.request_id in self._incremental_request_ids
             self._incremental_request_ids.discard(request.request_id)
+            self._revoked_request_ids.discard(request.request_id)
             current_mode = self.mode
 
         if mode_at_start == "content" and (incremental or mode_generation == self._mode_generation):
