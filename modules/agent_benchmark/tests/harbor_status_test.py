@@ -182,6 +182,16 @@ def test_evaluate_status_nonzero_agent_exit_code_failing_verifier():
     assert res.failure_cause == "agent_failed"
 
 
+def test_broken_agent_output_pipe_is_infrastructure_invalid_despite_failing_verifier():
+    trial = _make_trial(
+        rewards={"reward": 0.0}, exception_type="NonZeroAgentExitCodeError",
+        exception_msg="Command failed (exit 1): opencode ...\nstdout: error: EPIPE: broken pipe, write\nstderr: None",
+    )
+    result = evaluate_trial_status(trial)
+    assert result.canonical_status == "infrastructure_error"
+    assert result.points_awarded is None
+
+
 def test_evaluate_status_nonzero_agent_exit_code_missing_verifier():
     trial = _make_trial(
         rewards=None,

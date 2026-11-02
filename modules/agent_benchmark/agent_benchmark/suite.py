@@ -411,7 +411,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 )
         return {"status": status, "trial_id": trial_id, "ended_at": _now(),
                 "duration_wall_ms": duration, "content_fingerprint": content_fingerprint,
-                "summary": summary, "native_artifacts": [str(saved)], "error_code": None,
+                "summary": summary, "native_artifacts": [str(saved)],
+                "error_code": "HARBOR_INFRASTRUCTURE_ERROR" if status == "infrastructure_invalid" else None,
                 "monitor_request_ids": request_ids,
                 "recording_coverage": recording_coverage,
                 "monitor_requests": new_requests if monitor_before is not None else []}
@@ -484,7 +485,8 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
                              "done": sum(item["status"] in _COMPLETED for item in store.read()["tasks"]),
                              "total": len(store.manifest["tasks"])})
                 error_code = attempt.get("error_code") or ""
-                if error_code.startswith("MONITOR_") or error_code == "SOURCE_REVISION_MISMATCH":
+                if (error_code.startswith("MONITOR_") or error_code in
+                        {"SOURCE_REVISION_MISMATCH", "HARBOR_INFRASTRUCTURE_ERROR"}):
                     break
         checkpoint = store.read()
         state = "finished" if not any(row["status"] in {"pending", "running"} for row in checkpoint["tasks"]) else "interrupted"
