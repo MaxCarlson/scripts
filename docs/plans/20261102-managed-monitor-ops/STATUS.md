@@ -15,7 +15,7 @@
 |---|---|---|---|---|
 | **00** | Baseline Reconciliation and Integration Gate | COMPLETED | `109c7ad0` (Base) | Baseline tests passing: `llm_monitor` (116 pass, 2 skip, exit 0), `agent_benchmark` (542 pass, 6 skip). Worktree verified clean. |
 | **01** | Verified Managed Monitor Lifecycle & Readiness | COMPLETED | `cdcdec6c` | TDD: RED -> GREEN for descriptor fingerprint, socket readiness hook, safe restart, Windows process parent/child. Full llm_monitor suite passed (123 pass, 2 skip, exit 0). |
-| **02** | Protected Local Control Channel & Auth Bootstrap | COMPLETED | Staged for commit | Windows SID ACL named pipe with PIPE_REJECT_REMOTE_CLIENTS & AF_UNIX local control channel; short-lived scoped read capabilities; ManagedMonitorClient integration with suite_monitor. 100% test pass. |
+| **02** | Protected Local Control Channel & Auth Bootstrap | COMPLETED | `af3904ff` | Windows SID ACL named pipe with PIPE_REJECT_REMOTE_CLIENTS & AF_UNIX local control channel; short-lived scoped read capabilities; ManagedMonitorClient integration with suite_monitor. 100% test pass. |
 | **03** | Environment Doctor & Stable Failure Taxonomy | PENDING | Pending | `agent-bench suite doctor -F -f json` |
 | **04** | Bounded Recoverable Benchmark Preflight | PENDING | Pending | Preflight state machine, `-r/--recover-local` authorization, task boundary health checks |
 | **05** | Incident Regression Matrix & Reliability Qualification | PENDING | Pending | Adversarial regression tests across Windows/Docker/WSL2 incident matrix |
