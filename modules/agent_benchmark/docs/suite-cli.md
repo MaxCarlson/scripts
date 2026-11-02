@@ -1,6 +1,33 @@
 # Agent Benchmark Suite CLI
 
-`agent-bench suite` manages persistent cohort runs on top of the existing Harbor runner. Planning, status and reporting are read-only. Every inference-producing `run` or `resume` requires `-x/--execute`.
+`agent-bench suite` manages persistent cohort runs on top of the existing Harbor runner. Planning, status, diagnostics, and reporting are read-only. Every inference-producing `run` or `resume` requires `-x/--execute`.
+
+## Environment Diagnostics (`suite doctor`)
+
+Use `agent-bench suite doctor` to inspect the local execution context, managed LLM Monitor, authentication channel, LM Studio inference provider, Docker daemon, gateway mapping, and recorder health before planning or running a benchmark:
+
+```powershell
+# Standard diagnostic overview (human-readable text)
+agent-bench suite doctor
+
+# Structured, non-mutating preflight JSON output
+agent-bench suite doctor -f json
+
+# Bounded deep diagnostics (checking loaded model catalog and Docker daemon)
+agent-bench suite doctor -F --full -f json -H http://127.0.0.1:8788 -U http://host.docker.internal:8788/v1
+```
+
+### Diagnostics Characteristics
+- **Strictly Non-Mutating**: `doctor` never restarts Docker, never unloads/loads models, never restarts the Monitor, never writes credentials to disk, and **never dispatches benchmark inference** (`inference_dispatched: false`).
+- **Context-Aware Failure Taxonomy**: Distinguishes between:
+  - `LOCAL_SOCKET_RESTRICTED` / `DOCKER_PIPE_ACCESS_DENIED`: Context-level permission denials (recommends `USE_APPROVED_HOST_CONTEXT`; does not retry).
+  - `MONITOR_NOT_RUNNING`: Verified absence of local monitor service (recommends `START_MANAGED_MONITOR`).
+  - `MONITOR_UNMANAGED_LISTENER`: Port occupied by an unverified foreign listener (recommends `CHECK_MANAGED_MONITOR`; never kills).
+  - `MONITOR_CONFIG_MISMATCH`: Port occupied by a monitor with conflicting gateway or recording settings (recommends `FIX_CONFIGURATION`; never restarts silently).
+  - `MONITOR_CONTROL_PERMISSION_DENIED`: Local named pipe / socket ACL denied (recommends `USE_APPROVED_HOST_CONTEXT`).
+  - `MONITOR_RECORDER_UNHEALTHY`: Dropped observations or database flush errors (recommends `REPAIR_RECORDER`).
+  - `LM_STUDIO_UNREACHABLE`: Provider refused connection or timed out (recommends `CHECK_PROVIDER`).
+- **Exit Codes**: `0` when all required dependencies are ready; `1` when a known blocker is detected; `2` on invocation/argument errors.
 
 ## Cohorts and plans
 
@@ -35,9 +62,25 @@ agent-bench suite run -M .\aider-revision-smoke.json `
 
 This smoke verifies one scored task and does not launch the full ten-task cohort. Check `manifest.json` for registry resolution and snapshot hash, `registry/registry.json` for the exact dispatched registry, the Harbor lock for its source revision, and LLM Monitor request evidence for gateway routing and recording. A successful plan or synthetic preflight alone does not establish live inference capture.
 
-## Monitored execution
+## Monitored execution & Bounded Recovery
 
-LLM Monitor must already be running with its gateway enabled. Suite preflight queries the authenticated monitor model inventory, inference status, request capture and recorder status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.
+When running a monitored benchmark suite (`-L/--llm-monitor`), the suite performs preflight verification of the gateway and recorder.
+
+### Bounded Local Recovery (`-r / --recover-local`)
+- **Authorization Separation**: `-r/--recover-local` is a dedicated authorization flag distinct from inference authorization (`-x/--execute`).
+  - `suite plan -r`: If the managed Monitor is absent, starts it once with verified identity and settings, but **never dispatches inference**.
+  - `suite run -r -x`: Authorizes both starting an absent Monitor (if needed) and executing benchmark trials.
+  - `suite run -x` (without `-r`): Strictly fails closed if the Monitor is absent, outputting the exact start command.
+- **Fail-Closed Guarantees**:
+  - If a foreign listener occupies the port: fails closed (`MONITOR_UNMANAGED_LISTENER`); never kills the process.
+  - If an existing Monitor has conflicting configuration: fails closed (`MONITOR_CONFIG_MISMATCH`); never restarts or alters recording mode.
+  - If context denies access to Docker or local pipes: fails closed with `USE_APPROVED_HOST_CONTEXT`.
+- **Automatic Auth Bootstrap**:
+  - Local clients automatically acquire short-lived scoped read capabilities over the protected local control channel (Windows SID Named Pipe or POSIX AF_UNIX socket).
+  - Manual cookie extraction and browser startup code entry are eliminated for local benchmark runs.
+- **Task-Boundary Recorder Checks**:
+  - Before each task in the cohort, the runner pings the recorder status.
+  - If dropped observations increase or recording reports degraded health, the runner immediately halts dispatch and marks the task `infrastructure_invalid` with `MONITOR_RECORDER_UNHEALTHY`, preserving completed trial checkpoints and evidence.
 
 On Windows with Docker Desktop, `-U` defaults to `http://host.docker.internal:8788/v1` for the container, while host checks use `http://127.0.0.1:8788`. Use `-H/--monitor-host-url` if the host API has a different address; older run manifests use the same loopback mapping on resume. A session cookie must come from a login to the monitor; keep it private. For example, start the monitor with `llm-monitor web -p 8788 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n`, authenticate locally, and provide the resulting session cookie through `LLM_MONITOR_SESSION_COOKIE` without writing it to run artifacts.
 
