@@ -56,3 +56,11 @@ def test_lmstudio_v0_maximum_does_not_claim_loaded_context(monkeypatch):
     assert models[0]["context_length"] is None
     assert models[0]["max_context_length"] == 32768
     assert models[0]["context_source"] == "model_maximum_only"
+
+
+def test_lmstudio_client_strips_trailing_v1():
+    client1 = LMStudioClient("http://127.0.0.1:1234/v1")
+    assert client1.base_url == "http://127.0.0.1:1234"
+
+    client2 = LMStudioClient("http://127.0.0.1:1234/v1/")
+    assert client2.base_url == "http://127.0.0.1:1234"

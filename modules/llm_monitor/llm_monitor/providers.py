@@ -87,7 +87,10 @@ class LMStudioClient:
 
     def __init__(self, base_url: str = "http://127.0.0.1:1234", *, timeout: float = 2.0,
                  api_token: str | None = None):
-        self.base_url = base_url.rstrip("/")
+        base = base_url.rstrip("/")
+        if base.endswith("/v1"):
+            base = base[:-3]
+        self.base_url = base
         self.timeout = timeout
         self.api_token = api_token
 
