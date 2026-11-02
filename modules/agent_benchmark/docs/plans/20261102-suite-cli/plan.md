@@ -69,4 +69,4 @@
 - [x] Add all requested suite subcommands/flags and preserve old CLI parsing.
 - [x] Add command reference and agent examples; document platform limits and fidelity boundary.
 - [x] Run focused Agent Benchmark, Benchmark Core, relevant LLM Monitor tests, Ruff, help, and package checks; never run the full cohort.
-- [ ] Review the final diff and record exact validation and limitations.
+- [x] Review the final diff and record exact validation and limitations.
