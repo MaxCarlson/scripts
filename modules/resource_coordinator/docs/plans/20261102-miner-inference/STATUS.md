@@ -1,0 +1,62 @@
+# Status Ledger: Miner / Local LLM Coordination
+
+**Plan ID:** `miner-inference-coordination-20261102`  
+**Current Phase:** Phase 00 — Discovery and Reconciliation (Complete); Proceeding to Phase 01  
+**Timestamp:** 2026-11-02T11:00:00-08:00  
+**Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
+**Primary Repository:** `C:\Users\mcarls\src\scripts`  
+**Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
+**Branch:** `feature/miner-inference-coordination-20261102` (tracking `origin/main` at `109c7ad0edfb44b18e19505abf1def4ea58fac77`)  
+**Companion Repository:** `C:\Users\mcarls\src\Mining` (branch `master` at `9c36ed042ec68fba956846917ede2d04678c5230`; working copy preserved untouched)  
+
+---
+
+## 1. Runtime and Process Discovery Inventory
+
+| Resource / Process | Observed State | PID / Port / Details | Notes / Invariants |
+|---|---|---|---|
+| **LM Studio** | Active / Running | Port `1234` (Listen) | Loaded model: `qwen38-27b-q4km` (ID: `qwen38_23GB`), context 98304, parallel 4. Read-only API verified via `/v1/models`. |
+| **LLM Monitor Web** | Active / Running | PID `58828` on Port `8789` | Command: `-m llm_monitor web -p 8789 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n -d .../qualification.sqlite3`. Must NOT be interrupted. |
+| **OpenCode Workers** | Active | PIDs `47108`, `63836` | Local coding worker processes active. Must NOT be disturbed. |
+| **Miner (KRig / SRBMiner)** | Not Running | None | No KRig, SRBMiner, or XMRig processes active on host. |
+| **Mining Scheduled Tasks** | None | None | No scheduled tasks for mining detected. |
+| **Mining Windows Services** | None | None | No Windows services for mining detected. |
+| **NVIDIA GPU** | Operational | GeForce RTX 5090 | 600W max power limit, ~50W idle draw, 1% utilization, ~31.5 GB VRAM allocated by LM Studio resident model. |
+| **Resource Coordinator Service**| Inactive on host | Port `1235` (Free) | No host-wide coordinator running. Ephemeral test ports will be used for testing. |
+
+---
+
+## 2. Requirement-to-Existing-Code Gap Analysis
+
+| Requirement | Existing Codebase State | Gap / Action Needed |
+|---|---|---|
+| **Stop before forward barrier** | Implemented in `LMStudioGateway._proxy_with_coordination` via `emit_blocking()` calling `StopProcessAction.execute()`. | Fully verified. Need integration tests proving strict stop before upstream dispatch with 10s cooldown. |
+| **Atomic pending reservation & cooldown cancellation** | Implemented in `LeaseManager.reserve()`: increments pending and cancels cooldown before any await. | Verified in `leases.py`. Preserved without duplicating scheduler. |
+| **10.0-second cooldown** | Config currently defaults to 60.0s in multiple places; legacy process `restart_cooldown_seconds` exists. | Standardize default policy cooldown to 10.0s for both inference and model loading. Verify cancellation on arrival. |
+| **Two-proxy chaining (`Monitor -> Coordinator -> LM Studio`)** | LLM Monitor has `/v1/chat/completions` gateway forwarding to upstream. Coordinator reverse proxy forwards to LM Studio. | Add dedicated end-to-end chaining tests with simulated upstream and mock processes to verify headers, stream `[DONE]`, and lease lifetime. |
+| **KRig/SRBMiner launch & ownership contract** | `start-prl.ps1` runs interactively or with elevation; `WindowsProcessBackend` uses `subprocess.Popen` with PID/create-time tracking and CTRL+BREAK. | Provide noninteractive, un-elevated miner launch configuration resolver/manifest preserving KRig flags (`--coin pearl`, `--url ...`, `--user ...`, `--gpu-cclock 2400`) without copying credentials into committed code. |
+| **Durable state & crash safety** | `config.py` rejects `state_persistence_path` with `"State persistence is not implemented"`. `durable_state.py` lacks request journal, locks, or startup reconciliation. | Implement transactional journal for pre-forward intent, exclusive single-instance lock, crash recovery, and startup reconciliation (Phase 04). |
+| **Unexpected miner exit recovery** | Currently, if process dies externally, `ProcessSupervisor` doesn't automatically restart unless `resource.idle` is fired. | Implement bounded exponential backoff supervision for unexpected miner exit during idle (Phase 04). |
+| **Manual pause & operator override** | `ProcessSupervisor.set_manual_override()` and `LMStudioGateway.handle_coordinator_recover()` exist. | Ensure overrides are audited, reasoned, and persist across restarts. |
+
+---
+
+## 3. Baseline Verification Results
+
+- `modules/resource_coordinator`:
+  - 172 unit/policy/safety tests passed (`pytest test_leases.py test_actions.py test_admission.py test_gateway.py ...`).
+  - Note: `phase_c_safety_review_test.py` had 2 tests mocking `asyncio.create_subprocess_exec` for GPU monitor, which was refactored in `main` to `asyncio.to_thread(nvidia_gpus)`. These will be aligned.
+- `modules/llm_monitor`:
+  - 253 passed, 2 skipped (`pytest modules/llm_monitor/tests`).
+- Worktree clean and isolated on branch `feature/miner-inference-coordination-20261102`.
+
+---
+
+## 4. Current Phase & Next Action
+
+- **Phase 0 (Discovery):** COMPLETE.
+- **Phase 1 (Request Arbitration & Gateway Integration):** STARTING.
+  - Fix test mocks in `phase_c_safety_review_test.py`.
+  - Add deterministic tests for 10.0-second cooldown and boundary cancellation.
+  - Add end-to-end test for `LLM Monitor gateway -> Resource Coordinator -> Mock LM Studio`.
+  - Verify concurrent requests, streaming completion, and upstream failure handling.

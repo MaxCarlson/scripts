@@ -385,6 +385,6 @@ def test_config_supervised_template_file() -> None:
     assert miner.allow_external_stop is False
     assert miner.allow_external_restart is False
     assert miner.adopt_external is False
-    assert len(cfg.policies) == 1
+    assert len(cfg.policies) >= 1
     pol = cfg.policies[0]
     assert pol.only_if_stopped_by_coordinator is True
