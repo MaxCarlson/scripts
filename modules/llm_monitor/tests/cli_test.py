@@ -417,3 +417,91 @@ def test_tui_cli_reports_noninteractive_terminal_without_creating_database(tmp_p
     assert main(["tui", "--interval", "1", "--persist-alerts", "--database", str(database)]) == 1
     assert "interactive terminal" in capsys.readouterr().err
     assert not database.exists()
+
+
+def test_web_parser_startup_syntax_and_options():
+    parser = build_parser()
+
+    # Legacy startup syntax without explicit action
+    args1 = parser.parse_args(["web", "-p", "8788", "--gateway", "-R", "content"])
+    assert args1.command == "web"
+    assert args1.action == "start"
+    assert args1.port == 8788
+    assert args1.gateway is True
+    assert args1.record_inferences == "content"
+
+    # Status action
+    args2 = parser.parse_args(["web", "status", "-p", "8788"])
+    assert args2.command == "web"
+    assert args2.action == "status"
+    assert args2.port == 8788
+
+    # Stop preview
+    args3 = parser.parse_args(["web", "stop", "-p", "8788"])
+    assert args3.command == "web"
+    assert args3.action == "stop"
+    assert args3.port == 8788
+    assert args3.execute is False
+
+    # Stop execute
+    args4 = parser.parse_args(["web", "stop", "-p", "8788", "-x"])
+    assert args4.command == "web"
+    assert args4.action == "stop"
+    assert args4.port == 8788
+    assert args4.execute is True
+    assert args4.force is False
+
+    # Stop execute with force
+    args5 = parser.parse_args(["web", "stop", "-p", "8788", "-x", "--force"])
+    assert args5.command == "web"
+    assert args5.action == "stop"
+    assert args5.execute is True
+    assert args5.force is True
+
+
+def test_web_stop_force_without_execute_rejected(capsys):
+    from llm_monitor.cli import main
+
+    rc = main(["web", "stop", "-p", "8788", "--force"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "--force requires -x/--execute" in err
+
+
+def test_web_cli_routing(monkeypatch):
+    from llm_monitor.cli import main
+    import llm_monitor.server_lifecycle as slc
+    import llm_monitor.web as web_mod
+
+    called = {}
+
+    def fake_status(port=None, host="127.0.0.1", state_dir=None, as_json=False):
+        called["status"] = (port, as_json)
+        return 0
+
+    def fake_stop(port=None, host="127.0.0.1", execute=False, force=False, state_dir=None, timeout=5.0, as_json=False):
+        called["stop"] = (port, execute, force, as_json)
+        return 0
+
+    def fake_run(**kwargs):
+        called["run"] = kwargs
+        return 0
+
+    monkeypatch.setattr(slc, "status_server", fake_status)
+    monkeypatch.setattr(slc, "stop_server", fake_stop)
+    monkeypatch.setattr(web_mod, "run_web", fake_run)
+
+    assert main(["web", "status", "-p", "8788"]) == 0
+    assert called.get("status") == (8788, False)
+
+    assert main(["web", "status", "-p", "8788", "-F", "json"]) == 0
+    assert called.get("status") == (8788, True)
+
+    assert main(["web", "stop", "-p", "8788", "-x", "-f", "--format", "json"]) == 0
+    assert called.get("stop") == (8788, True, True, True)
+
+    assert main(["web", "-p", "8788", "--gateway", "-R", "content"]) == 0
+    assert called.get("run", {}).get("port") == 8788
+    assert called.get("run", {}).get("gateway_enabled") is True
+    assert called.get("run", {}).get("record_inferences") == "content"
+

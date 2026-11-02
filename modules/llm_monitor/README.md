@@ -22,20 +22,41 @@ llm-monitor db prune -r DAYS [-d DATABASE] [-w] [-f text|json]
 llm-monitor gpu [-f text|json]
 llm-monitor tui [-s SESSION_ID | -a] [-d DATABASE] [-i SECONDS]
 llm-monitor alerts list|rules|test|acknowledge [options]
-llm-monitor web [-p PORT] [-e URL] [-i SECONDS] [-n]
+llm-monitor web [start|status|stop] [-p PORT] [-x] [-f] [-e URL] [-i SECONDS] [-n] [--gateway] [-R metadata|content]
 ```
 
 OpenCode defaults to `http://127.0.0.1:4096`; LM Studio defaults to `http://127.0.0.1:1234`. `-d/--directory` remains the OpenCode project-directory option on existing live commands; database commands use `-d/--database`. The historical `report` uses `-D/--database` to preserve that existing directory flag. Optional `--mcp-jobs` input is an explicit JSON snapshot; the monitor does not connect to MCP or invoke job operations.
 
-## Standalone inference overview
+## Standalone inference overview and server lifecycle
 
 Install the optional browser dependencies with `python -m pip install -e ".[web]"`, then run:
 
 ```powershell
-llm-monitor web
+# Start the web overview server (existing syntax preserved)
+llm-monitor web -p 8788 --gateway -R content
+
+# Inspect the instance status without disclosing secrets or transcript content
+llm-monitor web status -p 8788
+
+# Preview shutdown (dry-run mode, no changes made)
+llm-monitor web stop -p 8788
+
+# Gracefully stop the verified instance
+llm-monitor web stop -p 8788 -x
+
+# Force termination only if graceful shutdown fails
+llm-monitor web stop -p 8788 -x --force
 ```
 
-The web command binds to `127.0.0.1:8788`, prints a one-time browser login code, and opens the dashboard. It reads LM Studio model inventory through the existing GET-only API client. Use `-n/--no-browser` to keep the browser closed, `-p/--port` to select a port, `-e/--endpoint` to set an HTTP(S) endpoint, and `-i/--refresh-interval` to change the shared inventory poll interval.
+The web command binds to `127.0.0.1:8788`, writes an owner-protected instance descriptor, prints a one-time browser login code, and opens the dashboard. It reads LM Studio model inventory through the existing GET-only API client. Use `-n/--no-browser` to keep the browser closed, `-p/--port` to select a port, `-e/--endpoint` to set an HTTP(S) endpoint, and `-i/--refresh-interval` to change the shared inventory poll interval.
+
+### Server Lifecycle Management
+
+- **Status (`llm-monitor web status -p PORT`)**: Identifies the server running on the specified port (or auto-discovers if single instance), checks process liveness and creation time, verifies genuine LLM Monitor ownership via loopback zero-knowledge challenge-response, and reports gateway state, recording mode, database path, and recorder health. Never displays login codes, tokens, or private content.
+- **Preview Stop (`llm-monitor web stop -p PORT`)**: Displays a dry-run preview of the verified target server without terminating or altering state.
+- **Graceful Stop (`llm-monitor web stop -p PORT -x`)**: Sends an authenticated, signed shutdown request to the server. The server rejects new inferences (`503`), drains active inferences, flushes the recorder to SQLite, runs all application shutdown hooks, and stops Uvicorn. If recorder flushing fails, shutdown aborts with an explicit failure.
+- **Forced Termination (`llm-monitor web stop -p PORT -x --force`)**: Strictly verifies PID and process creation time before terminating. Never kills an unverified or unrelated listener. Requires `-x/--execute`.
+
 
 The dashboard's inventory view is read-only. When the optional OpenAI-compatible gateway is enabled, requests routed through it can be recorded to SQLite. Metadata mode is the default; transcript persistence requires explicit `-R content` authorization. See [inference content recording](docs/INFERENCE_CONTENT_RECORDING.md) for capture, durability, and health behavior. Requests sent directly to LM Studio are not observed by the gateway.
 

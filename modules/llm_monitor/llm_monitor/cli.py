@@ -125,12 +125,16 @@ def build_parser() -> argparse.ArgumentParser:
     visualize.add_argument("-f", "--format", choices=("svg", "html"), default="svg")
     visualize.add_argument("-v", "--verbose", action="store_true")
 
-    web = sub.add_parser("web", help="Open the standalone local inference overview")
-    web.add_argument("-p", "--port", type=int, default=8788)
+    web = sub.add_parser("web", help="Open the standalone local inference overview or manage server lifecycle")
+    web.add_argument("action", nargs="?", choices=("start", "status", "stop"), default="start", help="Server lifecycle action (default: start)")
+    web.add_argument("-p", "--port", type=int, default=None, help="Port to bind, inspect, or stop (default: 8788)")
+    web.add_argument("-x", "--execute", action="store_true", help="Execute the stop action (without -x, stop runs in preview dry-run mode)")
+    web.add_argument("-f", "--force", action="store_true", help="Force termination if graceful shutdown fails (requires -x/--execute)")
+    web.add_argument("-F", "--format", choices=("text", "json"), default="text", help="Output format (text or json)")
     web.add_argument("-e", "--endpoint", default="http://127.0.0.1:1234", help="LM Studio HTTP base URL")
     web.add_argument("-i", "--refresh-interval", type=float, default=2.0)
     web.add_argument("-n", "--no-browser", action="store_true", help="Do not open a browser window")
-    web.add_argument("--gateway", action="store_true", help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
+    web.add_argument("-g", "--gateway", action="store_true", help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
     web.add_argument("--gateway-upstream", default="http://127.0.0.1:1234", help="Fixed loopback inference upstream (gateway mode only)")
     web.add_argument("-T", "--gateway-timing", action="store_true", help="Log gateway timing metadata without request content")
     web.add_argument("-R", "--record-inferences", choices=("metadata", "content"), help="Record gateway inference history to SQLite")
@@ -194,11 +198,29 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "visualize":
             return _visualize_command(args)
         if args.command == "web":
+            as_json = args.format == "json"
+            if args.action == "status":
+                from .server_lifecycle import status_server
+
+                return status_server(port=args.port, as_json=as_json)
+            if args.action == "stop":
+                if args.force and not args.execute:
+                    print("llm-monitor: web: --force requires -x/--execute", file=sys.stderr)
+                    return 2
+                from .server_lifecycle import stop_server
+
+                return stop_server(
+                    port=args.port,
+                    execute=args.execute,
+                    force=args.force,
+                    as_json=as_json,
+                )
+
             from .web import run_web
 
             return run_web(
                 endpoint=args.endpoint,
-                port=args.port,
+                port=args.port if args.port is not None else 8788,
                 no_browser=args.no_browser,
                 refresh_interval=args.refresh_interval,
                 gateway_enabled=args.gateway,

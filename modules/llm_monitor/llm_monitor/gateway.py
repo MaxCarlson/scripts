@@ -199,6 +199,8 @@ class OpenAIInferenceGateway:
 
         @router.post("/chat/completions")
         async def chat_completions(request: Request) -> Response:
+            if getattr(request.app.state, "shutting_down", False):
+                raise HTTPException(status_code=503, detail="Server is shutting down; new requests rejected")
             if self.capture_enabled and self.recorder is not None and not self.recorder.is_healthy:
                 raise HTTPException(status_code=503, detail="Inference recording is unhealthy; dispatch is paused")
             timing = _GatewayTiming(self.timing_sink)
