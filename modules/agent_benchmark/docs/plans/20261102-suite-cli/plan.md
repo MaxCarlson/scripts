@@ -70,3 +70,6 @@
 - [x] Add command reference and agent examples; document platform limits and fidelity boundary.
 - [x] Run focused Agent Benchmark, Benchmark Core, relevant LLM Monitor tests, Ruff, help, and package checks; never run the full cohort.
 - [x] Review the final diff and record exact validation and limitations.
+- [x] Preflight the frozen Aider revision through Harbor 0.25.0's registry resolver and persist the exact dispatched registry snapshot.
+- [x] Add revision-match, mismatch, unavailable-resolution, snapshot-forwarding, and pre-dispatch fail-closed tests.
+- [x] Document the bounded one-task live monitor/revision smoke without running the full cohort.

@@ -53,6 +53,62 @@ def test_llm_friendly_plan_preserves_harbor_execution_spec(monkeypatch, capsys):
     assert calls[0] == calls[1]
 
 
+def test_suite_run_resolves_frozen_revision_before_creating_or_dispatching_run(monkeypatch, tmp_path):
+    import agent_benchmark.suite_cli as suite_cli
+
+    planned = {
+        "cohort": "aider-python-10", "dataset": "aider/aider-polyglot",
+        "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+        "tasks": ["polyglot_python_beer-song"], "agent": "oracle", "model": None,
+        "provenance": {"effective_api_format": None, "registry_revision_required": True,
+                       "harbor_dataset": "aider-polyglot"},
+        "readiness": {"is_runnable": True, "blockers": []},
+    }
+    calls = []
+    monkeypatch.setattr(suite_cli, "build_manifest", lambda **_kwargs: planned)
+    monkeypatch.setattr(suite_cli, "resolve_frozen_registry_snapshot", lambda **kwargs: (
+        calls.append(kwargs) or (b"registry snapshot", {"verified": True})
+    ))
+    monkeypatch.setattr(suite_cli, "include_registry_resolution", lambda manifest, resolution: manifest)
+    monkeypatch.setattr(suite_cli, "create_run", lambda *args, **kwargs: calls.append((args, kwargs)) or tmp_path)
+    monkeypatch.setattr(suite_cli, "RunStore", lambda _path: type("Store", (), {"manifest": {
+        "run_id": "fixture", "tasks": ["polyglot_python_beer-song"],
+        "provenance": {"effective_api_format": None},
+    }})())
+    monkeypatch.setattr(suite_cli, "execute_pending", lambda *_args, **_kwargs: {
+        "run_id": "fixture", "state": "finished", "planned": 1, "scored": 1,
+        "passed": 1, "failed": 0, "timed_out": 0, "infrastructure_invalid": 0,
+        "pending": 0, "pass_rate_pct": 100.0, "coverage_pct": 100.0,
+    })
+
+    assert main(["suite", "run", "-c", "aider-python-10", "-x", "-o", str(tmp_path)]) == 0
+    assert calls[0]["expected_revision"] == planned["source_revision"]
+    assert calls[0]["task_ids"] == planned["tasks"]
+    assert calls[1][1]["registry_snapshot"] == b"registry snapshot"
+
+
+def test_suite_run_aborts_before_run_creation_if_frozen_revision_is_unavailable(monkeypatch, tmp_path, capsys):
+    import agent_benchmark.suite_cli as suite_cli
+    from agent_benchmark.suite_revision import DatasetRevisionError
+
+    monkeypatch.setattr(suite_cli, "build_manifest", lambda **_kwargs: {
+        "cohort": "aider-python-10", "dataset": "aider/aider-polyglot",
+        "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+        "tasks": ["polyglot_python_beer-song"], "provenance": {
+            "registry_revision_required": True, "harbor_dataset": "aider-polyglot",
+        }, "readiness": {"is_runnable": True, "blockers": []},
+    })
+    monkeypatch.setattr(suite_cli, "resolve_frozen_registry_snapshot", lambda **_kwargs: (_ for _ in ()).throw(
+        DatasetRevisionError("Harbor registry unavailable; no inference was dispatched")
+    ))
+    created = []
+    monkeypatch.setattr(suite_cli, "create_run", lambda *args, **kwargs: created.append(args))
+
+    assert main(["suite", "run", "-c", "aider-python-10", "-x", "-F", "-o", str(tmp_path)]) == 2
+    assert created == []
+    assert "DATASET_REVISION_PREFLIGHT_FAILED" in capsys.readouterr().out
+
+
 def test_external_run_accepts_compact_output_flag():
     args = parser().parse_args(["external", "run", "-F", "-x"])
     assert args.llm_friendly

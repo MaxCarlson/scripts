@@ -14,6 +14,7 @@ from .suite import (
 )
 from .suite_monitor import MonitorPreflightError, validate_monitor
 from .suite_output import emit
+from .suite_revision import DatasetRevisionError, include_registry_resolution, resolve_frozen_registry_snapshot
 
 DEFAULT_RUNS = Path("reports/agent-bench-suite")
 
@@ -90,6 +91,8 @@ def _error_code(error: Exception) -> str:
         return "EXECUTION_AUTHORIZATION_REQUIRED"
     if isinstance(error, MonitorPreflightError):
         return "MONITOR_PREFLIGHT_FAILED"
+    if isinstance(error, DatasetRevisionError):
+        return "DATASET_REVISION_PREFLIGHT_FAILED"
     if isinstance(error, FileNotFoundError):
         return "RUN_NOT_FOUND"
     if isinstance(error, ValueError):
@@ -123,10 +126,21 @@ def handle_suite(args: argparse.Namespace) -> int:
                 return 0 if plan["readiness"].get("is_runnable") else 1
             if not plan["readiness"].get("is_runnable"):
                 raise RuntimeError("suite readiness blocked: " + "; ".join(plan["readiness"].get("blockers", [])))
+            registry_snapshot = None
+            if plan["provenance"].get("registry_revision_required"):
+                harbor_dataset = plan["provenance"].get("harbor_dataset")
+                if not harbor_dataset:
+                    raise DatasetRevisionError("Harbor registry dataset identity is missing; no inference was dispatched")
+                registry_snapshot, resolution = resolve_frozen_registry_snapshot(
+                    dataset=harbor_dataset, task_ids=plan["tasks"],
+                    expected_revision=plan["source_revision"],
+                )
+                plan = include_registry_resolution(plan, resolution)
             run_dir = create_run(args.output_root, cohort=args.cohort, manifest=args.manifest,
                                  agent=args.agent, model=args.model, base_url=args.base_url,
                                  api_format=args.api_format, llm_monitor=args.llm_monitor,
-                                 recording=args.recording, jobs=args.jobs, monitor_url=args.monitor_url)
+                                 recording=args.recording, jobs=args.jobs, monitor_url=args.monitor_url,
+                                 planned_manifest=plan, registry_snapshot=registry_snapshot)
             store = RunStore(run_dir)
             if args.llm_monitor:
                 try:

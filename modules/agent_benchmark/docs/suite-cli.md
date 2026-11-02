@@ -11,7 +11,29 @@ agent-bench suite plan -c aider-python-10 -a opencode -m openai/qwen38_23GB
 
 `aider-python-10` is frozen in its original order at Harbor dataset source revision `f30b14415dd733c83627204bad0af69a89ceb46f`. The plan includes the agent/model, endpoint and API format, retry policy, task identities and a stable manifest SHA-256. Harbor's own lock supplies authoritative source task checksums after a job completes; the pre-run task identity key is explicitly labeled as an identity hash, not a content digest. `-M/--manifest` accepts JSON with `id`, `dataset`, `source_revision`, and an ordered, unique `tasks` array.
 
-The current shared Harbor runner does not expose the task Git commit override in its execution API. The suite therefore verifies the exact source revision from Harbor's lock after each one-task job and classifies any mismatch as infrastructure-invalid. A registry drift could consume inference before that mismatch is detected; use a controlled preflight or a runner with an explicit pre-dispatch commit pin when that risk is unacceptable.
+Before any task is dispatched, the suite asks Harbor 0.25.0's `DatasetConfig` registry resolver for the selected task configs and verifies every task's repository and commit. It saves the exact registry bytes and their SHA-256 in the run evidence, then passes that same file to Harbor with `--registry-path`. If Harbor is unavailable, the tasks cannot be resolved, or any URL/commit differs, the run stops before inference with `DATASET_REVISION_PREFLIGHT_FAILED`. After each task, the imported Harbor lock is still checked against the pinned revision as defense in depth. Manifests targeting the frozen Aider dataset and revision receive the same pre-dispatch validation.
+
+For a bounded revision/routing smoke once Docker and the monitor environment are available, create `aider-revision-smoke.json` with one cohort task:
+
+```json
+{
+  "id": "aider-revision-smoke",
+  "dataset": "aider/aider-polyglot",
+  "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+  "tasks": ["polyglot_python_beer-song"]
+}
+```
+
+First inspect route and plan, then explicitly authorize the one-task measured run:
+
+```powershell
+agent-bench suite plan -M .\aider-revision-smoke.json `
+  -a opencode -m openai/qwen38_23GB -L -R content -A openai_chat_completions
+agent-bench suite run -M .\aider-revision-smoke.json `
+  -a opencode -m openai/qwen38_23GB -L -R content -A openai_chat_completions -j 1 -F -x
+```
+
+This smoke verifies one scored task and does not launch the full ten-task cohort. Check `manifest.json` for registry resolution and snapshot hash, `registry/registry.json` for the exact dispatched registry, the Harbor lock for its source revision, and LLM Monitor request evidence for gateway routing and recording. A successful plan or synthetic preflight alone does not establish live inference capture.
 
 ## Monitored execution
 

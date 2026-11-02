@@ -36,6 +36,7 @@ def build_harbor_command(
     n_concurrent: int = 1,
     max_retries: int = 0,
     quiet: bool = False,
+    registry_path: Path | None = None,
 ) -> list[str]:
     """Build an exact subprocess argument list for harbor run (no shell interpolation)."""
     # Prefer native harbor executable, fallback to uv tool run
@@ -50,6 +51,8 @@ def build_harbor_command(
     if not harbor_ds:
         raise ValueError(f"Dataset {plan.dataset.id!r} has no Harbor registry identity")
     cmd.extend(["--dataset", harbor_ds])
+    if registry_path is not None:
+        cmd.extend(["--registry-path", str(registry_path.resolve())])
     cmd.extend(["--agent", plan.agent])
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
@@ -86,6 +89,7 @@ def execute_harbor_run(
     state_dir: Path | None = None,
     n_concurrent: int = 1,
     quiet: bool = False,
+    registry_path: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -138,6 +142,7 @@ def execute_harbor_run(
         n_concurrent=n_concurrent,
         max_retries=0,
         quiet=quiet,
+        registry_path=registry_path,
     )
 
     run_env = os.environ.copy()

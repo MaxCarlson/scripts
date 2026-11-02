@@ -1,6 +1,6 @@
 # Status: Agent Benchmark Suite CLI
 
-**Stage:** Implementation committed; focused validation complete; full host-dependent integration remains limited
+**Stage:** Suite CLI committed; frozen revision preflight correction validated and ready for local integration
 **Branch:** `feature/agent-benchmark-suite-cli-llm-friendly-20261102`
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\agent-benchmark-suite-cli-20261102`
 **Base:** `d13372389ef6b5f344e26ee150e67722a50a92ac`
@@ -12,6 +12,7 @@
 - Monitor status is read from its authenticated/local inference API, using an optional configured authorization header; no credential is copied to provenance.
 - Background execution uses a detached module worker with per-run lock and file-backed logs.
 - OpenCode monitored routing pins `openai_chat_completions`; the requested recording state must already be active and healthy.
+- Before measured execution, Harbor 0.25.0 resolves the selected Aider registry tasks; the run saves and passes the same registry snapshot with `--registry-path`.
 - Each Harbor task is checked against the pinned source revision on import; mismatches are infrastructure-invalid and never scored.
 - Live request IDs and safe token metadata are captured from LLM Monitor; exact request-to-task linkage is not claimed without a trustworthy correlation key.
 
@@ -27,6 +28,7 @@
 - Full module suites were attempted but not completed: existing Harbor runner checks rely on Docker Desktop access, and LLM Monitor's TestClient loopback test stalls under this Windows sandbox. These limits do not affect the mocked gateway suite checks.
 - No ten-task benchmark or live model inference was run. No LLM Monitor runtime state was changed.
 - Commit: `ce9250154f7519eb637c2c59451cd420f8e5f7c3` (`feat(agent-benchmark): add persistent suite CLI`).
-- Final diff review passed; the feature branch is clean. The primary checkout remains on `main` at the required base with its pre-existing untracked Harbor evidence untouched.
-- Remaining validation: live routing and recording need a controlled monitored smoke; the full ten-task cohort remains deliberately unrun. Do not merge or push.
-- Known interface boundary: the shared runner cannot pass a task Git commit override before dispatch. Revision mismatches are detected from Harbor lock evidence after the task and excluded from scores, but could consume inference before rejection.
+- Focused correction validation: 57 relevant Agent Benchmark tests passed; Ruff passed. The Agent Benchmark wheel built with `pip wheel --no-build-isolation --no-deps`; CLI run help was inspected. One unrelated Docker readiness test was excluded after Docker Desktop pipe access was denied in this sandbox.
+- Registry behavior was inspected in Harbor 0.25.0 `DatasetConfig`: registry resolution yields each task's Git URL and commit, and `registry_path` selects the local snapshot. The same snapshot is supplied to Harbor execution; post-run lock verification remains enabled.
+- The feature correction is ready to commit and fast-forward into local `main`; the primary checkout remains on `main` at the required base with its pre-existing untracked Harbor evidence untouched. No push is authorized or planned.
+- Remaining operational validation: run the documented one-task monitored smoke after Docker and LLM Monitor are available; verify gateway request evidence and recording health. The full ten-task cohort remains deliberately unrun.

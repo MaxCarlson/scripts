@@ -13,6 +13,10 @@ from typing import Any, Callable
 from uuid import uuid4
 
 from .harbor import execute_harbor_run, plan_benchmark
+from .suite_revision import (
+    DatasetRevisionError,
+    verify_saved_registry_snapshot,
+)
 
 FROZEN_REVISION = "f30b14415dd733c83627204bad0af69a89ceb46f"
 DEFAULT_MONITOR_URL = "http://host.docker.internal:8788/v1"
@@ -113,6 +117,11 @@ def build_manifest(
             "effective_api_format": plan.model_api_format,
             "original_protocol": "openai_responses" if agent.lower() == "opencode" else None,
             "harbor_version": plan.readiness.harbor_version,
+            "harbor_dataset": plan.dataset.harbor_dataset,
+            "registry_revision_required": (
+                selected["dataset"] == "aider/aider-polyglot"
+                and selected["revision"] == FROZEN_REVISION
+            ),
         },
         "readiness": {
             "is_runnable": plan.readiness.is_runnable and (
@@ -137,14 +146,26 @@ def create_run(
     root: Path, *, cohort: str | None, manifest: Path | None = None, agent: str, model: str | None,
     base_url: str | None, api_format: str | None, llm_monitor: bool, recording: str,
     jobs: int = 1, monitor_url: str | None = None,
+    planned_manifest: dict[str, Any] | None = None, registry_snapshot: bytes | None = None,
 ) -> Path:
-    plan = build_manifest(cohort=cohort, manifest=manifest, agent=agent, model=model,
-                          base_url=base_url, api_format=api_format, llm_monitor=llm_monitor,
-                          recording=recording, jobs=jobs, monitor_url=monitor_url)
+    plan = planned_manifest or build_manifest(cohort=cohort, manifest=manifest, agent=agent, model=model,
+                                               base_url=base_url, api_format=api_format, llm_monitor=llm_monitor,
+                                               recording=recording, jobs=jobs, monitor_url=monitor_url)
+    registry_resolution = plan["provenance"].get("registry_resolution")
+    if registry_resolution is not None and registry_snapshot is None:
+        raise DatasetRevisionError("verified registry snapshot bytes are missing; no inference was dispatched")
+    if registry_snapshot is not None:
+        actual_digest = hashlib.sha256(registry_snapshot).hexdigest()
+        if registry_resolution is None or actual_digest != registry_resolution.get("registry_sha256"):
+            raise DatasetRevisionError("verified registry snapshot digest changed; no inference was dispatched")
     run_id = f"suite-{datetime.now(timezone.utc):%Y%m%dT%H%M%S}-{uuid4().hex[:10]}"
     run_dir = root.expanduser().resolve() / run_id
     run_dir.mkdir(parents=True, exist_ok=False)
     _write_json_atomic(run_dir / "manifest.json", {**plan, "run_id": run_id, "created_at": _now()})
+    if registry_snapshot is not None:
+        registry_path = run_dir / registry_resolution["registry_path"]
+        registry_path.parent.mkdir(parents=True, exist_ok=True)
+        registry_path.write_bytes(registry_snapshot)
     _write_json_atomic(run_dir / "checkpoint.json", {
         "schema": "agent-benchmark-suite-checkpoint-v1", "run_id": run_id, "state": "planned",
         "created_at": _now(), "updated_at": _now(), "run_dir": str(run_dir),
@@ -314,10 +335,11 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
         )
         output_dir = store.run_dir / "results"
         jobs_dir = store.run_dir / "harbor-jobs"
+        registry_path = verify_saved_registry_snapshot(store.run_dir, manifest)
         with capture_process_output(log_path):
             saved, summary = execute_harbor_run(
                 plan, execute=True, output_dir=output_dir, jobs_dir=jobs_dir,
-                n_concurrent=1, quiet=True,
+                n_concurrent=1, quiet=True, registry_path=registry_path,
             )
         status = ("infrastructure_invalid" if summary.get("infrastructure_error", 0) else
                   "passed" if summary.get("passed", 0) else
@@ -401,6 +423,14 @@ def execute_pending(run_dir: Path, *, execute: bool, retry_invalid: bool = False
     lock = _claim(run_dir)
     store = RunStore(run_dir)
     try:
+        should_dispatch = any(
+            row["status"] == "pending"
+            or (retry_invalid and row["status"] == "infrastructure_invalid"
+                and len(row.get("attempt_history", [])) + bool(row.get("error_code")) < 2)
+            for row in store.read()["tasks"]
+        )
+        if should_dispatch and executor is _run_one:
+            verify_saved_registry_snapshot(run_dir, store.manifest)
         store.set_state("running", worker_pid=os.getpid(), started_at=_now())
         for task in store.manifest["tasks"]:
             row = next(item for item in store.read()["tasks"] if item["task_id"] == task)

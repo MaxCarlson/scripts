@@ -96,6 +96,17 @@ def test_run_checkpoint_counts_infrastructure_separately(tmp_path: Path):
     assert json.loads((run / "checkpoint.json").read_text(encoding="utf-8"))["tasks"][0]["status"] == "passed"
 
 
+def test_default_dispatch_fails_closed_without_preverified_frozen_registry(tmp_path: Path):
+    from agent_benchmark.suite import execute_pending
+    from agent_benchmark.suite_revision import DatasetRevisionError
+
+    run = create_run(tmp_path, cohort="aider-python-10", agent="oracle", model=None,
+                     base_url=None, api_format=None, llm_monitor=False, recording="off")
+    with pytest.raises(DatasetRevisionError, match="no inference was dispatched"):
+        execute_pending(run, execute=True)
+    assert not (run / "worker.lock").exists()
+
+
 def test_run_store_refuses_task_outside_manifest(tmp_path: Path):
     run = create_run(
         tmp_path, cohort="aider-python-10", agent="qwen-coder", model="qwen38_23GB",
@@ -112,6 +123,7 @@ def test_friendly_presentation_does_not_change_harbor_manifest(monkeypatch):
 
     class Plan:
         dataset: object = SimpleNamespace(id="aider/aider-polyglot", name="Aider", version="1.0",
+                                          harbor_dataset="aider-polyglot",
                                           default_scoring_protocol="single-attempt-v1")
         selected_tasks: tuple = EXPECTED_PYTHON_10
         agent: str = "opencode"
