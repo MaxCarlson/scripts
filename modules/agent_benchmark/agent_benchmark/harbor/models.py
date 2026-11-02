@@ -21,6 +21,7 @@ class FailureCause(StrEnum):
     UNCLASSIFIED = "unclassified"
     AGENT_EXHAUSTED_BUDGET = "agent_exhausted_budget"
     AGENT_REFUSED_TASK = "agent_refused_task"
+    AGENT_FAILED = "agent_failed"
     VERIFIER_FAILED = "verifier_failed"
     CANCELLED = "cancelled"
 
@@ -85,6 +86,8 @@ ERROR_TYPE_TO_CAUSE: dict[str, FailureCause] = {
     # Agent refusal
     "AgentSafetyRefusalError": FailureCause.AGENT_REFUSED_TASK,
     "ContentPolicyViolationError": FailureCause.AGENT_REFUSED_TASK,
+    # Agent execution / non-zero exit
+    "NonZeroAgentExitCodeError": FailureCause.AGENT_FAILED,
     # Verifier failure
     "VerifierTimeoutError": FailureCause.VERIFIER_FAILED,
     "RewardFileNotFoundError": FailureCause.VERIFIER_FAILED,
@@ -348,6 +351,47 @@ def evaluate_trial_status(trial: HarborTrialResult) -> StatusEvaluation:
                 primary_reward=None,
                 scoring_basis=scoring_basis,
                 diagnostics=f"Trial cancelled: {exc.exception_type}",
+                failure_cause=cause.value,
+            )
+        elif cause == FailureCause.AGENT_FAILED:
+            # Agent process exited non-zero (agent error/crash/EPIPE).
+            # Check if the authoritative verifier ran and evaluated the outcome.
+            v_res = trial.verifier_result
+            if v_res and v_res.rewards:
+                authoritative_keys = ("reward", "score", "acc", "accuracy")
+                reward_val = None
+                for key in authoritative_keys:
+                    if key in v_res.rewards:
+                        reward_val = float(v_res.rewards[key])
+                        break
+                if reward_val is None and len(v_res.rewards) == 1:
+                    reward_val = float(next(iter(v_res.rewards.values())))
+
+                if reward_val is not None and not (math.isnan(reward_val) or math.isinf(reward_val)):
+                    if reward_val >= 1.0:
+                        return StatusEvaluation(
+                            canonical_status="passed",
+                            points_awarded=1.0,
+                            primary_reward=reward_val,
+                            scoring_basis=scoring_basis,
+                            diagnostics="Verifier confirmed success",
+                            failure_cause=None,
+                        )
+                    else:
+                        return StatusEvaluation(
+                            canonical_status="failed",
+                            points_awarded=0.0,
+                            primary_reward=reward_val,
+                            scoring_basis=scoring_basis,
+                            diagnostics=f"Verifier confirmed failure (reward={reward_val})",
+                            failure_cause=cause.value,
+                        )
+            return StatusEvaluation(
+                canonical_status="failed",
+                points_awarded=0.0,
+                primary_reward=0.0,
+                scoring_basis=scoring_basis,
+                diagnostics=f"Agent command failed: {exc.exception_type} - {exc.exception_message}",
                 failure_cause=cause.value,
             )
         else:
