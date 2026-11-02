@@ -19,7 +19,7 @@
 | **03** | Environment Doctor & Stable Failure Taxonomy | COMPLETED | `6bc5581d` | Non-mutating `agent-bench suite doctor` with `-F/--full` and `-f {text,json}`; `monitor-preflight-v1` schema; failure taxonomy distinguishing absent, unmanaged listener, config mismatch, ACL denial, and provider status; zero inference dispatched. 100% test pass. |
 | **04** | Bounded Recoverable Benchmark Preflight | COMPLETED | `0350ca16` | Preflight state machine in `suite_recovery.py`; `-r/--recover-local` authorization on plan/run/resume; fails closed on unmanaged port, config mismatch, or pipe denial; task boundary recorder health check halts execution on dropped events. 100% test pass. |
 | **05** | Incident Regression Matrix & Reliability Qualification | COMPLETED | `566bce98` | Adversarial incident qualification suite; full cross-module test passes across `llm_monitor` (266 pass, 2 skip), `web_ui_tools` (14 pass), `runmux` (33 pass, 1 skip), and `agent_benchmark` (51 pass); `validation-receipt-v1.json` generated. |
-| **06** | Agent Policy, Documentation, Rollout & Integration | COMPLETED | Staged for commit | Module documentation, CLI help references, `OPERATIONAL_PLAYBOOK.md`, agent policy `MANAGED_MONITOR_POLICY.md`, and integration recommendations complete. |
+| **06** | Agent Policy, Documentation, Rollout & Integration | COMPLETED | `8503b52c` | Module documentation, CLI help references, `OPERATIONAL_PLAYBOOK.md`, agent policy `MANAGED_MONITOR_POLICY.md`, and integration recommendations complete. |
 
 ---
 
