@@ -164,6 +164,22 @@ def test_sequential_execution_preserves_accepted_trials_and_retries_invalid_once
     assert row["attempt_history"]
 
 
+def test_monitor_failure_stops_dispatching_further_tasks(tmp_path: Path):
+    from agent_benchmark.suite import execute_pending
+
+    run = create_run(tmp_path, cohort="aider-python-10", agent="oracle", model=None,
+                     base_url=None, api_format=None, llm_monitor=False, recording="off")
+    calls = []
+
+    def executor(_store, task):
+        calls.append(task)
+        return {"status": "infrastructure_invalid", "error_code": "MONITOR_CAPTURE_FAILED"}
+
+    report = execute_pending(run, execute=True, executor=executor)
+    assert len(calls) == 1
+    assert report["pending"] == 9
+
+
 def test_active_worker_lock_prevents_duplicate_dispatch(tmp_path: Path):
     from agent_benchmark.suite import _claim, execute_pending
 

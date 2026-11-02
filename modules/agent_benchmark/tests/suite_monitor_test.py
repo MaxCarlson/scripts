@@ -3,7 +3,45 @@ from __future__ import annotations
 import httpx
 import pytest
 
-from agent_benchmark.suite_monitor import MonitorPreflightError, request_snapshot, validate_monitor
+from agent_benchmark.suite_monitor import MonitorPreflightError, host_monitor_origin, request_snapshot, validate_monitor
+
+
+def test_legacy_container_url_resolves_to_windows_host_loopback():
+    assert host_monitor_origin("http://host.docker.internal:8788/v1") == "http://127.0.0.1:8788"
+    assert host_monitor_origin("http://example:9999/v1", "http://127.0.0.1:4444") == "http://127.0.0.1:4444"
+
+
+def test_monitor_preflight_uses_authenticated_host_api_and_container_gateway():
+    seen = []
+
+    def handler(request):
+        seen.append((str(request.url), request.headers.get("origin")))
+        assert request.url.host == "127.0.0.1"
+        assert request.headers["origin"] == "http://127.0.0.1:8788"
+        if request.url.path.endswith("/models"):
+            return httpx.Response(200, json={"models": [{"provider_model_id": "qwen38_23GB", "state": "loaded"}]})
+        if request.url.path.endswith("/status") and not request.url.path.endswith("/recording/status"):
+            return httpx.Response(200, json={"availability": "connected"})
+        if request.url.path.endswith("/requests"):
+            return httpx.Response(200, json={"capture_state": "available", "requests": []})
+        return httpx.Response(200, json={"recording": {"mode": "content", "healthy": True, "dropped_count": 0}})
+
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        result = validate_monitor(agent="opencode", model="openai/qwen38_23GB",
+                                  monitor_url="http://host.docker.internal:8788/v1",
+                                  monitor_host_url="http://127.0.0.1:8788", recording="content",
+                                  api_format="openai_chat_completions", client=client)
+    assert result["gateway_url"] == "http://host.docker.internal:8788/v1"
+    assert any(url.endswith("/api/inference/v1/models") for url, _ in seen)
+
+
+def test_missing_monitor_reports_endpoint_and_cause():
+    def handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+    with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+        with pytest.raises(MonitorPreflightError, match="127.0.0.1:8788"):
+            validate_monitor(agent="opencode", model="openai/model", api_format="openai_chat_completions",
+                             monitor_host_url="http://127.0.0.1:8788", client=client)
 
 
 def _client(recording: dict, availability: str = "available", model_id: str = "model") -> httpx.Client:

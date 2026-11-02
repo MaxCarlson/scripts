@@ -37,7 +37,9 @@ This smoke verifies one scored task and does not launch the full ten-task cohort
 
 ## Monitored execution
 
-LLM Monitor must already be running with its gateway enabled. Suite preflight queries the gateway `/models` endpoint, the monitor inference status, and recording status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.
+LLM Monitor must already be running with its gateway enabled. Suite preflight queries the authenticated monitor model inventory, inference status, request capture and recorder status. It requires the active mode selected with `-R`; `off` never enables recording. The preflight does not send a model inference request. OpenCode runs through the Harbor `--api-format openai_chat_completions` override; conflicting `--api-format`, `--base-url`, or non-OpenAI provider model settings are rejected. There is no direct-inference fallback.
+
+On Windows with Docker Desktop, `-U` defaults to `http://host.docker.internal:8788/v1` for the container, while host checks use `http://127.0.0.1:8788`. Use `-H/--monitor-host-url` if the host API has a different address; older run manifests use the same loopback mapping on resume. A session cookie must come from a login to the monitor; keep it private. For example, start the monitor with `llm-monitor web -p 8788 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n`, authenticate locally, and provide the resulting session cookie through `LLM_MONITOR_SESSION_COOKIE` without writing it to run artifacts.
 
 Supply `LLM_MONITOR_AUTHORIZATION` or `LLM_MONITOR_SESSION_COOKIE` when the local monitor API requires authentication. These values are used only for the preflight request and are never copied to run evidence. Keep the monitor dashboard bound to its configured local authenticated interface.
 

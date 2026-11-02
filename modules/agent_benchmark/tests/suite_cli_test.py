@@ -24,6 +24,13 @@ def test_suite_run_requires_explicit_execution_authorization(capsys):
     assert '"code":"EXECUTION_AUTHORIZATION_REQUIRED"' in capsys.readouterr().out
 
 
+def test_monitor_preflight_errors_keep_their_stable_code():
+    from agent_benchmark.suite_cli import _error_code
+    from agent_benchmark.suite_monitor import MonitorPreflightError
+
+    assert _error_code(MonitorPreflightError("unavailable")) == "MONITOR_PREFLIGHT_FAILED"
+
+
 def test_all_suite_read_commands_accept_friendly_flag():
     for argv in (
         ["suite", "plan", "-c", "aider-python-10", "-F"],

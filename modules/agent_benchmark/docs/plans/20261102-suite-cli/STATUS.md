@@ -32,3 +32,10 @@
 - Registry behavior was inspected in Harbor 0.25.0 `DatasetConfig`: registry resolution yields each task's Git URL and commit, and `registry_path` selects the local snapshot. The same snapshot is supplied to Harbor execution; post-run lock verification remains enabled.
 - Correction commit `399e62db` is validated and ready to merge into current local `main`; the primary checkout's untracked Harbor evidence remains untouched. No push is authorized or planned.
 - Remaining operational validation: run the documented one-task monitored smoke after Docker and LLM Monitor are available; verify gateway request evidence and recording health. The full ten-task cohort remains deliberately unrun.
+
+## Monitor integration repair — 2026-11-02
+
+- Worktree: `.worktrees/agent-benchmark-monitor-integration-20261102`, branch `fix/agent-benchmark-monitor-integration-20261102`, based on `5480ea69`.
+- Host and Docker container reached the loopback monitor. The gateway deliberately has no `/v1/models` endpoint; the authenticated monitor API requires a same-origin header and publishes inventory at `/api/inference/v1/models`.
+- Host preflight and per-task snapshots use the loopback API, while Harbor retains the container-facing gateway URL. Monitor and source failures stop further dispatch.
+- Focused validation: 62 tests passed, one Docker-dependent test deselected; Ruff and local wheel build passed. Live one-task smoke and cohort replay remain pending.

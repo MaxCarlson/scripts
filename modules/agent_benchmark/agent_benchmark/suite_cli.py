@@ -35,6 +35,7 @@ def add_suite_parser(actions: Any) -> None:
         parser.add_argument("-A", "--api-format", choices=("openai_chat_completions", "openai_responses", "anthropic_messages", "google_generate_content", "bedrock_converse"), default=None)
         parser.add_argument("-L", "--llm-monitor", action="store_true")
         parser.add_argument("-U", "--monitor-url", default=DEFAULT_MONITOR_URL)
+        parser.add_argument("-H", "--monitor-host-url", default=None, help="Monitor URL reachable from this host")
         parser.add_argument("-R", "--recording", choices=("off", "metadata", "content"), default="off")
         parser.add_argument("-j", "--jobs", type=int, default=1)
         parser.add_argument("-F", "--llm-friendly", action="store_true")
@@ -115,11 +116,11 @@ def handle_suite(args: argparse.Namespace) -> int:
             plan = build_manifest(cohort=args.cohort, manifest=args.manifest, agent=args.agent,
                                   model=args.model, base_url=args.base_url, api_format=args.api_format,
                                   llm_monitor=args.llm_monitor, recording=args.recording,
-                                  jobs=args.jobs, monitor_url=args.monitor_url)
+                                  jobs=args.jobs, monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url)
             if command == "plan":
                 if args.llm_monitor:
                     route = validate_monitor(agent=plan["agent"], model=plan["model"],
-                                             monitor_url=args.monitor_url, recording=args.recording,
+                                             monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url, recording=args.recording,
                                              api_format=plan["provenance"]["effective_api_format"])
                     plan["monitor_preflight"] = route
                 emit({"event": "plan_ready", "plan": plan} if friendly else plan, llm_friendly=friendly)
@@ -140,17 +141,18 @@ def handle_suite(args: argparse.Namespace) -> int:
                                  agent=args.agent, model=args.model, base_url=args.base_url,
                                  api_format=args.api_format, llm_monitor=args.llm_monitor,
                                  recording=args.recording, jobs=args.jobs, monitor_url=args.monitor_url,
+                                 monitor_host_url=args.monitor_host_url,
                                  planned_manifest=plan, registry_snapshot=registry_snapshot)
             store = RunStore(run_dir)
             if args.llm_monitor:
                 try:
                     route = validate_monitor(agent=store.manifest["agent"], model=store.manifest["model"],
-                                             monitor_url=args.monitor_url, recording=args.recording,
+                                             monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url, recording=args.recording,
                                              api_format=store.manifest["provenance"]["effective_api_format"])
                     (run_dir / "monitor-preflight.json").write_text(json.dumps(route, indent=2) + "\n", encoding="utf-8")
                 except MonitorPreflightError as error:
                     store.set_state("blocked_monitor", error_code="MONITOR_PREFLIGHT_FAILED", error_detail=str(error))
-                    raise RuntimeError(f"monitor preflight failed; run {store.manifest['run_id']} preserved: {error}") from error
+                    raise MonitorPreflightError(f"monitor preflight failed; run {store.manifest['run_id']} preserved: {error}") from error
             if args.background:
                 pid = launch_background(run_dir)
                 _emit_event("started", friendly=friendly, run_id=store.manifest["run_id"], pid=pid,
@@ -174,6 +176,7 @@ def handle_suite(args: argparse.Namespace) -> int:
             if store.manifest["provenance"]["llm_monitor_required"]:
                 validate_monitor(agent=store.manifest["agent"], model=store.manifest["model"],
                                  monitor_url=store.manifest["provenance"]["monitor_url"],
+                                 monitor_host_url=store.manifest["provenance"].get("monitor_host_url"),
                                  recording=store.manifest["provenance"]["recording_required"],
                                  api_format=store.manifest["provenance"]["effective_api_format"])
             if args.background:
