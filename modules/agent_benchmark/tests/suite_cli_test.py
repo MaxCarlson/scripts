@@ -9,11 +9,30 @@ import pytest
 
 
 def test_suite_parser_exposes_short_and_long_flags():
-    args = parser().parse_args([
-        "suite", "run", "-c", "aider-python-10", "-a", "opencode", "-m", "openai/model",
-        "-L", "-U", "http://monitor/v1", "-R", "content", "-A", "openai_chat_completions",
-        "-j", "1", "-F", "-B", "-x",
-    ])
+    args = parser().parse_args(
+        [
+            "suite",
+            "run",
+            "-c",
+            "aider-python-10",
+            "-a",
+            "opencode",
+            "-m",
+            "openai/model",
+            "-L",
+            "-U",
+            "http://monitor/v1",
+            "-R",
+            "content",
+            "-A",
+            "openai_chat_completions",
+            "-j",
+            "1",
+            "-F",
+            "-B",
+            "-x",
+        ]
+    )
     assert args.llm_monitor and args.llm_friendly and args.background and args.execute
     assert args.recording == "content"
     assert args.api_format == "openai_chat_completions"
@@ -64,29 +83,60 @@ def test_suite_run_resolves_frozen_revision_before_creating_or_dispatching_run(m
     import agent_benchmark.suite_cli as suite_cli
 
     planned = {
-        "cohort": "aider-python-10", "dataset": "aider/aider-polyglot",
+        "cohort": "aider-python-10",
+        "dataset": "aider/aider-polyglot",
         "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
-        "tasks": ["polyglot_python_beer-song"], "agent": "oracle", "model": None,
-        "provenance": {"effective_api_format": None, "registry_revision_required": True,
-                       "harbor_dataset": "aider-polyglot"},
+        "tasks": ["polyglot_python_beer-song"],
+        "agent": "oracle",
+        "model": None,
+        "provenance": {
+            "effective_api_format": None,
+            "registry_revision_required": True,
+            "harbor_dataset": "aider-polyglot",
+        },
         "readiness": {"is_runnable": True, "blockers": []},
     }
     calls = []
     monkeypatch.setattr(suite_cli, "build_manifest", lambda **_kwargs: planned)
-    monkeypatch.setattr(suite_cli, "resolve_frozen_registry_snapshot", lambda **kwargs: (
-        calls.append(kwargs) or (b"registry snapshot", {"verified": True})
-    ))
+    monkeypatch.setattr(
+        suite_cli,
+        "resolve_frozen_registry_snapshot",
+        lambda **kwargs: (calls.append(kwargs) or (b"registry snapshot", {"verified": True})),
+    )
     monkeypatch.setattr(suite_cli, "include_registry_resolution", lambda manifest, resolution: manifest)
     monkeypatch.setattr(suite_cli, "create_run", lambda *args, **kwargs: calls.append((args, kwargs)) or tmp_path)
-    monkeypatch.setattr(suite_cli, "RunStore", lambda _path: type("Store", (), {"manifest": {
-        "run_id": "fixture", "tasks": ["polyglot_python_beer-song"],
-        "provenance": {"effective_api_format": None},
-    }})())
-    monkeypatch.setattr(suite_cli, "execute_pending", lambda *_args, **_kwargs: {
-        "run_id": "fixture", "state": "finished", "planned": 1, "scored": 1,
-        "passed": 1, "failed": 0, "timed_out": 0, "infrastructure_invalid": 0,
-        "pending": 0, "pass_rate_pct": 100.0, "coverage_pct": 100.0,
-    })
+    monkeypatch.setattr(
+        suite_cli,
+        "RunStore",
+        lambda _path: type(
+            "Store",
+            (),
+            {
+                "manifest": {
+                    "run_id": "fixture",
+                    "tasks": ["polyglot_python_beer-song"],
+                    "provenance": {"effective_api_format": None},
+                }
+            },
+        )(),
+    )
+    monkeypatch.setattr(
+        suite_cli,
+        "execute_pending",
+        lambda *_args, **_kwargs: {
+            "run_id": "fixture",
+            "state": "finished",
+            "planned": 1,
+            "scored": 1,
+            "passed": 1,
+            "failed": 0,
+            "timed_out": 0,
+            "infrastructure_invalid": 0,
+            "pending": 0,
+            "pass_rate_pct": 100.0,
+            "coverage_pct": 100.0,
+        },
+    )
 
     assert main(["suite", "run", "-c", "aider-python-10", "-x", "-o", str(tmp_path)]) == 0
     assert calls[0]["expected_revision"] == planned["source_revision"]
@@ -98,16 +148,28 @@ def test_suite_run_aborts_before_run_creation_if_frozen_revision_is_unavailable(
     import agent_benchmark.suite_cli as suite_cli
     from agent_benchmark.suite_revision import DatasetRevisionError
 
-    monkeypatch.setattr(suite_cli, "build_manifest", lambda **_kwargs: {
-        "cohort": "aider-python-10", "dataset": "aider/aider-polyglot",
-        "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
-        "tasks": ["polyglot_python_beer-song"], "provenance": {
-            "registry_revision_required": True, "harbor_dataset": "aider-polyglot",
-        }, "readiness": {"is_runnable": True, "blockers": []},
-    })
-    monkeypatch.setattr(suite_cli, "resolve_frozen_registry_snapshot", lambda **_kwargs: (_ for _ in ()).throw(
-        DatasetRevisionError("Harbor registry unavailable; no inference was dispatched")
-    ))
+    monkeypatch.setattr(
+        suite_cli,
+        "build_manifest",
+        lambda **_kwargs: {
+            "cohort": "aider-python-10",
+            "dataset": "aider/aider-polyglot",
+            "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+            "tasks": ["polyglot_python_beer-song"],
+            "provenance": {
+                "registry_revision_required": True,
+                "harbor_dataset": "aider-polyglot",
+            },
+            "readiness": {"is_runnable": True, "blockers": []},
+        },
+    )
+    monkeypatch.setattr(
+        suite_cli,
+        "resolve_frozen_registry_snapshot",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            DatasetRevisionError("Harbor registry unavailable; no inference was dispatched")
+        ),
+    )
     created = []
     monkeypatch.setattr(suite_cli, "create_run", lambda *args, **kwargs: created.append(args))
 
@@ -134,8 +196,16 @@ def test_background_launch_detaches_and_passes_explicit_worker_authorization(tmp
     from types import SimpleNamespace
     import agent_benchmark.suite as suite
 
-    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="qwen38_23GB",
-                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    run = suite.create_run(
+        tmp_path,
+        cohort="aider-python-10",
+        agent="qwen-coder",
+        model="qwen38_23GB",
+        base_url=None,
+        api_format=None,
+        llm_monitor=False,
+        recording="off",
+    )
     args_seen = {}
 
     def fake_popen(args, **kwargs):
@@ -158,8 +228,16 @@ def test_background_retry_policy_is_forwarded_to_detached_worker(tmp_path, monke
     from types import SimpleNamespace
     import agent_benchmark.suite as suite
 
-    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="qwen38_23GB",
-                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    run = suite.create_run(
+        tmp_path,
+        cohort="aider-python-10",
+        agent="qwen-coder",
+        model="qwen38_23GB",
+        base_url=None,
+        api_format=None,
+        llm_monitor=False,
+        recording="off",
+    )
     args_seen = {}
 
     def fake_popen(args, **kwargs):
@@ -172,12 +250,45 @@ def test_background_retry_policy_is_forwarded_to_detached_worker(tmp_path, monke
     assert "--retry-invalid" in args_seen["args"]
 
 
+def test_background_resume_clears_previous_worker_pid(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import agent_benchmark.suite as suite
+
+    run = suite.create_run(
+        tmp_path,
+        cohort="aider-python-10",
+        agent="qwen-coder",
+        model="model",
+        base_url=None,
+        api_format=None,
+        llm_monitor=False,
+        recording="off",
+    )
+    suite.RunStore(run).set_state("interrupted", worker_pid=999999)
+
+    def fake_popen(_args, **_kwargs):
+        assert suite.RunStore(run).read()["worker_pid"] is None
+        suite.RunStore(run).set_state("running", worker_pid=os.getpid())
+        return SimpleNamespace(pid=os.getpid())
+
+    monkeypatch.setattr(suite.subprocess, "Popen", fake_popen)
+    assert suite.launch_background(run) == os.getpid()
+
+
 def test_detached_worker_lifecycle_reconciles_a_completed_fixture_without_inference(tmp_path):
     import time
     import agent_benchmark.suite as suite
 
-    run = suite.create_run(tmp_path, cohort="aider-python-10", agent="qwen-coder", model="fixture-model",
-                           base_url=None, api_format=None, llm_monitor=False, recording="off")
+    run = suite.create_run(
+        tmp_path,
+        cohort="aider-python-10",
+        agent="qwen-coder",
+        model="fixture-model",
+        base_url=None,
+        api_format=None,
+        llm_monitor=False,
+        recording="off",
+    )
     store = suite.RunStore(run)
     for task_id in store.manifest["tasks"]:
         store.update_task(task_id, status="passed", trial_id=f"fixture-{task_id}", ended_at="fixture")
@@ -198,10 +309,20 @@ def test_detached_worker_lifecycle_reconciles_a_completed_fixture_without_infere
 def test_finished_event_omits_repeated_per_task_details(tmp_path):
     from agent_benchmark.suite_cli import _finished_payload
 
-    summary = {"run_id": "run-1", "state": "finished", "planned": 10, "scored": 10,
-               "passed": 7, "failed": 3, "timed_out": 0, "infrastructure_invalid": 0,
-               "pending": 0, "pass_rate_pct": 70.0, "coverage_pct": 100.0,
-               "tasks": [{"task_id": "large-evidence-reference", "log": "logs/task.log"}]}
+    summary = {
+        "run_id": "run-1",
+        "state": "finished",
+        "planned": 10,
+        "scored": 10,
+        "passed": 7,
+        "failed": 3,
+        "timed_out": 0,
+        "infrastructure_invalid": 0,
+        "pending": 0,
+        "pass_rate_pct": 70.0,
+        "coverage_pct": 100.0,
+        "tasks": [{"task_id": "large-evidence-reference", "log": "logs/task.log"}],
+    }
     payload = _finished_payload(summary, tmp_path)
     assert payload["passed"] == 7
     assert "tasks" not in payload
@@ -233,8 +354,20 @@ def test_suite_plan_with_monitor_resolves_host_monitor_origin(monkeypatch, capsy
     monkeypatch.setattr(suite_cli, "validate_monitor", fake_validate_monitor)
 
     cmd = [
-        "suite", "plan", "-c", "aider-python-10", "-a", "opencode", "-m", "openai/model",
-        "-L", "-U", "http://host.docker.internal:8788/v1", "-H", "http://127.0.0.1:8788", "-F",
+        "suite",
+        "plan",
+        "-c",
+        "aider-python-10",
+        "-a",
+        "opencode",
+        "-m",
+        "openai/model",
+        "-L",
+        "-U",
+        "http://host.docker.internal:8788/v1",
+        "-H",
+        "http://127.0.0.1:8788",
+        "-F",
     ]
     code = main(cmd)
     out = capsys.readouterr().out
@@ -243,3 +376,21 @@ def test_suite_plan_with_monitor_resolves_host_monitor_origin(monkeypatch, capsy
     assert len(recovered) == 1
     assert recovered[0]["host_origin"] == "http://127.0.0.1:8788"
 
+
+def test_study_prepare_only_creates_run_without_execution_or_monitor(monkeypatch, tmp_path, capsys):
+    import agent_benchmark.suite_cli as suite_cli
+
+    plan = {
+        "study_adapter": "opencode-v1-isolated-v1",
+        "tasks": ["task"],
+        "prompt_policy": {"id": "sv0-unmodified-v1"},
+        "provenance": {"registry_revision_required": False},
+        "readiness": {"is_runnable": True, "blockers": []},
+    }
+    monkeypatch.setattr(suite_cli, "build_manifest", lambda **_: plan)
+    monkeypatch.setattr(suite_cli, "create_run", lambda *a, **kw: tmp_path)
+    monkeypatch.setattr(suite_cli, "RunStore", lambda _: type("Store", (), {"manifest": {"run_id": "fixture"}})())
+    monkeypatch.setattr(suite_cli, "execute_pending", lambda *a, **kw: pytest.fail("unexpected dispatch"))
+    result = main(["suite", "run", "-c", "aider-python-10", "-S", "-I", "1", "-Z", "1", "-N"])
+    assert result == 0
+    assert "fixture" in capsys.readouterr().out

@@ -25,6 +25,16 @@ from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readine
 logger = logging.getLogger(__name__)
 
 
+def _require_study_network_qualification(run_dir: Path | None, manifest: dict[str, Any] | None) -> None:
+    """Require current, run-bound network qualification before Harbor dispatch."""
+    from ..network_receipt import ReceiptRejected, validate_receipt
+
+    try:
+        validate_receipt(run_dir, manifest)
+    except ReceiptRejected as exc:
+        raise PreflightCheckError(str(exc)) from exc
+
+
 def find_harbor_opencode_adapters() -> list[Path]:
     """Find installed or cached Harbor opencode adapter script paths."""
     candidates: list[Path] = []
@@ -40,6 +50,7 @@ def find_harbor_opencode_adapters() -> list[Path]:
 
     try:
         import site
+
         for sp in site.getsitepackages():
             candidates.append(Path(sp))
     except Exception:
@@ -76,7 +87,7 @@ def ensure_harbor_opencode_compatibility(adapter_paths: list[Path] | None = None
     patched: list[Path] = []
     target_needle = 'env["OPENCODE_FAKE_VCS"] = "git"'
     replacement = (
-        '        # Compatibility fix for issue #4019 (uncaught EPIPE broken pipe crash):\n'
+        "        # Compatibility fix for issue #4019 (uncaught EPIPE broken pipe crash):\n"
         '        # Do not force OPENCODE_FAKE_VCS="git" on non-git directories.\n'
         '        if os.environ.get("OPENCODE_FAKE_VCS"):\n'
         '            env["OPENCODE_FAKE_VCS"] = os.environ["OPENCODE_FAKE_VCS"]'
@@ -121,28 +132,62 @@ def build_harbor_command(
     max_retries: int = 0,
     quiet: bool = False,
     registry_path: Path | None = None,
+    study_adapter: bool = False,
+    prompt_template_path: Path | None = None,
+    harbor_python: str | None = None,
+    study_task_path: Path | None = None,
+    study_source_git_url: str | None = None,
+    study_source_revision: str | None = None,
+    study_network_policy: dict[str, Any] | None = None,
 ) -> list[str]:
     """Build an exact subprocess argument list for harbor run (no shell interpolation)."""
     # Prefer native harbor executable, fallback to uv tool run
-    if shutil.which("harbor"):
+    if study_adapter and harbor_python:
+        cmd = [harbor_python, "-B", "-c", "from harbor.cli.main import app; app()", "run"]
+    elif shutil.which("harbor"):
         cmd = ["harbor", "run"]
     elif shutil.which("uv"):
         cmd = ["uv", "tool", "run", "--from", "harbor==0.25.0", "harbor", "run"]
     else:
         raise PreflightCheckError("Neither 'harbor' nor 'uv' CLI binary is available on PATH")
 
-    harbor_ds = plan.dataset.harbor_dataset
-    if not harbor_ds:
-        raise ValueError(f"Dataset {plan.dataset.id!r} has no Harbor registry identity")
-    cmd.extend(["--dataset", harbor_ds])
-    if registry_path is not None:
-        cmd.extend(["--registry-path", str(registry_path.resolve())])
+    if (study_adapter or prompt_template_path is not None) and plan.agent != "opencode":
+        raise ValueError("the policy study adapter requires opencode")
+    if prompt_template_path is not None and not study_adapter:
+        raise ValueError("prompt template requires the policy study adapter")
+    if study_adapter:
+        from ..study_network_policy import NETWORK_POLICY, _SOURCE_GIT_URL, _SOURCE_REVISION
+
+        if (
+            study_task_path is None
+            or not study_task_path.is_dir()
+            or study_source_git_url != _SOURCE_GIT_URL
+            or study_source_revision != _SOURCE_REVISION
+            or study_network_policy != NETWORK_POLICY
+            or len(plan.selected_tasks) != 1
+            or study_task_path.name != plan.selected_tasks[0]
+        ):
+            raise ValueError("study Harbor command requires one verified task and the restrictive network policy")
+        cmd.extend(["--path", str(study_task_path.resolve(strict=True))])
+    else:
+        harbor_ds = plan.dataset.harbor_dataset
+        if not harbor_ds:
+            raise ValueError(f"Dataset {plan.dataset.id!r} has no Harbor registry identity")
+        cmd.extend(["--dataset", harbor_ds])
+        if registry_path is not None:
+            cmd.extend(["--registry-path", str(registry_path.resolve())])
     agent_arg = (
-        "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
+        "agent_benchmark.harbor.opencode_v1:OpenCodeV1"
+        if study_adapter
+        else "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
         if plan.agent == "opencode-v2"
         else plan.agent
     )
     cmd.extend(["--agent", agent_arg])
+    if study_adapter:
+        cmd.extend(["--ak", "disable_web_search=true"])
+    if prompt_template_path is not None:
+        cmd.extend(["--ak", f"prompt_template_path={prompt_template_path.resolve(strict=True)}"])
     if plan.model and plan.model not in ("default", "none") and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--model", plan.model])
 
@@ -152,8 +197,9 @@ def build_harbor_command(
     if plan.model_api_format and plan.agent not in ("oracle", "nop"):
         cmd.extend(["--api-format", plan.model_api_format])
 
-    for task_id in plan.selected_tasks:
-        cmd.extend(["--include-task-name", task_id])
+    if not study_adapter:
+        for task_id in plan.selected_tasks:
+            cmd.extend(["--include-task-name", task_id])
 
     cmd.extend(["--n-attempts", str(plan.repetitions)])
     cmd.extend(["--n-concurrent", str(n_concurrent)])
@@ -179,6 +225,12 @@ def execute_harbor_run(
     n_concurrent: int = 1,
     quiet: bool = False,
     registry_path: Path | None = None,
+    study_adapter: bool = False,
+    prompt_template_path: Path | None = None,
+    study_policy: dict[str, Any] | None = None,
+    study_design: dict[str, Any] | None = None,
+    study_manifest: dict[str, Any] | None = None,
+    study_run_dir: Path | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -194,18 +246,27 @@ def execute_harbor_run(
             "Use 'agent-bench external plan' to inspect without execution."
         )
 
+    if not study_adapter and (study_manifest is not None or study_policy is not None or study_run_dir is not None):
+        raise PreflightCheckError("study metadata requires the protected study adapter")
+    if study_adapter:
+        _require_study_network_qualification(study_run_dir, study_manifest)
+        if study_manifest is not None and plan.base_url != study_manifest.get("provenance", {}).get(
+            "effective_base_url"
+        ):
+            raise PreflightCheckError("NETWORK_QUALIFICATION_ENDPOINT_MISMATCH")
+        if study_manifest is not None and study_policy != study_manifest.get("prompt_policy"):
+            raise PreflightCheckError("NETWORK_QUALIFICATION_STUDY_POLICY_MISMATCH")
+
     # Preflight 0: Blockers
     if not plan.readiness.is_runnable:
         raise PreflightCheckError(
-            f"Cannot execute benchmark due to readiness blockers: {"; ".join(plan.readiness.blockers)}"
+            f"Cannot execute benchmark due to readiness blockers: {'; '.join(plan.readiness.blockers)}"
         )
 
     # Preflight 1: Docker
     docker_ok, docker_msg = check_docker_readiness()
     if not docker_ok:
-        raise PreflightCheckError(
-            f"Cannot run external benchmark without container isolation: {docker_msg}"
-        )
+        raise PreflightCheckError(f"Cannot run external benchmark without container isolation: {docker_msg}")
 
     # Preflight 2: Harbor / uv
     harbor_ok, _ = check_harbor_readiness()
@@ -224,6 +285,22 @@ def execute_harbor_run(
     job_name = f"harbor_{datetime.now(timezone.utc).strftime('%Y%m%d_%H%M%S')}_{uuid4().hex[:8]}"
     job_dir = resolved_jobs_dir / job_name
 
+    study_network = None
+    if study_adapter:
+        from ..study_network_policy import verify_study_network_manifest
+
+        if study_manifest is None or study_run_dir is None:
+            raise PreflightCheckError("study network manifest and run directory are required before dispatch")
+        if len(plan.selected_tasks) != 1:
+            raise PreflightCheckError("study network dispatch requires exactly one selected task")
+        study_task_path, study_network = verify_study_network_manifest(
+            study_manifest, study_run_dir, plan.selected_tasks[0]
+        )
+        if study_network.get("source_git_url") is None or study_network.get("source_revision") is None:
+            raise PreflightCheckError("study task source identity is missing from network snapshot")
+    else:
+        study_task_path = None
+
     cmd = build_harbor_command(
         plan,
         jobs_dir=resolved_jobs_dir,
@@ -232,6 +309,13 @@ def execute_harbor_run(
         max_retries=0,
         quiet=quiet,
         registry_path=registry_path,
+        study_adapter=study_adapter,
+        prompt_template_path=prompt_template_path,
+        harbor_python=os.environ.get("HARBOR_025_PYTHON") if study_adapter else None,
+        study_task_path=study_task_path,
+        study_source_git_url=study_network.get("source_git_url") if study_network else None,
+        study_source_revision=study_network.get("source_revision") if study_network else None,
+        study_network_policy=study_network.get("network_policy") if study_network else None,
     )
 
     run_env = os.environ.copy()
@@ -240,23 +324,59 @@ def execute_harbor_run(
         run_env["PYTHONIOENCODING"] = "utf-8"
     if plan.agent in ("qwen-coder", "opencode", "opencode-v2") and "OPENAI_API_KEY" not in run_env:
         run_env["OPENAI_API_KEY"] = "lm-studio"
-    if plan.agent == "opencode-v2":
+    if plan.agent == "opencode-v2" or study_adapter:
         agent_bench_root = str(Path(__file__).resolve().parent.parent.parent)
+        benchmark_core_root = str(Path(agent_bench_root).parent / "benchmark_core")
         current_pythonpath = run_env.get("PYTHONPATH", "")
-        run_env["PYTHONPATH"] = (
-            f"{agent_bench_root}{os.pathsep}{current_pythonpath}"
-            if current_pythonpath
-            else agent_bench_root
+        run_env["PYTHONPATH"] = os.pathsep.join(
+            item for item in (agent_bench_root, benchmark_core_root, current_pythonpath) if item
         )
 
-    if plan.agent == "opencode":
+    if plan.agent == "opencode" and not study_adapter:
         ensure_harbor_opencode_compatibility()
+
+    if study_policy is not None:
+        from ..spec_verification_policy import BASELINE_ID, INTERVENTION_ID
+
+        policy_id = study_policy.get("id")
+        if (
+            not study_adapter
+            or policy_id not in (BASELINE_ID, INTERVENTION_ID)
+            or (policy_id == INTERVENTION_ID) != (prompt_template_path is not None)
+        ):
+            raise PreflightCheckError("study policy and template selection do not match")
+    if study_adapter and study_policy is not None and prompt_template_path is not None:
+        from ..spec_verification_policy import verify_frozen_policy
+
+        actual_template = verify_frozen_policy(prompt_template_path.parent.parent, study_policy)
+        if actual_template != prompt_template_path.resolve(strict=True):
+            raise PreflightCheckError("frozen policy path does not match the verified template")
 
     lock_cm = command_lock
     if lock_cm is None:
         from ..state import command_lock as lock_cm
 
     with lock_cm(state):
+        if study_adapter:
+            _require_study_network_qualification(study_run_dir, study_manifest)
+            from ..study_task_integrity import verify_study_task_trees
+            from ..suite_revision import verify_saved_registry_snapshot
+
+            if study_manifest is None or registry_path is None:
+                raise PreflightCheckError(
+                    "study manifest and registry snapshot required for task identity verification"
+                )
+            checked_registry = verify_saved_registry_snapshot(registry_path.parent.parent, study_manifest)
+            if checked_registry != registry_path.resolve():
+                raise PreflightCheckError("study registry path does not match the verified snapshot")
+            verify_study_task_trees(study_manifest)
+            from ..study_network_policy import verify_study_network_manifest
+
+            rechecked_task_path, rechecked_network = verify_study_network_manifest(
+                study_manifest, study_run_dir, plan.selected_tasks[0]
+            )
+            if rechecked_task_path != study_task_path or rechecked_network != study_network:
+                raise PreflightCheckError("study network snapshot changed before Harbor dispatch")
         try:
             # Execute Harbor subprocess
             proc = subprocess.run(
@@ -322,6 +442,15 @@ def execute_harbor_run(
     # Import the job artifacts
     importer = HarborImporter(job_dir)
     target_dir = resolved_output_dir / job_dir.name
-    saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
+    if study_policy is None:
+        saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
+    else:
+        saved_dir, summary = importer.import_to(
+            target_dir,
+            process_returncode=proc.returncode,
+            study_policy=study_policy,
+            study_design=study_design,
+            study_network=study_network,
+        )
 
     return saved_dir, summary

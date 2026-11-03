@@ -75,6 +75,70 @@ def contract_key(value: object) -> str | None:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
 
 
+def declared_prompt_intervention_error(
+    baseline_contract: object, candidate_contract: object,
+    baseline_metadata: object, candidate_metadata: object,
+) -> tuple[str | None, dict[str, str] | None]:
+    """Allow only an explicitly declared SV0/SV1 prompt-policy intervention."""
+    import copy
+
+    for contract in (baseline_contract, candidate_contract):
+        error = contract_error(contract)
+        if error:
+            return error, None
+    if not all(isinstance(value, dict) for value in
+               (baseline_contract, candidate_contract, baseline_metadata, candidate_metadata)):
+        return "Missing prompt intervention provenance", None
+    base_design = baseline_metadata.get("prompt_intervention")
+    cand_design = candidate_metadata.get("prompt_intervention")
+    if not isinstance(base_design, dict) or not isinstance(cand_design, dict):
+        return "Missing prompt intervention provenance", None
+    expected = {"schema", "design_id", "assignment"}
+    if (set(base_design) != expected or set(cand_design) != expected
+            or base_design.get("schema") != "declared-prompt-intervention-v1"
+            or cand_design.get("schema") != base_design.get("schema")
+            or not isinstance(base_design.get("design_id"), str) or not base_design["design_id"].strip()
+            or base_design["design_id"] != cand_design.get("design_id")
+            or base_design.get("assignment") != "SV0" or cand_design.get("assignment") != "SV1"):
+        return "Prompt intervention declaration is invalid", None
+    base = copy.deepcopy(baseline_contract)
+    candidate = copy.deepcopy(candidate_contract)
+    def valid_hash(value):
+        return isinstance(value, str) and len(value) == 64 and all(c in "0123456789abcdef" for c in value)
+
+    for contract, expected_id in ((base, "sv0-unmodified-v1"), (candidate, "sv1-specification-verification-v1")):
+        runtime = contract["environment"]["runtime"]
+        policy = runtime.pop("prompt_policy", None)
+        prompt = runtime.pop("prompt_sha256", None)
+        if (not isinstance(policy, dict) or set(policy) != {"id", "sha256"}
+                or policy.get("id") != expected_id or not valid_hash(policy.get("sha256"))
+                or not valid_hash(prompt)):
+            return "Prompt policy identity or effective prompt digest is missing", None
+        model = contract["environment"].get("model_identity")
+        if (not isinstance(model, dict) or not model.get("runtime_model_id") or not model.get("quantization")
+                or not isinstance(runtime.get("model_settings"), dict)):
+            return "Model identity, quantization or effective settings are missing", None
+        settings = runtime["model_settings"]
+        required = {"context", "output", "temperature", "top_p", "top_k", "reasoning_effort", "options_sha256"}
+        if not required.issubset(settings) or not valid_hash(settings.get("options_sha256")):
+            return "Effective inference settings are incomplete", None
+        if (not all(isinstance(settings.get(k), int) and not isinstance(settings[k], bool) and settings[k] > 0
+                    for k in ("context", "output", "top_k"))
+                or not all(isinstance(settings.get(k), (float, int)) and not isinstance(settings[k], bool)
+                           and math.isfinite(settings[k]) for k in ("temperature", "top_p"))
+                or not isinstance(settings.get("reasoning_effort"), str)
+                or settings["context"] != contract["context_length"]):
+            return "Effective inference settings are invalid", None
+    if base != candidate:
+        return "Undeclared comparison conditions differ", None
+    fingerprint = baseline_metadata.get("suite_fingerprint")
+    if (not isinstance(fingerprint, str) or len(fingerprint) != 64
+            or any(c not in "0123456789abcdef" for c in fingerprint)
+            or fingerprint != candidate_metadata.get("suite_fingerprint")):
+        return "Suite fingerprints are missing or differ", None
+    return None, {"baseline_condition": "SV0", "candidate_condition": "SV1", "design_id": base_design["design_id"]}
+
+
 def declared_tool_intervention_error(
     baseline_contract: object,
     candidate_contract: object,

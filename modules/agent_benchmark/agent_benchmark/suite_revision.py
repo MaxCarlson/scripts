@@ -48,6 +48,7 @@ async def resolve():
     configs = await config.get_task_configs()
     return [{
         "task_id": task.path.name if task.path is not None else None,
+        "git_path": task.path.as_posix() if task.path is not None else None,
         "git_url": task.git_url,
         "git_commit_id": task.git_commit_id,
     } for task in configs]
@@ -152,7 +153,10 @@ def resolve_registry_snapshot(
                 f"Harbor registry task {task_id} resolved from unexpected repository {git_url!r}; "
                 "no inference was dispatched"
             )
-        verified_rows.append({"task_id": task_id, "git_url": git_url, "git_commit_id": commit})
+        verified_row = {"task_id": task_id, "git_url": git_url, "git_commit_id": commit}
+        if isinstance(row.get("git_path"), str):
+            verified_row["git_path"] = row["git_path"]
+        verified_rows.append(verified_row)
     return {
         "verified": True,
         "harbor_version": HARBOR_VERSION,

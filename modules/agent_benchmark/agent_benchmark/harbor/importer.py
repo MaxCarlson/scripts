@@ -90,9 +90,7 @@ class HarborImporter:
         """Normalize Harbor data into canonical RunInfo and TrialResult records."""
         task_digests = job_lock.task_digests() if job_lock else {}
         harbor_version = (
-            job_lock.harbor.version
-            if job_lock and job_lock.harbor and job_lock.harbor.version
-            else "0.25.0"
+            job_lock.harbor.version if job_lock and job_lock.harbor and job_lock.harbor.version else "0.25.0"
         )
 
         # Sort trials deterministically by task_name and trial_name
@@ -132,11 +130,7 @@ class HarborImporter:
                 break
 
         if not raw_source and job_lock:
-            trial_list = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            trial_list = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
             for t_lock in trial_list:
                 if t_lock.task and t_lock.task.source:
                     raw_source = t_lock.task.source
@@ -144,11 +138,7 @@ class HarborImporter:
 
         task_locks = []
         if job_lock:
-            task_locks = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            task_locks = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
         lock_tasks = [trial.task for trial in task_locks if trial.task]
         locked_repos = {task.git_url.rstrip("/") for task in lock_tasks if task.git_url}
         locked_revisions = {task.git_commit_id for task in lock_tasks if task.git_commit_id}
@@ -195,11 +185,7 @@ class HarborImporter:
 
         # Check job_lock task versions or known catalog if suite_version not yet resolved
         if not suite_version and job_lock:
-            trial_list = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            trial_list = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
             for t_lock in trial_list:
                 if t_lock.task and t_lock.task.version:
                     suite_version = t_lock.task.version
@@ -208,7 +194,9 @@ class HarborImporter:
         if not suite_version:
             suite_version = "unversioned"
 
-        dataset_id = identity.id if identity else (f"{suite_id}@{suite_version}" if suite_version != "unversioned" else suite_id)
+        dataset_id = (
+            identity.id if identity else (f"{suite_id}@{suite_version}" if suite_version != "unversioned" else suite_id)
+        )
         dataset_source_repo = next(iter(locked_repos), None) if len(locked_repos) == 1 else None
         dataset_source_revision = next(iter(locked_revisions), None) if len(locked_revisions) == 1 else None
 
@@ -241,11 +229,7 @@ class HarborImporter:
             rep_counters[rep_key] = repetition + 1
 
             # Discover trial subdirectory if present
-            trial_sub_dir = (
-                (self.job_dir / ht.trial_name)
-                if (self.job_dir / ht.trial_name).is_dir()
-                else None
-            )
+            trial_sub_dir = (self.job_dir / ht.trial_name) if (self.job_dir / ht.trial_name).is_dir() else None
 
             # Evaluate status
             eval_res = evaluate_trial_status(ht, trial_dir=trial_sub_dir)
@@ -421,11 +405,7 @@ class HarborImporter:
         pass_rate = (stats["passed"] / scored * 100.0) if scored > 0 else 0.0
         coverage = (scored / stats["scheduled"] * 100.0) if stats["scheduled"] > 0 else 0.0
 
-        median_wall = (
-            sorted(stats["wall_time_ms"])[len(stats["wall_time_ms"]) // 2]
-            if stats["wall_time_ms"]
-            else None
-        )
+        median_wall = sorted(stats["wall_time_ms"])[len(stats["wall_time_ms"]) // 2] if stats["wall_time_ms"] else None
 
         summary_data = {
             "job_id": str(job_result.id),
@@ -463,6 +443,9 @@ class HarborImporter:
         output_dir: Path | str,
         *,
         process_returncode: int = 0,
+        study_policy: dict[str, Any] | None = None,
+        study_design: dict[str, Any] | None = None,
+        study_network: dict[str, Any] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         """Import Harbor job results to target destination directory idempotently."""
         out_dir = Path(output_dir).resolve()
@@ -472,6 +455,38 @@ class HarborImporter:
         run_info, canonical_trials, summary_data = self.normalize(
             job_result, job_lock, harbor_trials, process_returncode=process_returncode
         )
+        if study_policy is not None:
+            run_info.metadata["planned_prompt_policy"] = dict(study_policy)
+            run_info.metadata["study_design"] = dict(study_design or {})
+            if study_network is None:
+                raise HarborImportError("study trial is missing its declared network policy provenance")
+            run_info.metadata["study_network_policy"] = {
+                "policy_id": study_network.get("policy_id"),
+                "network_policy": study_network.get("network_policy"),
+                "task_id": study_network.get("task_id"),
+                "source_git_url": study_network.get("source_git_url"),
+                "source_revision": study_network.get("source_revision"),
+                "original_task_sha256": study_network.get("original_task_sha256"),
+                "original_verifier_sha256": study_network.get("original_verifier_sha256"),
+                "derived_verifier_sha256": study_network.get("derived_verifier_sha256"),
+                "original_tree_sha256": study_network.get("original_tree_sha256"),
+                "original_task_toml_sha256": study_network.get("original_task_toml_sha256"),
+                "derived_task_toml_sha256": study_network.get("derived_task_toml_sha256"),
+                "derived_tree_sha256": study_network.get("derived_tree_sha256"),
+                "snapshot_path": study_network.get("snapshot_path"),
+            }
+            assignments = {"sv0-unmodified-v1": "SV0", "sv1-specification-verification-v1": "SV1"}
+            assignment = assignments.get(study_policy.get("id"))
+            if assignment and study_design and study_design.get("id"):
+                run_info.metadata["prompt_intervention"] = {
+                    "schema": "declared-prompt-intervention-v1",
+                    "design_id": study_design["id"],
+                    "assignment": assignment,
+                }
+            for trial in canonical_trials:
+                trial.details["planned_prompt_policy"] = dict(study_policy)
+                trial.details["study_design"] = dict(study_design or {})
+                trial.details["study_network_policy"] = dict(run_info.metadata["study_network_policy"])
 
         # Save run.json (overwrite allowed for idempotent reimport)
         save_run(out_dir, run_info, overwrite=True)
