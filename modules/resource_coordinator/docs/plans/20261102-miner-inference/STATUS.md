@@ -119,20 +119,21 @@
   - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
   - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
   - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
-- **Stage 3 Live Hardware Acceptance (Trial T01 — Investigation & Enhancement):**
-  - Prior Run Execution (`20261102_233303_5a9bdae3`): Verified process creation, stop barrier, cooldown timing, restart, and cleanup. However, the initial KRig process was stopped ~295ms after launch and restarted PID 66428 was stopped ~47ms after start, preventing KRig from completing CUDA initialization or establishing hashing. Reclassified as: **"Process coordination verified; actual mining activity not established."**
+- **Stage 3 Live Hardware Acceptance (Trial T01 — Evidence Integrity & Bounded Warm-up):**
+  - Prior Run Execution (`20261102_233303_5a9bdae3`): Verified process creation, stop barrier, cooldown timing, restart, and cleanup. However, the initial KRig process was stopped ~295ms after launch and restarted PID 66428 was stopped ~47ms after start, preventing KRig from completing CUDA initialization or establishing hashing. Officially classified as: **"Process coordination verified; actual mining activity not established."**
   - **Remediation & Enhancements Implemented:**
-    1. **Stdout/Stderr Capture:** Added `stdout_log_path` across `ProcessConfig`, `WindowsProcessBackend`, and `CoordinatorConfig`. Output now captured to `miner_stdout.log` in the trial directory.
-    2. **GPU Telemetry Sampler:** Added `GpuActivitySampler` sampling power draw and compute load at 1–2 Hz, with pre-launch idle baseline comparison.
-    3. **Log Parsing:** Added `parse_miner_stdout_log` to detect Stratum pool connection and reported hashrate (`Speed: ... MH/s`).
-    4. **Three-Contract Partitioning:**
+    1. **Stdout/Stderr Capture & Process-Generation Log Isolation:** Added `stdout_log_path` across `ProcessConfig`, `WindowsProcessBackend`, and `CoordinatorConfig`. Added delimiter headers per generation and `start_offset` log seeking in `parse_miner_stdout_log`. Old hashrates from prior generations never satisfy subsequent restarts.
+    2. **Phase-Isolated GPU Telemetry Sampler:** Added `GpuActivitySampler` with `PhaseGpuEvidence` isolating samples between initial warm-up and post-cooldown restart.
+    3. **Log Telemetry & ANSI Stripping:** Enhanced `parse_miner_stdout_log` to strip ANSI codes, verify authenticated pool connections (`connected: stratum+ssl://...`) without misclassifying CLI argument echoes, extract Stratum jobs, and normalize hashrates.
+    4. **Settling State Machine:** Implemented 5-state state machine (`PROCESS_LAUNCHED` -> `ACTIVITY_DETECTED` -> `SUSTAINED_ACTIVITY_CONFIRMED` -> `SETTLING_IN_PROGRESS` -> `WARMUP_VERIFIED`). Enforces continuously sustained activity throughout `mining_settle_seconds`.
+    5. **Three-Contract Partitioning:**
        - Contract A: `process_contract_verified` (OS process lifecycle, PID tracking, stop, restart, cleanup).
        - Contract B: `inference_arbitration_contract_verified` (Stop barrier strictly before forward, 10.0s cooldown, restart on idle).
        - Contract C: `mining_activity_contract_verified` (Actual sustained GPU hashing confirmed prior to inference and after cooldown restart).
-    5. **Bounded Warm-up Verification:** Added `_verify_mining_warmup` on initial launch and post-cooldown restart with immediate fast-failure if miner exits prematurely, while preserving guaranteed cleanup in `finally:`.
+    6. **Taxonomy & Telemetry Capture:** Structured generation evidence in `trial.initial_generation` and `trial.restart_generation` classifying outcomes (`hashing_verified`, `gpu_compute_activity_observed`, `miner_hashrate_reported`, `pool_connection_verified`, `process_running`, `verification_inconclusive`).
   - **Verification:**
-    - 7 deterministic regression tests in `test_mining_activity_verification.py` passed.
-    - Full `resource_coordinator` test suite: **327 passed, 4 skipped**.
+    - 10 deterministic regression tests in `test_mining_activity_verification.py` passed.
+    - Full `resource_coordinator` test suite: **337 passed, 4 skipped**.
     - Windows `disposable_helper` acceptance run: **5/5 passed** (`os_process_contract`).
-    - Read-only live preflight: **READY** (1689 MiB free VRAM, `qwen38_23GB` loaded).
-  - Ready for operator authorization of supervised T01 rerun with physical mining activity verification.
+    - Read-only live preflight: **READY** (2036 MiB free VRAM, `qwen38_23GB` loaded).
+  - STOPPED at operator authorization boundary; ready for supervised T01 rerun.

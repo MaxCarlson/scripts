@@ -441,63 +441,145 @@ class TrialEvidence:
     peak_gpu_utilization_pct: Optional[float] = None
     peak_gpu_power_w: Optional[float] = None
     mining_verification_method: Optional[str] = None
+    initial_generation: Optional[Dict[str, Any]] = None
+    restart_generation: Optional[Dict[str, Any]] = None
 
 
 import re
 
-POOL_CONNECT_RE = re.compile(
-    r"(?:connected to|subscribed to|authorized worker|pool connected|stratum\+ssl://|stratum\+tcp://)",
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+POOL_CONNECTED_RE = re.compile(
+    r"(?:connected\s*(?:to|:)|pool connected\s*(?:to|:)?)[:\s]*(stratum(?:\+ssl|\+tcp)?://[^\s\"']+)",
+    re.IGNORECASE,
+)
+POOL_GENERIC_CONNECTED_RE = re.compile(
+    r"(?:subscribed to pool|authorized worker|subscription successful)",
+    re.IGNORECASE,
+)
+STRATUM_JOB_RE = re.compile(
+    r"stratum:\s*new job|new job\s+[0-9a-f_]+|subscribed to pool jobs",
     re.IGNORECASE,
 )
 HASHRATE_RE = re.compile(
-    r"(?:speed|hashrate)[:\s]+([\d\.]+\s*(?:[kMGT]?H/s))",
+    r"(?:Total|Speed|Hashrate)[:\s]+([\d.]+)\s*([KMGTPE]?H)/s",
     re.IGNORECASE,
 )
 
+UNIT_SCALE = {
+    "H": 1e-12,
+    "KH": 1e-9,
+    "MH": 1e-6,
+    "GH": 1e-3,
+    "TH": 1.0,
+    "PH": 1e3,
+    "EH": 1e6,
+}
 
-def parse_miner_stdout_log(log_path: Path | str) -> Dict[str, Any]:
-    """Parse miner stdout log file for pool connectivity and reported hashrate."""
+
+def parse_miner_stdout_log(log_path: Path | str, start_offset: int = 0) -> Dict[str, Any]:
+    """Parse miner stdout log file for pool connectivity, jobs, and reported hashrate starting at start_offset."""
     path = Path(log_path)
     if not path.is_file():
         return {
             "exists": False,
             "pool_connected": False,
+            "connected_pool_url": None,
+            "pool_job_received": False,
             "hashrate": None,
+            "hashrate_ths": None,
+            "start_offset": start_offset,
+            "end_offset": start_offset,
             "line_count": 0,
         }
     try:
-        content = path.read_text(encoding="utf-8", errors="replace")
+        with path.open("rb") as f:
+            if start_offset > 0:
+                f.seek(max(0, start_offset))
+            raw_bytes = f.read()
+            end_offset = f.tell()
+        content = raw_bytes.decode("utf-8", errors="replace")
     except Exception as exc:
         logger.warning("Error reading miner stdout log '%s': %s", path, exc)
         return {
             "exists": True,
             "pool_connected": False,
+            "connected_pool_url": None,
+            "pool_job_received": False,
             "hashrate": None,
+            "hashrate_ths": None,
+            "start_offset": start_offset,
+            "end_offset": start_offset,
             "error": str(exc),
             "line_count": 0,
         }
 
-    lines = content.splitlines()
+    clean_content = ANSI_ESCAPE_RE.sub("", content)
+    lines = clean_content.splitlines()
     pool_connected = False
-    hashrate = None
+    connected_pool_url: Optional[str] = None
+    pool_job_received = False
+    hashrate: Optional[str] = None
+    hashrate_ths: Optional[float] = None
 
     for line in lines:
-        if POOL_CONNECT_RE.search(line):
+        m_conn = POOL_CONNECTED_RE.search(line)
+        if m_conn:
             pool_connected = True
-        m = HASHRATE_RE.search(line)
-        if m:
-            hashrate = m.group(1).strip()
+            connected_pool_url = m_conn.group(1).strip()
+        elif POOL_GENERIC_CONNECTED_RE.search(line):
+            pool_connected = True
+
+        if STRATUM_JOB_RE.search(line):
+            pool_job_received = True
+
+        m_hash = HASHRATE_RE.search(line)
+        if m_hash:
+            val_str = m_hash.group(1)
+            unit_str = m_hash.group(2).upper()
+            hashrate = f"{val_str} {unit_str}/s"
+            try:
+                scale = UNIT_SCALE.get(unit_str, 1.0)
+                hashrate_ths = float(val_str) * scale
+            except ValueError:
+                pass
 
     return {
         "exists": True,
         "pool_connected": pool_connected,
+        "connected_pool_url": connected_pool_url,
+        "pool_job_received": pool_job_received,
         "hashrate": hashrate,
+        "hashrate_ths": hashrate_ths,
+        "start_offset": start_offset,
+        "end_offset": end_offset,
         "line_count": len(lines),
     }
 
 
+@dataclass
+class PhaseGpuEvidence:
+    phase_name: str
+    pid: Optional[int] = None
+    create_time: Optional[float] = None
+    baseline: Optional[Dict[str, Any]] = None
+    samples: List[Dict[str, Any]] = field(default_factory=list)
+
+    @property
+    def peak_power_w(self) -> Optional[float]:
+        if not self.samples:
+            return None
+        return max(s.get("power_draw_w", 0.0) for s in self.samples)
+
+    @property
+    def peak_utilization_pct(self) -> Optional[float]:
+        if not self.samples:
+            return None
+        return max(s.get("utilization_pct", 0.0) for s in self.samples)
+
+
 class GpuActivitySampler:
-    """Samples and evaluates GPU compute and power metrics for acceptance testing."""
+    """Samples and evaluates GPU compute and power metrics with per-phase isolation."""
 
     def __init__(
         self,
@@ -512,6 +594,24 @@ class GpuActivitySampler:
         self.min_util_delta_pct = min_util_delta_pct
         self.baseline: Optional[Dict[str, Any]] = None
         self.samples: List[Dict[str, Any]] = []
+        self.phase_evidence: Dict[str, PhaseGpuEvidence] = {}
+        self.current_phase: Optional[PhaseGpuEvidence] = None
+
+    def start_phase(
+        self,
+        phase_name: str,
+        pid: Optional[int] = None,
+        create_time: Optional[float] = None,
+    ) -> PhaseGpuEvidence:
+        phase = PhaseGpuEvidence(
+            phase_name=phase_name,
+            pid=pid,
+            create_time=create_time,
+            baseline=dict(self.baseline) if self.baseline else None,
+        )
+        self.phase_evidence[phase_name] = phase
+        self.current_phase = phase
+        return phase
 
     async def sample_baseline(self) -> Optional[Dict[str, Any]]:
         metrics = await self.monitor.get_metrics()
@@ -525,6 +625,8 @@ class GpuActivitySampler:
                 "timestamp": time.time(),
                 "monotonic": time.monotonic(),
             }
+            if self.current_phase and not self.current_phase.baseline:
+                self.current_phase.baseline = dict(self.baseline)
         return self.baseline
 
     async def sample(self) -> Optional[Dict[str, Any]]:
@@ -541,14 +643,20 @@ class GpuActivitySampler:
             "monotonic": time.monotonic(),
         }
         self.samples.append(s)
+        if self.current_phase is not None:
+            self.current_phase.samples.append(s)
         return s
 
-    def is_activity_sustained(self) -> bool:
-        if not self.baseline or len(self.samples) < self.min_consecutive:
+    def is_activity_sustained(self, phase_name: Optional[str] = None) -> bool:
+        target = self.phase_evidence.get(phase_name) if phase_name else self.current_phase
+        target_samples = target.samples if target is not None else self.samples
+        target_baseline = target.baseline if (target and target.baseline) else self.baseline
+
+        if not target_baseline or len(target_samples) < self.min_consecutive:
             return False
-        base_power = self.baseline.get("power_draw_w", 0.0)
-        base_util = self.baseline.get("utilization_pct", 0.0)
-        recent = self.samples[-self.min_consecutive:]
+        base_power = target_baseline.get("power_draw_w", 0.0)
+        base_util = target_baseline.get("utilization_pct", 0.0)
+        recent = target_samples[-self.min_consecutive:]
         power_elevated = all(s.get("power_draw_w", 0.0) >= base_power + self.min_power_delta_w for s in recent)
         util_elevated = all(s.get("utilization_pct", 0.0) >= base_util + self.min_util_delta_pct for s in recent)
         return power_elevated or util_elevated
@@ -637,7 +745,13 @@ class AcceptanceHarness:
         self.allow_live_lmstudio = allow_live_lmstudio
         self.allow_real_miner = allow_real_miner
         self.require_mining_activity = (
-            require_mining_activity if require_mining_activity is not None else (mode == "live")
+            require_mining_activity
+            if require_mining_activity is not None
+            else (
+                mode == "live"
+                and _upstream_app_override_for_test is None
+                and not _allow_short_cooldown_for_test
+            )
         )
         self.mining_warmup_timeout_seconds = float(mining_warmup_timeout_seconds)
         self.mining_settle_seconds = float(mining_settle_seconds)
@@ -1414,52 +1528,192 @@ class AcceptanceHarness:
         timeout: float,
         phase: str,
         t: TrialEvidence,
-    ) -> bool:
-        deadline = time.monotonic() + timeout
-        hashing_confirmed = False
+        start_offset: int = 0,
+        generation_num: int = 1,
+    ) -> Dict[str, Any]:
+        """
+        Verify that the miner reaches and sustains actual mining/hashing activity.
+        Uses a 5-state verification state machine:
+          PROCESS_LAUNCHED -> ACTIVITY_DETECTED -> SUSTAINED_ACTIVITY_CONFIRMED -> SETTLING_IN_PROGRESS -> WARMUP_VERIFIED
+        """
+        t_start = time.monotonic()
+        deadline = t_start + timeout
+        state = "PROCESS_LAUNCHED"
+        settle_deadline: Optional[float] = None
+        settle_start_time: Optional[float] = None
+        settling_verified = False
         method_parts: List[str] = []
-        settle_until: Optional[float] = None
+        gpu_active_once = False
+        last_log_parsed: Dict[str, Any] = {}
+        last_end_offset = start_offset
 
-        while time.monotonic() < deadline:
-            info = await supervisor.status()
-            if info.state not in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
-                raise RuntimeError(
-                    f"Miner exited prematurely during {phase} warm-up (state={info.state.value}, PID={info.pid})"
-                )
+        # Retrieve process PID and create_time
+        info = await supervisor.status()
+        current_pid = info.pid
+        current_create_time = info.create_time
 
-            await sampler.sample()
+        # Start phase-isolated GPU sampling
+        sampler.start_phase(phase_name=phase, pid=current_pid, create_time=current_create_time)
 
-            log_info = parse_miner_stdout_log(log_path)
-            if log_info.get("pool_connected"):
-                t.initial_pool_connected = True
-            if log_info.get("hashrate") and not t.initial_hashrate:
-                t.initial_hashrate = log_info["hashrate"]
+        try:
+            while time.monotonic() < deadline:
+                # Check if settling was completed
+                if (
+                    state == "SETTLING_IN_PROGRESS"
+                    and settle_deadline is not None
+                    and time.monotonic() >= settle_deadline
+                ):
+                    state = "WARMUP_VERIFIED"
+                    settling_verified = True
+                    break
 
-            gpu_active = sampler.is_activity_sustained()
-            log_active = bool(log_info.get("hashrate"))
+                # 1. Verify process is still alive; fail fast if process terminates
+                info = await supervisor.status()
+                if info.state not in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
+                    raise RuntimeError(
+                        f"Miner exited prematurely during {phase} warm-up (state={info.state.value}, PID={info.pid})"
+                    )
 
-            if gpu_active or log_active:
-                if not hashing_confirmed:
-                    hashing_confirmed = True
-                    if gpu_active and "gpu_telemetry" not in method_parts:
-                        method_parts.append("gpu_telemetry")
-                    if log_active and "miner_stdout" not in method_parts:
-                        method_parts.append("miner_stdout")
+                # 2. Sample GPU metrics for this phase
+                await sampler.sample()
+
+                # 3. Parse stdout log from phase start_offset
+                log_info = parse_miner_stdout_log(log_path, start_offset=start_offset)
+                last_log_parsed = log_info
+                last_end_offset = log_info.get("end_offset", last_end_offset)
+
+                if log_info.get("pool_connected"):
+                    if phase == "initial":
+                        t.initial_pool_connected = True
+                if log_info.get("hashrate"):
+                    if phase == "initial" and not t.initial_hashrate:
+                        t.initial_hashrate = log_info["hashrate"]
+
+                gpu_sustained = sampler.is_activity_sustained(phase)
+                log_has_hashrate = bool(log_info.get("hashrate"))
+                if gpu_sustained:
+                    gpu_active_once = True
+
+                # 4. State transitions
+                if state in ("PROCESS_LAUNCHED", "ACTIVITY_DETECTED"):
+                    if gpu_sustained or log_has_hashrate:
+                        state = "SUSTAINED_ACTIVITY_CONFIRMED"
+                        if gpu_sustained and "gpu_telemetry" not in method_parts:
+                            method_parts.append("gpu_telemetry")
+                        if log_has_hashrate and "miner_stdout" not in method_parts:
+                            method_parts.append("miner_stdout")
+                    elif (
+                        sampler.current_phase
+                        and sampler.current_phase.peak_power_w is not None
+                        and sampler.current_phase.peak_power_w
+                        > (sampler.baseline or {}).get("power_draw_w", 0.0) + sampler.min_power_delta_w
+                    ) or log_info.get("pool_connected"):
+                        state = "ACTIVITY_DETECTED"
+
+                if state == "SUSTAINED_ACTIVITY_CONFIRMED":
                     if self.mining_settle_seconds > 0.0:
-                        settle_until = time.monotonic() + self.mining_settle_seconds
+                        state = "SETTLING_IN_PROGRESS"
+                        settle_start_time = time.monotonic()
+                        settle_deadline = settle_start_time + self.mining_settle_seconds
                     else:
+                        state = "WARMUP_VERIFIED"
+                        settling_verified = True
                         break
 
-            if settle_until is not None and time.monotonic() >= settle_until:
-                break
+                if state == "SETTLING_IN_PROGRESS":
+                    activity_active = gpu_sustained or log_has_hashrate
+                    if not activity_active:
+                        logger.warning(
+                            "Activity dropped during %s settling window; resetting settle timer",
+                            phase,
+                        )
+                        state = "ACTIVITY_DETECTED"
+                        settle_deadline = None
+                    elif settle_deadline is not None and time.monotonic() >= settle_deadline:
+                        state = "WARMUP_VERIFIED"
+                        settling_verified = True
+                        break
 
-            await asyncio.sleep(0.05)
+                await asyncio.sleep(0.05)
+        finally:
+            verified = (state == "WARMUP_VERIFIED") and settling_verified
+            phase_gpu = sampler.phase_evidence.get(phase)
+            peak_power = phase_gpu.peak_power_w if phase_gpu else None
+            peak_util = phase_gpu.peak_utilization_pct if phase_gpu else None
+            gpu_samples_count = len(phase_gpu.samples) if phase_gpu else 0
 
-        if not hashing_confirmed:
-            return False
+            has_hashrate = bool(last_log_parsed.get("hashrate"))
+            pool_connected = bool(last_log_parsed.get("pool_connected"))
+            connected_pool_url = last_log_parsed.get("connected_pool_url")
+            pool_job_received = bool(last_log_parsed.get("pool_job_received"))
+            hashrate_str = last_log_parsed.get("hashrate")
+            hashrate_ths = last_log_parsed.get("hashrate_ths")
 
-        t.mining_verification_method = "+".join(method_parts) or "simulated"
-        return True
+            is_running = info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}
+
+            if verified:
+                if gpu_active_once and has_hashrate:
+                    classification = "hashing_verified"
+                elif has_hashrate:
+                    classification = "miner_hashrate_reported"
+                elif gpu_active_once:
+                    classification = "gpu_compute_activity_observed"
+                elif pool_connected:
+                    classification = "pool_connection_verified"
+                else:
+                    classification = "process_running"
+            else:
+                if has_hashrate and gpu_active_once:
+                    classification = "hashing_verified"
+                elif has_hashrate:
+                    classification = "miner_hashrate_reported"
+                elif gpu_active_once:
+                    classification = "gpu_compute_activity_observed"
+                elif pool_connected:
+                    classification = "pool_connection_verified"
+                elif is_running and (gpu_samples_count > 0 or last_log_parsed.get("exists")):
+                    classification = "process_running"
+                else:
+                    classification = "verification_inconclusive"
+
+            verification_method = "+".join(method_parts) if method_parts else "none"
+            t_now = time.monotonic()
+            settling_duration = (t_now - settle_start_time) if settle_start_time else 0.0
+
+            gen_evidence: Dict[str, Any] = {
+                "generation": generation_num,
+                "phase": phase,
+                "pid": current_pid,
+                "create_time": current_create_time,
+                "launch_monotonic": t_start,
+                "verified": verified,
+                "settling_verified": settling_verified,
+                "evidence_classification": classification,
+                "verification_method": verification_method,
+                "peak_power_w": peak_power,
+                "peak_utilization_pct": peak_util,
+                "gpu_samples_count": gpu_samples_count,
+                "log_start_offset": start_offset,
+                "log_end_offset": last_end_offset,
+                "pool_connected": pool_connected,
+                "connected_pool_url": connected_pool_url,
+                "pool_job_received": pool_job_received,
+                "hashrate": hashrate_str,
+                "hashrate_ths": hashrate_ths,
+                "warmup_duration_seconds": t_now - t_start,
+                "settling_duration_seconds": settling_duration,
+            }
+
+            if phase == "initial":
+                t.initial_generation = gen_evidence
+                t.initial_mining_activity_verified = verified
+                if verified and not t.mining_verification_method:
+                    t.mining_verification_method = verification_method
+            else:
+                t.restart_generation = gen_evidence
+                t.restart_mining_activity_verified = verified
+
+        return gen_evidence
 
     async def _run_trial_1_single_request(
         self,
@@ -1500,7 +1754,7 @@ class AcceptanceHarness:
 
             # Verify initial mining activity / warm-up
             if self.require_mining_activity:
-                warmup_ok = await self._verify_mining_warmup(
+                gen1_evidence = await self._verify_mining_warmup(
                     supervisor=supervisor,
                     backend=backend,
                     sampler=sampler,
@@ -1508,10 +1762,11 @@ class AcceptanceHarness:
                     timeout=self.mining_warmup_timeout_seconds,
                     phase="initial",
                     t=t,
+                    start_offset=getattr(backend, "last_launch_log_offset", 0),
+                    generation_num=getattr(backend, "generation", 1) or 1,
                 )
-                t.initial_mining_activity_verified = warmup_ok
                 t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
-                if not warmup_ok:
+                if not gen1_evidence.get("verified"):
                     raise RuntimeError(
                         f"Mining activity contract failed: miner did not reach sustained hashing state "
                         f"within {self.mining_warmup_timeout_seconds}s warm-up window"
@@ -1520,6 +1775,27 @@ class AcceptanceHarness:
                 t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
                 t.initial_mining_activity_verified = True
                 t.mining_verification_method = "simulated"
+                t.initial_generation = {
+                    "generation": 1,
+                    "phase": "initial",
+                    "pid": initial_info.pid,
+                    "create_time": initial_info.create_time,
+                    "launch_monotonic": t_miner_started,
+                    "verified": True,
+                    "settling_verified": True,
+                    "evidence_classification": "simulated",
+                    "verification_method": "simulated",
+                    "peak_power_w": 0.0,
+                    "peak_utilization_pct": 0.0,
+                    "gpu_samples_count": 0,
+                    "log_start_offset": 0,
+                    "log_end_offset": 0,
+                    "pool_connected": False,
+                    "connected_pool_url": None,
+                    "pool_job_received": False,
+                    "hashrate": None,
+                    "hashrate_ths": None,
+                }
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
@@ -1555,9 +1831,13 @@ class AcceptanceHarness:
             t.metrics["restarted_create_time"] = resumed_info.create_time
             t_restarted = time.monotonic()
 
+            gen1_end_offset = t.initial_generation.get("log_end_offset", 0) if t.initial_generation else 0
+            restart_log_offset = max(getattr(backend, "last_launch_log_offset", 0), gen1_end_offset)
+            restart_gen_num = getattr(backend, "generation", 2) or 2
+
             # Verify post-restart mining activity
             if self.require_mining_activity:
-                restart_warmup_ok = await self._verify_mining_warmup(
+                gen2_evidence = await self._verify_mining_warmup(
                     supervisor=supervisor,
                     backend=backend,
                     sampler=sampler,
@@ -1565,10 +1845,11 @@ class AcceptanceHarness:
                     timeout=self.mining_warmup_timeout_seconds,
                     phase="restart",
                     t=t,
+                    start_offset=restart_log_offset,
+                    generation_num=restart_gen_num,
                 )
-                t.restart_mining_activity_verified = restart_warmup_ok
                 t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
-                if not restart_warmup_ok:
+                if not gen2_evidence.get("verified"):
                     raise RuntimeError(
                         f"Mining activity contract failed: restarted miner did not resume sustained hashing "
                         f"within {self.mining_warmup_timeout_seconds}s window"
@@ -1576,6 +1857,27 @@ class AcceptanceHarness:
             else:
                 t.restart_mining_activity_verified = True
                 t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
+                t.restart_generation = {
+                    "generation": 2,
+                    "phase": "restart",
+                    "pid": resumed_info.pid,
+                    "create_time": resumed_info.create_time,
+                    "launch_monotonic": t_restarted,
+                    "verified": True,
+                    "settling_verified": True,
+                    "evidence_classification": "simulated",
+                    "verification_method": "simulated",
+                    "peak_power_w": 0.0,
+                    "peak_utilization_pct": 0.0,
+                    "gpu_samples_count": 0,
+                    "log_start_offset": 0,
+                    "log_end_offset": 0,
+                    "pool_connected": False,
+                    "connected_pool_url": None,
+                    "pool_job_received": False,
+                    "hashrate": None,
+                    "hashrate_ths": None,
+                }
 
             self._record_trial_telemetry(t, telemetry, cooldown)
             if t.metrics.get("cooldown_elapsed_seconds") is not None:
@@ -1593,8 +1895,9 @@ class AcceptanceHarness:
                 and telemetry["observed_running_during_inference"] is False
             )
             t.mining_activity_contract_verified = (
-                t.initial_mining_activity_verified and t.restart_mining_activity_verified
-            )
+                bool(t.initial_generation and t.initial_generation.get("verified"))
+                and bool(t.restart_generation and t.restart_generation.get("verified"))
+            ) if self.require_mining_activity else True
 
             if (
                 t.process_contract_verified
@@ -1613,8 +1916,9 @@ class AcceptanceHarness:
         finally:
             if sampler is not None:
                 t.gpu_samples = list(sampler.samples)
-                t.peak_gpu_power_w = sampler.peak_power_w
-                t.peak_gpu_utilization_pct = sampler.peak_utilization_pct
+                if sampler.samples:
+                    t.peak_gpu_power_w = max(s.get("power_draw_w", 0.0) for s in sampler.samples)
+                    t.peak_gpu_utilization_pct = max(s.get("utilization_pct", 0.0) for s in sampler.samples)
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )

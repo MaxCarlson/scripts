@@ -74,15 +74,19 @@ To guarantee both process safety and physical compute correctness, trials in `li
 - **Contract C (`mining_activity_contract_verified`):** Actual sustained GPU hashing confirmed prior to inference request and after cooldown restart.
 A live trial passes only when Contracts A, B, and C are all verified.
 
-### Bounded Warm-up Verification (`_verify_mining_warmup`)
+### Bounded Warm-up Verification & Settling State Machine (`_verify_mining_warmup`)
 To allow the miner to initialize CUDA, connect to the Stratum pool, and ramp GPU compute load before the inference request arrives:
 - Captures pre-launch baseline GPU power and utilization (`gpu_idle_baseline`).
 - Diverts miner output to `trial_dir / "miner_stdout.log"` via `stdout_log_path`.
-- Samples GPU metrics at 1–2 Hz using `GpuActivitySampler`.
+- Implements **process-generation log isolation**: writes explicit generation delimiter headers and tracks `last_launch_log_offset`; `parse_miner_stdout_log` reads from `start_offset`, preventing restarted processes from inheriting historical hashrate evidence.
+- Strips ANSI codes, verifies genuine Stratum pool connection confirmations (`connected: stratum+ssl://...`) while rejecting CLI argument echoes, extracts Stratum jobs, and parses reported hashrate.
+- Isolates GPU samples by phase (`PhaseGpuEvidence`: `initial` vs `restart`), ensuring initial warm-up samples never leak into restart evaluations.
+- Evaluates activity through an explicit 5-state state machine:
+  `PROCESS_LAUNCHED` -> `ACTIVITY_DETECTED` -> `SUSTAINED_ACTIVITY_CONFIRMED` -> `SETTLING_IN_PROGRESS` -> `WARMUP_VERIFIED`.
 - Verifies sustained hashing via dual corroborating signals:
   1. Elevated GPU power draw (`>= baseline + 35W`) or load (`>= baseline + 15%`) across consecutive samples.
-  2. Miner stdout log patterns (`"Connected to"`, `"Speed: ... MH/s"`).
-- Allows settle time (`mining_settle_seconds = 3.0s` live) before dispatching the inference request.
+  2. Miner stdout log hashrate (`Speed: ... MH/s` / `Total: ... TH/s`).
+- Enforces continuously sustained activity throughout `mining_settle_seconds` (`3.0s` live); transient spikes that drop back to idle reset the settle timer.
 - Repeats bounded warm-up verification after the 10.0-second cooldown restart before test completion.
 - Fails fast immediately if the miner process terminates prematurely during warm-up.
 
@@ -91,6 +95,13 @@ Every trial records:
 - `model_id` (discovered via read-only `/api/v0/models` or `/v1/models`)
 - `initial_pid` and `initial_create_time`
 - `process_contract_verified`, `inference_arbitration_contract_verified`, `mining_activity_contract_verified`
+- `initial_generation` and `restart_generation` structured evidence dictionaries:
+  - `generation`, `phase`, `pid`, `create_time`, `launch_monotonic`
+  - `verified`, `settling_verified`
+  - `evidence_classification` (`hashing_verified`, `gpu_compute_activity_observed`, `miner_hashrate_reported`, `pool_connection_verified`, `process_running`, `verification_inconclusive`)
+  - `verification_method`, `peak_power_w`, `peak_utilization_pct`, `gpu_samples_count`
+  - `log_start_offset`, `log_end_offset`, `pool_connected`, `connected_pool_url`, `pool_job_received`, `hashrate`, `hashrate_ths`
+  - `warmup_duration_seconds`, `settling_duration_seconds`
 - `initial_miner_uptime_before_inference_seconds` and `initial_mining_activity_verified`
 - `initial_hashrate` and `initial_pool_connected`
 - `restart_mining_activity_verified` and `restart_time_to_hashing_seconds`

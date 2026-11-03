@@ -215,9 +215,25 @@ An investigation was conducted into the discrepancy between the prior T01 run re
    - Detects premature miner process termination immediately and fails fast.
    - Preserves guaranteed cleanup in `finally:` on all failure paths.
 
-### 6.3 Verification Evidence
-- **New Regression Suite:** `modules/resource_coordinator/tests/test_mining_activity_verification.py`: **7 passed in 2.5s**.
+### 6.3 Process Generation Log Isolation, Phase-Isolated GPU Sampling, and Settling State Machine
+To guarantee evidence integrity between initial launch and post-cooldown restart:
+1. **Process-Generation Log Isolation (`core/processes.py`, `acceptance_harness.py`):**
+   - `WindowsProcessBackend` increments generation count (`_generation`) and writes an explicit delimiter header on each start (`--- [COORDINATOR GENERATION {gen} PID {pid} STARTED AT {ts}] ---`).
+   - `parse_miner_stdout_log` accepts `start_offset: int = 0`, reading only log bytes emitted after the process generation's launch offset. Old hashrate lines from prior generations are strictly ignored.
+   - Strips ANSI color/escape sequences (`\x1b\[[0-?]*[ -/]*[@-~]`) and accurately distinguishes pool connection confirmations from command-line argument echoes (`--url stratum+ssl:...`).
+2. **Phase-Isolated GPU Sampling (`acceptance_harness.py`):**
+   - `GpuActivitySampler` maintains `PhaseGpuEvidence` isolated by phase (`initial` vs `restart`), storing generation-specific baselines, peak power, peak utilization, and sample histories.
+   - Samples from the initial warm-up phase never leak into restart evaluation.
+3. **Settling-Period Activity Revalidation State Machine (`acceptance_harness.py`):**
+   - Implemented a 5-state state machine: `PROCESS_LAUNCHED` -> `ACTIVITY_DETECTED` -> `SUSTAINED_ACTIVITY_CONFIRMED` -> `SETTLING_IN_PROGRESS` -> `WARMUP_VERIFIED`.
+   - Continuous verification during `mining_settle_seconds`: transient activity spikes that drop back to idle reset the settle timer, preventing false positives.
+4. **Evidence Classification Taxonomy:**
+   - Formalized evidence classifications: `hashing_verified`, `gpu_compute_activity_observed`, `miner_hashrate_reported`, `pool_connection_verified`, `process_running`, and `verification_inconclusive`.
+   - Recorded structured evidence dictionaries in `trial.initial_generation` and `trial.restart_generation`.
+
+### 6.4 Verification Evidence
+- **Comprehensive Activity Verification Suite:** `modules/resource_coordinator/tests/test_mining_activity_verification.py`: **10 passed in 4.3s**.
 - **Process Backend Logging Tests:** `modules/resource_coordinator/tests/test_processes.py`: **5 passed in 0.8s**.
-- **Full Resource Coordinator Suite:** **327 passed, 4 skipped**.
+- **Full Resource Coordinator Suite:** **337 passed, 4 skipped**.
 - **Real Windows Disposable Helper:** `resource-coordinator accept -m disposable_helper` verified with **5/5 trials passed (`os_process_contract`)**.
-- **Read-Only Live Preflight:** `resource-coordinator preflight --check-live`: **READY** (1689 MiB free VRAM, `qwen38_23GB` loaded).
+- **Read-Only Live Preflight:** `resource-coordinator preflight --check-live`: **READY** (2036 MiB free VRAM, `qwen38_23GB` loaded).

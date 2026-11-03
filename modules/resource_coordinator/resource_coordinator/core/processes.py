@@ -117,6 +117,8 @@ class FakeProcessBackend:
         self.last_stopped_at: Optional[float] = None
         self.last_started_at: Optional[float] = time.time() if running else None
         self._relaunch_task: Optional[asyncio.Task] = None
+        self.generation = 1 if running else 0
+        self.last_launch_log_offset = 0
 
     async def status(self) -> ProcessInfo:
         if not self.running:
@@ -158,6 +160,7 @@ class FakeProcessBackend:
         self.pid = 12345
         self.create_time = time.time()
         self.last_started_at = time.time()
+        self.generation += 1
         return True
 
     async def stop(self, timeout: float = 10.0) -> bool:
@@ -243,6 +246,8 @@ class WindowsProcessBackend:
         self._last_started_at: Optional[float] = None
         self._last_stopped_at: Optional[float] = None
         self._log_file_handle: Optional[Any] = None
+        self._generation: int = 0
+        self._last_launch_log_offset: int = 0
 
     def _close_log_file(self) -> None:
         if self._log_file_handle is not None:
@@ -255,6 +260,14 @@ class WindowsProcessBackend:
 
     def __del__(self) -> None:
         self._close_log_file()
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    @property
+    def last_launch_log_offset(self) -> int:
+        return self._last_launch_log_offset
 
     @property
     def running(self) -> bool:
@@ -383,7 +396,26 @@ class WindowsProcessBackend:
             self._owned_create_time = p.create_time()
             self._console_group_pid = self._proc.pid if os.name == "nt" and not self.new_console else None
             self._last_started_at = time.time()
-            logger.info("Started process '%s' (PID %d)", self.name, self._owned_pid)
+            self._generation += 1
+            if self._log_file_handle is not None:
+                from datetime import datetime, timezone
+
+                iso_ts = datetime.now(timezone.utc).isoformat()
+                header = f"\n--- [COORDINATOR GENERATION {self._generation} PID {self._owned_pid} STARTED AT {iso_ts}] ---\n"
+                self._log_file_handle.write(header)
+                self._log_file_handle.flush()
+                try:
+                    self._last_launch_log_offset = Path(self.stdout_log_path).stat().st_size
+                except OSError:
+                    self._last_launch_log_offset = 0
+            else:
+                self._last_launch_log_offset = 0
+            logger.info(
+                "Started process '%s' (PID %d, Generation %d)",
+                self.name,
+                self._owned_pid,
+                self._generation,
+            )
             return True
         except Exception as exc:
             self._close_log_file()
@@ -560,6 +592,14 @@ class ProcessSupervisor:
     @property
     def allow_external_restart(self) -> bool:
         return getattr(self.backend, "allow_external_restart", False)
+
+    @property
+    def generation(self) -> int:
+        return getattr(self.backend, "generation", 0)
+
+    @property
+    def last_launch_log_offset(self) -> int:
+        return getattr(self.backend, "last_launch_log_offset", 0)
 
     async def status(self) -> ProcessInfo:
         info = await self.backend.status()
