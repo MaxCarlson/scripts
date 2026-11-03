@@ -181,3 +181,43 @@ All five defects were:
 - **Full LLM Monitor Suite:** **253 passed, 2 skipped**.
 - **Real Windows Disposable Helper:** `resource-coordinator accept -m disposable_helper` verified with **5/5 trials passed (`os_process_contract`)**.
 - **Dry-run Merge Tree:** `git merge-tree --write-tree origin/main HEAD` confirmed clean zero-conflict merge tree (`9a1d0427`).
+
+---
+
+## 6. Mining-Activity Verification & 3-Contract Partitioning (T01 Investigation & Enhancement)
+
+### 6.1 Investigation of Prior T01 Run (`20261102_233303_5a9bdae3`)
+An investigation was conducted into the discrepancy between the prior T01 run reporting `PASS` while the operator observed no noticeable increase in GPU utilization.
+- **Root Cause Identified:**
+  1. In `_run_trial_1_single_request`, after `service.start()` verified `initial_info.state == ProcessState.RUNNING`, `discover_live_model(client)` was called (~200ms) and the inference request was immediately posted. The inference arrival triggered `StopProcessAction` ~295ms after launch (total process lifetime ~758ms).
+  2. Following the 10.016s idle cooldown, post-restart KRig was verified in `RUNNING` state (~10ms) and execution immediately entered `finally:`, terminating the restarted process ~47ms after start.
+  3. KRig requires 3–10 seconds to initialize its CUDA runtime, allocate device buffers, connect to the Stratum pool, and ramp GPU compute load from idle (~40 W) to full Pearl hashing (~350–550 W).
+  4. `WindowsProcessBackend` redirected `stdout` and `stderr` to `subprocess.DEVNULL`, suppressing all miner diagnostic output and pool connection telemetry.
+- **Historical Verdict Classification:** Run `20261102_233303_5a9bdae3` is officially reclassified as: **"Process coordination verified; actual mining activity not established."**
+
+### 6.2 Implementation of Mining-Activity Verification
+1. **Stdout/Stderr Logging (`config.py`, `core/processes.py`):**
+   - Added `stdout_log_path: Optional[str] = None` to `ProcessConfig`, `WindowsProcessBackend`, and `CoordinatorConfig.from_dict()`.
+   - Directed stdout/stderr to `trial_dir / "miner_stdout.log"` with clean handle lifecycle and automatic closing on process exit/termination.
+2. **GPU Telemetry Sampler (`acceptance_harness.py`):**
+   - Added `GpuActivitySampler` sampling GPU utilization, power draw, and VRAM at 1–2 Hz via `GpuMonitor`.
+   - Captured pre-launch `gpu_idle_baseline` and evaluated sustained activity (elevated power or utilization across consecutive samples).
+3. **Log Telemetry Parsing (`acceptance_harness.py`):**
+   - Added `parse_miner_stdout_log()` parsing pool connection (`"Connected to"`, `"Subscribed"`) and reported hashrate (`"Speed: ... MH/s"`).
+4. **Three-Contract Partitioning (`TrialEvidence`):**
+   - **Contract A (`process_contract_verified`):** OS process launch, PID tracking, stop barrier, cooldown restart, and supervised cleanup.
+   - **Contract B (`inference_arbitration_contract_verified`):** Stop barrier strictly before forward, zero miner activity during inference, 10.0s cooldown, and restart on idle.
+   - **Contract C (`mining_activity_contract_verified`):** Actual sustained GPU hashing confirmed prior to inference request and after cooldown restart.
+   - For `live` mode, `TrialEvidence.status` requires contracts A, B, and C to be True.
+5. **Bounded Warm-up Verification (`_verify_mining_warmup`):**
+   - Verified initial mining activity within a bounded window (`mining_warmup_timeout_seconds`, default 60s live) and allowed settling (`mining_settle_seconds = 3.0s` live) before dispatching inference.
+   - Verified post-restart mining activity after the 10-second cooldown before trial completion.
+   - Detects premature miner process termination immediately and fails fast.
+   - Preserves guaranteed cleanup in `finally:` on all failure paths.
+
+### 6.3 Verification Evidence
+- **New Regression Suite:** `modules/resource_coordinator/tests/test_mining_activity_verification.py`: **7 passed in 2.5s**.
+- **Process Backend Logging Tests:** `modules/resource_coordinator/tests/test_processes.py`: **5 passed in 0.8s**.
+- **Full Resource Coordinator Suite:** **327 passed, 4 skipped**.
+- **Real Windows Disposable Helper:** `resource-coordinator accept -m disposable_helper` verified with **5/5 trials passed (`os_process_contract`)**.
+- **Read-Only Live Preflight:** `resource-coordinator preflight --check-live`: **READY** (1689 MiB free VRAM, `qwen38_23GB` loaded).

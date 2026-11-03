@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Live Hardware Acceptance Stage 3 (T01) Validated; Ready for Operator Authorization of Remaining Trials (T02–T04)  
-**Timestamp:** 2026-11-02T15:35:00-08:00  
+**Current Phase:** Stage 3 Live Hardware Acceptance (Trial T01 — Bounded Warm-up & 3-Contract Partitioning Validated; Awaiting Operator Authorization for Supervised T01 Rerun)  
+**Timestamp:** 2026-11-02T16:08:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -18,10 +18,10 @@
 | **LM Studio** | Active / Running | Port `1234` (Listen) | Loaded model (`/api/v0/models`): `qwen38_23GB` (`state: "loaded"`, `loaded_context_length: 98304`). Read-only discovery verified. |
 | **LLM Monitor Web** | Active / Running | PID `58828` on Port `8789` | Command: `-m llm_monitor web -p 8789 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1234 -R content -n -d .../qualification.sqlite3`. Must NOT be interrupted. |
 | **OpenCode Workers** | Active | PIDs `47108`, `63836` | Local coding worker processes active. Must NOT be disturbed. |
-| **External Miner (`krig-miner.exe`)** | Active (External) | PID `69988` (Parent `15808`) | Elevated external `krig-miner.exe` session currently running on host. Read-only preflight detects PID `69988` and blocks starting a second miner until operator stops PID `69988`. |
+| **External Miner (`krig-miner.exe`)** | Inactive on host | None running | Operator stopped external PID `69988` during Stage 2 preparation. Preflight confirms zero external miners running. |
 | **Mining Scheduled Tasks** | None | None | No scheduled tasks for mining detected. |
 | **Mining Windows Services** | None | None | No Windows services for mining detected. |
-| **NVIDIA GPU** | Operational | GeForce RTX 5090 | 550W current power limit (~549.8W draw while external PID `69988` mines Pearl), `30,690 MiB` used / `1,498 MiB` free / `32,607 MiB` total VRAM. |
+| **NVIDIA GPU** | Operational | GeForce RTX 5090 | 600W driver power limit (idle ~40W, 35°C), `30,918 MiB` used / `1,689 MiB` free / `32,607 MiB` total VRAM with resident `qwen38_23GB`. |
 | **Resource Coordinator Service**| Inactive on host | Port `1235` (Free) | No host-wide coordinator running. Ephemeral test ports used for testing. |
 
 ---
@@ -119,20 +119,20 @@
   - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
   - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
   - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
-- **Stage 3 Live Hardware Acceptance (Trial T01):** COMPLETE (PASS).
-  - Operator explicitly authorized bounded T01 execution under verified preflight conditions.
-  - Executed live run: `20261102_233303_5a9bdae3` in `modules/resource_coordinator/.live_acceptance_work/runs/20261102_233303_5a9bdae3`.
-  - Process backend: `windows_miner` (`krig-miner.exe`).
-  - Upstream backend: `live_lmstudio` (`qwen38_23GB` on `:1234`).
-  - Invariant Verification:
-    - Initial process launch: Verified PID `7020` (create_time `1793662383.41`).
-    - Stop barrier: Verified KRig termination at monotonic `282172.093` strictly before request dispatch at `282172.421` (`stopped_before_forward_verified = true`).
-    - Inference execution: Real HTTP 200 response from `qwen38_23GB` in 1,937 ms; zero coordinator-owned miner activity during inference (`observed_exit_during_inference = true`).
-    - Idle cooldown: Completed full 10.016-second idle quiet period before restart.
-    - Process restart: Verified distinct new coordinator-owned PID `66428` launched at monotonic `282182.438`.
-    - Supervised cleanup: `cleanup_verified_stopped = true`, `descendants_verified_stopped = true`; zero orphan processes remaining.
-    - Evidence durability: `manifest.json`, `journal_t01.json`, and `acceptance_report.json` preserved and pointed to by `latest_run.json`.
-    - Verdict: `PASS`, `verification_level = "live_hardware_partial_stage"`.
-    - Branch ready for operator-authorized execution of remaining trials (`T02 T03 T04`).
-
-
+- **Stage 3 Live Hardware Acceptance (Trial T01 — Investigation & Enhancement):**
+  - Prior Run Execution (`20261102_233303_5a9bdae3`): Verified process creation, stop barrier, cooldown timing, restart, and cleanup. However, the initial KRig process was stopped ~295ms after launch and restarted PID 66428 was stopped ~47ms after start, preventing KRig from completing CUDA initialization or establishing hashing. Reclassified as: **"Process coordination verified; actual mining activity not established."**
+  - **Remediation & Enhancements Implemented:**
+    1. **Stdout/Stderr Capture:** Added `stdout_log_path` across `ProcessConfig`, `WindowsProcessBackend`, and `CoordinatorConfig`. Output now captured to `miner_stdout.log` in the trial directory.
+    2. **GPU Telemetry Sampler:** Added `GpuActivitySampler` sampling power draw and compute load at 1–2 Hz, with pre-launch idle baseline comparison.
+    3. **Log Parsing:** Added `parse_miner_stdout_log` to detect Stratum pool connection and reported hashrate (`Speed: ... MH/s`).
+    4. **Three-Contract Partitioning:**
+       - Contract A: `process_contract_verified` (OS process lifecycle, PID tracking, stop, restart, cleanup).
+       - Contract B: `inference_arbitration_contract_verified` (Stop barrier strictly before forward, 10.0s cooldown, restart on idle).
+       - Contract C: `mining_activity_contract_verified` (Actual sustained GPU hashing confirmed prior to inference and after cooldown restart).
+    5. **Bounded Warm-up Verification:** Added `_verify_mining_warmup` on initial launch and post-cooldown restart with immediate fast-failure if miner exits prematurely, while preserving guaranteed cleanup in `finally:`.
+  - **Verification:**
+    - 7 deterministic regression tests in `test_mining_activity_verification.py` passed.
+    - Full `resource_coordinator` test suite: **327 passed, 4 skipped**.
+    - Windows `disposable_helper` acceptance run: **5/5 passed** (`os_process_contract`).
+    - Read-only live preflight: **READY** (1689 MiB free VRAM, `qwen38_23GB` loaded).
+  - Ready for operator authorization of supervised T01 rerun with physical mining activity verification.

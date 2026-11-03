@@ -427,6 +427,143 @@ class TrialEvidence:
     metrics: Dict[str, Any] = field(default_factory=dict)
     diagnostics: List[str] = field(default_factory=list)
     error: Optional[str] = None
+    process_contract_verified: bool = False
+    inference_arbitration_contract_verified: bool = False
+    mining_activity_contract_verified: bool = False
+    initial_miner_uptime_before_inference_seconds: Optional[float] = None
+    initial_mining_activity_verified: bool = False
+    initial_hashrate: Optional[str] = None
+    initial_pool_connected: Optional[bool] = None
+    restart_mining_activity_verified: bool = False
+    restart_time_to_hashing_seconds: Optional[float] = None
+    gpu_idle_baseline: Optional[Dict[str, Any]] = None
+    gpu_samples: List[Dict[str, Any]] = field(default_factory=list)
+    peak_gpu_utilization_pct: Optional[float] = None
+    peak_gpu_power_w: Optional[float] = None
+    mining_verification_method: Optional[str] = None
+
+
+import re
+
+POOL_CONNECT_RE = re.compile(
+    r"(?:connected to|subscribed to|authorized worker|pool connected|stratum\+ssl://|stratum\+tcp://)",
+    re.IGNORECASE,
+)
+HASHRATE_RE = re.compile(
+    r"(?:speed|hashrate)[:\s]+([\d\.]+\s*(?:[kMGT]?H/s))",
+    re.IGNORECASE,
+)
+
+
+def parse_miner_stdout_log(log_path: Path | str) -> Dict[str, Any]:
+    """Parse miner stdout log file for pool connectivity and reported hashrate."""
+    path = Path(log_path)
+    if not path.is_file():
+        return {
+            "exists": False,
+            "pool_connected": False,
+            "hashrate": None,
+            "line_count": 0,
+        }
+    try:
+        content = path.read_text(encoding="utf-8", errors="replace")
+    except Exception as exc:
+        logger.warning("Error reading miner stdout log '%s': %s", path, exc)
+        return {
+            "exists": True,
+            "pool_connected": False,
+            "hashrate": None,
+            "error": str(exc),
+            "line_count": 0,
+        }
+
+    lines = content.splitlines()
+    pool_connected = False
+    hashrate = None
+
+    for line in lines:
+        if POOL_CONNECT_RE.search(line):
+            pool_connected = True
+        m = HASHRATE_RE.search(line)
+        if m:
+            hashrate = m.group(1).strip()
+
+    return {
+        "exists": True,
+        "pool_connected": pool_connected,
+        "hashrate": hashrate,
+        "line_count": len(lines),
+    }
+
+
+class GpuActivitySampler:
+    """Samples and evaluates GPU compute and power metrics for acceptance testing."""
+
+    def __init__(
+        self,
+        monitor: Optional[Any] = None,
+        min_consecutive: int = 2,
+        min_power_delta_w: float = 35.0,
+        min_util_delta_pct: float = 15.0,
+    ) -> None:
+        self.monitor = monitor or NvidiaGpuMonitor()
+        self.min_consecutive = min_consecutive
+        self.min_power_delta_w = min_power_delta_w
+        self.min_util_delta_pct = min_util_delta_pct
+        self.baseline: Optional[Dict[str, Any]] = None
+        self.samples: List[Dict[str, Any]] = []
+
+    async def sample_baseline(self) -> Optional[Dict[str, Any]]:
+        metrics = await self.monitor.get_metrics()
+        if metrics:
+            m = metrics[0]
+            self.baseline = {
+                "device_id": m.device_id,
+                "power_draw_w": m.power_draw_w,
+                "utilization_pct": m.utilization_pct,
+                "memory_used_mb": m.memory_used_mb,
+                "timestamp": time.time(),
+                "monotonic": time.monotonic(),
+            }
+        return self.baseline
+
+    async def sample(self) -> Optional[Dict[str, Any]]:
+        metrics = await self.monitor.get_metrics()
+        if not metrics:
+            return None
+        m = metrics[0]
+        s = {
+            "device_id": m.device_id,
+            "power_draw_w": m.power_draw_w,
+            "utilization_pct": m.utilization_pct,
+            "memory_used_mb": m.memory_used_mb,
+            "timestamp": time.time(),
+            "monotonic": time.monotonic(),
+        }
+        self.samples.append(s)
+        return s
+
+    def is_activity_sustained(self) -> bool:
+        if not self.baseline or len(self.samples) < self.min_consecutive:
+            return False
+        base_power = self.baseline.get("power_draw_w", 0.0)
+        base_util = self.baseline.get("utilization_pct", 0.0)
+        recent = self.samples[-self.min_consecutive:]
+        power_elevated = all(s.get("power_draw_w", 0.0) >= base_power + self.min_power_delta_w for s in recent)
+        util_elevated = all(s.get("utilization_pct", 0.0) >= base_util + self.min_util_delta_pct for s in recent)
+        return power_elevated or util_elevated
+
+    @property
+    def peak_power_w(self) -> Optional[float]:
+        if not self.samples:
+            return None
+        return max(s.get("power_draw_w", 0.0) for s in self.samples)
+
+    @property
+    def peak_utilization_pct(self) -> Optional[float]:
+        if not self.samples:
+            return None
+        return max(s.get("utilization_pct", 0.0) for s in self.samples)
 
 
 @dataclass
@@ -485,6 +622,10 @@ class AcceptanceHarness:
         work_dir: Optional[str | Path] = None,
         lock_path: Optional[str | Path] = None,
         trials_to_run: Optional[List[str]] = None,
+        require_mining_activity: Optional[bool] = None,
+        mining_warmup_timeout_seconds: float = 60.0,
+        mining_settle_seconds: float = 3.0,
+        gpu_monitor: Optional[Any] = None,
         _allow_short_cooldown_for_test: bool = False,
         _upstream_app_override_for_test: Any = None,
         _external_miners_override_for_test: Optional[List[Dict[str, Any]]] = None,
@@ -495,6 +636,12 @@ class AcceptanceHarness:
         self.mode = mode
         self.allow_live_lmstudio = allow_live_lmstudio
         self.allow_real_miner = allow_real_miner
+        self.require_mining_activity = (
+            require_mining_activity if require_mining_activity is not None else (mode == "live")
+        )
+        self.mining_warmup_timeout_seconds = float(mining_warmup_timeout_seconds)
+        self.mining_settle_seconds = float(mining_settle_seconds)
+        self.gpu_monitor = gpu_monitor
         self._allow_short_cooldown_for_test = _allow_short_cooldown_for_test
         self._upstream_app_override_for_test = _upstream_app_override_for_test
         self._external_miners_override_for_test = _external_miners_override_for_test
@@ -607,6 +754,10 @@ class AcceptanceHarness:
         allow_real_miner: bool = False,
         lock_path: Optional[str | Path] = None,
         trials_to_run: Optional[List[str]] = None,
+        require_mining_activity: Optional[bool] = None,
+        mining_warmup_timeout_seconds: float = 60.0,
+        mining_settle_seconds: float = 3.0,
+        gpu_monitor: Optional[Any] = None,
         _allow_short_cooldown_for_test: bool = False,
         _upstream_app_override_for_test: Any = None,
     ) -> AcceptanceHarness:
@@ -619,6 +770,10 @@ class AcceptanceHarness:
             work_dir=work_dir,
             lock_path=lock_path,
             trials_to_run=trials_to_run,
+            require_mining_activity=require_mining_activity,
+            mining_warmup_timeout_seconds=mining_warmup_timeout_seconds,
+            mining_settle_seconds=mining_settle_seconds,
+            gpu_monitor=gpu_monitor,
             _allow_short_cooldown_for_test=_allow_short_cooldown_for_test,
             _upstream_app_override_for_test=_upstream_app_override_for_test,
         )
@@ -864,10 +1019,12 @@ class AcceptanceHarness:
         trial_dir.mkdir(parents=True, exist_ok=True)
         journal_path = run_dir / f"journal_{trial_id.lower()}.json"
         StateCodec.initialize(journal_path)
+        log_path = trial_dir / "miner_stdout.log"
 
         telemetry: Dict[str, Any] = {
             "journal_path": str(journal_path),
             "lock_path": str(self.lock_path),
+            "log_path": str(log_path),
             "stop_verified_monotonic": None,
             "lease_acquired_monotonic": None,
             "upstream_dispatch_monotonic": None,
@@ -942,12 +1099,14 @@ class AcceptanceHarness:
                     "refusing to fall back to simulated backend"
                 )
             target_proc_name = self.miner_process_config.name
+            live_proc_cfg = copy.deepcopy(self.miner_process_config)
+            live_proc_cfg.stdout_log_path = str(log_path)
             cfg = CoordinatorConfig(
                 service=ServiceConfig(
                     upstream_url=self.lmstudio_url,
                     state_persistence_path=str(journal_path),
                 ),
-                processes={target_proc_name: self.miner_process_config},
+                processes={target_proc_name: live_proc_cfg},
                 policies=[
                     PolicyConfig(
                         name="stop-miner-live",
@@ -999,6 +1158,7 @@ class AcceptanceHarness:
                 working_directory=str(trial_dir),
                 stop_timeout_seconds=5.0,
                 allow_force_termination=True,
+                stdout_log_path=str(log_path),
             )
             cfg = CoordinatorConfig(
                 service=ServiceConfig(
@@ -1245,6 +1405,62 @@ class AcceptanceHarness:
         if telemetry.get("lease_acquired_monotonic") is not None:
             t.metrics["lease_acquired_monotonic"] = telemetry["lease_acquired_monotonic"]
 
+    async def _verify_mining_warmup(
+        self,
+        supervisor: Any,
+        backend: Any,
+        sampler: GpuActivitySampler,
+        log_path: Path,
+        timeout: float,
+        phase: str,
+        t: TrialEvidence,
+    ) -> bool:
+        deadline = time.monotonic() + timeout
+        hashing_confirmed = False
+        method_parts: List[str] = []
+        settle_until: Optional[float] = None
+
+        while time.monotonic() < deadline:
+            info = await supervisor.status()
+            if info.state not in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
+                raise RuntimeError(
+                    f"Miner exited prematurely during {phase} warm-up (state={info.state.value}, PID={info.pid})"
+                )
+
+            await sampler.sample()
+
+            log_info = parse_miner_stdout_log(log_path)
+            if log_info.get("pool_connected"):
+                t.initial_pool_connected = True
+            if log_info.get("hashrate") and not t.initial_hashrate:
+                t.initial_hashrate = log_info["hashrate"]
+
+            gpu_active = sampler.is_activity_sustained()
+            log_active = bool(log_info.get("hashrate"))
+
+            if gpu_active or log_active:
+                if not hashing_confirmed:
+                    hashing_confirmed = True
+                    if gpu_active and "gpu_telemetry" not in method_parts:
+                        method_parts.append("gpu_telemetry")
+                    if log_active and "miner_stdout" not in method_parts:
+                        method_parts.append("miner_stdout")
+                    if self.mining_settle_seconds > 0.0:
+                        settle_until = time.monotonic() + self.mining_settle_seconds
+                    else:
+                        break
+
+            if settle_until is not None and time.monotonic() >= settle_until:
+                break
+
+            await asyncio.sleep(0.05)
+
+        if not hashing_confirmed:
+            return False
+
+        t.mining_verification_method = "+".join(method_parts) or "simulated"
+        return True
+
     async def _run_trial_1_single_request(
         self,
         mock_handler: Optional[Callable] = None,
@@ -1253,7 +1469,8 @@ class AcceptanceHarness:
         """Trial 1: Single request stop-before-forward and exact idle cooldown restart."""
         t = TrialEvidence(trial_id="T01", name="Single Request Stop Before Forward and Cooldown")
         t.start_monotonic = time.monotonic()
-        service = system = client = upstream_client = supervisor = backend = telemetry = None
+        service = system = client = upstream_client = supervisor = backend = telemetry = sampler = None
+        initial_info = resumed_info = resp = None
         try:
             cooldown = self.cooldown_seconds
             service, system, client, upstream_client, supervisor, backend, telemetry = self._build_test_harness(
@@ -1264,6 +1481,11 @@ class AcceptanceHarness:
             if _post_build_hook is not None:
                 _post_build_hook(service, system, backend)
 
+            sampler = GpuActivitySampler(monitor=self.gpu_monitor)
+            baseline = await sampler.sample_baseline()
+            if baseline:
+                t.gpu_idle_baseline = baseline
+
             if not await service.start():
                 raise RuntimeError(f"Service failed to start: {service.failure_reason}")
 
@@ -1271,6 +1493,33 @@ class AcceptanceHarness:
             assert initial_info.state == ProcessState.RUNNING
             t.metrics["initial_pid"] = initial_info.pid
             t.metrics["initial_create_time"] = initial_info.create_time
+            t.process_contract_verified = True
+            t_miner_started = time.monotonic()
+
+            log_path = Path(telemetry.get("log_path", ""))
+
+            # Verify initial mining activity / warm-up
+            if self.require_mining_activity:
+                warmup_ok = await self._verify_mining_warmup(
+                    supervisor=supervisor,
+                    backend=backend,
+                    sampler=sampler,
+                    log_path=log_path,
+                    timeout=self.mining_warmup_timeout_seconds,
+                    phase="initial",
+                    t=t,
+                )
+                t.initial_mining_activity_verified = warmup_ok
+                t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
+                if not warmup_ok:
+                    raise RuntimeError(
+                        f"Mining activity contract failed: miner did not reach sustained hashing state "
+                        f"within {self.mining_warmup_timeout_seconds}s warm-up window"
+                    )
+            else:
+                t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
+                t.initial_mining_activity_verified = True
+                t.mining_verification_method = "simulated"
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
@@ -1304,15 +1553,68 @@ class AcceptanceHarness:
             t.metrics["miner_restarted"] = True
             t.metrics["restarted_pid"] = resumed_info.pid
             t.metrics["restarted_create_time"] = resumed_info.create_time
+            t_restarted = time.monotonic()
+
+            # Verify post-restart mining activity
+            if self.require_mining_activity:
+                restart_warmup_ok = await self._verify_mining_warmup(
+                    supervisor=supervisor,
+                    backend=backend,
+                    sampler=sampler,
+                    log_path=log_path,
+                    timeout=self.mining_warmup_timeout_seconds,
+                    phase="restart",
+                    t=t,
+                )
+                t.restart_mining_activity_verified = restart_warmup_ok
+                t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
+                if not restart_warmup_ok:
+                    raise RuntimeError(
+                        f"Mining activity contract failed: restarted miner did not resume sustained hashing "
+                        f"within {self.mining_warmup_timeout_seconds}s window"
+                    )
+            else:
+                t.restart_mining_activity_verified = True
+                t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
+
             self._record_trial_telemetry(t, telemetry, cooldown)
             if t.metrics.get("cooldown_elapsed_seconds") is not None:
                 assert t.metrics["cooldown_elapsed_seconds"] >= cooldown - 0.15
-            t.status = "PASS"
+
+            # Evaluate 3 verification contracts
+            t.process_contract_verified = (
+                initial_info.state == ProcessState.RUNNING
+                and resumed_info.state == ProcessState.RUNNING
+                and resumed_info.pid is not None
+            )
+            t.inference_arbitration_contract_verified = (
+                resp.status_code == 200
+                and telemetry["stopped_before_forward_verified"] is True
+                and telemetry["observed_running_during_inference"] is False
+            )
+            t.mining_activity_contract_verified = (
+                t.initial_mining_activity_verified and t.restart_mining_activity_verified
+            )
+
+            if (
+                t.process_contract_verified
+                and t.inference_arbitration_contract_verified
+                and (t.mining_activity_contract_verified or not self.require_mining_activity)
+            ):
+                t.status = "PASS"
+            else:
+                t.status = "FAIL"
         except Exception as exc:
             t.status = "FAIL"
             t.error = str(exc)
+            if initial_info is not None and initial_info.state == ProcessState.RUNNING:
+                t.process_contract_verified = True
             logger.exception("Trial 1 failed: %s", exc)
         finally:
+            if sampler is not None:
+                t.gpu_samples = list(sampler.samples)
+                t.peak_gpu_power_w = sampler.peak_power_w
+                t.peak_gpu_utilization_pct = sampler.peak_utilization_pct
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )

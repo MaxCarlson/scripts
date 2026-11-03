@@ -51,6 +51,7 @@ class ProcessConfig:
     allow_external_restart: bool = False
     adopt_external: bool = False
     allow_force_termination: bool = False
+    stdout_log_path: Optional[str] = None
 
 
 @dataclass
@@ -122,6 +123,7 @@ class CoordinatorConfig:
                 allow_external_restart=bool(p_data.get("allow_external_restart", adopt)),
                 adopt_external=adopt,
                 allow_force_termination=p_data.get("allow_force_termination", False),
+                stdout_log_path=p_data.get("stdout_log_path"),
             )
 
         policies = []
@@ -298,6 +300,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
                 allow_external_restart=p_cfg.allow_external_restart,
                 adopt_external=p_cfg.adopt_external,
                 allow_force_termination=p_cfg.allow_force_termination,
+                stdout_log_path=p_cfg.stdout_log_path,
             )
         supervisor = ProcessSupervisor(
             backend=backend,

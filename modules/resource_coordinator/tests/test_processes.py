@@ -78,3 +78,63 @@ async def test_process_supervisor_external_ownership():
     backend.running = False
     start_res = await supervisor.start(only_if_stopped_by_coordinator=True)
     assert start_res is False
+
+
+def test_process_config_stdout_log_path():
+    from resource_coordinator.config import CoordinatorConfig, ProcessConfig
+
+    cfg = ProcessConfig(name="test", stdout_log_path=r"C:\test\miner.log")
+    assert cfg.stdout_log_path == r"C:\test\miner.log"
+
+    data = {
+        "version": "1.0",
+        "processes": {
+            "test": {
+                "executable": r"C:\Windows\System32\cmd.exe",
+                "stdout_log_path": r"C:\test\miner.log",
+            }
+        },
+    }
+    parsed = CoordinatorConfig.from_dict(data)
+    assert parsed.processes["test"].stdout_log_path == r"C:\test\miner.log"
+
+
+@pytest.mark.asyncio
+async def test_windows_process_backend_stdout_logging(tmp_path):
+    import asyncio
+    import os
+    import shutil
+    from pathlib import Path
+    from resource_coordinator.core.processes import WindowsProcessBackend
+
+    log_path = tmp_path / "miner_stdout.log"
+    cscript_src = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "cscript.exe"
+    mock_miner = tmp_path / "mock_miner.exe"
+    shutil.copy(cscript_src, mock_miner)
+
+    script_path = tmp_path / "miner.vbs"
+    script_path.write_text('WScript.Echo "HASH_READY"\nWScript.Sleep 3000\n', encoding="utf-8")
+
+    backend = WindowsProcessBackend(
+        name="test_worker",
+        executable=str(mock_miner),
+        arguments=["//NoLogo", str(script_path)],
+        allow_force_termination=True,
+        stdout_log_path=str(log_path),
+    )
+    started = await backend.start()
+    assert started is True
+    try:
+        # Give process time to write
+        for _ in range(30):
+            if log_path.exists() and "HASH_READY" in log_path.read_text(encoding="utf-8"):
+                break
+            await asyncio.sleep(0.1)
+        assert log_path.exists()
+        assert "HASH_READY" in log_path.read_text(encoding="utf-8")
+    finally:
+        stopped = await backend.stop(timeout=5.0)
+        assert stopped is True
+        # Verify file is not locked after stop
+        log_path.write_text("unlocked", encoding="utf-8")
+

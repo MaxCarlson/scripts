@@ -223,6 +223,7 @@ class WindowsProcessBackend:
         allow_external_restart: bool = False,
         adopt_external: bool = False,
         allow_force_termination: bool = False,
+        stdout_log_path: Optional[str] = None,
     ) -> None:
         self.name = name
         self.executable = executable
@@ -230,6 +231,7 @@ class WindowsProcessBackend:
         self.working_directory = working_directory
         self.new_console = new_console
         self.allow_force_termination = allow_force_termination
+        self.stdout_log_path = stdout_log_path
         self._console_group_pid: Optional[int] = None
         self.allow_external_stop = allow_external_stop or adopt_external
         self.allow_external_restart = allow_external_restart or adopt_external
@@ -240,6 +242,19 @@ class WindowsProcessBackend:
         self._owned_create_time: Optional[float] = None
         self._last_started_at: Optional[float] = None
         self._last_stopped_at: Optional[float] = None
+        self._log_file_handle: Optional[Any] = None
+
+    def _close_log_file(self) -> None:
+        if self._log_file_handle is not None:
+            try:
+                self._log_file_handle.flush()
+                self._log_file_handle.close()
+            except Exception:
+                pass
+            self._log_file_handle = None
+
+    def __del__(self) -> None:
+        self._close_log_file()
 
     @property
     def running(self) -> bool:
@@ -352,6 +367,14 @@ class WindowsProcessBackend:
         if os.name == "nt" and not self.new_console:
             launch_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
 
+        if self.stdout_log_path:
+            self._close_log_file()
+            log_dir = Path(self.stdout_log_path).parent
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self._log_file_handle = open(self.stdout_log_path, "a", encoding="utf-8", buffering=1)
+            launch_kwargs["stdout"] = self._log_file_handle
+            launch_kwargs["stderr"] = subprocess.STDOUT
+
         cmd = [self.executable, *self.arguments]
         try:
             self._proc = subprocess.Popen(cmd, **launch_kwargs)
@@ -363,6 +386,7 @@ class WindowsProcessBackend:
             logger.info("Started process '%s' (PID %d)", self.name, self._owned_pid)
             return True
         except Exception as exc:
+            self._close_log_file()
             logger.error("Failed to start process '%s': %s", self.name, exc)
             return False
 
@@ -434,6 +458,7 @@ class WindowsProcessBackend:
                 self._owned_pid = None
                 self._owned_create_time = None
                 self._console_group_pid = None
+                self._close_log_file()
             return stopped
         except psutil.AccessDenied:
             logger.error("Access denied stopping '%s'; stop is unverified", self.name)

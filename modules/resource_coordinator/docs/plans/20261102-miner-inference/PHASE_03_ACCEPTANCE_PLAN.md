@@ -67,10 +67,35 @@ Implemented in [`modules/resource_coordinator/resource_coordinator/acceptance_ha
 | `live` (with test overrides) | `WindowsProcessBackend` | Test Override | `live_contract_rehearsal` | `T01`, `T02`, `T03`, `T04` (`T05` skipped as mock-only) |
 | `live` (after all live trials pass) | `WindowsProcessBackend` (`krig-miner.exe`) | Live LM Studio (`:1234`) | `live_hardware` | `T01`, `T02`, `T03`, `T04` (full 10.0s cooldown) |
 
-### Recorded Per-Trial Telemetry (`TrialEvidence.metrics`)
+### Three-Contract Acceptance Partitioning
+To guarantee both process safety and physical compute correctness, trials in `live` mode evaluate three distinct contracts:
+- **Contract A (`process_contract_verified`):** OS process launch, PID tracking, stop barrier, cooldown restart, and verified cleanup.
+- **Contract B (`inference_arbitration_contract_verified`):** Stop barrier strictly before forward, zero miner activity during inference, full 10.0s cooldown, and restart on idle.
+- **Contract C (`mining_activity_contract_verified`):** Actual sustained GPU hashing confirmed prior to inference request and after cooldown restart.
+A live trial passes only when Contracts A, B, and C are all verified.
+
+### Bounded Warm-up Verification (`_verify_mining_warmup`)
+To allow the miner to initialize CUDA, connect to the Stratum pool, and ramp GPU compute load before the inference request arrives:
+- Captures pre-launch baseline GPU power and utilization (`gpu_idle_baseline`).
+- Diverts miner output to `trial_dir / "miner_stdout.log"` via `stdout_log_path`.
+- Samples GPU metrics at 1–2 Hz using `GpuActivitySampler`.
+- Verifies sustained hashing via dual corroborating signals:
+  1. Elevated GPU power draw (`>= baseline + 35W`) or load (`>= baseline + 15%`) across consecutive samples.
+  2. Miner stdout log patterns (`"Connected to"`, `"Speed: ... MH/s"`).
+- Allows settle time (`mining_settle_seconds = 3.0s` live) before dispatching the inference request.
+- Repeats bounded warm-up verification after the 10.0-second cooldown restart before test completion.
+- Fails fast immediately if the miner process terminates prematurely during warm-up.
+
+### Recorded Per-Trial Telemetry (`TrialEvidence`)
 Every trial records:
 - `model_id` (discovered via read-only `/api/v0/models` or `/v1/models`)
 - `initial_pid` and `initial_create_time`
+- `process_contract_verified`, `inference_arbitration_contract_verified`, `mining_activity_contract_verified`
+- `initial_miner_uptime_before_inference_seconds` and `initial_mining_activity_verified`
+- `initial_hashrate` and `initial_pool_connected`
+- `restart_mining_activity_verified` and `restart_time_to_hashing_seconds`
+- `gpu_idle_baseline`, `peak_gpu_power_w`, and `peak_gpu_utilization_pct`
+- `mining_verification_method` (`gpu_telemetry+miner_stdout`, `gpu_telemetry`, `miner_stdout`, `simulated`)
 - `stopped_before_forward_verified` (boolean proven by monotonic timestamps)
 - `observed_exit_during_inference` (boolean confirming miner stayed `STOPPED` throughout forwarding)
 - `inference_result` (HTTP status code and SSE `[DONE]` observation)
@@ -111,15 +136,21 @@ The operator manually terminates any external miner session and verifies preflig
 - Preflight reports `Live Acceptance Preflight: READY`.
 - Zero blocking reasons reported. Exit code `0`.
 
-### Stage 3 — First Live Test (Single Request Cycle)
-Execute only the first live trial (`T01`) under full coordinator ownership and supervision:
+### Stage 3 — Supervised Hardware Trial (Single Request Cycle)
+> [!NOTE] Historical Run Status
+> The earlier initial run `20261102_233303_5a9bdae3` verified process creation, stop barrier, cooldown timing, and restart, but stopped the miner before CUDA initialization and hashing began (no GPU compute load). It is classified as: **"Process coordination verified; actual mining activity not established."**
+> With the enhanced harness verifying Contracts A, B, and C, T01 is ready for a supervised rerun confirming full physical hashing.
+
+Execute the single-request trial (`T01`) with warm-up verification:
 ```powershell
 python -m resource_coordinator.cli accept -c modules/resource_coordinator/config.live-local.yaml -m live --allow-live-lmstudio --allow-real-miner --trials T01 -w modules/resource_coordinator/.live_acceptance_work
 ```
 **Acceptance Checkpoint:**
+- Initial miner launches and warms up until sustained hashing / elevated GPU load is verified.
 - `T01: Single Request Stop Before Forward and Cooldown` completes with `[PASS]`.
+- All three contracts verified: `process_contract_verified: true`, `inference_arbitration_contract_verified: true`, `mining_activity_contract_verified: true`.
 - Partial stage verification level recorded: `"verification_level": "live_hardware_partial_stage"`.
-- Collision-resistant directory created under `.live_acceptance_work/runs/<run_id>/`.
+- Collision-resistant directory created under `.live_acceptance_work/runs/<run_id>/` with `miner_stdout.log` and GPU samples.
 
 ### Stage 4 — Evidence Review
 Inspect the generated trial evidence before authorizing multi-request or streaming trials:
