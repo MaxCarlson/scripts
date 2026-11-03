@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import subprocess
 from typing import Any
+from urllib.parse import urlsplit
 
 from .study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID, verify_study_network_manifest
 
@@ -44,7 +45,39 @@ def snapshot_digest(manifest: dict[str, Any], run_dir: Path) -> str:
     return canonical_sha256(network)
 
 
-def runtime_fingerprint(image: str, monitor_url: str) -> dict[str, Any]:
+def gateway_fingerprint(monitor_url: str, monitor_host_url: str | None) -> dict[str, str]:
+    """Bind the gateway to an owner-verified local managed process descriptor."""
+    from .suite_doctor import find_active_server, is_process_alive
+    from .suite_monitor import host_monitor_origin
+
+    gateway = urlsplit(monitor_url)
+    origin = host_monitor_origin(monitor_url, monitor_host_url)
+    host = urlsplit(origin)
+    if host.hostname not in {"127.0.0.1", "localhost", "::1"} or (host.port or 80) != (gateway.port or 80):
+        raise ValueError("gateway host identity is not a matching local endpoint")
+    try:
+        descriptor = find_active_server(port=host.port or 80, host=host.hostname)
+        if (
+            descriptor is None
+            or not descriptor.gateway_enabled
+            or not descriptor.instance_id
+            or not descriptor.config_fingerprint
+            or descriptor.process_create_time is None
+            or not is_process_alive(descriptor.pid, descriptor.process_create_time)
+        ):
+            raise ValueError("gateway managed process identity is unavailable")
+        return {
+            "instance_id": str(descriptor.instance_id),
+            "config_fingerprint": str(descriptor.config_fingerprint),
+            "pid": str(descriptor.pid),
+            "process_create_time": str(descriptor.process_create_time),
+            "host_origin": origin,
+        }
+    except (AttributeError, OSError, RuntimeError) as exc:
+        raise ValueError("gateway managed process identity is unavailable") from exc
+
+
+def runtime_fingerprint(image: str, monitor_url: str, monitor_host_url: str | None = None) -> dict[str, Any]:
     """Measure the selected daemon, image, and Harbor executable without inference."""
 
     def docker(*args: str) -> Any:
@@ -98,6 +131,9 @@ print(json.dumps({"version": dist.version, "package_sha256": digest.hexdigest()}
         "harbor_package_sha256": harbor_identity["package_sha256"],
         "monitor_url": monitor_url,
     }
+    result.update(
+        {"gateway_" + key: value for key, value in gateway_fingerprint(monitor_url, monitor_host_url).items()}
+    )
     if any(not isinstance(value, str) or not value for value in result.values()) or harbor_version != "0.25.0":
         raise ValueError("runtime fingerprint contains unavailable measurements")
     return result
@@ -147,7 +183,7 @@ def make_receipt(
         "network_policy": NETWORK_POLICY,
         "task_snapshot_sha256": snapshot_digest(manifest, run_dir),
         "study_policy_sha256": canonical_sha256(manifest["prompt_policy"]),
-        "runtime": runtime_fingerprint(image, monitor_url),
+        "runtime": runtime_fingerprint(image, monitor_url, manifest["provenance"].get("monitor_host_url")),
         "created_at": created.isoformat(),
         "expires_at": (created + MAX_AGE).isoformat(),
         "gates": report.get("gates", {}),
@@ -229,7 +265,9 @@ def validate_receipt(run_dir: Path | None, manifest: dict[str, Any] | None) -> N
         expected_url = manifest["provenance"]["effective_base_url"].rstrip("/") + "/chat/completions"
         if runtime["monitor_url"] != expected_url:
             raise ReceiptRejected("ENDPOINT_MISMATCH")
-        if not isinstance(runtime, dict) or runtime != runtime_fingerprint(runtime["image"], runtime["monitor_url"]):
+        if not isinstance(runtime, dict) or runtime != runtime_fingerprint(
+            runtime["image"], runtime["monitor_url"], manifest["provenance"].get("monitor_host_url")
+        ):
             raise ReceiptRejected("RUNTIME_MISMATCH")
     except ReceiptRejected:
         raise

@@ -275,23 +275,24 @@ From `modules/agent_benchmark`, supply the existing study arguments, including
 # Prepare only: add -P <policy> -Q <reviewed-sha256> for SV1.
 & $coordinatorPython -B -m agent_benchmark suite run <study-arguments> -N -F
 # Record the run_dir and run_id from the prepared event.
-# After separate authorization for a network probe, use the exact interpreter
-# selected for dispatch. -m must match the frozen endpoint plus /chat/completions.
-& $env:HARBOR_025_PYTHON -B -m agent_benchmark.network_qualification `
+# After separate authorization for a network probe, the coordinator launches
+# the configured Harbor interpreter. -m must match the frozen endpoint.
+& $coordinatorPython -B -m agent_benchmark.network_qualification `
   -x -r <run_dir> -m <frozen-monitor-url>/chat/completions
 # Only after a PASS receipt and separate authorization for inference:
 & $coordinatorPython -B -m agent_benchmark suite resume `
   -d <output-root> -r <run_id> -x -F
 ```
 
-The interpreter used for qualification must equal `HARBOR_025_PYTHON`, which
-is also used for study dispatch. Each run needs its own receipt. The receipt
+The probe runs in `HARBOR_025_PYTHON`, which is also used for study dispatch;
+the coordinator verifies the local managed gateway identity. Each run needs its own receipt. The receipt
 expires after at most 24 hours and is checked again at dispatch and resume.
 DNS denial and application egress are separate gates: the earlier observed
 Docker resolver success remains a failure. Direct external TCP and DNS over
 UDP are also checked; absence of a response to one destination is bounded probe
 evidence, not proof of universal isolation. The gateway is identified by its
-frozen URL and expected OPTIONS response; a process identity is not measured.
+frozen URL, OPTIONS response, and owner-verified managed process descriptor.
+Missing process identity or configuration fingerprint fails closed.
 The checksum detects corruption but is not authentication. Protect run files
 from untrusted writers, since a writer can forge both evidence and checksum.
 Synthetic tests provide no live qualification. Before SV1, inspect SV0's

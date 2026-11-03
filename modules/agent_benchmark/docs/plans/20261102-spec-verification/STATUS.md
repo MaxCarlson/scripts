@@ -167,10 +167,15 @@ These are offline implementation checks, not a live qualification result.
 See the updated study procedure for runtime authorization and trust limits.
 
 Integration candidate validation: Agent Benchmark receipt, suite, Harbor,
-Monitor, recovery, doctor and review tests: 170 passed, exit 0, including all
+Monitor, recovery, doctor and review tests: 172 passed, exit 0, including all
 four cached Harbor-dependent checks. Benchmark Core contract/comparison/
 experiment/intervention tests: 82 passed, exit 0. Ruff check, Ruff format
 check and Git whitespace validation passed. No Docker network probe or model
-inference was executed. The gateway URL/OPTIONS response identifies the
-endpoint; the gateway process identity remains unmeasured. The protected run
+inference was executed. The gateway URL/OPTIONS response and owner-verified managed process descriptor
+identify the endpoint and process; missing descriptor measurements fail closed. The protected run
 directory and local operator remain the receipt trust boundary.
+
+The coordinator verifies the gateway descriptor while the configured Harbor
+interpreter runs the synthetic qualification probe; this avoids installing
+Monitor dependencies into Harbor's cached runtime. The selected interpreter
+and installed Harbor package are fingerprinted.

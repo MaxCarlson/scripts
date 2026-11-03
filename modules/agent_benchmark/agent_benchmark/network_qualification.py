@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 import importlib.metadata
 import json
 import os
-import sys
 from pathlib import Path
 import shlex
 import subprocess
@@ -280,6 +279,27 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
         return report
 
 
+def _qualify_selected(python: str, *, monitor_url: str, image: str) -> dict[str, Any]:
+    """Run the probe in the same interpreter Harbor will use for dispatch."""
+    script = (
+        "import asyncio,json,sys; "
+        "from agent_benchmark.network_qualification import _qualify; "
+        "print(json.dumps(asyncio.run(_qualify(monitor_url=sys.argv[1],image=sys.argv[2]))))"
+    )
+    result = subprocess.run(
+        [python, "-B", "-c", script, monitor_url, image],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        timeout=120,
+        check=True,
+    )
+    report = json.loads(result.stdout.splitlines()[-1])
+    if not isinstance(report, dict):
+        raise ValueError("qualified interpreter returned malformed probe evidence")
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -314,16 +334,18 @@ def main(argv: list[str] | None = None) -> int:
             from .network_receipt import make_receipt, runtime_fingerprint
 
             selected_python = os.environ.get("HARBOR_025_PYTHON")
-            if not selected_python or Path(selected_python).resolve(strict=True) != Path(sys.executable).resolve(
-                strict=True
-            ):
-                raise ValueError("run qualification with the HARBOR_025_PYTHON interpreter used for dispatch")
+            if not selected_python or not Path(selected_python).is_file():
+                raise ValueError("HARBOR_025_PYTHON must identify the interpreter used for dispatch")
             manifest = json.loads((args.run_dir / "manifest.json").read_text(encoding="utf-8"))
             expected_url = manifest["provenance"]["effective_base_url"].rstrip("/") + "/chat/completions"
             if args.monitor_url != expected_url:
                 raise ValueError("probe URL does not match the frozen study endpoint")
-            before = runtime_fingerprint(args.image, args.monitor_url)
-        result = asyncio.run(_qualify(monitor_url=args.monitor_url, image=args.image))
+            before = runtime_fingerprint(args.image, args.monitor_url, manifest["provenance"].get("monitor_host_url"))
+        result = (
+            _qualify_selected(selected_python, monitor_url=args.monitor_url, image=args.image)
+            if args.run_dir is not None
+            else asyncio.run(_qualify(monitor_url=args.monitor_url, image=args.image))
+        )
         if args.run_dir is not None:
             report = result
             result = make_receipt(report, manifest, args.run_dir, image=args.image, monitor_url=args.monitor_url)

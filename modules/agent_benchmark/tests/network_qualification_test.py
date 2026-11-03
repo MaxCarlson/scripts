@@ -86,7 +86,8 @@ def test_producer_binds_report_to_prepared_run_without_live_probe(tmp_path, monk
     monkeypatch.setattr("agent_benchmark.network_receipt.runtime_fingerprint", lambda *_: runtime.copy())
     monkeypatch.setattr("agent_benchmark.network_receipt.snapshot_digest", lambda *_: "a" * 64)
 
-    async def synthetic_probe(**_):
+    def synthetic_probe(python, **kwargs):
+        assert python == sys.executable
         return {
             "status": "PASS",
             "gates": {},
@@ -94,18 +95,7 @@ def test_producer_binds_report_to_prepared_run_without_live_probe(tmp_path, monk
             "created_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    monkeypatch.setattr("agent_benchmark.network_qualification._qualify", synthetic_probe)
-
-    def run_synthetic(coroutine):
-        coroutine.close()
-        return {
-            "status": "PASS",
-            "gates": {},
-            "container_cleanup": "PASS",
-            "created_at": datetime.now(timezone.utc).isoformat(),
-        }
-
-    monkeypatch.setattr("agent_benchmark.network_qualification.asyncio.run", run_synthetic)
+    monkeypatch.setattr("agent_benchmark.network_qualification._qualify_selected", synthetic_probe)
     assert main(["-x", "-r", str(tmp_path), "-i", "synthetic"]) == 1
     receipt = json.loads((tmp_path / "network-qualification.json").read_text(encoding="utf-8"))
     assert receipt["task_snapshot_sha256"] == "a" * 64
@@ -143,14 +133,44 @@ def test_dns_negative_response_is_not_network_denial():
     assert result["external_dns_name_lookup_denied"] == "FAIL"
 
 
-def test_producer_refuses_a_different_harbor_interpreter(tmp_path, monkeypatch, capsys):
-    import sys
-    from pathlib import Path
-
-    other = tmp_path / "other-python"
-    other.write_text("fixture", encoding="utf-8")
-    monkeypatch.setenv("HARBOR_025_PYTHON", str(other))
-    monkeypatch.setattr("agent_benchmark.network_qualification._qualify", lambda **_: pytest.fail("probe called"))
-    assert Path(sys.executable).resolve() != other.resolve()
+def test_producer_refuses_missing_harbor_interpreter(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HARBOR_025_PYTHON", str(tmp_path / "missing-python"))
+    monkeypatch.setattr(
+        "agent_benchmark.network_qualification._qualify_selected", lambda *a, **k: pytest.fail("probe called")
+    )
     assert main(["-x", "-r", str(tmp_path)]) == 1
     assert "interpreter used for dispatch" in capsys.readouterr().out
+
+
+def test_gateway_fingerprint_requires_verified_managed_process(monkeypatch):
+    from agent_benchmark.network_receipt import gateway_fingerprint
+    from types import SimpleNamespace
+
+    descriptor = SimpleNamespace(
+        instance_id="instance-a", config_fingerprint="config-a", pid=123, process_create_time=10.0, gateway_enabled=True
+    )
+    monkeypatch.setattr("agent_benchmark.suite_doctor.find_active_server", lambda **_: descriptor)
+    monkeypatch.setattr("agent_benchmark.suite_doctor.is_process_alive", lambda *_: True)
+    result = gateway_fingerprint("http://host.docker.internal:8788/v1/chat/completions", None)
+    assert result["instance_id"] == "instance-a"
+    descriptor.instance_id = "instance-b"
+    assert gateway_fingerprint("http://host.docker.internal:8788/v1/chat/completions", None) != result
+    monkeypatch.setattr("agent_benchmark.suite_doctor.is_process_alive", lambda *_: False)
+    with pytest.raises(ValueError, match="gateway"):
+        gateway_fingerprint("http://host.docker.internal:8788/v1/chat/completions", None)
+
+
+def test_probe_subprocess_uses_selected_harbor_interpreter(monkeypatch):
+    from agent_benchmark.network_qualification import _qualify_selected
+
+    seen = []
+
+    def run(command, **kwargs):
+        seen.append(command)
+        return SimpleNamespace(stdout='{"status":"FAIL"}\n')
+
+    monkeypatch.setattr("agent_benchmark.network_qualification.subprocess.run", run)
+    assert _qualify_selected(
+        "selected-python", monitor_url="http://host.docker.internal:8788/v1/chat/completions", image="cached"
+    ) == {"status": "FAIL"}
+    assert seen[0][0] == "selected-python"
