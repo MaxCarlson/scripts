@@ -65,7 +65,7 @@ def _insert_after_section(text: str, section: str, values: list[str]) -> str:
         (i for i in range(index + 1, len(lines)) if lines[i].lstrip().startswith("[")),
         len(lines),
     )
-    section_text = "".join(lines[index + 1:section_end])
+    section_text = "".join(lines[index + 1 : section_end])
     if re.search(r"(?m)^\s*(?:network_mode|allowed_hosts)\s*=", section_text):
         raise ValueError("task.toml network policy metadata already exists")
     newline = "\r\n" if "\r\n" in lines[index] else "\n"
@@ -73,7 +73,7 @@ def _insert_after_section(text: str, section: str, values: list[str]) -> str:
     if not header.endswith(("\n", "\r")):
         header += newline
     lines[index] = header
-    lines[index + 1:index + 1] = [value + newline for value in values]
+    lines[index + 1 : index + 1] = [value + newline for value in values]
     return "".join(lines)
 
 
@@ -187,14 +187,15 @@ def verify_study_task_snapshot(run_dir: Path, metadata: dict[str, Any]) -> Path:
     """Fail closed if the run-owned derived task or declared policy drifted."""
     if metadata.get("schema") != "sv-study-task-network-snapshot-v1" or metadata.get("policy_id") != NETWORK_POLICY_ID:
         raise ValueError("study network snapshot identity is unsupported")
-    if (metadata.get("source_git_url") != _SOURCE_GIT_URL
-            or metadata.get("source_revision") != _SOURCE_REVISION):
+    if metadata.get("source_git_url") != _SOURCE_GIT_URL or metadata.get("source_revision") != _SOURCE_REVISION:
         raise ValueError("study network snapshot source provenance changed")
     if metadata.get("network_policy") != NETWORK_POLICY:
         raise ValueError("study network policy metadata changed")
     task_id = metadata.get("task_id")
     if not isinstance(task_id, str) or task_id not in {
-        "polyglot_python_beer-song", "polyglot_python_bottle-song", "polyglot_python_bowling"
+        "polyglot_python_beer-song",
+        "polyglot_python_bottle-song",
+        "polyglot_python_bowling",
     }:
         raise ValueError("study network snapshot task is unsupported")
     expected_relative = (Path("study-network") / "tasks" / task_id).as_posix()
@@ -210,8 +211,9 @@ def verify_study_task_snapshot(run_dir: Path, metadata: dict[str, Any]) -> Path:
     if _tree_sha256(task_path) != metadata.get("derived_tree_sha256"):
         raise ValueError("study network snapshot changed after run creation")
     derived_verifier_sha256 = _verifier_sha256(task_path)
-    if (derived_verifier_sha256 != metadata.get("original_verifier_sha256")
-            or derived_verifier_sha256 != metadata.get("derived_verifier_sha256")):
+    if derived_verifier_sha256 != metadata.get("original_verifier_sha256") or derived_verifier_sha256 != metadata.get(
+        "derived_verifier_sha256"
+    ):
         raise ValueError("derived snapshot verifier bytes differ from the frozen original")
     from .study_task_integrity import EXPECTED
 

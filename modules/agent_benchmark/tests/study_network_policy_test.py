@@ -23,13 +23,7 @@ def _task_tree(root: Path) -> Path:
     task = root / _TASK_ID
     (task / "tests").mkdir(parents=True)
     (task / "task.toml").write_text(
-        'version = "1.0"\n'
-        '[verifier]\n'
-        'timeout_sec = 1800\n'
-        '[agent]\n'
-        'timeout_sec = 1800\n'
-        '[environment]\n'
-        'cpus = 1\n',
+        'version = "1.0"\n[verifier]\ntimeout_sec = 1800\n[agent]\ntimeout_sec = 1800\n[environment]\ncpus = 1\n',
         encoding="utf-8",
     )
     (task / "tests" / "test_contract.py").write_bytes(b"assert True\n")
@@ -83,9 +77,7 @@ def test_materialized_snapshot_changes_only_declared_network_metadata(tmp_path: 
     assert config["agent"]["allowed_hosts"] == ["host.docker.internal"]
     assert config["verifier"]["network_mode"] == "no-network"
     assert metadata["derived_tree_sha256"]
-    assert hashlib.sha256((original / "task.toml").read_bytes()).hexdigest() == metadata[
-        "original_task_toml_sha256"
-    ]
+    assert hashlib.sha256((original / "task.toml").read_bytes()).hexdigest() == metadata["original_task_toml_sha256"]
     derived_task_toml = (target / "task.toml").read_bytes()
     policy_lines = (
         b'network_mode = "public"\n'
@@ -106,9 +98,13 @@ def test_snapshot_detects_task_metadata_drift(tmp_path: Path, monkeypatch):
     verifier_sha256 = _set_expected(monkeypatch, original)
     run_dir = tmp_path / "run"
     metadata = materialize_study_task_snapshot(
-        run_dir=run_dir, source_path=original, task_id=original.name, source_revision=_REVISION,
+        run_dir=run_dir,
+        source_path=original,
+        task_id=original.name,
+        source_revision=_REVISION,
         source_git_url=_REPOSITORY,
-        original_task_sha256="a" * 64, original_verifier_sha256=verifier_sha256,
+        original_task_sha256="a" * 64,
+        original_verifier_sha256=verifier_sha256,
     )
     target = run_dir / "study-network" / "tasks" / original.name
     (target / "task.toml").write_text((target / "task.toml").read_text().replace('"no-network"', '"public"'))
@@ -122,8 +118,12 @@ def test_snapshot_rejects_git_provenance_drift(tmp_path: Path, monkeypatch):
     verifier_sha256 = _set_expected(monkeypatch, original)
     run_dir = tmp_path / "run"
     metadata = materialize_study_task_snapshot(
-        run_dir=run_dir, source_path=original, task_id=original.name, source_revision=_REVISION,
-        source_git_url=_REPOSITORY, original_task_sha256="a" * 64,
+        run_dir=run_dir,
+        source_path=original,
+        task_id=original.name,
+        source_revision=_REVISION,
+        source_git_url=_REPOSITORY,
+        original_task_sha256="a" * 64,
         original_verifier_sha256=verifier_sha256,
     )
     metadata["source_revision"] = "0" * 40
@@ -136,12 +136,16 @@ def test_snapshot_rejects_preexisting_network_keys_and_symlinks(tmp_path: Path, 
     source = _task_tree(tmp_path / "source")
     verifier_sha256 = _set_expected(monkeypatch, source)
     (source / "task.toml").write_text(
-        (source / "task.toml").read_text().replace('[agent]\n', '[agent]\nnetwork_mode = "public"\n')
+        (source / "task.toml").read_text().replace("[agent]\n", '[agent]\nnetwork_mode = "public"\n')
     )
     with pytest.raises(ValueError, match="network policy metadata already exists"):
         materialize_study_task_snapshot(
-            run_dir=tmp_path / "run", source_path=source, task_id=source.name, source_revision=_REVISION,
-            source_git_url=_REPOSITORY, original_task_sha256="a" * 64,
+            run_dir=tmp_path / "run",
+            source_path=source,
+            task_id=source.name,
+            source_revision=_REVISION,
+            source_git_url=_REPOSITORY,
+            original_task_sha256="a" * 64,
             original_verifier_sha256=verifier_sha256,
         )
 
@@ -151,11 +155,15 @@ def test_snapshot_manifest_rejects_missing_or_public_agent_policy(tmp_path: Path
 
     with pytest.raises(ValueError, match="no declared network policy"):
         verify_study_network_manifest({"provenance": {}}, tmp_path, _TASK_ID)
-    manifest = {"provenance": {"study_network": {
-        "policy_id": NETWORK_POLICY_ID,
-        "network_policy": {**NETWORK_POLICY, "agent": {"network_mode": "public", "allowed_hosts": []}},
-        "task_snapshots": {},
-    }}}
+    manifest = {
+        "provenance": {
+            "study_network": {
+                "policy_id": NETWORK_POLICY_ID,
+                "network_policy": {**NETWORK_POLICY, "agent": {"network_mode": "public", "allowed_hosts": []}},
+                "task_snapshots": {},
+            }
+        }
+    }
     with pytest.raises(ValueError, match="unsupported"):
         verify_study_network_manifest(manifest, tmp_path, _TASK_ID)
 
@@ -165,9 +173,13 @@ def test_snapshot_rejects_content_drift_and_paths_outside_run(tmp_path: Path, mo
     verifier_sha256 = _set_expected(monkeypatch, source)
     run_dir = tmp_path / "run"
     metadata = materialize_study_task_snapshot(
-        run_dir=run_dir, source_path=source, task_id=source.name, source_revision=_REVISION,
+        run_dir=run_dir,
+        source_path=source,
+        task_id=source.name,
+        source_revision=_REVISION,
         source_git_url=_REPOSITORY,
-        original_task_sha256="a" * 64, original_verifier_sha256=verifier_sha256,
+        original_task_sha256="a" * 64,
+        original_verifier_sha256=verifier_sha256,
     )
     target = run_dir / "study-network" / "tasks" / source.name
     (target / "instruction.md").write_bytes(b"tampered\n")
@@ -183,9 +195,13 @@ def test_materializer_does_not_overwrite_existing_snapshot(tmp_path: Path, monke
     target.mkdir()
     with pytest.raises(FileExistsError):
         materialize_study_task_snapshot(
-            run_dir=tmp_path / "run", source_path=source, task_id=source.name, source_revision=_REVISION,
+            run_dir=tmp_path / "run",
+            source_path=source,
+            task_id=source.name,
+            source_revision=_REVISION,
             source_git_url=_REPOSITORY,
-            original_task_sha256="a" * 64, original_verifier_sha256=verifier_sha256,
+            original_task_sha256="a" * 64,
+            original_verifier_sha256=verifier_sha256,
         )
 
 
@@ -199,10 +215,19 @@ def test_cached_frozen_task_overlays_preserve_original_verifier_trees(tmp_path: 
     repository = _REPOSITORY
     manifest = {
         "tasks": task_ids,
-        "provenance": {"registry_resolution": {"tasks": [{
-            "task_id": task_id, "git_url": repository, "git_commit_id": revision,
-            "git_path": f"datasets/aider_polyglot/{task_id}",
-        } for task_id in task_ids]}},
+        "provenance": {
+            "registry_resolution": {
+                "tasks": [
+                    {
+                        "task_id": task_id,
+                        "git_url": repository,
+                        "git_commit_id": revision,
+                        "git_path": f"datasets/aider_polyglot/{task_id}",
+                    }
+                    for task_id in task_ids
+                ]
+            }
+        },
     }
     original_rows = verify_study_task_trees(manifest)
     run_dir = tmp_path / "network-overlays"
@@ -258,8 +283,12 @@ def test_harbor_command_fails_closed_for_public_agent_network(tmp_path: Path, mo
     public = {**NETWORK_POLICY, "agent": {"network_mode": "public", "allowed_hosts": []}}
     with pytest.raises(ValueError, match="network policy"):
         build_harbor_command(
-            plan, jobs_dir=tmp_path, study_adapter=True, study_task_path=tmp_path,
-            study_source_git_url="https://example.invalid/repo.git", study_source_revision="rev",
+            plan,
+            jobs_dir=tmp_path,
+            study_adapter=True,
+            study_task_path=tmp_path,
+            study_source_git_url="https://example.invalid/repo.git",
+            study_source_revision="rev",
             study_network_policy=public,
         )
 
@@ -273,7 +302,12 @@ def test_cached_harbor_run_cli_supports_local_snapshot_path_and_not_git_flags():
         pytest.skip("set HARBOR_025_PYTHON to inspect actual Harbor 0.25.0 CLI")
     result = subprocess.run(
         [interpreter, "-B", "-c", "from harbor.cli.main import app; app()", "run", "--help"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20, check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        timeout=20,
+        check=False,
     )
     assert result.returncode == 0, result.stderr
     assert "--path" in result.stdout

@@ -326,33 +326,49 @@ def test_dataset_identity_with_explicit_version(tmp_path: Path):
 def test_dataset_identity_comes_from_locked_source_repository(tmp_path: Path):
     job_dir = tmp_path / "harbor_job_tb20"
     job_dir.mkdir()
-    (job_dir / "result.json").write_text(json.dumps({
-        "id": "33333333-3333-4444-5555-666666666666",
-        "started_at": "2026-10-29T11:00:00Z",
-        "finished_at": "2026-10-29T11:01:00Z",
-        "n_total_trials": 1,
-        "stats": {"n_completed_trials": 1},
-        "trial_results": [{
-            "id": "cccc1111-0000-0000-0000-000000000001",
-            "task_name": "build-cython-ext",
-            "trial_name": "build-cython-ext__oracle",
-            "source": "terminal-bench",
-            "agent_info": {"name": "oracle"},
-            "verifier_result": {"rewards": {"reward": 0.0}},
-        }],
-    }), encoding="utf-8")
-    (job_dir / "lock.json").write_text(json.dumps({
-        "schema_version": 3,
-        "harbor": {"version": "0.25.0"},
-        "trials": [{"task": {
-            "name": "build-cython-ext",
-            "type": "git",
-            "source": "terminal-bench",
-            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
-            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
-            "digest": "sha256:" + "a" * 64,
-        }}],
-    }), encoding="utf-8")
+    (job_dir / "result.json").write_text(
+        json.dumps(
+            {
+                "id": "33333333-3333-4444-5555-666666666666",
+                "started_at": "2026-10-29T11:00:00Z",
+                "finished_at": "2026-10-29T11:01:00Z",
+                "n_total_trials": 1,
+                "stats": {"n_completed_trials": 1},
+                "trial_results": [
+                    {
+                        "id": "cccc1111-0000-0000-0000-000000000001",
+                        "task_name": "build-cython-ext",
+                        "trial_name": "build-cython-ext__oracle",
+                        "source": "terminal-bench",
+                        "agent_info": {"name": "oracle"},
+                        "verifier_result": {"rewards": {"reward": 0.0}},
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    (job_dir / "lock.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "harbor": {"version": "0.25.0"},
+                "trials": [
+                    {
+                        "task": {
+                            "name": "build-cython-ext",
+                            "type": "git",
+                            "source": "terminal-bench",
+                            "git_url": "https://github.com/laude-institute/terminal-bench-2.git",
+                            "git_commit_id": "69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
+                            "digest": "sha256:" + "a" * 64,
+                        }
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
 
     out_dir = tmp_path / "corrected_tb20"
     HarborImporter(job_dir).import_to(out_dir)
@@ -402,6 +418,7 @@ def test_import_authentic_harbor_artifact(tmp_path: Path):
     assert run_info.suite_version == "1.0.0"
     assert run_info.metadata["harbor_package_version"] == "0.25.0"
 
+
 def test_import_with_process_returncode(tmp_path: Path):
     job_dir = _create_mock_harbor_job(tmp_path)
     out_dir = tmp_path / "imported_rc_run"
@@ -431,7 +448,7 @@ def test_import_endpoint_404_failure_classified_as_infrastructure_error(tmp_path
         "exception_info": {
             "exception_type": "NonZeroAgentExitCodeError",
             "exception_message": (
-                'Command failed (exit 1): opencode --model=openai/qwen38_23GB run ... '
+                "Command failed (exit 1): opencode --model=openai/qwen38_23GB run ... "
                 '{"name":"APIError","data":{"message":"Not Found: {\\"detail\\":\\"Not Found\\"}","statusCode":404},'
                 '"metadata":{"url":"http://host.docker.internal:8788/v1/responses"}}'
             ),
@@ -490,9 +507,7 @@ def test_import_records_policy_provenance_without_changing_scores(tmp_path: Path
         "derived_tree_sha256": "d" * 64,
         "snapshot_path": "study-network/tasks/polyglot_python_beer-song",
     }
-    _, summary = HarborImporter(job).import_to(
-        output, study_policy=policy, study_design=design, study_network=network
-    )
+    _, summary = HarborImporter(job).import_to(output, study_policy=policy, study_design=design, study_network=network)
     assert load_run_info(output / "run.json").metadata["planned_prompt_policy"] == policy
     assert load_run_info(output / "run.json").metadata["study_network_policy"] == {
         "policy_id": NETWORK_POLICY_ID,

@@ -40,6 +40,7 @@ def find_harbor_opencode_adapters() -> list[Path]:
 
     try:
         import site
+
         for sp in site.getsitepackages():
             candidates.append(Path(sp))
     except Exception:
@@ -76,7 +77,7 @@ def ensure_harbor_opencode_compatibility(adapter_paths: list[Path] | None = None
     patched: list[Path] = []
     target_needle = 'env["OPENCODE_FAKE_VCS"] = "git"'
     replacement = (
-        '        # Compatibility fix for issue #4019 (uncaught EPIPE broken pipe crash):\n'
+        "        # Compatibility fix for issue #4019 (uncaught EPIPE broken pipe crash):\n"
         '        # Do not force OPENCODE_FAKE_VCS="git" on non-git directories.\n'
         '        if os.environ.get("OPENCODE_FAKE_VCS"):\n'
         '            env["OPENCODE_FAKE_VCS"] = os.environ["OPENCODE_FAKE_VCS"]'
@@ -147,10 +148,15 @@ def build_harbor_command(
     if study_adapter:
         from ..study_network_policy import NETWORK_POLICY, _SOURCE_GIT_URL, _SOURCE_REVISION
 
-        if (study_task_path is None or not study_task_path.is_dir()
-                or study_source_git_url != _SOURCE_GIT_URL or study_source_revision != _SOURCE_REVISION
-                or study_network_policy != NETWORK_POLICY or len(plan.selected_tasks) != 1
-                or study_task_path.name != plan.selected_tasks[0]):
+        if (
+            study_task_path is None
+            or not study_task_path.is_dir()
+            or study_source_git_url != _SOURCE_GIT_URL
+            or study_source_revision != _SOURCE_REVISION
+            or study_network_policy != NETWORK_POLICY
+            or len(plan.selected_tasks) != 1
+            or study_task_path.name != plan.selected_tasks[0]
+        ):
             raise ValueError("study Harbor command requires one verified task and the restrictive network policy")
         cmd.extend(["--path", str(study_task_path.resolve(strict=True))])
     else:
@@ -162,8 +168,8 @@ def build_harbor_command(
             cmd.extend(["--registry-path", str(registry_path.resolve())])
     agent_arg = (
         "agent_benchmark.harbor.opencode_v1:OpenCodeV1"
-        if study_adapter else
-        "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
+        if study_adapter
+        else "agent_benchmark.harbor.opencode_v2:OpenCodeV2"
         if plan.agent == "opencode-v2"
         else plan.agent
     )
@@ -233,15 +239,13 @@ def execute_harbor_run(
     # Preflight 0: Blockers
     if not plan.readiness.is_runnable:
         raise PreflightCheckError(
-            f"Cannot execute benchmark due to readiness blockers: {"; ".join(plan.readiness.blockers)}"
+            f"Cannot execute benchmark due to readiness blockers: {'; '.join(plan.readiness.blockers)}"
         )
 
     # Preflight 1: Docker
     docker_ok, docker_msg = check_docker_readiness()
     if not docker_ok:
-        raise PreflightCheckError(
-            f"Cannot run external benchmark without container isolation: {docker_msg}"
-        )
+        raise PreflightCheckError(f"Cannot run external benchmark without container isolation: {docker_msg}")
 
     # Preflight 2: Harbor / uv
     harbor_ok, _ = check_harbor_readiness()
@@ -271,8 +275,7 @@ def execute_harbor_run(
         study_task_path, study_network = verify_study_network_manifest(
             study_manifest, study_run_dir, plan.selected_tasks[0]
         )
-        if (study_network.get("source_git_url") is None
-                or study_network.get("source_revision") is None):
+        if study_network.get("source_git_url") is None or study_network.get("source_revision") is None:
             raise PreflightCheckError("study task source identity is missing from network snapshot")
     else:
         study_task_path = None
@@ -313,12 +316,17 @@ def execute_harbor_run(
 
     if study_policy is not None:
         from ..spec_verification_policy import BASELINE_ID, INTERVENTION_ID
+
         policy_id = study_policy.get("id")
-        if (not study_adapter or policy_id not in (BASELINE_ID, INTERVENTION_ID)
-                or (policy_id == INTERVENTION_ID) != (prompt_template_path is not None)):
+        if (
+            not study_adapter
+            or policy_id not in (BASELINE_ID, INTERVENTION_ID)
+            or (policy_id == INTERVENTION_ID) != (prompt_template_path is not None)
+        ):
             raise PreflightCheckError("study policy and template selection do not match")
     if study_adapter and study_policy is not None and prompt_template_path is not None:
         from ..spec_verification_policy import verify_frozen_policy
+
         actual_template = verify_frozen_policy(prompt_template_path.parent.parent, study_policy)
         if actual_template != prompt_template_path.resolve(strict=True):
             raise PreflightCheckError("frozen policy path does not match the verified template")
@@ -331,8 +339,11 @@ def execute_harbor_run(
         if study_adapter:
             from ..study_task_integrity import verify_study_task_trees
             from ..suite_revision import verify_saved_registry_snapshot
+
             if study_manifest is None or registry_path is None:
-                raise PreflightCheckError("study manifest and registry snapshot required for task identity verification")
+                raise PreflightCheckError(
+                    "study manifest and registry snapshot required for task identity verification"
+                )
             checked_registry = verify_saved_registry_snapshot(registry_path.parent.parent, study_manifest)
             if checked_registry != registry_path.resolve():
                 raise PreflightCheckError("study registry path does not match the verified snapshot")
@@ -412,8 +423,12 @@ def execute_harbor_run(
     if study_policy is None:
         saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode)
     else:
-        saved_dir, summary = importer.import_to(target_dir, process_returncode=proc.returncode,
-                                                study_policy=study_policy, study_design=study_design,
-                                                study_network=study_network)
+        saved_dir, summary = importer.import_to(
+            target_dir,
+            process_returncode=proc.returncode,
+            study_policy=study_policy,
+            study_design=study_design,
+            study_network=study_network,
+        )
 
     return saved_dir, summary

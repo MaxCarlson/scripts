@@ -90,9 +90,7 @@ class HarborImporter:
         """Normalize Harbor data into canonical RunInfo and TrialResult records."""
         task_digests = job_lock.task_digests() if job_lock else {}
         harbor_version = (
-            job_lock.harbor.version
-            if job_lock and job_lock.harbor and job_lock.harbor.version
-            else "0.25.0"
+            job_lock.harbor.version if job_lock and job_lock.harbor and job_lock.harbor.version else "0.25.0"
         )
 
         # Sort trials deterministically by task_name and trial_name
@@ -132,11 +130,7 @@ class HarborImporter:
                 break
 
         if not raw_source and job_lock:
-            trial_list = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            trial_list = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
             for t_lock in trial_list:
                 if t_lock.task and t_lock.task.source:
                     raw_source = t_lock.task.source
@@ -144,11 +138,7 @@ class HarborImporter:
 
         task_locks = []
         if job_lock:
-            task_locks = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            task_locks = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
         lock_tasks = [trial.task for trial in task_locks if trial.task]
         locked_repos = {task.git_url.rstrip("/") for task in lock_tasks if task.git_url}
         locked_revisions = {task.git_commit_id for task in lock_tasks if task.git_commit_id}
@@ -195,11 +185,7 @@ class HarborImporter:
 
         # Check job_lock task versions or known catalog if suite_version not yet resolved
         if not suite_version and job_lock:
-            trial_list = (
-                job_lock.trials
-                if isinstance(job_lock.trials, list)
-                else list(job_lock.trials.values())
-            )
+            trial_list = job_lock.trials if isinstance(job_lock.trials, list) else list(job_lock.trials.values())
             for t_lock in trial_list:
                 if t_lock.task and t_lock.task.version:
                     suite_version = t_lock.task.version
@@ -208,7 +194,9 @@ class HarborImporter:
         if not suite_version:
             suite_version = "unversioned"
 
-        dataset_id = identity.id if identity else (f"{suite_id}@{suite_version}" if suite_version != "unversioned" else suite_id)
+        dataset_id = (
+            identity.id if identity else (f"{suite_id}@{suite_version}" if suite_version != "unversioned" else suite_id)
+        )
         dataset_source_repo = next(iter(locked_repos), None) if len(locked_repos) == 1 else None
         dataset_source_revision = next(iter(locked_revisions), None) if len(locked_revisions) == 1 else None
 
@@ -241,11 +229,7 @@ class HarborImporter:
             rep_counters[rep_key] = repetition + 1
 
             # Discover trial subdirectory if present
-            trial_sub_dir = (
-                (self.job_dir / ht.trial_name)
-                if (self.job_dir / ht.trial_name).is_dir()
-                else None
-            )
+            trial_sub_dir = (self.job_dir / ht.trial_name) if (self.job_dir / ht.trial_name).is_dir() else None
 
             # Evaluate status
             eval_res = evaluate_trial_status(ht, trial_dir=trial_sub_dir)
@@ -421,11 +405,7 @@ class HarborImporter:
         pass_rate = (stats["passed"] / scored * 100.0) if scored > 0 else 0.0
         coverage = (scored / stats["scheduled"] * 100.0) if stats["scheduled"] > 0 else 0.0
 
-        median_wall = (
-            sorted(stats["wall_time_ms"])[len(stats["wall_time_ms"]) // 2]
-            if stats["wall_time_ms"]
-            else None
-        )
+        median_wall = sorted(stats["wall_time_ms"])[len(stats["wall_time_ms"]) // 2] if stats["wall_time_ms"] else None
 
         summary_data = {
             "job_id": str(job_result.id),
@@ -500,7 +480,8 @@ class HarborImporter:
             if assignment and study_design and study_design.get("id"):
                 run_info.metadata["prompt_intervention"] = {
                     "schema": "declared-prompt-intervention-v1",
-                    "design_id": study_design["id"], "assignment": assignment,
+                    "design_id": study_design["id"],
+                    "assignment": assignment,
                 }
             for trial in canonical_trials:
                 trial.details["planned_prompt_policy"] = dict(study_policy)

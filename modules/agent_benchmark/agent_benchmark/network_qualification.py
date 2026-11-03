@@ -95,20 +95,14 @@ def _result_fields(result: Any) -> tuple[int, str, str]:
 def _probe_gates(observed: dict[str, Any], effective_agent: dict[str, Any]) -> dict[str, str]:
     """Evaluate required isolation probes without treating DNS resolution as egress success."""
     results = {
-        "policy": effective_agent == {
-            "network_mode": "allowlist", "allowed_hosts": ["host.docker.internal"]
-        },
+        "policy": effective_agent == {"network_mode": "allowlist", "allowed_hosts": ["host.docker.internal"]},
         "local_monitor_gateway_route": observed.get("local_monitor_gateway_route", {}).get("reachable") is True,
         "external_dns_direct_denied": observed.get("external_dns_direct", {}).get("resolved") is False,
-        "external_dns_name_lookup_denied": observed.get("local_resolver_external_name_lookup", {}).get(
-            "resolved"
-        ) is False,
-        "external_https_unlisted_sni_denied": observed.get("external_https_unlisted_sni", {}).get(
-            "connected"
-        ) is False,
-        "external_https_direct_ip_no_sni_denied": observed.get(
-            "external_https_direct_ip_no_sni", {}
-        ).get("connected") is False,
+        "external_dns_name_lookup_denied": observed.get("local_resolver_external_name_lookup", {}).get("resolved")
+        is False,
+        "external_https_unlisted_sni_denied": observed.get("external_https_unlisted_sni", {}).get("connected") is False,
+        "external_https_direct_ip_no_sni_denied": observed.get("external_https_direct_ip_no_sni", {}).get("connected")
+        is False,
         "no_outbound_proxy_environment": observed.get("proxy_environment_names") == [],
     }
     return {name: "PASS" if passed else "FAIL" for name, passed in results.items()}
@@ -128,9 +122,14 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
     if actual_version != HARBOR_VERSION:
         raise RuntimeError(f"Harbor {HARBOR_VERSION} is required; found {actual_version!r}")
     parsed_monitor_url = urlsplit(monitor_url)
-    if (parsed_monitor_url.scheme != "http" or parsed_monitor_url.hostname != "host.docker.internal"
-            or parsed_monitor_url.username or parsed_monitor_url.password or parsed_monitor_url.query
-            or parsed_monitor_url.fragment):
+    if (
+        parsed_monitor_url.scheme != "http"
+        or parsed_monitor_url.hostname != "host.docker.internal"
+        or parsed_monitor_url.username
+        or parsed_monitor_url.password
+        or parsed_monitor_url.query
+        or parsed_monitor_url.fragment
+    ):
         raise ValueError("monitor probe URL must use the allowlisted host.docker.internal hostname")
     image_check = subprocess.run(
         ["docker", "image", "inspect", image], capture_output=True, text=True, timeout=10, check=False
@@ -161,7 +160,9 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
         task_text = (task_dir / "task.toml").read_text(encoding="utf-8")
         task_config = TaskConfig.model_validate_toml(task_text)
         config = EnvironmentConfig(
-            docker_image=image, os=TaskOS.LINUX, workdir="/tmp",
+            docker_image=image,
+            os=TaskOS.LINUX,
+            workdir="/tmp",
             network_mode=task_config.environment.network_mode,
         )
         baseline = NetworkPolicy(network_mode=task_config.environment.network_mode)
@@ -191,8 +192,10 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
             "network_policy": NETWORK_POLICY,
             "harbor_task_config_network_policy": {
                 "environment": {"network_mode": task_config.environment.network_mode.value},
-                "agent": {"network_mode": task_config.agent.network_mode.value,
-                          "allowed_hosts": list(task_config.agent.allowed_hosts or [])},
+                "agent": {
+                    "network_mode": task_config.agent.network_mode.value,
+                    "allowed_hosts": list(task_config.agent.allowed_hosts or []),
+                },
                 "verifier": {"network_mode": task_config.verifier.network_mode.value},
             },
             "container_created": False,
@@ -232,7 +235,8 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
                 report["status"] = "PASS" if all(value == "PASS" for value in report["gates"].values()) else "FAIL"
                 await environment.set_network_policy(verifier_policy)
                 verifier_probe = await environment.exec(
-                    "node -e " + shlex.quote(
+                    "node -e "
+                    + shlex.quote(
                         "fetch(" + json.dumps(monitor_url) + ", {signal: AbortSignal.timeout(2500)})"
                         ".then(() => process.exit(1)).catch(() => process.exit(0))"
                     ),
@@ -260,29 +264,41 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("-x", "--execute", action="store_true", help="create and clean up one synthetic Harbor container")
+    parser.add_argument(
+        "-x", "--execute", action="store_true", help="create and clean up one synthetic Harbor container"
+    )
     parser.add_argument("-m", "--monitor-url", default=DEFAULT_MONITOR_URL)
     parser.add_argument("-i", "--image", default=DEFAULT_IMAGE, help="must already be cached locally")
     parser.add_argument("-o", "--output", type=Path, help="write machine-readable JSON evidence to this path")
     args = parser.parse_args(argv)
     if not args.execute:
-        print(json.dumps({
-            "status": "UNKNOWN",
-            "execution_required": True,
-            "harbor_version_required": HARBOR_VERSION,
-            "monitor_url": args.monitor_url,
-            "docker_image": args.image,
-            "policy_id": NETWORK_POLICY_ID,
-            "network_policy": NETWORK_POLICY,
-            "inference": "never",
-            "benchmark_tasks": "never",
-        }, indent=2, sort_keys=True))
+        print(
+            json.dumps(
+                {
+                    "status": "UNKNOWN",
+                    "execution_required": True,
+                    "harbor_version_required": HARBOR_VERSION,
+                    "monitor_url": args.monitor_url,
+                    "docker_image": args.image,
+                    "policy_id": NETWORK_POLICY_ID,
+                    "network_policy": NETWORK_POLICY,
+                    "inference": "never",
+                    "benchmark_tasks": "never",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
         return 0
     try:
         result = asyncio.run(_qualify(monitor_url=args.monitor_url, image=args.image))
     except Exception as error:
-        result = {"schema": "sv-harbor-network-qualification-v1", "status": "FAIL",
-                  "blocker": f"{type(error).__name__}: {error}", "inference": "never"}
+        result = {
+            "schema": "sv-harbor-network-qualification-v1",
+            "status": "FAIL",
+            "blocker": f"{type(error).__name__}: {error}",
+            "inference": "never",
+        }
     serialized = json.dumps(result, indent=2, sort_keys=True) + "\n"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
