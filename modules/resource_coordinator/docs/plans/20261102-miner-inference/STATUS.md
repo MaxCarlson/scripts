@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Stage 3 Live Hardware Acceptance (Trial T01 — Bounded Warm-up & 3-Contract Partitioning Validated; Awaiting Operator Authorization for Supervised T01 Rerun)  
-**Timestamp:** 2026-11-02T16:08:00-08:00  
+**Current Phase:** Stage 3 Live Hardware Acceptance (Trial T01 — Operator-Authorized Rerun Succeeded with Strong Compute Load & Verified Coordination; Ready for T02–T04 Decision)  
+**Timestamp:** 2026-11-02T16:42:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -119,21 +119,14 @@
   - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
   - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
   - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
-- **Stage 3 Live Hardware Acceptance (Trial T01 — Evidence Integrity & Bounded Warm-up):**
-  - Prior Run Execution (`20261102_233303_5a9bdae3`): Verified process creation, stop barrier, cooldown timing, restart, and cleanup. However, the initial KRig process was stopped ~295ms after launch and restarted PID 66428 was stopped ~47ms after start, preventing KRig from completing CUDA initialization or establishing hashing. Officially classified as: **"Process coordination verified; actual mining activity not established."**
-  - **Remediation & Enhancements Implemented:**
-    1. **Stdout/Stderr Capture & Process-Generation Log Isolation:** Added `stdout_log_path` across `ProcessConfig`, `WindowsProcessBackend`, and `CoordinatorConfig`. Added delimiter headers per generation and `start_offset` log seeking in `parse_miner_stdout_log`. Old hashrates from prior generations never satisfy subsequent restarts.
-    2. **Phase-Isolated GPU Telemetry Sampler:** Added `GpuActivitySampler` with `PhaseGpuEvidence` isolating samples between initial warm-up and post-cooldown restart.
-    3. **Log Telemetry & ANSI Stripping:** Enhanced `parse_miner_stdout_log` to strip ANSI codes, verify authenticated pool connections (`connected: stratum+ssl://...`) without misclassifying CLI argument echoes, extract Stratum jobs, and normalize hashrates.
-    4. **Settling State Machine:** Implemented 5-state state machine (`PROCESS_LAUNCHED` -> `ACTIVITY_DETECTED` -> `SUSTAINED_ACTIVITY_CONFIRMED` -> `SETTLING_IN_PROGRESS` -> `WARMUP_VERIFIED`). Enforces continuously sustained activity throughout `mining_settle_seconds`.
-    5. **Three-Contract Partitioning:**
-       - Contract A: `process_contract_verified` (OS process lifecycle, PID tracking, stop, restart, cleanup).
-       - Contract B: `inference_arbitration_contract_verified` (Stop barrier strictly before forward, 10.0s cooldown, restart on idle).
-       - Contract C: `mining_activity_contract_verified` (Actual sustained GPU hashing confirmed prior to inference and after cooldown restart).
-    6. **Taxonomy & Telemetry Capture:** Structured generation evidence in `trial.initial_generation` and `trial.restart_generation` classifying outcomes (`hashing_verified`, `gpu_compute_activity_observed`, `miner_hashrate_reported`, `pool_connection_verified`, `process_running`, `verification_inconclusive`).
-  - **Verification:**
-    - 10 deterministic regression tests in `test_mining_activity_verification.py` passed.
-    - Full `resource_coordinator` test suite: **337 passed, 4 skipped**.
-    - Windows `disposable_helper` acceptance run: **5/5 passed** (`os_process_contract`).
-    - Read-only live preflight: **READY** (2036 MiB free VRAM, `qwen38_23GB` loaded).
-  - STOPPED at operator authorization boundary; ready for supervised T01 rerun.
+- **Stage 3 Live Hardware Acceptance (Trial T01 — Supervised Rerun Verified):**
+  - **Operator-Authorized Rerun (`20261103_004050_cac310be`):**
+    - Initial Generation: PID `61272`, connected to `stratum+ssl://prl-us.kryptex.network:8048`, received jobs `a55d8ce4_2097152` and `d1569e1f_2097152`, power reached `75.42 W` / `11.0%` util, settling verified over `3.0s`.
+    - Stop-before-forward: Stop verified at monotonic `286248.171` <= dispatch at `286248.515` (gap `0.344s`). Miner observed `STOPPED` throughout protected inference.
+    - Inference Execution: Discovered `qwen38_23GB` on `:1234`, HTTP `200 OK`, latency `6797 ms`.
+    - Cooldown: Monotonic elapsed `10.032s` (target `10.0s`).
+    - Restart Generation: Distinct PID `60904`, generation 2 log offset `1212`, connected to pool, received job `26e98a41_2097152`, power surged to **603.6 W** / **100.0%** utilization across 39 GPU samples, settling verified over `3.015s`.
+    - Cleanup: Supervised termination verified (`cleanup_verified_stopped: true`, `descendants_verified_stopped: true`), zero orphan processes, lock released.
+    - Automated Runner Verdict: `PASS` (`verification_level = "live_hardware_partial_stage"`).
+    - Operational Assessment: Full process coordination and strong physical GPU compute load / pool connectivity verified; periodic stdout hashrate string omitted due to prompt ~4s warm-up transition before KRig's 30s summary interval.
+  - Ready for operator authorization of remaining trials T02–T04.

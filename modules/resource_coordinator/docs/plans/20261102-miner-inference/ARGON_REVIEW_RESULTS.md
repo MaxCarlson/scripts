@@ -237,3 +237,12 @@ To guarantee evidence integrity between initial launch and post-cooldown restart
 - **Full Resource Coordinator Suite:** **337 passed, 4 skipped**.
 - **Real Windows Disposable Helper:** `resource-coordinator accept -m disposable_helper` verified with **5/5 trials passed (`os_process_contract`)**.
 - **Read-Only Live Preflight:** `resource-coordinator preflight --check-live`: **READY** (2036 MiB free VRAM, `qwen38_23GB` loaded).
+
+### 6.5 Supervised T01 Live-Hardware Rerun Verification
+Following explicit operator authorization, supervised T01 rerun `20261103_004050_cac310be` was executed on the live RTX 5090 host:
+- **Generation 1 (Initial Launch):** PID `61272`, connected to `stratum+ssl://prl-us.kryptex.network:8048`, received jobs `a55d8ce4_2097152` and `d1569e1f_2097152`. Power increased from baseline `35.44 W` to `75.42 W` (`11.0%` util) with `3.0s` continuous settling verified.
+- **Inference Arbitration:** Stop barrier verified at monotonic `286248.171` before upstream dispatch at `286248.515` (gap `0.344s`). Miner stayed `STOPPED` throughout inference. LM Studio responded with HTTP `200` (`6797 ms` duration).
+- **Idle Cooldown:** Cooldown elapsed `10.032s` (target `10.0s`).
+- **Generation 2 (Post-Cooldown Restart):** Distinct PID `60904`, generation 2 log offset `1212`, connected to pool, received job `26e98a41_2097152`. GPU power surged to **603.6 W** and utilization reached **100.0%** across 39 GPU samples, with `3.015s` continuous settling verified.
+- **Supervised Cleanup:** Post-trial termination verified (`cleanup_verified_stopped: true`, `descendants_verified_stopped: true`), zero orphan processes, host lock cleanly released.
+- **Verdict:** Automated runner verdict `PASS` (`verification_level = "live_hardware_partial_stage"`). Both process coordination and physical GPU compute load independently confirmed. Ready for operator authorization of trials T02–T04.
