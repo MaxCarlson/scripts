@@ -687,6 +687,10 @@ class AcceptanceReport:
     process_backend: str = "fake"  # "fake", "windows_cscript", "windows_miner"
     upstream_type: str = "mock"  # "mock", "live_lmstudio"
     verification_level: str = "unit_simulation"
+    run_verification_level: str = "unit_simulation"
+    aggregate_verification_level: Optional[str] = None
+    aggregate_trials_verified: List[str] = field(default_factory=list)
+    aggregate_status: Optional[str] = None
     trials: List[TrialEvidence] = field(default_factory=list)
     summary: Dict[str, Any] = field(default_factory=dict)
 
@@ -703,6 +707,10 @@ class AcceptanceReport:
             "process_backend": self.process_backend,
             "upstream_type": self.upstream_type,
             "verification_level": self.verification_level,
+            "run_verification_level": self.run_verification_level,
+            "aggregate_verification_level": self.aggregate_verification_level,
+            "aggregate_trials_verified": self.aggregate_trials_verified,
+            "aggregate_status": self.aggregate_status,
             "trials": [asdict(t) for t in self.trials],
             "summary": self.summary,
         }
@@ -852,6 +860,7 @@ class AcceptanceHarness:
             process_backend=process_backend,
             upstream_type=upstream_type,
             verification_level=verification_level,
+            run_verification_level=verification_level,
         )
 
         self.current_run_id: str = ""
@@ -944,6 +953,47 @@ class AcceptanceHarness:
             self.report.effective_configuration = effective_cfg
             self.report.configuration_fingerprint = compute_config_fingerprint(effective_cfg)
         return self.current_run_dir
+
+    def _scan_aggregate_evidence(self) -> Dict[str, Any]:
+        """Scan historical run reports to determine aggregate trial coverage and verification level."""
+        runs_parent = self._base_work_dir / "runs"
+        passed_trials: set[str] = {t.trial_id for t in self.report.trials if t.status == "PASS"}
+        if runs_parent.is_dir():
+            for child in runs_parent.iterdir():
+                if not child.is_dir() or child.name == self.current_run_id:
+                    continue
+                rep_file = child / "acceptance_report.json"
+                if rep_file.is_file():
+                    try:
+                        data = json.loads(rep_file.read_text(encoding="utf-8"))
+                        if data.get("mode") == self.mode or (self.mode == "live" and data.get("mode") == "live"):
+                            for tr in data.get("trials", []):
+                                if tr.get("status") == "PASS":
+                                    passed_trials.add(tr.get("trial_id"))
+                    except Exception:
+                        pass
+
+        all_live_trials = {"T01", "T02", "T03", "T04"}
+        all_passed_live = all_live_trials.issubset(passed_trials)
+        is_test_override = (
+            self._allow_short_cooldown_for_test or self._upstream_app_override_for_test is not None
+        )
+        if self.mode == "live":
+            if is_test_override:
+                agg_level = "live_contract_rehearsal"
+                agg_status = "COMPLETE" if all_passed_live else "PARTIAL"
+            else:
+                agg_level = "live_hardware" if all_passed_live else self.report.run_verification_level
+                agg_status = "COMPLETE" if all_passed_live else "PARTIAL"
+        else:
+            agg_level = self.report.run_verification_level
+            agg_status = "COMPLETE" if len(passed_trials) >= len(self.report.trials) else "PARTIAL"
+
+        return {
+            "aggregate_trials_verified": sorted(list(passed_trials)),
+            "aggregate_verification_level": agg_level,
+            "aggregate_status": agg_status,
+        }
 
     async def run_all(self, output_file: Optional[str | Path] = None) -> AcceptanceReport:
         """Run all applicable test sequence trials and return the structured acceptance report."""
@@ -1045,22 +1095,32 @@ class AcceptanceHarness:
             failed = sum(1 for t in self.report.trials if t.status == "FAIL")
             all_passed = passed == total and total > 0
 
-            # Promote verification_level to "live_hardware" ONLY after actual live execution of all live trials
+            # Determine run_verification_level for the current execution
             if self.mode == "live":
                 is_test_override = (
                     self._allow_short_cooldown_for_test or self._upstream_app_override_for_test is not None
                 )
                 if all_passed and not is_test_override:
-                    if (total >= 4 and (to_run is None or len(to_run) >= 4)) or (
-                        total >= 3 and to_run and set(to_run) >= {"T02", "T03", "T04"}
-                    ):
-                        self.report.verification_level = "live_hardware"
+                    if total >= 4 and (to_run is None or len(to_run) >= 4):
+                        self.report.run_verification_level = "live_hardware"
                     else:
-                        self.report.verification_level = f"live_hardware_partial_stage"
+                        self.report.run_verification_level = "live_hardware_partial_stage"
                 elif all_passed and is_test_override:
-                    self.report.verification_level = "live_contract_rehearsal"
+                    self.report.run_verification_level = "live_contract_rehearsal"
                 else:
-                    self.report.verification_level = "failed_live_verification"
+                    self.report.run_verification_level = "failed_live_verification"
+            else:
+                self.report.run_verification_level = self.report.verification_level
+
+            # Determine aggregate verification level by scanning historical runs
+            agg = self._scan_aggregate_evidence()
+            self.report.aggregate_verification_level = agg["aggregate_verification_level"]
+            self.report.aggregate_trials_verified = agg["aggregate_trials_verified"]
+            self.report.aggregate_status = agg["aggregate_status"]
+            if self.mode == "live" and is_test_override:
+                self.report.verification_level = "live_contract_rehearsal"
+            else:
+                self.report.verification_level = agg["aggregate_verification_level"] or self.report.run_verification_level
 
             self.report.summary = {
                 "run_id": self.current_run_id,
@@ -1071,6 +1131,10 @@ class AcceptanceHarness:
                 "trials_executed": [t.trial_id for t in self.report.trials],
                 "all_passed": all_passed,
                 "verification_level": self.report.verification_level,
+                "run_verification_level": self.report.run_verification_level,
+                "aggregate_verification_level": self.report.aggregate_verification_level,
+                "aggregate_trials_verified": self.report.aggregate_trials_verified,
+                "aggregate_status": self.report.aggregate_status,
                 "run_dir": str(self.current_run_dir),
             }
         except (KeyboardInterrupt, asyncio.CancelledError) as exc:
@@ -1137,6 +1201,8 @@ class AcceptanceHarness:
         StateCodec.initialize(journal_path)
         log_path = trial_dir / "miner_stdout.log"
 
+        active_leases = 0
+        peak_active_leases = 0
         telemetry: Dict[str, Any] = {
             "journal_path": str(journal_path),
             "lock_path": str(self.lock_path),
@@ -1149,6 +1215,8 @@ class AcceptanceHarness:
             "cooldown_started_monotonic": None,
             "restarted_monotonic": None,
             "observed_pids": [],
+            "active_leases": 0,
+            "peak_active_leases": 0,
         }
 
         async def default_upstream_handler(request):
@@ -1356,7 +1424,18 @@ class AcceptanceHarness:
                 telemetry["stop_verified_monotonic"] = time.monotonic()
 
         async def on_resource_acquired(event: Any) -> None:
+            nonlocal active_leases, peak_active_leases
             telemetry["lease_acquired_monotonic"] = time.monotonic()
+            active_leases += 1
+            if active_leases > peak_active_leases:
+                peak_active_leases = active_leases
+            telemetry["active_leases"] = active_leases
+            telemetry["peak_active_leases"] = peak_active_leases
+
+        async def on_resource_released(event: Any) -> None:
+            nonlocal active_leases
+            active_leases = max(0, active_leases - 1)
+            telemetry["active_leases"] = active_leases
 
         async def on_inference_forwarded(event: Any) -> None:
             now_mono = time.monotonic()
@@ -1377,6 +1456,7 @@ class AcceptanceHarness:
         system.dispatcher.on("process.started", on_process_started)
         system.dispatcher.on("process.stopped", on_process_stopped)
         system.dispatcher.on("resource.acquired", on_resource_acquired)
+        system.dispatcher.on("resource.released", on_resource_released)
         system.dispatcher.on("lmstudio.inference_forwarded", on_inference_forwarded)
         system.dispatcher.on("resource.cooldown_started", on_cooldown_started)
 
@@ -1520,6 +1600,7 @@ class AcceptanceHarness:
             t.metrics["stop_verified_monotonic"] = telemetry["stop_verified_monotonic"]
         if telemetry.get("lease_acquired_monotonic") is not None:
             t.metrics["lease_acquired_monotonic"] = telemetry["lease_acquired_monotonic"]
+        t.metrics["max_concurrent_leases"] = telemetry.get("peak_active_leases", 1)
 
     async def _verify_mining_warmup(
         self,
@@ -2205,6 +2286,10 @@ class AcceptanceHarness:
             )
 
             self._record_trial_telemetry(t, telemetry, cooldown)
+            assert t.metrics.get("max_concurrent_leases", 0) >= 2, (
+                f"Expected at least 2 concurrent leases during overlapping requests, "
+                f"got {t.metrics.get('max_concurrent_leases')}"
+            )
 
             # Evaluate 3 verification contracts
             t.process_contract_verified = (

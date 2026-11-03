@@ -432,3 +432,80 @@ def test_mining_launcher_compatibility_reconciliation(tmp_path: Path):
         use_preview_invocation=False,
     )
     assert manifest_default.core_clock_mhz == 0
+
+
+@pytest.mark.asyncio
+async def test_trial_3_tracks_concurrent_leases_and_asserts_overlap(tmp_path: Path):
+    """
+    Verify that Trial 3 (Concurrent Overlapping Requests) explicitly tracks
+    active leases and records max_concurrent_leases >= 2 in metrics.
+    """
+    work_dir = tmp_path / "t03_test"
+    work_dir.mkdir(parents=True, exist_ok=True)
+
+    harness = AcceptanceHarness(
+        mode="simulated",
+        cooldown_seconds=0.05,
+        work_dir=work_dir,
+        trials_to_run=["T03"],
+    )
+
+    report = await harness.run_all()
+    assert report.summary["all_passed"] is True
+    assert len(report.trials) == 1
+    t03 = report.trials[0]
+    assert t03.trial_id == "T03"
+    assert t03.status == "PASS"
+    assert "max_concurrent_leases" in t03.metrics
+    assert t03.metrics["max_concurrent_leases"] >= 2
+
+
+def test_aggregate_evidence_scanning_across_multiple_runs(tmp_path: Path):
+    """
+    Verify that _scan_aggregate_evidence discovers passed trials across historical
+    run directories, correctly reporting aggregate_status: 'COMPLETE' and
+    aggregate_verification_level: 'live_hardware' when T01-T04 are covered.
+    """
+    work_dir = tmp_path / "multi_run_space"
+    runs_dir = work_dir / "runs"
+    runs_dir.mkdir(parents=True, exist_ok=True)
+
+    # Historical Run 1: T01 PASS
+    run1_dir = runs_dir / "20261103_004050_cac310be"
+    run1_dir.mkdir()
+    rep1 = {
+        "mode": "live",
+        "verification_level": "live_hardware_partial_stage",
+        "run_verification_level": "live_hardware_partial_stage",
+        "trials": [{"trial_id": "T01", "status": "PASS"}],
+        "summary": {"all_passed": True},
+    }
+    (run1_dir / "acceptance_report.json").write_text(json.dumps(rep1), encoding="utf-8")
+
+    # Historical Run 2: T02, T03, T04 PASS
+    run2_dir = runs_dir / "20261103_010258_800a81f9"
+    run2_dir.mkdir()
+    rep2 = {
+        "mode": "live",
+        "verification_level": "live_hardware_partial_stage",
+        "run_verification_level": "live_hardware_partial_stage",
+        "trials": [
+            {"trial_id": "T02", "status": "PASS"},
+            {"trial_id": "T03", "status": "PASS"},
+            {"trial_id": "T04", "status": "PASS"},
+        ],
+        "summary": {"all_passed": True},
+    }
+    (run2_dir / "acceptance_report.json").write_text(json.dumps(rep2), encoding="utf-8")
+
+    harness = AcceptanceHarness(
+        mode="live",
+        allow_live_lmstudio=True,
+        allow_real_miner=True,
+        work_dir=work_dir,
+    )
+    agg = harness._scan_aggregate_evidence()
+    assert agg["aggregate_status"] == "COMPLETE"
+    assert agg["aggregate_verification_level"] == "live_hardware"
+    assert agg["aggregate_trials_verified"] == ["T01", "T02", "T03", "T04"]
+

@@ -29,29 +29,35 @@ LM Studio Upstream (:1234)
 
 ## 2. Configuration & Manifests
 
-Production configuration template:
-[`modules/resource_coordinator/config.supervised-template.yaml`](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/config.supervised-template.yaml)
+Production configuration file (validated on host):
+[`modules/resource_coordinator/config.live-local.yaml`](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/config.live-local.yaml)
 
 ```yaml
 version: "1.0"
+
 service:
   listen_host: "127.0.0.1"
   listen_port: 1235
   upstream_url: "http://127.0.0.1:1234"
-  state_persistence_path: "C:\\Mining\\coordinator_state.json"
+  state_persistence_path: "C:\\Users\\mcarls\\src\\scripts\\.worktrees\\miner-inference-coordination-20261102\\modules\\resource_coordinator\\.live_acceptance_work\\coordinator_state.json"
+
+resources:
+  gpu.inference:
+    type: "shared"
+    cooldown_seconds: 10.0
 
 processes:
-  krig:
+  krig_miner:
     backend: "windows"
-    executable: "C:\\Mining\\krig-v1.6.0\\krig.exe"
+    executable: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6\\krig-miner.exe"
+    working_directory: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6"
     arguments:
       - "--coin"
       - "pearl"
       - "--url"
-      - "stratum+ssl://prl-us.example-pool.network:8048"
+      - "stratum+ssl://prl-us.kryptex.network:8048"
       - "--user"
-      - "PRL_WALLET_ADDRESS"
-    working_directory: "C:\\Mining\\krig-v1.6.0"
+      - "krxXPVG8JN/Xeres"
     stop_timeout_seconds: 10.0
     restart_cooldown_seconds: 10.0
     new_console: false
@@ -61,9 +67,9 @@ processes:
     adopt_external: false
 
 policies:
-  - name: "stop-miner-for-inference"
+  - name: "pause_krig_for_inference"
     trigger_event: "lmstudio.inference_requested"
-    target_process: "krig"
+    target_process: "krig_miner"
     stop_process: true
     stop_timeout_seconds: 10.0
     resource: "gpu.inference"
@@ -72,9 +78,9 @@ policies:
     restart_process: true
     only_if_stopped_by_coordinator: true
 
-  - name: "stop-miner-for-model-load"
+  - name: "pause_krig_for_model_load"
     trigger_event: "lmstudio.model_load_requested"
-    target_process: "krig"
+    target_process: "krig_miner"
     stop_process: true
     stop_timeout_seconds: 10.0
     resource: "gpu.inference"
@@ -172,13 +178,95 @@ Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/_coordinator/recover?
 
 ---
 
-## 5. Client Migration & Rollout Guide
+## 5. Five-Stage Production Rollout Plan
+
+To transition Miner / Local LLM Coordination from validated branch to production service safely, execute the following staged deployment:
+
+### Stage 1: Coordinator-Only Service Verification
+1. Verify LM Studio is listening on `127.0.0.1:1234` with `qwen38_23GB` loaded:
+   ```powershell
+   python -c "import httpx; r = httpx.get('http://127.0.0.1:1234/api/v0/models'); print([(m['id'], m['state']) for m in r.json().get('data', []) if m.get('state') == 'loaded'])"
+   ```
+2. Start Resource Coordinator standalone on port `1235`:
+   ```powershell
+   $env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
+   python -m resource_coordinator.cli serve --config modules/resource_coordinator/config.live-local.yaml --first-boot
+   ```
+3. In a separate terminal, verify service health and readiness:
+   ```powershell
+   curl http://127.0.0.1:1235/_coordinator/status
+   ```
+   Confirm `service_state == "ready"` and `is_ready == true`.
+4. Verify read-only model discovery passthrough:
+   ```powershell
+   curl http://127.0.0.1:1235/api/v0/models
+   ```
+   Confirm model list is returned without triggering process stops or acquiring leases.
+
+### Stage 2: Single Test Client Verification
+1. Send a single non-streaming test inference request directly to port `1235`:
+   ```powershell
+   $body = @{
+       model = "qwen38_23GB"
+       messages = @(@{ role = "user"; content = "Reply with OK" })
+       max_tokens = 4
+       temperature = 0.0
+   } | ConvertTo-Json
+   Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/v1/chat/completions" -Body $body -ContentType "application/json"
+   ```
+2. Verify coordinator stop-before-forward barrier:
+   - Miner process stops before LM Studio receives the request.
+   - Inference succeeds with HTTP `200 OK`.
+   - Cooldown timer (10.0s) begins.
+   - Miner restarts automatically after cooldown expires.
+
+### Stage 3: LLM Monitor Gateway Integration
+1. Restart LLM Monitor web targeting the Coordinator on port `1235`:
+   ```powershell
+   python -m llm_monitor web -p 8789 -e http://127.0.0.1:1234 --gateway --gateway-upstream http://127.0.0.1:1235 -R content -n -d .../qualification.sqlite3
+   ```
+2. Send a test inference request through LLM Monitor on port `8789`:
+   ```powershell
+   Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:8789/v1/chat/completions" -Body $body -ContentType "application/json"
+   ```
+3. Verify proxy chaining:
+   `Client -> LLM Monitor (:8789) -> Resource Coordinator (:1235) -> LM Studio (:1234)`
+   - LLM Monitor records prompt and response in SQLite qualification database.
+   - Resource Coordinator arbitrates GPU lease and holds miner stopped during inference.
+
+### Stage 4: OpenCode Worker Integration
+1. Update OpenCode provider configuration in `opencode.json` to target LLM Monitor or Coordinator:
+   ```json
+   {
+     "baseURL": "http://127.0.0.1:8789/v1"
+   }
+   ```
+2. Issue a test coding request to OpenCode.
+3. Verify streaming token delivery over SSE:
+   - Incremental chunks flow without backpressure stalls.
+   - Miner remains stopped throughout the generation.
+   - Cooldown initiates upon stream termination (`[DONE]`).
+
+### Stage 5: Normal Operation, Observability & Recovery
+1. Operating state invariants:
+   - Port 1235 handles all inference traffic with authoritative arbitration.
+   - Driver power limit remains pinned at 600W.
+   - Crash watchdog automatically recovers unexpected miner exits during safe-idle (1s, 2s, 4s backoff; max 3 retries).
+2. Emergency Abort & Recovery:
+   - To immediately stop admission and freeze mining:
+     `POST http://127.0.0.1:1235/_coordinator/abort`
+   - To clear operator holds after verifying LM Studio idle:
+     `POST http://127.0.0.1:1235/_coordinator/recover?resource=gpu.inference`
+
+---
+
+## 6. Client Migration Reference & Rollback Guide
 
 | Client | Configuration Location | Current Setting | Migrated Setting | Rollback Command |
 |---|---|---|---|---|
 | **Direct Inference** | Client HTTP baseUrl | `http://127.0.0.1:1234` | `http://127.0.0.1:1235` | Set baseUrl back to `:1234` |
 | **Monitored Benchmark** | `llm-monitor web --gateway-upstream` | `http://127.0.0.1:1234` | `http://127.0.0.1:1235` | Restart monitor with `--gateway-upstream http://127.0.0.1:1234` |
-| **OpenCode Local Agent** | `opencode.json` / provider config | `http://127.0.0.1:1234/v1` | `http://127.0.0.1:1235/v1` | Revert `baseURL` in provider settings |
+| **OpenCode Local Agent** | `opencode.json` / provider config | `http://127.0.0.1:1234/v1` | `http://127.0.0.1:1235/v1` (or `:8789/v1`) | Revert `baseURL` in provider settings |
 
 ### Rollback Procedure
 If any client encounters unexpected latency or errors:

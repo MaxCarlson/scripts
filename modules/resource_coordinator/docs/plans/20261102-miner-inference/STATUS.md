@@ -155,4 +155,28 @@
     - 3 / 3 live trials passed in latest run; 4 / 4 total live acceptance trials verified across T01–T04 on real RTX 5090 host.
     - Full offline regression suite: **337 passed, 4 skipped** (`resource_coordinator`).
     - Zero host orphans, 600W power limit strictly preserved, GPU idle and cool.
-    - **Deployment and Integration Readiness:** Verified and ready for operator merge/cutover review.
+- **Stage 4 — Final Integration Validation & Merge Preparation:** COMPLETE.
+  - **Correction 1 (Lease Overlap & Aggregate Tracking):**
+    - `AcceptanceHarness._build_test_harness` now explicitly tracks `active_leases` and `peak_active_leases` on `resource.acquired` and `resource.released` events.
+    - `_record_trial_telemetry` records `t.metrics["max_concurrent_leases"]`.
+    - Trial T03 explicitly asserts `t.metrics["max_concurrent_leases"] >= 2`.
+    - `AcceptanceReport` exposes `run_verification_level`, `aggregate_verification_level`, `aggregate_trials_verified`, and `aggregate_status`. Historical run directories are automatically scanned to verify aggregate coverage across split runs (e.g., T01 in run 1 + T02–T04 in run 2 -> aggregate status `COMPLETE` / `live_hardware`).
+    - Validated in `test_final_acceptance_readiness.py` (11 passed).
+  - **Correction 2 (Real Loopback Service on TCP :1235):**
+    - Created and executed `test_live_loopback_service.py` running `CoordinatorService` + `system.gateway.create_app()` over real TCP socket on `127.0.0.1:1235` backed by `uvicorn.Server` and real LM Studio on `127.0.0.1:1234` (`qwen38_23GB`).
+    - Verified `GET /_coordinator/status` returns `status: "online"`, `is_ready: true`, and correct process inventory.
+    - Verified `GET /api/v0/models` and `GET /v1/models` passthrough to LM Studio with zero leases and untouched process state.
+    - Verified real non-streaming `POST /v1/chat/completions` stopping miner before forward, returning 200 OK, and executing cooldown restart.
+    - Verified real streaming `POST /v1/chat/completions` over TCP socket with incremental SSE chunk consumption, process held stopped, terminal `[DONE]` detection, and cooldown restart.
+    - Verified real concurrent overlapping requests with `max_concurrent_leases >= 2` and cooldown delayed until final completion.
+    - Verified model mutation refusal (503 `uncoordinated_model_mutation` on unload and unauthorized load).
+    - Verified clean server and process teardown without socket leaks or orphan processes.
+  - **Correction 3 (Client Integration & Chaining):**
+    - Verified chained topology: `Client -> LLM Monitor (:8789) -> Resource Coordinator (:1235) -> LM Studio (:1234)`.
+    - Verified in `test_phase1_proxy_chain_integration.py` (4 passed).
+  - **Correction 4 (Operational Runbook & Rollout Plan):**
+    - Updated `RUNBOOK.md` with accurate host paths (`C:\Users\mcarls\src\Mining\vendor\krig-miner-1.5.6\krig-miner.exe`, `config.live-local.yaml`).
+    - Added comprehensive 5-stage production rollout plan (Stages 1–5).
+  - **Merge Assessment:**
+    - Zero merge conflicts against `origin/main` (`git merge-tree` clean).
+    - Branch: `feature/miner-inference-coordination-20261102` ready for operator merge review.
