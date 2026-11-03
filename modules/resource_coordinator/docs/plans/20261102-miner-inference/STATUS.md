@@ -175,7 +175,8 @@
     - Verified chained topology: `Client -> LLM Monitor (:8789) -> Resource Coordinator (:1235) -> LM Studio (:1234)`.
     - Verified in `test_phase1_proxy_chain_integration.py` (4 passed).
   - **Correction 4 (Operational Runbook & Rollout Plan):**
-    - Updated `RUNBOOK.md` with accurate host paths (`C:\Users\mcarls\src\Mining\vendor\krig-miner-1.5.6\krig-miner.exe`, `config.live-local.yaml`).
+    - Created tracked production configuration template `config.production-template.yaml` with persistent state path (`$HOME\.resource_coordinator\coordinator_state.json`) and redacted wallet placeholders.
+    - Updated `RUNBOOK.md` with explicit CLI startup flags (`--start-process krig_miner --stop-process-on-shutdown krig_miner`), first-boot vs normal restart semantics, and preflight refusal rules for conflicting miners.
     - Added comprehensive 5-stage production rollout plan (Stages 1–5).
   - **Merge Assessment:**
     - Zero merge conflicts against `origin/main` (`git merge-tree` clean).

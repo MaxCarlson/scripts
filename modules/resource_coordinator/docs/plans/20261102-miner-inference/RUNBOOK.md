@@ -29,8 +29,8 @@ LM Studio Upstream (:1234)
 
 ## 2. Configuration & Manifests
 
-Production configuration file (validated on host):
-[`modules/resource_coordinator/config.live-local.yaml`](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/config.live-local.yaml)
+Tracked production configuration template:
+[`modules/resource_coordinator/config.production-template.yaml`](file:///C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102/modules/resource_coordinator/config.production-template.yaml)
 
 ```yaml
 version: "1.0"
@@ -39,7 +39,8 @@ service:
   listen_host: "127.0.0.1"
   listen_port: 1235
   upstream_url: "http://127.0.0.1:1234"
-  state_persistence_path: "C:\\Users\\mcarls\\src\\scripts\\.worktrees\\miner-inference-coordination-20261102\\modules\\resource_coordinator\\.live_acceptance_work\\coordinator_state.json"
+  # Persistent writable state directory outside ephemeral git worktrees:
+  state_persistence_path: "C:\\Users\\mcarls\\.resource_coordinator\\coordinator_state.json"
 
 resources:
   gpu.inference:
@@ -57,7 +58,7 @@ processes:
       - "--url"
       - "stratum+ssl://prl-us.kryptex.network:8048"
       - "--user"
-      - "krxXPVG8JN/Xeres"
+      - "<YOUR_WALLET_ADDRESS>/<YOUR_WORKER_NAME>"
     stop_timeout_seconds: 10.0
     restart_cooldown_seconds: 10.0
     new_console: false
@@ -90,6 +91,24 @@ policies:
     only_if_stopped_by_coordinator: true
 ```
 
+### Creating Local Deployment Configuration
+To configure the service for local host execution outside disposable git worktrees:
+1. Create the persistent configuration and state directory:
+   ```powershell
+   New-Item -ItemType Directory -Force -Path "$HOME\.resource_coordinator"
+   ```
+2. Copy the template to your local path:
+   ```powershell
+   Copy-Item modules\resource_coordinator\config.production-template.yaml "$HOME\.resource_coordinator\config.yaml"
+   # Alternatively, create a git-ignored file: modules\resource_coordinator\config.local.yaml
+   ```
+3. Set your authorized pool wallet and worker name in place of `<YOUR_WALLET_ADDRESS>/<YOUR_WORKER_NAME>`. Never commit wallet credentials to Git.
+4. Verify that binary and working directory paths match your host installation (`C:\Users\mcarls\src\Mining\vendor\krig-miner-1.5.6\krig-miner.exe`).
+5. Validate the configuration via preflight before starting:
+   ```powershell
+   python -m resource_coordinator.cli preflight -c "$HOME\.resource_coordinator\config.yaml"
+   ```
+
 ---
 
 ## 3. Operations & Lifecycle Commands
@@ -114,12 +133,29 @@ The coordinator CLI provides automated acceptance testing across three modes:
    ```
 
 ### Starting the Coordinator Service
-From the repository root or worktree:
+From the repository root or deployment folder:
+
 ```powershell
+# Initial Deployment (first-boot: initializes clean durable state journal if it does not exist):
 $env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
-python -m resource_coordinator.cli serve --config modules/resource_coordinator/config.supervised-template.yaml
+python -m resource_coordinator.cli serve `
+    -c "$HOME\.resource_coordinator\config.yaml" `
+    --first-boot `
+    --start-process krig_miner `
+    --stop-process-on-shutdown krig_miner
+
+# Normal Service Restart (resumes and reconciles existing durable state):
+$env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
+python -m resource_coordinator.cli serve `
+    -c "$HOME\.resource_coordinator\config.yaml" `
+    --start-process krig_miner `
+    --stop-process-on-shutdown krig_miner
 ```
-*Note: On a brand new deployment without an existing state journal, add `--first-boot` to explicitly initialize the journal file.*
+
+**Startup Flags Explained:**
+- `--start-process krig_miner`: Instructs the coordinator to explicitly launch the configured mining process under coordinator ownership once the service reaches `ready` state.
+- `--stop-process-on-shutdown krig_miner`: Guarantees that when the coordinator is stopped (via `Ctrl+C` or service stop), the child KRig process and its descendants are cleanly terminated.
+- `--first-boot`: Initializes a brand-new durable state journal on disk if one does not already exist. **Do NOT pass `--first-boot` on routine restarts**, because normal restarts must reconcile any in-flight requests recorded in the existing journal rather than bypassing them.
 
 ### Inspecting Service Health & Status
 ```powershell
@@ -128,17 +164,27 @@ curl http://127.0.0.1:1235/_coordinator/status
 Example Response:
 ```json
 {
+  "status": "online",
   "service_state": "ready",
   "is_ready": true,
-  "resources": {
-    "gpu.inference": {
-      "active_count": 0,
-      "pending_count": 0,
-      "is_restart_inhibited": false,
-      "inhibition": null
+  "upstream_url": "http://127.0.0.1:1234",
+  "processes": {
+    "krig_miner": {
+      "state": "running",
+      "pid": 60904,
+      "lifecycle_owner": "coordinator",
+      "is_coordinator_owned": true,
+      "was_stopped_by_coordinator": false
     }
   },
-  "managed_processes": ["krig"]
+  "gpu_inference": {
+    "active_count": 0,
+    "pending_count": 0,
+    "is_cooling_down": false,
+    "cooldown_remaining": 0.0,
+    "is_restart_inhibited": false,
+    "inhibition": null
+  }
 }
 ```
 
@@ -160,21 +206,34 @@ Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/_coordinator/recover?
 
 ---
 
-## 4. Crash Recovery & Single-Instance Safety
+## 4. Startup, Shutdown & Crash Recovery Safety
 
-1. **Single Owner Lock:**
-   - A single-instance lock (`coordinator_state.lock`) is acquired upon launch via `msvcrt.locking`.
-   - If a duplicate coordinator is launched by a user or script, it will fail closed immediately without spawning competing processes or touching existing leases.
+1. **Preflight Refusal of Conflicting External Miners:**
+   - On startup, the coordinator actively scans host processes for existing unmanaged instances of the target executable (`krig-miner.exe`).
+   - If an unowned external miner is running, the service fails closed and refuses to start, preventing dual-ownership collisions, overlapping GPU compute thrashing, or clock interference.
+   - External miners must be stopped by the operator before the coordinator is launched.
 
-2. **Durable Journal Reconciliation:**
-   - Before upstream dispatch, every request is atomically committed as `POSSIBLY_FORWARDED`.
-   - On coordinator crash or host restart, any request not marked `TERMINAL_VERIFIED` is replayed on startup as a `RestartInhibition` on `gpu.inference`.
-   - The miner will **never** automatically restart after a crash until an operator clears the hold or upstream verifies completion.
+2. **Single-Instance Host Ownership:**
+   - An OS-level single-instance file lock (`coordinator_state.lock` via `msvcrt.locking` on Windows) is acquired exclusively upon launch.
+   - If a duplicate coordinator instance is launched by a user, scheduled task, or background agent, it fails closed immediately without spawning competing processes, acquiring leases, or touching hardware.
 
-3. **Unexpected Miner Exit Watchdog:**
+3. **Strict Non-Adoption of Foreign Processes:**
+   - The coordinator strictly manages only processes it has spawned directly (`adopt_external: false`).
+   - Foreign processes (such as manual mining launched via `start-prl.ps1`, LM Studio on `:1234`, or OpenCode workers on PIDs `47108`/`63836`) are never adopted, signaled, or terminated.
+
+4. **Durable Journal Reconciliation & Unresolved Prior Inference:**
+   - Before upstream dispatch, every request is atomically committed to the durable state journal as `POSSIBLY_FORWARDED`.
+   - On coordinator crash, abrupt process kill, or host reboot, any request not marked `TERMINAL_VERIFIED` is replayed on startup as a persistent `RestartInhibition` on `gpu.inference`.
+   - The miner will **never** automatically restart after an unverified crash until an operator confirms upstream idle and clears the hold via `POST /_coordinator/recover`.
+   - **Safety Invariant:** A fresh journal (`--first-boot`) must **never** be used to bypass an existing unresolved safety state or crash hold. Bypassing an unresolved journal risks restarting the miner while upstream inference is still executing.
+
+5. **Unexpected Miner Exit Watchdog:**
    - If the coordinator-owned miner crashes while the system is safe-idle:
-     - Attempts bounded exponential backoff restarts (1s, 2s, 4s).
-     - If crashes exceed 3 consecutive attempts, it emits `process.crash_loop_inhibited` and permanently latches restart inhibition on `gpu.inference`.
+     - The supervisor executes bounded exponential backoff restarts (1s, 2s, 4s).
+     - If crashes exceed 3 consecutive attempts, it emits `process.crash_loop_inhibited` and permanently latches restart inhibition on `gpu.inference` to protect the host.
+
+6. **Host Services Protection:**
+   - LM Studio (`:1234`), LLM Monitor (`:8789`), and local OpenCode workers are invariant host infrastructure and are never stopped, restarted, or altered by the Resource Coordinator.
 
 ---
 
@@ -187,10 +246,15 @@ To transition Miner / Local LLM Coordination from validated branch to production
    ```powershell
    python -c "import httpx; r = httpx.get('http://127.0.0.1:1234/api/v0/models'); print([(m['id'], m['state']) for m in r.json().get('data', []) if m.get('state') == 'loaded'])"
    ```
-2. Start Resource Coordinator standalone on port `1235`:
+2. Start Resource Coordinator standalone on port `1235` (using your local persistent configuration):
    ```powershell
    $env:PYTHONPATH = "modules/resource_coordinator;modules/llm_monitor"
-   python -m resource_coordinator.cli serve --config modules/resource_coordinator/config.live-local.yaml --first-boot
+   # Initial deployment only (--first-boot initializes new journal; omit on subsequent restarts):
+   python -m resource_coordinator.cli serve `
+       -c "$HOME\.resource_coordinator\config.yaml" `
+       --first-boot `
+       --start-process krig_miner `
+       --stop-process-on-shutdown krig_miner
    ```
 3. In a separate terminal, verify service health and readiness:
    ```powershell
