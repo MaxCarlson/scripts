@@ -50,6 +50,7 @@ def test_dispatch_stops_on_identity_drift(tmp_path, monkeypatch):
     from contextlib import nullcontext
     from agent_benchmark.harbor.planner import plan_benchmark
     from agent_benchmark.harbor.runner import execute_harbor_run
+    from agent_benchmark.study_network_policy import NETWORK_POLICY
 
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ok"))
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
@@ -61,16 +62,29 @@ def test_dispatch_stops_on_identity_drift(tmp_path, monkeypatch):
     registry.parent.mkdir()
     registry.write_text("{}", encoding="utf-8")
     monkeypatch.setattr("agent_benchmark.suite_revision.verify_saved_registry_snapshot", lambda *_: registry.resolve())
+    snapshot = tmp_path / "polyglot_python_beer-song"
+    snapshot.mkdir()
+    network_row = {
+        "source_git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+        "network_policy": NETWORK_POLICY,
+    }
+    monkeypatch.setattr(
+        "agent_benchmark.study_network_policy.verify_study_network_manifest",
+        lambda *_: (snapshot, network_row),
+    )
     def reject(_manifest):
         raise ValueError("digest mismatch")
     monkeypatch.setattr("agent_benchmark.study_task_integrity.verify_study_task_trees", reject)
     monkeypatch.setattr("agent_benchmark.harbor.runner.subprocess.run",
                         lambda *args, **kwargs: pytest.fail("Harbor dispatch was reached"))
-    plan = plan_benchmark("aider/aider-polyglot", agent="opencode", count=1)
+    plan = plan_benchmark(
+        "aider/aider-polyglot", agent="opencode", task_ids=["polyglot_python_beer-song"]
+    )
     with pytest.raises(ValueError, match="digest mismatch"):
         execute_harbor_run(plan, execute=True, output_dir=tmp_path / "out", jobs_dir=tmp_path / "jobs",
                            state_dir=tmp_path / "state", study_adapter=True, study_manifest=manifest(),
-                           registry_path=registry)
+                           registry_path=registry, study_run_dir=tmp_path)
 
 
 def test_cached_harbor_identity_when_runtime_is_available():

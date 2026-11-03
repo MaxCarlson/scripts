@@ -31,7 +31,8 @@ for row in json.loads(sys.argv[1]):
     for p in sorted((root / 'tests').rglob('*')):
         if p.is_symlink(): raise RuntimeError('verifier contains symlink')
         if p.is_file(): digest.update(p.relative_to(root).as_posix().encode() + b'\0' + hashlib.sha256(p.read_bytes()).digest())
-    results.append({'task_id': row['task_id'], 'task_sha256': task_hash, 'verifier_sha256': digest.hexdigest()})
+    results.append({'task_id': row['task_id'], 'task_sha256': task_hash,
+                    'verifier_sha256': digest.hexdigest(), 'task_root': str(root.resolve())})
 print(json.dumps(results))
 '''
 

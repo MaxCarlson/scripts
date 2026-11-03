@@ -174,9 +174,22 @@ def build_manifest(
         },
     }
     if study_adapter:
+        from .study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID
+
         result["prompt_policy"] = policy
         result["study_adapter"] = "opencode-v1-isolated-v1"
-        result["study_web_access"] = {"native_web_tools": "deny-requested", "network_enforcement": None}
+        result["study_web_access"] = {
+            "native_web_tools": "deny-requested",
+            "network_policy_id": NETWORK_POLICY_ID,
+            "network_policy": NETWORK_POLICY,
+            "network_enforcement": "requested; requires effective Docker sidecar qualification",
+        }
+        result["provenance"]["study_network"] = {
+            "policy_id": NETWORK_POLICY_ID,
+            "network_policy": NETWORK_POLICY,
+            "enforcement_state": "planned",
+            "task_snapshots": {},
+        }
         result["study_design"] = {"id": "spec-verification-pilot-v1", "repetition": study_repetition,
                                   "randomization_seed": study_seed}
     digest_payload = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
@@ -198,6 +211,8 @@ def create_run(
                                                monitor_host_url=monitor_host_url, study_adapter=study_adapter,
                                                prompt_policy_file=prompt_policy_file,
                                                study_repetition=study_repetition, study_seed=study_seed)
+    plan = dict(plan)
+    plan["provenance"] = dict(plan.get("provenance", {}))
     registry_resolution = plan["provenance"].get("registry_resolution")
     if registry_resolution is not None and registry_snapshot is None:
         raise DatasetRevisionError("verified registry snapshot bytes are missing; no inference was dispatched")
@@ -217,6 +232,40 @@ def create_run(
         if identity != plan["prompt_policy"]:
             raise ValueError("prompt policy changed since planning")
     run_dir.mkdir(parents=True, exist_ok=False)
+    if plan.get("study_adapter"):
+        from .study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID, materialize_study_task_snapshot
+        from .study_task_integrity import verify_study_task_trees
+
+        verified_trees = verify_study_task_trees(plan)
+        resolution_rows = {
+            row["task_id"]: row for row in plan.get("provenance", {}).get("registry_resolution", {}).get("tasks", [])
+        }
+        verified_rows = {row["task_id"]: row for row in verified_trees}
+        if set(resolution_rows) != set(plan["tasks"]) or set(verified_rows) != set(plan["tasks"]):
+            raise DatasetRevisionError("verified study task source set is incomplete; no inference was dispatched")
+        snapshots: dict[str, dict[str, Any]] = {}
+        for task_id in plan["tasks"]:
+            source = resolution_rows[task_id]
+            verified = verified_rows[task_id]
+            snapshots[task_id] = materialize_study_task_snapshot(
+                run_dir=run_dir,
+                source_path=Path(verified["task_root"]),
+                task_id=task_id,
+                source_revision=source["git_commit_id"],
+                source_git_url=source["git_url"],
+                original_task_sha256=verified["task_sha256"],
+                original_verifier_sha256=verified["verifier_sha256"],
+            )
+        plan["provenance"]["study_network"] = {
+            "policy_id": NETWORK_POLICY_ID,
+            "network_policy": NETWORK_POLICY,
+            "enforcement_state": "declared in run-owned Harbor task metadata; effective enforcement must be container-qualified",
+            "task_snapshots": snapshots,
+        }
+        digest_payload = {key: value for key, value in plan.items() if key != "manifest_sha256"}
+        plan["manifest_sha256"] = hashlib.sha256(
+            json.dumps(digest_payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
     if policy_bytes is not None:
         policy_dir = run_dir / "policy"
         policy_dir.mkdir()
@@ -420,6 +469,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 study_policy=manifest.get("prompt_policy"),
                 study_design=manifest.get("study_design"),
                 study_manifest=manifest if manifest.get("study_adapter") else None,
+                study_run_dir=store.run_dir if manifest.get("study_adapter") else None,
             )
         status = ("infrastructure_invalid" if summary.get("infrastructure_error", 0) else
                   "passed" if summary.get("passed", 0) else

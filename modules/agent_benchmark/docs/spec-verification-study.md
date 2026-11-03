@@ -1,8 +1,10 @@
 # Specification-verification policy study
 
-Status: implementation and non-inference qualification are complete. No live
-inference or scored Harbor trial has been authorized or launched. The proposed
-18-trial pilot and the separately prepared two-trial acceptance are distinct.
+Status: implementation and non-inference qualification are complete, but
+container qualification found an external-DNS-resolution leak. No live
+inference or scored Harbor trial has been authorized or launched. The
+two-trial acceptance remains blocked until DNS isolation passes or an approved
+equivalent control is established. The proposed 18-trial pilot is separate.
 
 ## Intervention and frozen cohort
 
@@ -60,7 +62,7 @@ the November 2, 2026 host preflight also reported all three task and verifier
 trees PASS. The runner resolves the frozen registry revision and rechecks the
 exact selected trees immediately before dispatch. Current fingerprints:
 
-| Task | Harbor task SHA-256 | Verifier tree SHA-256 |
+| Task | Harbor task SHA-256 | Original = derived verifier SHA-256 |
 | --- | --- | --- |
 | `polyglot_python_beer-song` | `79c3e5b6f2300c5de6ff862d212ea38d329ef31eb243e6a55da975c622b53376` | `01402f4ff69be049e7bc032c55215b018f19aa129021c3cf59d508764eb3a417` |
 | `polyglot_python_bottle-song` | `7aa03a961facf5071aea121fb5ccb1a9519c133230025db0922a70803dab139c` | `c3c6d0bdf66833931416f8d9347285950fd895f9e648ebdd9b17c8223c0bdb2b` |
@@ -73,6 +75,47 @@ Harbor 0.25.0 `DatasetConfig`/`GitTaskId` resolution, and
 digest. The verifier SHA is the sorted task-relative `tests/` path and file
 digest aggregate defined by that module. The dataset revision is not a content
 hash.
+
+## Study-only network metadata overlay
+
+The suite now materializes a run-owned copy under
+`<run>/study-network/tasks/<task-id>`. It verifies the original selected task
+and verifier trees against the frozen hashes above, then modifies only the
+root `task.toml` by adding the policy below. The original task cache, registry,
+instructions, verifier files, fixtures, expected outputs, and score semantics
+are not edited. Before Harbor dispatch and resume, the runner verifies the
+copied tree, unchanged verifier, exact metadata delta, policy identity, and
+recorded original hashes. Harbor executes the run-owned copy through its
+supported `--path` option while the manifest retains the source Git URL and
+commit provenance.
+
+```toml
+[environment]
+network_mode = "public"
+
+[agent]
+network_mode = "allowlist"
+allowed_hosts = ["host.docker.internal"]
+
+[verifier]
+network_mode = "no-network"
+```
+
+`public` applies to task setup (including dependency/OpenCode setup),
+`allowlist` to agent execution, and `no-network` to verification. Both arms
+use this same declared policy. Harbor's hostname allowlist is not port-specific:
+allowing `host.docker.internal` permits contact with other host services, not
+only the Monitor on port 8788. The probe establishes Monitor HTTP reachability,
+not isolation from other host ports.
+
+Exact original and derived hashes from the actual cached Harbor 0.25.0 trees
+are recorded in the ignored evidence file
+`modules/agent_benchmark/.pytest_tmp_root/sv-network-task-identities.json`.
+For every task, the original Harbor task digest and verifier digest match the
+frozen values above, and the derived verifier digest equals the original
+verifier digest. The added full-tree and `task.toml` digests identify the one
+declared metadata overlay. The real-cache overlay test checks all three tasks
+without changing the source cache.
 
 ## Host evidence and settings provenance
 
@@ -135,30 +178,47 @@ SV0 and SV1 generate identical native web-tool config, and that selecting the
 SV1 template does not change that config. This is a source-backed synthetic
 check, not observation of a live container's config.
 
-This does not deny network access from shell commands. The frozen beer-song
-task's `task.toml` has no network policy. Harbor 0.25.0's `DockerEnvironment`
-uses `NetworkMode.PUBLIC` when no network policy is supplied; its egress
-sidecar is only enabled for a non-public policy. The study runner does not
-select an alternate network policy. Therefore shell-level outbound internet
-is **not restricted by this experiment**, and task-specific external reference
-retrieval remains possible. Both arms would have equal egress, but this fails
-the requirement that task-specific external information not be obtained from
-unauthorized sources. It is a mandatory live-dispatch blocker for this
-acceptance protocol, not a prompt-policy implementation defect. Do not claim
-strict isolation from the native web-tool denial. No firewall, Docker, WSL,
-DNS, or host network setting was changed.
+Shell egress is governed by the Harbor task policy above, and was probed inside
+a synthetic Harbor 0.25.0 Docker task using the same three phase policies.
+Harbor parsed the intended configuration and enabled its egress sidecar. An
+`OPTIONS` request to the actual
+`host.docker.internal:8788/v1/chat/completions` route returned HTTP 405,
+confirming the POST-only gateway route is reachable without sending a
+completion request. Direct DNS to `1.1.1.1`, unlisted-host TLS with SNI, and
+direct-IP TLS without SNI were blocked. The verifier phase could not reach the
+Monitor, and Harbor removed the synthetic container after the probe.
 
-The source check was against the managed Harbor 0.25.0
-`harbor/environments/docker/docker.py` constructor and the frozen beer-song
-task's `task.toml`; the latter declares resource limits but no network policy.
-Harbor's pinned source includes a no-network Compose file and an egress
-sidecar, but neither is selected by this study command.
+However, the container's default Docker resolver returned two addresses for
+`example.com`. Direct DNS to `1.1.1.1` was refused, but name resolution through
+Docker's embedded resolver succeeded. The probe does not capture upstream
+packets, so it cannot establish whether Docker forwarded that lookup or served
+a cached answer. The strict gate requires name resolution to be denied, so it
+correctly reports `FAIL`. The effective allowlist blocks the tested
+connections but does not block use of the configured resolver. No host
+firewall, Docker daemon, WSL, DNS, or network configuration was changed to
+work around this limitation.
 
-Harbor also needs network access for task setup and installing the pinned
-OpenCode package. An eventual approved network regime must preserve that setup
-and the local Monitor/model gateway while preventing unauthorized external
-task research, and must be identical across the two arms. The current suite
-does not provide that task-container egress policy as a study CLI option.
+The supported Harbor policy blocks the tested direct external connection
+paths and preserves local Monitor reachability, but it is not strict shell
+egress isolation. The hostname allowlist also permits access to other host
+services. Both limits must be resolved through an existing supported,
+approved common infrastructure control or explicitly accepted by a revised
+study threat model, then requalified before dispatch. No custom firewall,
+sidecar patch, or installed Harbor modification was introduced.
+
+A narrowly scoped protocol alternative for separate review is to permit name
+resolution through Docker's embedded resolver while retaining the tested
+connection allowlist, and explicitly accept that resolver queries could
+potentially carry data. This would relax the current “external DNS denied”
+condition and would not qualify as strict external isolation. The host-wide
+reachability implied by `host.docker.internal` would also need explicit
+acceptance if other host services are in scope. Neither protocol change is
+currently approved.
+
+Harbor's declared network-policy contract and phase configuration are described
+in the [Harbor 0.25.0 network-policy documentation](https://github.com/harbor-framework/harbor/blob/v0.25.0/docs-mintlify/tasks/network-policies.mdx),
+[task configuration model](https://github.com/harbor-framework/harbor/blob/v0.25.0/src/harbor/models/task/config.py),
+and [Docker environment implementation](https://github.com/harbor-framework/harbor/blob/v0.25.0/src/harbor/environments/docker/docker.py).
 
 ## Final qualification gate matrix
 
@@ -177,17 +237,19 @@ mandatory safety gates pass.
 | MODEL-01 | Measurement | Exact model-file identity and quantization | Candidate GGUF path, size, and SHA recorded above; alias/model key agree. In-memory binding and backend identity not exposed by preflight | PASS for file candidate; in-memory binding UNKNOWN | Not alone; reconcile with runtime before SV1 | Partly; loaded binding needs runtime evidence |
 | SETTINGS-01 | Measurement | Equal context, sampling, limits, stops, and reasoning settings | Inventory context 98,304 observed; adapter does not pin decoding/output values; LM Studio UI default 32,768 is not effective evidence | RUNTIME_OBSERVATION_REQUIRED | Do not dispatch SV1 unless SV0 request and SV1 request show matching settings (prompt is excluded) | No; request evidence needed |
 | TOOLS-01 | Safety | Native `websearch` and `webfetch` denied identically | Actual Harbor factory builds identical deny config for both arms; both command lines request the supported option | PASS for generated config; runtime config not yet captured | Verify native configuration in each task before outcome acceptance | Live artifact required |
-| NET-01 | Safety | No unauthorized task-specific external research; identical shell egress controls | Frozen task omits network policy; Harbor Docker defaults unspecified policy to PUBLIC; experiment does not set a policy | FAIL (public egress permitted by default) | **Yes; current blocker** | Not with current suite CLI; requires a supported, separately approved common egress regime |
+| NET-01 | Safety | Agent shell can reach the local Monitor but cannot reach unauthorized external services or use external DNS | Actual Harbor 0.25.0 Docker probe: sidecar enabled; `allowlist` effective; OPTIONS to POST-only Monitor gateway route returned 405; direct `1.1.1.1` DNS refused; unlisted SNI and direct-IP TLS reset; Docker embedded resolver returned `example.com`; verifier `no-network` denies Monitor | FAIL (name resolution remains available through Docker resolver; host alias is not port-specific) | **Yes** | Derived task metadata and Harbor policy are implemented; strict DNS/host-port isolation requires an existing supported control or an explicitly accepted study threat model |
 | EXEC-01 | Safety | Sequential, one attempt, zero retries; preserve results and stop on infrastructure failure | Suite plans one repetition, `-j 1`, Harbor max retries 0; separate arm output roots and commands below | PASS for procedure | No; operator follows stop rule | Yes |
 | BASELINE-01 | Validity | SV0 preserves the existing v1 execution contract; only declared policy differs | Synthetic actual-adapter comparison and identical generated web config; SV1 template contributes instruction plus the declared template option | PASS, simulated | Actual instruction, agent/model route, config and request diff must be checked across live evidence | No for actual runtime parity |
 | MEASURE-01 | Validity | Independent hidden verifier result and complete Monitor/Harbor evidence | Preflight recorder healthy; no smoke request exists | UNKNOWN until acceptance | Yes if recorder is incomplete, dropped, or trial infrastructure-invalid | No |
 
-The supported network feature is available in Harbor, but the existing suite
-does not currently carry a per-task `NetworkPolicy` into Harbor's job config.
-This status report does not authorize changing that integration or host
-network. Until an approved common egress policy is available, the acceptance is
-**not ready for live dispatch**. Decoding settings are measurement gaps rather
-than code defects; capture them from SV0 and require equality before SV1.
+Harbor's supported per-task metadata is now carried in the run-owned snapshot
+and selected by the runner for both arms. Actual container enforcement is
+partially demonstrated, but the DNS-resolver leak leaves NET-01 **FAIL**. The
+acceptance is **not ready for live dispatch**. Resolving this blocker must use
+an existing supported, approved common control and then pass the same
+container-side probe; host network mutation is outside this implementation.
+Decoding settings remain runtime measurement gaps; capture them from SV0 and
+require equality before SV1.
 
 ## Two-trial acceptance procedure (preview is the default)
 
@@ -215,10 +277,36 @@ $policySha = (Get-FileHash -LiteralPath $policy -Algorithm SHA256).Hash.ToLowerI
 Set-Location $module
 ```
 
-Preview both arms first. These `plan` commands do not infer. They require the
-host's existing Docker and Monitor to be reachable and content recording
-healthy; there is intentionally no `-r/--recover-local` flag. Stop if either
-plan is blocked, the task/revision/policy differs, or `-Q` rejects the policy.
+The network probe is the mandatory pre-dispatch gate. It creates only a
+synthetic container and never calls a model or benchmark task. It must report
+`PASS`; with the currently observed Docker DNS behavior it exits 1 and the
+procedure stops here. Do not continue to trial dispatch until a supported
+control removes that DNS leak and the complete probe passes. The report is
+machine-readable and kept under the private ignored reports directory.
+
+```powershell
+$networkRoot = Join-Path $module "reports\agent-bench-suite\sv-network-qualification-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
+if (Test-Path $networkRoot) { throw "Qualification evidence root already exists: $networkRoot" }
+New-Item -ItemType Directory -Path $networkRoot -Force | Out-Null
+& $env:HARBOR_025_PYTHON -B -m agent_benchmark.network_qualification `
+  -x -m http://host.docker.internal:8788/v1/chat/completions `
+  -o (Join-Path $networkRoot 'qualification.json')
+$networkExit = $LASTEXITCODE
+$networkEvidence = Get-Content -Raw (Join-Path $networkRoot 'qualification.json') | ConvertFrom-Json
+if ($networkExit -ne 0 -or $networkEvidence.status -ne 'PASS' -or
+    $networkEvidence.policy_id -ne 'sv-network-policy-v1' -or
+    $networkEvidence.container_cleanup -ne 'PASS') {
+  throw "Network qualification failed (exit $networkExit; status $($networkEvidence.status)); no suite run is permitted."
+}
+```
+
+Preview both arms only after the network gate passes. These `plan` commands do
+not infer. They require the host's existing Docker and Monitor to be reachable
+and content recording healthy; there is intentionally no
+`-r/--recover-local` flag. Stop if either plan is blocked, the task/revision/
+policy differs, or `-Q` rejects the policy. Each actual run will use the
+run-owned task snapshot with network policy provenance; it does not modify the
+registry cache.
 
 ```powershell
 & $coordinatorPython -B -m agent_benchmark suite plan `
@@ -236,9 +324,10 @@ $sv1PlanExit = $LASTEXITCODE
 if ($sv0PlanExit -ne 0 -or $sv1PlanExit -ne 0) { throw 'Preview failed; no run was dispatched.' }
 ```
 
-The acceptance must remain stopped while `NET-01` is FAIL. After a separately
-approved, identical egress regime has been configured and requalified, explicitly
-authorize **one** run at a time with the suite's required `-x`. Before each
+The acceptance must remain stopped while `NET-01` is FAIL. After an existing
+supported, identical egress control has been approved and the synthetic probe
+reports PASS, separately authorize **one** run at a time with the suite's
+required `-x`. Before each
 command, display and check the task, policy identity, model, endpoint, and
 output root. The example uses a unique evidence root and fails rather than
 overwriting an existing one:
@@ -295,26 +384,42 @@ comparable. The task does not need to pass for the trial to be accepted.
 
 ## Non-inference validation evidence
 
-At checkpoint `ee63bb32a6828952ad8ffdb6069b3e6f184a1254`, the focused
-qualification previously passed 29 Agent Benchmark tests and Ruff. This turn
-did not repeat that suite. Additional checks performed for this report:
+Earlier checkpoints and this network-isolation implementation were validated
+separately. Exact final focused commands and exit codes:
+
+The Agent Benchmark command ran from `modules/agent_benchmark` with
+`HARBOR_025_PYTHON` set to the managed Harbor 0.25.0 interpreter at
+`C:\Users\mcarls\AppData\Local\uv\cache\archive-v0\6oHf_rWkqYo-3vQ-qABxe\Scripts\python.exe`;
+that enables the cached actual-task and CLI contract checks instead of skipping
+them.
 
 | Check | Exact result |
 | --- | --- |
+| Focused Agent Benchmark policy/network/suite/Harbor tests (10 files; includes actual cached Harbor task-tree overlay and CLI contract qualification) | `python -m pytest tests/network_qualification_test.py tests/study_network_policy_test.py tests/spec_verification_policy_test.py tests/study_task_integrity_test.py tests/harbor_runner_test.py tests/harbor_importer_test.py tests/suite_test.py tests/suite_revision_test.py tests/suite_cli_test.py tests/harbor_prompt_runtime_test.py -q`; 107 passed, exit 0 |
+| Benchmark Core comparison and intervention contracts | `python -m pytest tests/contract_test.py tests/compare_test.py tests/experiment_test.py tests/prompt_intervention_test.py -q`; 82 passed, exit 0 |
+| Ruff on changed Agent Benchmark implementation and regression-test files | `ruff check agent_benchmark/network_qualification.py agent_benchmark/study_network_policy.py agent_benchmark/study_task_integrity.py agent_benchmark/suite.py agent_benchmark/harbor/runner.py agent_benchmark/harbor/importer.py tests/network_qualification_test.py tests/study_network_policy_test.py tests/spec_verification_policy_test.py tests/study_task_integrity_test.py tests/harbor_importer_test.py`; all checks passed, exit 0 |
+| Cached Harbor task/verifier overlay identity check | `HARBOR_025_PYTHON=<managed Harbor 0.25.0 interpreter> python -m pytest tests/study_network_policy_test.py::test_cached_frozen_task_overlays_preserve_original_verifier_trees -q`; 1 passed, exit 0 |
+| Actual Harbor 0.25.0 `run --help` CLI contract | PASS, exit 0; supports `--path`; does not define `--task-git-url` or `--task-git-commit`. Runner uses the supported local path; original Git URL/revision remain validated in run and trial provenance rather than unsupported CLI flags |
 | Harbor option/config check using the cached Harbor 0.25.0 interpreter, actual `AgentFactory`, and SV0/SV1 adapters | PASS; both generated configs denied `websearch` and `webfetch` identically; policy did not alter tool config; exit 0 |
 | `python -m agent_benchmark suite plan --help` | PASS; showed `-S`, `-P`, `-Q`, `-I`, `-Z`, monitor and API flags; exit 0 |
 | SV0/SV1 `suite plan` structural preview with no Monitor flag (therefore not a final routed preview) | Both emitted the expected one-task plan, same task/revision/model/protocol, policy IDs differed as declared; both exit 1 because sandbox Docker named-pipe access was denied |
 | Exact monitored SV0/SV1 plan preview (`-L`, existing endpoint, no recovery) | Both exited 2 with `MONITOR_NOT_RUNNING` in this sandbox; no service was started |
 | Candidate GGUF SHA-256 | PASS, hash recorded above; read-only 16.8 GB file hashing |
 | Actual Harbor native web config generation | PASS; exit 0 |
+| Synthetic Harbor 0.25.0 Docker network qualification | Harbor 0.25.0 / Docker Server 29.9.2 / `node:20`; container created and cleaned; effective allowlist and sidecar PASS; `OPTIONS /v1/chat/completions` returned 405 from local Monitor route; direct `1.1.1.1` DNS, external SNI TLS, direct-IP TLS blocked; Docker resolver resolved `example.com`; report status FAIL, command exit 1; final evidence at ignored `.pytest_tmp_root/sv-network-qualification-gateway-route.json` (2026-11-03 00:31:54 UTC) |
+| Network probe preview | `python -m agent_benchmark.network_qualification`; `status: UNKNOWN`, no container or inference, exit 0; default is Monitor `/v1/chat/completions`, checked with OPTIONS only |
+| Actual frozen task cache and derived digest evidence | Three task overlays materialized in a temporary directory; task/verifier hashes match frozen values; evidence in ignored `.pytest_tmp_root/sv-network-task-identities.json`; test exit 0 |
 
 The sandbox preview without `-L` is only structural evidence: it reports
 `llm_monitor_required=false`, recording `off`, and is not the final monitored
 condition. The exact monitored preview command is prepared for the host above;
 the operator-reported host preflight previously saw Docker and Monitor PASS.
-The only remaining blockers are the common shell egress policy and the listed
-runtime observations/dispatch authorization, not unimplemented policy or
-manifest behavior.
+The new run-owned task/network-policy path is implemented and its unit and
+cached-task checks pass. The actual container qualification returns exit 1
+because Docker's embedded resolver resolves an external hostname. That is the
+current mandatory safety blocker, alongside runtime-only settings and separate
+inference authorization; it is not an unimplemented suite policy-injection
+path.
 
 ## Outcomes and offline review
 

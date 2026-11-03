@@ -471,10 +471,44 @@ def test_import_endpoint_404_failure_classified_as_infrastructure_error(tmp_path
 def test_import_records_policy_provenance_without_changing_scores(tmp_path: Path):
     job = _create_mock_harbor_job(tmp_path)
     output = tmp_path / "imported"
+    from agent_benchmark.study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID
+
     policy = {"id": "sv1-specification-verification-v1", "sha256": "a" * 64}
     design = {"id": "spec-verification-pilot-v1", "repetition": 2, "randomization_seed": 20261102}
-    _, summary = HarborImporter(job).import_to(output, study_policy=policy, study_design=design)
+    network = {
+        "policy_id": NETWORK_POLICY_ID,
+        "network_policy": NETWORK_POLICY,
+        "task_id": "polyglot_python_beer-song",
+        "source_git_url": "https://github.com/laude-institute/harbor-datasets.git",
+        "source_revision": "f30b14415dd733c83627204bad0af69a89ceb46f",
+        "original_task_sha256": "b" * 64,
+        "original_verifier_sha256": "c" * 64,
+        "derived_verifier_sha256": "c" * 64,
+        "original_tree_sha256": "e" * 64,
+        "original_task_toml_sha256": "f" * 64,
+        "derived_task_toml_sha256": "1" * 64,
+        "derived_tree_sha256": "d" * 64,
+        "snapshot_path": "study-network/tasks/polyglot_python_beer-song",
+    }
+    _, summary = HarborImporter(job).import_to(
+        output, study_policy=policy, study_design=design, study_network=network
+    )
     assert load_run_info(output / "run.json").metadata["planned_prompt_policy"] == policy
+    assert load_run_info(output / "run.json").metadata["study_network_policy"] == {
+        "policy_id": NETWORK_POLICY_ID,
+        "network_policy": NETWORK_POLICY,
+        "task_id": network["task_id"],
+        "source_git_url": network["source_git_url"],
+        "source_revision": network["source_revision"],
+        "original_task_sha256": network["original_task_sha256"],
+        "original_verifier_sha256": network["original_verifier_sha256"],
+        "derived_verifier_sha256": network["derived_verifier_sha256"],
+        "original_tree_sha256": network["original_tree_sha256"],
+        "original_task_toml_sha256": network["original_task_toml_sha256"],
+        "derived_task_toml_sha256": network["derived_task_toml_sha256"],
+        "derived_tree_sha256": network["derived_tree_sha256"],
+        "snapshot_path": network["snapshot_path"],
+    }
     assert load_run_info(output / "run.json").metadata["prompt_intervention"]["assignment"] == "SV1"
     trials = load_trials(output / "trials.jsonl")
     assert all(trial.details["planned_prompt_policy"] == policy for trial in trials)

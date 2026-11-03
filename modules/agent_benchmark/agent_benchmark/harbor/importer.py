@@ -465,6 +465,7 @@ class HarborImporter:
         process_returncode: int = 0,
         study_policy: dict[str, Any] | None = None,
         study_design: dict[str, Any] | None = None,
+        study_network: dict[str, Any] | None = None,
     ) -> tuple[Path, dict[str, Any]]:
         """Import Harbor job results to target destination directory idempotently."""
         out_dir = Path(output_dir).resolve()
@@ -477,6 +478,23 @@ class HarborImporter:
         if study_policy is not None:
             run_info.metadata["planned_prompt_policy"] = dict(study_policy)
             run_info.metadata["study_design"] = dict(study_design or {})
+            if study_network is None:
+                raise HarborImportError("study trial is missing its declared network policy provenance")
+            run_info.metadata["study_network_policy"] = {
+                "policy_id": study_network.get("policy_id"),
+                "network_policy": study_network.get("network_policy"),
+                "task_id": study_network.get("task_id"),
+                "source_git_url": study_network.get("source_git_url"),
+                "source_revision": study_network.get("source_revision"),
+                "original_task_sha256": study_network.get("original_task_sha256"),
+                "original_verifier_sha256": study_network.get("original_verifier_sha256"),
+                "derived_verifier_sha256": study_network.get("derived_verifier_sha256"),
+                "original_tree_sha256": study_network.get("original_tree_sha256"),
+                "original_task_toml_sha256": study_network.get("original_task_toml_sha256"),
+                "derived_task_toml_sha256": study_network.get("derived_task_toml_sha256"),
+                "derived_tree_sha256": study_network.get("derived_tree_sha256"),
+                "snapshot_path": study_network.get("snapshot_path"),
+            }
             assignments = {"sv0-unmodified-v1": "SV0", "sv1-specification-verification-v1": "SV1"}
             assignment = assignments.get(study_policy.get("id"))
             if assignment and study_design and study_design.get("id"):
@@ -487,6 +505,7 @@ class HarborImporter:
             for trial in canonical_trials:
                 trial.details["planned_prompt_policy"] = dict(study_policy)
                 trial.details["study_design"] = dict(study_design or {})
+                trial.details["study_network_policy"] = dict(run_info.metadata["study_network_policy"])
 
         # Save run.json (overwrite allowed for idempotent reimport)
         save_run(out_dir, run_info, overwrite=True)
