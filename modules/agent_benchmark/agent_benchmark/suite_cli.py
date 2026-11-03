@@ -38,6 +38,11 @@ def add_suite_parser(actions: Any) -> None:
         parser.add_argument("-H", "--monitor-host-url", default=None, help="Monitor URL reachable from this host")
         parser.add_argument("-R", "--recording", choices=("off", "metadata", "content"), default="off")
         parser.add_argument("-j", "--jobs", type=int, default=1)
+        parser.add_argument("-P", "--prompt-policy-file", type=Path, help="UTF-8 specification policy for the isolated OpenCode study")
+        parser.add_argument("-Q", "--expected-policy-sha256", help="Policy digest from the previously reviewed plan")
+        parser.add_argument("-S", "--spec-verification-study", action="store_true", help="Use the isolated OpenCode v1 study adapter")
+        parser.add_argument("-I", "--study-repetition", type=int, help="Study repetition index")
+        parser.add_argument("-Z", "--study-seed", type=int, help="Study randomization seed")
         parser.add_argument("-r", "--recover-local", action="store_true", help="Authorize bounded start of absent local managed LLM Monitor")
         parser.add_argument("-F", "--llm-friendly", action="store_true")
         if execution:
@@ -150,7 +155,15 @@ def handle_suite(args: argparse.Namespace) -> int:
             plan = build_manifest(cohort=args.cohort, manifest=args.manifest, agent=args.agent,
                                   model=args.model, base_url=args.base_url, api_format=args.api_format,
                                   llm_monitor=args.llm_monitor, recording=args.recording,
-                                  jobs=args.jobs, monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url)
+                                  jobs=args.jobs, monitor_url=args.monitor_url, monitor_host_url=args.monitor_host_url,
+                                  study_adapter=args.spec_verification_study, prompt_policy_file=args.prompt_policy_file,
+                                  study_repetition=args.study_repetition, study_seed=args.study_seed)
+            if command == "run" and plan.get("study_adapter") and (args.study_repetition is None or args.study_seed is None):
+                raise ValueError("study runs require -I/--study-repetition and -Z/--study-seed")
+            if command == "run" and args.prompt_policy_file and not args.expected_policy_sha256:
+                raise ValueError("policy run requires -Q/--expected-policy-sha256 from the reviewed plan")
+            if args.expected_policy_sha256 and args.expected_policy_sha256 != plan.get("prompt_policy", {}).get("sha256"):
+                raise ValueError("policy SHA-256 does not match the reviewed plan")
             if command == "plan":
                 if args.llm_monitor:
                     recover_local = bool(getattr(args, "recover_local", False))
@@ -185,7 +198,8 @@ def handle_suite(args: argparse.Namespace) -> int:
                                  api_format=args.api_format, llm_monitor=args.llm_monitor,
                                  recording=args.recording, jobs=args.jobs, monitor_url=args.monitor_url,
                                  monitor_host_url=args.monitor_host_url,
-                                 planned_manifest=plan, registry_snapshot=registry_snapshot)
+                                 planned_manifest=plan, registry_snapshot=registry_snapshot,
+                                 prompt_policy_file=args.prompt_policy_file)
             store = RunStore(run_dir)
             if args.llm_monitor:
                 try:

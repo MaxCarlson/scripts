@@ -134,6 +134,8 @@ def test_build_harbor_command_keeps_terminal_bench_4_separate():
 
 
 def test_execution_fails_closed_when_docker_offline(tmp_path: Path, monkeypatch):
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ready"))
+    monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
     plan = plan_benchmark("aider/aider-polyglot", count=1)
 
     # Simulate Docker being offline

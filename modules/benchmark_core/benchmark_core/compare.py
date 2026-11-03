@@ -12,7 +12,7 @@ from dataclasses import dataclass, field, replace
 import json
 from typing import Any, Optional, Sequence
 
-from .conditions import contract_error, contract_key, declared_tool_intervention_error
+from .conditions import contract_error, contract_key, declared_tool_intervention_error, declared_prompt_intervention_error
 from .models import ExperimentConfig, MetricValue, RunInfo, TrialResult, TrialStatus
 from .stats import (
     BenchmarkSummary,
@@ -203,10 +203,16 @@ def compare_runs(
     candidate_contract = candidate.run_info.metadata.get("comparison_contract")
     condition_mismatch = (contract_error(baseline_contract) is not None
                           or contract_error(candidate_contract) is not None
-                          or baseline_contract != candidate_contract)
+                          or baseline_contract != candidate_contract
+                          or baseline.run_info.metadata.get("prompt_intervention") is not None
+                          or candidate.run_info.metadata.get("prompt_intervention") is not None)
     condition_comparison: dict[str, str] = {"status": "strict_contract"}
     if condition_mismatch:
-        intervention_error, intervention = declared_tool_intervention_error(
+        checker = (declared_prompt_intervention_error
+                   if baseline.run_info.metadata.get("prompt_intervention") is not None
+                   or candidate.run_info.metadata.get("prompt_intervention") is not None
+                   else declared_tool_intervention_error)
+        intervention_error, intervention = checker(
             baseline_contract, candidate_contract,
             baseline.run_info.metadata, candidate.run_info.metadata,
         )
