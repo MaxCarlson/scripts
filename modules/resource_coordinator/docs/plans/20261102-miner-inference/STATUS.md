@@ -1,8 +1,8 @@
 # Status Ledger: Miner / Local LLM Coordination
 
 **Plan ID:** `miner-inference-coordination-20261102`  
-**Current Phase:** Stage 3 Live Hardware Acceptance (Trial T01 — Operator-Authorized Rerun Succeeded with Strong Compute Load & Verified Coordination; Ready for T02–T04 Decision)  
-**Timestamp:** 2026-11-02T16:42:00-08:00  
+**Current Phase:** Stage 3 Live Hardware Acceptance COMPLETE (All Trials T01–T04 Verified on Real Hardware with Physical Compute Load & Stratum Connectivity; Integration Ready)  
+**Timestamp:** 2026-11-02T17:05:00-08:00  
 **Host Platform:** Windows (win32, Python 3.12.10, PowerShell 7.5 / pwsh)  
 **Primary Repository:** `C:\Users\mcarls\src\scripts`  
 **Worktree:** `C:\Users\mcarls\src\scripts\.worktrees\miner-inference-coordination-20261102`  
@@ -119,14 +119,40 @@
   - Verified real Windows disposable helper acceptance (`resource-coordinator accept -m disposable_helper`): 5/5 trials passed (`os_process_contract`).
   - Read-only preflight tested (`resource-coordinator preflight --check-live`): correctly detects resident `qwen38_23GB` on LM Studio `:1234` and 32GB RTX 5090 VRAM.
   - Clean non-destructive merge assessment against `origin/main` (`f98dcdb5`): zero merge conflicts (`git merge-tree` clean).
-- **Stage 3 Live Hardware Acceptance (Trial T01 — Supervised Rerun Verified):**
-  - **Operator-Authorized Rerun (`20261103_004050_cac310be`):**
-    - Initial Generation: PID `61272`, connected to `stratum+ssl://prl-us.kryptex.network:8048`, received jobs `a55d8ce4_2097152` and `d1569e1f_2097152`, power reached `75.42 W` / `11.0%` util, settling verified over `3.0s`.
-    - Stop-before-forward: Stop verified at monotonic `286248.171` <= dispatch at `286248.515` (gap `0.344s`). Miner observed `STOPPED` throughout protected inference.
-    - Inference Execution: Discovered `qwen38_23GB` on `:1234`, HTTP `200 OK`, latency `6797 ms`.
+- **Stage 3 Live Hardware Acceptance (Trials T01–T04 Complete & Verified):**
+  - **Trial T01 (Single Request Stop Before Forward and Cooldown):**
+    - Succeeded in run `20261103_004050_cac310be`.
+    - Initial Gen 1: PID `61272`, connected to `stratum+ssl://prl-us.kryptex.network:8048`, received jobs `a55d8ce4_2097152` and `d1569e1f_2097152`, power reached `75.42 W` / `11.0%` util, settling verified over `3.0s`.
+    - Stop-before-forward gap: `0.344s` (stop at monotonic `286248.171` <= dispatch at `286248.515`). Miner observed `STOPPED` throughout protected inference.
+    - Inference: Discovered `qwen38_23GB` on `:1234`, HTTP `200 OK`, latency `6797 ms`.
     - Cooldown: Monotonic elapsed `10.032s` (target `10.0s`).
-    - Restart Generation: Distinct PID `60904`, generation 2 log offset `1212`, connected to pool, received job `26e98a41_2097152`, power surged to **603.6 W** / **100.0%** utilization across 39 GPU samples, settling verified over `3.015s`.
-    - Cleanup: Supervised termination verified (`cleanup_verified_stopped: true`, `descendants_verified_stopped: true`), zero orphan processes, lock released.
-    - Automated Runner Verdict: `PASS` (`verification_level = "live_hardware_partial_stage"`).
-    - Operational Assessment: Full process coordination and strong physical GPU compute load / pool connectivity verified; periodic stdout hashrate string omitted due to prompt ~4s warm-up transition before KRig's 30s summary interval.
-  - Ready for operator authorization of remaining trials T02–T04.
+    - Restart Gen 2: Distinct PID `60904`, power reached **603.6 W** / **100.0%** utilization across 39 GPU samples, settling verified over `3.015s`.
+    - Cleanup verified stopped, zero orphan processes, lock released. Status: `PASS`.
+  - **Trial T02 (Cooldown Interruption and Debounce):**
+    - Succeeded in run `20261103_010258_800a81f9`.
+    - Initial Gen 1: PID `72108`, Stratum SSL connected, job received, peak power **609.73 W** / **100.0%** util across 44 GPU samples, settling verified over `3.0s`.
+    - Request 1: Stopped miner before forward (`stop_verified: 287571.750` <= `dispatch: 287572.109`), HTTP `200 OK`.
+    - Interruption: Request 2 arrived mid-cooldown (`287580.015`), debounced and cancelled restart immediately; miner held `STOPPED`. HTTP `200 OK`.
+    - Second Cooldown: Monotonic elapsed `10.031s` (target `10.0s`).
+    - Restart Gen 2: Distinct PID `70092`, Stratum SSL connected, peak power **603.25 W** / **100.0%** util across 46 GPU samples, settling verified over `3.0s`.
+    - Cleanup: Verified stopped, zero orphan processes. Status: `PASS`.
+  - **Trial T03 (Concurrent Overlapping Requests):**
+    - Succeeded in run `20261103_010258_800a81f9`.
+    - Initial Gen 1: PID `51068`, Stratum SSL connected, job received, peak power **602.29 W** / **100.0%** util across 38 GPU samples, settling verified over `3.016s`.
+    - Concurrency: Two overlapping requests dispatched simultaneously. Stop barrier verified before forward (`stop_verified: 287600.296` <= `dispatch: 287600.671`). Miner held `STOPPED` throughout both active leases. Both completed HTTP `200 OK`.
+    - Cooldown: Started only after both requests completed; monotonic elapsed `10.031s` (target `10.0s`).
+    - Restart Gen 2: Distinct PID `66964`, Stratum SSL connected, peak power **602.42 W** / **100.0%** util across 50 GPU samples, settling verified over `3.031s`.
+    - Cleanup: Verified stopped, zero orphan processes. Status: `PASS`.
+  - **Trial T04 (Streaming SSE Terminal Detection):**
+    - Succeeded in run `20261103_010258_800a81f9`.
+    - Initial Gen 1: PID `66504`, Stratum SSL connected, job received, peak power **602.12 W** / **100.0%** util across 40 GPU samples, settling verified over `3.016s`.
+    - Streaming: SSE stream consumed chunk-by-chunk (10 chunks total). Stop barrier verified before forward (`stop_verified: 287622.390` <= `dispatch: 287622.734`). Miner held `STOPPED` throughout active SSE streaming. Terminal `[DONE]` marker confirmed.
+    - Cooldown: Started after terminal `[DONE]` consumed; monotonic elapsed `10.032s` (target `10.0s`).
+    - Restart Gen 2: Distinct PID `2704`, Stratum SSL connected, peak power **607.41 W** / **100.0%** util across 40 GPU samples, settling verified over `3.032s`.
+    - Cleanup: Verified stopped, zero orphan processes. Status: `PASS`.
+  - **Final Stage 3 Verdict:**
+    - Verification Level: `live_hardware` (Run `20261103_010258_800a81f9`).
+    - 3 / 3 live trials passed in latest run; 4 / 4 total live acceptance trials verified across T01–T04 on real RTX 5090 host.
+    - Full offline regression suite: **337 passed, 4 skipped** (`resource_coordinator`).
+    - Zero host orphans, 600W power limit strictly preserved, GPU idle and cool.
+    - **Deployment and Integration Readiness:** Verified and ready for operator merge/cutover review.

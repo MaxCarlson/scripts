@@ -1,6 +1,6 @@
 # Phase 03 — Supervised Hardware Acceptance Plan & Operator Checklist
 
-**Status:** Hardware Acceptance Harness & Read-Only Preflight Verified; Awaiting Operator Execution Window  
+**Status:** Stage 3 Live Hardware Acceptance Complete (Trials T01–T04 Verified on Real RTX 5090 Host; Integration Ready)  
 **Primary Module:** `modules/resource_coordinator`  
 **Target Topology:**
 ```text

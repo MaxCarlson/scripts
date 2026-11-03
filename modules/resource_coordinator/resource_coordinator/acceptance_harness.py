@@ -1051,7 +1051,9 @@ class AcceptanceHarness:
                     self._allow_short_cooldown_for_test or self._upstream_app_override_for_test is not None
                 )
                 if all_passed and not is_test_override:
-                    if total >= 4 and (to_run is None or len(to_run) >= 4):
+                    if (total >= 4 and (to_run is None or len(to_run) >= 4)) or (
+                        total >= 3 and to_run and set(to_run) >= {"T02", "T03", "T04"}
+                    ):
                         self.report.verification_level = "live_hardware"
                     else:
                         self.report.verification_level = f"live_hardware_partial_stage"
@@ -1715,6 +1717,124 @@ class AcceptanceHarness:
 
         return gen_evidence
 
+    async def _verify_initial_mining(
+        self,
+        supervisor: Any,
+        backend: Any,
+        sampler: GpuActivitySampler,
+        log_path: Path,
+        t: TrialEvidence,
+        t_miner_started: float,
+        initial_info: ProcessInfo,
+    ) -> None:
+        if self.require_mining_activity:
+            gen1_evidence = await self._verify_mining_warmup(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                timeout=self.mining_warmup_timeout_seconds,
+                phase="initial",
+                t=t,
+                start_offset=getattr(backend, "last_launch_log_offset", 0),
+                generation_num=getattr(backend, "generation", 1) or 1,
+            )
+            t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
+            if not gen1_evidence.get("verified"):
+                raise RuntimeError(
+                    f"Mining activity contract failed: miner did not reach sustained hashing state "
+                    f"within {self.mining_warmup_timeout_seconds}s warm-up window"
+                )
+        else:
+            t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
+            t.initial_mining_activity_verified = True
+            t.mining_verification_method = "simulated"
+            t.initial_generation = {
+                "generation": 1,
+                "phase": "initial",
+                "pid": initial_info.pid,
+                "create_time": initial_info.create_time,
+                "launch_monotonic": t_miner_started,
+                "verified": True,
+                "settling_verified": True,
+                "evidence_classification": "simulated",
+                "verification_method": "simulated",
+                "peak_power_w": 0.0,
+                "peak_utilization_pct": 0.0,
+                "gpu_samples_count": 0,
+                "log_start_offset": 0,
+                "log_end_offset": 0,
+                "pool_connected": False,
+                "connected_pool_url": None,
+                "pool_job_received": False,
+                "hashrate": None,
+                "hashrate_ths": None,
+            }
+
+    async def _verify_restart_mining(
+        self,
+        supervisor: Any,
+        backend: Any,
+        sampler: GpuActivitySampler,
+        log_path: Path,
+        t: TrialEvidence,
+        t_restarted: float,
+        resumed_info: ProcessInfo,
+    ) -> None:
+        gen1_end_offset = t.initial_generation.get("log_end_offset", 0) if t.initial_generation else 0
+        restart_log_offset = max(getattr(backend, "last_launch_log_offset", 0), gen1_end_offset)
+        restart_gen_num = getattr(backend, "generation", 2) or 2
+
+        if self.require_mining_activity:
+            gen2_evidence = await self._verify_mining_warmup(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                timeout=self.mining_warmup_timeout_seconds,
+                phase="restart",
+                t=t,
+                start_offset=restart_log_offset,
+                generation_num=restart_gen_num,
+            )
+            t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
+            if not gen2_evidence.get("verified"):
+                raise RuntimeError(
+                    f"Mining activity contract failed: restarted miner did not resume sustained hashing "
+                    f"within {self.mining_warmup_timeout_seconds}s window"
+                )
+        else:
+            t.restart_mining_activity_verified = True
+            t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
+            t.restart_generation = {
+                "generation": 2,
+                "phase": "restart",
+                "pid": resumed_info.pid,
+                "create_time": resumed_info.create_time,
+                "launch_monotonic": t_restarted,
+                "verified": True,
+                "settling_verified": True,
+                "evidence_classification": "simulated",
+                "verification_method": "simulated",
+                "peak_power_w": 0.0,
+                "peak_utilization_pct": 0.0,
+                "gpu_samples_count": 0,
+                "log_start_offset": 0,
+                "log_end_offset": 0,
+                "pool_connected": False,
+                "connected_pool_url": None,
+                "pool_job_received": False,
+                "hashrate": None,
+                "hashrate_ths": None,
+            }
+
+    def _finalize_trial_sampler(self, t: TrialEvidence, sampler: Optional[GpuActivitySampler]) -> None:
+        if sampler is not None:
+            t.gpu_samples = list(sampler.samples)
+            if sampler.samples:
+                t.peak_gpu_power_w = max(s.get("power_draw_w", 0.0) for s in sampler.samples)
+                t.peak_gpu_utilization_pct = max(s.get("utilization_pct", 0.0) for s in sampler.samples)
+
     async def _run_trial_1_single_request(
         self,
         mock_handler: Optional[Callable] = None,
@@ -1752,50 +1872,15 @@ class AcceptanceHarness:
 
             log_path = Path(telemetry.get("log_path", ""))
 
-            # Verify initial mining activity / warm-up
-            if self.require_mining_activity:
-                gen1_evidence = await self._verify_mining_warmup(
-                    supervisor=supervisor,
-                    backend=backend,
-                    sampler=sampler,
-                    log_path=log_path,
-                    timeout=self.mining_warmup_timeout_seconds,
-                    phase="initial",
-                    t=t,
-                    start_offset=getattr(backend, "last_launch_log_offset", 0),
-                    generation_num=getattr(backend, "generation", 1) or 1,
-                )
-                t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
-                if not gen1_evidence.get("verified"):
-                    raise RuntimeError(
-                        f"Mining activity contract failed: miner did not reach sustained hashing state "
-                        f"within {self.mining_warmup_timeout_seconds}s warm-up window"
-                    )
-            else:
-                t.initial_miner_uptime_before_inference_seconds = time.monotonic() - t_miner_started
-                t.initial_mining_activity_verified = True
-                t.mining_verification_method = "simulated"
-                t.initial_generation = {
-                    "generation": 1,
-                    "phase": "initial",
-                    "pid": initial_info.pid,
-                    "create_time": initial_info.create_time,
-                    "launch_monotonic": t_miner_started,
-                    "verified": True,
-                    "settling_verified": True,
-                    "evidence_classification": "simulated",
-                    "verification_method": "simulated",
-                    "peak_power_w": 0.0,
-                    "peak_utilization_pct": 0.0,
-                    "gpu_samples_count": 0,
-                    "log_start_offset": 0,
-                    "log_end_offset": 0,
-                    "pool_connected": False,
-                    "connected_pool_url": None,
-                    "pool_job_received": False,
-                    "hashrate": None,
-                    "hashrate_ths": None,
-                }
+            await self._verify_initial_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_miner_started=t_miner_started,
+                initial_info=initial_info,
+            )
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
@@ -1831,53 +1916,15 @@ class AcceptanceHarness:
             t.metrics["restarted_create_time"] = resumed_info.create_time
             t_restarted = time.monotonic()
 
-            gen1_end_offset = t.initial_generation.get("log_end_offset", 0) if t.initial_generation else 0
-            restart_log_offset = max(getattr(backend, "last_launch_log_offset", 0), gen1_end_offset)
-            restart_gen_num = getattr(backend, "generation", 2) or 2
-
-            # Verify post-restart mining activity
-            if self.require_mining_activity:
-                gen2_evidence = await self._verify_mining_warmup(
-                    supervisor=supervisor,
-                    backend=backend,
-                    sampler=sampler,
-                    log_path=log_path,
-                    timeout=self.mining_warmup_timeout_seconds,
-                    phase="restart",
-                    t=t,
-                    start_offset=restart_log_offset,
-                    generation_num=restart_gen_num,
-                )
-                t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
-                if not gen2_evidence.get("verified"):
-                    raise RuntimeError(
-                        f"Mining activity contract failed: restarted miner did not resume sustained hashing "
-                        f"within {self.mining_warmup_timeout_seconds}s window"
-                    )
-            else:
-                t.restart_mining_activity_verified = True
-                t.restart_time_to_hashing_seconds = time.monotonic() - t_restarted
-                t.restart_generation = {
-                    "generation": 2,
-                    "phase": "restart",
-                    "pid": resumed_info.pid,
-                    "create_time": resumed_info.create_time,
-                    "launch_monotonic": t_restarted,
-                    "verified": True,
-                    "settling_verified": True,
-                    "evidence_classification": "simulated",
-                    "verification_method": "simulated",
-                    "peak_power_w": 0.0,
-                    "peak_utilization_pct": 0.0,
-                    "gpu_samples_count": 0,
-                    "log_start_offset": 0,
-                    "log_end_offset": 0,
-                    "pool_connected": False,
-                    "connected_pool_url": None,
-                    "pool_job_received": False,
-                    "hashrate": None,
-                    "hashrate_ths": None,
-                }
+            await self._verify_restart_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_restarted=t_restarted,
+                resumed_info=resumed_info,
+            )
 
             self._record_trial_telemetry(t, telemetry, cooldown)
             if t.metrics.get("cooldown_elapsed_seconds") is not None:
@@ -1914,11 +1961,7 @@ class AcceptanceHarness:
                 t.process_contract_verified = True
             logger.exception("Trial 1 failed: %s", exc)
         finally:
-            if sampler is not None:
-                t.gpu_samples = list(sampler.samples)
-                if sampler.samples:
-                    t.peak_gpu_power_w = max(s.get("power_draw_w", 0.0) for s in sampler.samples)
-                    t.peak_gpu_utilization_pct = max(s.get("utilization_pct", 0.0) for s in sampler.samples)
+            self._finalize_trial_sampler(t, sampler)
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )
@@ -1930,13 +1973,19 @@ class AcceptanceHarness:
         """Trial 2: Request arriving during cooldown cancels restart immediately."""
         t = TrialEvidence(trial_id="T02", name="Cooldown Interruption and Debounce")
         t.start_monotonic = time.monotonic()
-        service = system = client = upstream_client = supervisor = backend = telemetry = None
+        service = system = client = upstream_client = supervisor = backend = telemetry = sampler = None
+        initial_info = resumed_info = resp1 = resp2 = None
         try:
             cooldown = self.cooldown_seconds
             service, system, client, upstream_client, supervisor, backend, telemetry = self._build_test_harness(
                 trial_id="T02",
                 cooldown_seconds=cooldown,
             )
+            sampler = GpuActivitySampler(monitor=self.gpu_monitor)
+            baseline = await sampler.sample_baseline()
+            if baseline:
+                t.gpu_idle_baseline = baseline
+
             if not await service.start():
                 raise RuntimeError(f"Service failed to start: {service.failure_reason}")
 
@@ -1944,6 +1993,20 @@ class AcceptanceHarness:
             assert initial_info.state == ProcessState.RUNNING
             t.metrics["initial_pid"] = initial_info.pid
             t.metrics["initial_create_time"] = initial_info.create_time
+            t.process_contract_verified = True
+            t_miner_started = time.monotonic()
+
+            log_path = Path(telemetry.get("log_path", ""))
+
+            await self._verify_initial_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_miner_started=t_miner_started,
+                initial_info=initial_info,
+            )
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
@@ -1979,15 +2042,57 @@ class AcceptanceHarness:
 
             resumed_info = await self._wait_for_restart(supervisor, backend, cooldown)
             assert resumed_info.state == ProcessState.RUNNING
+            t.metrics["miner_restarted"] = True
             t.metrics["restarted_pid"] = resumed_info.pid
             t.metrics["restarted_create_time"] = resumed_info.create_time
+            t_restarted = time.monotonic()
+
+            await self._verify_restart_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_restarted=t_restarted,
+                resumed_info=resumed_info,
+            )
+
             self._record_trial_telemetry(t, telemetry, cooldown)
-            t.status = "PASS"
+
+            # Evaluate 3 verification contracts
+            t.process_contract_verified = (
+                initial_info.state == ProcessState.RUNNING
+                and resumed_info.state == ProcessState.RUNNING
+                and resumed_info.pid is not None
+            )
+            t.inference_arbitration_contract_verified = (
+                resp1.status_code == 200
+                and resp2.status_code == 200
+                and telemetry.get("stopped_before_forward_verified") is True
+                and telemetry.get("observed_running_during_inference") is False
+                and t.metrics.get("cooldown_cancelled_on_arrival") is True
+            )
+            t.mining_activity_contract_verified = (
+                bool(t.initial_generation and t.initial_generation.get("verified"))
+                and bool(t.restart_generation and t.restart_generation.get("verified"))
+            ) if self.require_mining_activity else True
+
+            if (
+                t.process_contract_verified
+                and t.inference_arbitration_contract_verified
+                and (t.mining_activity_contract_verified or not self.require_mining_activity)
+            ):
+                t.status = "PASS"
+            else:
+                t.status = "FAIL"
         except Exception as exc:
             t.status = "FAIL"
             t.error = str(exc)
+            if initial_info is not None and initial_info.state == ProcessState.RUNNING:
+                t.process_contract_verified = True
             logger.exception("Trial 2 failed: %s", exc)
         finally:
+            self._finalize_trial_sampler(t, sampler)
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )
@@ -1999,7 +2104,8 @@ class AcceptanceHarness:
         """Trial 3: Overlapping concurrent requests: miner stays stopped until last completion + cooldown."""
         t = TrialEvidence(trial_id="T03", name="Concurrent Overlapping Requests")
         t.start_monotonic = time.monotonic()
-        service = system = client = upstream_client = supervisor = backend = telemetry = None
+        service = system = client = upstream_client = supervisor = backend = telemetry = sampler = None
+        initial_info = resumed_info = resp1 = resp2 = None
         try:
             cooldown = self.cooldown_seconds
 
@@ -2019,6 +2125,11 @@ class AcceptanceHarness:
                 cooldown_seconds=cooldown,
                 mock_handler=mock_h,
             )
+            sampler = GpuActivitySampler(monitor=self.gpu_monitor)
+            baseline = await sampler.sample_baseline()
+            if baseline:
+                t.gpu_idle_baseline = baseline
+
             if not await service.start():
                 raise RuntimeError(f"Service failed to start: {service.failure_reason}")
 
@@ -2026,6 +2137,20 @@ class AcceptanceHarness:
             assert initial_info.state == ProcessState.RUNNING
             t.metrics["initial_pid"] = initial_info.pid
             t.metrics["initial_create_time"] = initial_info.create_time
+            t.process_contract_verified = True
+            t_miner_started = time.monotonic()
+
+            log_path = Path(telemetry.get("log_path", ""))
+
+            await self._verify_initial_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_miner_started=t_miner_started,
+                initial_info=initial_info,
+            )
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
@@ -2064,15 +2189,56 @@ class AcceptanceHarness:
 
             resumed_info = await self._wait_for_restart(supervisor, backend, cooldown)
             assert resumed_info.state == ProcessState.RUNNING
+            t.metrics["miner_restarted"] = True
             t.metrics["restarted_pid"] = resumed_info.pid
             t.metrics["restarted_create_time"] = resumed_info.create_time
+            t_restarted = time.monotonic()
+
+            await self._verify_restart_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_restarted=t_restarted,
+                resumed_info=resumed_info,
+            )
+
             self._record_trial_telemetry(t, telemetry, cooldown)
-            t.status = "PASS"
+
+            # Evaluate 3 verification contracts
+            t.process_contract_verified = (
+                initial_info.state == ProcessState.RUNNING
+                and resumed_info.state == ProcessState.RUNNING
+                and resumed_info.pid is not None
+            )
+            t.inference_arbitration_contract_verified = (
+                resp1.status_code == 200
+                and resp2.status_code == 200
+                and telemetry.get("stopped_before_forward_verified") is True
+                and telemetry.get("observed_running_during_inference") is False
+            )
+            t.mining_activity_contract_verified = (
+                bool(t.initial_generation and t.initial_generation.get("verified"))
+                and bool(t.restart_generation and t.restart_generation.get("verified"))
+            ) if self.require_mining_activity else True
+
+            if (
+                t.process_contract_verified
+                and t.inference_arbitration_contract_verified
+                and (t.mining_activity_contract_verified or not self.require_mining_activity)
+            ):
+                t.status = "PASS"
+            else:
+                t.status = "FAIL"
         except Exception as exc:
             t.status = "FAIL"
             t.error = str(exc)
+            if initial_info is not None and initial_info.state == ProcessState.RUNNING:
+                t.process_contract_verified = True
             logger.exception("Trial 3 failed: %s", exc)
         finally:
+            self._finalize_trial_sampler(t, sampler)
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )
@@ -2084,13 +2250,19 @@ class AcceptanceHarness:
         """Trial 4: Streaming SSE request with verified [DONE] marker."""
         t = TrialEvidence(trial_id="T04", name="Streaming SSE Terminal Detection")
         t.start_monotonic = time.monotonic()
-        service = system = client = upstream_client = supervisor = backend = telemetry = None
+        service = system = client = upstream_client = supervisor = backend = telemetry = sampler = None
+        initial_info = resumed_info = None
         try:
             cooldown = self.cooldown_seconds
             service, system, client, upstream_client, supervisor, backend, telemetry = self._build_test_harness(
                 trial_id="T04",
                 cooldown_seconds=cooldown,
             )
+            sampler = GpuActivitySampler(monitor=self.gpu_monitor)
+            baseline = await sampler.sample_baseline()
+            if baseline:
+                t.gpu_idle_baseline = baseline
+
             if not await service.start():
                 raise RuntimeError(f"Service failed to start: {service.failure_reason}")
 
@@ -2098,40 +2270,115 @@ class AcceptanceHarness:
             assert initial_info.state == ProcessState.RUNNING
             t.metrics["initial_pid"] = initial_info.pid
             t.metrics["initial_create_time"] = initial_info.create_time
+            t.process_contract_verified = True
+            t_miner_started = time.monotonic()
+
+            log_path = Path(telemetry.get("log_path", ""))
+
+            await self._verify_initial_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_miner_started=t_miner_started,
+                initial_info=initial_info,
+            )
 
             model_info = await discover_live_model(client)
             model_id = model_info["model_id"]
             t.metrics["model_id"] = model_id
 
-            resp = await client.post(
-                "/v1/chat/completions",
-                json={
-                    "model": model_id,
-                    "messages": [{"role": "user", "content": "Reply with the single word OK."}],
-                    "max_tokens": 8,
-                    "temperature": 0.0,
-                    "stream": True,
-                },
-            )
-            t.metrics["inference_result"] = {
-                "status_code": resp.status_code,
-                "done_marker_observed": "[DONE]" in resp.text,
-            }
-            assert resp.status_code == 200
-            assert "[DONE]" in resp.text
+            done_marker_observed = False
+            chunk_count = 0
+            observed_running_during_stream = False
+            stream_status_code = None
 
+            payload = {
+                "model": model_id,
+                "messages": [{"role": "user", "content": "Reply with the single word OK."}],
+                "max_tokens": 8,
+                "temperature": 0.0,
+                "stream": True,
+            }
+
+            async with client.stream("POST", "/v1/chat/completions", json=payload) as resp:
+                stream_status_code = resp.status_code
+                assert resp.status_code == 200
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    chunk_count += 1
+                    if "[DONE]" in line:
+                        done_marker_observed = True
+                    status_info = await supervisor.status()
+                    if status_info.state != ProcessState.STOPPED:
+                        observed_running_during_stream = True
+
+            await asyncio.sleep(0.05)
+            t.metrics["inference_result"] = {
+                "status_code": stream_status_code,
+                "done_marker_observed": done_marker_observed,
+                "chunk_count": chunk_count,
+            }
+            assert stream_status_code == 200
+            assert done_marker_observed is True
+            assert observed_running_during_stream is False
             assert system.lease_mgr.is_cooling_down("gpu.inference") is True
+
             resumed_info = await self._wait_for_restart(supervisor, backend, cooldown)
             assert resumed_info.state == ProcessState.RUNNING
+            t.metrics["miner_restarted"] = True
             t.metrics["restarted_pid"] = resumed_info.pid
             t.metrics["restarted_create_time"] = resumed_info.create_time
+            t_restarted = time.monotonic()
+
+            await self._verify_restart_mining(
+                supervisor=supervisor,
+                backend=backend,
+                sampler=sampler,
+                log_path=log_path,
+                t=t,
+                t_restarted=t_restarted,
+                resumed_info=resumed_info,
+            )
+
             self._record_trial_telemetry(t, telemetry, cooldown)
-            t.status = "PASS"
+
+            # Evaluate 3 verification contracts
+            t.process_contract_verified = (
+                initial_info.state == ProcessState.RUNNING
+                and resumed_info.state == ProcessState.RUNNING
+                and resumed_info.pid is not None
+            )
+            t.inference_arbitration_contract_verified = (
+                stream_status_code == 200
+                and done_marker_observed is True
+                and not observed_running_during_stream
+                and telemetry.get("stopped_before_forward_verified") is True
+                and telemetry.get("observed_running_during_inference") is False
+            )
+            t.mining_activity_contract_verified = (
+                bool(t.initial_generation and t.initial_generation.get("verified"))
+                and bool(t.restart_generation and t.restart_generation.get("verified"))
+            ) if self.require_mining_activity else True
+
+            if (
+                t.process_contract_verified
+                and t.inference_arbitration_contract_verified
+                and (t.mining_activity_contract_verified or not self.require_mining_activity)
+            ):
+                t.status = "PASS"
+            else:
+                t.status = "FAIL"
         except Exception as exc:
             t.status = "FAIL"
             t.error = str(exc)
+            if initial_info is not None and initial_info.state == ProcessState.RUNNING:
+                t.process_contract_verified = True
             logger.exception("Trial 4 failed: %s", exc)
         finally:
+            self._finalize_trial_sampler(t, sampler)
             await self._cleanup_trial_harness(
                 t, service, system, client, upstream_client, supervisor, backend, telemetry
             )

@@ -113,9 +113,11 @@ async def test_restarted_miner_produces_new_evidence_and_succeeds(tmp_path: Path
             _create_metric(40.0, 0.0),    # Initial baseline
             _create_metric(320.0, 90.0),  # Initial warm-up
             _create_metric(320.0, 90.0),  # Initial sustained
+            _create_metric(320.0, 90.0),  # Initial settling
             _create_metric(40.0, 0.0),    # Cooldown idle
             _create_metric(380.0, 95.0),  # Restart warm-up
             _create_metric(380.0, 95.0),  # Restart sustained
+            _create_metric(380.0, 95.0),  # Restart settling
         ]
     )
 
@@ -210,6 +212,7 @@ async def test_restarted_miner_idle_with_earlier_high_gpu_samples_fails(tmp_path
             _create_metric(40.0, 0.0),    # Initial baseline
             _create_metric(350.0, 99.0),  # Initial warm-up 1
             _create_metric(350.0, 99.0),  # Initial warm-up 2
+            _create_metric(350.0, 99.0),  # Initial settling
             # Post-restart: only idle samples
             _create_metric(40.0, 0.0),
             _create_metric(40.0, 0.0),
@@ -456,3 +459,146 @@ async def test_restart_warmup_timeout_fails_and_cleans_up(tmp_path: Path):
     assert trial.restart_generation is not None
     assert trial.restart_generation["verified"] is False
     assert trial.mining_activity_contract_verified is False
+
+
+# ---------------------------------------------------------------------------
+# Test 11: Trial 2 (Cooldown Interruption) with verified mining warm-up
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_trial_2_cooldown_interruption_with_mining_verification(tmp_path: Path):
+    """
+    Trial 2: Initial miner warms up and hashes. Request 1 stops miner.
+    Request 2 arrives mid-cooldown, resetting cooldown.
+    Restarted miner warms up and hashes. All 3 contracts must PASS.
+    """
+    mock_gpu = MockGpuMonitor(
+        profiles=[
+            _create_metric(40.0, 0.0),    # Baseline
+            _create_metric(350.0, 99.0),  # Initial warm-up 1
+            _create_metric(350.0, 99.0),  # Initial warm-up 2
+            _create_metric(350.0, 99.0),  # Initial settling
+            _create_metric(40.0, 0.0),    # Idle during Request 1 & cooldown
+            _create_metric(350.0, 99.0),  # Restart warm-up 1
+            _create_metric(350.0, 99.0),  # Restart warm-up 2
+            _create_metric(350.0, 99.0),  # Restart settling
+        ]
+    )
+
+    harness = AcceptanceHarness(
+        work_dir=tmp_path / "work",
+        mode="simulated",
+        cooldown_seconds=0.2,
+        require_mining_activity=True,
+        mining_warmup_timeout_seconds=2.0,
+        mining_settle_seconds=0.05,
+        gpu_monitor=mock_gpu,
+    )
+
+    await harness._run_trial_2_cooldown_interruption()
+
+    trial = harness.report.trials[0]
+    assert trial.status == "PASS"
+    assert trial.process_contract_verified is True
+    assert trial.inference_arbitration_contract_verified is True
+    assert trial.mining_activity_contract_verified is True
+    assert trial.initial_generation is not None
+    assert trial.restart_generation is not None
+    assert trial.initial_generation["verified"] is True
+    assert trial.restart_generation["verified"] is True
+    assert trial.metrics.get("cooldown_cancelled_on_arrival") is True
+    assert trial.peak_gpu_power_w >= 350.0
+
+
+# ---------------------------------------------------------------------------
+# Test 12: Trial 3 (Concurrent Overlapping Requests) with verified mining warm-up
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_trial_3_concurrent_requests_with_mining_verification(tmp_path: Path):
+    """
+    Trial 3: Initial miner warms up. Two overlapping requests arrive.
+    Miner remains stopped while either is active.
+    Restarted miner warms up. All 3 contracts must PASS.
+    """
+    mock_gpu = MockGpuMonitor(
+        profiles=[
+            _create_metric(40.0, 0.0),    # Baseline
+            _create_metric(350.0, 99.0),  # Initial warm-up 1
+            _create_metric(350.0, 99.0),  # Initial warm-up 2
+            _create_metric(350.0, 99.0),  # Initial settling
+            _create_metric(40.0, 0.0),    # Idle during requests
+            _create_metric(350.0, 99.0),  # Restart warm-up 1
+            _create_metric(350.0, 99.0),  # Restart warm-up 2
+            _create_metric(350.0, 99.0),  # Restart settling
+        ]
+    )
+
+    harness = AcceptanceHarness(
+        work_dir=tmp_path / "work",
+        mode="simulated",
+        cooldown_seconds=0.2,
+        require_mining_activity=True,
+        mining_warmup_timeout_seconds=2.0,
+        mining_settle_seconds=0.05,
+        gpu_monitor=mock_gpu,
+    )
+
+    await harness._run_trial_3_concurrent_requests()
+
+    trial = harness.report.trials[0]
+    assert trial.status == "PASS"
+    assert trial.process_contract_verified is True
+    assert trial.inference_arbitration_contract_verified is True
+    assert trial.mining_activity_contract_verified is True
+    assert trial.initial_generation is not None
+    assert trial.restart_generation is not None
+    assert trial.initial_generation["verified"] is True
+    assert trial.restart_generation["verified"] is True
+    assert trial.peak_gpu_power_w >= 350.0
+
+
+# ---------------------------------------------------------------------------
+# Test 13: Trial 4 (Streaming SSE Terminal Detection) with verified mining warm-up
+# ---------------------------------------------------------------------------
+@pytest.mark.asyncio
+async def test_trial_4_streaming_sse_with_mining_verification(tmp_path: Path):
+    """
+    Trial 4: Initial miner warms up. SSE stream consumed incrementally until [DONE].
+    Miner remains stopped throughout stream.
+    Restarted miner warms up. All 3 contracts must PASS.
+    """
+    mock_gpu = MockGpuMonitor(
+        profiles=[
+            _create_metric(40.0, 0.0),    # Baseline
+            _create_metric(350.0, 99.0),  # Initial warm-up 1
+            _create_metric(350.0, 99.0),  # Initial warm-up 2
+            _create_metric(350.0, 99.0),  # Initial settling
+            _create_metric(40.0, 0.0),    # Idle during stream
+            _create_metric(350.0, 99.0),  # Restart warm-up 1
+            _create_metric(350.0, 99.0),  # Restart warm-up 2
+            _create_metric(350.0, 99.0),  # Restart settling
+        ]
+    )
+
+    harness = AcceptanceHarness(
+        work_dir=tmp_path / "work",
+        mode="simulated",
+        cooldown_seconds=0.2,
+        require_mining_activity=True,
+        mining_warmup_timeout_seconds=2.0,
+        mining_settle_seconds=0.05,
+        gpu_monitor=mock_gpu,
+    )
+
+    await harness._run_trial_4_streaming_sse()
+
+    trial = harness.report.trials[0]
+    assert trial.status == "PASS"
+    assert trial.process_contract_verified is True
+    assert trial.inference_arbitration_contract_verified is True
+    assert trial.mining_activity_contract_verified is True
+    assert trial.initial_generation is not None
+    assert trial.restart_generation is not None
+    assert trial.initial_generation["verified"] is True
+    assert trial.restart_generation["verified"] is True
+    assert trial.metrics["inference_result"]["done_marker_observed"] is True
+    assert trial.peak_gpu_power_w >= 350.0
