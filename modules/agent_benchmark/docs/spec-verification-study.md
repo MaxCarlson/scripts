@@ -1,5 +1,11 @@
 # Specification-verification policy study
 
+**Dispatch interlock:** Study dispatch currently fails with
+`NETWORK_QUALIFICATION_UNAVAILABLE` before Docker readiness checks. The existing
+probe report is not bound to the task snapshot or execution environment and
+cannot authorize dispatch. A verified receipt mechanism remains to be built;
+the commands below are historical and cannot yet execute a study trial.
+
 Status: implementation and non-inference qualification are complete, but
 container qualification found an external-DNS-resolution leak. No live
 inference or scored Harbor trial has been authorized or launched. The

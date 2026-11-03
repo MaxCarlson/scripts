@@ -68,6 +68,8 @@ def test_dispatch_stops_on_identity_drift(tmp_path, monkeypatch):
     from agent_benchmark.harbor.runner import execute_harbor_run
     from agent_benchmark.study_network_policy import NETWORK_POLICY
 
+    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda: None)
+
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ok"))
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
     monkeypatch.setattr("agent_benchmark.harbor.runner.check_docker_readiness", lambda: (True, "ok"))

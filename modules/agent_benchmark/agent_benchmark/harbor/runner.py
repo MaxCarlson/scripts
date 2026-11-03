@@ -25,6 +25,14 @@ from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readine
 logger = logging.getLogger(__name__)
 
 
+def _require_study_network_qualification() -> None:
+    """Block study dispatch until qualification evidence is enforced."""
+    raise PreflightCheckError(
+        "NETWORK_QUALIFICATION_UNAVAILABLE: study dispatch is disabled until "
+        "a verified, environment-bound qualification receipt can be enforced"
+    )
+
+
 def find_harbor_opencode_adapters() -> list[Path]:
     """Find installed or cached Harbor opencode adapter script paths."""
     candidates: list[Path] = []
@@ -235,6 +243,9 @@ def execute_harbor_run(
             "Benchmark execution refused without -x/--execute authorization. "
             "Use 'agent-bench external plan' to inspect without execution."
         )
+
+    if study_adapter:
+        _require_study_network_qualification()
 
     # Preflight 0: Blockers
     if not plan.readiness.is_runnable:
