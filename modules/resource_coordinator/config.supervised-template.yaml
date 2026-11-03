@@ -18,7 +18,7 @@ service:
 resources:
   gpu.inference:
     type: "shared"
-    cooldown_seconds: 30.0
+    cooldown_seconds: 10.0
 
 processes:
   krig_miner:
@@ -51,6 +51,17 @@ policies:
     stop_timeout_seconds: 10.0
     resource: "gpu.inference"
     lease_type: "shared"
-    cooldown_seconds: 30.0
+    cooldown_seconds: 10.0
+    restart_process: true
+    only_if_stopped_by_coordinator: true
+
+  - name: "pause_krig_for_model_load"
+    trigger_event: "lmstudio.model_load_requested"
+    target_process: "krig_miner"
+    stop_process: true
+    stop_timeout_seconds: 10.0
+    resource: "gpu.inference"
+    lease_type: "exclusive"
+    cooldown_seconds: 10.0
     restart_process: true
     only_if_stopped_by_coordinator: true

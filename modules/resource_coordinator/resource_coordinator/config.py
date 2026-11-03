@@ -51,6 +51,7 @@ class ProcessConfig:
     allow_external_restart: bool = False
     adopt_external: bool = False
     allow_force_termination: bool = False
+    stdout_log_path: Optional[str] = None
 
 
 @dataclass
@@ -62,7 +63,7 @@ class PolicyConfig:
     stop_timeout_seconds: float = 10.0
     resource: Optional[str] = None
     lease_type: str = "shared"
-    cooldown_seconds: float = 60.0
+    cooldown_seconds: float = 10.0
     restart_process: bool = True
     only_if_stopped_by_coordinator: bool = True
 
@@ -122,6 +123,7 @@ class CoordinatorConfig:
                 allow_external_restart=bool(p_data.get("allow_external_restart", adopt)),
                 adopt_external=adopt,
                 allow_force_termination=p_data.get("allow_force_termination", False),
+                stdout_log_path=p_data.get("stdout_log_path"),
             )
 
         policies = []
@@ -190,7 +192,8 @@ class CoordinatorConfig:
         if not 0 < svc.listen_port < 65536:
             raise ValueError("Listen port is out of range")
         if svc.state_persistence_path:
-            raise ValueError("State persistence is not implemented")
+            if not isinstance(svc.state_persistence_path, str) or not svc.state_persistence_path.strip():
+                raise ValueError("Invalid state_persistence_path: must be a non-empty string path")
         if svc.bounded_drain_seconds:
             raise ValueError("Bounded drain is disabled pending cancellation-safe implementation")
         return cls(
@@ -233,8 +236,16 @@ def load_config(path: Optional[Union[str, Path]] = None) -> CoordinatorConfig:
                     trigger_event="lmstudio.inference_requested",
                     target_process="krig",
                     resource="gpu.inference",
-                    cooldown_seconds=60.0,
-                )
+                    cooldown_seconds=10.0,
+                ),
+                PolicyConfig(
+                    name="prioritize-model-load",
+                    trigger_event="lmstudio.model_load_requested",
+                    target_process="krig",
+                    resource="gpu.inference",
+                    lease_type="exclusive",
+                    cooldown_seconds=10.0,
+                ),
             ],
         )
 
@@ -262,7 +273,7 @@ class CoordinatorSystem:
 def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) -> CoordinatorSystem:
     """Factory creating fully wired coordinator system from configuration."""
     dispatcher = EventDispatcher()
-    lease_mgr = LeaseManager(default_cooldown_seconds=60.0, event_dispatcher=dispatcher)
+    lease_mgr = LeaseManager(default_cooldown_seconds=10.0, event_dispatcher=dispatcher)
     policy_engine = PolicyEngine(event_dispatcher=dispatcher, lease_manager=lease_mgr)
 
     supervisors: Dict[str, ProcessSupervisor] = {}
@@ -289,8 +300,13 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
                 allow_external_restart=p_cfg.allow_external_restart,
                 adopt_external=p_cfg.adopt_external,
                 allow_force_termination=p_cfg.allow_force_termination,
+                stdout_log_path=p_cfg.stdout_log_path,
             )
-        supervisor = ProcessSupervisor(backend=backend, event_dispatcher=dispatcher)
+        supervisor = ProcessSupervisor(
+            backend=backend,
+            event_dispatcher=dispatcher,
+            state_persistence_path=config.service.state_persistence_path,
+        )
         supervisors[name] = supervisor
 
         # By default create miner adapter for miner-like processes
@@ -338,6 +354,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
         bounded_drain_seconds=config.service.bounded_drain_seconds,
+        state_persistence_path=config.service.state_persistence_path,
     )
 
     return CoordinatorSystem(

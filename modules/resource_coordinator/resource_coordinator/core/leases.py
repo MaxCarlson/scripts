@@ -229,6 +229,8 @@ class LeaseManager:
         resource: str,
         callback: Callable[[], Awaitable[None]],
         additionally_guarded_resources: Optional[set[str]] = None,
+        *,
+        check_self_cooldown: bool = False,
     ) -> bool:
         """Run one idle action while reservations cannot cross the final safety check."""
         async with self._condition:
@@ -241,7 +243,7 @@ class LeaseManager:
                 self.active_count(name)
                 or self.pending_count(name)
                 or self.is_restart_inhibited(name)
-                or (name != resource and self.is_cooling_down(name))
+                or ((check_self_cooldown or name != resource) and self.is_cooling_down(name))
                 for name in resources
             ):
                 return False
@@ -285,7 +287,12 @@ class LeaseManager:
         return inhibition
 
     async def clear_inhibition(
-        self, resource: str, origin: str = "recovery", *, require_all_idle: bool = False
+        self,
+        resource: str,
+        origin: str = "recovery",
+        *,
+        require_all_idle: bool = False,
+        before_clear: Optional[Callable[[], None]] = None,
     ) -> Optional[RestartInhibition]:
         """
         Clear a protective restart inhibition and start idle cooldown if eligible.
@@ -298,6 +305,8 @@ class LeaseManager:
                 or self.pending_count(resource)
             ):
                 raise RuntimeError("Cannot recover a resource with active or pending requests")
+            if before_clear is not None:
+                before_clear()
             removed = self._inhibitions.pop(resource, None)
             if removed is not None:
                 logger.info(

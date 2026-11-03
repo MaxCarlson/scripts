@@ -117,6 +117,8 @@ class FakeProcessBackend:
         self.last_stopped_at: Optional[float] = None
         self.last_started_at: Optional[float] = time.time() if running else None
         self._relaunch_task: Optional[asyncio.Task] = None
+        self.generation = 1 if running else 0
+        self.last_launch_log_offset = 0
 
     async def status(self) -> ProcessInfo:
         if not self.running:
@@ -158,6 +160,7 @@ class FakeProcessBackend:
         self.pid = 12345
         self.create_time = time.time()
         self.last_started_at = time.time()
+        self.generation += 1
         return True
 
     async def stop(self, timeout: float = 10.0) -> bool:
@@ -223,6 +226,7 @@ class WindowsProcessBackend:
         allow_external_restart: bool = False,
         adopt_external: bool = False,
         allow_force_termination: bool = False,
+        stdout_log_path: Optional[str] = None,
     ) -> None:
         self.name = name
         self.executable = executable
@@ -230,6 +234,7 @@ class WindowsProcessBackend:
         self.working_directory = working_directory
         self.new_console = new_console
         self.allow_force_termination = allow_force_termination
+        self.stdout_log_path = stdout_log_path
         self._console_group_pid: Optional[int] = None
         self.allow_external_stop = allow_external_stop or adopt_external
         self.allow_external_restart = allow_external_restart or adopt_external
@@ -240,6 +245,33 @@ class WindowsProcessBackend:
         self._owned_create_time: Optional[float] = None
         self._last_started_at: Optional[float] = None
         self._last_stopped_at: Optional[float] = None
+        self._log_file_handle: Optional[Any] = None
+        self._generation: int = 0
+        self._last_launch_log_offset: int = 0
+
+    def _close_log_file(self) -> None:
+        if self._log_file_handle is not None:
+            try:
+                self._log_file_handle.flush()
+                self._log_file_handle.close()
+            except Exception:
+                pass
+            self._log_file_handle = None
+
+    def __del__(self) -> None:
+        self._close_log_file()
+
+    @property
+    def generation(self) -> int:
+        return self._generation
+
+    @property
+    def last_launch_log_offset(self) -> int:
+        return self._last_launch_log_offset
+
+    @property
+    def running(self) -> bool:
+        return self._proc is not None and self._proc.poll() is None
 
     def _same_executable(self, process: psutil.Process) -> bool:
         try:
@@ -348,6 +380,14 @@ class WindowsProcessBackend:
         if os.name == "nt" and not self.new_console:
             launch_kwargs["creationflags"] = getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0x200)
 
+        if self.stdout_log_path:
+            self._close_log_file()
+            log_dir = Path(self.stdout_log_path).parent
+            log_dir.mkdir(parents=True, exist_ok=True)
+            self._log_file_handle = open(self.stdout_log_path, "a", encoding="utf-8", buffering=1)
+            launch_kwargs["stdout"] = self._log_file_handle
+            launch_kwargs["stderr"] = subprocess.STDOUT
+
         cmd = [self.executable, *self.arguments]
         try:
             self._proc = subprocess.Popen(cmd, **launch_kwargs)
@@ -356,9 +396,29 @@ class WindowsProcessBackend:
             self._owned_create_time = p.create_time()
             self._console_group_pid = self._proc.pid if os.name == "nt" and not self.new_console else None
             self._last_started_at = time.time()
-            logger.info("Started process '%s' (PID %d)", self.name, self._owned_pid)
+            self._generation += 1
+            if self._log_file_handle is not None:
+                from datetime import datetime, timezone
+
+                iso_ts = datetime.now(timezone.utc).isoformat()
+                header = f"\n--- [COORDINATOR GENERATION {self._generation} PID {self._owned_pid} STARTED AT {iso_ts}] ---\n"
+                self._log_file_handle.write(header)
+                self._log_file_handle.flush()
+                try:
+                    self._last_launch_log_offset = Path(self.stdout_log_path).stat().st_size
+                except OSError:
+                    self._last_launch_log_offset = 0
+            else:
+                self._last_launch_log_offset = 0
+            logger.info(
+                "Started process '%s' (PID %d, Generation %d)",
+                self.name,
+                self._owned_pid,
+                self._generation,
+            )
             return True
         except Exception as exc:
+            self._close_log_file()
             logger.error("Failed to start process '%s': %s", self.name, exc)
             return False
 
@@ -399,11 +459,27 @@ class WindowsProcessBackend:
                     return False
                 logger.warning("Forcefully terminating '%s'; Windows terminate is not graceful", self.name)
                 p.terminate()
+
+            if self.allow_force_termination and children:
+                for child in children:
+                    try:
+                        if child.is_running():
+                            child.terminate()
+                    except (psutil.NoSuchProcess, psutil.AccessDenied):
+                        pass
+
             stopped = await self.wait_stopped(timeout=timeout)
             if not stopped and self.allow_force_termination:
                 # psutil's Process methods check PID reuse before signalling.
                 if p.is_running() and p.create_time() == st.create_time:
                     p.kill()
+                if children:
+                    for child in children:
+                        try:
+                            if child.is_running():
+                                child.kill()
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            pass
                 stopped = await self.wait_stopped(timeout=3.0)
             if not children_stopped():
                 logger.error("Descendant processes remain for '%s'; stop is unverified", self.name)
@@ -414,6 +490,7 @@ class WindowsProcessBackend:
                 self._owned_pid = None
                 self._owned_create_time = None
                 self._console_group_pid = None
+                self._close_log_file()
             return stopped
         except psutil.AccessDenied:
             logger.error("Access denied stopping '%s'; stop is unverified", self.name)
@@ -457,18 +534,52 @@ class ProcessSupervisor:
         event_dispatcher: Optional[EventDispatcher] = None,
         allow_external_stop: Optional[bool] = None,
         allow_external_restart: Optional[bool] = None,
+        state_persistence_path: str = "",
     ) -> None:
         self.backend = backend
         self.dispatcher = event_dispatcher or EventDispatcher()
+        self.state_persistence_path = state_persistence_path
         self.was_stopped_by_coordinator = False
         self._stopped_external = False
         self.is_manual_override = False
+        self.consecutive_unexpected_exits = 0
+        self._has_started = bool(getattr(backend, "running", False))
         self._lock = asyncio.Lock()
 
         if allow_external_stop is not None:
             self.backend.allow_external_stop = allow_external_stop
         if allow_external_restart is not None:
             self.backend.allow_external_restart = allow_external_restart
+
+    def _persist_state(self, info: Optional[ProcessInfo] = None) -> None:
+        if not self.state_persistence_path:
+            return
+        try:
+            from resource_coordinator.core.durable_state import StateCodec
+
+            if info is not None:
+                is_running = info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}
+                pid = info.pid if is_running else None
+                create_time = info.create_time if is_running else None
+                owner = info.lifecycle_owner.value
+            else:
+                state = StateCodec.load(self.state_persistence_path)
+                existing = state.processes.get(self.name)
+                pid = existing.pid if existing else None
+                create_time = existing.create_time if existing else None
+                owner = existing.lifecycle_owner if existing else ProcessLifecycleOwner.UNMANAGED.value
+
+            StateCodec.record_process_state(
+                self.state_persistence_path,
+                self.name,
+                pid=pid,
+                create_time=create_time,
+                lifecycle_owner=owner,
+                was_stopped_by_coordinator=self.was_stopped_by_coordinator,
+                is_manual_override=self.is_manual_override,
+            )
+        except Exception as exc:
+            logger.error("Failed persisting process state for '%s': %s", self.name, exc)
 
     @property
     def name(self) -> str:
@@ -482,12 +593,27 @@ class ProcessSupervisor:
     def allow_external_restart(self) -> bool:
         return getattr(self.backend, "allow_external_restart", False)
 
-    async def status(self) -> ProcessInfo:
-        return await self.backend.status()
+    @property
+    def generation(self) -> int:
+        return getattr(self.backend, "generation", 0)
 
-    def set_manual_override(self, paused: bool) -> None:
+    @property
+    def last_launch_log_offset(self) -> int:
+        return getattr(self.backend, "last_launch_log_offset", 0)
+
+    async def status(self) -> ProcessInfo:
+        info = await self.backend.status()
+        if info.state == ProcessState.RUNNING or info.last_started_at is not None:
+            self._has_started = True
+        return info
+
+    def set_manual_override(self, paused: bool, *, persist: bool = True) -> None:
         """Set or clear manual pause override."""
         self.is_manual_override = paused
+        if paused:
+            self.consecutive_unexpected_exits = 0
+        if persist:
+            self._persist_state()
         logger.info("Process '%s' manual override set to %s", self.name, paused)
 
     async def stop(self, timeout: float = 10.0, origin: str = "coordinator") -> bool:
@@ -495,6 +621,8 @@ class ProcessSupervisor:
         async with self._lock:
             info = await self.backend.status()
             if info.state == ProcessState.STOPPED:
+                if self.state_persistence_path:
+                    self._persist_state(info)
                 return True
 
             if info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL and not self.allow_external_stop:
@@ -513,7 +641,12 @@ class ProcessSupervisor:
             if success:
                 if origin == "coordinator":
                     self.was_stopped_by_coordinator = True
+                    self.consecutive_unexpected_exits = 0
                     self._stopped_external = info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL
+                elif origin == "shutdown":
+                    self.was_stopped_by_coordinator = False
+                if self.state_persistence_path:
+                    self._persist_state(await self.backend.status())
                 await self.dispatcher.emit(
                     "process.stopped",
                     {
@@ -547,6 +680,7 @@ class ProcessSupervisor:
 
             info = await self.backend.status()
             if info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}:
+                self._has_started = True
                 return True
             if info.state != ProcessState.STOPPED:
                 return False
@@ -567,7 +701,10 @@ class ProcessSupervisor:
 
             success = await self.backend.start()
             if success:
+                self._has_started = True
                 self.was_stopped_by_coordinator = False
+                if self.state_persistence_path:
+                    self._persist_state(await self.backend.status())
                 await self.dispatcher.emit(
                     "process.started",
                     {"name": self.name, "origin": origin},
@@ -581,3 +718,110 @@ class ProcessSupervisor:
 
     async def wait_stopped(self, timeout: float = 10.0) -> bool:
         return await self.backend.wait_stopped(timeout=timeout)
+
+    async def handle_unexpected_exit_backoff(
+        self,
+        lease_manager: Any,
+        resource: str = "gpu.inference",
+        max_retries: int = 3,
+        base_backoff_seconds: float = 1.0,
+    ) -> bool:
+        """
+        Inspect process status. If coordinator-owned process exited unexpectedly while
+        system is safe idle, attempt bounded backoff restart or inhibit further attempts.
+        """
+        exhausted_count: Optional[int] = None
+        async with self._lock:
+            if self.is_manual_override or self.was_stopped_by_coordinator:
+                return False
+
+            # Check if resource is safe idle (including active cooldown or global restart block)
+            if (
+                lease_manager.active_count(resource) > 0
+                or lease_manager.pending_count(resource) > 0
+                or lease_manager.is_restart_inhibited(resource)
+                or ( hasattr(lease_manager, "is_cooling_down") and lease_manager.is_cooling_down(resource) )
+                or getattr(lease_manager, "restarts_blocked", False)
+            ):
+                return False
+
+            info = await self.backend.status()
+            if info.state != ProcessState.STOPPED:
+                return False
+
+            # Process unexpectedly exited while safe idle!
+            self.consecutive_unexpected_exits += 1
+            if self.consecutive_unexpected_exits > max_retries:
+                exhausted_count = self.consecutive_unexpected_exits
+            else:
+                backoff = base_backoff_seconds * (2 ** (self.consecutive_unexpected_exits - 1))
+                logger.warning(
+                    "Process '%s' exited unexpectedly (crash #%d); waiting %.1fs backoff before restart",
+                    self.name,
+                    self.consecutive_unexpected_exits,
+                    backoff,
+                )
+                await self.dispatcher.emit(
+                    "process.crashed_restarting",
+                    {"name": self.name, "attempt": self.consecutive_unexpected_exits, "backoff": backoff},
+                )
+
+        if exhausted_count is not None:
+            # Release self._lock before acquiring lease_manager._lock to preserve canonical lock order
+            logger.error(
+                "Process '%s' exceeded maximum consecutive unexpected exits (%d); inhibiting restart",
+                self.name,
+                max_retries,
+            )
+            await lease_manager.inhibit_restart(
+                resource=resource,
+                reason=f"process_crash_loop_exhausted:{self.name}",
+                holder_id=f"watchdog:{self.name}",
+                details={"consecutive_exits": exhausted_count, "process": self.name},
+            )
+            await self.dispatcher.emit(
+                "process.crash_loop_inhibited",
+                {"name": self.name, "consecutive_exits": exhausted_count},
+            )
+            return False
+
+        # Release lock during backoff sleep so incoming reservations or stop() are not blocked
+        await asyncio.sleep(backoff)
+
+        # Serialize final safety check and restart under lease_manager.run_if_idle -> self._lock
+        started_result = False
+        cancelled_by_override_or_stop = False
+
+        async def _restart_if_still_stopped() -> None:
+            nonlocal started_result, cancelled_by_override_or_stop
+            async with self._lock:
+                if self.is_manual_override or self.was_stopped_by_coordinator:
+                    cancelled_by_override_or_stop = True
+                    return
+                info_now = await self.backend.status()
+                if info_now.state != ProcessState.STOPPED:
+                    return
+                started_result = await self.backend.start()
+                if started_result:
+                    self._has_started = True
+                    self.was_stopped_by_coordinator = False
+                    if self.state_persistence_path:
+                        self._persist_state(await self.backend.status())
+                    await self.dispatcher.emit(
+                        "process.started", {"name": self.name, "origin": "crash_recovery"}
+                    )
+
+        ran_idle = await lease_manager.run_if_idle(
+            resource, _restart_if_still_stopped, check_self_cooldown=True
+        )
+        if not ran_idle or cancelled_by_override_or_stop:
+            async with self._lock:
+                self.consecutive_unexpected_exits = max(0, self.consecutive_unexpected_exits - 1)
+            logger.info(
+                "Process '%s' restart cancelled after backoff: resource '%s' busy/cooling/inhibited or override active",
+                self.name,
+                resource,
+            )
+            return False
+
+        return started_result

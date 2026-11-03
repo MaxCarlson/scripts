@@ -25,8 +25,10 @@ from resource_coordinator.adapters.lmstudio.admission import (
     OperationClassifier,
     OperationKind,
 )
+from resource_coordinator.core.durable_state import RequestPhase, StateCodec
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
+from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
 
@@ -162,12 +164,14 @@ class LMStudioGateway:
         recovery_token: Optional[str] = None,
         admission_controller: Optional[AdmissionController] = None,
         standalone: bool = False,
+        state_persistence_path: Optional[str] = None,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
         self.lease_mgr = lease_manager or LeaseManager(event_dispatcher=self.dispatcher)
         self.timeout_seconds = timeout_seconds
         self.bounded_drain_seconds = bounded_drain_seconds
+        self.state_persistence_path = state_persistence_path or ""
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
         self.admission_controller = admission_controller or AdmissionController(
@@ -281,6 +285,13 @@ class LMStudioGateway:
         ):
             return JSONResponse({"error": "Nonempty bounded reason and operator are required"}, status_code=400)
         res = await svc.emergency_abort(reason=f"{body['operator']}: {body['reason']}")
+        if self.state_persistence_path:
+            StateCodec.record_inhibition(
+                self.state_persistence_path,
+                "gpu.inference",
+                reason=f"abort:{body['operator']}:{body['reason']}",
+                holder_id=body["operator"],
+            )
         return JSONResponse(res)
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
@@ -308,12 +319,37 @@ class LMStudioGateway:
                 {"error": "Terminal or unready service requires independent reconciliation"}, status_code=409
             )
         resource = request.query_params.get("resource", "gpu.inference")
+        resolved_requests: list[str] = []
+
+        def _persist_resolution() -> None:
+            nonlocal resolved_requests
+            if self.state_persistence_path:
+                _, resolved_requests = StateCodec.resolve_unresolved_requests(
+                    self.state_persistence_path, resource, operator, reason
+                )
+
         try:
             cleared = await self.lease_mgr.clear_inhibition(
-                resource, origin=f"operator_override:{operator}:{reason}", require_all_idle=True
+                resource,
+                origin=f"operator_override:{operator}:{reason}",
+                require_all_idle=True,
+                before_clear=_persist_resolution,
             )
         except RuntimeError as exc:
             return JSONResponse({"error": str(exc)}, status_code=409)
+        except (OSError, ValueError) as exc:
+            logger.error("Failed persisting operator recovery for '%s': %s", resource, exc)
+            return JSONResponse(
+                {"error": f"Durable state persistence failed during recovery: {exc}"}, status_code=500
+            )
+        if service is not None and service.state == ServiceState.RECONCILIATION_REQUIRED:
+            # If all resources are now uninhibited and not claimed, restore service readiness
+            if not self.lease_mgr.restarts_blocked and not any(
+                self.lease_mgr.is_restart_inhibited(r) for r in self.lease_mgr.tracked_resources()
+            ):
+                service._state = ServiceState.READY
+                service._aborted = False
+                service._failure_reason = None
         return JSONResponse(
             {
                 "status": "cleared" if cleared else "none",
@@ -321,6 +357,7 @@ class LMStudioGateway:
                 "previous_inhibition": cleared.to_dict() if cleared else None,
                 "operator": operator,
                 "reason": reason,
+                "resolved_request_ids": resolved_requests,
                 "upstream_verified_idle": False,
             }
         )
@@ -408,12 +445,13 @@ class LMStudioGateway:
         }
 
         reservation_cm = self.lease_mgr.reserve(resource, lease_type, request_id, {"model": model_name, "path": path})
-        reservation = await reservation_cm.__aenter__()
+        reservation = None
         upstream_resp: Optional[httpx.Response] = None
         forwarded = False
         completed = False
         response_owns_cleanup = False
         cleaned = False
+        reserved_in_journal = False
 
         async def cleanup() -> None:
             nonlocal cleaned
@@ -429,6 +467,44 @@ class LMStudioGateway:
                             request_id,
                             {"model": model_name, "path": path},
                         )
+                    if self.state_persistence_path and (reserved_in_journal or forwarded):
+                        try:
+                            if completed:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.TERMINAL_VERIFIED,
+                                    model=model_name,
+                                    path=path,
+                                )
+                            elif forwarded:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.UNCERTAIN,
+                                    model=model_name,
+                                    path=path,
+                                )
+                            else:
+                                StateCodec.record_request_phase(
+                                    self.state_persistence_path,
+                                    request_id,
+                                    resource,
+                                    RequestPhase.TERMINAL_VERIFIED,
+                                    model=model_name,
+                                    path=path,
+                                    details={"cancelled": True},
+                                )
+                        except Exception as log_exc:
+                            logger.error("Failed recording terminal phase in state journal: %s", log_exc)
+                            await self.lease_mgr.inhibit_restart(
+                                resource,
+                                f"Journal persistence failure during request cleanup: {log_exc}",
+                                request_id,
+                                {"model": model_name, "path": path},
+                            )
                     await self.dispatcher.emit(
                         finish_event,
                         {
@@ -441,9 +517,21 @@ class LMStudioGateway:
                         if upstream_resp is not None:
                             await upstream_resp.aclose()
                     finally:
-                        await reservation_cm.__aexit__(None, None, None)
+                        if reservation is not None:
+                            await reservation_cm.__aexit__(None, None, None)
 
         try:
+            reservation = await reservation_cm.__aenter__()
+            if self.state_persistence_path:
+                StateCodec.record_request_phase(
+                    self.state_persistence_path,
+                    request_id,
+                    resource,
+                    RequestPhase.RESERVED,
+                    model=model_name,
+                    path=path,
+                )
+                reserved_in_journal = True
             if not self.admission_controller.evaluate(request.method, path).allowed:
                 raise VetoOperation("Admission closed before blocking actions")
             await self.dispatcher.emit_blocking(event_name, event_data, origin="lmstudio_gateway")
@@ -457,7 +545,17 @@ class LMStudioGateway:
                 raise VetoOperation("Admission closed before forwarding")
             client = self.get_http_client()
             upstream_req = self._build_upstream_request(client, request, path, body, request_id)
+            if self.state_persistence_path:
+                StateCodec.record_request_phase(
+                    self.state_persistence_path,
+                    request_id,
+                    resource,
+                    RequestPhase.POSSIBLY_FORWARDED,
+                    model=model_name,
+                    path=path,
+                )
             forwarded = True  # send may have reached upstream even if it raises/cancels
+            await self.dispatcher.emit("lmstudio.inference_forwarded", event_data)
             upstream_resp = await client.send(upstream_req, stream=True)
             content_type = upstream_resp.headers.get("content-type", "")
             clean_headers = self._clean_headers(upstream_resp.headers, request_id)

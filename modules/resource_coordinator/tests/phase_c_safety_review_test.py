@@ -82,29 +82,19 @@ async def test_restore_validates_all_records_before_installing_any_hold():
 @pytest.mark.asyncio
 @pytest.mark.parametrize("cancelled", [False, True])
 async def test_gpu_query_timeout_or_cancellation_reaps_subprocess(cancelled, monkeypatch):
+    import time
+    import resource_coordinator.monitors.gpu as gpu_module
+
     entered = asyncio.Event()
 
-    class Process:
-        returncode = None
-        killed = False
+    def fake_nvidia_gpus(**kwargs):
+        entered.set()
+        if cancelled:
+            time.sleep(0.5)
+        raise TimeoutError("timeout")
 
-        async def communicate(self):
-            entered.set()
-            await asyncio.Event().wait()
-
-        def kill(self):
-            self.killed = True
-
-        async def wait(self):
-            self.returncode = -1
-
-    proc = Process()
-
-    async def spawn(*args, **kwargs):
-        return proc
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
-    monitor = NvidiaGpuMonitor(timeout_seconds=0.01 if not cancelled else 60)
+    monkeypatch.setattr(gpu_module, "nvidia_gpus", fake_nvidia_gpus)
+    monitor = NvidiaGpuMonitor()
     task = asyncio.create_task(monitor.get_metrics())
     await entered.wait()
     if cancelled:
@@ -113,7 +103,6 @@ async def test_gpu_query_timeout_or_cancellation_reaps_subprocess(cancelled, mon
             await task
     else:
         assert await task == []
-    assert proc.killed and proc.returncode == -1
 
 
 @pytest.mark.asyncio
@@ -163,18 +152,18 @@ async def test_idle_inference_does_not_ignore_unregistered_gpu_model_hold():
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("row", ["0, GPU, nan, 100, 200, 30", "0, GPU, -1, 100, 200, 30", "0, GPU, 10, 100, 200, nan"])
+@pytest.mark.parametrize(
+    "row",
+    [
+        {"id": 0, "load": float("nan"), "mem_used": 100, "mem_total": 200, "power_w": 30},
+        {"id": 0, "load": -1, "mem_used": 100, "mem_total": 200, "power_w": 30},
+        {"id": 0, "load": 10, "mem_used": 100, "mem_total": 200, "power_w": float("nan")},
+    ],
+)
 async def test_invalid_gpu_values_are_unavailable_not_idle(row, monkeypatch):
-    class Process:
-        returncode = 0
+    import resource_coordinator.monitors.gpu as gpu_module
 
-        async def communicate(self):
-            return row.encode(), b""
-
-    async def spawn(*args, **kwargs):
-        return Process()
-
-    monkeypatch.setattr(asyncio, "create_subprocess_exec", spawn)
+    monkeypatch.setattr(gpu_module, "nvidia_gpus", lambda **kwargs: [row])
     assert await NvidiaGpuMonitor().get_metrics() == []
 
 

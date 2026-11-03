@@ -1,0 +1,71 @@
+# Resource Coordinator — Production Configuration Template
+# Platform: Windows 11 / NVIDIA RTX 5090
+# Service: Reverse proxy at 127.0.0.1:1235 -> LM Studio upstream 127.0.0.1:1234
+# Target Process: KRig Miner v1.5.6 (PearlHash)
+#
+# INSTRUCTIONS:
+# 1. Copy this file to a persistent local path outside disposable git worktrees:
+#      New-Item -ItemType Directory -Force -Path "$HOME\.resource_coordinator"
+#      Copy-Item modules\resource_coordinator\config.production-template.yaml "$HOME\.resource_coordinator\config.yaml"
+#    Alternatively, use a git-ignored path: modules\resource_coordinator\config.local.yaml
+# 2. In your local copy, replace `<YOUR_WALLET_ADDRESS>` and `<YOUR_WORKER_NAME>`.
+# 3. Verify that the executable and working_directory paths match your host installation.
+# 4. Validate the configuration before running:
+#      python -m resource_coordinator.cli preflight -c "$HOME\.resource_coordinator\config.yaml"
+
+version: "1.0"
+
+service:
+  listen_host: "127.0.0.1"
+  listen_port: 1235
+  upstream_url: "http://127.0.0.1:1234"
+  # Persistent writable state directory outside ephemeral git worktrees:
+  state_persistence_path: "C:\\Users\\mcarls\\.resource_coordinator\\coordinator_state.json"
+
+resources:
+  gpu.inference:
+    type: "shared"
+    cooldown_seconds: 10.0
+
+processes:
+  krig_miner:
+    backend: "windows"
+    executable: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6\\krig-miner.exe"
+    working_directory: "C:\\Users\\mcarls\\src\\Mining\\vendor\\krig-miner-1.5.6"
+    arguments:
+      - "--coin"
+      - "pearl"
+      - "--url"
+      - "stratum+ssl://prl-us.kryptex.network:8048"
+      - "--user"
+      - "<YOUR_WALLET_ADDRESS>/<YOUR_WORKER_NAME>"
+    stop_timeout_seconds: 10.0
+    restart_cooldown_seconds: 10.0
+    new_console: false
+    allow_force_termination: true
+    allow_external_stop: false
+    allow_external_restart: false
+    adopt_external: false
+
+policies:
+  - name: "pause_krig_for_inference"
+    trigger_event: "lmstudio.inference_requested"
+    target_process: "krig_miner"
+    stop_process: true
+    stop_timeout_seconds: 10.0
+    resource: "gpu.inference"
+    lease_type: "shared"
+    cooldown_seconds: 10.0
+    restart_process: true
+    only_if_stopped_by_coordinator: true
+
+  - name: "pause_krig_for_model_load"
+    trigger_event: "lmstudio.model_load_requested"
+    target_process: "krig_miner"
+    stop_process: true
+    stop_timeout_seconds: 10.0
+    resource: "gpu.inference"
+    lease_type: "exclusive"
+    cooldown_seconds: 10.0
+    restart_process: true
+    only_if_stopped_by_coordinator: true
