@@ -63,3 +63,38 @@ def test_docker_resolver_external_name_lookup_fails_closed_even_when_direct_egre
     assert gates["local_monitor_gateway_route"] == "PASS"
     assert gates["external_https_unlisted_sni_denied"] == "PASS"
     assert gates["external_dns_name_lookup_denied"] == "FAIL"
+
+
+def test_producer_binds_report_to_prepared_run_without_live_probe(tmp_path, monkeypatch, capsys):
+    import json
+
+    manifest = {
+        "prompt_policy": {"id": "synthetic"},
+        "provenance": {"effective_base_url": "http://host.docker.internal:8788/v1"},
+    }
+    (tmp_path / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+    runtime = {"image": "synthetic", "monitor_url": "http://host.docker.internal:8788/v1/chat/completions"}
+    monkeypatch.setattr("agent_benchmark.network_receipt.runtime_fingerprint", lambda *_: runtime.copy())
+    monkeypatch.setattr("agent_benchmark.network_receipt.snapshot_digest", lambda *_: "a" * 64)
+
+    async def synthetic_probe(**_):
+        return {"status": "PASS", "gates": {}, "container_cleanup": "PASS"}
+
+    monkeypatch.setattr("agent_benchmark.network_qualification._qualify", synthetic_probe)
+
+    def run_synthetic(coroutine):
+        coroutine.close()
+        return {"status": "PASS", "gates": {}, "container_cleanup": "PASS"}
+
+    monkeypatch.setattr("agent_benchmark.network_qualification.asyncio.run", run_synthetic)
+    assert main(["-x", "-r", str(tmp_path), "-i", "synthetic"]) == 1
+    receipt = json.loads((tmp_path / "network-qualification.json").read_text(encoding="utf-8"))
+    assert receipt["task_snapshot_sha256"] == "a" * 64
+    assert receipt["runtime"] == runtime
+    assert receipt["evidence"]["gates"] == {}
+    from agent_benchmark.network_receipt import ReceiptRejected, validate_receipt
+    import pytest
+
+    with pytest.raises(ReceiptRejected, match="FAILED"):
+        validate_receipt(tmp_path, manifest)
+    capsys.readouterr()

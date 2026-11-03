@@ -12,7 +12,9 @@ def manifest():
     task = "polyglot_python_beer-song"
     return {
         "tasks": [task],
+        "prompt_policy": {"id": "sv0-unmodified-v1"},
         "provenance": {
+            "effective_base_url": "http://host.docker.internal:1234/v1",
             "registry_resolution": {
                 "tasks": [
                     {
@@ -22,7 +24,7 @@ def manifest():
                         "git_path": "datasets/aider_polyglot/" + task,
                     }
                 ]
-            }
+            },
         },
     }
 
@@ -68,7 +70,7 @@ def test_dispatch_stops_on_identity_drift(tmp_path, monkeypatch):
     from agent_benchmark.harbor.runner import execute_harbor_run
     from agent_benchmark.study_network_policy import NETWORK_POLICY
 
-    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda: None)
+    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda *_: None)
 
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_docker_readiness", lambda: (True, "ok"))
     monkeypatch.setattr("agent_benchmark.harbor.planner.check_harbor_readiness", lambda: (True, "0.25.0"))
@@ -110,6 +112,7 @@ def test_dispatch_stops_on_identity_drift(tmp_path, monkeypatch):
             state_dir=tmp_path / "state",
             study_adapter=True,
             study_manifest=manifest(),
+            study_policy=manifest()["prompt_policy"],
             registry_path=registry,
             study_run_dir=tmp_path,
         )

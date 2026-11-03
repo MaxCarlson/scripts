@@ -25,12 +25,14 @@ from .planner import BenchmarkPlan, check_docker_readiness, check_harbor_readine
 logger = logging.getLogger(__name__)
 
 
-def _require_study_network_qualification() -> None:
-    """Block study dispatch until qualification evidence is enforced."""
-    raise PreflightCheckError(
-        "NETWORK_QUALIFICATION_UNAVAILABLE: study dispatch is disabled until "
-        "a verified, environment-bound qualification receipt can be enforced"
-    )
+def _require_study_network_qualification(run_dir: Path | None, manifest: dict[str, Any] | None) -> None:
+    """Require current, run-bound network qualification before Harbor dispatch."""
+    from ..network_receipt import ReceiptRejected, validate_receipt
+
+    try:
+        validate_receipt(run_dir, manifest)
+    except ReceiptRejected as exc:
+        raise PreflightCheckError(str(exc)) from exc
 
 
 def find_harbor_opencode_adapters() -> list[Path]:
@@ -245,7 +247,13 @@ def execute_harbor_run(
         )
 
     if study_adapter:
-        _require_study_network_qualification()
+        _require_study_network_qualification(study_run_dir, study_manifest)
+        if study_manifest is not None and plan.base_url != study_manifest.get("provenance", {}).get(
+            "effective_base_url"
+        ):
+            raise PreflightCheckError("NETWORK_QUALIFICATION_ENDPOINT_MISMATCH")
+        if study_manifest is not None and study_policy != study_manifest.get("prompt_policy"):
+            raise PreflightCheckError("NETWORK_QUALIFICATION_STUDY_POLICY_MISMATCH")
 
     # Preflight 0: Blockers
     if not plan.readiness.is_runnable:
@@ -348,6 +356,7 @@ def execute_harbor_run(
 
     with lock_cm(state):
         if study_adapter:
+            _require_study_network_qualification(study_run_dir, study_manifest)
             from ..study_task_integrity import verify_study_task_trees
             from ..suite_revision import verify_saved_registry_snapshot
 

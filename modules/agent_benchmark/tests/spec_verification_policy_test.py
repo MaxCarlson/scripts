@@ -251,7 +251,7 @@ def test_sv0_sv1_run_artifacts_share_network_snapshot_and_keep_policy_freeze(tmp
 
 
 def test_network_snapshot_drift_fails_before_harbor_subprocess(tmp_path, monkeypatch):
-    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda: None)
+    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda *_: None)
     from contextlib import nullcontext
     from dataclasses import replace
     import json
@@ -285,6 +285,7 @@ def test_network_snapshot_drift_fails_before_harbor_subprocess(tmp_path, monkeyp
             state_dir=tmp_path / "state",
             study_adapter=True,
             study_manifest=manifest,
+            study_policy=manifest["prompt_policy"],
             registry_path=registry,
             study_run_dir=run_dir,
         )
@@ -338,7 +339,7 @@ def test_resume_refuses_modified_study_manifest(tmp_path, monkeypatch):
 
 
 def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path, monkeypatch):
-    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda: None)
+    monkeypatch.setattr("agent_benchmark.harbor.runner._require_study_network_qualification", lambda *_: None)
     from contextlib import nullcontext
     import subprocess
     from agent_benchmark.harbor.planner import plan_benchmark
@@ -376,6 +377,7 @@ def test_study_dispatch_uses_import_path_without_patching_dependencies(tmp_path,
             state_dir=tmp_path / "state",
             study_adapter=True,
             study_manifest=manifest,
+            study_policy=manifest["prompt_policy"],
             registry_path=registry,
             study_run_dir=run_dir,
         )

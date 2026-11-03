@@ -150,3 +150,7 @@ Private qualification reports remain under ignored `.pytest_tmp_root`;
 original benchmark archives, task caches, verifier files, and historical
 evidence remain unchanged. The exact commands and hash evidence are also
 recorded in the study document.
+
+### P02 qualification receipts (2026-11-02)
+
+Study dispatch requires `network-qualification.json` in the prepared run directory. To produce it, run the existing non-inference qualification with `-x -r <run-dir>` after preparing that run; `-m` must match the frozen monitor endpoint plus `/chat/completions`. The producer checks the task snapshots and records Docker daemon and image identity, Harbor runtime, policy, probe results, cleanup, and a 24-hour expiry. It fails closed when measurements are unavailable or change during the probe. The SHA-256 is an integrity checksum, not a signature; receipts must be protected from untrusted modification. Synthetic test receipts are test fixtures only and are not live qualification evidence. No live qualification was run as part of implementation.

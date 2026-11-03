@@ -270,6 +270,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("-m", "--monitor-url", default=DEFAULT_MONITOR_URL)
     parser.add_argument("-i", "--image", default=DEFAULT_IMAGE, help="must already be cached locally")
     parser.add_argument("-o", "--output", type=Path, help="write machine-readable JSON evidence to this path")
+    parser.add_argument("-r", "--run-dir", type=Path, help="bind qualification to a prepared study run")
     args = parser.parse_args(argv)
     if not args.execute:
         print(
@@ -291,7 +292,20 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 0
     try:
+        if args.run_dir is not None:
+            from .network_receipt import make_receipt, runtime_fingerprint
+
+            manifest = json.loads((args.run_dir / "manifest.json").read_text(encoding="utf-8"))
+            expected_url = manifest["provenance"]["effective_base_url"].rstrip("/") + "/chat/completions"
+            if args.monitor_url != expected_url:
+                raise ValueError("probe URL does not match the frozen study endpoint")
+            before = runtime_fingerprint(args.image, args.monitor_url)
         result = asyncio.run(_qualify(monitor_url=args.monitor_url, image=args.image))
+        if args.run_dir is not None:
+            report = result
+            result = make_receipt(report, manifest, args.run_dir, image=args.image, monitor_url=args.monitor_url)
+            if result["runtime"] != before:
+                raise ValueError("runtime changed during qualification")
     except Exception as error:
         result = {
             "schema": "sv-harbor-network-qualification-v1",
@@ -300,6 +314,8 @@ def main(argv: list[str] | None = None) -> int:
             "inference": "never",
         }
     serialized = json.dumps(result, indent=2, sort_keys=True) + "\n"
+    if args.run_dir and not args.output:
+        args.output = args.run_dir / "network-qualification.json"
     if args.output:
         args.output.parent.mkdir(parents=True, exist_ok=True)
         args.output.write_text(serialized, encoding="utf-8")
