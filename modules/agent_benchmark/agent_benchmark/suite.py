@@ -766,6 +766,7 @@ def execute_pending(
             if (
                 actual != store.manifest.get("manifest_sha256")
                 or actual != checkpoint.get("manifest_sha256")
+                or checkpoint.get("run_id") != store.manifest.get("run_id")
                 or checkpoint.get("study_adapter") != store.manifest.get("study_adapter")
             ):
                 raise ValueError("study manifest changed; no inference was dispatched")
@@ -782,6 +783,10 @@ def execute_pending(
             from .spec_verification_policy import verify_frozen_policy
 
             verify_frozen_policy(run_dir, store.manifest["prompt_policy"])
+        if should_dispatch and executor is _run_one and store.manifest.get("study_adapter"):
+            from .network_receipt import validate_receipt
+
+            validate_receipt(run_dir, store.manifest)
         if should_dispatch and executor is _run_one:
             if (
                 store.manifest["provenance"].get("llm_monitor_required")

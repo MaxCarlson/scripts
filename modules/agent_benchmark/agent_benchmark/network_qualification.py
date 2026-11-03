@@ -7,6 +7,8 @@ import asyncio
 from datetime import datetime, timezone
 import importlib.metadata
 import json
+import os
+import sys
 from pathlib import Path
 import shlex
 import subprocess
@@ -73,6 +75,7 @@ async function main() {
     local_monitor_gateway_route: monitor,
     local_resolver_external_name_lookup: dnsResult,
     external_dns_direct: directDns,
+    external_tcp_direct_ip: await tcp("1.1.1.1", 443),
     external_https_unlisted_sni: await tlsConnect("example.com", 443, "example.com"),
     external_https_direct_ip_no_sni: await tlsConnect("1.1.1.1", 443, undefined),
     proxy_environment_names: proxyNames,
@@ -94,12 +97,25 @@ def _result_fields(result: Any) -> tuple[int, str, str]:
 
 def _probe_gates(observed: dict[str, Any], effective_agent: dict[str, Any]) -> dict[str, str]:
     """Evaluate required isolation probes without treating DNS resolution as egress success."""
+
+    def dns_denied(name: str) -> bool:
+        probe = observed.get(name, {})
+        return probe.get("resolved") is False and probe.get("error") in {
+            "ETIMEOUT",
+            "ECONNREFUSED",
+            "EAI_AGAIN",
+            "ENETUNREACH",
+            "EHOSTUNREACH",
+        }
+
     results = {
         "policy": effective_agent == {"network_mode": "allowlist", "allowed_hosts": ["host.docker.internal"]},
-        "local_monitor_gateway_route": observed.get("local_monitor_gateway_route", {}).get("reachable") is True,
-        "external_dns_direct_denied": observed.get("external_dns_direct", {}).get("resolved") is False,
-        "external_dns_name_lookup_denied": observed.get("local_resolver_external_name_lookup", {}).get("resolved")
-        is False,
+        "local_monitor_gateway_route": observed.get("local_monitor_gateway_route", {}).get("reachable") is True
+        and observed.get("local_monitor_gateway_route", {}).get("status") == 405
+        and observed.get("local_monitor_gateway_route", {}).get("method") == "OPTIONS",
+        "external_dns_direct_denied": dns_denied("external_dns_direct"),
+        "external_tcp_direct_ip_denied": observed.get("external_tcp_direct_ip", {}).get("connected") is False,
+        "external_dns_name_lookup_denied": dns_denied("local_resolver_external_name_lookup"),
         "external_https_unlisted_sni_denied": observed.get("external_https_unlisted_sni", {}).get("connected") is False,
         "external_https_direct_ip_no_sni_denied": observed.get("external_https_direct_ip_no_sni", {}).get("connected")
         is False,
@@ -183,6 +199,7 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
         )
         report: dict[str, Any] = {
             "schema": "sv-harbor-network-qualification-v1",
+            "evidence_origin": "live-probe",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "inference": "never",
             "benchmark_tasks": "never",
@@ -234,6 +251,7 @@ async def _qualify(*, monitor_url: str, image: str) -> dict[str, Any]:
                 report["gates"] = _probe_gates(observed, effective)
                 report["status"] = "PASS" if all(value == "PASS" for value in report["gates"].values()) else "FAIL"
                 await environment.set_network_policy(verifier_policy)
+                report["effective_verifier_policy"] = {"network_mode": environment.network_policy.network_mode.value}
                 verifier_probe = await environment.exec(
                     "node -e "
                     + shlex.quote(
@@ -295,6 +313,11 @@ def main(argv: list[str] | None = None) -> int:
         if args.run_dir is not None:
             from .network_receipt import make_receipt, runtime_fingerprint
 
+            selected_python = os.environ.get("HARBOR_025_PYTHON")
+            if not selected_python or Path(selected_python).resolve(strict=True) != Path(sys.executable).resolve(
+                strict=True
+            ):
+                raise ValueError("run qualification with the HARBOR_025_PYTHON interpreter used for dispatch")
             manifest = json.loads((args.run_dir / "manifest.json").read_text(encoding="utf-8"))
             expected_url = manifest["provenance"]["effective_base_url"].rstrip("/") + "/chat/completions"
             if args.monitor_url != expected_url:

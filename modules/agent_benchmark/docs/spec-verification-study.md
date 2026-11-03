@@ -259,134 +259,44 @@ require equality before SV1.
 
 ## Two-trial acceptance procedure (preview is the default)
 
-The one-task manifest is
-[`spec-verification-beer-song-acceptance.json`](spec-verification-beer-song-acceptance.json).
-It fixes the dataset revision and task. Each `suite run` creates a separate
-immutable run manifest and artifact directory. The commands below use the
-existing suite CLI; no separate runner is introduced.
+The former standalone qualification followed by `suite run -x` cannot satisfy
+run-bound receipts. Prepare each arm separately, qualify its exact run, then
+resume it only with separate authorization for inference. Keep SV0 and SV1
+sequential and preserve the existing stop rule and recording requirements.
+Preparation resolves the frozen registry and reads cached task trees; it may
+access the registry, so authorize that access separately. Qualification creates
+a synthetic Docker container and requires separate authorization. No probe or
+inference is authorized by this document.
 
-Open PowerShell 7 in the worktree and prepare the environment. This only sets
-process-local interpreter/import variables and selects LiteLLM's bundled cost
-map to prevent an unsolicited cost-map lookup. It does not touch services or
-configuration.
-
-```powershell
-$repo = 'C:\Users\mcarls\src\scripts\.worktrees\spec-verification-policy-20261102'
-$module = Join-Path $repo 'modules\agent_benchmark'
-$manifest = Join-Path $module 'docs\spec-verification-beer-song-acceptance.json'
-$policy = Join-Path $module 'agent_benchmark\policies\sv1-v1.md'
-$coordinatorPython = 'C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe'
-$env:HARBOR_025_PYTHON = 'C:\Users\mcarls\AppData\Local\uv\cache\archive-v0\6oHf_rWkqYo-3vQ-qABxe\Scripts\python.exe'
-$env:LITELLM_LOCAL_MODEL_COST_MAP = 'True'
-$env:PYTHONPATH = "$module;$repo\modules\benchmark_core;$env:PYTHONPATH"
-$policySha = (Get-FileHash -LiteralPath $policy -Algorithm SHA256).Hash.ToLowerInvariant()
-Set-Location $module
-```
-
-The network probe is the mandatory pre-dispatch gate. It creates only a
-synthetic container and never calls a model or benchmark task. It must report
-`PASS`; with the currently observed Docker DNS behavior it exits 1 and the
-procedure stops here. Do not continue to trial dispatch until a supported
-control removes that DNS leak and the complete probe passes. The report is
-machine-readable and kept under the private ignored reports directory.
+From `modules/agent_benchmark`, supply the existing study arguments, including
+`-S -I 1 -Z 20261102`, the selected cohort, monitor route, and output root:
 
 ```powershell
-$networkRoot = Join-Path $module "reports\agent-bench-suite\sv-network-qualification-$(Get-Date -Format 'yyyyMMdd-HHmmss')"
-if (Test-Path $networkRoot) { throw "Qualification evidence root already exists: $networkRoot" }
-New-Item -ItemType Directory -Path $networkRoot -Force | Out-Null
+# Prepare only: add -P <policy> -Q <reviewed-sha256> for SV1.
+& $coordinatorPython -B -m agent_benchmark suite run <study-arguments> -N -F
+# Record the run_dir and run_id from the prepared event.
+# After separate authorization for a network probe, use the exact interpreter
+# selected for dispatch. -m must match the frozen endpoint plus /chat/completions.
 & $env:HARBOR_025_PYTHON -B -m agent_benchmark.network_qualification `
-  -x -m http://host.docker.internal:8788/v1/chat/completions `
-  -o (Join-Path $networkRoot 'qualification.json')
-$networkExit = $LASTEXITCODE
-$networkEvidence = Get-Content -Raw (Join-Path $networkRoot 'qualification.json') | ConvertFrom-Json
-if ($networkExit -ne 0 -or $networkEvidence.status -ne 'PASS' -or
-    $networkEvidence.policy_id -ne 'sv-network-policy-v1' -or
-    $networkEvidence.container_cleanup -ne 'PASS') {
-  throw "Network qualification failed (exit $networkExit; status $($networkEvidence.status)); no suite run is permitted."
-}
+  -x -r <run_dir> -m <frozen-monitor-url>/chat/completions
+# Only after a PASS receipt and separate authorization for inference:
+& $coordinatorPython -B -m agent_benchmark suite resume `
+  -d <output-root> -r <run_id> -x -F
 ```
 
-Preview both arms only after the network gate passes. These `plan` commands do
-not infer. They require the host's existing Docker and Monitor to be reachable
-and content recording healthy; there is intentionally no
-`-r/--recover-local` flag. Stop if either plan is blocked, the task/revision/
-policy differs, or `-Q` rejects the policy. Each actual run will use the
-run-owned task snapshot with network policy provenance; it does not modify the
-registry cache.
-
-```powershell
-& $coordinatorPython -B -m agent_benchmark suite plan `
-  -M $manifest -a opencode -m openai/qwen38_23GB `
-  -L -U http://host.docker.internal:8788/v1 -H http://127.0.0.1:8788 `
-  -R content -A openai_chat_completions -j 1 -S -I 1 -Z 20261102 -F
-$sv0PlanExit = $LASTEXITCODE
-
-& $coordinatorPython -B -m agent_benchmark suite plan `
-  -M $manifest -a opencode -m openai/qwen38_23GB `
-  -L -U http://host.docker.internal:8788/v1 -H http://127.0.0.1:8788 `
-  -R content -A openai_chat_completions -j 1 -S `
-  -P $policy -Q $policySha -I 1 -Z 20261102 -F
-$sv1PlanExit = $LASTEXITCODE
-if ($sv0PlanExit -ne 0 -or $sv1PlanExit -ne 0) { throw 'Preview failed; no run was dispatched.' }
-```
-
-The acceptance must remain stopped while `NET-01` is FAIL. After an existing
-supported, identical egress control has been approved and the synthetic probe
-reports PASS, separately authorize **one** run at a time with the suite's
-required `-x`. Before each
-command, display and check the task, policy identity, model, endpoint, and
-output root. The example uses a unique evidence root and fails rather than
-overwriting an existing one:
-
-```powershell
-$acceptanceRoot = Join-Path $repo 'reports\agent-bench-suite\spec-verification-acceptance-20261102'
-$sv0Root = Join-Path $acceptanceRoot 'SV0'
-$sv1Root = Join-Path $acceptanceRoot 'SV1'
-if (Test-Path $acceptanceRoot) { throw "Evidence root already exists: $acceptanceRoot" }
-New-Item -ItemType Directory -Path $sv0Root,$sv1Root -Force | Out-Null
-
-[pscustomobject]@{ Condition='SV0'; Task='polyglot_python_beer-song'; Revision='f30b14415dd733c83627204bad0af69a89ceb46f'; Model='openai/qwen38_23GB via LLM Monitor'; API='openai_chat_completions'; Policy='sv0-unmodified-v1'; Output=$sv0Root } | Format-List
-# Execute only after separate explicit authorization and all blocking gates pass.
-& $coordinatorPython -B -m agent_benchmark suite run `
-  -M $manifest -a opencode -m openai/qwen38_23GB `
-  -L -U http://host.docker.internal:8788/v1 -H http://127.0.0.1:8788 `
-  -R content -A openai_chat_completions -j 1 -S -I 1 -Z 20261102 `
-  -o $sv0Root -F -x 2>&1 | Tee-Object -FilePath (Join-Path $sv0Root 'dispatch.jsonl')
-$sv0Exit = $LASTEXITCODE
-[ordered]@{condition='SV0';exit_code=$sv0Exit;task='polyglot_python_beer-song';policy_id='sv0-unmodified-v1';inference_dispatched=$true} |
-  ConvertTo-Json | Set-Content -LiteralPath (Join-Path $sv0Root 'command-result.json') -Encoding utf8NoBOM
-Write-Output "SV0_EXIT_CODE=$sv0Exit"
-if ($sv0Exit -ne 0) { throw 'SV0 was not a valid completed outcome; do not dispatch SV1.' }
-```
-
-Inspect SV0's `manifest.json`, `report.json`, task result and native Harbor
-artifacts. A normal scored verifier failure can continue; missing/incomplete
-recording, route/settings mismatch, or any `infrastructure_invalid` result
-must stop before SV1. Do not call `resume --retry-invalid`. Only after SV0 is
-accepted and its request settings/route are recorded, authorize SV1 in a
-separate command:
-
-```powershell
-[pscustomobject]@{ Condition='SV1'; Task='polyglot_python_beer-song'; Revision='f30b14415dd733c83627204bad0af69a89ceb46f'; Model='openai/qwen38_23GB via LLM Monitor'; API='openai_chat_completions'; Policy='sv1-specification-verification-v1'; PolicySha256=$policySha; Output=$sv1Root } | Format-List
-& $coordinatorPython -B -m agent_benchmark suite run `
-  -M $manifest -a opencode -m openai/qwen38_23GB `
-  -L -U http://host.docker.internal:8788/v1 -H http://127.0.0.1:8788 `
-  -R content -A openai_chat_completions -j 1 -S -P $policy -Q $policySha `
-  -I 1 -Z 20261102 -o $sv1Root -F -x 2>&1 |
-  Tee-Object -FilePath (Join-Path $sv1Root 'dispatch.jsonl')
-$sv1Exit = $LASTEXITCODE
-[ordered]@{condition='SV1';exit_code=$sv1Exit;task='polyglot_python_beer-song';policy_id='sv1-specification-verification-v1';policy_sha256=$policySha;inference_dispatched=$true} |
-  ConvertTo-Json | Set-Content -LiteralPath (Join-Path $sv1Root 'command-result.json') -Encoding utf8NoBOM
-Write-Output "SV1_EXIT_CODE=$sv1Exit"
-```
-
-`-F` stores compact command events in the separate `dispatch.jsonl`; run
-directories retain the immutable manifest, checkpoint, report, imported trial,
-logs, and native Harbor job evidence. Keep the existing Monitor recording
-database intact. Do not emit environment variables or credential values.
-Reconcile each run's imported instruction/ATIF turn, model route and observed
-generation parameters with its Monitor request before treating the pair as
-comparable. The task does not need to pass for the trial to be accepted.
+The interpreter used for qualification must equal `HARBOR_025_PYTHON`, which
+is also used for study dispatch. Each run needs its own receipt. The receipt
+expires after at most 24 hours and is checked again at dispatch and resume.
+DNS denial and application egress are separate gates: the earlier observed
+Docker resolver success remains a failure. Direct external TCP and DNS over
+UDP are also checked; absence of a response to one destination is bounded probe
+evidence, not proof of universal isolation. The gateway is identified by its
+frozen URL and expected OPTIONS response; a process identity is not measured.
+The checksum detects corruption but is not authentication. Protect run files
+from untrusted writers, since a writer can forge both evidence and checksum.
+Synthetic tests provide no live qualification. Before SV1, inspect SV0's
+native artifacts, Monitor recording and effective settings; stop on an
+infrastructure-invalid result or a route or settings mismatch.
 
 ## Non-inference validation evidence
 

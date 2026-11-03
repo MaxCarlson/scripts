@@ -246,6 +246,8 @@ def execute_harbor_run(
             "Use 'agent-bench external plan' to inspect without execution."
         )
 
+    if not study_adapter and (study_manifest is not None or study_policy is not None or study_run_dir is not None):
+        raise PreflightCheckError("study metadata requires the protected study adapter")
     if study_adapter:
         _require_study_network_qualification(study_run_dir, study_manifest)
         if study_manifest is not None and plan.base_url != study_manifest.get("provenance", {}).get(

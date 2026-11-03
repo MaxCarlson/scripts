@@ -154,3 +154,23 @@ recorded in the study document.
 ### P02 qualification receipts (2026-11-02)
 
 Study dispatch requires `network-qualification.json` in the prepared run directory. To produce it, run the existing non-inference qualification with `-x -r <run-dir>` after preparing that run; `-m` must match the frozen monitor endpoint plus `/chat/completions`. The producer checks the task snapshots and records Docker daemon and image identity, Harbor runtime, policy, probe results, cleanup, and a 24-hour expiry. It fails closed when measurements are unavailable or change during the probe. The SHA-256 is an integrity checksum, not a signature; receipts must be protected from untrusted modification. Synthetic test receipts are test fixtures only and are not live qualification evidence. No live qualification was run as part of implementation.
+
+
+### P02 independent integration review
+
+Receipt review added run-ID binding, explicit direct-IP TCP containment and
+DNS negative-response handling, an effective verifier policy check, and a
+requirement that the probe and dispatcher use the same Harbor interpreter.
+Study runs now prepare with `suite run -N` and require a per-run receipt before
+`resume -x`; rejected qualification leaves the pending attempt unchanged.
+These are offline implementation checks, not a live qualification result.
+See the updated study procedure for runtime authorization and trust limits.
+
+Integration candidate validation: Agent Benchmark receipt, suite, Harbor,
+Monitor, recovery, doctor and review tests: 170 passed, exit 0, including all
+four cached Harbor-dependent checks. Benchmark Core contract/comparison/
+experiment/intervention tests: 82 passed, exit 0. Ruff check, Ruff format
+check and Git whitespace validation passed. No Docker network probe or model
+inference was executed. The gateway URL/OPTIONS response identifies the
+endpoint; the gateway process identity remains unmeasured. The protected run
+directory and local operator remain the receipt trust boundary.

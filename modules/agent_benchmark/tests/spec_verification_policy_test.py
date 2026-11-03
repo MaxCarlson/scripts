@@ -179,12 +179,12 @@ def test_prompt_template_command_is_opt_in(tmp_path, monkeypatch):
 def test_literal_render_preserves_whitespace(tmp_path):
     jinja = pytest.importorskip("jinja2")
     source = tmp_path / "source.md"
-    source.write_bytes("policy\r\n😀\n\n".encode())
+    source.write_bytes("policy\r\nðŸ˜€\n\n".encode())
     _, template, _ = load_policy(source)
     rendered = (
         jinja.Environment(undefined=jinja.StrictUndefined).from_string(template.decode()).render(instruction="  task\n")
     )
-    assert rendered == "  task\n\n\npolicy\r\n😀\n\n"
+    assert rendered == "  task\n\n\npolicy\r\nðŸ˜€\n\n"
 
 
 def test_policy_requires_opencode_and_baseline_has_explicit_identity(tmp_path):
@@ -398,3 +398,124 @@ def test_resume_refuses_modified_template_before_executor(tmp_path, monkeypatch)
     with pytest.raises(ValueError, match="changed"):
         execute_pending(run, execute=True, executor=lambda *args: called.append(args))
     assert not called
+
+
+def test_resume_rejects_run_id_drift_before_dispatch(tmp_path, monkeypatch):
+    import json
+    from agent_benchmark.suite import execute_pending
+
+    _, _, run = _create_study_run(tmp_path, monkeypatch)
+    path = run / "manifest.json"
+    manifest = json.loads(path.read_text(encoding="utf-8"))
+    manifest["run_id"] = "another-run"
+    path.write_text(json.dumps(manifest), encoding="utf-8")
+    called = []
+    with pytest.raises(ValueError, match="manifest changed"):
+        execute_pending(run, execute=True, executor=lambda *args: called.append(args))
+    assert called == []
+
+
+def test_resume_rechecks_receipt_before_changing_pending_attempt(tmp_path, monkeypatch):
+    from agent_benchmark.network_receipt import ReceiptRejected
+    from agent_benchmark.suite import RunStore, execute_pending
+
+    _, _, run = _create_study_run(tmp_path, monkeypatch)
+    before = RunStore(run).read()["tasks"]
+
+    def reject(*_):
+        raise ReceiptRejected("RUNTIME_MISMATCH")
+
+    monkeypatch.setattr("agent_benchmark.network_receipt.validate_receipt", reject)
+    with pytest.raises(ReceiptRejected, match="RUNTIME_MISMATCH"):
+        execute_pending(run, execute=True)
+    assert RunStore(run).read()["tasks"] == before
+
+
+def test_real_snapshot_receipt_reaches_dispatch_then_runtime_drift_blocks(tmp_path, monkeypatch):
+    from contextlib import nullcontext
+    import json
+    from agent_benchmark.harbor.planner import plan_benchmark
+    from agent_benchmark.harbor.runner import execute_harbor_run, PreflightCheckError
+    from agent_benchmark.network_receipt import REQUIRED_GATES, make_receipt
+    from agent_benchmark.study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID
+
+    _, _, run_dir = _create_study_run(tmp_path, monkeypatch)
+    manifest = json.loads((run_dir / "manifest.json").read_text(encoding="utf-8"))
+    url = manifest["provenance"]["effective_base_url"] + "/chat/completions"
+    runtime = {"image": "test-image", "monitor_url": url, "daemon": "test-daemon"}
+    monkeypatch.setattr("agent_benchmark.network_receipt.runtime_fingerprint", lambda *_: runtime.copy())
+    gates = {name: "PASS" for name in REQUIRED_GATES}
+    from datetime import datetime, timezone
+
+    report = {
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "schema": "sv-harbor-network-qualification-v1",
+        "evidence_origin": "live-probe",
+        "status": "PASS",
+        "container_cleanup": "PASS",
+        "inference": "never",
+        "benchmark_tasks": "never",
+        "container_created": True,
+        "egress_sidecar_enabled": True,
+        "policy_id": NETWORK_POLICY_ID,
+        "network_policy": NETWORK_POLICY,
+        "harbor_task_config_network_policy": NETWORK_POLICY,
+        "effective_verifier_policy": NETWORK_POLICY["verifier"],
+        "effective_agent_policy": NETWORK_POLICY["agent"],
+        "harbor_version": "0.25.0",
+        "docker_image": "test-image",
+        "gates": gates,
+        "probes": {
+            "agent_phase_exit_code": 0,
+            "verifier_no_network_exit_code": 0,
+            "local_monitor_gateway_route": {"reachable": True, "status": 405, "method": "OPTIONS"},
+            "external_dns_direct": {"resolved": False, "error": "ECONNREFUSED"},
+            "local_resolver_external_name_lookup": {"resolved": False, "error": "EAI_AGAIN"},
+            "external_tcp_direct_ip": {"connected": False},
+            "external_https_unlisted_sni": {"connected": False},
+            "external_https_direct_ip_no_sni": {"connected": False},
+            "proxy_environment_names": [],
+        },
+    }
+    receipt = make_receipt(report, manifest, run_dir, image="test-image", monitor_url=url)
+    (run_dir / "network-qualification.json").write_text(json.dumps(receipt), encoding="utf-8")
+    for location in ("agent_benchmark.harbor.planner", "agent_benchmark.harbor.runner"):
+        monkeypatch.setattr(location + ".check_docker_readiness", lambda: (True, "ready"))
+        monkeypatch.setattr(location + ".check_harbor_readiness", lambda: (True, "0.25.0"))
+    monkeypatch.setattr("agent_benchmark.harbor.runner.shutil.which", lambda _: "harbor")
+    monkeypatch.setattr("agent_benchmark.harbor.runner.command_lock", lambda _: nullcontext())
+    calls = []
+
+    def dispatch(*args, **kwargs):
+        calls.append(args)
+        raise RuntimeError("synthetic dispatch boundary")
+
+    monkeypatch.setattr("agent_benchmark.harbor.runner.subprocess.run", dispatch)
+    plan = plan_benchmark(
+        "aider/aider-polyglot",
+        agent="opencode",
+        base_url=manifest["provenance"]["effective_base_url"],
+        task_ids=manifest["tasks"],
+    )
+
+    def run():
+        return execute_harbor_run(
+            plan,
+            execute=True,
+            output_dir=tmp_path / "out",
+            jobs_dir=tmp_path / "jobs",
+            state_dir=tmp_path / "state",
+            study_adapter=True,
+            study_run_dir=run_dir,
+            study_manifest=manifest,
+            study_policy=manifest["prompt_policy"],
+            registry_path=run_dir / "registry" / "registry.json",
+        )
+
+    with pytest.raises(RuntimeError, match="synthetic dispatch boundary"):
+        run()
+    assert len(calls) == 1
+    runtime["daemon"] = "changed"
+    with pytest.raises(PreflightCheckError, match="RUNTIME_MISMATCH"):
+        run()
+    assert len(calls) == 1

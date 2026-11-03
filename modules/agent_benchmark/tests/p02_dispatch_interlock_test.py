@@ -18,6 +18,7 @@ class Dispatched(Exception):
 def study(tmp_path, monkeypatch):
     runtime = {"image": "synthetic", "monitor_url": "http://host.docker.internal:8788/v1/chat/completions"}
     manifest = {
+        "run_id": "synthetic-run",
         "prompt_policy": {"id": "sv0-unmodified-v1"},
         "provenance": {"effective_base_url": "http://host.docker.internal:8788/v1"},
     }
@@ -25,6 +26,12 @@ def study(tmp_path, monkeypatch):
     monkeypatch.setattr("agent_benchmark.network_receipt.runtime_fingerprint", lambda *_: runtime.copy())
     report = {
         "status": "PASS",
+        "schema": "sv-harbor-network-qualification-v1",
+        "evidence_origin": "live-probe",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "harbor_version": "0.25.0",
+        "harbor_task_config_network_policy": NETWORK_POLICY,
+        "effective_verifier_policy": NETWORK_POLICY["verifier"],
         "container_cleanup": "PASS",
         "inference": "never",
         "benchmark_tasks": "never",
@@ -38,9 +45,10 @@ def study(tmp_path, monkeypatch):
         "probes": {
             "agent_phase_exit_code": 0,
             "verifier_no_network_exit_code": 0,
-            "local_monitor_gateway_route": {"reachable": True},
-            "external_dns_direct": {"resolved": False},
-            "local_resolver_external_name_lookup": {"resolved": False},
+            "local_monitor_gateway_route": {"reachable": True, "status": 405, "method": "OPTIONS"},
+            "external_dns_direct": {"resolved": False, "error": "ECONNREFUSED"},
+            "external_tcp_direct_ip": {"connected": False},
+            "local_resolver_external_name_lookup": {"resolved": False, "error": "EAI_AGAIN"},
             "external_https_unlisted_sni": {"connected": False},
             "external_https_direct_ip_no_sni": {"connected": False},
             "proxy_environment_names": [],
@@ -119,6 +127,7 @@ def test_valid_synthetic_receipt_reaches_harbor_once(study):
         "runtime",
         "policy",
         "evidence",
+        "synthetic_origin",
     ],
 )
 def test_invalid_synthetic_receipt_never_reaches_harbor(study, failure):
@@ -151,6 +160,8 @@ def test_invalid_synthetic_receipt_never_reaches_harbor(study, failure):
             receipt["study_policy_sha256"] = "c" * 64
         elif failure == "evidence":
             receipt["evidence"]["probes"]["external_dns_direct"]["resolved"] = True
+        elif failure == "synthetic_origin":
+            receipt["evidence"]["evidence_origin"] = "synthetic-test"
         elif failure == "failed":
             receipt["status"] = "FAIL"
         if failure != "altered":
@@ -159,3 +170,61 @@ def test_invalid_synthetic_receipt_never_reaches_harbor(study, failure):
     with pytest.raises(PreflightCheckError, match="NETWORK_QUALIFICATION_"):
         run()
     assert calls == []
+
+
+def test_copied_receipt_is_rejected_for_another_run(study, tmp_path):
+    from agent_benchmark.network_receipt import ReceiptRejected, validate_receipt
+    import shutil
+
+    path, _, _, _ = study
+    other = tmp_path / "other-run"
+    other.mkdir()
+    shutil.copyfile(path, other / "network-qualification.json")
+    manifest = {
+        "run_id": "other-run",
+        "prompt_policy": {"id": "sv0-unmodified-v1"},
+        "provenance": {"effective_base_url": "http://host.docker.internal:8788/v1"},
+    }
+    with pytest.raises(ReceiptRejected, match="RUN_MISMATCH"):
+        validate_receipt(other, manifest)
+
+
+def test_runtime_drift_rejects_before_harbor(study, monkeypatch):
+    _, _, calls, run = study
+    monkeypatch.setattr("agent_benchmark.network_receipt.runtime_fingerprint", lambda *_: {"changed": True})
+    with pytest.raises(PreflightCheckError, match="RUNTIME_MISMATCH"):
+        run()
+    assert calls == []
+
+
+def test_direct_runner_cannot_disable_study_adapter(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr("agent_benchmark.harbor.runner.subprocess.run", lambda *a, **k: calls.append(a))
+    with pytest.raises(PreflightCheckError, match="protected study adapter"):
+        execute_harbor_run(
+            SimpleNamespace(),
+            execute=True,
+            output_dir=tmp_path,
+            study_adapter=False,
+            study_manifest={"study_adapter": "opencode-v1-isolated-v1"},
+        )
+    assert calls == []
+
+
+def test_receipt_cannot_refresh_old_probe_timestamp(study, tmp_path):
+    from agent_benchmark.network_receipt import ReceiptRejected, make_receipt, validate_receipt
+
+    path, receipt, _, _ = study
+    report = receipt["evidence"]
+    report["created_at"] = (datetime.now(timezone.utc) - timedelta(days=2)).isoformat()
+    manifest = {
+        "run_id": "synthetic-run",
+        "prompt_policy": {"id": "sv0-unmodified-v1"},
+        "provenance": {"effective_base_url": "http://host.docker.internal:8788/v1"},
+    }
+    refreshed = make_receipt(
+        report, manifest, tmp_path, image="synthetic", monitor_url=receipt["runtime"]["monitor_url"]
+    )
+    path.write_text(json.dumps(refreshed), encoding="utf-8")
+    with pytest.raises(ReceiptRejected, match="STALE"):
+        validate_receipt(tmp_path, manifest)

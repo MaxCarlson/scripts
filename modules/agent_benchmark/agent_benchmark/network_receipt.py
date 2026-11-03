@@ -8,9 +8,7 @@ import importlib.metadata
 import json
 import os
 from pathlib import Path
-import shutil
 import subprocess
-import sys
 from typing import Any
 
 from .study_network_policy import NETWORK_POLICY, NETWORK_POLICY_ID, verify_study_network_manifest
@@ -21,6 +19,7 @@ REQUIRED_GATES = (
     "policy",
     "local_monitor_gateway_route",
     "external_dns_direct_denied",
+    "external_tcp_direct_ip_denied",
     "external_dns_name_lookup_denied",
     "external_https_unlisted_sni_denied",
     "external_https_direct_ip_no_sni_denied",
@@ -54,21 +53,37 @@ def runtime_fingerprint(image: str, monitor_url: str) -> dict[str, Any]:
 
     info = docker("info", "--format", "{{json .}}")
     images = docker("image", "inspect", image)
-    python = Path(os.environ.get("HARBOR_025_PYTHON", sys.executable)).resolve(strict=True)
-    harbor_cli = shutil.which("harbor") or shutil.which("uv")
-    if os.environ.get("HARBOR_025_PYTHON"):
-        version_result = subprocess.run(
-            [str(python), "-c", "import importlib.metadata; print(importlib.metadata.version('harbor'))"],
-            capture_output=True,
-            text=True,
-            timeout=10,
-            check=True,
-        )
-        harbor_version = version_result.stdout.strip()
-    else:
-        harbor_version = importlib.metadata.version("harbor")
-    if not harbor_cli and not os.environ.get("HARBOR_025_PYTHON"):
-        raise ValueError("Harbor executable is unavailable")
+    configured_python = os.environ.get("HARBOR_025_PYTHON")
+    if not configured_python:
+        raise ValueError("HARBOR_025_PYTHON must identify the qualified Harbor runtime")
+    python = Path(configured_python).resolve(strict=True)
+    runtime_script = r"""
+import hashlib, importlib.metadata, json
+from pathlib import Path
+
+dist = importlib.metadata.distribution("harbor")
+digest = hashlib.sha256()
+files = sorted(str(item) for item in (dist.files or []) if str(item).startswith("harbor/")
+               and (Path(str(item)).suffix in {".py", ".yaml", ".yml", ".sh", ".toml"}
+                    or Path(str(item)).name == "Dockerfile"))
+if not files:
+    raise RuntimeError("Harbor package files unavailable")
+for name in files:
+    path = Path(dist.locate_file(name))
+    if not path.is_file():
+        raise RuntimeError("Harbor package file unavailable")
+    digest.update(name.encode() + b"\0" + hashlib.sha256(path.read_bytes()).digest())
+print(json.dumps({"version": dist.version, "package_sha256": digest.hexdigest()}))
+"""
+    version_result = subprocess.run(
+        [str(python), "-B", "-c", runtime_script],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    harbor_identity = json.loads(version_result.stdout)
+    harbor_version = harbor_identity["version"]
     result = {
         "docker_id": info.get("ID"),
         "docker_server_version": info.get("ServerVersion"),
@@ -79,7 +94,8 @@ def runtime_fingerprint(image: str, monitor_url: str) -> dict[str, Any]:
         "image_id": images[0].get("Id") if isinstance(images, list) and images else None,
         "harbor_version": harbor_version,
         "harbor_python": str(python),
-        "harbor_executable": str(Path(harbor_cli).resolve()) if harbor_cli else str(python),
+        "harbor_python_sha256": hashlib.sha256(python.read_bytes()).hexdigest(),
+        "harbor_package_sha256": harbor_identity["package_sha256"],
         "monitor_url": monitor_url,
     }
     if any(not isinstance(value, str) or not value for value in result.values()) or harbor_version != "0.25.0":
@@ -87,12 +103,46 @@ def runtime_fingerprint(image: str, monitor_url: str) -> dict[str, Any]:
     return result
 
 
+def _evidence_matches(receipt: dict[str, Any]) -> bool:
+    from .network_qualification import _probe_gates
+
+    evidence = receipt["evidence"]
+    return not (
+        not isinstance(evidence, dict)
+        or evidence.get("status") != "PASS"
+        or evidence.get("inference") != "never"
+        or evidence.get("benchmark_tasks") != "never"
+        or evidence.get("container_created") is not True
+        or evidence.get("egress_sidecar_enabled") is not True
+        or evidence.get("container_cleanup") != "PASS"
+        or evidence.get("gates") != receipt["gates"]
+        or evidence.get("created_at") != receipt["created_at"]
+        or evidence.get("schema") != "sv-harbor-network-qualification-v1"
+        or evidence.get("evidence_origin") != "live-probe"
+        or evidence.get("harbor_version") != "0.25.0"
+        or evidence.get("harbor_task_config_network_policy") != NETWORK_POLICY
+        or evidence.get("effective_verifier_policy") != NETWORK_POLICY["verifier"]
+        or evidence.get("policy_id") != NETWORK_POLICY_ID
+        or evidence.get("network_policy") != NETWORK_POLICY
+        or evidence.get("docker_image") != receipt["runtime"]["image"]
+        or evidence.get("probes", {}).get("agent_phase_exit_code") != 0
+        or evidence.get("probes", {}).get("verifier_no_network_exit_code") != 0
+        or any(
+            evidence["gates"].get(k) != v
+            for k, v in _probe_gates(evidence["probes"], evidence.get("effective_agent_policy", {})).items()
+        )
+    )
+
+
 def make_receipt(
     report: dict[str, Any], manifest: dict[str, Any], run_dir: Path, *, image: str, monitor_url: str
 ) -> dict[str, Any]:
-    created = datetime.now(timezone.utc)
+    created = datetime.fromisoformat(report["created_at"])
+    if created.utcoffset() is None:
+        raise ValueError("probe timestamp must include a timezone")
     receipt = {
         "schema": "sv-network-receipt-v1",
+        "run_id": manifest["run_id"],
         "policy_id": NETWORK_POLICY_ID,
         "network_policy": NETWORK_POLICY,
         "task_snapshot_sha256": snapshot_digest(manifest, run_dir),
@@ -106,6 +156,11 @@ def make_receipt(
         "evidence": report,
     }
     if not isinstance(receipt["gates"], dict) or any(receipt["gates"].get(gate) != "PASS" for gate in REQUIRED_GATES):
+        receipt["status"] = "UNVERIFIED"
+    try:
+        if not _evidence_matches(receipt):
+            receipt["status"] = "UNVERIFIED"
+    except (AttributeError, KeyError, TypeError, ValueError):
         receipt["status"] = "UNVERIFIED"
     receipt["sha256"] = canonical_sha256(receipt)
     return receipt
@@ -140,6 +195,12 @@ def validate_receipt(run_dir: Path | None, manifest: dict[str, Any] | None) -> N
             or receipt["network_policy"] != NETWORK_POLICY
         ):
             raise ReceiptRejected("POLICY_MISMATCH")
+        if (
+            not isinstance(manifest.get("run_id"), str)
+            or not manifest["run_id"]
+            or receipt["run_id"] != manifest["run_id"]
+        ):
+            raise ReceiptRejected("RUN_MISMATCH")
         created = datetime.fromisoformat(receipt["created_at"])
         expires = datetime.fromisoformat(receipt["expires_at"])
         now = datetime.now(timezone.utc)
@@ -158,28 +219,7 @@ def validate_receipt(run_dir: Path | None, manifest: dict[str, Any] | None) -> N
             receipt["gates"].get(gate) != "PASS" for gate in REQUIRED_GATES
         ):
             raise ReceiptRejected("PROBE_FAILED")
-        from .network_qualification import _probe_gates
-
-        evidence = receipt["evidence"]
-        if (
-            not isinstance(evidence, dict)
-            or evidence.get("status") != "PASS"
-            or evidence.get("inference") != "never"
-            or evidence.get("benchmark_tasks") != "never"
-            or evidence.get("container_created") is not True
-            or evidence.get("egress_sidecar_enabled") is not True
-            or evidence.get("container_cleanup") != "PASS"
-            or evidence.get("gates") != receipt["gates"]
-            or evidence.get("policy_id") != NETWORK_POLICY_ID
-            or evidence.get("network_policy") != NETWORK_POLICY
-            or evidence.get("docker_image") != receipt["runtime"]["image"]
-            or evidence.get("probes", {}).get("agent_phase_exit_code") != 0
-            or evidence.get("probes", {}).get("verifier_no_network_exit_code") != 0
-            or any(
-                evidence["gates"].get(k) != v
-                for k, v in _probe_gates(evidence["probes"], evidence.get("effective_agent_policy", {})).items()
-            )
-        ):
+        if not _evidence_matches(receipt):
             raise ReceiptRejected("EVIDENCE_MISMATCH")
         if receipt["study_policy_sha256"] != canonical_sha256(manifest["prompt_policy"]):
             raise ReceiptRejected("STUDY_POLICY_MISMATCH")
