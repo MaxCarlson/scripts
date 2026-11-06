@@ -10,6 +10,7 @@ import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import sys
 import time
@@ -514,6 +515,24 @@ class ManagedInstallation:
             time.sleep(0.5)
         return None
 
+    @staticmethod
+    def _coordinator_port_open() -> bool:
+        try:
+            with socket.create_connection(("127.0.0.1", 1235), timeout=0.3):
+                return True
+        except OSError:
+            return False
+
+    @staticmethod
+    def _request_graceful_shutdown(token: str) -> httpx.Response:
+        with httpx.Client(timeout=60.0) as client:
+            return client.post(
+                f"{COORDINATOR_URL}/_coordinator/shutdown",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"operator": os.environ.get("USERNAME", "operator"),
+                      "reason": "Resource Coordinator teardown"},
+            )
+
     def doctor(self) -> Dict[str, Any]:
         try:
             task_rows = [asdict(task) for task in self.task_backend.status()]
@@ -626,10 +645,22 @@ class ManagedInstallation:
         if status is None:
             return self._offline_teardown(plan, non_interactive=non_interactive)
         gpu = status.get("gpu_inference", {})
-        if int(gpu.get("active_count", 0)) or int(gpu.get("pending_count", 0)):
-            raise InstallationError("Teardown refused while inference is active or pending.")
+        if status.get("service_state") != "ready":
+            raise InstallationError(
+                f"Teardown refused because coordinator is not ready ({status.get('service_state')})."
+            )
         if gpu.get("is_restart_inhibited"):
             raise InstallationError("Teardown refused while inference state is restart-inhibited.")
+        try:
+            config = load_config(self.paths.config)
+            state_path = Path(config.service.state_persistence_path)
+            if not config.service.state_persistence_path or not state_path.is_file():
+                raise ValueError("durable state path is missing")
+            StateCodec.load(state_path)
+        except Exception as exc:
+            raise InstallationError(
+                "Teardown refused because a valid durable journal cannot be verified; no service state was changed."
+            ) from exc
         owned_processes = [
             proc for proc in status.get("processes", {}).values()
             if proc.get("is_coordinator_owned") and proc.get("pid") and proc.get("create_time")
@@ -642,23 +673,28 @@ class ManagedInstallation:
                 "Run 'resource-coordinator auth doctor' offline and repair the credential first."
             ) from exc
         try:
-            with httpx.Client(timeout=60.0) as client:
-                response = client.post(
-                    f"{COORDINATOR_URL}/_coordinator/shutdown",
-                    headers={"Authorization": f"Bearer {token}"},
-                    json={"operator": os.environ.get("USERNAME", "operator"), "reason": "Resource Coordinator teardown"},
-                )
+            response = self._request_graceful_shutdown(token)
         except httpx.HTTPError as exc:
             raise InstallationError(f"Could not request graceful shutdown: {exc}") from exc
         if response.status_code != 202:
             raise InstallationError(f"Graceful coordinator shutdown failed ({response.status_code}).")
         deadline = time.monotonic() + 30.0
         while time.monotonic() < deadline:
-            if self._service_status() is None:
+            if not self._coordinator_port_open():
                 break
             time.sleep(0.5)
         else:
             raise InstallationError("Coordinator did not release its service port after shutdown.")
+        try:
+            lock_path = state_path.with_suffix(".lock")
+            lock = SingleInstanceLock(lock_path)
+            if not lock.acquire():
+                raise InstallationError("Coordinator port closed but its instance lock remains held.")
+            lock.release()
+        except InstallationError:
+            raise
+        except Exception as exc:
+            raise InstallationError("Could not verify coordinator instance-lock release.") from exc
         if owned_processes:
             import psutil
 

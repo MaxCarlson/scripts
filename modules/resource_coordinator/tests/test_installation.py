@@ -246,8 +246,8 @@ def test_startup_install_registers_task_without_starting_service(tmp_path, monke
     "status, message",
     [
         (None, "durable state is missing"),
-        ({"gpu_inference": {"active_count": 1, "pending_count": 0}}, "inference is active or pending"),
-        ({"gpu_inference": {"active_count": 0, "pending_count": 1}}, "inference is active or pending"),
+        ({"service_state": "draining", "gpu_inference": {}}, "not ready"),
+        ({"service_state": "ready", "gpu_inference": {"is_restart_inhibited": True}}, "restart-inhibited"),
     ],
 )
 def test_teardown_refuses_unknown_or_active_service_state_without_changing_tasks(tmp_path, status, message):
@@ -263,6 +263,46 @@ def test_teardown_refuses_unknown_or_active_service_state_without_changing_tasks
 
     assert task.name in tasks.items
     assert tasks.items[task.name].enabled is True
+
+
+def test_teardown_asks_coordinator_to_drain_active_inference_before_removing_startup(tmp_path, monkeypatch):
+    import httpx
+
+    paths, _ = make_paths(tmp_path)
+    _write_offline_journal(paths)
+    tasks = MemoryTasks()
+    task = tasks.install("logon", paths.launcher)
+    tasks.set_enabled(task, True)
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: {
+        "service_state": "ready",
+        "gpu_inference": {"active_count": 1, "pending_count": 2, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    manager._coordinator_port_open = lambda: False
+    shutdown_requests = []
+    manager._request_graceful_shutdown = lambda token: shutdown_requests.append(token) or httpx.Response(202)
+    monkeypatch.setattr("resource_coordinator.installation.load_token", lambda: "unit-test-token")
+
+    result = manager.teardown(apply=True)
+
+    assert result["status"] == "applied"
+    assert shutdown_requests == ["unit-test-token"]
+    assert task.name not in tasks.items
+
+
+def test_teardown_requires_valid_durable_journal_before_requesting_shutdown(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    manager = ManagedInstallation(paths, MemoryTasks())
+    manager._service_status = lambda: {
+        "service_state": "ready",
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    manager._request_graceful_shutdown = lambda token: pytest.fail("must preserve running service")
+
+    with pytest.raises(InstallationError, match="valid durable journal"):
+        manager.teardown(apply=True)
 
 
 def test_offline_teardown_removes_owned_startup_artifacts_and_preserves_durable_data(tmp_path):
