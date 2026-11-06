@@ -1,6 +1,7 @@
 import base64
 import json
 import re
+import sys
 from pathlib import Path
 
 import pytest
@@ -10,10 +11,12 @@ from resource_coordinator.installation import (
     InstallationPaths,
     ManagedInstallation,
     StartupTask,
+    TASK_NAMES,
     TASK_MARKER,
     _clean_powershell_error,
     WindowsStartupTaskBackend,
 )
+from resource_coordinator.cli import parse_args
 
 
 class MemoryTasks:
@@ -48,6 +51,13 @@ class MemoryTasks:
     def start(self, task, *, non_interactive=False):
         self.start_calls.append(task.name)
 
+    def snapshot(self, task):
+        assert task.owned
+        return {"definition": f"<Task name='{task.name}' />", "enabled": task.enabled}
+
+    def restore_snapshot(self, task, snapshot, *, non_interactive=False):
+        self.items[task.name] = task
+
 
 def make_paths(tmp_path: Path):
     home = tmp_path / "home"
@@ -55,7 +65,10 @@ def make_paths(tmp_path: Path):
     template = repo / "modules" / "resource_coordinator" / "config.production-template.yaml"
     template.parent.mkdir(parents=True)
     template.write_text("version: '1.0'\nprocesses: {}\npolicies: []\n", encoding="utf-8")
-    paths = InstallationPaths.discover(home=home, repository=repo, python=Path("C:/Python/python.exe"))
+    package = repo / "modules" / "resource_coordinator" / "resource_coordinator"
+    package.mkdir(parents=True)
+    (package / "__init__.py").write_text("__version__ = '0.10.0'\n", encoding="utf-8")
+    paths = InstallationPaths.discover(home=home, repository=repo, python=Path(sys.executable))
     return paths, template
 
 
@@ -100,6 +113,413 @@ def test_setup_without_apply_is_a_plan_and_does_not_create_files(tmp_path):
     assert tasks.install_calls == []
 
 
+def test_upgrade_cli_defaults_to_preview_and_supports_apply_json_and_non_interactive():
+    preview = parse_args(["upgrade"])
+    apply = parse_args(["upgrade", "-a", "-j", "-n"])
+
+    assert preview.command == "upgrade"
+    assert preview.apply is False
+    assert preview.json is False
+    assert preview.non_interactive is False
+    assert apply.command == "upgrade"
+    assert apply.apply is True
+    assert apply.json is True
+    assert apply.non_interactive is True
+
+
+def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses: {{}}\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    task = StartupTask(
+        TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+        f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True,
+    )
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: {
+        "service_state": "ready", "runtime": {"pid": 51, "stop_miner_on_shutdown": True},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+
+    result = manager.upgrade()
+
+    assert result["status"] == "planned"
+    assert result["runtime_legacy"] is True
+    assert result["will_drain_inference"] is True
+    assert not paths.upgrade_receipt.exists()
+    assert not paths.upgrade_policy.exists()
+    assert tasks.install_calls == []
+    assert tasks.start_calls == []
+
+    tasks._admin = lambda: False
+    noninteractive = manager.upgrade(apply=True, non_interactive=True)
+    assert noninteractive["status"] == "blocked"
+    assert any("non-interactive mode forbids UAC" in item for item in noninteractive["preflight"]["blockers"])
+    assert not paths.upgrade_receipt.exists()
+
+
+def test_upgrade_noop_when_runtime_fingerprint_and_managed_launcher_match(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses: {{}}\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{paths.launcher}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    identity = {"version": "0.10.0", "source_path": str(paths.repository / "modules/resource_coordinator/resource_coordinator/__init__.py"),
+                "revision": "same-source"}
+    monkeypatch.setattr(installation_module, "build_runtime_identity", lambda package: identity)
+    manager._service_status = lambda: {
+        "service_state": "ready", "runtime": {**identity, "pid": 51},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+
+    result = manager.upgrade(apply=True)
+
+    assert result["status"] == "already-current"
+    assert result["phase"] == "VERIFIED"
+    assert tasks.install_calls == []
+    assert tasks.start_calls == []
+    assert not paths.upgrade_receipt.exists()
+
+    manager._service_status = lambda: {
+        "service_state": "ready", "runtime": {**identity, "revision": "previous-source-revision", "pid": 51},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    changed_source = manager.upgrade()
+    assert changed_source["status"] == "planned"
+    assert changed_source["runtime_revision"] == "previous-source-revision"
+    assert changed_source["source_revision"] == "same-source"
+
+
+def test_upgrade_shutdown_rejection_restores_prepared_launcher_and_leaves_task_untouched(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses: {{}}\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: {
+        "service_state": "ready", "runtime": {"pid": 51},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {},
+    }
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_request_graceful_shutdown",
+                        lambda self, token: type("Response", (), {"status_code": 404})())
+
+    with pytest.raises(InstallationError, match="not accepted"):
+        manager.upgrade(apply=True)
+
+    assert not paths.launcher.exists()
+    assert not paths.upgrade_policy.exists()
+    assert tasks.install_calls == []
+    assert tasks.start_calls == []
+    receipt = json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))
+    assert receipt["phase"] == "RECOVERY_REQUIRED"
+    assert receipt["failed_at"] == "DRAINING"
+
+
+def test_upgrade_preserves_manual_miner_hold_while_verifying_new_runtime(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses:\n"
+        "  krig_miner:\n    backend: fake\n    executable: C:/Mining/krig-miner.exe\n"
+        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    from resource_coordinator.core.durable_state import PersistedProcess
+    durable_state = StateCodec.load(paths.state)
+    durable_state.processes["krig_miner"] = PersistedProcess(
+        name="krig_miner", is_manual_override=True, lifecycle_owner="coordinator"
+    )
+    StateCodec.save_atomic(durable_state, paths.state)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    runtime_identity = {
+        "version": "0.10.0",
+        "source_path": str(paths.repository / "modules/resource_coordinator/resource_coordinator/__init__.py"),
+        "revision": "new-revision",
+    }
+    old_service = {
+        "service_state": "ready", "runtime": {"pid": 51, "stop_miner_on_shutdown": True},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {"krig_miner": {"name": "krig_miner", "state": "running",
+                                      "is_coordinator_owned": True, "pid": 91, "create_time": 30.0}},
+    }
+    statuses = iter([old_service, None, None])
+    manager._service_status = lambda: next(statuses)
+    new_service = {
+        "service_state": "ready", "runtime": {**runtime_identity, "pid": 52},
+        "upstream_url": "http://127.0.0.1:1234",
+        "processes": {"krig_miner": {"name": "krig_miner", "state": "stopped",
+                                      "is_coordinator_owned": False}},
+    }
+    manager._wait_for_service = lambda timeout=30.0: new_service
+    monkeypatch.setattr(installation_module, "build_runtime_identity", lambda package: runtime_identity)
+    monkeypatch.setattr(installation_module, "_exact_process_is_alive", lambda pid, created: False)
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
+    listener_identities = iter([
+        {"pid": 51, "create_time": 10.0},
+        {"pid": 52, "create_time": 20.0},
+    ])
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: next(listener_identities))
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: {"power_limit_w": 550.0})
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_request_graceful_shutdown",
+                        staticmethod(lambda token: type("Response", (), {"status_code": 202})()))
+    resume_calls = []
+    monkeypatch.setattr(installation_module.httpx, "post",
+                        lambda *args, **kwargs: resume_calls.append((args, kwargs)) or
+                        type("Response", (), {"status_code": 200})())
+
+    class ControlClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(installation_module.httpx, "Client", ControlClient)
+
+    result = manager.upgrade(apply=True, timeout=0.1)
+
+    assert result["status"] == "verified"
+    assert result["runtime"]["revision"] == "new-revision"
+    assert tasks.install_calls == [("logon", paths.launcher, False)]
+    assert tasks.start_calls == ["ResourceCoordinator-KRig-Logon"]
+    assert resume_calls == []
+    receipt = json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))
+    assert receipt["phase"] == "VERIFIED"
+
+
+def test_interrupted_upgrade_retries_only_after_old_owner_and_lock_are_gone(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses: {{}}\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    runtime_identity = {
+        "version": "0.10.0",
+        "source_path": str(paths.repository / "modules/resource_coordinator/resource_coordinator/__init__.py"),
+        "revision": "retry-revision",
+    }
+    new_service = {"service_state": "ready", "runtime": {**runtime_identity, "pid": 52},
+                   "upstream_url": "http://127.0.0.1:1234", "processes": {}}
+    manager._service_status = lambda: None
+    manager._wait_for_service = lambda timeout=30.0: new_service
+    monkeypatch.setattr(installation_module, "build_runtime_identity", lambda package: runtime_identity)
+    listener_results = iter([None, None, {"pid": 52, "create_time": 20.0}])
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: next(listener_results))
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
+    monkeypatch.setattr(installation_module, "_exact_process_is_alive", lambda pid, created: False)
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+
+    class ControlClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(installation_module.httpx, "Client", ControlClient)
+    paths.upgrade_receipt.write_text(json.dumps({
+        "schema": 1,
+        "phase": "RECOVERY_REQUIRED",
+        "failed_at": "DRAINING",
+        "source": runtime_identity,
+        "old_service_pid": 51,
+        "old_service_create_time": 10.0,
+        "old_miner": {},
+        "miner_was_running": False,
+        "miner_resume_allowed": False,
+        "configured_gpu_settings": {},
+        "task_snapshot": {"definition": "<Task />", "enabled": True},
+    }), encoding="utf-8")
+
+    result = manager.upgrade(apply=True)
+
+    assert result["status"] == "verified"
+    assert result["recovered"] is True
+    assert tasks.start_calls == ["ResourceCoordinator-KRig-Logon"]
+    assert json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))["phase"] == "VERIFIED"
+
+
+def test_upgrade_never_starts_replacement_while_original_miner_pid_is_alive(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{paths.state}'\nprocesses:\n"
+        "  krig_miner:\n    backend: fake\n    executable: C:/Mining/krig-miner.exe\n"
+        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+    StateCodec.initialize(paths.state)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    manager = ManagedInstallation(paths, tasks)
+    old_service = {
+        "service_state": "ready", "runtime": {"pid": 51, "stop_miner_on_shutdown": True},
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {"krig_miner": {"name": "krig_miner", "state": "running",
+                                      "is_coordinator_owned": True, "pid": 91, "create_time": 30.0}},
+    }
+    statuses = iter([old_service, None])
+    manager._service_status = lambda: next(statuses)
+    monkeypatch.setattr(installation_module, "_listener_identity",
+                        lambda: {"pid": 51, "create_time": 10.0})
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
+    monkeypatch.setattr(installation_module, "_exact_process_is_alive",
+                        lambda pid, created: pid == 91)
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: {"power_limit_w": 550.0})
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
+    monkeypatch.setattr(installation_module.ManagedInstallation, "_request_graceful_shutdown",
+                        staticmethod(lambda token: type("Response", (), {"status_code": 202})()))
+
+    with pytest.raises(InstallationError, match="Original coordinator-owned miner is still running"):
+        manager.upgrade(apply=True, timeout=0.1)
+
+    assert tasks.install_calls == []
+    assert tasks.start_calls == []
+    assert not paths.upgrade_policy.exists()
+    receipt = json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))
+    assert receipt["phase"] == "RECOVERY_REQUIRED"
+    assert receipt["failed_at"] == "DRAINING"
+
+
+def test_ready_gpu_recovery_resumes_only_the_prior_coordinator_owned_miner(tmp_path, monkeypatch):
+    import resource_coordinator.installation as installation_module
+
+    paths, _ = make_paths(tmp_path)
+    tasks = MemoryTasks()
+    manager = ManagedInstallation(paths, tasks)
+    runtime = {"version": "0.10.0", "source_path": "C:/source/__init__.py", "revision": "new"}
+    miner_stopped = {"state": "stopped", "is_coordinator_owned": False}
+    service = {
+        "service_state": "ready", "runtime": runtime, "upstream_url": "http://127.0.0.1:1234",
+        "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
+        "processes": {"krig_miner": miner_stopped},
+    }
+    service_after_resume = {
+        **service,
+        "processes": {"krig_miner": {"state": "running", "is_coordinator_owned": True, "pid": 83}},
+    }
+    paths.upgrade_receipt.parent.mkdir(parents=True, exist_ok=True)
+    paths.upgrade_receipt.write_text(json.dumps({
+        "phase": "RECOVERY_REQUIRED", "failed_at": "NEW_READY", "miner_resume_allowed": True,
+        "configured_gpu_settings": {"power_limit_w": 550.0},
+    }), encoding="utf-8")
+    manager._service_status = lambda: service_after_resume
+    monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: {"power_limit_w": 550.0})
+    monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
+    monkeypatch.setattr(installation_module.httpx, "post",
+                        lambda *args, **kwargs: type("Response", (), {"status_code": 200})())
+
+    class ControlClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def get(self, *_args, **_kwargs):
+            return type("Response", (), {"status_code": 200})()
+
+    monkeypatch.setattr(installation_module.httpx, "Client", ControlClient)
+    result = manager._finalize_ready_upgrade({
+        "service": service, "runtime_current": True,
+        "configured_upstream_url": "http://127.0.0.1:1234",
+        "miner_name": "krig_miner", "miner_manual_hold": False,
+    })
+
+    assert result["status"] == "verified"
+    assert result["recovered"] is True
+    assert json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))["phase"] == "VERIFIED"
+
+
 def test_powershell_clixml_error_is_rendered_as_actionable_plain_text():
     message = _clean_powershell_error(
         '#< CLIXML\n<S S="Error">Exception calling "ProcessRecord": "Access to a CIM resource was not available to the client."</S>'
@@ -120,6 +540,38 @@ def test_task_helper_uses_calling_users_root_and_identity_instead_of_elevated_pr
     payload = json.loads(base64.b64decode(encoded_payload))
     assert payload["managed_root"] == str((tmp_path / ".resource_coordinator").resolve())
     assert payload["interactive_user"] == "EXAMPLE\\mcarls"
+
+
+def test_task_helper_snapshots_and_restores_exact_owned_task_definition(tmp_path):
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / ".resource_coordinator",
+                                        interactive_user="EXAMPLE\\mcarls")
+    snapshot_script = backend._script({"operation": "snapshot", "task_name": TASK_NAMES["logon"]})
+    restore_script = backend._script({"operation": "restore", "task_name": TASK_NAMES["logon"],
+                                       "definition": "<Task />", "enabled": True})
+
+    assert "Export-ScheduledTask" in snapshot_script
+    assert "Test-RcOwned $existing" in snapshot_script
+    assert "Register-ScheduledTask -TaskName $name -Xml" in restore_script
+    assert "Enable-ScheduledTask -TaskName $name" in restore_script
+
+
+def test_managed_launcher_consumes_one_shot_miner_start_suppression_policy(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        "version: '1.0'\nprocesses:\n  krig_miner:\n    backend: fake\n"
+        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        encoding="utf-8",
+    )
+
+    from resource_coordinator.installation import render_launcher
+    script = render_launcher(paths)
+
+    assert "--start-process" in script
+    assert "--stop-process-on-shutdown" in script
+    assert "upgrade-start-policy.json" in script
+    assert "if (-not [bool]$policy.start_miner)" in script
+    assert "if ($serveArgs[$i] -eq '--start-process') { $i++; continue }" in script
 
 
 def test_setup_preserves_existing_configuration_and_is_idempotent(tmp_path, monkeypatch):

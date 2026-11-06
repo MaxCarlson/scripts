@@ -412,6 +412,11 @@ class LMStudioGateway:
         if service.state != ServiceState.READY:
             return JSONResponse({"error": f"Coordinator is not ready ({service.state.value})"}, status_code=409)
 
+        # Close admission synchronously before returning 202. This prevents a
+        # concurrent control or inference request from slipping in before the
+        # ASGI background task begins the graceful drain.
+        service._state = ServiceState.DRAINING
+
         async def drain_and_exit() -> None:
             await service.stop(reason=f"{payload['operator']}: {payload['reason']}")
             if service.state != ServiceState.STOPPED:
@@ -453,10 +458,10 @@ class LMStudioGateway:
                 "service_state": svc.state.value if svc else "standalone",
                 "is_ready": svc.is_ready if svc else self.admission_controller.standalone,
                 "runtime": {
+                    **(getattr(svc, "runtime_identity", {}) if svc else {}),
                     "pid": os.getpid(),
-                    "version": __import__("resource_coordinator").__version__,
-                    "source_path": str(Path(__file__).resolve().parents[2] / "__init__.py"),
-                },
+                    "stop_miner_on_shutdown": bool(getattr(svc, "stop_miner_on_shutdown", False)),
+                } if svc else None,
                 "upstream_url": self.upstream_url,
                 "processes": processes,
                 "gpu_inference": {

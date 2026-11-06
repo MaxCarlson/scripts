@@ -8,6 +8,7 @@ import ctypes
 import getpass
 import json
 import os
+import psutil
 import re
 import shutil
 import socket
@@ -30,6 +31,7 @@ from resource_coordinator.core.operator_credentials import (
     load_or_create_token,
     load_token,
 )
+from resource_coordinator.core.runtime_identity import build_runtime_identity
 
 
 TASK_MARKER = "ResourceCoordinator:Managed:v1"
@@ -62,6 +64,8 @@ class InstallationPaths:
     launcher: Path
     viewer: Path
     coordinator_log: Path
+    upgrade_receipt: Path
+    upgrade_policy: Path
 
     @classmethod
     def discover(cls, *, home: Optional[Path] = None, repository: Optional[Path] = None,
@@ -83,6 +87,8 @@ class InstallationPaths:
             launcher=root / "start-coordinator-managed.ps1",
             viewer=root / "view-krig-managed.ps1",
             coordinator_log=root / "coordinator.log",
+            upgrade_receipt=root / "upgrade-receipt.json",
+            upgrade_policy=root / "upgrade-start-policy.json",
         )
 
 
@@ -179,6 +185,74 @@ def _runtime_source_matches(runtime_source: Optional[str], expected_source: Path
     return os.path.normcase(os.path.realpath(runtime_source)) == os.path.normcase(os.path.realpath(expected_source))
 
 
+def _write_json_atomic(path: Path, value: Dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(path.name + ".new")
+    temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
+    os.replace(temporary, path)
+
+
+def _listener_identity(port: int = 1235) -> Optional[Dict[str, Any]]:
+    """Identify the local listener from the OS, not only from its HTTP response."""
+    try:
+        for connection in psutil.net_connections(kind="inet"):
+            if connection.status != psutil.CONN_LISTEN or not connection.laddr or connection.laddr.port != port:
+                continue
+            if connection.pid is None:
+                continue
+            process = psutil.Process(connection.pid)
+            return {"pid": connection.pid, "create_time": process.create_time()}
+    except (psutil.Error, OSError):
+        return None
+    return None
+
+
+def _exact_process_is_alive(pid: int, create_time: float) -> Optional[bool]:
+    """Return None when identity cannot be checked; uncertainty is never treated as exit."""
+    try:
+        process = psutil.Process(pid)
+        return abs(process.create_time() - float(create_time)) < 0.01
+    except psutil.NoSuchProcess:
+        return False
+    except (psutil.AccessDenied, psutil.Error, OSError, TypeError, ValueError):
+        return None
+
+
+def _configured_executable_running(executable: str) -> Optional[bool]:
+    """Conservatively detect an unmanaged copy of the configured executable."""
+    expected_name = Path(executable).name.casefold()
+    uncertain = False
+    try:
+        for process in psutil.process_iter(["name", "exe"]):
+            try:
+                name = str(process.info.get("name") or "").casefold()
+                if name != expected_name:
+                    continue
+                return True
+            except (psutil.AccessDenied, psutil.Error, OSError):
+                uncertain = True
+    except (psutil.AccessDenied, psutil.Error, OSError):
+        return None
+    return None if uncertain else False
+
+
+def _effective_gpu_settings() -> Optional[Dict[str, Optional[float]]]:
+    try:
+        result = subprocess.run(
+            ["nvidia-smi", "--query-gpu=power.limit,clocks.current.graphics,clocks.current.memory",
+             "--format=csv,noheader,nounits"],
+            capture_output=True, text=True, timeout=5, check=True,
+        )
+        row = next(csv.reader([result.stdout.strip()]))
+        return {
+            "power_limit_w": float(row[0].strip()),
+            "graphics_clock_mhz": float(row[1].strip()),
+            "memory_clock_mhz": float(row[2].strip()),
+        }
+    except (OSError, subprocess.SubprocessError, ValueError, IndexError, StopIteration):
+        return None
+
+
 def _task_identity_valid(task: Dict[str, Any]) -> bool:
     identity = str(task.get("user_id", "")).casefold().strip()
     mode = task.get("mode")
@@ -216,6 +290,7 @@ def render_launcher(paths: InstallationPaths) -> str:
             f"$config = {_ps_single_quote(paths.config)}",
             f"$state = {_ps_single_quote(state_path)}",
             f"$token = {_ps_single_quote(paths.token)}",
+            f"$upgradePolicy = {_ps_single_quote(paths.upgrade_policy)}",
             f"$logDir = {_ps_single_quote(paths.logs)}",
             f"$log = {_ps_single_quote(paths.coordinator_log)}",
             "foreach ($path in @($config, $python)) { if (-not (Test-Path -LiteralPath $path)) { throw \"Required RC path missing: $path\" } }",
@@ -227,6 +302,13 @@ def render_launcher(paths: InstallationPaths) -> str:
             "$env:RESOURCE_COORDINATOR_LOG_DIR = $logDir",
             "New-Item -ItemType Directory -Force -Path $logDir | Out-Null",
             "$serveArgs = @(" + ", ".join(args) + ")",
+            "if (Test-Path -LiteralPath $upgradePolicy) {",
+            "  $policy = Get-Content -LiteralPath $upgradePolicy -Raw | ConvertFrom-Json",
+            "  Remove-Item -LiteralPath $upgradePolicy -Force",
+            "  if (-not [bool]$policy.start_miner) {",
+            "    $filtered = @(); for ($i=0; $i -lt $serveArgs.Count; $i++) { if ($serveArgs[$i] -eq '--start-process') { $i++; continue }; $filtered += $serveArgs[$i] }; $serveArgs = $filtered",
+            "  }",
+            "}",
             "if (-not (Test-Path -LiteralPath $state) -and $serveArgs -notcontains '--first-boot') { $serveArgs += '--first-boot' }",
             "Set-Location -LiteralPath $repoRoot",
             "& $python @serveArgs *>> $log",
@@ -279,7 +361,12 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
     blockers: List[str] = []
     if checks.get("service_ready") is not True:
         blockers.append("coordinator service is not ready")
-    if checks.get("runtime_source_matches") is not True or checks.get("runtime_version_matches") is not True:
+    if checks.get("upgrade_in_progress") is True:
+        blockers.append("an upgrade transition is in progress")
+    if checks.get("upgrade_recovery_required") is True:
+        blockers.append("upgrade recovery is required; inspect the persisted upgrade receipt")
+    if (checks.get("runtime_source_matches") is not True or checks.get("runtime_version_matches") is not True
+            or checks.get("runtime_revision_matches") is False):
         warnings.append("running coordinator source/version does not match the installed Resource Coordinator package")
     if checks.get("credential_ready") is not True:
         blockers.append("operator credential is unavailable or insecure")
@@ -385,6 +472,32 @@ class WindowsStartupTaskBackend:
             return [StartupTask(**task) for task in raw]
         except (json.JSONDecodeError, TypeError, KeyError) as exc:
             raise InstallationError("Scheduled Task status returned invalid data") from exc
+
+    def snapshot(self, task: StartupTask) -> Dict[str, Any]:
+        """Capture the exact owned task XML and enabled state before reconciliation."""
+        if not task.owned or task.mode not in {"boot", "logon"}:
+            raise InstallationError(f"Refusing to snapshot unowned coordinator task {task.name}")
+        result = self._run({"operation": "snapshot", "task_name": task.name})
+        try:
+            snapshot = json.loads(result.stdout)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise InstallationError("Scheduled Task snapshot returned invalid data") from exc
+        if not isinstance(snapshot, dict) or not isinstance(snapshot.get("definition"), str):
+            raise InstallationError("Scheduled Task snapshot is incomplete")
+        return snapshot
+
+    def restore_snapshot(self, task: StartupTask, snapshot: Dict[str, Any], *,
+                         non_interactive: bool = False) -> None:
+        """Restore a previously captured, RC-owned task definition."""
+        if not task.owned or task.mode not in {"boot", "logon"}:
+            raise InstallationError(f"Refusing to restore unowned coordinator task {task.name}")
+        definition = snapshot.get("definition")
+        enabled = snapshot.get("enabled")
+        if not isinstance(definition, str) or type(enabled) is not bool:
+            raise InstallationError("Scheduled Task recovery snapshot is invalid")
+        self._run({"operation": "restore", "task_name": task.name,
+                   "definition": definition, "enabled": enabled}, elevated=True,
+                  non_interactive=non_interactive)
 
     def install(self, mode: str, launcher: Path, *, non_interactive: bool = False) -> StartupTask:
         if mode not in {"boot", "logon"}:
@@ -555,6 +668,17 @@ class ManagedInstallation:
         successful_activation = activation in {
             "already-running", "started", "not-started-by-startup-command"
         }
+        service_for_upgrade = self._service_status() if activate else None
+        expected_runtime = build_runtime_identity(self.paths.repository / "modules" / "resource_coordinator" /
+                                                  "resource_coordinator")
+        reported_runtime = (service_for_upgrade or {}).get("runtime") or {}
+        upgrade_available = bool(
+            service_for_upgrade and service_for_upgrade.get("service_state") == "ready" and
+            (reported_runtime.get("revision") != expected_runtime["revision"] or
+             reported_runtime.get("version") != expected_runtime["version"] or
+             not _runtime_source_matches(reported_runtime.get("source_path"),
+                                        Path(expected_runtime["source_path"])))
+        )
         return {
             "status": "applied" if successful_activation and mining_warning is None else "degraded",
             "created": created,
@@ -565,6 +689,9 @@ class ManagedInstallation:
             "miner_identity_configured": miner_name is not None,
             "mining_warning": mining_warning,
             "service_activation": activation,
+            "runtime_upgrade_available": upgrade_available,
+            "recommendation": "Run 'resource-coordinator upgrade --apply' to activate the current source."
+            if upgrade_available else None,
             "preserved": [str(self.paths.state), str(self.paths.logs)],
         }
 
@@ -611,6 +738,613 @@ class ManagedInstallation:
         updated = [self.task_backend.set_enabled(task, enabled, non_interactive=non_interactive) for task in selected]
         return {"status": "applied", "operation": action, "tasks": [asdict(task) for task in updated],
                 "running_coordinator_affected": False}
+
+    def _upgrade_preflight(self, *, non_interactive: bool = False) -> Dict[str, Any]:
+        """Read-only upgrade inspection. Every unknown ownership fact is a blocker."""
+        source_identity = build_runtime_identity(self.paths.repository / "modules" / "resource_coordinator" /
+                                                 "resource_coordinator")
+        service = self._service_status()
+        tasks = self.task_backend.status()
+        enabled = [task for task in tasks if task.owned and task.enabled and task.mode in {"boot", "logon"}]
+        blockers: List[str] = []
+        if not self.paths.python.is_file():
+            blockers.append(f"configured Python executable is missing: {self.paths.python}")
+        source_package = self.paths.repository / "modules" / "resource_coordinator" / "resource_coordinator" / "__init__.py"
+        if not source_package.is_file():
+            blockers.append(f"current Resource Coordinator source package is missing: {source_package}")
+        try:
+            rendered_launcher = render_launcher(self.paths)
+            if TASK_MARKER not in rendered_launcher or str(self.paths.config) not in rendered_launcher:
+                raise ValueError("managed launcher did not contain expected ownership/configuration markers")
+        except Exception as exc:
+            blockers.append(f"managed launcher cannot be rendered and validated: {exc}")
+        if service is None:
+            blockers.append("coordinator status is unavailable; upgrade will not start a replacement owner")
+        elif service.get("service_state") != "ready":
+            blockers.append(f"coordinator is not ready ({service.get('service_state')})")
+        if len(enabled) != 1:
+            blockers.append(f"expected exactly one enabled RC startup task, found {len(enabled)}")
+        task = enabled[0] if len(enabled) == 1 else None
+        is_admin = getattr(self.task_backend, "_admin", lambda: True)()
+        if non_interactive and not is_admin:
+            blockers.append("startup task update requires administrator approval, but non-interactive mode forbids UAC")
+        if task and (task.run_level != "Highest" or not _task_identity_valid(asdict(task))):
+            blockers.append(f"startup task {task.name} has an unexpected identity or privilege level")
+
+        runtime = (service or {}).get("runtime") or {}
+        listener = _listener_identity()
+        runtime_pid = runtime.get("pid")
+        if listener is None:
+            blockers.append("OS listener identity for port 1235 is unavailable")
+        elif runtime_pid is not None and runtime_pid != listener.get("pid"):
+            blockers.append("HTTP runtime PID does not match the process owning port 1235")
+        elif runtime_pid is None:
+            runtime = {**runtime, "pid": listener.get("pid"), "legacy_identity": True}
+        runtime_create_time = runtime.get("process_create_time")
+        if (listener and runtime_create_time is not None and
+                abs(float(runtime_create_time) - float(listener["create_time"])) > 1.0):
+            blockers.append("HTTP runtime creation time does not match the process owning port 1235")
+
+        config = None
+        journal = None
+        miner_name = None
+        try:
+            config = load_config(self.paths.config)
+            state_path = Path(config.service.state_persistence_path).expanduser()
+            if not config.service.state_persistence_path or not state_path.is_file():
+                raise ValueError("durable state journal is missing")
+            journal = StateCodec.load(state_path)
+            miner_name = _configured_miner(self.paths.config)
+        except Exception as exc:
+            blockers.append(f"configuration or durable journal cannot be verified: {exc}")
+
+        if journal and journal.gaming_mode.get("state", "inactive") != "inactive":
+            blockers.append(f"gaming transition is {journal.gaming_mode.get('state')}; finish it before upgrade")
+        gpu_status = (service or {}).get("gpu_inference", {})
+        if gpu_status.get("is_restart_inhibited"):
+            blockers.append("inference restart is inhibited; resolve the safety inhibition before upgrade")
+        if service and (gpu_status.get("active_count") is None or gpu_status.get("pending_count") is None):
+            blockers.append("service does not report complete active/pending inference counts")
+
+        processes = (service or {}).get("processes", {})
+        miner = processes.get(miner_name, {}) if miner_name else {}
+        miner_state = miner.get("state")
+        miner_running = miner_state == "running"
+        if miner_name and miner_state not in {"running", "stopped"}:
+            blockers.append(f"configured miner state is unavailable or transitional ({miner_state or 'unknown'})")
+        if miner_running and (not miner.get("is_coordinator_owned") or not miner.get("pid") or
+                              miner.get("create_time") is None):
+            blockers.append("running miner ownership or exact process identity is uncertain")
+        if miner_running and not runtime.get("stop_miner_on_shutdown"):
+            blockers.append("running service does not confirm stop-miner-on-shutdown; refusing to risk an orphan")
+        if journal and task and miner_running and not runtime.get("stop_miner_on_shutdown"):
+            launcher_match = re.search(r"-File\s+\"?([^\";]+\.ps1)", task.action, flags=re.IGNORECASE)
+            launcher_path = Path(launcher_match.group(1)) if launcher_match else None
+            if launcher_path and launcher_path.is_file():
+                launcher_text = launcher_path.read_text(encoding="utf-8", errors="replace")
+                if "--stop-process-on-shutdown" in launcher_text and miner_name in launcher_text:
+                    blockers = [b for b in blockers if "stop-miner-on-shutdown" not in b]
+                    runtime = {**runtime, "shutdown_miner_verified_from_launcher": True}
+
+        if journal:
+            uncertain_requests = [
+                request.request_id for request in journal.requests.values()
+                if request.phase in {RequestPhase.POSSIBLY_FORWARDED, RequestPhase.UNCERTAIN}
+            ]
+            if uncertain_requests:
+                blockers.append(
+                    f"durable journal contains uncertain inferences ({len(uncertain_requests)}); resolve recovery first"
+                )
+
+        credential_ok = False
+        try:
+            load_token()
+            credential = credential_doctor()
+            credential_ok = bool(credential.get("credential_valid") and credential.get("credential_file_readable")
+                                 and credential.get("acl_restricted") is True
+                                 and credential.get("environment_override_matches_file") is not False)
+        except Exception:
+            credential_ok = False
+        if not credential_ok:
+            blockers.append("operator credential cannot be safely loaded by this CLI")
+
+        snapshot = None
+        if task:
+            snapshotter = getattr(self.task_backend, "snapshot", None)
+            if not callable(snapshotter):
+                blockers.append("startup backend cannot snapshot the exact task definition for recovery")
+            else:
+                try:
+                    snapshot = snapshotter(task)
+                except Exception as exc:
+                    blockers.append(f"startup task recovery snapshot failed: {exc}")
+
+        configured_gpu = _configured_gpu_settings(config) if config else {}
+        persisted_miner = journal.processes.get(miner_name) if journal and miner_name else None
+        miner_resume_allowed = bool(
+            miner_running and not (persisted_miner and persisted_miner.is_manual_override)
+        )
+        managed_launcher = bool(task and os.path.normcase(str(self.paths.launcher)) in
+                                os.path.normcase(task.action))
+        runtime_current = bool(
+            runtime.get("revision") == source_identity["revision"] and
+            runtime.get("version") == source_identity["version"] and managed_launcher and
+            _runtime_source_matches(runtime.get("source_path"), Path(source_identity["source_path"]))
+        )
+        return {
+            "source": source_identity,
+            "runtime": runtime,
+            "runtime_legacy": not bool(runtime.get("revision")),
+            "managed_launcher_current": managed_launcher,
+            "runtime_current": runtime_current,
+            "service": service,
+            "listener": listener,
+            "task": asdict(task) if task else None,
+            "task_snapshot": snapshot,
+            "miner_name": miner_name,
+            "miner": miner,
+            "miner_was_running": miner_running,
+            "miner_resume_allowed": miner_resume_allowed,
+            "miner_manual_hold": bool(persisted_miner and persisted_miner.is_manual_override),
+            "journal": journal.to_dict() if journal else None,
+            "gaming_state": journal.gaming_mode.get("state", "inactive") if journal else "unknown",
+            "configured_gpu_settings": configured_gpu,
+            "configured_upstream_url": config.service.upstream_url if config else None,
+            "elevation_required": not is_admin,
+            "elevation_mode": "non-interactive-blocked" if non_interactive and not is_admin else
+                              "uac-required" if not is_admin else "already-elevated",
+            "effective_gpu_settings": _effective_gpu_settings(),
+            "blockers": blockers,
+        }
+
+    def _resume_interrupted_upgrade(self, preflight: Dict[str, Any], *,
+                                    non_interactive: bool, timeout: float) -> Optional[Dict[str, Any]]:
+        """Retry only a receipt-backed transition whose old owner is proven gone."""
+        try:
+            receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return None
+        if receipt.get("phase") not in {
+            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_UPDATED", "RECOVERY_REQUIRED"
+        }:
+            return None
+        if receipt.get("source", {}).get("revision") != preflight["source"].get("revision"):
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["source changed since the interrupted upgrade; inspect the receipt before retrying"]}
+        expected_absent = {"coordinator status is unavailable; upgrade will not start a replacement owner",
+                           "OS listener identity for port 1235 is unavailable"}
+        blockers = list(preflight["blockers"])
+        unknown_miner = next((item for item in blockers if item.startswith("configured miner state is unavailable")), None)
+        if unknown_miner and preflight.get("miner_name"):
+            miner_config = load_config(self.paths.config).processes[preflight["miner_name"]]
+            executable_running = _configured_executable_running(miner_config.executable)
+            if executable_running is False:
+                blockers.remove(unknown_miner)
+            else:
+                return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                        "blockers": ["offline miner process identity is uncertain" if executable_running is None else
+                                     "a configured miner process is still running"]}
+        if set(blockers) - expected_absent:
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED", "blockers": blockers}
+        if self._coordinator_port_open() or _listener_identity() is not None:
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["a coordinator listener exists; recovery will not start another owner"]}
+        old_pid = receipt.get("old_service_pid")
+        old_created = receipt.get("old_service_create_time")
+        if type(old_pid) is not int or type(old_created) not in (int, float):
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["receipt lacks the old coordinator's exact process identity"]}
+        if _exact_process_is_alive(old_pid, float(old_created)) is not False:
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["old coordinator process has not been proven exited"]}
+        old_miner = receipt.get("old_miner") or {}
+        if receipt.get("miner_was_running"):
+            pid, created = old_miner.get("pid"), old_miner.get("create_time")
+            if type(pid) is not int or type(created) not in (int, float):
+                return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                        "blockers": ["receipt lacks the prior miner's exact process identity"]}
+            if _exact_process_is_alive(pid, float(created)) is not False:
+                return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                        "blockers": ["prior miner process has not been proven exited"]}
+        config = load_config(self.paths.config)
+        lock_path = Path(config.service.state_persistence_path).with_suffix(".lock")
+        probe = SingleInstanceLock(lock_path)
+        if not probe.acquire():
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["coordinator instance lock is still held or inaccessible"]}
+        probe.release()
+
+        tasks = [task for task in self.task_backend.status()
+                 if task.owned and task.enabled and task.mode in {"boot", "logon"}]
+        if len(tasks) != 1:
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": [f"recovery requires exactly one enabled owned task; found {len(tasks)}"]}
+        task = tasks[0]
+        if task.run_level != "Highest" or not _task_identity_valid(asdict(task)):
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["startup task identity or privilege level is not verified"]}
+        token = load_token()
+        if not credential_doctor().get("acl_restricted"):
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["operator credential ACL is not verified"]}
+        if not self.paths.launcher.is_file():
+            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+        if os.path.normcase(str(self.paths.launcher)) not in os.path.normcase(task.action):
+            snapshot = receipt.get("task_snapshot")
+            if not isinstance(snapshot, dict):
+                return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                        "blockers": ["receipt has no exact task definition for safe recovery"]}
+            task = self.task_backend.install(task.mode, self.paths.launcher, non_interactive=non_interactive)
+            receipt["task_after"] = asdict(task)
+        _write_json_atomic(self.paths.upgrade_policy, {"start_miner": False})
+        receipt.update(phase="TASK_UPDATED", updated_at=time.time(), retry_count=int(receipt.get("retry_count", 0)) + 1)
+        _write_json_atomic(self.paths.upgrade_receipt, receipt)
+        self.task_backend.start(task, non_interactive=non_interactive)
+        service = self._wait_for_service(timeout=timeout)
+        if not service:
+            receipt.update(phase="RECOVERY_REQUIRED", failed_at="TASK_UPDATED",
+                           error="retry task did not produce a ready service", updated_at=time.time())
+            _write_json_atomic(self.paths.upgrade_receipt, receipt)
+            return {"status": "recovery-required", "phase": "TASK_UPDATED",
+                    "blocker": "Retry started the owned task, but readiness was not verified.",
+                    "receipt": str(self.paths.upgrade_receipt)}
+        runtime = service.get("runtime") or {}
+        listener = _listener_identity()
+        if (runtime.get("revision") != preflight["source"]["revision"] or
+                service.get("upstream_url") != preflight.get("configured_upstream_url") or listener is None or
+                listener.get("pid") != runtime.get("pid") or
+                not _runtime_source_matches(runtime.get("source_path"), Path(preflight["source"]["source_path"]))):
+            receipt.update(phase="RECOVERY_REQUIRED", failed_at="NEW_READY",
+                           error="runtime fingerprint/listener verification failed", updated_at=time.time())
+            _write_json_atomic(self.paths.upgrade_receipt, receipt)
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": "Retry service identity could not be verified; mining remains held.",
+                    "receipt": str(self.paths.upgrade_receipt)}
+        with httpx.Client(timeout=5.0) as client:
+            control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+        if control.status_code != 200:
+            return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
+                    "blocker": f"Recovered coordinator miner-control API is unavailable ({control.status_code}).",
+                    "receipt": str(self.paths.upgrade_receipt)}
+        effective = _effective_gpu_settings()
+        expected_power = (receipt.get("configured_gpu_settings") or {}).get("power_limit_w")
+        if receipt.get("miner_resume_allowed") and expected_power is not None and (
+                effective is None or effective.get("power_limit_w") is None or
+                abs(float(effective["power_limit_w"]) - float(expected_power)) > 0.5):
+            receipt.update(phase="RECOVERY_REQUIRED", failed_at="NEW_READY",
+                           error="effective GPU power limit does not match configured policy", updated_at=time.time())
+            _write_json_atomic(self.paths.upgrade_receipt, receipt)
+            return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
+                    "effective_gpu_settings": effective,
+                    "blocker": "Coordinator is ready; prior mining remains stopped because GPU policy failed.",
+                    "receipt": str(self.paths.upgrade_receipt)}
+        if receipt.get("miner_resume_allowed"):
+            response = httpx.post(
+                f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"operator": getpass.getuser(), "reason": "Restore prior miner state after upgrade recovery"},
+                timeout=10.0,
+            )
+            if response.status_code != 200:
+                return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
+                        "blocker": f"Recovered coordinator refused safe miner resume ({response.status_code}).",
+                        "receipt": str(self.paths.upgrade_receipt)}
+            service = self._wait_for_service(timeout=10.0) or service
+            miner_after = (service.get("processes") or {}).get(receipt.get("old_miner", {}).get("name"), {})
+            if miner_after.get("state") != "running" or not miner_after.get("is_coordinator_owned"):
+                return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
+                        "blocker": "Recovered coordinator did not verify ownership of the resumed miner.",
+                        "receipt": str(self.paths.upgrade_receipt)}
+        elif preflight.get("miner_name"):
+            miner_after = (service.get("processes") or {}).get(preflight["miner_name"], {})
+            if miner_after.get("state") != "stopped":
+                receipt.update(phase="RECOVERY_REQUIRED", failed_at="NEW_READY",
+                               error="miner was not verified stopped under the persisted hold", updated_at=time.time())
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
+                return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
+                        "blocker": "Persisted mining hold is active, but the recovered service did not verify mining stayed stopped.",
+                        "receipt": str(self.paths.upgrade_receipt)}
+        receipt.update(phase="VERIFIED", new_runtime=runtime, effective_gpu_settings_after=effective,
+                       updated_at=time.time())
+        _write_json_atomic(self.paths.upgrade_receipt, receipt)
+        return {"status": "verified", "phase": "VERIFIED", "runtime": runtime,
+                "recovered": True, "effective_gpu_settings": effective,
+                "receipt": str(self.paths.upgrade_receipt)}
+
+    def _finalize_ready_upgrade(self, preflight: Dict[str, Any]) -> Dict[str, Any]:
+        """Complete a verified new runtime after a prior GPU-policy recovery hold."""
+        try:
+            receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+        except (OSError, ValueError) as exc:
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED", "blockers": [str(exc)]}
+        service = preflight.get("service") or {}
+        if (receipt.get("phase") != "RECOVERY_REQUIRED" or receipt.get("failed_at") != "NEW_READY" or
+                service.get("service_state") != "ready" or not preflight.get("runtime_current") or
+                service.get("upstream_url") != preflight.get("configured_upstream_url")):
+            return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                    "blockers": ["receipt and ready runtime do not describe the same verified upgrade"]}
+        gpu = service.get("gpu_inference") or {}
+        if gpu.get("active_count") != 0 or gpu.get("pending_count") != 0 or gpu.get("is_restart_inhibited"):
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": "inference is active, pending, or inhibited; leave mining held and retry later"}
+        with httpx.Client(timeout=5.0) as client:
+            control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+        if control.status_code != 200:
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": f"miner-control API is unavailable ({control.status_code})"}
+        effective = _effective_gpu_settings()
+        expected_power = (receipt.get("configured_gpu_settings") or {}).get("power_limit_w")
+        if expected_power is not None and (
+                effective is None or effective.get("power_limit_w") is None or
+                abs(float(effective["power_limit_w"]) - float(expected_power)) > 0.5):
+            return {"status": "recovery-required", "phase": "NEW_READY", "effective_gpu_settings": effective,
+                    "blocker": "effective GPU power policy still does not match configuration"}
+        miner_name = preflight.get("miner_name")
+        miner = (service.get("processes") or {}).get(miner_name, {}) if miner_name else {}
+        if receipt.get("miner_resume_allowed") and preflight.get("miner_manual_hold"):
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": "a newer persisted manual mining hold takes precedence over the saved pre-upgrade state"}
+        if receipt.get("miner_resume_allowed"):
+            if miner.get("state") != "running":
+                token = load_token()
+                response = httpx.post(
+                    f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"operator": getpass.getuser(), "reason": "Resume prior mining after GPU policy recovery"},
+                    timeout=10.0,
+                )
+                if response.status_code != 200:
+                    return {"status": "recovery-required", "phase": "NEW_READY",
+                            "blocker": f"safe miner resume was rejected ({response.status_code})"}
+                service = self._service_status() or service
+                miner = (service.get("processes") or {}).get(miner_name, {})
+            if miner.get("state") != "running" or not miner.get("is_coordinator_owned"):
+                return {"status": "recovery-required", "phase": "NEW_READY",
+                        "blocker": "prior mining state is not running under coordinator ownership"}
+        elif miner.get("state") == "running":
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": "miner is running despite a prior stopped/held state; manual reconciliation is required"}
+        receipt.update(phase="VERIFIED", new_runtime=service.get("runtime"),
+                       effective_gpu_settings_after=effective, updated_at=time.time())
+        _write_json_atomic(self.paths.upgrade_receipt, receipt)
+        return {"status": "verified", "phase": "VERIFIED", "runtime": service.get("runtime"),
+                "recovered": True, "effective_gpu_settings": effective,
+                "receipt": str(self.paths.upgrade_receipt)}
+
+    def upgrade(self, *, apply: bool = False, non_interactive: bool = False,
+                timeout: float = 45.0) -> Dict[str, Any]:
+        if not apply:
+            return self._upgrade_impl(apply=False, non_interactive=non_interactive, timeout=timeout)
+        preflight = self._upgrade_preflight(non_interactive=non_interactive)
+        if preflight["runtime_current"]:
+            if self.paths.upgrade_receipt.is_file():
+                try:
+                    receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    receipt = {}
+                if receipt.get("phase") == "RECOVERY_REQUIRED" and receipt.get("failed_at") == "NEW_READY":
+                    lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+                    if not lock.acquire():
+                        return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
+                                "blockers": ["another Resource Coordinator upgrade holds the upgrade lock"]}
+                    try:
+                        return self._finalize_ready_upgrade(preflight)
+                    finally:
+                        lock.release()
+            return {"status": "already-current", "phase": "VERIFIED", "preflight": preflight}
+        recoverable_offline = preflight["service"] is None and self.paths.upgrade_receipt.is_file()
+        if preflight["blockers"] and not recoverable_offline:
+            return {"status": "blocked", "phase": "PREFLIGHT", "preflight": preflight}
+        lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+        if not lock.acquire():
+            return {"status": "blocked", "phase": "PREFLIGHT",
+                    "blockers": ["another Resource Coordinator upgrade already holds the upgrade lock"]}
+        try:
+            return self._upgrade_impl(apply=True, non_interactive=non_interactive, timeout=timeout,
+                                      preflight=preflight)
+        finally:
+            lock.release()
+
+    def _upgrade_impl(self, *, apply: bool, non_interactive: bool, timeout: float,
+                      preflight: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Orchestrate an external, receipt-backed service upgrade without hot reload."""
+        preflight = preflight or self._upgrade_preflight(non_interactive=non_interactive)
+        if apply and preflight["service"] is None and self.paths.upgrade_receipt.is_file():
+            recovered = self._resume_interrupted_upgrade(
+                preflight, non_interactive=non_interactive, timeout=timeout
+            )
+            if recovered is not None:
+                return recovered
+        if preflight["runtime_current"]:
+            return {"status": "already-current", "phase": "VERIFIED", "preflight": preflight}
+        if preflight["blockers"]:
+            return {"status": "blocked", "phase": "PREFLIGHT", "preflight": preflight}
+        plan = {
+            "status": "planned",
+            "phase": "PREFLIGHT",
+            "source_revision": preflight["source"]["revision"],
+            "runtime_revision": preflight["runtime"].get("revision"),
+            "runtime_legacy": preflight["runtime_legacy"],
+            "startup_task": preflight["task"]["name"],
+            "elevation_required": preflight["elevation_required"],
+            "elevation_mode": preflight["elevation_mode"],
+            "miner_was_running": preflight["miner_was_running"],
+            "miner_resume_allowed": preflight["miner_resume_allowed"],
+            "configured_gpu_settings": preflight["configured_gpu_settings"],
+            "effective_gpu_settings": preflight["effective_gpu_settings"],
+            "configured_upstream_url": preflight["configured_upstream_url"],
+            "will_drain_inference": True,
+            "changes": ["gracefully stop current coordinator and owned miner", "reconcile RC startup task",
+                        "start one coordinator and verify runtime identity"],
+        }
+        if not apply:
+            return plan
+
+        assert preflight["task"] is not None
+        task = StartupTask(**preflight["task"])
+        original_launcher_text = self.paths.launcher.read_text(encoding="utf-8") if self.paths.launcher.exists() else None
+        receipt = {
+            "schema": 1,
+            "phase": "PREPARED",
+            "source": preflight["source"],
+            "old_runtime": preflight["runtime"],
+            "old_service_pid": preflight["listener"]["pid"],
+            "old_service_create_time": preflight["listener"]["create_time"],
+            "old_miner": preflight["miner"],
+            "miner_was_running": preflight["miner_was_running"],
+            "miner_resume_allowed": preflight["miner_resume_allowed"],
+            "durable_state": preflight["journal"],
+            "configured_gpu_settings": preflight["configured_gpu_settings"],
+            "configured_upstream_url": preflight["configured_upstream_url"],
+            "effective_gpu_settings_before": preflight["effective_gpu_settings"],
+            "task": preflight["task"],
+            "task_snapshot": preflight["task_snapshot"],
+            "elevation_mode": preflight["elevation_mode"],
+            "launcher_existed": original_launcher_text is not None,
+        }
+        if original_launcher_text is not None:
+            receipt["launcher_backup"] = original_launcher_text
+        _write_json_atomic(self.paths.upgrade_receipt, receipt)
+
+        def update_phase(phase: str, **extra: Any) -> None:
+            receipt.update(phase=phase, updated_at=time.time(), **extra)
+            _write_json_atomic(self.paths.upgrade_receipt, receipt)
+
+        task_updated = False
+        task_update_started = False
+        try:
+            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+            # The task launch is held from auto-starting mining until this external
+            # process verifies the new runtime and GPU policy.
+            _write_json_atomic(self.paths.upgrade_policy, {"start_miner": False})
+            update_phase("PREPARED", launcher_path=str(self.paths.launcher))
+            token = load_token()
+            update_phase("DRAINING")
+            response = self._request_graceful_shutdown(token)
+            if response.status_code != 202:
+                raise InstallationError(
+                    f"Graceful shutdown was not accepted ({response.status_code}); task and service were not replaced."
+                )
+
+            deadline = time.monotonic() + timeout
+            lock_path = Path(load_config(self.paths.config).service.state_persistence_path).with_suffix(".lock")
+            while time.monotonic() < deadline:
+                if self._service_status() is None and not self._coordinator_port_open():
+                    probe = SingleInstanceLock(lock_path)
+                    service_alive = _exact_process_is_alive(
+                        int(preflight["listener"]["pid"]), float(preflight["listener"]["create_time"])
+                    )
+                    if probe.acquire() and service_alive is False:
+                        probe.release()
+                        break
+                    probe.release()
+                time.sleep(0.25)
+            else:
+                raise InstallationError("Old coordinator did not release port 1235 and its instance lock in time")
+
+            old_miner = preflight["miner"]
+            if preflight["miner_resume_allowed"]:
+                miner_alive = _exact_process_is_alive(int(old_miner["pid"]), float(old_miner["create_time"]))
+                if miner_alive is not False:
+                    raise InstallationError("Original coordinator-owned miner is still running; replacement refused")
+            update_phase("OLD_STOPPED")
+
+            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+            task_update_started = True
+            task = self.task_backend.install(task.mode, self.paths.launcher, non_interactive=non_interactive)
+            task_updated = True
+            update_phase("TASK_UPDATED", task_after=asdict(task))
+            self.task_backend.start(task, non_interactive=non_interactive)
+
+            service = self._wait_for_service(timeout=timeout)
+            if not service:
+                raise InstallationError("Updated startup task did not produce a ready coordinator")
+            runtime = service.get("runtime") or {}
+            if runtime.get("revision") != preflight["source"]["revision"]:
+                raise InstallationError("New coordinator is ready but its startup-captured source revision does not match")
+            if service.get("upstream_url") != preflight["configured_upstream_url"]:
+                raise InstallationError("New coordinator inference upstream does not match the protected configuration")
+            if not _runtime_source_matches(runtime.get("source_path"), Path(preflight["source"]["source_path"])):
+                raise InstallationError("New coordinator source path does not match the selected source checkout")
+            if runtime.get("pid") == preflight["listener"]["pid"]:
+                raise InstallationError("Coordinator PID did not change across the upgrade")
+            new_listener = _listener_identity()
+            if new_listener is None or new_listener.get("pid") != runtime.get("pid"):
+                raise InstallationError("Ready coordinator PID does not own the port 1235 listener")
+            new_create_time = runtime.get("process_create_time")
+            if (new_create_time is not None and
+                    abs(float(new_create_time) - float(new_listener["create_time"])) > 1.0):
+                raise InstallationError("New coordinator runtime creation time does not match its listener")
+            with httpx.Client(timeout=5.0) as client:
+                control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+            if control.status_code != 200:
+                raise InstallationError(f"New miner-control API is unavailable ({control.status_code})")
+
+            effective = _effective_gpu_settings()
+            expected_power = preflight["configured_gpu_settings"].get("power_limit_w")
+            if expected_power is not None and (
+                effective is None or effective.get("power_limit_w") is None or
+                abs(float(effective["power_limit_w"]) - expected_power) > 0.5
+            ):
+                update_phase("RECOVERY_REQUIRED", new_runtime=runtime, effective_gpu_settings_after=effective,
+                             blocker="effective GPU power limit does not match configured policy")
+                return {"status": "recovery-required", "phase": "NEW_READY", "preflight": preflight,
+                        "runtime": runtime, "effective_gpu_settings": effective,
+                        "blocker": "Coordinator is ready, but mining was left stopped because GPU policy verification failed."}
+
+            if preflight["miner_resume_allowed"]:
+                response = httpx.post(
+                    f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                    headers={"Authorization": f"Bearer {token}"},
+                    json={"operator": getpass.getuser(), "reason": "Resume prior mining state after verified upgrade"},
+                    timeout=10.0,
+                )
+                if response.status_code != 200:
+                    raise InstallationError(f"Prior miner state could not be safely restored ({response.status_code})")
+                service = self._wait_for_service(timeout=10.0) or service
+                miner_after = (service.get("processes") or {}).get(preflight["miner_name"], {})
+                if miner_after.get("state") != "running" or not miner_after.get("is_coordinator_owned"):
+                    raise InstallationError("Mining did not resume under the new coordinator's verified ownership")
+            elif preflight["miner_name"]:
+                miner_after = (service.get("processes") or {}).get(preflight["miner_name"], {})
+                if miner_after.get("state") != "stopped":
+                    raise InstallationError(
+                        "Mining was held before upgrade but the new coordinator did not verify it stayed stopped"
+                    )
+            update_phase("VERIFIED", new_runtime=runtime, effective_gpu_settings_after=effective,
+                         miner_after=(service.get("processes") or {}).get(preflight["miner_name"], {}))
+            return {"status": "verified", "phase": "VERIFIED", "runtime": runtime,
+                    "miner_was_running": preflight["miner_was_running"],
+                    "miner_resumed": preflight["miner_resume_allowed"], "effective_gpu_settings": effective,
+                    "receipt": str(self.paths.upgrade_receipt)}
+        except Exception as exc:
+            failed_at = receipt.get("phase", "UNKNOWN")
+            if task_update_started and self._service_status() is None:
+                try:
+                    restorer = getattr(self.task_backend, "restore_snapshot")
+                    restorer(task, preflight["task_snapshot"], non_interactive=non_interactive)
+                    if original_launcher_text is None:
+                        self.paths.launcher.unlink(missing_ok=True)
+                    else:
+                        self._write_managed(self.paths.launcher, original_launcher_text)
+                    self.paths.upgrade_policy.unlink(missing_ok=True)
+                    receipt["task_restored"] = True
+                except Exception as restore_error:
+                    receipt["task_restore_error"] = str(restore_error)
+            elif not task_updated:
+                try:
+                    if original_launcher_text is None:
+                        self.paths.launcher.unlink(missing_ok=True)
+                    else:
+                        self._write_managed(self.paths.launcher, original_launcher_text)
+                    self.paths.upgrade_policy.unlink(missing_ok=True)
+                except Exception as restore_error:
+                    receipt["launcher_restore_error"] = str(restore_error)
+            update_phase("RECOVERY_REQUIRED", failed_at=failed_at, error=str(exc))
+            raise InstallationError(
+                f"Upgrade stopped during {failed_at}; no process was force-terminated. "
+                f"Inspect {self.paths.upgrade_receipt} before retrying. Details: {exc}"
+            ) from exc
 
     @staticmethod
     def _service_status() -> Optional[Dict[str, Any]]:
@@ -699,9 +1433,36 @@ class ManagedInstallation:
         checks["service_ready"] = service.get("service_state") == "ready"
         runtime = service.get("runtime", {})
         expected_source = Path(__file__).resolve().parent / "__init__.py"
+        expected_runtime = build_runtime_identity(self.paths.repository / "modules" / "resource_coordinator" /
+                                                  "resource_coordinator")
         checks["runtime"] = runtime
         checks["runtime_source_matches"] = _runtime_source_matches(runtime.get("source_path"), expected_source)
         checks["runtime_version_matches"] = runtime.get("version") == checks["source_version"]
+        checks["runtime_revision_matches"] = runtime.get("revision") == expected_runtime["revision"]
+        checks["runtime_current"] = bool(
+            checks["service_ready"] and checks["runtime_revision_matches"] and
+            checks["runtime_version_matches"] and checks["runtime_source_matches"]
+        )
+        receipt = None
+        if self.paths.upgrade_receipt.is_file():
+            try:
+                receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                receipt = {"phase": "CORRUPT"}
+        receipt_phase = (receipt or {}).get("phase")
+        checks["upgrade_in_progress"] = receipt_phase in {
+            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_UPDATED", "NEW_READY"
+        }
+        checks["upgrade_blocked"] = receipt_phase == "RECOVERY_REQUIRED"
+        checks["upgrade_available"] = bool(checks["service_ready"] and not checks["runtime_current"])
+        checks["upgrade_recovery_required"] = checks["upgrade_blocked"] or receipt_phase == "CORRUPT"
+        checks["upgrade_receipt_phase"] = receipt_phase
+        checks["upgrade_state"] = (
+            "recovery_required" if checks["upgrade_recovery_required"] else
+            "in_progress" if checks["upgrade_in_progress"] else
+            "available" if checks["upgrade_available"] else
+            "current" if checks["runtime_current"] else "unknown"
+        )
         gpu = service.get("gpu_inference", {})
         checks["active_inferences"] = gpu.get("active_count")
         checks["pending_requests"] = gpu.get("pending_count")
@@ -767,10 +1528,14 @@ class ManagedInstallation:
             and checks["credential"].get("credential_file_readable")
             and checks["credential"].get("acl_restricted")
         )
+        checks["installation_configured"] = bool(
+            checks["config_valid"] and checks["credential_ready"] and checks["task_ready"]
+        )
         checks.update(classify_doctor({
             "service_ready": checks["service_ready"],
             "runtime_source_matches": checks["runtime_source_matches"],
             "runtime_version_matches": checks["runtime_version_matches"],
+            "runtime_revision_matches": checks["runtime_revision_matches"],
             "credential_ready": checks["credential_ready"],
             "task_ready": checks["task_ready"],
             "configured_power_limit_w": checks.get("configured_power_limit_w"),
@@ -781,6 +1546,8 @@ class ManagedInstallation:
             "miner_owned": checks["miner_owned"],
             "upstream_ready": checks.get("upstream_ready"),
             "log_paths": checks.get("log_paths", {}),
+            "upgrade_in_progress": checks["upgrade_in_progress"],
+            "upgrade_recovery_required": checks["upgrade_recovery_required"],
         }))
         return checks
 
@@ -1027,7 +1794,7 @@ switch ($payload.operation) {
     }
     ConvertTo-Json -InputObject @($items) -Depth 5 -Compress
   }
-  {$_ -in 'install','install_viewer','enable','disable','uninstall','start'} {
+  {$_ -in 'install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
     if ($payload.operation -eq 'install') {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
       $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
@@ -1072,6 +1839,17 @@ switch ($payload.operation) {
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
         Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $marker -Force | Out-Null
       }
+      'snapshot' {
+        if (-not $existing -or -not (Test-RcOwned $existing)) { throw "Cannot snapshot missing or unowned task $name." }
+        $definition = Export-ScheduledTask -TaskName $name -ErrorAction Stop
+        ConvertTo-Json -Compress -InputObject @{definition=$definition; enabled=[bool]$existing.Settings.Enabled}
+      }
+      'restore' {
+        if (-not $payload.definition -or $null -eq $payload.enabled) { throw 'Task recovery snapshot is incomplete.' }
+        Register-ScheduledTask -TaskName $name -Xml ([string]$payload.definition) -Force | Out-Null
+        if ([bool]$payload.enabled) { Enable-ScheduledTask -TaskName $name | Out-Null }
+        else { Disable-ScheduledTask -TaskName $name | Out-Null }
+      }
       'enable' { Enable-ScheduledTask -TaskName $name | Out-Null }
       'disable' { Disable-ScheduledTask -TaskName $name | Out-Null }
       'uninstall' { Unregister-ScheduledTask -TaskName $name -Confirm:$false }
@@ -1092,6 +1870,19 @@ def handle_installation_command(args: Any) -> int:
     paths = InstallationPaths.discover()
     backend = _powershell_backend(paths)
     manager = ManagedInstallation(paths, backend)
+    if args.command == "upgrade":
+        result = manager.upgrade(apply=args.apply, non_interactive=args.non_interactive)
+        if getattr(args, "json", False):
+            print(json.dumps(result, indent=2))
+        else:
+            print(f"Resource Coordinator upgrade: {result.get('status')} ({result.get('phase', 'PREFLIGHT')})")
+            for blocker in result.get("preflight", {}).get("blockers", []):
+                print(f"  BLOCKED: {blocker}")
+            if result.get("blocker"):
+                print(f"  BLOCKED: {result['blocker']}")
+            if result.get("status") == "planned":
+                print("  Apply with: resource-coordinator upgrade --apply")
+        return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
     if args.command == "setup":
         result = manager.setup(
             apply=args.apply, mode=args.startup_mode, non_interactive=args.non_interactive,

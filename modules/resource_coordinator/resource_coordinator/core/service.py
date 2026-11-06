@@ -8,6 +8,7 @@ import asyncio
 import logging
 import math
 import os
+import psutil
 import time
 from enum import Enum
 from pathlib import Path
@@ -16,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from resource_coordinator.core.durable_state import StateCodec, reconcile_startup_state
 from resource_coordinator.core.lock import SingleInstanceLock
 from resource_coordinator.core.processes import ProcessState, ProcessLifecycleOwner, WindowsProcessBackend
+from resource_coordinator.core.runtime_identity import build_runtime_identity
 
 if TYPE_CHECKING:
     from resource_coordinator.config import CoordinatorSystem
@@ -66,6 +68,13 @@ class CoordinatorService:
         **kwargs: Any,
     ) -> None:
         self.system = system
+        # A running process must keep the identity captured from the code it
+        # started with, even after its source checkout is updated on disk.
+        self.runtime_identity = build_runtime_identity()
+        try:
+            self.runtime_identity["process_create_time"] = psutil.Process(os.getpid()).create_time()
+        except (psutil.Error, OSError):
+            self.runtime_identity["process_create_time"] = None
         self.drain_timeout_seconds = float(kwargs.get("drain_timeout", drain_timeout_seconds))
         if not math.isfinite(self.drain_timeout_seconds) or self.drain_timeout_seconds <= 0:
             raise ValueError("Drain timeout must be finite and positive")

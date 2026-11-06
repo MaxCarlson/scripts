@@ -59,6 +59,13 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     )
     setup_parser.add_argument("--viewer", action="store_true", help="Install the optional visible log viewer at user logon.")
 
+    upgrade_parser = subparsers.add_parser("upgrade", help="Safely activate the current Resource Coordinator source.")
+    upgrade_parser.add_argument("-a", "--apply", action="store_true", help="Apply the prepared upgrade.")
+    upgrade_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
+    upgrade_parser.add_argument(
+        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
+    )
+
     doctor_parser = subparsers.add_parser("doctor", help="Check installation and operational health.")
     doctor_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
 
@@ -978,7 +985,7 @@ def main(argv: Optional[List[str]] = None) -> None:
     code = 0
     if args.command == "auth":
         code = cmd_auth(args)
-    elif args.command in {"setup", "teardown", "doctor", "startup", "repair"}:
+    elif args.command in {"setup", "upgrade", "teardown", "doctor", "startup", "repair"}:
         from resource_coordinator.installation import handle_installation_command
         try:
             code = handle_installation_command(args)

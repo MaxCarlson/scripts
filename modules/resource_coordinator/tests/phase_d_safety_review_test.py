@@ -130,6 +130,8 @@ async def test_abort_endpoint_authentication_and_terminal_recovery(monkeypatch, 
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
         status = await client.get("/_coordinator/status")
         assert status.status_code == 200
+        assert status.json()["runtime"]["revision"] == service.runtime_identity["revision"]
+        assert status.json()["runtime"]["process_create_time"] == service.runtime_identity["process_create_time"]
         denied = await client.post("/_coordinator/abort", json={"reason": "test", "operator": "test"})
         assert denied.status_code == 503
         assert service.is_ready
@@ -530,6 +532,43 @@ async def test_authenticated_restart_drains_and_requests_supervised_relaunch(mon
     assert service.state == ServiceState.STOPPED
     assert app.state.restart_requested is True
     assert exit_requests == [True]
+
+
+@pytest.mark.asyncio
+async def test_restart_closes_admission_before_background_drain(monkeypatch):
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    system, service = assembled()
+    assert await service.start()
+    app = system.gateway.create_app(service)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    original_stop = service.stop
+
+    async def delayed_stop(reason="normal_shutdown"):
+        entered.set()
+        await release.wait()
+        await original_stop(reason=reason)
+
+    service.stop = delayed_stop
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        restart = asyncio.create_task(client.post(
+            "/_coordinator/restart",
+            headers={"Authorization": "Bearer test-token"},
+            json={"operator": "test", "reason": "upgrade"},
+        ))
+        await entered.wait()
+        assert service.state == ServiceState.DRAINING
+        blocked = await client.post(
+            "/_coordinator/miner/stop",
+            headers={"Authorization": "Bearer test-token"},
+            json={"operator": "test", "reason": "racing control"},
+        )
+        assert blocked.status_code == 409
+        release.set()
+        response = await restart
+
+    assert response.status_code == 202
+    assert service.state == ServiceState.STOPPED
 
 
 @pytest.mark.asyncio

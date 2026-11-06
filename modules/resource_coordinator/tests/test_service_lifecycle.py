@@ -21,6 +21,20 @@ async def test_service_initial_state_created(minimal_system):
     service = CoordinatorService(minimal_system)
     assert service.state == ServiceState.CREATED
     assert service.is_ready is False
+    assert len(service.runtime_identity["revision"]) == 64
+    assert service.runtime_identity["source_path"].endswith("__init__.py")
+
+
+def test_service_keeps_startup_runtime_identity_after_source_changes(minimal_system, monkeypatch):
+    import resource_coordinator.core.service as service_module
+
+    captured = {"version": "0.10.0", "source_path": "C:/source/__init__.py", "revision": "startup-revision"}
+    monkeypatch.setattr(service_module, "build_runtime_identity", lambda: dict(captured))
+    service = CoordinatorService(minimal_system)
+    monkeypatch.setattr(service_module, "build_runtime_identity",
+                        lambda: {**captured, "revision": "new-checkout-revision"})
+
+    assert service.runtime_identity["revision"] == "startup-revision"
 
 
 @pytest.mark.asyncio

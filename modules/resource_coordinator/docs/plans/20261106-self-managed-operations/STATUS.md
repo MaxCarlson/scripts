@@ -43,6 +43,17 @@ Read-only host check in this execution: `resource-coordinator doctor --json` loa
 
 Continue P1/P2 acceptance without live service disruption: review the GPU policy and startup/elevation boundaries; validate docs and routing without changing production configuration. Keep offline teardown fail-closed unless an ownership-safe control mechanism is proven. Existing async manual/gaming/GPU-idle lifecycle tests now run outside the restricted runner; the TUI remains deferred until Windows/live acceptance is complete.
 
+## Upgrade lifecycle checkpoint — 2026-11-06
+
+- [x] Added `resource-coordinator upgrade` preview/apply/JSON/noninteractive CLI options and an external, receipt-backed orchestrator. It fingerprints the service package at startup, explicitly detects legacy runtime metadata, snapshots the owned task definition and launcher, validates credential/task/source/process state, drains via authenticated graceful shutdown, verifies old PID/creation-time exit, listener closure and lock release, updates only the owned task, then verifies new runtime identity, protected upstream, miner-control API and effective GPU power before restoring eligible mining.
+- [x] Added fail-closed recovery for interrupted upgrades. Retry requires an exact receipt, old coordinator and miner proven exited, listener and lock released, one valid owned task, verified credential access, and matching source identity. It never adopts or force-kills an existing process. GPU-policy failure leaves mining held and can be finalized only after a later verified policy check.
+- [x] Preserved manual mining holds: a previously running miner is resumed only when the durable state allows it; otherwise the new service must verify the miner remains stopped.
+- [x] Added startup-captured SHA-256 source identity and process creation time to service status; doctor distinguishes runtime version/source drift and reports upgrade availability/progress/recovery state.
+- [x] Documented `resource-coordinator upgrade` in the module README and advanced package version to 0.10.0.
+- [x] Focused offline installation/runtime-identity suite passed after the final change; async lifecycle/safety suite passed in the normal-permission runner. Scoped Ruff, package compileall and `git diff --check` passed.
+- [ ] Windows Task Scheduler/UAC execution, migration from the actual legacy task, and live GPU/service transition remain unverified. No production coordinator, miner, task, GPU, or LM Studio state was changed. Do not deploy as part of this source checkpoint.
+- [ ] Review and integrate the worktree branch into the latest `main` only after current remote state and concurrent work are checked; the primary checkout remains on `main` with its unrelated dirty/untracked files preserved.
+
 ## Work completed in current execution
 
 - Added top-level `setup`, `doctor`, `repair`, `teardown`, and `startup` command dispatch.

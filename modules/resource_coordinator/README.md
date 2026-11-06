@@ -216,6 +216,9 @@ resource-coordinator setup
 resource-coordinator setup --apply
 resource-coordinator setup --apply --viewer
 resource-coordinator doctor --json
+resource-coordinator upgrade
+resource-coordinator upgrade --apply
+resource-coordinator upgrade --apply --json
 resource-coordinator startup status --json
 resource-coordinator startup install -m logon --apply
 resource-coordinator startup install -m boot --apply
@@ -230,6 +233,24 @@ resource-coordinator teardown --apply
 The optional `--viewer` opens a separate read-only PowerShell window after
 user logon. Closing it only closes the viewer; mining remains owned by the
 coordinator.
+
+`upgrade` previews by default. `upgrade --apply` runs from the CLI process,
+records a durable receipt, closes admission through the authenticated service
+lifecycle, waits for the old coordinator and its instance lock to exit, updates
+the RC-owned startup task, then verifies the new process's startup-captured
+source fingerprint, protected gateway controls, upstream, and effective GPU
+power limit before restoring prior mining activity. A legacy runtime without a
+fingerprint is treated as needing migration. If any ownership, shutdown, task,
+runtime, or GPU check is uncertain, upgrade fails closed and records the exact
+phase for `resource-coordinator upgrade --apply` to safely retry. Use
+`--non-interactive` to reject the transition before shutdown when UAC is needed.
+The command does not force-terminate the coordinator or miner.
+
+The runtime fingerprint is captured when each coordinator process starts; it
+does not change when the source checkout later advances. `doctor` reports
+`upgrade_state` as `current`, `available`, `in_progress`, `recovery_required`,
+or `unknown`. `setup` remains a non-interrupting installation repair and
+recommends `upgrade --apply` when a ready process is running old code.
 
 For a coordinator-owned miner start, use `resource-coordinator miner start`;
 do not launch KRig directly. The service task's configured run level supplies
