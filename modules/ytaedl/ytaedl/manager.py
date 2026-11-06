@@ -1382,7 +1382,7 @@ def _add_run_core_args(dest) -> None:
                       help="URL files to prioritize (can be specified multiple times)")
     dest.add_argument("-i", "--priority-files-only", action="store_true",
                       help="Only process -p/--priority-files; use at most -t workers and queue remaining files")
-    dest.add_argument("-pf", "--priority-file-scheduling", choices=("file", "url"), default="file",
+    dest.add_argument("--priority-file-scheduling", choices=("file", "url"), default="file",
                       help=("With -i: 'file' finishes each URL file before taking another; "
                             "'url' assigns one URL at a time and rotates across selected files"))
     dest.add_argument("-P", "--proxy-dl-location", default=None,

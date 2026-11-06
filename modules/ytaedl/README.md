@@ -35,7 +35,7 @@ Important options:
 - `-i/--priority-files-only`: process only explicitly supplied
   `-p/--priority-files` values. `-t/--threads` caps the initial workers;
   excess files remain queued and are assigned as workers become free.
-- `-pf/--priority-file-scheduling`: in exact mode, choose `file` (finish one
+- `--priority-file-scheduling`: in exact mode, choose `file` (finish one
   URL file before taking another; default) or `url` (assign one URL at a time
   and rotate across the selected files, subject to domain limits).
 - `-L/--download-root`: final destination root for per-URL-file folders.

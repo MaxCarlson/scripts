@@ -55,7 +55,9 @@ class TestManager:
         assert parser.parse_args(["-i"]).priority_files_only is True
         assert parser.parse_args(["--priority-files-only"]).priority_files_only is True
         assert parser.parse_args(["--priority-file-scheduling", "url"]).priority_file_scheduling == "url"
-        assert parser.parse_args(["-pf", "file"]).priority_file_scheduling == "file"
+        assert parser.parse_args(["--priority-file-scheduling", "file"]).priority_file_scheduling == "file"
+        with pytest.raises(SystemExit):
+            parser.parse_args(["-pf", "url"])
         assert parser.parse_args(["-H", "8", "-b"]).max_workers == 8
         assert parser.parse_args(["-b"]).stay_open is True
 
@@ -241,7 +243,7 @@ class TestManager:
         process.stdout = iter([])
         process.wait.return_value = 0
         argv = [
-            "-i", "-pf", "url", "-t", "2", "-D", "1",
+            "-i", "--priority-file-scheduling", "url", "-t", "2", "-D", "1",
             *[item for path in files for item in ("-p", str(path))],
             "-g", str(log_dir), "-a", str(archive_dir), "-L", str(media_dir),
         ]
@@ -275,7 +277,7 @@ class TestManager:
         process.stdout = iter([])
         process.wait.return_value = 0
         argv = [
-            "-i", "-pf", "url", "-t", "2", "-D", "1",
+            "-i", "--priority-file-scheduling", "url", "-t", "2", "-D", "1",
             *[item for path in files for item in ("-p", str(path))],
             "-g", str(tmp_path / "logs"), "-a", str(tmp_path / "archive"),
             "-L", str(tmp_path / "media"),
