@@ -14,6 +14,7 @@ Usage
   ytaedl archive           [options]   Archive file management
   ytaedl archive validate  [options]   Validate archive/domain_index state
   ytaedl archive apply-plan -p plan.json
+  ytaedl reconcile-aebn   [stage]     Replace historical full movies with verified scenes
 
 Run ``ytaedl <subcommand> --help`` for the full option list of each subcommand.
 Run ``ytaedl run <profile> --help`` for coloured, focused help on a run profile.
@@ -39,6 +40,7 @@ _SUBCOMMAND_HELP = {
     "archive": "Archive file management (rebuild, validate, apply-plan)",
     "summary": "Display real-time statistics and active locks across ytaedl instances",
     "scene": "Inspect AEBN scene IDs without downloading media",
+    "reconcile-aebn": "Reconcile historical AEBN full movies with requested scenes",
 }
 
 _EXAMPLES = textwrap.dedent("""\
@@ -154,6 +156,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if subcommand == "scene":
         from .scene_cli import main as scene_main
         return scene_main(rest)
+
+    if subcommand == "reconcile-aebn":
+        from .aebn_reconcile.cli import main as reconcile_main
+        return reconcile_main(rest)
 
     # Unknown subcommand
     print(f"ytaedl: unknown subcommand '{subcommand}'", file=sys.stderr)
