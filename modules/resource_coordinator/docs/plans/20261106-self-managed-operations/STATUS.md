@@ -2,19 +2,19 @@
 
 ## Current checkpoint
 
-- [x] Confirmed current source repository is `C:/Users/mcarls/src/scripts`, branch `main`; validated checkpoints are `3cd1da96` (log retention), `b1505a4d` (runtime identity doctor), `4b590ac2` (GPU-idle/game gate), and `d58ddcfc` (initial manual-hold preservation). Current changes build on `d58ddcfc`. No RC source worktree was created.
+- [x] Resumed from `main` at `86c106bc2176e16a9646df3f8ed7c802bf927fb1` (matching `origin/main`) and moved the scoped, unfinished RC work onto `codex/resource-coordinator-offline-teardown-safety-20261106`; current checkpoint is `51c07ad1`. No unrelated worktree was changed.
 - [x] Existing setup, doctor, repair, teardown, startup task management, auth provisioning, optional viewer, and `miner`/`krig` log aliases are present in merged mainline history.
 - [x] Added bounded append-only miner output retention: rotate at 64 MiB, preserve three prior files, and keep an empty active file ready for capture.
 - [x] Doctor now resolves default capture paths, checks capture-directory access, and compares the running service's reported package path/version against the installed source.
 - [x] Doctor labels the power limit and memory clock verified/mismatched/unavailable, and does not claim independent verification of dynamic core clock or the unexposed core offset.
 - [x] GPU-idle sampling now pauses while gaming is stopping, active, restoring, or failed, so an old conditional pause cannot restart mining during gaming/reconciliation; 4 synchronous gate regressions pass.
 - [x] All manual miner mutations are blocked during gaming/reconciliation; operators must use gaming stop to restore mining. A newer timed pause/stop clears any stale GPU-idle auto-resume condition. Synchronous gate coverage passes.
-- [x] Focused installation/config/log/CLI tests: latest run 56 passed; credential regression selection: 15 passed, 1 async test deselected.
-- [x] Protected inference route regression tests: 5 passed.
-- [x] Ruff, `py_compile`, and submodule-safe `git diff --check` passed for current source changes.
+- [x] Latest focused installation/config/log/CLI tests: 56 passed; credential regression selection: 15 passed, 1 async test deselected; protected inference route regressions: 5 passed.
+- [x] Offline teardown fails closed when the coordinator is unreachable but the journal-verified miner remains alive. It does not start another task or claim the new coordinator can control the old process group; the scoped behavior is committed as `51c07ad1`.
+- [x] Full `test_installation.py`: 45 passed after the fail-closed change. Ruff, `py_compile`, and `git diff --check` passed.
 - [ ] Validate service lifecycle controls (manual miner, gaming, GPU-idle) on a functioning async test runner. A focused `pytest -vv -s` invocation reached the first manual-control test and then stalled without assertion output; interrupted only that test process.
-- [ ] Complete fresh-install/elevation acceptance and safe degraded teardown boundaries; driver telemetry still cannot independently verify core clock lock or offset, and live task/process controls are not available from this sandbox.
-- [x] Confirmed the service-test stall is runner-level: `asyncio.run(asyncio.sleep(0))` prints before entering the loop and then hangs. The existing async lifecycle tests therefore remain unverified here; async credential restart test was excluded while its synchronous credential regressions passed.
+- [ ] Complete fresh-install/elevation acceptance and hardware policy diagnosis; driver telemetry still cannot independently verify core clock lock or offset, and live task/process controls are not available from this sandbox. Offline teardown with a live miner intentionally remains fail-closed until a supported way to restore its original process-group control is proven.
+- [x] Bounded async reproduction: project `.venv` Python 3.12.10 and base Python both print `before` then time out in `asyncio.run(asyncio.sleep(0))`; base Python also times out with `WindowsSelectorEventLoopPolicy`, isolated mode, and a temp working directory. Cause remains unresolved. Async lifecycle and credential-restart tests remain unverified.
 - [ ] TUI remains deferred until setup/teardown and operational controls are validated.
 
 ## Ownership/dependency inventory (source review; runtime portions historical)
@@ -30,7 +30,9 @@
 | OpenCode inference provider | User-owned configuration with protected RC routing | Bridge tests validate `:1235` default and explicit Monitor route and prevent fallback to direct LM Studio `:1234`. Effective runtime checks for Codex/AGY remain unverified. |
 | Windows Task Scheduler / UAC | OS-owned, RC manages only fixed RC task identities | Setup/task helpers use a static operation allow-list and request UAC for privileged task changes; live UAC/SYSTEM acceptance is unverified. |
 
-Current live health and task inventory are not refreshed by this checkpoint; prior GPU, task, PID, and listener observations remain historical only.
+The effective OpenCode provider file statically points to `http://127.0.0.1:1235/v1`; Codex has no explicit `model_providers.*.base_url` entries, and both AGY config files exist. Effective Codex/AGY runtime routing is not verified. `setup --json` and `teardown --json` dry runs returned `planned`; `startup status --json` failed because Task Scheduler CIM access is denied. No live task, coordinator, miner, routing, or GPU setting was changed.
+
+Integration boundary: at this checkpoint, `main` and `origin/main` are both `86c106bc`. The Resource Coordinator safety checkpoint is on `codex/resource-coordinator-offline-teardown-safety-20261106`; it has not been pushed or merged. Other pre-existing dirty/untracked files remain outside that commit.
 
 ## Last verified live state
 
@@ -38,7 +40,7 @@ Read-only host check in this execution: `resource-coordinator doctor --json` loa
 
 ## Next action
 
-Resolve the service-test runner hang or use a supported test context; finish setup/elevation/degraded teardown and hardware policy diagnosis; then verify controls/integrations/GPU-idle before implementing the TUI last. Preserve the dirty handoff document and unrelated untracked paths in the root checkout.
+Continue P1/P2 acceptance without live service disruption: validate setup/elevation and the hardware policy boundary; diagnose async tests only in a bounded supported runner. Review whether any ownership-safe offline recovery mechanism exists; otherwise keep the tested fail-closed response. Then validate existing controls/integrations and GPU-idle before considering the TUI last. Preserve the dirty handoff document and unrelated untracked paths.
 
 ## Work completed in current execution
 
@@ -47,7 +49,7 @@ Resolve the service-test runner hang or use a supported test context; finish set
 - Added a Windows task backend with a fixed operation allow-list, ownership checks, duplicate-trigger suppression, and explicit noninteractive elevation failure.
 - Setup copies the production template only when configuration is missing, creates the shared credential through existing credential code, verifies its ACL/validity before task registration, preserves existing config/state/logs, and avoids restarting an already-ready service.
 - Doctor compares configured and live GPU power limit, checks upstream reachability, service/miner state, credential ACL, tasks, and configured logs; inaccessible Task Scheduler inventory is reported as unavailable rather than an empty healthy result.
-- Teardown refuses to act when coordinator state is unreachable or inference is active/pending; offline destructive recovery remains unfinished.
+- Teardown refuses to act when coordinator state is unreachable or inference is active/pending; offline teardown is intentionally fail-closed when a live owned miner requires its lost process-group handle.
 - `logs miner` and `logs krig` resolve to the single configured miner; unknown process and missing log configuration return distinct errors.
 - Focused validation: 35 self-management/config/log tests passed; 10 focused operator-credential tests passed in two subsets; Ruff, Python compilation, `git diff --check`, and PowerShell parsing for the generated task/launcher/viewer scripts passed. The elevated helper carries an allow-listed encoded task operation and the original interactive user's managed root/identity, without relying on a second administrator profile. Setup reports placeholder miner configuration as degraded and reports completed resources on partial failure without exposing credential values; startup task installation is tested not to start the service; optional viewer creation follows the configured miner capture path without mining side effects; teardown requests graceful draining of active/pending work, validates durable state before shutdown, holds the instance lock while decommissioning, and its offline path acquires the lock before reading the journal; tests cover idle recovery, unresolved inference refusal, and refusal to disturb a verified running miner. Doctor reports requested GPU flags separately from observed driver values and validates task identity; log aliases and authorization passed a direct handler test. Actual UAC acceptance, Task Scheduler mutation, full service lifecycle, and integrated ASGI raw-log test attempts remain unverified in this Windows sandbox.
 - Log retention follow-up: `test_log_rotation.py` verifies preservation of prior bytes and bounded three-file rotation. Retention + installation + alias validation passed; protected provider/model-switch routing passed 5 regressions. Ruff, `py_compile`, and submodule-safe `git diff --check` passed. Focused `test_service_lifecycle.py` invocation stalled in the first test and was interrupted; no assertion result was produced.
@@ -56,3 +58,5 @@ Resolve the service-test runner hang or use a supported test context; finish set
 - Manual-control precedence: five states verify that all manual mutations are blocked during gaming/recovery, and four cases verify that timed/manual stop supersedes an older GPU-idle resume condition. The latest combined suite passed 56 RC tests, 15 credential tests (one async excluded), and 5 routing tests; Ruff, compilation, and diff checks passed.
 - CLI dry-run acceptance: `setup --json` and `teardown --json` both returned `planned` without mutation. `startup status --json` failed with the exact Task Scheduler CIM access error; actual apply/elevation remains unverified. Read-only doctor confirms configured/effective 550 W and 7001 MHz, valid token ACL, and writable captured log, but coordinator/upstream/task state cannot be read from this sandbox.
 - Read-only Task Scheduler verification was blocked by Windows CIM access (`Access to a CIM resource was not available to the client`); no live tasks, coordinator, or miner were changed.
+- Offline teardown safety checkpoint: restarting the Scheduled Task cannot recover `WindowsProcessBackend`'s original `Popen`/console-group handle; `CoordinatorService.start()` rejects an already-running process it does not own. The mock-only recovery path was removed. `test_offline_teardown_never_terminates_a_verified_running_owned_miner`, offline idle removal, and unresolved-inference refusal pass; the complete installation suite passed 45 tests. Commit `51c07ad1` on `codex/resource-coordinator-offline-teardown-safety-20261106`.
+- Async environment probe: `C:/Users/mcarls/src/scripts/.venv/Scripts/python.exe` Python 3.12.10 (`pytest` 9.0.3, `pytest-asyncio` 1.3.0) and base `C:/Users/mcarls/AppData/Local/Programs/Python/Python312/python.exe` both hang in isolated child runs after printing `before`; base Python also hangs under `WindowsSelectorEventLoopPolicy` from a temp cwd. No root cause established; async lifecycle tests remain unverified.
