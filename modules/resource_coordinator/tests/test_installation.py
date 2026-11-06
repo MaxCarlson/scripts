@@ -583,3 +583,32 @@ def test_doctor_degrades_for_stale_running_coordinator_source_or_version():
 
     assert report["status"] == "degraded"
     assert any("source/version" in warning for warning in report["warnings"])
+
+
+def test_doctor_does_not_claim_unobservable_core_policy_is_verified():
+    from resource_coordinator.installation import classify_doctor
+
+    report = classify_doctor({
+        "service_ready": True,
+        "runtime_source_matches": True,
+        "runtime_version_matches": True,
+        "credential_ready": True,
+        "task_ready": True,
+        "configured_gpu_settings": {"core_clock_mhz": 2400, "core_offset_mhz": 225},
+        "gpu_policy_verification": {"core_clock_mhz": "observed_dynamic_only", "core_offset_mhz": "unavailable"},
+    })
+
+    assert report["status"] == "degraded"
+    assert any("core clock lock" in warning for warning in report["warnings"])
+    assert any("core offset" in warning for warning in report["warnings"])
+
+
+@pytest.mark.parametrize("gaming_state", ["stopping", "active", "restoring", "failed"])
+def test_gpu_idle_condition_cannot_resume_mining_during_gaming_or_reconciliation(gaming_state):
+    from resource_coordinator.core.service import _gpu_idle_sampling_allowed
+
+    condition = {"threshold_pct": 20, "window_seconds": 60, "samples": []}
+
+    assert _gpu_idle_sampling_allowed(condition, {"state": "inactive"}, manual_override=True)
+    assert not _gpu_idle_sampling_allowed(condition, {"state": gaming_state}, manual_override=True)
+    assert not _gpu_idle_sampling_allowed(condition, {"state": "inactive"}, manual_override=False)

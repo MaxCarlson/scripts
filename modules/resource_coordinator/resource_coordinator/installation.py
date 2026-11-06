@@ -298,6 +298,11 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
             f"observed GPU memory clock {observed_memory:g} MHz does not match configured "
             f"{configured_memory:g} MHz"
         )
+    configured_gpu = checks.get("configured_gpu_settings", {})
+    policy_verification = checks.get("gpu_policy_verification", {})
+    for key, label in (("core_clock_mhz", "core clock lock"), ("core_offset_mhz", "core offset")):
+        if key in configured_gpu and policy_verification.get(key) != "verified":
+            warnings.append(f"configured GPU {label} is not independently verified by available driver telemetry")
     if checks.get("miner_expected") and checks.get("miner_owned") is not True:
         warnings.append("configured miner is not running under coordinator ownership")
     if checks.get("upstream_ready") is False:
@@ -661,12 +666,15 @@ class ManagedInstallation:
             "tasks": task_rows,
             "task_inventory_error": task_inventory_error,
         }
+        configured_gpu_settings: Dict[str, float] = {}
+        configured_limit: Optional[float] = None
         try:
             config = load_config(self.paths.config)
             checks["config_valid"] = True
             checks["processes"] = sorted(config.processes)
-            checks["configured_gpu_settings"] = _configured_gpu_settings(config)
-            configured_limit = checks["configured_gpu_settings"].get("power_limit_w")
+            configured_gpu_settings = _configured_gpu_settings(config)
+            checks["configured_gpu_settings"] = configured_gpu_settings
+            configured_limit = configured_gpu_settings.get("power_limit_w")
             checks["configured_power_limit_w"] = configured_limit
             checks["log_paths"] = {
                 name: {
@@ -734,6 +742,26 @@ class ManagedInstallation:
         except (OSError, subprocess.SubprocessError, ValueError, IndexError, StopIteration):
             checks["gpu"] = None
 
+        observed_gpu = checks.get("gpu") or {}
+        checks["gpu_policy_verification"] = {
+            "power_limit_w": (
+                "verified" if configured_limit is not None and observed_gpu.get("power_limit_w") is not None
+                and abs(configured_limit - float(observed_gpu["power_limit_w"])) <= 0.5
+                else "mismatch" if configured_limit is not None and observed_gpu.get("power_limit_w") is not None
+                else "unavailable"
+            ),
+            "memory_clock_mhz": (
+                "verified" if configured_gpu_settings.get("memory_clock_mhz") is not None
+                and observed_gpu.get("memory_clock_mhz") is not None
+                and abs(configured_gpu_settings["memory_clock_mhz"] - float(observed_gpu["memory_clock_mhz"])) <= 100
+                else "mismatch" if configured_gpu_settings.get("memory_clock_mhz") is not None
+                and observed_gpu.get("memory_clock_mhz") is not None
+                else "unavailable"
+            ),
+            "core_clock_mhz": "observed_dynamic_only" if observed_gpu.get("graphics_clock_mhz") is not None else "unavailable",
+            "core_offset_mhz": "unavailable",
+        }
+
         checks["credential_ready"] = bool(
             checks["credential"].get("credential_valid")
             and checks["credential"].get("credential_file_readable")
@@ -747,6 +775,8 @@ class ManagedInstallation:
             "task_ready": checks["task_ready"],
             "configured_power_limit_w": checks.get("configured_power_limit_w"),
             "effective_power_limit_w": checks.get("effective_power_limit_w"),
+            "configured_gpu_settings": checks.get("configured_gpu_settings", {}),
+            "gpu_policy_verification": checks.get("gpu_policy_verification", {}),
             "miner_expected": checks["miner_expected"],
             "miner_owned": checks["miner_owned"],
             "upstream_ready": checks.get("upstream_ready"),

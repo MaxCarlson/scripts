@@ -23,6 +23,12 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
+def _gpu_idle_sampling_allowed(condition: Dict[str, Any], gaming_mode: Dict[str, Any], *,
+                               manual_override: bool) -> bool:
+    """Only a pending one-shot idle pause may resume mining outside gaming/recovery."""
+    return bool(condition) and manual_override and gaming_mode.get("state", "inactive") == "inactive"
+
+
 class ServiceState(str, Enum):
     """Observable lifecycle states of the Resource Coordinator service."""
 
@@ -750,8 +756,12 @@ class CoordinatorService:
                 if adapter is not None:
                     supervisor = adapter.supervisor
                     state_path = getattr(self.system.config.service, "state_persistence_path", "")
-                    condition = StateCodec.load(state_path).gpu_idle_condition if state_path else {}
-                    if condition and supervisor.is_manual_override:
+                    durable_state = StateCodec.load(state_path) if state_path else None
+                    condition = durable_state.gpu_idle_condition if durable_state else {}
+                    gaming_mode = durable_state.gaming_mode if durable_state else {}
+                    if _gpu_idle_sampling_allowed(
+                        condition, gaming_mode, manual_override=supervisor.is_manual_override
+                    ):
                         await self._sample_gpu_idle_condition(condition, state_path, adapter)
                     deadline = supervisor.manual_override_until
                     if supervisor.is_manual_override and deadline is not None and deadline <= time.time():
