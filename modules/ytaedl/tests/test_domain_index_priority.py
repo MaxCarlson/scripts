@@ -3,10 +3,6 @@
 from __future__ import annotations
 
 from collections import deque
-from pathlib import Path
-
-import pytest
-
 from ytaedl.domain_index import DomainIndex, ScanLogEntry, UrlEntry
 
 
@@ -43,6 +39,29 @@ URL_C = "https://site-a.com/video/3"  # same domain as A
 # ---------------------------------------------------------------------------
 
 class TestPickUrlBasic:
+    def test_add_files_appends_without_reordering_existing_domain_queue(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("https://site-a.com/first\n", encoding="utf-8")
+        second.write_text("https://site-a.com/second\nhttps://site-b.com/finished\n", encoding="utf-8")
+        idx = DomainIndex.build([first])
+
+        added = idx.add_files([second], {"https://site-b.com/finished": "downloaded"})
+
+        assert added == 1
+        assert idx.pick_url({}, 2, {0: 0, 1: -1}).url == "https://site-a.com/second"
+        assert idx.pick_url({}, 2, {0: 0, 1: -1}).url == "https://site-a.com/first"
+        assert idx.is_finished("https://site-b.com/finished")
+
+    def test_dynamically_added_urls_obey_domain_concurrency_limit(self, tmp_path):
+        source = tmp_path / "manual.txt"
+        source.write_text("https://site-a.com/manual\n", encoding="utf-8")
+        idx = DomainIndex.build([])
+        assert idx.add_files([source]) == 1
+
+        assert idx.pick_url({"site-a.com": 1}, max_per_domain=1, file_priority={}) is None
+        assert idx.pick_url({}, max_per_domain=1, file_priority={}).url == "https://site-a.com/manual"
+
     def test_returns_none_when_empty(self):
         idx = _build_index([])
         assert idx.pick_url({}, 2, {}) is None

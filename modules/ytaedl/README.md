@@ -1,4 +1,4 @@
-<!-- version: 2.13.0 -->
+<!-- version: 2.16.0 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -29,6 +29,8 @@ ytaedl -t 12 -L /media/stars -s ./files/downloads/stars -d ./files/downloads/ae-
 Important options:
 
 - `-t/--threads`: number of concurrent workers.
+- `-H/--max-workers`: cap for worker slots, including workers added during runtime (default 16).
+- `-b/--stay-open`: keep the manager running after its queue drains so more work can be submitted.
 - `-i/--priority-files-only`: process only explicitly supplied
   `-p/--priority-files` values, with one worker per unique URL file.
 - `-L/--download-root`: final destination root for per-URL-file folders.
@@ -130,10 +132,12 @@ Downloads panel hotkeys:
 - `u`: URL stats panel.
 - `d`: downloads panel.
 - `Up/Down`: select worker.
+- `j` / `k`: scroll the worker list when it extends beyond the visible screen.
 - `1` through `9`: select workers 1 through 9 directly.
 - `P`: pause or resume the selected worker.
 - `p`: pause or resume all workers.
 - `x`: toggle controlled quit, which finishes active URLs and starts no new downloads.
+- `i`: open a multiline URL and URL-file submission dialog; press Ctrl+S to validate, then choose queue or additional workers.
 - `h`: toggle the normal top status bars while keeping workers and verbose output visible.
 - `v`: cycle verbose pane between off, NDJSON, and worker program log.
 - `q`: quit with confirmation.
@@ -268,6 +272,8 @@ Active domains: a.example,b.example,c.example,+
 ## Controlled Quit And Status Visibility
 
 Press `x` on the downloads panel to enter controlled quit mode. The manager stops assigning new URL files and each worker finishes its current URL before exiting its assigned URL file. Active tool subprocesses are not terminated for controlled quit.
+
+Press `i` while the manager is running to submit one URL or existing URL-file path per line. URL query strings and fragments are retained. Select queueing or request additional worker slots; submissions are stored under the configured log directory in `pending_manual_submissions.json` and restored after a restart. Manual work is scheduled ahead of regular URL files while remaining subject to domain and global bandwidth limits. Use `--stay-open` to receive submissions when starting without work or after the queue drains; additional slots are capped by `--max-workers`.
 
 While controlled quit is enabled, the pinned downloads header shows:
 

@@ -3,8 +3,11 @@
 import os
 import random
 import re
+import sys
 import tempfile
 import threading
+from collections import deque
+from threading import Event
 import pytest
 from pathlib import Path
 from unittest.mock import patch, MagicMock
@@ -30,6 +33,8 @@ class TestManager:
         # Test parsing with defaults
         args = parser.parse_args([])
         assert args.threads == 2
+        assert args.max_workers == 16
+        assert args.stay_open is False
         assert args.time_limit == -1
         assert args.max_ndjson_rate == 5.0
         assert args.max_resolution == "2k"   # new default
@@ -49,6 +54,8 @@ class TestManager:
         assert args_with_priority.priority_files == ["file.txt"]
         assert parser.parse_args(["-i"]).priority_files_only is True
         assert parser.parse_args(["--priority-files-only"]).priority_files_only is True
+        assert parser.parse_args(["-H", "8", "-b"]).max_workers == 8
+        assert parser.parse_args(["-b"]).stay_open is True
 
         args_with_res = parser.parse_args(["--max-resolution", "1080"])
         assert args_with_res.max_resolution == "1080"
@@ -313,6 +320,397 @@ class TestManager:
                 assert output_dir.parent == media_dir
         assert "pending.txt" in assigned_files
         assert "complete.txt" not in assigned_files
+
+    def test_runtime_dialog_starts_requested_workers_and_persists_overflow(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+
+        submitted = [
+            "https://one.example/a#scene-1171754",
+            "https://two.example/b?q=2#scene-1303590",
+            "https://three.example/c",
+        ]
+        source_file = tmp_path / "manual list with spaces.txt"
+        source_file.write_text("https://file.example/retained#scene-1303589\n", encoding="utf-8")
+        submitted_lines = [*submitted, str(source_file)]
+        keys = deque(["i", *"\r".join(submitted_lines), "\x13", "2", "2", "\r", "q", "y"])
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+            @staticmethod
+            def locking(*_args):
+                return None
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+
+        argv = [
+            "--threads", "1", "--max-workers", "3", "--stars-dir", str(stars_dir),
+            "--aebn-dir", str(ae_dir), "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "-1",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        commands = [call.args[0] for call in popen.call_args_list]
+        assert len(commands) == 3
+        assigned_files = [Path(cmd[cmd.index("-f") + 1]) for cmd in commands]
+        manual_contents = [path.read_text(encoding="utf-8").strip() for path in assigned_files if path.parent.name == "manual_submissions"]
+        assert manual_contents == submitted[:2]
+
+        import json
+
+        state = json.loads((log_dir / "pending_manual_submissions.json").read_text(encoding="utf-8"))
+        assert len(state["pending"]) == 2
+        assert str(source_file.resolve()) in [item["value"] for item in state["pending"]]
+
+    def test_runtime_submissions_respect_domain_cap(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+        submitted = ["https://same.example/a", "https://same.example/b"]
+        keys = deque(["i", *"\r".join(submitted), "\x13", "2", "2", "\r", "q", "y"])
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+            @staticmethod
+            def locking(*_args):
+                return None
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--max-workers", "3", "--stars-dir", str(stars_dir),
+            "--aebn-dir", str(ae_dir), "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "1", "--no-exclusive-urlfiles",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        # Initial worker plus one submitted URL; the second same-domain URL waits.
+        assert popen.call_count == 2
+
+    def test_domain_index_distributes_submitted_url_file_individually(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+        source_file = tmp_path / "submitted scenes.txt"
+        submitted = ["https://one.example/a#scene-1171754", "https://two.example/b#scene-1303590"]
+        source_file.write_text("\n".join(submitted) + "\n", encoding="utf-8")
+        keys = deque(["i", *str(source_file), "\x13", "2", "2", "\r", "q", "y"])
+
+        class FakeMsvcrt:
+            LK_NBLCK = 1
+            LK_UNLCK = 2
+
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+            @staticmethod
+            def locking(*_args):
+                return None
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--max-workers", "3", "--stars-dir", str(stars_dir),
+            "--aebn-dir", str(ae_dir), "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "1", "--no-exclusive-urlfiles",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        commands = [call.args[0] for call in popen.call_args_list]
+        assert len(commands) == 3
+        assigned_urls = {
+            Path(command[command.index("-f") + 1]).read_text(encoding="utf-8").strip()
+            for command in commands[1:]
+        }
+        assert assigned_urls == set(submitted)
+
+    def test_invalid_runtime_input_shows_error_without_starting_worker(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+        keys = deque(["i", *"missing URL file.txt", "\x13", "\x1b", "q", "y"])
+
+        class FakeMsvcrt:
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--stars-dir", str(stars_dir), "--aebn-dir", str(ae_dir),
+            "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "-1",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 1
+        assert not (log_dir / "pending_manual_submissions.json").exists()
+
+    def test_exact_file_mode_can_add_runtime_worker_without_restarting_existing_worker(self, tmp_path):
+        initial = tmp_path / "exact input with spaces.txt"
+        initial.write_text("https://initial.example/item\n", encoding="utf-8")
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        keys = deque(["i", *"https://runtime.example/a#scene-1171754", "\x13", "2", "1", "\r", "q", "y"])
+
+        class FakeMsvcrt:
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--priority-files-only", "--priority-files", str(initial),
+            "--max-workers", "2", "--stars-dir", str(stars_dir), "--aebn-dir", str(ae_dir),
+            "--download-root", str(media_dir), "--log-dir", str(log_dir), "--archive", str(tmp_path / "archive"),
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 2
+        commands = [call.args[0] for call in popen.call_args_list]
+        manual_file = Path(commands[1][commands[1].index("-f") + 1])
+        assert manual_file.read_text(encoding="utf-8") == "https://runtime.example/a#scene-1171754\n"
+
+    def test_queue_submission_is_assigned_when_existing_worker_becomes_idle(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+        modal_keys = deque(["i", *"https://queued.example/a#scene-1171754", "\x13", "1"])
+        quit_keys = deque(["q", "y"])
+
+        class FakeMsvcrt:
+            deferred_quit = False
+
+            @staticmethod
+            def getwch():
+                return (modal_keys if modal_keys else quit_keys).popleft()
+
+            @staticmethod
+            def kbhit():
+                if modal_keys:
+                    return bool(modal_keys)
+                if not FakeMsvcrt.deferred_quit:
+                    FakeMsvcrt.deferred_quit = True
+                    return False
+                return bool(quit_keys)
+
+        first_process = MagicMock()
+        poll_count = {"value": 0}
+
+        def poll_first_process():
+            poll_count["value"] += 1
+            return None if poll_count["value"] == 1 else 0
+
+        first_process.poll.side_effect = poll_first_process
+        first_process.stdout = iter([])
+        first_process.wait.return_value = 0
+        second_process = MagicMock()
+        second_process.poll.return_value = None
+        second_process.stdout = iter([])
+        second_process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--stars-dir", str(stars_dir), "--aebn-dir", str(ae_dir),
+            "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "-1",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", side_effect=[first_process, second_process]) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 2
+        assigned = Path(popen.call_args_list[1].args[0][popen.call_args_list[1].args[0].index("-f") + 1])
+        assert assigned.read_text(encoding="utf-8") == "https://queued.example/a#scene-1171754\n"
+
+    def test_additional_worker_admission_respects_global_bandwidth_cap(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
+        keys = deque(["i", *"https://queued.example/a", "\x13", "2", "1", "\r", "q", "y"])
+        reader_done = Event()
+
+        def worker_events():
+            yield '{"event":"progress","speed_bps":1048576}\n'
+            reader_done.set()
+
+        class FakeMsvcrt:
+            @staticmethod
+            def kbhit():
+                return reader_done.is_set() and bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = worker_events()
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--max-workers", "2", "--max-total-dl-speed", "0.1",
+            "--stars-dir", str(stars_dir), "--aebn-dir", str(ae_dir), "--download-root", str(media_dir),
+            "--log-dir", str(log_dir), "--archive", str(tmp_path / "archive"), "-D", "-1",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 1
+        import json
+
+        state = json.loads((log_dir / "pending_manual_submissions.json").read_text(encoding="utf-8"))
+        assert len(state["pending"]) == 1
+
+    def test_stay_open_accepts_queue_submission_after_starting_without_work(self, tmp_path):
+        stars_dir = tmp_path / "stars"
+        ae_dir = tmp_path / "ae"
+        media_dir = tmp_path / "media"
+        log_dir = tmp_path / "logs"
+        for directory in (stars_dir, ae_dir, media_dir, log_dir):
+            directory.mkdir()
+        keys = deque(["i", *"https://queued.example/empty#scene-1171754", "\x13", "1", "q", "y"])
+
+        class FakeMsvcrt:
+            @staticmethod
+            def kbhit():
+                return bool(keys)
+
+            @staticmethod
+            def getwch():
+                return keys.popleft()
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "--threads", "1", "--stay-open", "--stars-dir", str(stars_dir), "--aebn-dir", str(ae_dir),
+            "--download-root", str(media_dir), "--log-dir", str(log_dir),
+            "--archive", str(tmp_path / "archive"), "-D", "-1",
+        ]
+        with patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}):
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=lambda _: None):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 1
+        assigned = Path(popen.call_args.args[0][popen.call_args.args[0].index("-f") + 1])
+        assert assigned.read_text(encoding="utf-8") == "https://queued.example/empty#scene-1171754\n"
 
     def test_storage_summary_lines_same_volume(self):
         staging = td_utils.DiskStats(
