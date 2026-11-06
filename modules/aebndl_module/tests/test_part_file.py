@@ -3,10 +3,23 @@ import os
 import json
 import shutil
 import tempfile
+import struct
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
 from aebn_dl import Downloader
+
+
+def _mp4_box(box_type: bytes, payload: bytes = b"") -> bytes:
+    return struct.pack(">I4s", len(payload) + 8, box_type) + payload
+
+
+def _init_fragment() -> bytes:
+    return _mp4_box(b"ftyp") + _mp4_box(b"moov")
+
+
+def _media_fragment() -> bytes:
+    return _mp4_box(b"moof") + _mp4_box(b"mdat", b"fixture")
 
 
 class PartFileTest(unittest.TestCase):
@@ -325,11 +338,11 @@ class PartFileTest(unittest.TestCase):
         seg3 = os.path.join(movie_work_dir, "v_test_video_0.mp4")
 
         with open(seg1, 'wb') as f:
-            f.write(b'x' * 1000)
+            f.write(_media_fragment())
         with open(seg2, 'wb') as f:
-            f.write(b'x' * 1000)
+            f.write(_media_fragment())
         with open(seg3, 'wb') as f:
-            f.write(b'x' * 2000)
+            f.write(_media_fragment())
 
         # Create manifest
         mock_manifest = MagicMock(spec=Manifest)
@@ -368,12 +381,12 @@ class PartFileTest(unittest.TestCase):
         self.assertEqual(len(mock_manifest.audio_stream.downloaded_segments), 2)
         self.assertIn(seg1, mock_manifest.audio_stream.downloaded_segments)
         self.assertIn(seg2, mock_manifest.audio_stream.downloaded_segments)
-        self.assertEqual(mock_manifest.audio_stream.downloaded_bytes, 2000)
+        self.assertEqual(mock_manifest.audio_stream.downloaded_bytes, 2 * len(_media_fragment()))
         self.assertEqual(mock_manifest.audio_stream.total_size, 10000)
 
         self.assertEqual(len(mock_manifest.video_stream.downloaded_segments), 1)
         self.assertIn(seg3, mock_manifest.video_stream.downloaded_segments)
-        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 2000)
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, len(_media_fragment()))
         self.assertEqual(mock_manifest.video_stream.total_size, 20000)
 
     def test_restore_recomputes_low_total_size_from_existing_segments(self):
@@ -396,11 +409,11 @@ class PartFileTest(unittest.TestCase):
         seg1 = os.path.join(movie_work_dir, "v_test_video_0.mp4")
         seg2 = os.path.join(movie_work_dir, "v_test_video_1.mp4")
         with open(init_seg, 'wb') as f:
-            f.write(b'i' * 100)
+            f.write(_init_fragment())
         with open(seg1, 'wb') as f:
-            f.write(b'x' * 1000)
+            f.write(_media_fragment())
         with open(seg2, 'wb') as f:
-            f.write(b'x' * 3000)
+            f.write(_media_fragment())
 
         mock_manifest = MagicMock(spec=Manifest)
         mock_manifest.total_number_of_data_segments = 10
@@ -419,15 +432,15 @@ class PartFileTest(unittest.TestCase):
                     'stream_id': 'test_video',
                     'downloaded_segments': [init_seg, seg1, seg2],
                     'downloaded_bytes': 4100,
-                    'total_size': 750,
+                    'total_size': 100,
                 }
             }
         }
 
         downloader._restore_from_part_file(part_data)
 
-        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 4100)
-        self.assertEqual(mock_manifest.video_stream.total_size, 20100)
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, len(_init_fragment()) + 2 * len(_media_fragment()))
+        self.assertEqual(mock_manifest.video_stream.total_size, len(_init_fragment()) + 10 * len(_media_fragment()))
 
     def test_existing_segment_does_not_count_as_network_bytes(self):
         """Resume-discovered local segments should update progress but not speed counters."""
@@ -446,7 +459,7 @@ class PartFileTest(unittest.TestCase):
         os.makedirs(movie_work_dir, exist_ok=True)
         segment_path = os.path.join(movie_work_dir, "v_test_video_0.mp4")
         with open(segment_path, "wb") as f:
-            f.write(b"x" * 4096)
+            f.write(_media_fragment())
 
         mock_manifest = MagicMock(spec=Manifest)
         mock_manifest.base_stream_url = "https://media.example/stream"
@@ -460,7 +473,7 @@ class PartFileTest(unittest.TestCase):
 
         downloader._download_segment(mock_manifest.video_stream, None, segment_number=0)
 
-        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 4096)
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, len(_media_fragment()))
         self.assertEqual(mock_manifest.video_stream.network_downloaded_bytes, 0)
 
     def test_new_segment_counts_as_network_bytes(self):
@@ -488,7 +501,7 @@ class PartFileTest(unittest.TestCase):
 
         response = MagicMock()
         response.ok = True
-        response.content = b"x" * 2048
+        response.content = _media_fragment()
         downloader.session = MagicMock()
         downloader.session.get = MagicMock(return_value=response)
         downloader.manifest = mock_manifest
@@ -496,8 +509,8 @@ class PartFileTest(unittest.TestCase):
 
         downloader._download_segment(mock_manifest.video_stream, None, segment_number=0)
 
-        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, 2048)
-        self.assertEqual(mock_manifest.video_stream.network_downloaded_bytes, 2048)
+        self.assertEqual(mock_manifest.video_stream.downloaded_bytes, len(_media_fragment()))
+        self.assertEqual(mock_manifest.video_stream.network_downloaded_bytes, len(_media_fragment()))
 
     def test_restore_filters_missing_segments(self):
         """Test that restore ignores segments that no longer exist on disk"""
@@ -520,7 +533,7 @@ class PartFileTest(unittest.TestCase):
         seg2 = os.path.join(movie_work_dir, "a_test_audio_1.mp4")  # Won't create this
 
         with open(seg1, 'wb') as f:
-            f.write(b'x' * 1000)
+            f.write(_media_fragment())
 
         mock_manifest = MagicMock(spec=Manifest)
         mock_manifest.audio_stream = AudioStream()

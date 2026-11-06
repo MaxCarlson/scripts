@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import math
 import lxml.etree as ET
@@ -5,6 +7,14 @@ import lxml.etree as ET
 from . import utils
 from .models import AudioStream, VideoStream
 from .custom_session import CustomSession
+
+
+class PreviewAccessError(ValueError):
+    """Delivery metadata does not establish access to the requested interval."""
+
+
+class UnsupportedManifestError(ValueError):
+    """The manifest does not provide a supported, unambiguous segment timeline."""
 
 
 class Manifest:
@@ -27,11 +37,53 @@ class Manifest:
         self.video_stream = VideoStream()
         self.audio_stream = AudioStream()
         self.avaliable_resulutions: list[int] | None = None
+        self.requested_interval = (0.0, float(total_duration_seconds))
+        self.delivery_metadata = None
+        self.segment_templates: dict[str, dict] = {}
+
+    def validate_delivery_window(self, payload: dict, requested_start: float, requested_end: float) -> None:
+        try:
+            values = (payload.get("startSeconds"), payload.get("endSeconds"), requested_start, requested_end)
+            if any(isinstance(value, bool) for value in values):
+                raise ValueError("boolean boundary")
+            start, end, requested_start, requested_end = map(float, values)
+            if not all(math.isfinite(value) for value in (start, end, requested_start, requested_end)):
+                raise ValueError("non-finite boundary")
+            if start < 0 or end <= start or requested_start < 0 or requested_end <= requested_start:
+                raise ValueError("invalid boundaries")
+        except (AttributeError, TypeError, ValueError) as exc:
+            raise PreviewAccessError("Delivery access window is missing or malformed") from exc
+        if requested_start < start or requested_end > end:
+            raise PreviewAccessError(
+                f"Preview/access limitation: requested {requested_start:g}–{requested_end:g}s; "
+                f"delivery permits {start:g}–{end:g}s"
+            )
 
     def parse_content(self, manifest_content: str) -> None:
         """Parse the XML manifest content"""
         root = ET.fromstring(manifest_content, None)
+        self.segment_templates = {}
+        for kind, mime in (("v", "video/mp4"), ("a", "audio/mp4")):
+            templates = root.xpath(f'.//*[local-name()="AdaptationSet" and @mimeType="{mime}"]//*[local-name()="SegmentTemplate"]')
+            parsed = []
+            for item in templates:
+                if item.get("timescale") and item.get("duration"):
+                    parsed.append({"timescale": item.get("timescale"), "duration": item.get("duration"),
+                                   "start_number": item.get("startNumber", "1"),
+                                   "presentation_time_offset": item.get("presentationTimeOffset", "0")})
+            if parsed and all(item == parsed[0] for item in parsed):
+                self.segment_templates[kind] = parsed[0]
         self.total_number_of_data_segments = self._total_number_of_data_segments_calc(root, self.total_duration_seconds)
+        if self.delivery_metadata is not None:
+            start, end = self.requested_interval
+            segment_start = max(0.0, math.floor(start / self.segment_duration) * self.segment_duration)
+            segment_end = min(float(self.total_duration_seconds),
+                              (math.ceil(end / self.segment_duration) + 1) * self.segment_duration)
+            self.validate_delivery_window(self.delivery_metadata, segment_start, segment_end)
+        if root.xpath('.//*[local-name()="SegmentTimeline"]') or set(self.segment_templates) != {"v", "a"}:
+            raise UnsupportedManifestError(
+                "Unsupported or ambiguous DASH segment templates; fragment identity cannot be verified"
+            )
         video_streams = self._parse_and_sort_video_streams(root)
         self.avaliable_resulutions = [video_stream[1] for video_stream in video_streams]
         audio_stream_id = self._find_best_good_audio_stream(video_streams)
@@ -75,7 +127,8 @@ class Manifest:
             init_segment_name = f"ai_{stream_id}"
             init_segment_url = f"{self.base_stream_url}/{init_segment_name}.mp4d"
             init_segment_bytes = self.session.get(init_segment_url).content
-            data_segment_number = int(self.total_number_of_data_segments / 2)
+            midpoint = (self.requested_interval[0] + self.requested_interval[1]) / 2
+            data_segment_number = int(midpoint / self.segment_duration)
             data_segment_name = f"a_{stream_id}_{data_segment_number}"
             data_segment_url = f"{self.base_stream_url}/{data_segment_name}.mp4d"
             data_segment_bytes = self.session.get(data_segment_url).content
@@ -90,9 +143,7 @@ class Manifest:
         return sorted_video_streams
 
     def _get_new_manifest_url(self) -> str:
-        # Send isPreview=true to bypass subscription/auth check on the deliver endpoint.
-        # The returned manifest URL grants access to all segments regardless of the
-        # startSeconds/endSeconds window in the response; those fields are ignored.
+        # The delivery response must establish access to the requested interval.
         url_content_type = self.input_url.split("/")[3]
         movie_id = self.input_url.split("/")[5]
         headers = {"content-type": "application/x-www-form-urlencoded"}
@@ -110,10 +161,12 @@ class Manifest:
                 f"AEBN deliver endpoint returned non-JSON response "
                 f"(status={status}, content_type={content_type}, body={snippet!r})"
             ) from exc
+        self.delivery_metadata = content
         return content["url"]
 
     def process_manifest(self):
         manifest_url = self._get_new_manifest_url()
+        self.validate_delivery_window(self.delivery_metadata, *self.requested_interval)
         self.base_stream_url = manifest_url.rsplit("/", 1)[0]
         manifest_content = self.session.get(manifest_url).content
         self.parse_content(manifest_content)

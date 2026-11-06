@@ -78,20 +78,73 @@ def parse_scene_inputs(files: list[Path | str]) -> ParsedInputs:
 
 
 def probe_video(path: Path) -> dict | None:
-    """Return basic ffprobe media facts, or None when ffprobe is unavailable/invalid."""
+    """Return container and independent stream coverage facts using bounded probes."""
     executable = shutil.which("ffprobe")
     if not executable:
         return None
     try:
         result = subprocess.run(
-            [executable, "-v", "error", "-show_entries", "format=duration:stream=codec_type",
+            [executable, "-v", "error", "-count_packets", "-show_entries",
+             "format=duration:stream=codec_type,duration,start_time,nb_read_packets,time_base",
              "-of", "json", str(path)],
             capture_output=True, text=True, timeout=45, check=True,
         )
         data = json.loads(result.stdout)
         duration = float(data.get("format", {}).get("duration"))
-        has_video = any(stream.get("codec_type") == "video" for stream in data.get("streams", []))
-        return {"duration": duration, "video": has_video}
+        stream_facts = {}
+        for kind, selector in (("video", "v:0"), ("audio", "a:0")):
+            stream = next((item for item in data.get("streams", []) if item.get("codec_type") == kind), None)
+            if not stream:
+                continue
+            sample_count = 128 if kind == "audio" else 16
+            head = subprocess.run(
+                [executable, "-v", "error", "-select_streams", selector, "-read_intervals", f"%+#{sample_count}",
+                 "-show_packets", "-show_entries", "packet=pts_time,dts_time", "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            stream_duration = float(stream.get("duration")) if stream.get("duration") is not None else None
+            stream_start = float(stream.get("start_time", 0) or 0)
+            if stream_duration is None:
+                return None
+            tail_start = max(0.0, stream_start + stream_duration - 1.0)
+            tail = subprocess.run(
+                [executable, "-v", "error", "-select_streams", selector,
+                 "-read_intervals", f"{tail_start}%+#{sample_count}", "-show_packets", "-show_entries", "packet=pts_time,dts_time",
+                 "-of", "json", str(path)],
+                capture_output=True, text=True, timeout=30, check=True,
+            )
+            head_stamps = [float(packet.get("pts_time", packet.get("dts_time")))
+                           for packet in json.loads(head.stdout).get("packets", [])
+                           if packet.get("pts_time", packet.get("dts_time")) is not None]
+            tail_stamps = [float(packet.get("pts_time", packet.get("dts_time")))
+                           for packet in json.loads(tail.stdout).get("packets", [])
+                           if packet.get("pts_time", packet.get("dts_time")) is not None]
+            if kind != "video" and (not head_stamps or not tail_stamps):
+                return None
+            stream_facts[kind] = {
+                "duration": stream_duration,
+                "start_time": stream_start,
+                "packet_count": int(stream.get("nb_read_packets", 0) or 0),
+                "first_pts": min(head_stamps) if head_stamps else None,
+                "last_pts": max(tail_stamps) if tail_stamps else None,
+                "timestamp_span": max(tail_stamps) - min(head_stamps) if head_stamps and tail_stamps else None,
+                "time_base": stream.get("time_base"),
+            }
+        continuity = None
+        if "video" in stream_facts:
+            try:
+                from aebn_dl.media_validation import scan_video_packet_timing
+            except ImportError:
+                return None
+            continuity = scan_video_packet_timing(path, ffprobe=executable)
+            if continuity is None:
+                return None
+            first, last = continuity.get("min_pts_s"), continuity.get("max_pts_s")
+            if first is None or last is None:
+                return None
+            stream_facts["video"].update({"first_pts": first, "last_pts": last, "timestamp_span": last - first})
+        return {"duration": duration, "video": "video" in stream_facts,
+                "streams": stream_facts, "video_continuity": continuity}
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, json.JSONDecodeError):
         return None
 
@@ -408,18 +461,22 @@ def scan_reconciliation(
                     if facts:
                         duration = facts.get("duration")
                         has_video = bool(facts.get("video"))
-                    is_valid = bool(relevant and has_video and _within_duration(duration, expected_duration)
-                                    and not identity_ambiguous)
+                    # Inventory probing is discovery evidence only. The independent
+                    # verifier must establish audio/video packet coverage before a
+                    # scene can be considered verified.
+                    duration_candidate = bool(relevant and has_video and _within_duration(duration, expected_duration)
+                                              and not identity_ambiguous)
                     classification = "unknown" if identity_ambiguous else "scene"
-                    confidence = "high" if studio_match and is_valid else "low"
+                    confidence = "high" if studio_match and duration_candidate else "low"
                     evidence = {"title_token_match": True, "studio_token_match": studio_match,
-                                "scene_ordinal": ordinal, "duration_match": is_valid, "ffprobe": facts,
+                                "scene_ordinal": ordinal, "container_duration_candidate": duration_candidate,
+                                "verification_required": True, "ffprobe": facts,
                                 "ambiguous_movie_identity": identity_ambiguous}
                     for request in (requests if identity_ambiguous else relevant):
-                        status = "scene_verified" if is_valid else "scene_candidate_unverified"
+                        status = "scene_candidate_unverified"
                         if identity_ambiguous:
                             status = "scene_ambiguous"
-                        detail = None if is_valid else "filename matches scene ordinal, but media verification is incomplete"
+                        detail = "inventory match requires independent audio/video packet coverage verification"
                         if identity_ambiguous:
                             detail = "filename and scene ordinal match more than one AEBN movie identity"
                         store.execute("UPDATE requested_scenes SET status=?, status_detail=? WHERE movie_key=? AND scene_id=?",

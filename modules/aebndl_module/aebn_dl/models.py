@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from dataclasses import dataclass, field
 
 
@@ -21,6 +23,8 @@ class MediaStream:
     total_size: int = 0
     downloaded_bytes: int = 0
     network_downloaded_bytes: int = 0
+    optional_missing_segments: list[int] = field(default_factory=list)
+    track_info: dict | None = None
 
 
 @dataclass

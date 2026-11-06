@@ -338,7 +338,7 @@ class TestManager:
         source_file = tmp_path / "manual list with spaces.txt"
         source_file.write_text("https://file.example/retained#scene-1303589\n", encoding="utf-8")
         submitted_lines = [*submitted, str(source_file)]
-        keys = deque(["i", *"\r".join(submitted_lines), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *"\r".join(submitted_lines), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -395,7 +395,7 @@ class TestManager:
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
         submitted = ["https://same.example/a", "https://same.example/b"]
-        keys = deque(["i", *"\r".join(submitted), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *"\r".join(submitted), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -444,7 +444,7 @@ class TestManager:
         source_file = tmp_path / "submitted scenes.txt"
         submitted = ["https://one.example/a#scene-1171754", "https://two.example/b#scene-1303590"]
         source_file.write_text("\n".join(submitted) + "\n", encoding="utf-8")
-        keys = deque(["i", *str(source_file), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *str(source_file), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -495,7 +495,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        keys = deque(["i", *"missing URL file.txt", "\x13", "\x1b", "q", "y"])
+        keys = deque(["i", *"missing URL file.txt", "\t", "\x1b", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod
@@ -535,7 +535,7 @@ class TestManager:
         log_dir = tmp_path / "logs"
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
-        keys = deque(["i", *"https://runtime.example/a#scene-1171754", "\x13", "2", "1", "\r", "q", "y"])
+        keys = deque(["i", *"https://runtime.example/a#scene-1171754", "\t", "2", "1", "\r", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod
@@ -576,7 +576,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        modal_keys = deque(["i", *"https://queued.example/a#scene-1171754", "\x13", "1"])
+        modal_keys = deque(["i", *"https://queued.example/a#scene-1171754", "\t", "1"])
         quit_keys = deque(["q", "y"])
 
         class FakeMsvcrt:
@@ -634,7 +634,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        keys = deque(["i", *"https://queued.example/a", "\x13", "2", "1", "\r", "q", "y"])
+        keys = deque(["i", *"https://queued.example/a", "\t", "2", "1", "\r", "q", "y"])
         reader_done = Event()
 
         def worker_events():
@@ -680,7 +680,7 @@ class TestManager:
         log_dir = tmp_path / "logs"
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
-        keys = deque(["i", *"https://queued.example/empty#scene-1171754", "\x13", "1", "q", "y"])
+        keys = deque(["i", *"https://queued.example/empty#scene-1171754", "\t", "1", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod

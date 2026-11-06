@@ -226,9 +226,15 @@ def test_aebn_metadata_check_uses_aebndl_existing_output(monkeypatch, tmp_path):
             return None
 
         def _scrape_movie_info(self):
-            return object()
+            from types import SimpleNamespace
+            return SimpleNamespace(scene_ordinal_for_id=lambda scene_id: 1,
+                                   calculate_scenes_boundaries=lambda duration: None)
 
-        def _find_existing_output(self, _movie):
+        def _expected_duration(self, _movie):
+            return 30
+
+        def _find_existing_output(self, _movie, expected_duration):
+            assert expected_duration == 30
             return str(existing) if Path(self.output_dir) == existing.parent else None
 
     monkeypatch.setitem(sys.modules, "aebn_dl", type("M", (), {"Downloader": DummyDownloader}))
@@ -247,6 +253,29 @@ def test_aebn_metadata_check_uses_aebndl_existing_output(monkeypatch, tmp_path):
     assert result.status == "preexisting"
     assert result.downloader == "aebndl-metadata"
     assert result.present_path == str(existing)
+
+
+def test_aebn_metadata_validator_supplies_scene_timing_to_real_finder(monkeypatch, tmp_path):
+    import pytest
+    from types import SimpleNamespace
+    aebn = pytest.importorskip("aebn_dl.downloader")
+    target = tmp_path / "stars" / "case" / "Title Scene 1 720p.mp4"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fixture")
+    scene = SimpleNamespace(start_timing=10, end_timing=40)
+    movie = SimpleNamespace(studio_name="", title="Title", scenes=[scene], total_duration_seconds=90,
+                            scene_ordinal_for_id=lambda scene_id: 1,
+                            calculate_scenes_boundaries=lambda duration: None)
+    monkeypatch.setattr(aebn.Downloader, "_initialize_download", lambda self: None)
+    monkeypatch.setattr(aebn.Downloader, "_scrape_movie_info", lambda self: movie)
+    monkeypatch.setattr(aebn.Downloader, "_validate_output", lambda self, path, duration:
+                        {"valid": duration == 30, "errors": ["expected 30 seconds"]})
+    entry = archive_validator.ArchiveUrl(
+        url="https://straight.aebn.com/straight/movies/1/title#scene-12", archive_status="downloaded",
+        archive_file=tmp_path / "ae-case.txt", archive_line=1, archive_text="", source_group="ae-case")
+    result = archive_validator._verify_aebn_metadata_existing(entry, [tmp_path / "stars"], tmp_path / "logs")
+    assert result.status == archive_validator.PRESENT_STATUS
+    assert result.present_path == str(target)
 
 
 def test_validation_writes_master_and_worker_logs(tmp_path):

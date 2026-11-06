@@ -40,6 +40,7 @@ from procparsers import iter_parsed_events
 try:
     from . import _partial_utils
     from . import yt_grid
+    from . import aebn_validation_cache as aebn_cache
     from . import __version__ as YTAEDL_VERSION
     from .urlfile_lock import LOCK_ERROR_RC, LOCK_HELD_RC, LockAttempt, UrlFileLock
 except ImportError:  # pragma: no cover - used when downloader.py is executed by file path.
@@ -57,6 +58,7 @@ except ImportError:  # pragma: no cover - used when downloader.py is executed by
 
     _partial_utils = _load_sibling("_partial_utils", "_partial_utils.py")
     yt_grid = _load_sibling("yt_grid", "yt_grid.py")
+    aebn_cache = _load_sibling("aebn_validation_cache", "aebn_validation_cache.py")
     _urlfile_lock = _load_sibling("urlfile_lock", "urlfile_lock.py")
     LOCK_ERROR_RC = _urlfile_lock.LOCK_ERROR_RC
     LOCK_HELD_RC = _urlfile_lock.LOCK_HELD_RC
@@ -107,6 +109,10 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0,
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
     p.add_argument("-a", "--archive-dir", type=str, default=None, help="Directory to store per-urlfile archive status files.")
+    p.add_argument("-e", "--aebn-revalidate-limit", type=int, default=0, metavar="N",
+                   help="Revalidate at most N historical unverified AEBN archive entries")
+    p.add_argument("-l", "--aebn-revalidate-retry", action="store_true",
+                   help="Include previously attempted AEBN revalidations in this bounded batch")
     p.add_argument("-O", "--archive-source-file", type=str, default=None,
                    help="Original URL file used for archive naming and status lookup; defaults to --url-file.")
     p.add_argument("-S", "--stall-seconds", type=int, default=4, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and try fallback methods.")
@@ -862,6 +868,7 @@ def _build_aebndl_cmd(
     max_height: Optional[int] = None,
     scene: Optional[int] = None,
     scene_id: Optional[str] = None,
+    existing_output_dirs: Optional[List[Path]] = None,
 ) -> List[str]:
     # Keep default logging level (INFO) to have progress; do NOT pass -c by default
     cmd = ["aebndl", "--json", "-o", str(out_dir), "-w", str(work_dir)]
@@ -873,6 +880,8 @@ def _build_aebndl_cmd(
         if not re.fullmatch(r"\d+", scene_id):
             raise ValueError(f"invalid AEBN scene ID: {scene_id!r}")
         cmd += ["-I", scene_id]
+    for existing_dir in existing_output_dirs or []:
+        cmd += ["-C", str(existing_dir)]
     cmd.append(url)
     return cmd
 def _coerce_progress_number(value):
@@ -1649,7 +1658,9 @@ def _run_one(
 
     # choose command
     if tool == "aebndl":
-        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height, scene_id=scene_id)
+        existing_dirs = [path for path in _all_canonical_dirs if path != out_dir.resolve()]
+        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height, scene_id=scene_id,
+                                existing_output_dirs=existing_dirs)
     else:
         cmd = _build_ytdlp_cmd(
             [url],
@@ -1713,6 +1724,8 @@ def _run_one(
     last_destination_path: Optional[Path] = None
     last_error_event: Optional[dict] = None
     complete_event: Optional[dict] = None
+    validated_aebn_outcome = False
+    verified_aebn_event: Optional[dict] = None
 
     try:
         # internal heartbeat for scheduling; also used for stall detection
@@ -1731,8 +1744,11 @@ def _run_one(
         )
         for evt in iter_parsed_events(tool, proc.stdout, raw_log_path=raw_path, heartbeat_secs=hb):
             # track 'already' to classify FINISH_DUPLICATE later for yt-dlp
-            if evt.get("event") == "already":
+            if evt.get("event") == "already" and (tool != "aebndl" or aebn_cache.validated_aebn_event(evt)):
                 already_seen = True
+                if tool == "aebndl":
+                    validated_aebn_outcome = True
+                    verified_aebn_event = dict(evt)
                 # Short-circuit this URL: file already exists at destination
                 try:
                     proc.terminate()
@@ -1751,6 +1767,8 @@ def _run_one(
             if evt.get("event") == "destination":
                 raw_dest = evt.get("path")
                 if raw_dest:
+                    last_destination_path = Path(raw_dest).expanduser().resolve()
+                if raw_dest and tool != "aebndl":
                     candidate = Path(raw_dest).expanduser().resolve()
                     last_destination_path = candidate
                     # Check all canonical dirs for an existing duplicate
@@ -1797,6 +1815,9 @@ def _run_one(
                 last_progress = evt
             if evt.get("event") == "complete":
                 complete_event = dict(evt)
+                if tool == "aebndl" and aebn_cache.validated_aebn_event(evt):
+                    validated_aebn_outcome = True
+                    verified_aebn_event = dict(evt)
             if evt.get("event") in {"error", "manifest_error"}:
                 last_error_event = dict(evt)
             now = time.time()
@@ -1885,6 +1906,11 @@ def _run_one(
         # Treat as non-fatal for the file: return 130 so caller can advance to next URL
         info = {"elapsed_s": time.time() - t_url_start, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": False, "downloader": tool}
         return 130, info
+
+    if rc == 0 and tool == "aebndl" and not validated_aebn_outcome:
+        rc = 1
+        last_error_event = {"event": "error", "error_type": "UnverifiedAebnOutput",
+                            "message": "AEBN exited without a validated complete or already event"}
 
     if terminate_for_canonical_duplicate and cleanup_proxy_path:
         try:
@@ -2001,8 +2027,9 @@ def _run_one(
         "downloader": tool,
         "error_type": (last_error_event or {}).get("error_type"),
         "error_message": (last_error_event or {}).get("message"),
+        "verified_aebn_event": verified_aebn_event,
     }
-    if rc != 0 and retries > 0:
+    if rc not in (0, 77, 78, 130, 131) and retries > 0:
         return _run_one(
             tool,
             urls,
@@ -2145,16 +2172,32 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
                 archive_file.write_text('\n'.join(normalized_lines) + '\n', encoding='utf-8')
             except Exception:
                 pass
+    verified_aebn_urls = aebn_cache.current_verified_urls(archive_dir)
+    attempted_aebn_urls = aebn_cache.attempted_revalidations(archive_dir)
     if not urls:
         print("[ERROR] No URLs found.", file=sys.stderr)
         return 3
 
     overall_rc = 0
+    revalidation_count = 0
     try:
         for i, url in enumerate(urls, 1):
             # Skip successfully processed URLs based on archive status.
+            # Historical AEBN scene successes may have recorded a full movie or
+            # an invalid remux. Re-enter aebndl to validate unverified AEBN
+            # output; a current file-bound result permits the archive fast path.
+            aebn_recheck = aebn_cache.is_aebn_url(url) and url not in verified_aebn_urls
+            revalidating = False
             if archive_file and url in archive_processed_urls:
-                continue
+                if not aebn_recheck:
+                    continue
+                if ((url in attempted_aebn_urls and not args.aebn_revalidate_retry)
+                        or revalidation_count >= max(0, args.aebn_revalidate_limit)):
+                    _emit_json({"event": "aebn_revalidation_deferred", "url": url,
+                                "reason": "historical archive success has no current verification"})
+                    continue
+                revalidation_count += 1
+                revalidating = True
             if _stop_sentinel_active(stop_sentinel):
                 _emit_json(
                     {
@@ -2218,8 +2261,14 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
                 ytdlp_impersonate=getattr(args, "ytdlp_impersonate", "chrome"),
                 ytdlp_downloader=getattr(args, "ytdlp_downloader", "aria2c"),
             )
+            if rc == 0 and tool == "aebndl" and archive_dir and info.get("verified_aebn_event"):
+                if aebn_cache.record_verified_output(archive_dir, url, info["verified_aebn_event"]):
+                    verified_aebn_urls.add(url)
+            if revalidating and archive_dir:
+                outcome = "verified" if rc == 0 else "preview-unavailable" if rc == 77 else "unverified"
+                aebn_cache.record_revalidation_attempt(archive_dir, url, outcome)
             # Update archive status (skip marking on Ctrl-C abort rc==130)
-            if archive_file:
+            if archive_file and not revalidating:
                 if rc == 0:
                     status = 'already' if info.get('already') else 'downloaded'
                 elif rc == 77:
@@ -2228,6 +2277,8 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
                     status = 'stalled'
                 elif rc in (130, 131):
                     status = ''  # do not write on Ctrl+C/deadline
+                elif tool == "aebndl":
+                    status = ''  # preserve prior AEBN archive history on a failed scene attempt
                 else:
                     status = 'bad-url'
                 if status:

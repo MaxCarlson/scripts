@@ -2,11 +2,13 @@
 
 from pathlib import Path
 import json
+import shutil
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
-from ytaedl.aebn_reconcile.scanner import parse_scene_inputs, scan_reconciliation
+from ytaedl.aebn_reconcile.scanner import parse_scene_inputs, probe_video, scan_reconciliation
 from ytaedl.aebn_reconcile.store import ReconciliationStore
 from ytaedl.aebn_reconcile.downloader import download_missing
 from ytaedl.aebn_reconcile.verifier import verify_replacements
@@ -19,6 +21,52 @@ from ytaedl.domain_index import DomainIndex
 
 MOVIE_URL = "https://straight.aebn.com/straight/movies/322251/busty-vixens-2"
 SCENE_URLS = [f"{MOVIE_URL}#scene-{scene_id}" for scene_id in ("1303588", "1303589", "1303590")]
+
+
+def _probe(duration: float) -> dict:
+    return {
+        "duration": duration,
+        "video": True,
+        "video_continuity": {"packet_count": max(1000, int(duration * 25)), "invalid_packets": 0,
+                             "dts_regressions": 0, "max_pts_gap_s": 0.04, "max_dts_gap_s": 0.04,
+                             "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0},
+        "streams": {
+            kind: {"duration": duration, "timestamp_span": duration, "packet_count": 100,
+                   "first_pts": 0.0, "last_pts": duration, "time_base": "1/1000"}
+            for kind in ("video", "audio")
+        },
+    }
+
+
+def test_reconciliation_rejects_internal_video_gap():
+    from ytaedl.aebn_reconcile.verifier import _validate_av_coverage
+    facts = _probe(700)
+    facts["video_continuity"] = {"packet_count": 1000, "invalid_packets": 0, "dts_regressions": 0,
+                                 "max_pts_gap_s": 100, "max_dts_gap_s": 100,
+                                 "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0}
+    result = _validate_av_coverage(facts, 700)
+    assert result["valid"] is False
+    assert any("gap" in error for error in result["errors"])
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
+def test_probe_video_reports_collapsed_video_separately_from_long_audio(tmp_path):
+    output = tmp_path / "collapsed-video.mp4"
+    subprocess.run(
+        [shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y",
+         "-f", "lavfi", "-i", "testsrc2=size=160x90:rate=24:duration=3",
+         "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000:duration=3",
+         "-vf", "setpts=0.1*PTS", "-fps_mode", "passthrough", "-c:v", "libx264", "-preset", "ultrafast",
+         "-c:a", "aac", str(output)], check=True, capture_output=True, text=True,
+    )
+
+    facts = probe_video(output)
+
+    assert facts is not None
+    assert facts["duration"] > 2.9
+    assert facts["streams"]["video"]["duration"] < 1.0
+    assert facts["streams"]["audio"]["duration"] > 2.9
+    assert facts["streams"]["video"]["timestamp_span"] < 1.0
 
 
 def test_parse_scene_inputs_preserves_fragments_and_source_lines(tmp_path):
@@ -75,7 +123,7 @@ def test_scan_resolves_scenes_and_identifies_full_movie_without_archive_trust(tm
     )
 
     assert result.summary["unique_scenes"] == 3
-    assert result.summary["verified_scenes"] == 1
+    assert result.summary["verified_scenes"] == 0
     assert result.summary["missing_scenes"] == 2
     assert result.summary["full_movie_candidates"] == 1
     assert not (tmp_path / "archive").exists()
@@ -83,12 +131,16 @@ def test_scan_resolves_scenes_and_identifies_full_movie_without_archive_trust(tm
     with ReconciliationStore(db) as store:
         scenes = store.list_scenes()
         assert [scene["ordinal"] for scene in scenes] == [1, 2, 3]
-        assert scenes[1]["status"] == "scene_verified"
+        assert scenes[1]["status"] == "scene_candidate_unverified"
         candidates = store.list_candidates()
         original = next(candidate for candidate in candidates if candidate["classification"] == "full_movie")
         assert original["approval"] == "undecided"
         assert not original["eligible"]
-    assert download_missing(db, apply=False)["planned"] == 2
+    assert download_missing(db, apply=False)["planned"] == 3
+    verification = verify_replacements(db, probe_video_fn=lambda _path: _probe(700))
+    assert verification["verified"] == 1
+    with ReconciliationStore(db) as store:
+        assert store.list_scenes()[1]["status"] == "scene_verified"
 
 
 def test_metadata_failure_records_unknown_mapping_and_never_invents_ordinal(tmp_path):
@@ -211,7 +263,7 @@ def test_missing_scene_download_uses_scene_id_and_preserves_historical_movie(tmp
     assert original.read_bytes() == b"original movie"
     assert "AEBN Scene Replacements" in calls[0][calls[0].index("-o") + 1]
 
-    verification = verify_replacements(db, probe_video_fn=lambda _path: {"duration": 700, "video": True})
+    verification = verify_replacements(db, probe_video_fn=lambda _path: _probe(700))
     assert verification["verified"] == 1
     with ReconciliationStore(db) as store:
         assert store.list_scenes()[0]["status"] == "scene_verified"
@@ -296,7 +348,7 @@ def test_download_failure_cannot_make_original_deletion_eligible(tmp_path):
         with pytest.raises(ValueError, match="verified"):
             decide_candidate(store, candidate_id, "approve", confirm_identity=True)
     preview = delete_approved(db, apply=False, in_use_check=lambda _path: False,
-                              probe_video_fn=lambda _path: {"duration": 3600, "video": True})
+                              probe_video_fn=lambda _path: _probe(700))
     assert preview["planned"] == []
     assert original.exists()
 
@@ -328,13 +380,55 @@ def test_verification_rejects_movie_length_output_mislabeled_as_scene(tmp_path):
         store.execute("UPDATE download_jobs SET status='downloaded',exit_code=0,output_path=? WHERE scene_id=?",
                       (str(output), "1303588"))
 
-    result = verify_replacements(db, probe_video_fn=lambda _path: {"duration": 3600, "video": True})
+    result = verify_replacements(db, probe_video_fn=lambda _path: _probe(3600))
 
     assert result["failed"] == 1
     with ReconciliationStore(db) as store:
         scene = store.list_scenes()[0]
         assert scene["status"] == "scene_invalid"
         job = store.list_jobs()[0]
+        assert job["verification_status"] == "failed"
+
+
+def test_reconciliation_rejects_two_second_video_with_full_scene_audio(tmp_path):
+    root = tmp_path / "media"
+    root.mkdir()
+    url_file = tmp_path / "one.txt"
+    url_file.write_text(SCENE_URLS[0], encoding="utf-8")
+
+    class FakeMovie:
+        movie_id = "322251"
+        url_content_type = "straight"
+        title = "Busty Vixens 2"
+        studio_name = "Studio"
+        total_duration_seconds = 3600
+        scenes = [SimpleNamespace(scene_id="1303588", start_timing=0, end_timing=700)]
+
+        def scene_ordinal_for_id(self, _scene_id):
+            return 1
+
+    db = tmp_path / "state.sqlite"
+    scan_reconciliation(files=[url_file], download_roots=[root], archive_dir=None, database_path=db,
+                        movie_factory=lambda _url, _session: FakeMovie(), session=object())
+    output = root / "AEBN Scene Replacements" / "322251" / "Studio - Busty Vixens 2 Scene 1 1080p.mp4"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(b"synthetic corrupted replacement")
+    with ReconciliationStore(db) as store:
+        store.execute("UPDATE download_jobs SET status='downloaded',exit_code=0,output_path=? WHERE scene_id=?",
+                      (str(output), "1303588"))
+
+    corrupted = _probe(700)
+    corrupted["streams"]["video"].update({"duration": 2.0, "timestamp_span": 2.0, "packet_count": 2200})
+    result = verify_replacements(db, probe_video_fn=lambda _path: corrupted)
+
+    assert result["failed"] == 1
+    with ReconciliationStore(db) as store:
+        scene = store.list_scenes()[0]
+        job = store.list_jobs()[0]
+        assert scene["status"] == "scene_invalid"
+        assert "video" in scene["status_detail"]
+        evidence = json.loads(job["verification_json"])
+        assert evidence["verification_contract"] == 4
         assert job["verification_status"] == "failed"
 
 
@@ -373,15 +467,22 @@ def test_approval_requires_every_linked_scene_verified_and_binds_evidence(tmp_pa
             output.write_bytes(scene_id.encode())
             store.execute("UPDATE requested_scenes SET status='scene_verified' WHERE scene_id=?", (scene_id,))
             stat = output.stat()
-            verification = json.dumps({"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns})
-            store.execute("UPDATE download_jobs SET output_path=?,verification_status='passed',verification_json=? WHERE scene_id=?",
-                          (str(output), verification, scene_id))
+            store.execute("UPDATE download_jobs SET status='downloaded',exit_code=0,output_path=? WHERE scene_id=?",
+                          (str(output), scene_id))
+    verify_replacements(db, probe_video_fn=lambda _path: _probe(700))
     with ReconciliationStore(db) as store:
         result = decide_candidate(store, candidate_id, "approve", confirm_identity=True)
         assert result["approval_fingerprint"]
         candidate = store.list_candidates()[0]
         assert candidate["eligible"]
         assert candidate["approval"] == "approved"
+        job = store.list_jobs()[0]
+        old_evidence = json.loads(job["verification_json"])
+        old_evidence["verification_contract"] = 2
+        store.execute("UPDATE download_jobs SET verification_json=? WHERE movie_key=? AND scene_id=?",
+                      (json.dumps(old_evidence), job["movie_key"], job["scene_id"]))
+        with pytest.raises(ValueError, match="current audio/video verification"):
+            decide_candidate(store, candidate_id, "approve", confirm_identity=True)
 
 
 def test_delete_requires_recorded_approval_and_quarantines_synthetic_original(tmp_path):
@@ -409,16 +510,17 @@ def test_delete_requires_recorded_approval_and_quarantines_synthetic_original(tm
     db = tmp_path / "state.sqlite"
     scan_reconciliation(files=[url_file], download_roots=[root], archive_dir=None, database_path=db,
                         movie_factory=lambda _url, _session: FakeMovie(), session=object(),
-                        probe_video_fn=lambda path: {"duration": 3600 if Path(path) == original else 700, "video": True})
+                        probe_video_fn=lambda path: _probe(3600 if Path(path) == original else 700))
     with ReconciliationStore(db) as store:
-        store.execute("UPDATE requested_scenes SET status='scene_verified' WHERE scene_id='1303588'")
-        store.execute("UPDATE download_jobs SET status='verified',output_path=?,verification_status='passed' WHERE scene_id='1303588'",
+        store.execute("UPDATE download_jobs SET status='downloaded',exit_code=0,output_path=? WHERE scene_id='1303588'",
                       (str(replacement),))
+    verify_replacements(db, probe_video_fn=lambda _path: _probe(700))
+    with ReconciliationStore(db) as store:
         candidate_id = store.execute("SELECT candidate_id FROM media_candidates WHERE classification='full_movie'").fetchone()[0]
         decide_candidate(store, candidate_id, "approve", confirm_identity=True)
 
     def probe(path):
-        return {"duration": 3600 if Path(path) == original else 700, "video": True}
+        return _probe(3600 if Path(path) == original else 700)
     preview = delete_approved(db, apply=False, in_use_check=lambda _path: False, probe_video_fn=probe)
     assert len(preview["planned"]) == 1, preview
     assert original.exists()
@@ -542,6 +644,7 @@ def test_archive_sync_is_targeted_locked_and_idempotent(tmp_path):
     scan_reconciliation(files=[url_file], download_roots=[root], archive_dir=archive, database_path=db,
                         movie_factory=lambda _url, _session: FakeMovie(), session=object(),
                         probe_video_fn=lambda _path: {"duration": 700, "video": True})
+    verify_replacements(db, probe_video_fn=lambda _path: _probe(700))
 
     preview = sync_verified_archives(db, apply=False)
     assert preview["planned_urls"] == 1

@@ -29,6 +29,7 @@ from .downloader import (
     _build_aebndl_cmd,
     _build_ytdlp_cmd,
     _coerce_progress_number,
+    _extract_aebn_scene_id,
     _is_aebn,
     _simulate_check,
 )
@@ -346,9 +347,16 @@ def _verify_aebn_metadata_existing(
         )
         dl._initialize_download()
         movie = dl._scrape_movie_info()
+        scene_id = _extract_aebn_scene_id(entry.url)
+        if scene_id is not None:
+            dl.scene_n = movie.scene_ordinal_for_id(scene_id)
+            movie.calculate_scenes_boundaries(1.0)
+        expected_duration = dl._expected_duration(movie)
+        if expected_duration is None:
+            raise ValueError("expected media duration is unavailable")
         for out_dir in dirs:
             dl.output_dir = str(out_dir)
-            existing = dl._find_existing_output(movie)
+            existing = dl._find_existing_output(movie, expected_duration)
             if existing:
                 _close_aebn_logger(dl)
                 return UrlReality(
@@ -364,7 +372,7 @@ def _verify_aebn_metadata_existing(
         except Exception:
             pass
         return UrlReality(
-            status=BAD_STATUS,
+            status=UNKNOWN_STATUS,
             downloader="aebndl-metadata",
             reason=f"aebndl metadata verification failed: {type(exc).__name__}: {exc}",
         )

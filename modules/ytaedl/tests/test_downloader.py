@@ -10,6 +10,15 @@ import ytaedl.downloader as downloader
 from ytaedl.urlfile_lock import LOCK_HELD_RC, UrlFileLock
 
 
+def _aebn_validation():
+    stream = {"duration_s": 30.0, "packet_span_s": 29.96, "packet_count": 750}
+    return {"valid": True, "validation_contract": 4, "evidence": {
+        "expected_duration_s": 30, "streams": {"video": stream, "audio": stream},
+        "video_continuity": {"packet_count": 750, "invalid_packets": 0, "dts_regressions": 0,
+                             "max_pts_gap_s": 0.04, "max_dts_gap_s": 0.04,
+                             "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0}}}
+
+
 class TestDownloader:
     """Test cases for the downloader module."""
 
@@ -368,7 +377,7 @@ class TestDownloader:
         assert stalled_events
         assert stalled_events[-1]["reason"] == "pre_transfer_no_output"
 
-    def test_run_one_aebndl_does_not_use_yt_dlp_pre_transfer_stall_window(self, monkeypatch):
+    def test_run_one_aebndl_does_not_use_yt_dlp_pre_transfer_stall_window(self, monkeypatch, tmp_path):
         current_time = [0.0]
 
         def fake_time():
@@ -389,7 +398,7 @@ class TestDownloader:
             urls=["https://straight.aebn.com/straight/movies/190977/example#scene-900595"],
             out_dir=Path("."),
             canonical_out_dir=Path("."),
-            partial_root=Path("."),
+            partial_root=tmp_path,
             raw_dir=Path("."),
             url_index=1,
             proglog=self._NoopProgLogger(),
@@ -407,20 +416,23 @@ class TestDownloader:
             skip_simulate_check=True,
         )
 
-        assert rc == 0
+        assert rc != 0  # No validated AEBN completion was emitted.
         assert not any(evt.get("event") == "stalled" for evt in emitted)
 
-    def test_run_one_aebndl_complete_event_reports_finished_size(self, monkeypatch):
+    def test_run_one_aebndl_complete_event_reports_finished_size(self, monkeypatch, tmp_path):
         current_time = [0.0]
+        output = tmp_path / "scene.mp4"
+        output.write_bytes(b"x" * 12345)
 
         def fake_time():
             return current_time[0]
 
         def fake_iter(tool, stdout, raw_log_path=None, heartbeat_secs=None):
             current_time[0] = 1.0
-            yield {"event": "destination", "path": str(Path("scene.mp4").resolve())}
+            yield {"event": "destination", "path": str(output)}
             current_time[0] = 2.0
-            yield {"event": "complete", "path": str(Path("scene.mp4").resolve()), "file_size": 12345}
+            yield {"event": "complete", "path": str(output), "file_size": 12345,
+                   "validation": _aebn_validation()}
 
         emitted = []
         proc = self._FakeProc(rc=0)
@@ -458,6 +470,97 @@ class TestDownloader:
         assert not proc.terminated
         assert any(evt.get("event") == "complete" for evt in emitted)
         assert not any(evt.get("event") == "stalled" for evt in emitted)
+
+    def test_aebn_preview_limit_does_not_retry(self, monkeypatch, tmp_path):
+        launches = []
+        def popen(*args, **kwargs):
+            launches.append(args)
+            return self._FakeProc(rc=77)
+        monkeypatch.setattr(downloader.subprocess, "Popen", popen)
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter([{"event": "preview_fallback"}]))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, _ = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=tmp_path, canonical_out_dir=tmp_path, partial_root=tmp_path, raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=3, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == 77
+        assert len(launches) == 1
+
+    def test_aebn_fragment_integrity_failure_does_not_retry(self, monkeypatch, tmp_path):
+        launches = []
+        def popen(*args, **kwargs):
+            launches.append(args)
+            return self._FakeProc(rc=78)
+        monkeypatch.setattr(downloader.subprocess, "Popen", popen)
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter([
+            {"event": "error", "error_type": "FragmentIntegrityError", "message": "invalid fragment"}]))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, _ = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=tmp_path, canonical_out_dir=tmp_path, partial_root=tmp_path, raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=3, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == 78
+        assert len(launches) == 1
+
+    def test_aebn_canonical_filename_does_not_terminate_download(self, monkeypatch, tmp_path):
+        canonical = tmp_path / "canonical"
+        output = tmp_path / "output"
+        canonical.mkdir()
+        output.mkdir()
+        original = canonical / "scene.mp4"
+        original.write_bytes(b"unverified existing file")
+        destination = output / "scene.mp4"
+        destination.write_bytes(b"x" * 123)
+        events = [
+            {"event": "destination", "path": str(destination)},
+            {"event": "complete", "path": str(destination), "file_size": 123,
+             "validation": _aebn_validation()},
+        ]
+        proc = self._FakeProc(rc=0)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: proc)
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter(events))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, info = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=output, canonical_out_dir=canonical, partial_root=tmp_path / "partial", raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=0, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == 0 and not info["already"]
+        assert not proc.terminated
+        assert original.read_bytes() == b"unverified existing file"
+
+    @pytest.mark.parametrize("validation,expected_rc", [(None, 1), ({"valid": True}, 1),
+                                                         (_aebn_validation(), 0), ({"valid": False}, 1)])
+    def test_aebn_already_requires_validation(self, monkeypatch, tmp_path, validation, expected_rc):
+        output = tmp_path / "scene.mp4"
+        output.write_bytes(b"fixture")
+        event = {"event": "already", "path": str(output)}
+        if validation is not None:
+            event["validation"] = validation
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter([event]))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, info = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=tmp_path, canonical_out_dir=tmp_path, partial_root=tmp_path / "partial", raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=0, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == expected_rc
+        assert info["already"] is (expected_rc == 0)
 
     def test_run_one_successful_fallback_uses_fallback_progress(self, monkeypatch):
         current_time = [0.0]
@@ -631,6 +734,14 @@ class TestDownloader:
         assert "-w" in cmd
         assert str(work_dir) in cmd
         assert url in cmd
+
+    def test_aebndl_command_passes_secondary_roots_for_validation(self, tmp_path):
+        secondary = tmp_path / "secondary"
+        cmd = downloader._build_aebndl_cmd(
+            "https://straight.aebn.com/straight/movies/1/title#scene-1", tmp_path / "out", tmp_path / "work",
+            scene_id="1", existing_output_dirs=[secondary],
+        )
+        assert cmd[cmd.index("-C") + 1] == str(secondary)
 
     def test_build_aebndl_cmd_with_height_limit(self):
         """Test aebndl command when max height is provided."""
@@ -928,6 +1039,90 @@ class TestIntegration:
                 assert second_fields[0] == 'downloaded'
         finally:
             os.unlink(temp_path)
+
+    def test_archived_aebn_scene_is_rechecked_and_failure_preserves_history(self, tmp_path):
+        url = "https://straight.aebn.com/straight/movies/215286/cum-eating-cuckolds-32#scene-983074"
+        urlfile = tmp_path / "ae-stars" / "scene.txt"
+        urlfile.parent.mkdir()
+        urlfile.write_text(url + "\n", encoding="utf-8")
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        archive_file = archive_dir / "ae-scene.txt"
+        old_line = downloader._format_archive_line("downloaded", 10.0, "2026-11-06T08:00:00", 485.0, "old", url)
+        archive_file.write_text(old_line + "\n", encoding="utf-8")
+
+        with patch("sys.argv", ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir), "-e", "1"]):
+            with patch("ytaedl.downloader._run_one", return_value=(2, {
+                "elapsed_s": 1.0, "downloaded": None, "total": None, "already": False, "downloader": "aebndl",
+            })) as mock_run:
+                result = downloader.main()
+
+        assert result != 0
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["urls"] == [url]
+        assert archive_file.read_text(encoding="utf-8") == old_line + "\n"
+
+    def test_historical_aebn_success_is_deferred_by_default(self, tmp_path, capsys):
+        url = "https://straight.aebn.com/straight/movies/1/title#scene-1"
+        source = tmp_path / "ae-stars" / "scene.txt"
+        source.parent.mkdir()
+        source.write_text(url + "\n", encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        old = downloader._format_archive_line("downloaded", 1, "date", 1, "", url)
+        (archive / "ae-scene.txt").write_text(old + "\n", encoding="utf-8")
+        with patch("sys.argv", ["ytaedl", "-f", str(source), "-a", str(archive)]), \
+                patch("ytaedl.downloader._run_one") as run:
+            assert downloader.main() == 0
+            run.assert_not_called()
+        assert "aebn_revalidation_deferred" in capsys.readouterr().out
+        assert (archive / "ae-scene.txt").read_text(encoding="utf-8") == old + "\n"
+
+    def test_revalidation_batch_advances_after_preview_failure_on_restart(self, tmp_path):
+        urls = [f"https://straight.aebn.com/straight/movies/1/title#scene-{i}" for i in range(3)]
+        source = tmp_path / "ae-stars" / "scene.txt"
+        source.parent.mkdir()
+        source.write_text("\n".join(urls), encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        original = "".join(downloader._format_archive_line("downloaded", 1, "date", 1, "", u) + "\n" for u in urls)
+        (archive / "ae-scene.txt").write_text(original, encoding="utf-8")
+        args = ["ytaedl", "-f", str(source), "-a", str(archive), "-e", "1"]
+        info = {"elapsed_s": 1.0, "downloaded": None, "total": None, "already": False,
+                "downloader": "aebndl"}
+        for expected in urls[:2]:
+            with patch("sys.argv", args), patch("ytaedl.downloader._run_one", return_value=(77, info)) as run:
+                assert downloader.main() != 0
+                assert run.call_count == 1 and run.call_args.kwargs["urls"] == [expected]
+        assert (archive / "ae-scene.txt").read_text(encoding="utf-8") == original
+
+    def test_verified_aebn_archive_skips_until_output_identity_changes(self, tmp_path):
+        url = "https://straight.aebn.com/straight/movies/1/title#scene-1"
+        urlfile = tmp_path / "ae-stars" / "scene.txt"
+        urlfile.parent.mkdir()
+        urlfile.write_text(url + "\n", encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        archive_file = archive / "ae-scene.txt"
+        old_line = downloader._format_archive_line("downloaded", 1, "date", 1, "", url)
+        archive_file.write_text(old_line + "\n", encoding="utf-8")
+        output = tmp_path / "scene.mp4"
+        output.write_bytes(b"verified fixture")
+        event = {"event": "already", "path": str(output), "validation": _aebn_validation()}
+        info = {"elapsed_s": 1.0, "downloaded": 10, "already": True, "downloader": "aebndl",
+                "verified_aebn_event": event}
+        args = ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive), "-e", "1", "-l"]
+        with patch("sys.argv", args), patch("ytaedl.downloader._run_one", return_value=(0, info)) as run:
+            assert downloader.main() == 0
+            run.assert_called_once()
+        with patch("sys.argv", args), patch("ytaedl.downloader._run_one") as run:
+            assert downloader.main() == 0
+            run.assert_not_called()
+        output.write_bytes(b"changed fixture")
+        with patch("sys.argv", args), patch("ytaedl.downloader._run_one", return_value=(1, info)) as run:
+            assert downloader.main() != 0
+            run.assert_called_once()
+        assert archive_file.read_text(encoding="utf-8").splitlines()[0] == old_line
 
     def test_main_archive_skips_by_url_not_line_position(self, tmp_path):
         urlfile = tmp_path / "urls.txt"

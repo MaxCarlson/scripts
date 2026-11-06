@@ -1,0 +1,75 @@
+# Status
+
+## Final review corrections
+
+- Local movie/scene candidates are independently validated before a delivery
+  manifest is requested. All plausible resolution variants are inspected;
+  invalid files are preserved. Final validation precedes atomic no-overwrite
+  promotion. Explicit partial segment selections fail closed.
+- Resume state records representation and timeline identity instead of signed
+  delivery URLs. Legacy signed-URL records are not trusted; retained fragments
+  are checked against current identity. Contract 4 caps timeline-gap tolerance
+  at 30 seconds, invalidating old cache and reconciliation approval evidence.
+- Historical archive successes are deferred by default. The worker's `-e N`
+  enables a bounded explicit revalidation batch, persisted separately from
+  archive records; `-l` includes prior attempts. A missing local file may cause
+  a download in this explicit mode. No production batch was run.
+- A bounded manager-suite run stalled in the runtime-submission test because
+  that test sends Ctrl+S while the current dialog advances on Tab. This is an
+  unrelated stale test; targeted manager and scheduler checks pass in the
+  focused suite. Final offline results: 117 AEBN tests and 172 ytaedl,
+  reconciliation, scheduler and parser tests passed. Ruff, compileall,
+  Python 3.9 grammar parsing and `git diff --check` passed. No live AEBN test
+  was run; both review patches remain untracked and unchanged.
+
+## Current offline correction work
+
+- Preview-window checks precede fragment scheduling. Constant-duration DASH
+  templates validate track identity and timing at acquisition; ambiguous
+  templates fail closed, and refresh rejects representation or timing changes.
+- Verification contract 3 scans all video packet timestamps in bounded memory;
+  reconciliation and existing-output checks require the new evidence. A
+  file-identity-bound cache permits skips for newly verified AEBN files and
+  requeues old unverified successes without rewriting archive history.
+- Offline fragmented-media tests cover healthy and corrupt outputs, metadata,
+  internal gaps and a synthetic full pipeline. A local 5,909-packet scan took
+  about 0.08 seconds; large and remote-file performance remains unmeasured.
+  Preview-limited delivery remains an access limitation and no successful
+  full-content AEBN live test has been established.
+- Historical edit-list inspection found suppressed packets in one larger file
+  and a smaller file containing only the visible subset. Different durations
+  prevent proving they are the same pre-/post-remux pair; the original loss
+  remains unproven.
+- Focused offline checks: 109 AEBN tests and 168 ytaedl, reconciliation,
+  scheduler and procparsers tests passed. Ruff, compileall, Python 3.9 grammar
+  parsing and `git diff --check` passed. Python 3.9 runtime and authorized
+  full-content live delivery remain untested. Do not merge or push; preserve
+  the existing untracked review patch.
+
+## Earlier review-correction checkpoint
+
+- The delivery response window is retained and checked before manifest or media fragment fetching. An uncovered or malformed window raises a structured preview/access limitation and CLI status 77; the ytaedl worker does not retry status 77. Scene timing is fetched once and reused for access and segment selection.
+- AEBN canonical filename matches no longer terminate downloads as successful; zero exit now requires a validated `complete` or `already` event. Secondary canonical files are not yet independently validated or recognized as duplicates.
+- The archive validator resolves scene identity/timing and passes expected duration to the real existing-output finder; inability to verify reports unknown. Current and historical absent-studio filename patterns are recognized.
+- Nested f-strings were removed and postponed annotations added for declared Python 3.9 compatibility; all 10 package modules parse under Python 3.9 grammar. No Python 3.9 interpreter was available for a runtime test.
+- Current focused offline results: 89 AEBN tests passed; 145 ytaedl/archive/reconciliation/domain-index/pause tests passed. The preview-window tests include rejection before media fetch and non-retryable worker handling.
+- Critical work remains: acquisition-time fragment identity against DASH semantics; full internal video timeline validation and reconciliation contract invalidation; representation-safe manifest refresh; verified-secondary canonical duplicate support; archive/domain-index verification-state policy; metadata utility compatibility; and focused performance and forensic checks. Do not call this checkpoint integration ready.
+- Local commit `96213bc9` confirms the switch back to `isPreview=true` and its assumption of unrestricted fragment access. The reported historical May–July versus October–November transition has not been independently verified here.
+- The user-authorized Eporner control downloaded one 360p file through the isolated ytaedl worker: video 196.966667s/5909 frames; audio 196.950998s/8482 frames; FFmpeg full decode reported no errors. Worker and raw logs are under `modules/ytaedl/.pytest_tmp_root/eporner-control-20261106/`.
+
+- Branch: `codex/aebn-media-integrity-20261106`
+- Base: `c12779ab7dc69bac133b495757dc97989a51dcf9`
+- Worktree: `.worktrees/aebn-media-integrity-20261106`
+- Scope: AEBN media integrity across `aebndl`, `ytaedl`, and reconciliation.
+- Current stage: offline implementation and regressions pass; the controlled live scene was correctly rejected before metadata rewriting or final promotion. A live fragment defect is confirmed for this scene, while the cause of the older size loss remains unconfirmed.
+- Baseline: AEBN focused tests 68 passed; ytaedl AEBN/reconciliation focused tests 85 passed. First AEBN invocation hit `ImportPathMismatchError`; rerun passed with `--import-mode=importlib`.
+- Current offline verification: broader AEBN suite 94 passed, 1 skipped excluding `test_real_downloads.py` (live network tests) and stale `dlscript_ndjson_test.py` whose referenced `test/dlscript.py` is absent; ytaedl AEBN scene/reconciliation/downloader suite 88 passed.
+- An unrestricted AEBN run failed six live-network cases at DNS lookup; no media completed in that run. The missing-script dry-run test is an existing repository fixture/path issue.
+- Final checks: Ruff passed for changed Python paths; compileall passed for both packages; `git diff --check` passed.
+- Read-only damage report: `.pytest_tmp_root/aebn-incident/B-stars-last-24-hours.csv`; 68 paths classified, 67 manager destinations correlated, archive statuses: 65 `downloaded`, 2 `already`, one temporary copy without manager destination.
+- A missing packet timestamp sample was initially treated as non-contradictory. A failing regression demonstrated the gap; validation now rejects unavailable packet timeline evidence.
+- Controlled live smoke ran once at 480p for `https://straight.aebn.com/straight/movies/329413/amersterdam-shower#scene-1320457` (453-second scene). It downloaded 104,408,694 reported segment bytes into the isolated scratch tree. Audio had 227 unique, advancing fragments; video had 228 files but only 23 unique payloads. Indices 23–227 repeated index 17 byte-for-byte and repeated its decode timestamp. Decode time regressed from 675840 at index 22 to 522240 at index 23 (video timescale 15360).
+- The concatenated video-only stream reported 453.87 seconds but its packet timestamps covered only about 34.8 seconds; the first A/V mux staging MP4 had 46 seconds of video (3001 packets/2915 frames) and 453.88 seconds of audio (19549 packets/19547 frames). Validation rejected it before metadata rewrite, final promotion, `complete`, or archive update. Output, `.part`, fragments, concatenated streams, staging MP4, and event log remain under `.pytest_tmp_root/live-smoke-20261106/`; the isolated archive directory is empty. Detailed report: `.pytest_tmp_root/live-smoke-20261106/diagnostics/live-smoke-report.json`.
+- Added `tfdt` monotonicity validation to reject repeated/regressing fragments before `segments_complete`; an offline fragmented-MP4 regression confirms the event is withheld, and the guard rejects the captured live fragments at indices 22→23. This points to repeated video fragment responses before muxing; whether the source is AEBN/CDN behavior or request/representation handling remains unproven. The older 87.6% size change remains unexplained because that reproduction's pre-metadata file and fragments were not retained.
+- No production media, archives, or partials were changed. Ruff, compileall, and `git diff --check` passed. Live AEBN validation is not considered successful: the test exposed invalid source fragments rather than a valid completed scene. Do not repeat the live download or troubleshoot network further in this assignment.
+- Next: review and commit the targeted fragment-timeline correction. Preserve live artifacts. Do not merge; any future smoke should use a scene whose fetched fragments advance through the full timeline.
