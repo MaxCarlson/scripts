@@ -1,4 +1,7 @@
 import json
+import subprocess
+import sys
+import textwrap
 from pathlib import Path
 
 import pytest
@@ -138,6 +141,31 @@ def test_each_subcommand_has_help(capsys):
             cli.main([command, "--help"])
         assert exc.value.code == 0
         assert "usage:" in capsys.readouterr().out
+
+
+def test_cli_imports_when_resolved_as_namespace_package():
+    package_path = Path(__file__).resolve().parents[1] / "snips"
+    program = textwrap.dedent(
+        """
+        import importlib.machinery
+        import sys
+        import types
+
+        package = types.ModuleType("snips")
+        package.__path__ = [sys.argv[1]]
+        package.__spec__ = importlib.machinery.ModuleSpec("snips", loader=None, is_package=True)
+        sys.modules["snips"] = package
+        import snips.cli
+        print(snips.cli.__version__)
+        """
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-c", program, str(package_path)], capture_output=True, text=True, check=False
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0.1.1"
 
 
 def test_export_requires_apply_and_writes_valid_config(tmp_path, capsys):

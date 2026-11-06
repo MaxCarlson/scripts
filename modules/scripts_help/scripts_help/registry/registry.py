@@ -620,7 +620,7 @@ REGISTRY: dict = {
                 "path": "modules/snips",
                 "desc": "Manage versioned text templates, clipboard fencing, and AutoHotkey v2 hotkeys",
                 "help_cmd": ["python", "-m", "snips", "--help"],
-                "version": "0.1.0",
+                "version": "0.1.1",
             },
         ],
     },

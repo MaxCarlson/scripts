@@ -24,11 +24,12 @@ Investigated FlitKey, Lintalist, and Espanso. FlitKey documents per-snippet hotk
 - Base: `58dbc4775fbc1bd429db489d386311ee0795befc`
 - Feature commit: `91b2dd30` (`feat(snips): add CLI-managed Windows snippets`), pushed to `origin/codex/cli-managed-snippets-20261106`.
 - Implemented the schema, atomic config/runtime deployment with rollback, CLI, AutoHotkey backend discovery/install, HKCU Run startup, help registry entry, tests, and user documentation.
+- Follow-up packaging fix: CLI version now comes from a sibling module, so it loads even when the installed editable import resolves `snips` as a namespace package. The module version is `0.1.1`; a regression test reproduces the reported `unknown location` import error and verifies the fix.
 - The backend reuses an existing AutoHotkey v2, checks Scoop install roots, and installs in WinGet → Scoop Extras → official installer order. The official fallback selects the numerically newest stable v2 setup and uses its `/silent` switch.
 - On 2026-11-06, AutoHotkey v2.0.30.0 was detected at `C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe`. `snips install --apply --json` refreshed the runtime at `C:\Users\mcarls\AppData\Local\snips\runtime`, confirmed the existing startup value without replacing it, and started PID 132292. Subsequent `status` and `doctor` reported the process running, schema-1 config valid with two bindings, and startup configured.
-- Focused suite: `python -m pytest -q -o "addopts=-ra" --basetemp=.pytest_tmp_root/final-suite` → 25 passed, including generated AHK parse/registration in validation mode. `ruff check` and `ruff format --check --line-length 120` pass. `compileall` and `--help` for every subcommand pass.
+- Focused suite: `python -m pytest -q -o "addopts=-ra" --basetemp=.pytest_tmp_root/namespace-fix-final` → 26 passed, including namespace import regression and generated AHK parse/registration in validation mode. `ruff check` and `ruff format --check --line-length 120` pass. `compileall` and CLI help pass. The installed `snips --version`, `snips list`, and `snips status` commands work.
 - Interactive Notepad/browser/editor tests and clipboard/caret interaction checks were not performed because the user prohibited further computer UI interaction after an earlier AutoHotkey popup. No GUI validation is claimed.
 
 ## Handoff
 
-Implementation, validation, task-only review, feature commit, task-branch push, and local merge into `main` are complete. The `main` merge remains local and was not pushed. Keep the feature worktree available for review.
+Implementation, validation, feature commit, task-branch push, local merge into `main`, and the namespace-package import fix are complete. The `main` merge and follow-up fix remain local and were not pushed. Keep the feature worktree available for review.

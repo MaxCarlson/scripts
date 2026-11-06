@@ -9,7 +9,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from snips import __version__
+from ._version import __version__
 from snips.backend import ensure_autohotkey, find_autohotkey, register_startup, startup_status
 from snips.config import (
     ConfigError,
