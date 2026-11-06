@@ -1,4 +1,4 @@
-<!-- version: 2.18.0 -->
+<!-- version: 2.18.1 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -33,9 +33,10 @@ Important options:
 - `-H/--max-workers`: cap for worker slots, including workers added during runtime (default 16).
 - `-b/--stay-open`: keep the manager running after its queue drains so more work can be submitted.
 - `-i/--priority-files-only`: process only explicitly supplied
-  `-p/--priority-files` values. `-t/--threads` caps the initial workers;
-  excess files remain queued and are assigned as workers become free.
-- `--priority-file-scheduling`: in exact mode, choose `file` (finish one
+  `-p/--priority-files` values. `-t/--threads` requests initial workers and
+  `-H/--max-workers` is the upper bound; actual initial workers are clamped to
+  both limits. Excess files remain queued and are assigned as workers become free.
+- `-pf/--priority-file-scheduling`: in exact mode, choose `file` (finish one
   URL file before taking another; default) or `url` (assign one URL at a time
   and rotate across the selected files, subject to domain limits).
 - `-L/--download-root`: final destination root for per-URL-file folders.
@@ -76,11 +77,23 @@ By default (`--priority-file-scheduling file`) the manager:
 - does not scan the normal URL roots or use domain-index scheduling;
 - keeps each worker on its assigned file until that file is complete.
 
-Use `--priority-file-scheduling url` to assign a single URL per worker task.
+Use `-pf url` (or `--priority-file-scheduling url`) to assign a single URL per worker task.
 The manager rotates file priority after each assignment and uses the existing
 domain-index scheduler, domain concurrency limits, URL-file locks, and archive
 statuses. This mode builds a private in-memory index from only the selected
 files, so it does not rewrite the shared persistent domain index.
+Each source URL file is assigned exclusively to one worker at a time. This
+prevents duplicate URL assignment and preserves URL-file lock safety, but caps
+simultaneous URL-mode assignments at the number of currently eligible source
+files (for example, two files can use at most two workers even with `-t 8`).
+Workers that have no eligible URL wait and periodically retry, so they resume
+when a source-file lock or domain concurrency slot becomes available.
+
+In exact whole-file mode, a failed or timed-out file receives one immediate
+retry. If it still fails, or the manager is deliberately stopped, the file is
+saved in the durable manual-submission queue for restart recovery. Completed
+URL archive progress remains available to skip already completed URLs on retry.
+The manager logs unresolved files when it exits with work retained.
 
 In whole-file mode, each worker takes an operating-system lock before reading
 or downloading URLs. Rotating URL mode checks the same lock sidecars before

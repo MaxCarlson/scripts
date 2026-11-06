@@ -164,6 +164,10 @@ class DomainIndex:
         return sum(len(q) for q in self._url_queues.values())
 
     @property
+    def total_in_progress(self) -> int:
+        return len(self._in_progress)
+
+    @property
     def total_finished(self) -> int:
         return len(self._finished)
 

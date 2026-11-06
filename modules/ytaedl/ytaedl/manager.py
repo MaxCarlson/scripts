@@ -1016,6 +1016,7 @@ class WorkerState:
     controlled_stopped: bool = False
     is_waiting_domain: bool = False     # True when idle because all domain slots are taken
     waiting_domain_since: float = 0.0   # timestamp when domain-wait began
+    waiting_reason: Optional[str] = None
     domain_search_file: Optional[str] = None   # file currently being scanned for domain
     domain_search_progress: tuple = (0, 0)     # (checked_count, total_urls) during scan
     url_entry: Optional[object] = None          # DomainIndex UrlEntry for this assignment
@@ -1382,7 +1383,7 @@ def _add_run_core_args(dest) -> None:
                       help="URL files to prioritize (can be specified multiple times)")
     dest.add_argument("-i", "--priority-files-only", action="store_true",
                       help="Only process -p/--priority-files; use at most -t workers and queue remaining files")
-    dest.add_argument("--priority-file-scheduling", choices=("file", "url"), default="file",
+    dest.add_argument("-pf", "--priority-file-scheduling", choices=("file", "url"), default="file",
                       help=("With -i: 'file' finishes each URL file before taking another; "
                             "'url' assigns one URL at a time and rotates across selected files"))
     dest.add_argument("-P", "--proxy-dl-location", default=None,
@@ -1691,6 +1692,8 @@ def run_main(
         return 2
     exact_urlfiles: List[Path] = []
     overflow_urlfiles: List[Path] = []
+    requested_threads = int(args.threads)
+    args.threads = min(requested_threads, max_workers)
     if exact_file_mode:
         if not args.priority_files:
             print(
@@ -1706,10 +1709,8 @@ def run_main(
         if not exact_urlfiles:
             print("[ERROR] No unique URL files were specified", file=sys.stderr)
             return 2
-        requested_threads = args.threads
-        args.threads = min(requested_threads, len(exact_urlfiles))
+        args.threads = min(args.threads, len(exact_urlfiles))
         overflow_urlfiles = exact_urlfiles[args.threads :]
-    max_workers = max(max_workers, int(args.threads))
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
 
@@ -1766,8 +1767,29 @@ def run_main(
     submission_by_path: Dict[str, Submission] = {
         str(Path(item.value).resolve()): item for item in submission_queue.pending
     }
+    exact_file_failure_attempts: Dict[str, int] = {}
+    unresolved_exact_files: set[str] = set()
     exact_runtime_files: Deque[Path] = deque(Path(item.value).resolve() for item in submission_queue.pending)
     priority_url_file_order: Deque[Path] = deque(exact_urlfiles)
+
+    def _persist_exact_file(path: Path, item: Optional[Submission] = None) -> Optional[Submission]:
+        """Keep an incomplete exact-mode source file in the durable submission queue."""
+        resolved = path.expanduser().resolve()
+        key = str(resolved)
+        known = item or submission_by_path.get(key)
+        if known is not None:
+            submission_queue.restore(known)
+        else:
+            try:
+                accepted = submission_queue.submit(key)
+            except (OSError, ValueError) as exc:
+                mlog.error(f"Could not persist incomplete priority file {resolved}: {exc}")
+                return None
+            if accepted:
+                known = accepted[0]
+        if known is not None:
+            submission_by_path[key] = known
+        return known
 
     ytdlp_grid_db: Optional[Path] = None
     if args.yt_dlp_grid_search:
@@ -2117,6 +2139,8 @@ def run_main(
     domain_diversity_avg = DomainDiversityAverager()
     controlled_quit = False
     downloads_status_visible = True
+    priority_url_retry_interval_s = 1.0
+    next_priority_url_retry = time.monotonic() + priority_url_retry_interval_s
 
     # Totals tracking
     total_completed_bytes = 0
@@ -2876,6 +2900,7 @@ def run_main(
 
             exclusive_urlfiles = getattr(args, "exclusive_urlfiles", True)
             exclude_file_ids: set[int] = set()
+            source_file_lock_blocked = False
             if exclusive_urlfiles:
                 active_paths = set()
                 for w in workers:
@@ -2883,13 +2908,17 @@ def run_main(
                         continue
                     if w.proc and not w.is_paused and w.url_entry:
                         active_paths.add(str(Path(w.url_entry.file_path).resolve()))
+                source_file_lock_blocked = bool(active_paths)
             else:
                 active_paths = set()
             for fid, fpath in domain_index._file_map.items():
                 if str(Path(fpath).resolve()) in active_paths:
                     exclude_file_ids.add(fid)
-                elif probe_urlfile_lock(Path(fpath), url_file_lock_dir).status != "available":
-                    exclude_file_ids.add(fid)
+                else:
+                    lock_status = probe_urlfile_lock(Path(fpath), url_file_lock_dir).status
+                    if lock_status != "available":
+                        source_file_lock_blocked = True
+                        exclude_file_ids.add(fid)
 
             scan_log: List[ScanLogEntry] = []
             entry = domain_index.pick_url(
@@ -2910,9 +2939,14 @@ def run_main(
                 if not ws.is_waiting_domain:
                     ws.is_waiting_domain = True
                     ws.waiting_domain_since = time.time()
-                    _wlog(ws, "DOMAIN_WAIT",
-                          f"all domain slots filled (max={_max_per}); will retry each tick")
-                    mlog.info(f"[{ws.slot:02d}] DOMAIN_WAIT no URL available (max={_max_per}/domain)")
+                    ws.waiting_reason = (
+                        "source URL-file lock" if source_file_lock_blocked else "domain concurrency limit"
+                    )
+                    _wlog(ws, "DOMAIN_WAIT", f"{ws.waiting_reason}; retrying periodically")
+                    mlog.info(
+                        f"[{ws.slot:02d}] DOMAIN_WAIT no URL available ({ws.waiting_reason}, "
+                        f"max={_max_per}/domain)"
+                    )
                 return False
 
             if priority_url_mode:
@@ -2951,6 +2985,7 @@ def run_main(
             # Reset worker state
             ws.is_waiting_domain = False
             ws.waiting_domain_since = 0.0
+            ws.waiting_reason = None
             ws.url_entry = entry
             ws.runtime_submission = manual_item
             ws.original_urlfile = original_file
@@ -3114,6 +3149,7 @@ def run_main(
 
         ws.is_waiting_domain = False
         ws.waiting_domain_since = 0.0
+        ws.waiting_reason = None
         ws.url_entry = None
         ws.original_urlfile = None
         _begin_worker_assignment(ws)
@@ -3329,7 +3365,35 @@ def run_main(
                 except Exception:
                     pass
         manual_item = ws.runtime_submission
-        if manual_item is not None:
+        if file_level_exact_mode and ws.urlfile is not None and not finished:
+            source_file = Path(ws.urlfile).resolve()
+            source_key = str(source_file)
+            deliberate_stop = (
+                ws.controlled_stopped
+                or reason in {"controlled_quit", "keyboard_interrupt", "shutdown"}
+                or (ws.proc is not None and ws.proc.poll() in (130, 131))
+            )
+            retry_count = exact_file_failure_attempts.get(source_key, 0)
+            persisted = _persist_exact_file(source_file, manual_item)
+            if deliberate_stop:
+                unresolved_exact_files.add(source_key)
+                mlog.warning(
+                    f"UNRESOLVED priority URL file retained for restart after deliberate stop: {source_file}"
+                )
+            elif retry_count < 1:
+                exact_file_failure_attempts[source_key] = retry_count + 1
+                exact_runtime_files.appendleft(source_file)
+                mlog.warning(
+                    f"Retrying incomplete priority URL file once ({retry_count + 1}/1): {source_file}"
+                )
+            else:
+                unresolved_exact_files.add(source_key)
+                mlog.warning(
+                    f"UNRESOLVED priority URL file retained for restart after bounded retries: {source_file}"
+                )
+            if persisted is None:
+                unresolved_exact_files.add(source_key)
+        elif manual_item is not None:
             if domain_index is not None:
                 manual_urls = domain_index.file_urls(manual_item.value)
                 if manual_urls and all(domain_index.is_finished(url) for url in manual_urls):
@@ -3361,6 +3425,7 @@ def run_main(
         ws.attempt_phase = "idle"
         ws.is_searching = False
         ws.is_waiting_urlfile_lock = False
+        ws.waiting_reason = None
         ws.urlfile_lock_since = 0.0
         ws.urlfile_lock_owner = None
         if finished:
@@ -3622,6 +3687,19 @@ def run_main(
                 break
             watcher_enabled = bool(watcher and watcher.is_enabled())
             now = time.time()
+            if (
+                priority_url_mode
+                and domain_index is not None
+                and not paused
+                and not controlled_quit
+                and time.monotonic() >= next_priority_url_retry
+            ):
+                next_priority_url_retry = time.monotonic() + priority_url_retry_interval_s
+                for idle_worker in workers:
+                    if idle_worker.proc is None and not idle_worker.assignment_terminal:
+                        if not _can_assign_more():
+                            break
+                        _assign(idle_worker)
             if url_scan_interval and next_url_scan and now >= next_url_scan:
                 if _refresh_url_scan("interval") and args.url_preempt:
                     _maybe_preempt_workers()
@@ -4248,7 +4326,7 @@ def run_main(
                         wait_line = (
                             f"{sel_marker}[{ws.slot:02d}] "
                             + td_utils.color_text(
-                                f"[Waiting: all domain slots taken – max {args.unique_domain_dls}/domain]",
+                                f"[Waiting: {ws.waiting_reason or 'domain concurrency limit'}]",
                                 "yellow",
                             )
                             + f"  {wait_elapsed}{idx_stat}"
@@ -4612,22 +4690,22 @@ def run_main(
             if _controlled_quit_complete(controlled_quit, workers):
                 break
 
-            if file_level_exact_mode and all(worker.assignment_terminal for worker in workers) and not args.stay_open:
-                break
-
-            if (
-                priority_url_mode
-                and domain_index is not None
-                and all(worker.proc is None for worker in workers)
-                and domain_index.total_queued == 0
-                and not submission_queue.pending_count
-                and not submission_queue.in_progress_count
-                and not args.stay_open
-            ):
-                break
-
-            # If all workers idle and both pools empty, stop
-            if not exact_file_mode and all(w.proc is None for w in workers):
+            if priority_url_mode:
+                if (
+                    domain_index is not None
+                    and all(worker.proc is None for worker in workers)
+                    and domain_index.total_queued == 0
+                    and domain_index.total_in_progress == 0
+                    and not submission_queue.pending_count
+                    and not submission_queue.in_progress_count
+                    and not args.stay_open
+                ):
+                    break
+            elif file_level_exact_mode:
+                if all(worker.assignment_terminal for worker in workers) and not args.stay_open:
+                    break
+            # If all workers idle and both pools empty, stop.
+            elif all(w.proc is None for w in workers):
                 current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
                 if (
                     not current_regular and not current_priority
@@ -4645,6 +4723,22 @@ def run_main(
             controlled_quit_sentinel.unlink(missing_ok=True)
         except Exception:
             pass
+        if file_level_exact_mode:
+            for pending_file in list(exact_runtime_files):
+                pending_key = str(Path(pending_file).resolve())
+                _persist_exact_file(Path(pending_file))
+                unresolved_exact_files.add(pending_key)
+            for worker in workers:
+                if worker.proc and worker.urlfile and worker.urlfile.parent.name != "tmp_urls":
+                    pending_file = Path(worker.urlfile).resolve()
+                    pending_key = str(pending_file)
+                    _persist_exact_file(pending_file, worker.runtime_submission)
+                    unresolved_exact_files.add(pending_key)
+            if unresolved_exact_files:
+                mlog.warning(
+                    f"UNRESOLVED priority URL files retained for restart ({len(unresolved_exact_files)}): "
+                    + ", ".join(sorted(unresolved_exact_files))
+                )
         # Cleanup
         for ws in workers:
             if ws.proc and ws.proc.poll() is None:

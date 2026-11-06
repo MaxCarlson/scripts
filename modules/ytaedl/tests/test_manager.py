@@ -1,5 +1,6 @@
 """Tests for ytaedl.manager module."""
 
+import json
 import os
 import random
 import re
@@ -20,6 +21,23 @@ ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
 
 def _strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text)
+
+
+def _successful_single_url_process(command, launched):
+    url_file = Path(command[command.index("-f") + 1])
+    source_file = Path(command[command.index("-O") + 1])
+    url = url_file.read_text(encoding="utf-8").strip()
+    launched.append((source_file.resolve(), url))
+    attempt_id = f"mock-attempt-{len(launched)}"
+    events = [
+        {"event": "start", "attempt_id": attempt_id, "url_index": 1, "url": url},
+        {"event": "finish", "attempt_id": attempt_id, "url_index": 1, "url": url, "rc": 0},
+    ]
+    process = MagicMock()
+    process.stdout = iter(json.dumps(event) + "\n" for event in events)
+    process.poll.return_value = 0
+    process.wait.return_value = 0
+    return process
 
 
 class TestManager:
@@ -56,8 +74,8 @@ class TestManager:
         assert parser.parse_args(["--priority-files-only"]).priority_files_only is True
         assert parser.parse_args(["--priority-file-scheduling", "url"]).priority_file_scheduling == "url"
         assert parser.parse_args(["--priority-file-scheduling", "file"]).priority_file_scheduling == "file"
-        with pytest.raises(SystemExit):
-            parser.parse_args(["-pf", "url"])
+        assert parser.parse_args(["-pf", "url"]).priority_file_scheduling == "url"
+        assert parser.parse_args(["-pf", "file"]).priority_file_scheduling == "file"
         assert parser.parse_args(["-H", "8", "-b"]).max_workers == 8
         assert parser.parse_args(["-b"]).stay_open is True
 
@@ -194,7 +212,48 @@ class TestManager:
             for command in commands
         }
         assert lock_dirs == {(archive_dir / "locks").resolve()}
+        assigned_order = [Path(command[command.index("-f") + 1]).resolve() for command in commands]
+        assert assigned_order == [first.resolve(), second.resolve()]
         scan.assert_not_called()
+
+    def test_priority_worker_slots_clamp_to_threads_and_max_workers(self, tmp_path):
+        for configured_max, expected in ((None, 8), (4, 4)):
+            case_dir = tmp_path / (f"max-{configured_max}" if configured_max else "max-default")
+            case_dir.mkdir()
+            files = []
+            for index in range(15):
+                path = case_dir / f"priority-{index:02d}.txt"
+                path.write_text(f"https://host{index}.example/video\n", encoding="utf-8")
+                files.append(path)
+
+            process = MagicMock()
+            process.poll.return_value = None
+            process.stdout = iter([])
+            process.wait.return_value = 0
+            argv = ["-i", "-t", "8", *[arg for path in files for arg in ("-p", str(path))]]
+            if configured_max is not None:
+                argv += ["-H", str(configured_max)]
+            argv += [
+                "-g", str(case_dir / "logs"), "-a", str(case_dir / "archive"),
+                "-L", str(case_dir / "media"),
+            ]
+
+            with patch("subprocess.Popen", return_value=process) as popen:
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        with patch("time.sleep", side_effect=KeyboardInterrupt):
+                            with patch.object(manager, "_kill_process_tree"):
+                                assert manager.run_main(argv) == 0
+
+            assert popen.call_count == expected
+            if configured_max == 4:
+                recovered = manager.SubmissionQueue(
+                    case_dir / "logs" / "pending_manual_submissions.json",
+                    case_dir / "logs" / "manual_submissions",
+                )
+                assert {Path(item.value).resolve() for item in recovered.pending} == {
+                    path.resolve() for path in files
+                }
 
     def test_priority_url_scheduling_rotates_selected_files(self):
         ordered = deque(["a.txt", "b.txt", "c.txt"])
@@ -291,6 +350,190 @@ class TestManager:
                             assert manager.run_main(argv) == 0
 
         assert popen.call_count == 1
+
+    def test_priority_url_mode_rotates_through_all_urls_across_three_files(self, tmp_path):
+        files = []
+        for name, domain in (("first list.txt", "one.example"), ("second list.txt", "two.example"), ("third list.txt", "three.example")):
+            path = tmp_path / name
+            urls = [f"https://{domain}/video-{index}#scene-117175{index}" for index in (1, 2)]
+            path.write_text("\n".join(urls) + "\n", encoding="utf-8")
+            files.append(path)
+
+        launched = []
+        argv = [
+            "-i", "-pf", "url", "-t", "1",
+            *[item for path in files for item in ("-p", str(path))],
+            "-g", str(tmp_path / "logs"), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=lambda command, **kwargs: _successful_single_url_process(command, launched)):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert launched == [
+            (files[index % len(files)].resolve(), files[index % len(files)].read_text(encoding="utf-8").splitlines()[index // len(files)])
+            for index in range(6)
+        ]
+        assert len(launched) == 6
+        assert all("#scene-" in url for _, url in launched)
+
+    def test_priority_url_domain_limit_holds_across_assignment_cycles(self, tmp_path):
+        files = []
+        for index in range(2):
+            source = tmp_path / f"same-domain-{index}.txt"
+            source.write_text(
+                f"https://one.example/video-{index}-1\nhttps://one.example/video-{index}-2\n",
+                encoding="utf-8",
+            )
+            files.append(source)
+
+        launched = []
+        active = 0
+        max_active = 0
+
+        def make_process(command, **kwargs):
+            nonlocal active, max_active
+            url_file = Path(command[command.index("-f") + 1])
+            source_file = Path(command[command.index("-O") + 1])
+            url = url_file.read_text(encoding="utf-8").strip()
+            launched.append((source_file.resolve(), url))
+            active += 1
+            max_active = max(max_active, active)
+            attempt_id = f"same-domain-{len(launched)}"
+            events = [
+                {"event": "start", "attempt_id": attempt_id, "url_index": 1, "url": url},
+                {"event": "finish", "attempt_id": attempt_id, "url_index": 1, "url": url, "rc": 0},
+            ]
+
+            class Process:
+                stdout = iter(json.dumps(event) + "\n" for event in events)
+                polls = 0
+                done = False
+
+                def poll(self):
+                    nonlocal active
+                    if self.done:
+                        return 0
+                    self.polls += 1
+                    if self.polls >= 2:
+                        self.done = True
+                        active -= 1
+                        return 0
+                    return None
+
+                def wait(self, timeout=None):
+                    return self.poll()
+
+            return Process()
+
+        argv = [
+            "-i", "-pf", "url", "-t", "2", "-D", "1",
+            *[item for path in files for item in ("-p", str(path))],
+            "-g", str(tmp_path / "logs"), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert len(launched) == 4
+        assert max_active == 1
+        assert {url for _, url in launched} == {
+            "https://one.example/video-0-1", "https://one.example/video-0-2",
+            "https://one.example/video-1-1", "https://one.example/video-1-2",
+        }
+
+    def test_failed_exact_file_is_retried_once_and_persisted_for_restart(self, tmp_path):
+        failed = tmp_path / "failed urls.txt"
+        overflow = tmp_path / "overflow.txt"
+        failed.write_text("https://failed.example/one\nhttps://failed.example/two\n", encoding="utf-8")
+        overflow.write_text("https://overflow.example/one\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        launched = []
+
+        def make_process(command, **kwargs):
+            source_file = Path(command[command.index("-f") + 1]).resolve()
+            launched.append(source_file)
+            process = MagicMock()
+            process.stdout = iter([])
+            process.poll.return_value = 1 if source_file == failed.resolve() else 0
+            process.wait.return_value = process.poll.return_value
+            return process
+
+        argv = [
+            "-i", "-t", "1", "-p", str(failed), "-p", str(overflow),
+            "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert launched == [failed.resolve(), failed.resolve(), overflow.resolve()]
+        assert (log_dir / "pending_manual_submissions.json").exists()
+        recovered = manager.SubmissionQueue(log_dir / "pending_manual_submissions.json", log_dir / "manual_submissions")
+        assert [Path(item.value).resolve() for item in recovered.pending] == [failed.resolve()]
+        assert (log_dir / "finished_urls.txt").exists()
+        assert "https://failed.example/one" not in (log_dir / "finished_urls.txt").read_text(encoding="utf-8")
+
+    def test_priority_url_mode_retries_file_after_lock_clears(self, tmp_path):
+        source = tmp_path / "temporarily locked.txt"
+        source.write_text("https://unlocked.example/video#scene-1171754\n", encoding="utf-8")
+        lock_calls = 0
+        launched = []
+
+        def probe(*args, **kwargs):
+            nonlocal lock_calls
+            lock_calls += 1
+            return MagicMock(status="locked" if lock_calls == 1 else "available")
+
+        argv = [
+            "-i", "-pf", "url", "-t", "1", "-p", str(source),
+            "-g", str(tmp_path / "logs"), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("ytaedl.manager.probe_urlfile_lock", side_effect=probe):
+            with patch("subprocess.Popen", side_effect=lambda command, **kwargs: _successful_single_url_process(command, launched)):
+                with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                    with patch("sys.stdout"):
+                        assert manager.run_main(argv) == 0
+
+        assert lock_calls >= 2
+        assert launched == [(source.resolve(), "https://unlocked.example/video#scene-1171754")]
+        manager_logs = list((tmp_path / "logs").glob("dlmanager-*.log"))
+        assert len(manager_logs) == 1
+        assert "source URL-file lock" in manager_logs[0].read_text(encoding="utf-8")
+
+    def test_controlled_process_stop_persists_file_without_immediate_retry(self, tmp_path):
+        source = tmp_path / "stopped.txt"
+        source.write_text("https://stopped.example/one\nhttps://stopped.example/two\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        launched = []
+
+        def stopped_process(command, **kwargs):
+            launched.append(Path(command[command.index("-f") + 1]).resolve())
+            process = MagicMock()
+            process.stdout = iter([])
+            process.poll.return_value = 130
+            process.wait.return_value = 130
+            return process
+
+        argv = [
+            "-i", "-t", "1", "-p", str(source),
+            "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=stopped_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert launched == [source.resolve()]
+        recovered = manager.SubmissionQueue(log_dir / "pending_manual_submissions.json", log_dir / "manual_submissions")
+        assert [Path(item.value).resolve() for item in recovered.pending] == [source.resolve()]
 
     def test_nonpositive_threads_rejected_before_worker_launch(self):
         with patch("subprocess.Popen") as popen:
