@@ -952,7 +952,10 @@ class ManagedInstallation:
         if miner_running and (not miner.get("is_coordinator_owned") or not miner.get("pid") or
                               miner.get("create_time") is None):
             blockers.append("running miner ownership or exact process identity is uncertain")
-        if miner_running and not (runtime.get("stop_miner_on_shutdown") or runtime.get("shutdown_miner_verified_from_launcher")):
+        shutdown_check = "verified" if (runtime.get("stop_miner_on_shutdown") or
+                                         runtime.get("shutdown_miner_verified_from_launcher")) else "not-evaluated"
+        if miner_running and shutdown_check != "verified" and not legacy_needed:
+            shutdown_check = "unverified"
             blockers.append("running service does not confirm stop-miner-on-shutdown; refusing to risk an orphan")
 
         if journal:
@@ -1009,6 +1012,7 @@ class ManagedInstallation:
             "service": service,
             "listener": listener,
             "listener_discovery": listener_details,
+            "miner_shutdown_check": shutdown_check,
             "task": asdict(task) if task else None,
             "task_snapshot": snapshot,
             "miner_name": miner_name,

@@ -77,12 +77,41 @@ def test_native_fallback_used_when_psutil_cannot_provide_pid(monkeypatch):
     ], []))
     monkeypatch.setattr(windows_listener, "_windows_process_identity", lambda pid: windows_listener.ProcessIdentityResult(
         {"pid": pid, "create_time": 100.0, "executable": r"C:\Python\python.exe"}, "identified"))
+    monkeypatch.setattr(windows_listener, "_endpoint_reachable", lambda host, port: True)
 
     result = windows_listener.identify_tcp_listener("127.0.0.1", 43210)
 
     assert result.verified
     assert result.identity["pid"] == 44
     assert result.identity["discovery_backend"] == "windows-ip-helper"
+
+
+def test_listener_class_candidate_with_invalid_state_requires_reachability_and_identity(monkeypatch):
+    monkeypatch.setattr(windows_listener, "os", type("OS", (), {"name": "nt"})())
+    monkeypatch.setattr(windows_listener, "_psutil_listener_rows", lambda: [])
+    monkeypatch.setattr(windows_listener, "_native_listener_rows", lambda: ([
+        {"local_address": "127.0.0.1", "port": 43210, "pid": 44, "tcp_state": 0,
+         "table_class": "listener"},
+    ], []))
+    monkeypatch.setattr(windows_listener, "_endpoint_reachable", lambda host, port: True)
+    monkeypatch.setattr(windows_listener, "_windows_process_identity", lambda pid: windows_listener.ProcessIdentityResult(
+        {"pid": pid, "create_time": 100.0, "executable": r"C:\Python\python.exe"}, "identified"))
+    result = windows_listener.identify_tcp_listener("127.0.0.1", 43210)
+    assert result.verified
+    assert result.identity["tcp_state"] == 0
+
+
+def test_invalid_state_candidate_without_tcp_reachability_is_rejected(monkeypatch):
+    monkeypatch.setattr(windows_listener, "os", type("OS", (), {"name": "nt"})())
+    monkeypatch.setattr(windows_listener, "_psutil_listener_rows", lambda: [])
+    monkeypatch.setattr(windows_listener, "_native_listener_rows", lambda: ([
+        {"local_address": "127.0.0.1", "port": 43210, "pid": 44, "tcp_state": 0,
+         "table_class": "listener"},
+    ], []))
+    monkeypatch.setattr(windows_listener, "_endpoint_reachable", lambda host, port: False)
+    result = windows_listener.identify_tcp_listener("127.0.0.1", 43210)
+    assert not result.verified
+    assert any("not reachable" in line for line in result.diagnostics)
 
 
 def test_multiple_distinct_owners_are_ambiguous(monkeypatch):

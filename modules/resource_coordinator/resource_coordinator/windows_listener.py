@@ -16,6 +16,7 @@ import psutil
 _AF_INET = 2
 _AF_INET6 = 23
 _TCP_TABLE_OWNER_PID_LISTENER = 3
+_TCP_TABLE_OWNER_PID_ALL = 5
 _MIB_TCP_STATE_LISTEN = 2
 _ERROR_INSUFFICIENT_BUFFER = 122
 _ERROR_NO_DATA = 232
@@ -102,7 +103,7 @@ def _parse_table(buffer: Any, row_type: Any) -> List[Any]:
             for i in range(count)]
 
 
-def _query_windows_table(address_family: int, row_type: Any) -> List[Any]:
+def _query_windows_table(address_family: int, row_type: Any, table_class: int = _TCP_TABLE_OWNER_PID_LISTENER) -> List[Any]:
     if os.name != "nt":
         raise OSError("native IP Helper API is available only on Windows")
     iphlpapi = ctypes.WinDLL("iphlpapi.dll")
@@ -112,7 +113,7 @@ def _query_windows_table(address_family: int, row_type: Any) -> List[Any]:
     get_table.restype = ctypes.c_uint32
     required = ctypes.c_uint32(0)
     result = get_table(None, ctypes.byref(required), 0, address_family,
-                       _TCP_TABLE_OWNER_PID_LISTENER, 0)
+                       table_class, 0)
     if result not in (_ERROR_INSUFFICIENT_BUFFER, _ERROR_NO_DATA):
         raise OSError(result, f"GetExtendedTcpTable size query failed with Windows error {result}")
     if result == _ERROR_NO_DATA:
@@ -120,7 +121,7 @@ def _query_windows_table(address_family: int, row_type: Any) -> List[Any]:
     for _attempt in range(_RETRIES):
         buffer = ctypes.create_string_buffer(required.value)
         result = get_table(buffer, ctypes.byref(required), 0, address_family,
-                           _TCP_TABLE_OWNER_PID_LISTENER, 0)
+                           table_class, 0)
         if result == 0:
             return _parse_table(buffer, row_type)
         if result == _ERROR_NO_DATA:
@@ -138,14 +139,33 @@ def _native_listener_rows() -> Tuple[List[Dict[str, Any]], List[str]]:
         (_AF_INET6, _MibTcp6RowOwnerPid, _ipv6_row_to_endpoint, "IPv6"),
     ):
         try:
-            for row in _query_windows_table(family, row_type):
-                if row.dwState == _MIB_TCP_STATE_LISTEN:
-                    rows.append(convert(row))
+            listener_rows = _query_windows_table(family, row_type, _TCP_TABLE_OWNER_PID_LISTENER)
+            all_rows = _query_windows_table(family, row_type, _TCP_TABLE_OWNER_PID_ALL)
+            all_states = {}
+            for row in all_rows:
+                endpoint = convert(row)
+                all_states[(endpoint["local_address"], endpoint["port"], endpoint["pid"])] = int(row.dwState)
+            for row in listener_rows:
+                # LISTENER table class is the endpoint selector. Windows 26H2
+                # may return a stale/invalid dwState for a working listener.
+                endpoint = convert(row)
+                endpoint["tcp_state"] = int(row.dwState)
+                endpoint["all_table_state"] = all_states.get((endpoint["local_address"], endpoint["port"], endpoint["pid"]))
+                endpoint["table_class"] = "listener"
+                rows.append(endpoint)
         except OSError as exc:
             errors.append(f"{label} GetExtendedTcpTable: {exc}")
         except Exception as exc:  # ctypes/API errors are surfaced as diagnostic evidence, never success.
             errors.append(f"{label} GetExtendedTcpTable: {type(exc).__name__}: {exc}")
     return rows, errors
+
+
+def _endpoint_reachable(host: str, port: int) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=0.5):
+            return True
+    except OSError:
+        return False
 
 
 def _psutil_listener_rows() -> List[Dict[str, Any]]:
@@ -302,6 +322,9 @@ def identify_tcp_listener(host: str, port: int) -> ListenerIdentityResult:
             matches = _filter_endpoints(native_rows, host, port)
             if not matches:
                 diagnostics.append("Windows IP Helper: no matching listening endpoint")
+            elif not _endpoint_reachable(host, port):
+                diagnostics.append("Windows IP Helper: listener candidate was not reachable by TCP; rejected")
+                matches = []
             for endpoint in matches:
                 pid = endpoint.get("pid")
                 if not isinstance(pid, int) or pid <= 0:
