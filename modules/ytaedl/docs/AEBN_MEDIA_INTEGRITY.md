@@ -16,9 +16,8 @@ state are atomic; retained fragments are checked against stream and segment
 identity before reuse. `SIGTERM` reports an interrupted, nonzero result.
 
 These checks prevent the known two-second-video/long-audio signature from
-becoming a new successful archive result. They do not establish that every AEBN
-delivery variant has been tested against the live service; the controlled live
-smoke test remains pending because this environment could not resolve AEBN.
+becoming a new successful archive result. One controlled live test reached AEBN
+but was correctly rejected because video fragments repeated after index 22.
 
 ## Historical outputs
 
@@ -37,9 +36,17 @@ The original reproduction's pre-metadata MP4 and its scene-specific fragments
 were not retained. Its logged pre-metadata size was about 485.7 MB, while the
 final file was about 60.4 MB. Offline remux fixtures show that the metadata
 rewrite preserves both healthy stream coverage and an already-collapsed video
-timeline; they do not reproduce that size reduction. The immediate incident
-mechanism therefore remains unconfirmed. The new pipeline rejects the observed
-media shape at either finalization stage.
+timeline; they do not reproduce that size reduction. The immediate cause of
+that historical size reduction therefore remains unconfirmed. A later isolated
+live test of scene 1320457 for movie 329413 showed a related upstream symptom:
+205 video fragment indices (23–227) were byte-identical to fragment 17 and had
+a regressing `tfdt`. Audio fragments advanced normally. The concatenated
+video-only stream contained only about 34.8 seconds of timestamp coverage, and
+the first muxed stage had 46 seconds of video against 453.9 seconds of audio.
+The pipeline rejected it before metadata rewriting, final output promotion, or
+archive success. This establishes that metadata rewriting did not cause that
+live failure; whether repeated responses came from AEBN/CDN delivery or
+request/representation behavior remains unresolved.
 
 ## Safe handling of a historical file
 
@@ -57,7 +64,7 @@ this implementation.
 
 ## Controlled live smoke test
 
-The authorized candidate is a short scene resolved from
+The attempted candidate was a short scene resolved from
 `https://straight.aebn.com/straight/movies/329413/amersterdam-shower`, using
 480p. Use an isolated scratch root such as
 `modules/aebndl_module/.pytest_tmp_root/live-smoke-20261106/` with separate
@@ -66,9 +73,10 @@ The authorized candidate is a short scene resolved from
 fragments and logs, and copy concatenated audio/video streams plus the
 pre-metadata and post-metadata MP4s before cleanup. Compare audio/video stream
 durations, packet timestamps at both ends, packet/frame counts, final file
-size, and completion/archive-success behavior. The metadata request required to
-resolve the exact scene ID failed with `getaddrinfo() thread failed to start`,
-so no media request was started.
+size, and completion/archive-success behavior. The metadata request selected
+scene 1320457; its download was rejected before metadata remux and finalization.
+Captured artifacts and `diagnostics/live-smoke-report.json` remain in the
+isolated scratch root. This is a failed live smoke, not a service validation.
 
 ## Validation status
 

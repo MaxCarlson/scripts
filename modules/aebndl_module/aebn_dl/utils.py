@@ -116,6 +116,66 @@ def is_mp4_fragment(path: str | Path, *, initialization: bool) -> bool:
         return False
 
 
+def mp4_fragment_decode_time(path: str | Path) -> int | None:
+    """Read the media fragment's base decode time from its ``tfdt`` box."""
+    try:
+        data = Path(path).read_bytes()
+    except OSError:
+        return None
+
+    def iter_boxes(start: int, end: int):
+        offset = start
+        while offset + 8 <= end:
+            box_size, box_type = struct.unpack_from(">I4s", data, offset)
+            header_size = 8
+            if box_size == 1:
+                if offset + 16 > end:
+                    return
+                box_size = struct.unpack_from(">Q", data, offset + 8)[0]
+                header_size = 16
+            elif box_size == 0:
+                box_size = end - offset
+            if box_size < header_size or offset + box_size > end:
+                return
+            yield box_type, offset + header_size, offset + box_size
+            offset += box_size
+
+    timestamps: list[int] = []
+
+    def visit(start: int, end: int) -> None:
+        for box_type, body, box_end in iter_boxes(start, end):
+            if box_type == b"tfdt":
+                if body + 8 > box_end:
+                    continue
+                version = data[body]
+                if version == 1 and body + 12 <= box_end:
+                    timestamps.append(struct.unpack_from(">Q", data, body + 4)[0])
+                elif version == 0:
+                    timestamps.append(struct.unpack_from(">I", data, body + 4)[0])
+            elif box_type in {b"moof", b"traf"}:
+                visit(body, box_end)
+
+    visit(0, len(data))
+    return timestamps[0] if len(timestamps) == 1 else None
+
+
+def validate_fragment_timeline(paths: list[str | Path]) -> None:
+    """Reject missing, duplicate, or regressing decode timestamps in index order."""
+    if not paths:
+        raise ValueError("No media fragments are available for timeline validation")
+    previous: int | None = None
+    previous_path: str | Path | None = None
+    for path in paths:
+        current = mp4_fragment_decode_time(path)
+        if current is None:
+            raise ValueError(f"Fragment has no unambiguous decode timestamp: {path}")
+        if previous is not None and current <= previous:
+            raise ValueError(
+                f"Fragment decode timestamp did not advance: {previous_path}={previous}, {path}={current}"
+            )
+        previous, previous_path = current, path
+
+
 def concat_segments(files: list[str], output_path: str, tqdm_desc: str, aggressive_cleaning: bool, silent: bool = False):
     """Concat segments into a single file"""
     _files = [files[0], *sorted(files[1:], key=natural_sort_key)]

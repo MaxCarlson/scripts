@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import shutil
+import struct
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from aebn_dl.media_validation import probe_media, validate_media_facts
-from aebn_dl.utils import add_metadata, ffmpeg_mux_streams
+from aebn_dl.utils import add_metadata, ffmpeg_mux_streams, validate_fragment_timeline
 
 
 def _facts(video_duration: float = 30.0, audio_duration: float = 30.0) -> dict:
@@ -233,6 +234,84 @@ def test_invalid_segment_response_is_never_promoted_from_temporary_file(tmp_path
 
     assert not (tmp_path / "v_fixture_0.mp4").exists()
     assert not list(tmp_path.glob("*.tmp-*"))
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg"), reason="FFmpeg unavailable")
+def test_fragment_timeline_rejects_repeated_video_fragment(tmp_path: Path, monkeypatch, capsys) -> None:
+    ffmpeg = shutil.which("ffmpeg")
+    assert ffmpeg
+    source = tmp_path / "fragmented-source.mp4"
+    subprocess.run(
+        [ffmpeg, "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+         "testsrc2=size=320x180:rate=30:duration=5", "-an", "-c:v", "libx264", "-g", "30",
+         "-movflags", "+empty_moov+frag_keyframe+default_base_moof", "-frag_duration", "1000000", str(source)],
+        check=True, capture_output=True, text=True,
+    )
+
+    data = source.read_bytes()
+    offset = 0
+    initialization = bytearray()
+    fragments = []
+    current = bytearray()
+    while offset + 8 <= len(data):
+        size, box_type = struct.unpack_from(">I4s", data, offset)
+        header_size = 8
+        if size == 1:
+            size = struct.unpack_from(">Q", data, offset + 8)[0]
+            header_size = 16
+        elif size == 0:
+            size = len(data) - offset
+        assert size >= header_size
+        box = data[offset:offset + size]
+        if box_type == b"moof":
+            if current:
+                fragments.append(bytes(current))
+                current.clear()
+            current.extend(box)
+        elif current:
+            current.extend(box)
+        else:
+            initialization.extend(box)
+        offset += size
+    if current:
+        fragments.append(bytes(current))
+    assert len(initialization) > 0
+    assert len(fragments) >= 3
+    paths = []
+    for index, fragment in enumerate(fragments):
+        path = tmp_path / f"video_{index}.mp4"
+        path.write_bytes(fragment)
+        paths.append(path)
+
+    validate_fragment_timeline(paths)
+
+    repeated = [paths[0], paths[0], *paths[2:]]
+    with pytest.raises(ValueError, match="decode timestamp"):
+        validate_fragment_timeline(repeated)
+
+    from aebn_dl.downloader import Downloader
+    from aebn_dl.models import VideoStream
+
+    instance = Downloader("https://straight.aebn.com/straight/movies/123/fixture",
+                          no_part=True, json_output=True, threads=2)
+    instance.movie_work_dir = str(tmp_path)
+    instance.manifest = SimpleNamespace(process_manifest=lambda: None,
+                                        total_number_of_data_segments=len(repeated) - 1)
+    stream = VideoStream()
+    stream.stream_id = "fixture"
+
+    def write_repeated_segment(_stream, _bar, segment_number=None):
+        if segment_number is None:
+            return
+        path = tmp_path / f"v_fixture_{segment_number}.mp4"
+        shutil.copyfile(repeated[segment_number], path)
+        stream.downloaded_segments.append(str(path))
+
+    monkeypatch.setattr(instance, "_download_segment", write_repeated_segment)
+    with pytest.raises(RuntimeError, match="Required AEBN stream downloads failed"):
+        instance._download_streams_json([stream], (0, len(repeated) - 1))
+    events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    assert not any(event["event"] == "segments_complete" for event in events)
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")

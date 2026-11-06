@@ -1085,12 +1085,46 @@ class Downloader:
                         failed_segments.append(segment_number)
             if failed_segments:
                 raise RuntimeError(f"{stream.human_name} stream missing required segments after retries: {failed_segments}")
+            self._validate_downloaded_stream_timeline(stream, segment_range)
         finally:
             stop_refresh.set()
             if refresher_thread:
                 refresher_thread.join(timeout=2.0)
             if download_bar:
                 download_bar.close()
+
+    def _validate_downloaded_stream_timeline(
+        self, stream: MediaStream, segment_range: tuple[int, int]
+    ) -> None:
+        """Require an ordered, complete fragment set with advancing decode time."""
+        prefix = f"{stream.media_type}_{stream.stream_id}_"
+        segment_paths: dict[int, str] = {}
+        for path in stream.downloaded_segments:
+            name = Path(path).name
+            if not name.startswith(prefix) or not name.endswith(".mp4"):
+                continue
+            try:
+                index = int(name[len(prefix):-4])
+            except ValueError:
+                continue
+            if index in segment_paths:
+                raise ValueError(f"Duplicate {stream.human_name} segment index {index}")
+            segment_paths[index] = path
+
+        expected = set(range(segment_range[0], segment_range[1] + 1))
+        optional = set(stream.optional_missing_segments)
+        missing = expected - set(segment_paths) - optional
+        unexpected = set(segment_paths) - expected
+        if missing or unexpected:
+            raise ValueError(
+                f"{stream.human_name} fragment inventory mismatch; "
+                f"missing={sorted(missing)}, unexpected={sorted(unexpected)}"
+            )
+        ordered = [segment_paths[index] for index in sorted(segment_paths)]
+        try:
+            utils.validate_fragment_timeline(ordered)
+        except ValueError as exc:
+            raise ValueError(f"{stream.human_name} fragment timeline is invalid: {exc}") from exc
 
     def _download_segment(self, stream: MediaStream, download_bar: tqdm, segment_number: int | None = None) -> None:
         """Download and save stream segment"""
