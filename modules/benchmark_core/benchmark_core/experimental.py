@@ -261,6 +261,23 @@ def compare_paired_trials(
         and str(b_idx[key].status) in {"passed", "failed", "timed_out"}
         and str(c_idx[key].status) in {"passed", "failed", "timed_out"}
     ]
+    paired_keys = {key for key, _baseline, _candidate in paired}
+    non_scored_matched_blocks = sorted(
+        key
+        for key in set(b_idx) & set(c_idx)
+        if key not in paired_keys
+    )
+    for key in non_scored_matched_blocks:
+        for side, trial in (("baseline", b_idx[key]), ("candidate", c_idx[key])):
+            if str(trial.status) not in {"passed", "failed", "timed_out"}:
+                excluded.append(
+                    {
+                        "trial_id": trial.trial_id,
+                        "reason_code": "trial.status_not_scored_in_pair",
+                        "condition": side,
+                        "status": str(trial.status),
+                    }
+                )
     unmatched = len(set(b_idx) ^ set(c_idx))
     task_deltas: dict[str, list[float]] = defaultdict(list)
     wins = losses = ties = 0
@@ -336,6 +353,7 @@ def compare_paired_trials(
                 "distinct_tasks": distinct_tasks,
                 "matched_blocks": len(blocks),
                 "completed_pairs": len(paired),
+                "matched_blocks_without_scored_pair": len(non_scored_matched_blocks),
                 "paired_tasks": len(paired_tasks),
                 "task_level_effects": [
                     {

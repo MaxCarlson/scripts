@@ -97,7 +97,7 @@ def test_alert_store_migrates_v1_and_persists_acknowledgment(tmp_path):
         connection.execute("PRAGMA user_version=1")
 
     with TelemetryStore(database) as store:
-        assert store.database_info()["schema_version"] in {2, 3}
+        assert store.database_info()["schema_version"] in {2, 3, 4}
         assert store.list_alert_states() == []
         alert = {"alert_id": "alert-1", "provider_instance_id": "http://localhost:4096", "session_id": "s1",
             "rule_id": "blocker.question", "category": "questions", "severity": "info",

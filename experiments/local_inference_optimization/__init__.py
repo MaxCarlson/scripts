@@ -5,6 +5,7 @@ from .adapters import (
     legacy_profile_requests,
     monitor_request_observations,
 )
+from .correlation_adapter import reconcile_correlated_execution
 from .apply import (
     RECEIPT_SCHEMA,
     apply_plan_to_target,
@@ -66,6 +67,7 @@ __all__ = [
     "is_baseline_equivalent",
     "legacy_profile_requests",
     "monitor_request_observations",
+    "reconcile_correlated_execution",
     "preregistration_fingerprint",
     "randomized_execution_order",
     "rollback_transaction",
