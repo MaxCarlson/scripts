@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "snips"
+version = "0.1.0"
+description = "CLI-managed Windows snippets and hotkeys"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = []
+
+[project.scripts]
+snips = "snips.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+
+[tool.pytest.ini_options]
+addopts = "-ra --basetemp=.pytest_tmp_root"
+testpaths = ["tests"]
+python_files = ["*_test.py"]

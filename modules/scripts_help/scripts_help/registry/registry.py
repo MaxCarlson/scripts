@@ -612,6 +612,18 @@ REGISTRY: dict = {
             },
         ],
     },
+    "Automation & Shortcuts": {
+        "desc": "Manage reusable text snippets and Windows global keyboard shortcuts",
+        "items": [
+            {
+                "name": "snips (module)",
+                "path": "modules/snips",
+                "desc": "Manage versioned text templates, clipboard fencing, and AutoHotkey v2 hotkeys",
+                "help_cmd": ["python", "-m", "snips", "--help"],
+                "version": "0.1.0",
+            },
+        ],
+    },
     "Knowledge & Project Management": {
         "desc": "Manage projects, tasks, backups, and tmux sessions",
         "items": [
