@@ -766,39 +766,41 @@ class ManagedInstallation:
             lock = SingleInstanceLock(lock_path)
             if not lock.acquire():
                 raise InstallationError("Coordinator port closed but its instance lock remains held.")
-            lock.release()
         except InstallationError:
             raise
         except Exception as exc:
             raise InstallationError("Could not verify coordinator instance-lock release.") from exc
-        if owned_processes:
-            import psutil
+        try:
+            if owned_processes:
+                import psutil
 
-            deadline = time.monotonic() + 15.0
-            while time.monotonic() < deadline:
-                running = []
-                for proc in owned_processes:
-                    try:
-                        live = psutil.Process(int(proc["pid"]))
-                        if live.create_time() == float(proc["create_time"]):
-                            running.append(int(proc["pid"]))
-                    except psutil.NoSuchProcess:
-                        pass
-                if not running:
-                    break
-                time.sleep(0.25)
-            else:
-                raise InstallationError(f"Owned processes did not exit after coordinator shutdown: {running}")
-        remaining = []
-        for task in self.task_backend.status():
-            if task.owned:
-                self.task_backend.uninstall(task, non_interactive=non_interactive)
-                remaining.append(task.name)
-        removed = []
-        for path in (self.paths.launcher, self.paths.viewer):
-            if path.is_file() and TASK_MARKER in path.read_text(encoding="utf-8", errors="replace"):
-                path.unlink()
-                removed.append(str(path))
+                deadline = time.monotonic() + 15.0
+                while time.monotonic() < deadline:
+                    running = []
+                    for proc in owned_processes:
+                        try:
+                            live = psutil.Process(int(proc["pid"]))
+                            if live.create_time() == float(proc["create_time"]):
+                                running.append(int(proc["pid"]))
+                        except psutil.NoSuchProcess:
+                            pass
+                    if not running:
+                        break
+                    time.sleep(0.25)
+                else:
+                    raise InstallationError(f"Owned processes did not exit after coordinator shutdown: {running}")
+            remaining = []
+            for task in self.task_backend.status():
+                if task.owned:
+                    self.task_backend.uninstall(task, non_interactive=non_interactive)
+                    remaining.append(task.name)
+            removed = []
+            for path in (self.paths.launcher, self.paths.viewer):
+                if path.is_file() and TASK_MARKER in path.read_text(encoding="utf-8", errors="replace"):
+                    path.unlink()
+                    removed.append(str(path))
+        finally:
+            lock.release()
         return {"status": "applied", "tasks_uninstalled": remaining, "launchers_removed": removed,
                 "preserved": plan["preserved"]}
 
@@ -811,31 +813,14 @@ class ManagedInstallation:
         """
         try:
             config = load_config(self.paths.config)
+            if not config.service.state_persistence_path:
+                raise ValueError("durable state path is not configured")
             state_path = Path(config.service.state_persistence_path)
-            state = StateCodec.load(state_path)
         except Exception as exc:
             raise InstallationError(
-                "Coordinator is unreachable and durable state is missing, unreadable, or invalid; "
-                "offline teardown made no changes. Restore the coordinator or repair its journal first."
+                "Coordinator is unreachable and its configuration cannot identify a durable journal; "
+                "offline teardown made no changes. Restore the coordinator or configuration first."
             ) from exc
-
-        unresolved = [
-            request.request_id for request in state.requests.values()
-            if request.phase in {
-                RequestPhase.RESERVED.value,
-                RequestPhase.POSSIBLY_FORWARDED.value,
-                RequestPhase.UNCERTAIN.value,
-            }
-        ]
-        if unresolved or state.inhibitions:
-            raise InstallationError(
-                "Coordinator is unreachable and the journal contains unresolved inference or safety holds; "
-                "offline teardown made no changes."
-            )
-        if state.gaming_mode.get("state", "inactive") != "inactive":
-            raise InstallationError(
-                "Coordinator is unreachable during a gaming-mode transition; offline teardown made no changes."
-            )
 
         lock_path = state_path.with_suffix(".lock")
         lock = SingleInstanceLock(lock_path)
@@ -844,6 +829,30 @@ class ManagedInstallation:
                 "Coordinator is unreachable but its instance lock is held; offline teardown made no changes."
             )
         try:
+            try:
+                state = StateCodec.load(state_path)
+            except Exception as exc:
+                raise InstallationError(
+                    "Coordinator is unreachable and durable state is missing, unreadable, or invalid; "
+                    "offline teardown made no changes. Restore the coordinator or repair its journal first."
+                ) from exc
+            unresolved = [
+                request.request_id for request in state.requests.values()
+                if request.phase in {
+                    RequestPhase.RESERVED.value,
+                    RequestPhase.POSSIBLY_FORWARDED.value,
+                    RequestPhase.UNCERTAIN.value,
+                }
+            ]
+            if unresolved or state.inhibitions:
+                raise InstallationError(
+                    "Coordinator is unreachable and the journal contains unresolved inference or safety holds; "
+                    "offline teardown made no changes."
+                )
+            if state.gaming_mode.get("state", "inactive") != "inactive":
+                raise InstallationError(
+                    "Coordinator is unreachable during a gaming-mode transition; offline teardown made no changes."
+                )
             import psutil
 
             live_owned: List[int] = []

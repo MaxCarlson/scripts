@@ -296,7 +296,7 @@ def test_startup_install_registers_task_without_starting_service(tmp_path, monke
 @pytest.mark.parametrize(
     "status, message",
     [
-        (None, "durable state is missing"),
+        (None, "configuration cannot identify a durable journal"),
         ({"service_state": "draining", "gpu_inference": {}}, "not ready"),
         ({"service_state": "ready", "gpu_inference": {"is_restart_inhibited": True}}, "restart-inhibited"),
     ],
