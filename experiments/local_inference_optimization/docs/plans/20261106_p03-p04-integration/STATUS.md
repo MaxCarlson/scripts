@@ -21,27 +21,32 @@ schemas remain unchanged.
 
 ## Remaining acceptance boundary
 
-- Actual Harbor/OpenCode propagation of per-invocation correlation is not tested.
+- Mocked Harbor runner → child environment → OpenCode config → gateway propagation
+  now passes; Docker container inheritance and actual OpenCode parsing remain
+  unverified and require separately authorized live acceptance.
 - P04 history persists correlation metadata, not request parameters; the LIO
   adapter accepts separately captured sanitized parameter evidence and does not
   infer settings from correlation.
 - P02 remains unsealed unless independently established; synthetic readiness is
   not evidence about the real baseline.
 - Effective settings still require independent backend-runtime evidence.
-- Full `llm_monitor` and `agent_benchmark` suites did not complete within this
-  environment's bounded run; focused suites and the other full offline suites
-  are recorded in the integration handoff.
+- Full `llm_monitor` passed (277 passed, 2 skipped). The full Agent Benchmark
+  directory completed (643 passed, 10 skipped, 5 failed); the failures are
+  classified in `OFFLINE_REGRESSION_CLOSURE.md`. Two verifier path failures
+  passed with a short temp root; two tests require Docker; one test probes the
+  default local Monitor endpoint and must be isolated before future offline
+  suite runs.
 
 ## Offline validation
 
-The final combined command ran 273 tests with 1 existing skip and exit code 0.
+The original combined command ran 273 tests with 1 existing skip and exit code 0.
 It covered all LIO tests, all `benchmark_core` tests, all
 `interactive_reports` tests, P04 correlation/storage plus the schema migration
 regression, and the agent correlation/config and Monitor-preflight suites.
 Imports were printed and verified to resolve from this integration worktree.
-Ruff checks, formatting checks for new files, compileall, and `git diff --check`
-also completed successfully. The broader Monitor and agent test directories
-were attempted but did not return within the bounded environment run; those
-attempts are not counted as passing validation.
+The follow-up full Monitor run and bounded Agent Benchmark diagnostics, including
+the Windows event-loop stack trace and exact failure classification, are in
+`OFFLINE_REGRESSION_CLOSURE.md`. The targeted P04 propagation, gateway,
+correlation, and P03/P04 LIO integration tests passed from this worktree.
 
 See `../../P03_P04_INTEGRATION.md` for protocol details and validation scope.

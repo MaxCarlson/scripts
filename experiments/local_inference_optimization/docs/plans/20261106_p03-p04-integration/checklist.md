@@ -8,5 +8,8 @@
 - [x] Add non-scored matched-block diagnostics for infrastructure-invalid data.
 - [x] Align package dependency/version metadata.
 - [x] Finish focused offline validation; record broader suite execution limits.
+- [x] Diagnose prior asyncio stall under normal Windows permissions and rerun the complete attempt tests.
+- [x] Exercise Harbor runner environment assembly, OpenCode config injection, mocked gateway recording, and native trial reconciliation.
+- [x] Reconcile SQLite v4 full-suite assertion and document full Monitor/Agent results and environment-limited failures.
 - [x] Review diff, privacy, API/schema compatibility, and final clean status.
 - [x] Commit the isolated integration checkpoint.
