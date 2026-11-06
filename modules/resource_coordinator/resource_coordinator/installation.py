@@ -876,12 +876,7 @@ class ManagedInstallation:
                 "preserved": plan["preserved"]}
 
     def _offline_teardown(self, plan: Dict[str, Any], *, non_interactive: bool) -> Dict[str, Any]:
-        """Remove startup artifacts only when the lock and durable state prove it is safe.
-
-        A running coordinator-owned process cannot be stopped here: the service's
-        process-group handle is gone, so the offline path deliberately refuses
-        to signal it and leaves startup resources intact.
-        """
+        """Remove offline artifacts only when no live owned process needs its original supervisor."""
         try:
             config = load_config(self.paths.config)
             if not config.service.state_persistence_path:
@@ -955,30 +950,34 @@ class ManagedInstallation:
             if live_owned:
                 raise InstallationError(
                     "Coordinator is unreachable while its miner is still running "
-                    f"(verified PID(s): {live_owned}); no safe process-group handle is available, "
-                    "so no task or process was changed. Restore coordinator service, stop the miner "
-                    "through its control API, then retry teardown."
+                    f"(verified PID(s): {live_owned}); the original coordinator's process-group handle "
+                    "cannot be recovered by starting a new instance. Offline teardown therefore refuses "
+                    "to stop the miner or remove its startup task. Restore coordinator control and retry "
+                    "'resource-coordinator teardown --apply'; if the original supervisor cannot be restored, "
+                    "leave the miner and installation intact until the miner exits."
                 )
-
-            removed_tasks: List[str] = []
-            for task in self.task_backend.status():
-                if task.owned:
-                    self.task_backend.uninstall(task, non_interactive=non_interactive)
-                    removed_tasks.append(task.name)
-            removed_paths: List[str] = []
-            for path in (self.paths.launcher, self.paths.viewer):
-                if path.is_file() and TASK_MARKER in path.read_text(encoding="utf-8", errors="replace"):
-                    path.unlink()
-                    removed_paths.append(str(path))
-            return {
-                "status": "applied",
-                "offline_recovery": True,
-                "tasks_uninstalled": removed_tasks,
-                "launchers_removed": removed_paths,
-                "preserved": plan["preserved"],
-            }
+            else:
+                removed_tasks: List[str] = []
+                for task in self.task_backend.status():
+                    if task.owned:
+                        self.task_backend.uninstall(task, non_interactive=non_interactive)
+                        removed_tasks.append(task.name)
+                removed_paths: List[str] = []
+                for path in (self.paths.launcher, self.paths.viewer):
+                    if path.is_file() and TASK_MARKER in path.read_text(encoding="utf-8", errors="replace"):
+                        path.unlink()
+                        removed_paths.append(str(path))
+                result = {
+                    "status": "applied",
+                    "offline_recovery": True,
+                    "tasks_uninstalled": removed_tasks,
+                    "launchers_removed": removed_paths,
+                    "preserved": plan["preserved"],
+                }
         finally:
             lock.release()
+
+        return result
 
 
 _TASKS_POWERSHELL = r'''

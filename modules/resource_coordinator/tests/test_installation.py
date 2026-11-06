@@ -437,11 +437,13 @@ def test_offline_teardown_never_terminates_a_verified_running_owned_miner(tmp_pa
     tasks.set_enabled(task, True)
     manager = ManagedInstallation(paths, tasks)
     manager._service_status = lambda: None
+    manager._wait_for_service = lambda timeout=30.0: None
 
     with pytest.raises(InstallationError, match=r"verified PID\(s\): \[24680\]"):
         manager.teardown(apply=True)
 
     assert task.name in tasks.items
+    assert tasks.start_calls == []
 
 
 def test_teardown_plan_preserves_configuration_credentials_journal_and_logs(tmp_path):
