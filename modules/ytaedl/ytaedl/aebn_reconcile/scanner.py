@@ -96,8 +96,9 @@ def probe_video(path: Path) -> dict | None:
             stream = next((item for item in data.get("streams", []) if item.get("codec_type") == kind), None)
             if not stream:
                 continue
+            sample_count = 128 if kind == "audio" else 16
             head = subprocess.run(
-                [executable, "-v", "error", "-select_streams", selector, "-read_intervals", "%+#16",
+                [executable, "-v", "error", "-select_streams", selector, "-read_intervals", f"%+#{sample_count}",
                  "-show_packets", "-show_entries", "packet=pts_time,dts_time", "-of", "json", str(path)],
                 capture_output=True, text=True, timeout=30, check=True,
             )
@@ -108,7 +109,7 @@ def probe_video(path: Path) -> dict | None:
             tail_start = max(0.0, stream_start + stream_duration - 1.0)
             tail = subprocess.run(
                 [executable, "-v", "error", "-select_streams", selector,
-                 "-read_intervals", f"{tail_start}%+#16", "-show_packets", "-show_entries", "packet=pts_time,dts_time",
+                 "-read_intervals", f"{tail_start}%+#{sample_count}", "-show_packets", "-show_entries", "packet=pts_time,dts_time",
                  "-of", "json", str(path)],
                 capture_output=True, text=True, timeout=30, check=True,
             )
@@ -118,17 +119,32 @@ def probe_video(path: Path) -> dict | None:
             tail_stamps = [float(packet.get("pts_time", packet.get("dts_time")))
                            for packet in json.loads(tail.stdout).get("packets", [])
                            if packet.get("pts_time", packet.get("dts_time")) is not None]
-            if not head_stamps or not tail_stamps:
+            if kind != "video" and (not head_stamps or not tail_stamps):
                 return None
             stream_facts[kind] = {
                 "duration": stream_duration,
                 "start_time": stream_start,
                 "packet_count": int(stream.get("nb_read_packets", 0) or 0),
-                "first_pts": min(head_stamps), "last_pts": max(tail_stamps),
-                "timestamp_span": max(tail_stamps) - min(head_stamps),
+                "first_pts": min(head_stamps) if head_stamps else None,
+                "last_pts": max(tail_stamps) if tail_stamps else None,
+                "timestamp_span": max(tail_stamps) - min(head_stamps) if head_stamps and tail_stamps else None,
                 "time_base": stream.get("time_base"),
             }
-        return {"duration": duration, "video": "video" in stream_facts, "streams": stream_facts}
+        continuity = None
+        if "video" in stream_facts:
+            try:
+                from aebn_dl.media_validation import scan_video_packet_timing
+            except ImportError:
+                return None
+            continuity = scan_video_packet_timing(path, ffprobe=executable)
+            if continuity is None:
+                return None
+            first, last = continuity.get("min_pts_s"), continuity.get("max_pts_s")
+            if first is None or last is None:
+                return None
+            stream_facts["video"].update({"first_pts": first, "last_pts": last, "timestamp_span": last - first})
+        return {"duration": duration, "video": "video" in stream_facts,
+                "streams": stream_facts, "video_continuity": continuity}
     except (OSError, subprocess.SubprocessError, ValueError, TypeError, json.JSONDecodeError):
         return None
 

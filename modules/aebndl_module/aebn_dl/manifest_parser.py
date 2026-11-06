@@ -13,6 +13,10 @@ class PreviewAccessError(ValueError):
     """Delivery metadata does not establish access to the requested interval."""
 
 
+class UnsupportedManifestError(ValueError):
+    """The manifest does not provide a supported, unambiguous segment timeline."""
+
+
 class Manifest:
     def __init__(
         self,
@@ -35,6 +39,7 @@ class Manifest:
         self.avaliable_resulutions: list[int] | None = None
         self.requested_interval = (0.0, float(total_duration_seconds))
         self.delivery_metadata = None
+        self.segment_templates: dict[str, dict] = {}
 
     def validate_delivery_window(self, payload: dict, requested_start: float, requested_end: float) -> None:
         try:
@@ -57,7 +62,28 @@ class Manifest:
     def parse_content(self, manifest_content: str) -> None:
         """Parse the XML manifest content"""
         root = ET.fromstring(manifest_content, None)
+        self.segment_templates = {}
+        for kind, mime in (("v", "video/mp4"), ("a", "audio/mp4")):
+            templates = root.xpath(f'.//*[local-name()="AdaptationSet" and @mimeType="{mime}"]//*[local-name()="SegmentTemplate"]')
+            parsed = []
+            for item in templates:
+                if item.get("timescale") and item.get("duration"):
+                    parsed.append({"timescale": item.get("timescale"), "duration": item.get("duration"),
+                                   "start_number": item.get("startNumber", "1"),
+                                   "presentation_time_offset": item.get("presentationTimeOffset", "0")})
+            if parsed and all(item == parsed[0] for item in parsed):
+                self.segment_templates[kind] = parsed[0]
         self.total_number_of_data_segments = self._total_number_of_data_segments_calc(root, self.total_duration_seconds)
+        if self.delivery_metadata is not None:
+            start, end = self.requested_interval
+            segment_start = max(0.0, math.floor(start / self.segment_duration) * self.segment_duration)
+            segment_end = min(float(self.total_duration_seconds),
+                              (math.ceil(end / self.segment_duration) + 1) * self.segment_duration)
+            self.validate_delivery_window(self.delivery_metadata, segment_start, segment_end)
+        if root.xpath('.//*[local-name()="SegmentTimeline"]') or set(self.segment_templates) != {"v", "a"}:
+            raise UnsupportedManifestError(
+                "Unsupported or ambiguous DASH segment templates; fragment identity cannot be verified"
+            )
         video_streams = self._parse_and_sort_video_streams(root)
         self.avaliable_resulutions = [video_stream[1] for video_stream in video_streams]
         audio_stream_id = self._find_best_good_audio_stream(video_streams)
@@ -101,7 +127,8 @@ class Manifest:
             init_segment_name = f"ai_{stream_id}"
             init_segment_url = f"{self.base_stream_url}/{init_segment_name}.mp4d"
             init_segment_bytes = self.session.get(init_segment_url).content
-            data_segment_number = int(self.total_number_of_data_segments / 2)
+            midpoint = (self.requested_interval[0] + self.requested_interval[1]) / 2
+            data_segment_number = int(midpoint / self.segment_duration)
             data_segment_name = f"a_{stream_id}_{data_segment_number}"
             data_segment_url = f"{self.base_stream_url}/{data_segment_name}.mp4d"
             data_segment_bytes = self.session.get(data_segment_url).content

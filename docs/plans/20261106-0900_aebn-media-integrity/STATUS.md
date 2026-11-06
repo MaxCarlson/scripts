@@ -1,6 +1,30 @@
 # Status
 
-## Review-correction checkpoint (in progress)
+## Current offline correction work
+
+- Preview-window checks precede fragment scheduling. Constant-duration DASH
+  templates validate track identity and timing at acquisition; ambiguous
+  templates fail closed, and refresh rejects representation or timing changes.
+- Verification contract 3 scans all video packet timestamps in bounded memory;
+  reconciliation and existing-output checks require the new evidence. A
+  file-identity-bound cache permits skips for newly verified AEBN files and
+  requeues old unverified successes without rewriting archive history.
+- Offline fragmented-media tests cover healthy and corrupt outputs, metadata,
+  internal gaps and a synthetic full pipeline. A local 5,909-packet scan took
+  about 0.08 seconds; large and remote-file performance remains unmeasured.
+  Preview-limited delivery remains an access limitation and no successful
+  full-content AEBN live test has been established.
+- Historical edit-list inspection found suppressed packets in one larger file
+  and a smaller file containing only the visible subset. Different durations
+  prevent proving they are the same pre-/post-remux pair; the original loss
+  remains unproven.
+- Focused offline checks: 109 AEBN tests and 168 ytaedl, reconciliation,
+  scheduler and procparsers tests passed. Ruff, compileall, Python 3.9 grammar
+  parsing and `git diff --check` passed. Python 3.9 runtime and authorized
+  full-content live delivery remain untested. Do not merge or push; preserve
+  the existing untracked review patch.
+
+## Earlier review-correction checkpoint
 
 - The delivery response window is retained and checked before manifest or media fragment fetching. An uncovered or malformed window raises a structured preview/access limitation and CLI status 77; the ytaedl worker does not retry status 77. Scene timing is fetched once and reused for access and segment selection.
 - AEBN canonical filename matches no longer terminate downloads as successful; zero exit now requires a validated `complete` or `already` event. Secondary canonical files are not yet independently validated or recognized as duplicates.

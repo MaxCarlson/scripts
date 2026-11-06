@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import subprocess
 import shutil
 from pathlib import Path
@@ -8,6 +9,7 @@ import os
 import re
 import sys
 import struct
+import uuid
 
 from tqdm import tqdm
 
@@ -118,10 +120,142 @@ def is_mp4_fragment(path: str | Path, *, initialization: bool) -> bool:
         return False
 
 
+def _mp4_boxes(data: bytes, start: int, end: int):
+    offset = start
+    while offset + 8 <= end:
+        size, kind = struct.unpack_from(">I4s", data, offset)
+        header = 8
+        if size == 1:
+            if offset + 16 > end:
+                return
+            size = struct.unpack_from(">Q", data, offset + 8)[0]
+            header = 16
+        elif size == 0:
+            size = end - offset
+        if size < header or offset + size > end:
+            return
+        yield kind, offset + header, offset + size
+        offset += size
+
+
+def _read_top_level_box(path: str | Path, wanted: bytes, max_bytes: int = 16 * 1024 * 1024) -> bytes | None:
+    """Read only a bounded metadata box, never the accompanying media payload."""
+    try:
+        total = Path(path).stat().st_size
+        found = None
+        with open(path, "rb") as stream:
+            offset = 0
+            while offset + 8 <= total:
+                stream.seek(offset)
+                header_data = stream.read(8)
+                if len(header_data) != 8:
+                    return None
+                size, kind = struct.unpack(">I4s", header_data)
+                header = 8
+                if size == 1:
+                    extra = stream.read(8)
+                    if len(extra) != 8:
+                        return None
+                    size = struct.unpack(">Q", extra)[0]
+                    header = 16
+                elif size == 0:
+                    size = total - offset
+                if size < header or offset + size > total:
+                    return None
+                if kind == wanted:
+                    if found is not None or size > max_bytes:
+                        return None
+                    stream.seek(offset)
+                    found = stream.read(size)
+                    if len(found) != size:
+                        return None
+                offset += size
+        return found
+    except OSError:
+        return None
+
+
+def mp4_init_track_info(path: str | Path) -> dict | None:
+    """Read a single-track initialization file's track ID and time scale."""
+    try:
+        data = _read_top_level_box(path, b"moov")
+        if data is None:
+            return None
+        values = {"track_id": [], "timescale": []}
+        def visit(start: int, end: int) -> None:
+            for kind, body, stop in _mp4_boxes(data, start, end):
+                if kind in {b"tkhd", b"mdhd"}:
+                    if body + 4 > stop:
+                        continue
+                    offset = body + (20 if data[body] == 1 else 12)
+                    if offset + 4 <= stop:
+                        key = "track_id" if kind == b"tkhd" else "timescale"
+                        values[key].append(struct.unpack_from(">I", data, offset)[0])
+                elif kind in {b"moov", b"trak", b"mdia"}:
+                    visit(body, stop)
+        visit(0, len(data))
+        if len(values["track_id"]) != 1 or len(values["timescale"]) != 1 or not values["timescale"][0]:
+            return None
+        return {key: value[0] for key, value in values.items()}
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def mp4_fragment_identity(path: str | Path) -> dict | None:
+    """Read the single track, sequence, and base decode time of a fragment."""
+    try:
+        data = _read_top_level_box(path, b"moof")
+        if data is None:
+            return None
+        values = {"sequence_number": [], "track_id": [], "decode_time": []}
+        def visit(start: int, end: int) -> None:
+            for kind, body, stop in _mp4_boxes(data, start, end):
+                if kind in {b"mfhd", b"tfhd", b"tfdt"} and body + 8 <= stop:
+                    if kind == b"tfdt" and data[body] == 1:
+                        if body + 12 <= stop:
+                            values["decode_time"].append(struct.unpack_from(">Q", data, body + 4)[0])
+                    elif kind != b"tfdt" or data[body] == 0:
+                        key = {b"mfhd": "sequence_number", b"tfhd": "track_id", b"tfdt": "decode_time"}[kind]
+                        values[key].append(struct.unpack_from(">I", data, body + 4)[0])
+                elif kind in {b"moof", b"traf"}:
+                    visit(body, stop)
+        visit(0, len(data))
+        if any(len(items) != 1 for items in values.values()):
+            return None
+        return {key: items[0] for key, items in values.items()}
+    except (OSError, ValueError, struct.error):
+        return None
+
+
+def validate_fragment_identity(identity: dict | None, track: dict | None, template: dict, index: int) -> None:
+    """Validate track and decode time using the supplied DASH template offsets."""
+    if not identity or not track or identity["track_id"] != track["track_id"]:
+        raise ValueError("Fragment track identity does not match its initialization")
+    try:
+        template_scale = float(template["timescale"])
+        duration = float(template["duration"])
+        offset = float(template.get("presentation_time_offset", 0))
+        start_number = int(template.get("start_number", 1))
+        track_scale = int(track["timescale"])
+        if min(template_scale, duration, track_scale) <= 0 or not all(
+            math.isfinite(value) for value in (template_scale, duration, offset)
+        ):
+            raise ValueError("invalid DASH timing")
+        expected = (offset + (index - start_number) * duration) / template_scale
+        actual = identity["decode_time"] / track_scale
+        tolerance = max(1.0, duration / template_scale)
+        if expected < -tolerance or abs(actual - expected) > tolerance:
+            raise ValueError(f"Fragment {index} decode time {actual:g}s differs from DASH time {expected:g}s")
+    except (KeyError, TypeError, OverflowError, ZeroDivisionError) as exc:
+        raise ValueError("Fragment or DASH timing metadata is incomplete") from exc
+
+
 def mp4_fragment_decode_time(path: str | Path) -> int | None:
     """Read the media fragment's base decode time from its ``tfdt`` box."""
     try:
-        data = Path(path).read_bytes()
+        data = _read_top_level_box(path, b"moof")
+        if data is None:
+            return None
     except OSError:
         return None
 
@@ -223,13 +357,37 @@ def add_metadata(
     output_path: str | Path | None = None,
     scene_n: int | None = None,
 ) -> Path:
-    """Write title/chapters to a separate candidate file using stream copy.
+    """Write title/chapters using a candidate validated before in-place replacement.
 
-    The assembled input is never replaced here. The caller validates the
-    candidate and promotes it only after that validation passes.
+    Explicit output paths leave the input untouched for caller validation.
+    With no output path, both artifacts are validated before atomic replacement.
     """
     input_path = Path(input_path)
-    output_path = Path(output_path) if output_path is not None else input_path.with_name(f"{input_path.stem}.metadata{input_path.suffix}")
+    in_place = output_path is None
+    source_stat = input_path.stat() if in_place else None
+    pre_validation = None
+    required_streams = ()
+    expected_duration = None
+    if in_place:
+        from .media_validation import probe_media, validate_media_facts
+        before = probe_media(input_path)
+        if before is None:
+            raise FFmpegError("Cannot verify input media before metadata rewriting")
+        required_streams = tuple(kind for kind in ("video", "audio")
+                                 if any(stream.get("codec_type") == kind for stream in before.get("streams", [])))
+        if not required_streams:
+            raise FFmpegError("Input media has no audio or video stream")
+        if scene_n is not None and 1 <= scene_n <= len(movie.scenes):
+            scene = movie.scenes[scene_n - 1]
+            expected_duration = scene.end_timing - scene.start_timing
+        else:
+            expected_duration = getattr(movie, "total_duration_seconds", None)
+        pre_validation = validate_media_facts(before, expected_duration=expected_duration, required_streams=required_streams)
+        if not pre_validation["valid"]:
+            raise FFmpegError(f"Input media failed validation: {pre_validation['errors']}")
+        output_path = input_path.with_name(f"{input_path.stem}.metadata-{uuid.uuid4().hex}{input_path.suffix}")
+    else:
+        output_path = Path(output_path)
 
     def escape(value: object) -> str:
         text = str(value or "")
@@ -269,4 +427,23 @@ def add_metadata(
         raise FFmpegError(result.stderr)
     if not output_path.is_file() or output_path.stat().st_size == 0:
         raise FFmpegError("ffmpeg produced no metadata candidate output")
+    if in_place:
+        after = probe_media(output_path)
+        post_validation = (validate_media_facts(after, expected_duration=expected_duration, required_streams=required_streams)
+                           if after is not None else {"valid": False, "errors": ["ffprobe failed"]})
+        if not post_validation["valid"]:
+            raise FFmpegError(f"Metadata candidate failed validation: {post_validation['errors']}")
+        for kind in required_streams:
+            before_stream = pre_validation["evidence"]["streams"][kind]
+            after_stream = post_validation["evidence"]["streams"][kind]
+            if (before_stream["packet_count"] != after_stream["packet_count"]
+                    or abs(before_stream["duration_s"] - after_stream["duration_s"]) > 1):
+                raise FFmpegError("Metadata rewrite changed stream coverage")
+        current_stat = input_path.stat()
+        if (current_stat.st_dev, current_stat.st_ino, current_stat.st_size, current_stat.st_mtime_ns) != (
+            source_stat.st_dev, source_stat.st_ino, source_stat.st_size, source_stat.st_mtime_ns
+        ):
+            raise FFmpegError("Input media changed during metadata rewriting")
+        os.replace(output_path, input_path)
+        return input_path
     return output_path

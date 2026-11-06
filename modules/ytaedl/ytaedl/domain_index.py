@@ -25,6 +25,7 @@ from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set, Tuple
+from .aebn_validation_cache import is_aebn_url
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +527,30 @@ class DomainIndex:
             if not any(e.url == url for e in q):
                 q.append(entry)
             return True
+
+    def requeue_unverified_aebn(self, verified_urls: set[str]) -> int:
+        """Requeue old AEBN successes that lack current file-bound verification."""
+        changed = 0
+        with self._lock:
+            for url, status in list(self._finished.items()):
+                if status.status not in {"downloaded", "already", "preexisting"}:
+                    continue
+                if not is_aebn_url(url) or url in verified_urls:
+                    continue
+                entry = self._url_entry_map.get(url)
+                if entry is None:
+                    entry = UrlEntry(url=url, file_id=status.file_id, file_path=status.file_path,
+                                     line_num=status.line_num)
+                    self._url_entry_map[url] = entry
+                    stem = Path(url.rstrip("/").split("/")[-1]).stem.lower()
+                    if stem:
+                        self._stem_to_url.setdefault(stem, url)
+                self._finished.pop(url, None)
+                queue = self._url_queues.setdefault(_extract_domain(url), deque())
+                if not any(item.url == url for item in queue):
+                    queue.append(entry)
+                changed += 1
+        return changed
 
     def mark_partial(self, url: str) -> None:
         """

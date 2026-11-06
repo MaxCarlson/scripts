@@ -6,7 +6,8 @@ import signal
 from typing import Literal
 
 from . import Downloader
-from .manifest_parser import PreviewAccessError
+from .manifest_parser import PreviewAccessError, UnsupportedManifestError
+from .downloader import FragmentIntegrityError
 
 
 def download_movie(args):
@@ -34,6 +35,7 @@ def download_movie(args):
         proxy_metadata_only=args.proxy_metadata,
         json_output=args.json,
         no_part=args.no_part,
+        existing_output_dirs=getattr(args, "existing_output_dir", None),
     ).run()
 
 
@@ -78,6 +80,8 @@ def main(argv: list[str] | None = None):
     parser = argparse.ArgumentParser()
     parser.add_argument("url", help="URL of the movie or list.txt")
     parser.add_argument("-o", "--output_dir", type=str, help="Specify the output directory")
+    parser.add_argument("-C", "--existing-output-dir", action="append", default=[],
+                        help="Also validate existing output files in this directory (repeatable)")
     parser.add_argument("-w", "--work_dir", type=str, help="Specify the work diretory to store downloaded temporary segments in")
     parser.add_argument("-r", "--resolution", type=int, help="Desired video resolution by pixel height. If not found, the nearest lower resolution will be used. Use 0 to select the lowest available resolution. (default: highest available)")
     parser.add_argument("-f", "--force-resolution", action="store_true", help="If the target resolution not available, exit with an error")
@@ -115,6 +119,9 @@ def main(argv: list[str] | None = None):
     except PreviewAccessError as exc:
         logging.error("AEBN access limitation: %s", exc)
         return 77
+    except (FragmentIntegrityError, UnsupportedManifestError) as exc:
+        logging.error("AEBN fragment integrity failure: %s", exc)
+        return 78
     except Exception as exc:
         logging.error("AEBN download failed: %s", exc)
         return 1

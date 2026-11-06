@@ -3,8 +3,8 @@
 ## What completion means
 
 `aebndl` now validates a scene or movie against its expected duration using
-independent audio and video stream durations, packet counts, and bounded packet
-timestamp samples. Missing or collapsed video coverage fails closed. The
+independent audio and video stream durations and a streaming, bounded-memory
+scan of all video packet timestamps. Missing or collapsed video coverage fails closed. The
 `complete` event is emitted only after metadata processing, validation, and
 promotion, and its `file_size` is read from the final artifact. Existing AEBN
 outputs must pass the same checks before they can be reported as `already`.
@@ -18,6 +18,36 @@ identity before reuse. `SIGTERM` reports an interrupted, nonzero result.
 These checks prevent the known two-second-video/long-audio signature from
 becoming a new successful archive result. One controlled live test reached AEBN
 but was correctly rejected because video fragments repeated after index 22.
+
+## Delivery and verification limits
+
+Delivery boundaries are checked before media requests. The observed 5–35-second
+preview does not authorize a complete 453-second scene; missing or contradictory
+access metadata fails closed. The client does not bypass provider restrictions.
+A full-content response from an entitled session has not been verified.
+Constant-duration DASH templates check fragment track identity and timing.
+Ambiguous templates, including SegmentTimeline, are rejected; manifest refresh
+must retain representation and timing identity.
+
+Verification contract 3 scans all video packets. It rejects timestamp gaps
+above the larger of 10 seconds or 5% of expected duration, runs of 100
+sub-millisecond durations or decode increments, and fewer than 0.2 packets per
+second for videos at least a minute long. These conservative rules can reject
+unusual legitimate variable-rate or long-still content; missing evidence fails
+closed. One local 196-second, 5,909-packet control took about 0.08 seconds to
+scan; large and remote-file performance is unmeasured. Reconciliation rechecks
+replacements under the current contract before removal.
+
+Successful AEBN archive skips require a current result bound to the file's
+identity, size and timestamps in `aebn-verified-media.sqlite3`. Unverified
+historical successes remain in the archive but are revalidated when encountered;
+unavailable provider access can prevent revalidation.
+
+Read-only historical inspection found an edit list hid many packets in a larger
+file, while a smaller file retained only the visible subset. Different durations
+prevent proving these are the same pre-/post-remux pair; the original 425 MB
+loss remains unresolved. Distinct live fragment URLs returned identical response
+bytes; preview restriction is a strong explanation, not a proven internal cause.
 
 ## Historical outputs
 

@@ -10,18 +10,27 @@ from typing import Callable
 
 from .scanner import _within_duration, probe_video
 from .store import ReconciliationStore
+from ..aebn_validation_cache import AEBN_VALIDATION_CONTRACT
 
 
 _SCENE_NAME = re.compile(r"(?:^|[\s._\-[(])scene[\s._-]*(\d+)(?=$|[\s._\-\])])", re.IGNORECASE)
-VERIFICATION_CONTRACT = 2
+VERIFICATION_CONTRACT = AEBN_VALIDATION_CONTRACT
 
 
 def _validate_av_coverage(facts: dict, expected: float) -> dict:
     """Require bounded timestamp and duration evidence for both A/V streams."""
     errors = []
     streams = facts.get("streams") or {}
-    tolerance = max(8.0, expected * 0.05)
-    evidence = {"expected_duration_s": expected, "tolerance_s": tolerance, "streams": {}}
+    tolerance = min(max(8.0, expected * 0.05), expected * 0.2)
+    continuity = facts.get("video_continuity")
+    evidence = {"expected_duration_s": expected, "tolerance_s": tolerance, "streams": {},
+                "video_continuity": continuity}
+    try:
+        from aebn_dl.media_validation import validate_video_continuity
+    except ImportError:
+        errors.append("video continuity validator is unavailable")
+    else:
+        errors.extend(validate_video_continuity(continuity, expected))
     for kind in ("video", "audio"):
         stream = streams.get(kind)
         if not stream:

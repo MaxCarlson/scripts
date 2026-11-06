@@ -1,4 +1,7 @@
 import json
+import hashlib
+import shutil
+import subprocess
 import time
 from pathlib import Path
 
@@ -77,6 +80,52 @@ def test_existing_scene_matches_current_and_legacy_names(tmp_path, monkeypatch, 
     path.write_bytes(b"fixture")
     monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": True, "errors": []})
     assert dl._find_existing_output(movie, 30) == str(path)
+
+
+@pytest.mark.parametrize("scene_n,filename", [
+    (1, "Movie Scene 10 720p.mp4"),
+    (None, "Movie Scene 1 720p.mp4"),
+])
+def test_existing_output_does_not_match_another_scene_or_movie(tmp_path, monkeypatch, scene_n, filename):
+    movie = type("Movie", (), {"studio_name": "", "title": "Movie"})()
+    dl = Downloader("https://straight.aebn.com/straight/movies/1/title", output_dir=str(tmp_path), no_part=True)
+    dl.scene_n = scene_n
+    (tmp_path / filename).write_bytes(b"fixture")
+    monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": True, "errors": []})
+    assert dl._find_existing_output(movie, 30) is None
+
+
+@pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
+@pytest.mark.parametrize("valid", [True, False])
+def test_secondary_existing_output_is_independently_validated(tmp_path, monkeypatch, capsys, valid):
+    from types import SimpleNamespace
+    secondary = tmp_path / "secondary"
+    secondary.mkdir()
+    candidate = secondary / "Movie 720p.mp4"
+    video_duration = 4 if valid else 1
+    subprocess.run([shutil.which("ffmpeg"), "-hide_banner", "-loglevel", "error", "-y", "-f", "lavfi", "-i",
+                    f"testsrc2=size=160x90:rate=10:duration={video_duration}", "-f", "lavfi", "-i",
+                    "sine=frequency=440:sample_rate=48000:duration=4", "-c:v", "libx264", "-c:a", "aac",
+                    str(candidate)], check=True, capture_output=True, text=True)
+    original_hash = hashlib.sha256(candidate.read_bytes()).hexdigest()
+    movie = SimpleNamespace(studio_name="", title="Movie", performers=[], scenes=[],
+                            movie_id="123", total_duration_seconds=4)
+    dl = Downloader("https://straight.aebn.com/straight/movies/123/title", output_dir=str(tmp_path / "output"),
+                    existing_output_dirs=[str(secondary)], json_output=True, no_part=True)
+    monkeypatch.setattr(dl, "_initialize_download", lambda: None)
+    monkeypatch.setattr(dl, "_scrape_movie_info", lambda: movie)
+    monkeypatch.setattr(dl, "_process_manifest", lambda movie: setattr(dl, "manifest", SimpleNamespace(
+        total_number_of_data_segments=15, video_stream=SimpleNamespace(height=480))))
+    if valid:
+        dl.run()
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert any(event["event"] == "already" and event["path"] == str(candidate) for event in events)
+    else:
+        with pytest.raises(ValueError, match="invalid and was preserved"):
+            dl.run()
+        events = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+        assert not any(event["event"] in {"already", "complete"} for event in events)
+    assert hashlib.sha256(candidate.read_bytes()).hexdigest() == original_hash
 
 
 def test_run_emits_already_only_after_manifest_validation(tmp_path, monkeypatch, capsys):

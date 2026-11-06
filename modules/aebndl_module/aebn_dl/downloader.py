@@ -5,6 +5,7 @@ import email.utils as eut
 import glob as _glob
 import logging
 import math
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Event, Thread
 
@@ -19,7 +20,7 @@ from . import utils
 from .custom_session import CustomSession
 from .models import MediaStream
 from .movie_scraper import Movie
-from .manifest_parser import Manifest, PreviewAccessError
+from .manifest_parser import Manifest, PreviewAccessError, UnsupportedManifestError
 from .exceptions import Forbidden
 import json
 import atexit
@@ -27,6 +28,10 @@ import uuid
 from pathlib import Path
 
 from .media_validation import probe_media, validate_media_facts
+
+
+class FragmentIntegrityError(ValueError):
+    """A fragment contradicts the selected track or manifest timing."""
 
 
 class Downloader:
@@ -55,6 +60,7 @@ class Downloader:
         json_output: bool = False,
         no_part: bool = False,
         scene_id: str | None = None,
+        existing_output_dirs: list[str] | None = None,
     ):
         """
         Args:
@@ -105,6 +111,7 @@ class Downloader:
         self.proxy_metadata_only = proxy_metadata_only
         self.json_output = json_output
         self.no_part = no_part
+        self.existing_output_dirs = list(existing_output_dirs or [])
         self.logger = utils.new_logger(name=self._movie_logger_name(), log_level=log_level)
         self.is_silent = self.logger.getEffectiveLevel() > logging.INFO or self.json_output
 
@@ -120,6 +127,10 @@ class Downloader:
         self.part_file_path: str | None = None
         self.download_interrupted = False
         self.part_file_lock = Lock()
+        self.fragment_identity_lock = Lock()
+        self.segment_state_lock = Lock()
+        self.fragment_sequences: dict[tuple[str, str], dict[int, int]] = {}
+        self.fragment_integrity_stop = Event()
         self.required_segment_range: tuple[int, int] | None = None
 
         # Register cleanup handler for graceful exit
@@ -378,7 +389,16 @@ class Downloader:
             output_path = os.path.join(self.output_dir, output_file_name)
             expected_duration = self._expected_duration(scraped_movie)
             if not self.overwrite_existing_files:
-                existing = self._find_existing_output(scraped_movie, expected_duration)
+                existing = None
+                original_output_dir = self.output_dir
+                try:
+                    for existing_dir in [original_output_dir, *self.existing_output_dirs]:
+                        self.output_dir = existing_dir
+                        existing = self._find_existing_output(scraped_movie, expected_duration)
+                        if existing is not None:
+                            break
+                finally:
+                    self.output_dir = original_output_dir
                 if existing is not None:
                     self._json_log("destination", path=existing)
                     self._json_log("already", path=existing, validation=getattr(self, "_last_existing_validation", None))
@@ -580,10 +600,15 @@ class Downloader:
         bases = [base]
         if not scraped_movie.studio_name:
             bases.append(f"- {base}")
-        paths = [path for name in bases for path in _glob.glob(
+        paths = [(name, path) for name in bases for path in _glob.glob(
             os.path.join(self.output_dir, f"{_glob.escape(name)}*p.mp4")
         )]
-        for path in paths:
+        for name, path in paths:
+            suffix = Path(path).name[len(name):]
+            if self.scene_n and suffix[:1].isdigit():
+                continue
+            if not self.scene_n and re.search(r"(?:^|[\s._-])scene[\s._-]*\d+(?=$|[\s._-])", suffix, re.IGNORECASE):
+                continue
             try:
                 if os.path.isfile(path) and os.path.getsize(path) > 0:
                     validation = self._validate_output(path, expected_duration)
@@ -731,6 +756,23 @@ class Downloader:
         else:
             scraped_movie.calculate_scenes_boundaries(self.manifest.segment_duration)
 
+    def _refresh_manifest_locked(self) -> None:
+        """Refresh a signed URL without mutating active stream representations."""
+        active = self.manifest
+        fresh = Manifest(self.input_url, active.total_duration_seconds, self.session,
+                         target_height=self.target_height, force_resolution=self.force_resolution)
+        fresh.requested_interval = active.requested_interval
+        fresh.process_manifest()
+        def identity(manifest):
+            return (manifest.video_stream.stream_id, manifest.video_stream.height,
+                    manifest.audio_stream.stream_id, manifest.segment_duration,
+                    manifest.total_number_of_data_segments, manifest.segment_templates)
+        if identity(active) != identity(fresh):
+            self.fragment_integrity_stop.set()
+            raise FragmentIntegrityError("Manifest refresh changed the selected representation or timing")
+        active.base_stream_url = fresh.base_stream_url
+        active.delivery_metadata = fresh.delivery_metadata
+
     def _scrape_movie_info(self) -> Movie:
         """Scrapes movie information from the input URL."""
         self.logger.info("Scraping movie info")
@@ -811,6 +853,7 @@ class Downloader:
 
     def _download_streams(self, scraped_movie: Movie) -> None:
         """Download movie streams concurrently"""
+        self.fragment_integrity_stop.clear()
         if self.proxy and self.proxy_metadata_only:
             # disable proxies in session
             self.session.proxies = None
@@ -995,6 +1038,7 @@ class Downloader:
                     for idx, stream in enumerate(streams)
                 }
                 failures = []
+                fatal = None
                 for future in as_completed(futures):
                     stream = futures[future]
                     try:
@@ -1002,6 +1046,10 @@ class Downloader:
                     except Exception as exc:
                         self.logger.error(f"Failed to download {stream.human_name} stream: {exc}")
                         failures.append(f"{stream.human_name}: {exc}")
+                        if isinstance(exc, (FragmentIntegrityError, PreviewAccessError, UnsupportedManifestError)):
+                            fatal = exc
+                if fatal is not None:
+                    raise fatal
                 if failures:
                     raise RuntimeError("Required AEBN stream downloads failed: " + "; ".join(failures))
 
@@ -1064,10 +1112,14 @@ class Downloader:
             refresher_thread = Thread(target=_bar_refresher, daemon=True)
             refresher_thread.start()
 
+        stop_download = self.fragment_integrity_stop
+
         def download_task(segment_num: int, max_retries: int = 30) -> int | None:
             nonlocal last_part_save
             retries = 0
             while retries <= max_retries:
+                if stop_download.is_set():
+                    return None
                 try:
                     self._download_segment(stream, download_bar, segment_number=segment_num)
 
@@ -1077,12 +1129,19 @@ class Downloader:
                         last_part_save = time.time()
 
                     return segment_num
+                except FragmentIntegrityError as exc:
+                    self.logger.error(f"Invalid {stream.human_name} fragment {segment_num}: {exc}")
+                    stop_download.set()
+                    raise
                 except Exception as exc:
                     last_error = exc
                     if self.manifest_lock.acquire(blocking=False):
                         try:
-                            self.manifest.process_manifest()
+                            self._refresh_manifest_locked()
                             self.logger.debug(f"Manifest refreshed by segment {segment_num} (attempt {retries + 1})")
+                        except (FragmentIntegrityError, PreviewAccessError, UnsupportedManifestError):
+                            stop_download.set()
+                            raise
                         finally:
                             self.manifest_lock.release()
                     else:
@@ -1094,6 +1153,7 @@ class Downloader:
                         return None
 
         failed_segments = []
+        fatal_errors = []
         try:
             with ThreadPoolExecutor(max_workers=self.threads) as executor:
                 futures = {executor.submit(download_task, i): i for i in segments_to_download}
@@ -1105,6 +1165,10 @@ class Downloader:
                     except Exception as exc:
                         self.logger.error(f"Unexpected error downloading segment {segment_number}: {exc}")
                         failed_segments.append(segment_number)
+                        if isinstance(exc, (FragmentIntegrityError, PreviewAccessError, UnsupportedManifestError)):
+                            fatal_errors.append(exc)
+            if fatal_errors:
+                raise fatal_errors[0]
             if failed_segments:
                 raise RuntimeError(f"{stream.human_name} stream missing required segments after retries: {failed_segments}")
             self._validate_downloaded_stream_timeline(stream, segment_range)
@@ -1146,33 +1210,70 @@ class Downloader:
         try:
             utils.validate_fragment_timeline(ordered)
         except ValueError as exc:
-            raise ValueError(f"{stream.human_name} fragment timeline is invalid: {exc}") from exc
+            self.fragment_integrity_stop.set()
+            raise FragmentIntegrityError(f"{stream.human_name} fragment timeline is invalid: {exc}") from exc
 
     def _download_segment(self, stream: MediaStream, download_bar: tqdm, segment_number: int | None = None) -> None:
         """Download and save stream segment"""
+        with self.manifest_lock:
+            stream_id = stream.stream_id
+            base_stream_url = self.manifest.base_stream_url
+            template = getattr(self.manifest, "segment_templates", {}).get(stream.media_type)
         if isinstance(segment_number, int):
-            segment_name = f"{stream.media_type}_{stream.stream_id}_{segment_number}"
+            segment_name = f"{stream.media_type}_{stream_id}_{segment_number}"
         else:
-            segment_name = f"{stream.media_type}i_{stream.stream_id}"
+            segment_name = f"{stream.media_type}i_{stream_id}"
 
-        segment_url = f"{self.manifest.base_stream_url}/{segment_name}.mp4d"
+        segment_url = f"{base_stream_url}/{segment_name}.mp4d"
         segment_path = os.path.join(self.movie_work_dir, f"{segment_name}.mp4")
+
+        def check_identity(path: str) -> None:
+            if not template:
+                return
+            if segment_number is None:
+                info = utils.mp4_init_track_info(path)
+                if info is None:
+                    raise FragmentIntegrityError(f"Initialization track metadata is unavailable: {segment_name}")
+                stream.track_info = info
+                return
+            try:
+                identity = utils.mp4_fragment_identity(path)
+                utils.validate_fragment_identity(identity, stream.track_info, template, segment_number)
+                with self.fragment_identity_lock:
+                    sequences = self.fragment_sequences.setdefault((stream.media_type, stream.stream_id), {})
+                    sequence = identity["sequence_number"]
+                    if any(index != segment_number and value == sequence for index, value in sequences.items()):
+                        raise ValueError(f"Duplicate fragment sequence number {sequence}")
+                    sequences[segment_number] = sequence
+            except ValueError as exc:
+                raise FragmentIntegrityError(f"{segment_name}: {exc}") from exc
+
         if os.path.exists(segment_path) and not self.overwrite_existing_files:
             is_init = segment_number is None
             if utils.is_mp4_fragment(segment_path, initialization=is_init):
-                self.logger.debug(f"Validated {segment_name} on disk")
-                if segment_path not in stream.downloaded_segments:
-                    stream.downloaded_segments.append(segment_path)
-                    segment_size = os.path.getsize(segment_path)
-                    stream.downloaded_bytes += segment_size
-                    if download_bar:
-                        download_bar.update(segment_size)
-                return
+                try:
+                    check_identity(segment_path)
+                except FragmentIntegrityError:
+                    with self.segment_state_lock:
+                        if segment_path in stream.downloaded_segments:
+                            stream.downloaded_segments.remove(segment_path)
+                            stream.downloaded_bytes -= os.path.getsize(segment_path)
+                else:
+                    self.logger.debug(f"Validated {segment_name} on disk")
+                    with self.segment_state_lock:
+                        if segment_path not in stream.downloaded_segments:
+                            stream.downloaded_segments.append(segment_path)
+                            segment_size = os.path.getsize(segment_path)
+                            stream.downloaded_bytes += segment_size
+                            if download_bar:
+                                download_bar.update(segment_size)
+                    return
             self.logger.warning(f"Rejecting malformed retained fragment {segment_path}; it will be refetched")
 
         response = self.session.get(segment_url)
 
         if response.ok:
+            old_size = os.path.getsize(segment_path) if os.path.isfile(segment_path) else 0
             temp_path = f"{segment_path}.tmp-{uuid.uuid4().hex}"
             try:
                 with open(temp_path, "xb") as f:
@@ -1181,17 +1282,19 @@ class Downloader:
                     os.fsync(f.fileno())
                 if not utils.is_mp4_fragment(temp_path, initialization=segment_number is None):
                     raise ValueError(f"Downloaded {segment_name} is not a complete MP4 fragment")
+                check_identity(temp_path)
                 os.replace(temp_path, segment_path)
             finally:
                 if os.path.exists(temp_path):
                     os.remove(temp_path)
             segment_size = os.path.getsize(segment_path)
-            if segment_path not in stream.downloaded_segments:
-                stream.downloaded_segments.append(segment_path)
-            stream.downloaded_bytes = sum(
-                os.path.getsize(path) for path in stream.downloaded_segments if os.path.isfile(path)
-            )
-            stream.network_downloaded_bytes += segment_size
+            with self.segment_state_lock:
+                if segment_path not in stream.downloaded_segments:
+                    stream.downloaded_segments.append(segment_path)
+                    stream.downloaded_bytes += segment_size
+                else:
+                    stream.downloaded_bytes += segment_size - old_size
+                stream.network_downloaded_bytes += segment_size
             if stream.total_size == 0 and segment_number is not None:
                 stream.total_size = segment_size * self.manifest.total_number_of_data_segments
                 if download_bar:

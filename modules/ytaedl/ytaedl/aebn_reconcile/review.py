@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Callable
 
 from .store import ReconciliationStore
+from .verifier import VERIFICATION_CONTRACT
 
 
 def approval_fingerprint(store: ReconciliationStore, candidate_id: int) -> str:
@@ -106,8 +107,9 @@ def decide_candidate(store: ReconciliationStore, candidate_id: int, decision: st
                     raise ValueError(f"replacement output is not a separate regular file for scene {replacement['scene_id']}")
                 verification = json.loads(replacement["verification_json"] or "{}")
                 coverage = verification.get("av_coverage", {}).get("streams", {})
-                if (verification.get("verification_contract") != 2
-                        or not {"video", "audio"}.issubset(coverage)):
+                if (verification.get("verification_contract") != VERIFICATION_CONTRACT
+                        or not {"video", "audio"}.issubset(coverage)
+                        or not verification.get("av_coverage", {}).get("video_continuity")):
                     raise ValueError(f"replacement scene {replacement['scene_id']} lacks current audio/video verification evidence")
                 if verification.get("size_bytes") is not None:
                     if (verification["size_bytes"] != output_stat.st_size

@@ -24,6 +24,7 @@ class MediaStream:
     downloaded_bytes: int = 0
     network_downloaded_bytes: int = 0
     optional_missing_segments: list[int] = field(default_factory=list)
+    track_info: dict | None = None
 
 
 @dataclass

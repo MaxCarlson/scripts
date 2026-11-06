@@ -27,12 +27,26 @@ def _probe(duration: float) -> dict:
     return {
         "duration": duration,
         "video": True,
+        "video_continuity": {"packet_count": max(1000, int(duration * 25)), "invalid_packets": 0,
+                             "dts_regressions": 0, "max_pts_gap_s": 0.04, "max_dts_gap_s": 0.04,
+                             "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0},
         "streams": {
             kind: {"duration": duration, "timestamp_span": duration, "packet_count": 100,
                    "first_pts": 0.0, "last_pts": duration, "time_base": "1/1000"}
             for kind in ("video", "audio")
         },
     }
+
+
+def test_reconciliation_rejects_internal_video_gap():
+    from ytaedl.aebn_reconcile.verifier import _validate_av_coverage
+    facts = _probe(700)
+    facts["video_continuity"] = {"packet_count": 1000, "invalid_packets": 0, "dts_regressions": 0,
+                                 "max_pts_gap_s": 100, "max_dts_gap_s": 100,
+                                 "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0}
+    result = _validate_av_coverage(facts, 700)
+    assert result["valid"] is False
+    assert any("gap" in error for error in result["errors"])
 
 
 @pytest.mark.skipif(not shutil.which("ffmpeg") or not shutil.which("ffprobe"), reason="FFmpeg tools unavailable")
@@ -414,7 +428,7 @@ def test_reconciliation_rejects_two_second_video_with_full_scene_audio(tmp_path)
         assert scene["status"] == "scene_invalid"
         assert "video" in scene["status_detail"]
         evidence = json.loads(job["verification_json"])
-        assert evidence["verification_contract"] == 2
+        assert evidence["verification_contract"] == 3
         assert job["verification_status"] == "failed"
 
 
@@ -462,6 +476,13 @@ def test_approval_requires_every_linked_scene_verified_and_binds_evidence(tmp_pa
         candidate = store.list_candidates()[0]
         assert candidate["eligible"]
         assert candidate["approval"] == "approved"
+        job = store.list_jobs()[0]
+        old_evidence = json.loads(job["verification_json"])
+        old_evidence["verification_contract"] = 2
+        store.execute("UPDATE download_jobs SET verification_json=? WHERE movie_key=? AND scene_id=?",
+                      (json.dumps(old_evidence), job["movie_key"], job["scene_id"]))
+        with pytest.raises(ValueError, match="current audio/video verification"):
+            decide_candidate(store, candidate_id, "approve", confirm_identity=True)
 
 
 def test_delete_requires_recorded_approval_and_quarantines_synthetic_original(tmp_path):

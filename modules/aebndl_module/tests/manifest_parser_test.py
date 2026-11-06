@@ -143,6 +143,15 @@ def test_cli_access_limitation_returns_nonretryable_status(monkeypatch):
     assert cli.main(["https://straight.aebn.com/straight/movies/123/title"]) == 77
 
 
+def test_cli_fragment_integrity_returns_nonretryable_status(monkeypatch):
+    from aebn_dl import cli
+    from aebn_dl.downloader import FragmentIntegrityError
+    def fail(args):
+        raise FragmentIntegrityError("invalid fragment")
+    monkeypatch.setattr(cli, "download_movie", fail)
+    assert cli.main(["https://straight.aebn.com/straight/movies/123/title"]) == 78
+
+
 def test_scene_preview_rejected_before_media_and_emits_access_event(capsys):
     import json
     from types import SimpleNamespace
@@ -184,3 +193,64 @@ def test_scene_manifest_uses_one_consistent_timeline(monkeypatch):
     dl._process_manifest(movie)
     assert calls == [1.0]
     assert (scene.start_segment, scene.end_segment) == (5, 15)
+
+
+def test_manifest_retains_dash_template_offsets_for_fragment_validation(monkeypatch):
+    manifest = Manifest("https://straight.aebn.com/straight/movies/123/title", 453, _FakeSession(), 480)
+    monkeypatch.setattr(manifest, "_find_best_good_audio_stream", lambda streams: "audio")
+    xml = b'''<MPD><Period>
+      <AdaptationSet mimeType="video/mp4"><SegmentTemplate timescale="1000000" duration="2000000.0"
+        presentationTimeOffset="4000000" startNumber="2"/><Representation id="v" height="480"/></AdaptationSet>
+      <AdaptationSet mimeType="audio/mp4"><SegmentTemplate timescale="1000000" duration="2000000.0"
+        presentationTimeOffset="4000000" startNumber="2"/></AdaptationSet>
+      </Period></MPD>'''
+    manifest.parse_content(xml)
+    assert manifest.segment_templates["v"] == {"timescale": "1000000", "duration": "2000000.0",
+                                                "presentation_time_offset": "4000000", "start_number": "2"}
+    assert manifest.segment_templates["a"] == manifest.segment_templates["v"]
+
+
+@pytest.mark.parametrize("audio_template", [
+    '<SegmentTemplate timescale="1" duration="2"><SegmentTimeline><S t="0" d="2"/></SegmentTimeline></SegmentTemplate>',
+    '',
+])
+def test_unsupported_templates_fail_before_audio_probe(monkeypatch, audio_template):
+    from aebn_dl.manifest_parser import UnsupportedManifestError
+    manifest = Manifest("https://straight.aebn.com/straight/movies/123/title", 453, _FakeSession(), 480)
+    monkeypatch.setattr(manifest, "_find_best_good_audio_stream", lambda streams: pytest.fail("must not fetch audio"))
+    xml = f'''<MPD><Period>
+      <AdaptationSet mimeType="video/mp4"><SegmentTemplate timescale="1" duration="2"/>
+        <Representation id="v" height="480"/></AdaptationSet>
+      <AdaptationSet mimeType="audio/mp4">{audio_template}</AdaptationSet>
+      </Period></MPD>'''
+    with pytest.raises(UnsupportedManifestError):
+        manifest.parse_content(xml)
+
+
+def test_audio_probe_stays_within_requested_scene(monkeypatch):
+    from aebn_dl import manifest_parser
+    requested = []
+    class Session:
+        def get(self, url):
+            requested.append(url)
+            return type("Response", (), {"content": b"fixture"})()
+    manifest = Manifest("https://straight.aebn.com/straight/movies/123/title", 453, Session())
+    manifest.base_stream_url = "https://fixture.invalid"
+    manifest.segment_duration = 2
+    manifest.total_number_of_data_segments = 227
+    manifest.requested_interval = (10, 30)
+    monkeypatch.setattr(manifest_parser.utils, "is_valid_media", lambda content: True)
+    assert manifest._find_best_good_audio_stream([("rep", 480)]) == "rep"
+    assert requested[-1].endswith("/a_rep_10.mp4d")
+
+
+def test_scene_with_boundary_segments_outside_window_fails_before_audio_probe(monkeypatch):
+    manifest = Manifest("https://straight.aebn.com/straight/movies/123/title", 453, _FakeSession(), 480)
+    manifest.delivery_metadata = {"startSeconds": 5, "endSeconds": 35}
+    manifest.requested_interval = (5, 35)
+    monkeypatch.setattr(manifest, "_find_best_good_audio_stream", lambda streams: pytest.fail("must not fetch audio"))
+    xml = b'''<MPD><Period><AdaptationSet mimeType="video/mp4">
+      <SegmentTemplate timescale="1" duration="2"/><Representation id="v" height="480"/>
+      </AdaptationSet></Period></MPD>'''
+    with pytest.raises(ValueError, match="(?i)(preview|access|delivery)"):
+        manifest.parse_content(xml)
