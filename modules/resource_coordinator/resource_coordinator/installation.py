@@ -289,8 +289,13 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
 class WindowsStartupTaskBackend:
     """Manage only the named RC tasks, using the built-in ScheduledTasks module."""
 
-    def __init__(self, *, powershell: Optional[str] = None):
+    def __init__(self, *, powershell: Optional[str] = None, managed_root: Optional[Path] = None,
+                 interactive_user: Optional[str] = None):
         self.powershell = powershell or shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
+        self.managed_root = (managed_root or (Path.home() / ".resource_coordinator")).resolve()
+        default_user = os.environ.get("USERDOMAIN", "")
+        username = os.environ.get("USERNAME") or getpass.getuser()
+        self.interactive_user = interactive_user or (f"{default_user}\\{username}" if default_user else username)
 
     @staticmethod
     def _admin() -> bool:
@@ -301,8 +306,12 @@ class WindowsStartupTaskBackend:
         except (AttributeError, OSError):
             return False
 
-    @staticmethod
-    def _script(payload: Dict[str, Any]) -> str:
+    def _script(self, payload: Dict[str, Any]) -> str:
+        payload = {
+            **payload,
+            "managed_root": str(self.managed_root),
+            "interactive_user": self.interactive_user,
+        }
         payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
         return _TASKS_POWERSHELL.replace("__PAYLOAD__", payload_b64)
 
@@ -316,15 +325,14 @@ class WindowsStartupTaskBackend:
             if non_interactive:
                 raise ElevationRequired("Administrator approval is required; rerun interactively or elevate PowerShell.")
             wrapper = (
-                "$encoded=$env:RC_ELEVATED_SCRIPT; "
-                "$p=Start-Process -FilePath $env:RC_POWERSHELL -Verb RunAs "
+                f"$encoded='{encoded}'; $exe={_ps_single_quote(self.powershell)}; "
+                "$p=Start-Process -FilePath $exe -Verb RunAs -WindowStyle Hidden "
                 "-ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -Wait -PassThru; "
                 "exit $p.ExitCode"
             )
             wrapper_encoded = base64.b64encode(wrapper.encode("utf-16le")).decode("ascii")
             result = subprocess.run(
                 [self.powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", wrapper_encoded],
-                env={**os.environ, "RC_ELEVATED_SCRIPT": encoded, "RC_POWERSHELL": self.powershell},
                 capture_output=True, text=True, timeout=120,
             )
         else:
@@ -915,11 +923,24 @@ $ErrorActionPreference = 'Stop'
 $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
 $marker = 'ResourceCoordinator:Managed:v1'
 $taskNames = @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon','KRig-Live-Output-Viewer')
+$managedRoot = [IO.Path]::GetFullPath([string]$payload.managed_root)
+$rootPrefix = $managedRoot.TrimEnd('\') + '\'
+function Get-RcSid([string]$identity) {
+  if ($identity -match '^S-1-\d+(?:-\d+)+$') { return $identity }
+  return ([Security.Principal.NTAccount]$identity).Translate([Security.Principal.SecurityIdentifier]).Value
+}
+$interactiveSid = Get-RcSid ([string]$payload.interactive_user)
 function Test-RcOwned($task) {
     if (-not $task) { return $false }
-    if ($task.Description -like "*$marker*") { return $true }
-    $root = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
-    $rootPrefix = $root.TrimEnd('\') + '\'
+    try {
+      if ($task.TaskName -eq 'ResourceCoordinator-KRig-Boot') {
+        $taskSid = Get-RcSid ([string]$task.Principal.UserId)
+        if ($taskSid -ne 'S-1-5-18') { return $false }
+      } else {
+        $taskSid = Get-RcSid ([string]$task.Principal.UserId)
+        if ($taskSid -ne $interactiveSid) { return $false }
+      }
+    } catch { return $false }
     foreach ($action in $task.Actions) {
       if ($task.TaskName -in @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon') -and $action.Arguments -match '-File\s+"?(.+?start-coordinator(?:-managed)?\.ps1)') {
         try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
@@ -949,16 +970,12 @@ switch ($payload.operation) {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
       $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
       $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
-      $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
-      $expectedPrefix = $expectedRoot.TrimEnd('\') + '\'
-      if (-not $launcher.StartsWith($expectedPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'start-coordinator-managed.ps1') { throw 'Launcher path is outside the managed installation.' }
+      if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'start-coordinator-managed.ps1') { throw 'Launcher path is outside the managed installation.' }
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed launcher is missing.' }
     } elseif ($payload.operation -eq 'install_viewer') {
       $name='KRig-Live-Output-Viewer'
       $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
-      $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
-      $expectedPrefix = $expectedRoot.TrimEnd('\') + '\'
-      if (-not $launcher.StartsWith($expectedPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'view-krig-managed.ps1') { throw 'Viewer path is outside the managed installation.' }
+      if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'view-krig-managed.ps1') { throw 'Viewer path is outside the managed installation.' }
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed viewer is missing.' }
     } else { $name=[string]$payload.task_name }
     if ($name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
@@ -973,7 +990,7 @@ switch ($payload.operation) {
           $trigger = New-ScheduledTaskTrigger -AtStartup
           $principal = New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest
         } else {
-          $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+          $user = [string]$payload.interactive_user
           $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
           $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Highest
         }
@@ -987,7 +1004,7 @@ switch ($payload.operation) {
         $pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
         if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
         $action = New-ScheduledTaskAction -Execute $pwsh -Argument ("-NoLogo -NoProfile -WindowStyle Normal -File `"$launcher`"")
-        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $user = [string]$payload.interactive_user
         $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
         $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
@@ -1004,14 +1021,14 @@ switch ($payload.operation) {
 '''
 
 
-def _powershell_backend() -> WindowsStartupTaskBackend:
-    return WindowsStartupTaskBackend()
+def _powershell_backend(paths: InstallationPaths) -> WindowsStartupTaskBackend:
+    return WindowsStartupTaskBackend(managed_root=paths.root)
 
 
 def handle_installation_command(args: Any) -> int:
     """CLI entry point; command execution remains separate from core logic for testing."""
     paths = InstallationPaths.discover()
-    backend = _powershell_backend()
+    backend = _powershell_backend(paths)
     manager = ManagedInstallation(paths, backend)
     if args.command == "setup":
         result = manager.setup(

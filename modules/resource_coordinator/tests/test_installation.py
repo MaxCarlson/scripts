@@ -1,3 +1,6 @@
+import base64
+import json
+import re
 from pathlib import Path
 
 import pytest
@@ -9,6 +12,7 @@ from resource_coordinator.installation import (
     StartupTask,
     TASK_MARKER,
     _clean_powershell_error,
+    WindowsStartupTaskBackend,
 )
 
 
@@ -102,6 +106,20 @@ def test_powershell_clixml_error_is_rendered_as_actionable_plain_text():
     )
 
     assert message == "Access to a CIM resource was not available to the client."
+
+
+def test_task_helper_uses_calling_users_root_and_identity_instead_of_elevated_profile(tmp_path):
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / ".resource_coordinator",
+                                        interactive_user="EXAMPLE\\mcarls")
+    script = backend._script({"operation": "status"})
+
+    assert "Get-RcSid ([string]$payload.interactive_user)" in script
+    assert "$managedRoot = [IO.Path]::GetFullPath([string]$payload.managed_root)" in script
+    assert "$env:USERPROFILE" not in script
+    encoded_payload = re.search(r"FromBase64String\('([A-Za-z0-9+/=]+)'\)", script).group(1)
+    payload = json.loads(base64.b64decode(encoded_payload))
+    assert payload["managed_root"] == str((tmp_path / ".resource_coordinator").resolve())
+    assert payload["interactive_user"] == "EXAMPLE\\mcarls"
 
 
 def test_setup_preserves_existing_configuration_and_is_idempotent(tmp_path, monkeypatch):
