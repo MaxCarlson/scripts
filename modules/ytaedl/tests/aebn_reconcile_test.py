@@ -609,5 +609,3 @@ def test_same_title_different_movie_ids_remain_ambiguous(tmp_path):
         assert {candidate["classification"] for candidate in candidates} == {"unknown"}
         with pytest.raises(ValueError, match="multiple AEBN movie IDs"):
             decide_candidate(store, candidates[0]["candidate_id"], "approve", confirm_identity=True)
-
-\n
