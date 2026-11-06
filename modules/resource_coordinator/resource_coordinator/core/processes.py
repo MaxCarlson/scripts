@@ -542,6 +542,7 @@ class ProcessSupervisor:
         self.was_stopped_by_coordinator = False
         self._stopped_external = False
         self.is_manual_override = False
+        self.manual_override_until: Optional[float] = None
         self.consecutive_unexpected_exits = 0
         self._has_started = bool(getattr(backend, "running", False))
         self._lock = asyncio.Lock()
@@ -577,6 +578,7 @@ class ProcessSupervisor:
                 lifecycle_owner=owner,
                 was_stopped_by_coordinator=self.was_stopped_by_coordinator,
                 is_manual_override=self.is_manual_override,
+                manual_override_until=self.manual_override_until,
             )
         except Exception as exc:
             logger.error("Failed persisting process state for '%s': %s", self.name, exc)
@@ -607,9 +609,16 @@ class ProcessSupervisor:
             self._has_started = True
         return info
 
-    def set_manual_override(self, paused: bool, *, persist: bool = True) -> None:
-        """Set or clear manual pause override."""
+    def set_manual_override(
+        self,
+        paused: bool,
+        *,
+        persist: bool = True,
+        until: Optional[float] = None,
+    ) -> None:
+        """Set an indefinite or deadline-bound manual pause override."""
         self.is_manual_override = paused
+        self.manual_override_until = until if paused else None
         if paused:
             self.consecutive_unexpected_exits = 0
         if persist:

@@ -19,10 +19,20 @@ def test_cli_parse_args_status():
 
 
 def test_cli_parse_args_miner():
-    args = parse_args(["miner", "pause", "-t", "5.0"])
+    args = parse_args(["miner", "pause", "-d", "2h"])
     assert args.command == "miner"
     assert args.miner_command == "pause"
-    assert args.timeout == 5.0
+    assert args.duration == "2h"
+
+
+def test_cli_miner_control_commands_and_duration_parser():
+    from resource_coordinator.cli import _parse_hold_duration
+
+    assert _parse_hold_duration("2h") == 7200
+    assert _parse_hold_duration("30m") == 1800
+    for action in ("start", "stop", "resume"):
+        args = parse_args(["miner", action])
+        assert args.miner_command == action
 
 
 def test_cli_config_show(capsys):

@@ -97,6 +97,7 @@ class PersistedProcess:
     lifecycle_owner: str = ProcessLifecycleOwner.UNMANAGED.value
     was_stopped_by_coordinator: bool = False
     is_manual_override: bool = False
+    manual_override_until: Optional[float] = None
     last_stopped_at: Optional[float] = None
     last_started_at: Optional[float] = None
 
@@ -113,6 +114,9 @@ class PersistedProcess:
             raise ValueError("Restart ownership must be a boolean")
         if type(data.get("is_manual_override", False)) is not bool:
             raise ValueError("Manual override must be a boolean")
+        hold_until = data.get("manual_override_until")
+        if hold_until is not None and not _valid_time(hold_until):
+            raise ValueError("Invalid manual override deadline")
         pid, created = data.get("pid"), data.get("create_time")
         if pid is not None and (type(pid) is not int or pid <= 0 or not _valid_time(created)):
             raise ValueError("A persisted PID requires a valid exact creation time")
@@ -389,6 +393,7 @@ class StateCodec:
         lifecycle_owner: str,
         was_stopped_by_coordinator: bool,
         is_manual_override: Optional[bool] = None,
+        manual_override_until: Optional[float] = None,
     ) -> CoordinatorState:
         target = Path(target_path)
         now = time.time()
@@ -400,6 +405,7 @@ class StateCodec:
         proc.was_stopped_by_coordinator = was_stopped_by_coordinator
         if is_manual_override is not None:
             proc.is_manual_override = is_manual_override
+        proc.manual_override_until = manual_override_until if proc.is_manual_override else None
         if was_stopped_by_coordinator:
             proc.last_stopped_at = now
         elif pid is not None:
@@ -568,7 +574,7 @@ async def reconcile_startup_state(
             sup = supervisors[proc_name]
             sup.was_stopped_by_coordinator = proc.was_stopped_by_coordinator
             if proc.is_manual_override:
-                sup.set_manual_override(True, persist=False)
+                sup.set_manual_override(True, persist=False, until=proc.manual_override_until)
         outcome = reconcile_pid(proc.pid, proc.create_time, query_fn)
         audit["reconciled_processes"][proc_name] = {
             "pid": proc.pid,

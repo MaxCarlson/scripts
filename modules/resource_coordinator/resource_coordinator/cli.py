@@ -12,6 +12,7 @@ import logging
 import os
 import sys
 import time
+import re
 from typing import List, Optional
 
 import httpx
@@ -187,15 +188,17 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     miner_parser = subparsers.add_parser("miner", help="Manage miner workload and overrides.")
     miner_sub = miner_parser.add_subparsers(dest="miner_command", required=True)
     m_status = miner_sub.add_parser("status", help="Get current miner process status.")
-    m_status.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    m_status.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
     m_status.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
 
-    m_pause = miner_sub.add_parser("pause", help="Pause mining process and set manual override.")
-    m_pause.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
-    m_pause.add_argument("-t", "--timeout", type=float, default=10.0, help="Stop timeout in seconds.")
-
-    m_resume = miner_sub.add_parser("resume", help="Clear manual override and resume mining.")
-    m_resume.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    for action in ("start", "stop", "resume", "pause"):
+        miner_action = miner_sub.add_parser(action, help=f"Coordinator-mediated miner {action}.")
+        miner_action.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
+        miner_action.add_argument("-r", "--reason", default=f"Operator requested miner {action}.")
+        miner_action.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
+        if action == "pause":
+            miner_action.add_argument("-d", "--duration", required=True, help="Hold duration, e.g. 2h, 30m, or 90s.")
+    m_status.add_argument("-c", "--config", default=None, help=argparse.SUPPRESS)
 
     # diagnose
     diag_parser = subparsers.add_parser(
@@ -422,50 +425,54 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _async_miner_status(config_path: Optional[str], as_json: bool) -> int:
-    config = load_config(config_path)
-    system = build_system(config)
-    if not system.miner_adapter:
-        print("No miner process configured.", file=sys.stderr)
-        return 1
-    st = await system.miner_adapter.status()
-    override = system.miner_adapter.is_manual_override
-    data = {**st.to_dict(), "manual_override": override}
-    if as_json:
-        print(json.dumps(data, indent=2))
+def _parse_hold_duration(value: str) -> float:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(s|m|h|d)\s*", value, re.IGNORECASE)
+    if not match:
+        raise argparse.ArgumentTypeError("Duration must use s, m, h, or d (for example 2h).")
+    return float(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2).lower()]
+
+
+async def _async_miner_command(args: argparse.Namespace) -> int:
+    if args.miner_command == "status":
+        method, endpoint, payload = "GET", "status", None
     else:
-        print(f"Miner Name:       {st.name}")
-        print(f"State:            {st.state.value}")
-        print(f"PID:              {st.pid}")
-        print(f"Coordinator owned:{st.is_coordinator_owned}")
-        print(f"Manual override:  {override}")
-    return 0
-
-
-async def _async_miner_pause(config_path: Optional[str], timeout: float) -> int:
-    print(
-        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
-        file=sys.stderr,
-    )
-    return 1
-
-
-async def _async_miner_resume(config_path: Optional[str]) -> int:
-    print(
-        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
-        file=sys.stderr,
-    )
-    return 1
+        method, endpoint = "POST", args.miner_command
+        payload = {"operator": getpass.getuser(), "reason": args.reason}
+        if args.miner_command == "pause":
+            try:
+                payload["duration_seconds"] = _parse_hold_duration(args.duration)
+            except argparse.ArgumentTypeError as exc:
+                print(str(exc), file=sys.stderr)
+                return 2
+    headers = {}
+    if method == "POST":
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
+            "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
+        )
+        if not token:
+            print("Miner control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+            return 1
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(method, f"{args.url.rstrip('/')}/_coordinator/miner/{endpoint}",
+                                            headers=headers, json=payload)
+        data = response.json()
+        if response.status_code != 200:
+            print(f"Miner {args.miner_command} failed ({response.status_code}): {data}", file=sys.stderr)
+            return 1
+        if args.miner_command == "status" or getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Miner control: {data.get('status')}")
+        return 0
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
 
 
 def cmd_miner(args: argparse.Namespace) -> int:
-    if args.miner_command == "status":
-        return asyncio.run(_async_miner_status(args.config, args.json))
-    elif args.miner_command == "pause":
-        return asyncio.run(_async_miner_pause(args.config, args.timeout))
-    elif args.miner_command == "resume":
-        return asyncio.run(_async_miner_resume(args.config))
-    return 0
+    return asyncio.run(_async_miner_command(args))
 
 
 def cmd_recover(args: argparse.Namespace) -> int:

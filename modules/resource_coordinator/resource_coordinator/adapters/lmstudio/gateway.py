@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import secrets
 import uuid
@@ -228,6 +229,8 @@ class LMStudioGateway:
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
+            Route("/_coordinator/miner/status", self.handle_coordinator_miner_status, methods=["GET"]),
+            Route("/_coordinator/miner/{action:str}", self.handle_coordinator_miner_control, methods=["POST"]),
             Route("/_coordinator/restart", self.handle_coordinator_restart, methods=["POST"]),
             Route("/_coordinator/shutdown", self.handle_coordinator_shutdown, methods=["POST"]),
             Route("/_coordinator/recover", self.handle_coordinator_recover, methods=["POST"]),
@@ -236,6 +239,48 @@ class LMStudioGateway:
         ]
         app = Starlette(routes=routes, lifespan=lifespan)
         return app
+
+    def _operator_authorized(self, request: Request) -> bool:
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        supplied = request.headers.get("authorization", "")
+        return bool(token and secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()))
+
+    async def handle_coordinator_miner_status(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        result = await service.manual_miner_control("status")
+        return JSONResponse(result, status_code=200 if result.get("status") == "ok" else 503)
+
+    async def handle_coordinator_miner_control(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        if not service.is_ready:
+            return JSONResponse({"error": "Coordinator is not ready"}, status_code=409)
+        action = request.path_params.get("action")
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A control request body is required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        duration = payload.get("duration_seconds")
+        if action == "pause" and (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
+            return JSONResponse({"error": "pause requires a finite positive duration_seconds"}, status_code=400)
+        result = await service.manual_miner_control(action, duration_seconds=duration)
+        status_code = 200 if result.get("status") in {"running", "paused", "stopped"} else 409
+        if result.get("status") == "invalid":
+            status_code = 400
+        if result.get("status") == "unavailable":
+            status_code = 503
+        result.update(operator=payload["operator"], reason=payload["reason"])
+        return JSONResponse(result, status_code=status_code)
 
     async def _request_lifecycle_action(self, request: Request, *, restart: bool) -> Response:
         service = self.admission_controller.service
@@ -262,8 +307,6 @@ class LMStudioGateway:
         async def drain_and_exit() -> None:
             await service.stop(reason=f"{payload['operator']}: {payload['reason']}")
             if service.state != ServiceState.STOPPED:
-                return
-            if restart and service.system.lease_mgr.restarts_blocked:
                 return
             request.app.state.restart_requested = restart
             callback = getattr(request.app.state, "request_server_exit", None)

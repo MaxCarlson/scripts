@@ -3,9 +3,10 @@ Unit tests for CoordinatorService lifecycle, readiness state machine, preflight,
 """
 
 import asyncio
+import httpx
 import pytest
 
-from resource_coordinator.config import CoordinatorConfig, build_system
+from resource_coordinator.config import CoordinatorConfig, ProcessConfig, PolicyConfig, ServiceConfig, build_system
 from resource_coordinator.core.service import CoordinatorService, ServiceState
 
 
@@ -30,6 +31,67 @@ async def test_service_startup_to_ready(minimal_system):
     assert service.state == ServiceState.READY
     assert service.is_ready is True
     assert service.failure_reason is None
+
+
+@pytest.mark.asyncio
+async def test_manual_miner_pause_persists_deadline_and_resumes_safely(tmp_path):
+    from resource_coordinator.core.durable_state import StateCodec
+    from resource_coordinator.core.processes import ProcessState
+
+    state_path = tmp_path / "coordinator.json"
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(state_path)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(
+            name="stop", trigger_event="lmstudio.inference_requested", target_process="krig",
+            resource="gpu.inference", cooldown_seconds=0.01,
+        )],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True, first_boot=True,
+                                 supervision_poll_interval=0.01)
+    assert await service.start()
+    result = await service.manual_miner_control("pause", duration_seconds=0.05)
+    assert result["status"] == "paused"
+    supervisor = system.supervisors["krig"]
+    assert supervisor.is_manual_override
+    assert supervisor.manual_override_until is not None
+    assert StateCodec.load(state_path).processes["krig"].manual_override_until == supervisor.manual_override_until
+    await asyncio.sleep(0.15)
+    assert not supervisor.is_manual_override
+    assert (await supervisor.status()).state == ProcessState.RUNNING
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_manual_miner_http_control_requires_operator_token(tmp_path, monkeypatch):
+    from resource_coordinator.core.durable_state import StateCodec
+    from resource_coordinator.core.processes import ProcessState
+
+    state_path = tmp_path / "coordinator.json"
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(state_path)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="stop", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference", cooldown_seconds=0)],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True, first_boot=True)
+    assert await service.start()
+    app = system.gateway.create_app(service)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        body = {"operator": "test", "reason": "pause for maintenance", "duration_seconds": 600}
+        denied = await client.post("/_coordinator/miner/pause", json=body)
+        assert denied.status_code == 403
+        assert (await system.miner_adapter.status()).state == ProcessState.RUNNING
+        accepted = await client.post("/_coordinator/miner/pause", headers={"Authorization": "Bearer test-token"},
+                                     json=body)
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "paused"
+        persisted = StateCodec.load(state_path).processes["krig"]
+        assert persisted.is_manual_override and persisted.manual_override_until is not None
+    await service.stop()
 
 
 @pytest.mark.asyncio

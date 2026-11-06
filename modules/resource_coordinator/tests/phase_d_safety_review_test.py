@@ -438,6 +438,54 @@ def test_cli_serve_runs_real_factory_and_lifespan_offline(monkeypatch):
     assert observed == [True]
 
 
+def test_cli_serve_relaunches_only_after_supervised_clean_restart(monkeypatch):
+    from resource_coordinator.config import CoordinatorConfig
+    from resource_coordinator import cli
+
+    config = CoordinatorConfig(
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[
+            PolicyConfig(
+                name="stop",
+                trigger_event="lmstudio.inference_requested",
+                target_process="krig",
+                resource="gpu.inference",
+            )
+        ],
+    )
+    config_loads = []
+    observed_ready = []
+    monkeypatch.setattr(cli, "load_config", lambda path: config_loads.append(path) or config)
+
+    class FakeServer:
+        launches = 0
+
+        def __init__(self, server_config):
+            self.app = server_config.app
+            self.should_exit = False
+
+        def run(self):
+            FakeServer.launches += 1
+
+            async def run_app():
+                async with self.app.router.lifespan_context(self.app):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=self.app), base_url="http://gateway"
+                    ) as client:
+                        observed_ready.append((await client.get("/_coordinator/status")).json()["is_ready"])
+                    if FakeServer.launches == 1:
+                        self.app.state.restart_requested = True
+                        self.should_exit = True
+
+            asyncio.run(run_app())
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
+    assert cli.cmd_serve(cli.parse_args(["serve", "--fake-miner"])) == 0
+    assert FakeServer.launches == 2
+    assert len(config_loads) == 2
+    assert observed_ready == [True, True]
+
+
 @pytest.mark.parametrize(
     "method,path",
     [

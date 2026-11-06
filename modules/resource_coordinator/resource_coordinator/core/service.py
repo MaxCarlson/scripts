@@ -117,7 +117,8 @@ class CoordinatorService:
         # No await before all restart protections are latched. Do not acquire a
         # supervisor mutex here: startup/stop may already be waiting inside one.
         for supervisor in self.system.supervisors.values():
-            supervisor.set_manual_override(True, persist=False)
+            if not supervisor.is_manual_override:
+                supervisor.set_manual_override(True, persist=False)
         tasks = self.system.lease_mgr.block_restarts(reason)
         startup = self._startup_task
         if startup is not None and startup is not asyncio.current_task() and not startup.done():
@@ -395,6 +396,71 @@ class CoordinatorService:
             "managed_processes": list(self.system.supervisors),
         }
 
+    async def manual_miner_control(
+        self,
+        action: str,
+        *,
+        duration_seconds: Optional[float] = None,
+        timeout_seconds: float = 10.0,
+    ) -> Dict[str, Any]:
+        """Perform a miner mutation only while all GPU claims and cooldowns are clear."""
+        adapter = self.system.miner_adapter
+        state_path = getattr(self.system.config.service, "state_persistence_path", "")
+        if adapter is None:
+            return {"status": "unavailable", "reason": "No miner is configured"}
+        if action not in {"start", "stop", "resume", "pause", "status"}:
+            return {"status": "invalid", "reason": "Unsupported miner action"}
+        if action == "status":
+            info = await adapter.status()
+            return {
+                "status": "ok", "process": info.to_dict(),
+                "manual_override": adapter.is_manual_override,
+                "manual_override_until": adapter.supervisor.manual_override_until,
+            }
+        if not state_path:
+            return {"status": "unavailable", "reason": "Durable state persistence is required for manual controls"}
+        if action == "pause" and (
+            duration_seconds is None or not math.isfinite(duration_seconds) or duration_seconds <= 0
+        ):
+            return {"status": "invalid", "reason": "Pause requires a finite positive duration"}
+
+        supervisor = adapter.supervisor
+        async def mutate() -> None:
+            if not self.is_ready:
+                raise RuntimeError("Coordinator stopped admitting work")
+            if action in {"pause", "stop"}:
+                deadline = time.time() + duration_seconds if action == "pause" else None
+                supervisor.set_manual_override(True, until=deadline)
+                stopped = await adapter.pause(timeout=timeout_seconds, origin="manual")
+                verified = await adapter.status()
+                if not stopped or verified.state != ProcessState.STOPPED:
+                    supervisor.set_manual_override(False)
+                    raise RuntimeError("Miner stop was not verified; manual hold cleared")
+                result.update(status="paused" if action == "pause" else "stopped", manual_override_until=deadline)
+                return
+            if action in {"start", "resume"}:
+                supervisor.set_manual_override(False)
+                started = await adapter.resume(
+                    origin="manual", only_if_stopped_by_coordinator=(action == "resume")
+                )
+                verified = await adapter.status()
+                if not started or verified.state != ProcessState.RUNNING or not verified.is_coordinator_owned:
+                    raise RuntimeError("Coordinator-owned miner start was not verified")
+                result.update(status="running", manual_override_until=None)
+
+        result: Dict[str, Any] = {}
+        try:
+            admitted = await self.system.lease_mgr.run_if_idle(
+                "gpu.inference", mutate,
+                additionally_guarded_resources={"gpu.model_loading"},
+                check_self_cooldown=True,
+            )
+        except Exception as exc:
+            return {"status": "failed", "reason": str(exc)}
+        if not admitted:
+            return {"status": "blocked", "reason": "GPU claims, cooldown, inhibition, or safety gate is active"}
+        return result
+
     async def _run_supervision_loop(self) -> None:
         """
         Continuous supervision loop: inspects managed processes configured for restart.
@@ -405,6 +471,25 @@ class CoordinatorService:
                 await asyncio.sleep(self.supervision_poll_interval)
                 if not self.is_ready:
                     break
+
+                adapter = self.system.miner_adapter
+                if adapter is not None:
+                    supervisor = adapter.supervisor
+                    deadline = supervisor.manual_override_until
+                    if supervisor.is_manual_override and deadline is not None and deadline <= time.time():
+                        async def resume_expired_hold() -> None:
+                            supervisor.set_manual_override(False)
+                            if supervisor.was_stopped_by_coordinator:
+                                started = await adapter.resume(origin="manual_deadline")
+                                info = await adapter.status()
+                                if not started or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                                    supervisor.set_manual_override(True, until=deadline)
+                                    logger.error("Expired manual miner hold could not safely resume")
+                        await self.system.lease_mgr.run_if_idle(
+                            "gpu.inference", resume_expired_hold,
+                            additionally_guarded_resources={"gpu.model_loading"},
+                            check_self_cooldown=True,
+                        )
 
                 for policy in self.system.config.policies:
                     if not policy.restart_process:
