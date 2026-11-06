@@ -2,17 +2,18 @@
 
 ## Current Branch
 
-`codex/aebn-historical-reconciliation-20261106`
+`codex/ytaedl-priority-file-queue-20261106` in `.worktrees/ytaedl-priority-file-queue-20261106`
 
 ## Active Stage / Plan
 
-Implementing the AEBN historical download reconciliation workflow.
+Implementing thread-capped and rotating priority URL-file scheduling.
 
-* Plan: [00-implementation-plan.md](plans/20261106-aebn-historical-reconciliation/00-implementation-plan.md)
-* Status: [STATUS.md](plans/20261106-aebn-historical-reconciliation/STATUS.md)
-* Checklist: [checklist.md](plans/20261106-aebn-historical-reconciliation/checklist.md)
+* Plan: [00-implementation-plan.md](plans/20261106-priority-file-scheduling/00-implementation-plan.md)
+* Status: [STATUS.md](plans/20261106-priority-file-scheduling/STATUS.md)
 
 ## Verification and Commands
 
-* Focused test command: `pytest tests/aebn_reconcile_test.py -q` (run from `modules/ytaedl`).
-* No production scan, media download, archive update, or deletion has been performed.
+* Focused tests: `pytest tests/test_manager.py -q` and
+  `pytest tests/test_domain_index_priority.py tests/runtime_submissions_test.py tests/test_manager_pause.py -q`
+  (run from `modules/ytaedl`).
+* No media downloads or live services are used by these scheduling tests.

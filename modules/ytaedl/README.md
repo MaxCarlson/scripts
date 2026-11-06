@@ -1,4 +1,4 @@
-<!-- version: 2.17.0 -->
+<!-- version: 2.18.0 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -33,7 +33,11 @@ Important options:
 - `-H/--max-workers`: cap for worker slots, including workers added during runtime (default 16).
 - `-b/--stay-open`: keep the manager running after its queue drains so more work can be submitted.
 - `-i/--priority-files-only`: process only explicitly supplied
-  `-p/--priority-files` values, with one worker per unique URL file.
+  `-p/--priority-files` values. `-t/--threads` caps the initial workers;
+  excess files remain queued and are assigned as workers become free.
+- `-pf/--priority-file-scheduling`: in exact mode, choose `file` (finish one
+  URL file before taking another; default) or `url` (assign one URL at a time
+  and rotate across the selected files, subject to domain limits).
 - `-L/--download-root`: final destination root for per-URL-file folders.
 - `-P/--proxy-dl-location`: staging root for worker downloads.
 - `-w/--enable-mp4-watcher`: enable the MP4 watcher panel and automatic sync.
@@ -65,15 +69,22 @@ ytaedl run -i \
 
 `-i/--priority-files-only` changes the existing repeatable
 `-p/--priority-files` option from a priority hint into the complete workload.
-The manager:
+By default (`--priority-file-scheduling file`) the manager:
 
-- creates one worker per unique canonical URL-file path;
-- ignores `-t/--threads` for worker count;
+- creates at most `min(-t, unique URL files)` initial workers;
+- queues extra URL files until a worker becomes available;
 - does not scan the normal URL roots or use domain-index scheduling;
-- never assigns another URL file to those worker slots.
+- keeps each worker on its assigned file until that file is complete.
 
-Every worker takes an operating-system lock before reading or downloading
-URLs. Lock sidecars are stored under:
+Use `--priority-file-scheduling url` to assign a single URL per worker task.
+The manager rotates file priority after each assignment and uses the existing
+domain-index scheduler, domain concurrency limits, URL-file locks, and archive
+statuses. This mode builds a private in-memory index from only the selected
+files, so it does not rewrite the shared persistent domain index.
+
+In whole-file mode, each worker takes an operating-system lock before reading
+or downloading URLs. Rotating URL mode checks the same lock sidecars before
+assigning a URL from a source file. Lock sidecars are stored under:
 
 ```text
 <archive>/locks/<url-file-name>.<canonical-path-hash>.ytaedl.lock

@@ -54,6 +54,8 @@ class TestManager:
         assert args_with_priority.priority_files == ["file.txt"]
         assert parser.parse_args(["-i"]).priority_files_only is True
         assert parser.parse_args(["--priority-files-only"]).priority_files_only is True
+        assert parser.parse_args(["--priority-file-scheduling", "url"]).priority_file_scheduling == "url"
+        assert parser.parse_args(["-pf", "file"]).priority_file_scheduling == "file"
         assert parser.parse_args(["-H", "8", "-b"]).max_workers == 8
         assert parser.parse_args(["-b"]).stay_open is True
 
@@ -116,7 +118,7 @@ class TestManager:
             assert manager.run_main(["-i", "-p", str(missing)]) == 2
         popen.assert_not_called()
 
-    def test_priority_files_only_launches_one_worker_per_unique_file(self, tmp_path):
+    def test_priority_files_only_caps_workers_and_queues_overflow(self, tmp_path):
         first = tmp_path / "first.txt"
         second = tmp_path / "second.txt"
         first.write_text("https://example.com/first\n", encoding="utf-8")
@@ -125,12 +127,33 @@ class TestManager:
         archive_dir = tmp_path / "archive"
         media_dir = tmp_path / "media"
 
+        active_processes = 0
+        max_active_processes = 0
+
         def make_process(*args, **kwargs):
-            process = MagicMock()
-            process.poll.return_value = 0
-            process.stdout = iter([])
-            process.wait.return_value = 0
-            return process
+            nonlocal active_processes, max_active_processes
+            active_processes += 1
+            max_active_processes = max(max_active_processes, active_processes)
+
+            class Process:
+                stdout = iter([])
+                _counted_exit = False
+
+                def poll(self):
+                    nonlocal active_processes
+                    if not self._counted_exit:
+                        self._counted_exit = True
+                        active_processes -= 1
+                    return 0
+
+                def wait(self, timeout=None):
+                    nonlocal active_processes
+                    if not self._counted_exit:
+                        self._counted_exit = True
+                        active_processes -= 1
+                    return 0
+
+            return Process()
 
         argv = [
             "-i",
@@ -141,7 +164,7 @@ class TestManager:
             "-p",
             str(first),
             "-t",
-            "9",
+            "1",
             "-g",
             str(log_dir),
             "-a",
@@ -157,6 +180,7 @@ class TestManager:
                             assert manager.run_main(argv) == 0
 
         assert popen.call_count == 2
+        assert max_active_processes == 1
         commands = [call.args[0] for call in popen.call_args_list]
         assigned = {Path(command[command.index("-f") + 1]).resolve() for command in commands}
         assert assigned == {first.resolve(), second.resolve()}
@@ -169,6 +193,107 @@ class TestManager:
         }
         assert lock_dirs == {(archive_dir / "locks").resolve()}
         scan.assert_not_called()
+
+    def test_priority_url_scheduling_rotates_selected_files(self):
+        ordered = deque(["a.txt", "b.txt", "c.txt"])
+        a, b, c = (str(Path(name).resolve()) for name in ("a.txt", "b.txt", "c.txt"))
+        assert manager._priority_file_rankings(ordered) == {a: 0, b: 1, c: 2}
+
+        manager._rotate_priority_file(ordered, "a.txt")
+        assert list(ordered) == ["b.txt", "c.txt", "a.txt"]
+        assert manager._priority_file_rankings(ordered) == {b: 0, c: 1, a: 2}
+
+    def test_priority_url_scheduling_takes_one_url_from_each_file_in_rotation(self, tmp_path):
+        first = tmp_path / "first list.txt"
+        second = tmp_path / "second list.txt"
+        first.write_text("https://one.example/a1\nhttps://one.example/a2\n", encoding="utf-8")
+        second.write_text("https://two.example/b1\nhttps://two.example/b2\n", encoding="utf-8")
+        ordered = deque([first, second])
+        index = manager.DomainIndex.build([first, second])
+        selected = []
+
+        for _ in range(4):
+            path_ranks = manager._priority_file_rankings(ordered)
+            file_ranks = {
+                file_id: path_ranks[str(Path(path).resolve())]
+                for file_id, path in index._file_map.items()
+            }
+            entry = index.pick_url({}, 2, file_ranks, prefer_partial=False)
+            assert entry is not None
+            selected.append(Path(entry.file_path).name)
+            manager._rotate_priority_file(ordered, entry.file_path)
+            index.mark_finished(entry.url, "downloaded")
+
+        assert selected == [first.name, second.name, first.name, second.name]
+
+    def test_priority_url_mode_starts_thread_capped_workers_from_selected_files(self, tmp_path):
+        files = []
+        for name, domain in (("first list.txt", "one.example"), ("second list.txt", "straight.aebn.com"), ("queued list.txt", "three.example")):
+            path = tmp_path / name
+            path.write_text(f"https://{domain}/a#scene-1171754\nhttps://{domain}/b\n", encoding="utf-8")
+            files.append(path)
+        log_dir = tmp_path / "logs"
+        archive_dir = tmp_path / "archive"
+        media_dir = tmp_path / "media"
+
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "-i", "-pf", "url", "-t", "2", "-D", "1",
+            *[item for path in files for item in ("-p", str(path))],
+            "-g", str(log_dir), "-a", str(archive_dir), "-L", str(media_dir),
+        ]
+        with patch("subprocess.Popen", return_value=process) as popen:
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    with patch("time.sleep", side_effect=KeyboardInterrupt):
+                        with patch.object(manager, "_kill_process_tree"):
+                            assert manager.run_main(argv) == 0
+
+        commands = [call.args[0] for call in popen.call_args_list]
+        assert len(commands) == 2
+        assigned = [
+            Path(command[command.index("-f") + 1]).read_text(encoding="utf-8").strip()
+            for command in commands
+        ]
+        assert assigned == [
+            "https://one.example/a#scene-1171754",
+            "https://straight.aebn.com/a#scene-1171754",
+        ]
+        assert not (archive_dir / "domain_index.json").exists()
+
+    def test_priority_url_mode_respects_domain_concurrency_limit(self, tmp_path):
+        files = []
+        for name, video in (("first.txt", "a"), ("second.txt", "b")):
+            path = tmp_path / name
+            path.write_text(f"https://same.example/{video}\n", encoding="utf-8")
+            files.append(path)
+        process = MagicMock()
+        process.poll.return_value = None
+        process.stdout = iter([])
+        process.wait.return_value = 0
+        argv = [
+            "-i", "-pf", "url", "-t", "2", "-D", "1",
+            *[item for path in files for item in ("-p", str(path))],
+            "-g", str(tmp_path / "logs"), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+
+        with patch("subprocess.Popen", return_value=process) as popen:
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    with patch("time.sleep", side_effect=KeyboardInterrupt):
+                        with patch.object(manager, "_kill_process_tree"):
+                            assert manager.run_main(argv) == 0
+
+        assert popen.call_count == 1
+
+    def test_nonpositive_threads_rejected_before_worker_launch(self):
+        with patch("subprocess.Popen") as popen:
+            assert manager.run_main(["-t", "0"]) == 2
+        popen.assert_not_called()
 
     def test_prepare_log_window(self):
         logs = [f"line {i}" for i in range(6)]
@@ -338,7 +463,7 @@ class TestManager:
         source_file = tmp_path / "manual list with spaces.txt"
         source_file.write_text("https://file.example/retained#scene-1303589\n", encoding="utf-8")
         submitted_lines = [*submitted, str(source_file)]
-        keys = deque(["i", *"\r".join(submitted_lines), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *"\r".join(submitted_lines), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -395,7 +520,7 @@ class TestManager:
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
         submitted = ["https://same.example/a", "https://same.example/b"]
-        keys = deque(["i", *"\r".join(submitted), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *"\r".join(submitted), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -444,7 +569,7 @@ class TestManager:
         source_file = tmp_path / "submitted scenes.txt"
         submitted = ["https://one.example/a#scene-1171754", "https://two.example/b#scene-1303590"]
         source_file.write_text("\n".join(submitted) + "\n", encoding="utf-8")
-        keys = deque(["i", *str(source_file), "\x13", "2", "2", "\r", "q", "y"])
+        keys = deque(["i", *str(source_file), "\t", "2", "2", "\r", "q", "y"])
 
         class FakeMsvcrt:
             LK_NBLCK = 1
@@ -495,7 +620,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        keys = deque(["i", *"missing URL file.txt", "\x13", "\x1b", "q", "y"])
+        keys = deque(["i", *"missing URL file.txt", "\t", "\x1b", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod
@@ -535,7 +660,7 @@ class TestManager:
         log_dir = tmp_path / "logs"
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
-        keys = deque(["i", *"https://runtime.example/a#scene-1171754", "\x13", "2", "1", "\r", "q", "y"])
+        keys = deque(["i", *"https://runtime.example/a#scene-1171754", "\t", "2", "1", "\r", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod
@@ -576,7 +701,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        modal_keys = deque(["i", *"https://queued.example/a#scene-1171754", "\x13", "1"])
+        modal_keys = deque(["i", *"https://queued.example/a#scene-1171754", "\t", "1"])
         quit_keys = deque(["q", "y"])
 
         class FakeMsvcrt:
@@ -634,7 +759,7 @@ class TestManager:
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
         (stars_dir / "initial.txt").write_text("https://initial.example/item\n", encoding="utf-8")
-        keys = deque(["i", *"https://queued.example/a", "\x13", "2", "1", "\r", "q", "y"])
+        keys = deque(["i", *"https://queued.example/a", "\t", "2", "1", "\r", "q", "y"])
         reader_done = Event()
 
         def worker_events():
@@ -680,7 +805,7 @@ class TestManager:
         log_dir = tmp_path / "logs"
         for directory in (stars_dir, ae_dir, media_dir, log_dir):
             directory.mkdir()
-        keys = deque(["i", *"https://queued.example/empty#scene-1171754", "\x13", "1", "q", "y"])
+        keys = deque(["i", *"https://queued.example/empty#scene-1171754", "\t", "1", "q", "y"])
 
         class FakeMsvcrt:
             @staticmethod

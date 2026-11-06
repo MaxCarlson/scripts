@@ -30,7 +30,7 @@ import types
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Deque, Dict, List, Optional, Sequence, TextIO
+from typing import Deque, Dict, Iterable, List, Optional, Sequence, TextIO
 from urllib.parse import urlparse
 
 # Import EnforcedArgumentParser with fallback
@@ -1218,6 +1218,21 @@ def _resolve_explicit_urlfiles(values: Optional[Sequence[str]]) -> List[Path]:
     return resolved
 
 
+def _priority_file_rankings(paths: Iterable[Path | str]) -> Dict[str, int]:
+    """Return URL-file path priorities in the order currently queued."""
+    return {str(Path(path).resolve()): rank for rank, path in enumerate(paths)}
+
+
+def _rotate_priority_file(paths: Deque[Path | str], selected: Path | str) -> None:
+    """Move a URL file that supplied one URL to the back of the rotation."""
+    selected_key = str(Path(selected).resolve())
+    for index, path in enumerate(paths):
+        if str(Path(path).resolve()) == selected_key:
+            del paths[index]
+            paths.append(path)
+            return
+
+
 def _start_worker(
     slot: int,
     urlfile: Path,
@@ -1366,7 +1381,10 @@ def _add_run_core_args(dest) -> None:
     dest.add_argument("-p", "--priority-files", action="append",
                       help="URL files to prioritize (can be specified multiple times)")
     dest.add_argument("-i", "--priority-files-only", action="store_true",
-                      help="Only process -p/--priority-files; create one worker per unique URL file")
+                      help="Only process -p/--priority-files; use at most -t workers and queue remaining files")
+    dest.add_argument("-pf", "--priority-file-scheduling", choices=("file", "url"), default="file",
+                      help=("With -i: 'file' finishes each URL file before taking another; "
+                            "'url' assigns one URL at a time and rotates across selected files"))
     dest.add_argument("-P", "--proxy-dl-location", default=None,
                       help="Staging root for downloads (per-urlfile subfolder); duplicates checked in -L roots")
     dest.add_argument("-s", "--stars-dir",
@@ -1659,11 +1677,20 @@ def run_main(
         argv_list = list(argv) if argv is not None else sys.argv[1:]
         args = make_parser().parse_args(argv_list)
     exact_file_mode = bool(getattr(args, "priority_files_only", False))
+    priority_url_mode = exact_file_mode and getattr(args, "priority_file_scheduling", "file") == "url"
+    file_level_exact_mode = exact_file_mode and not priority_url_mode
     max_workers = int(getattr(args, "max_workers", 16))
+    if int(getattr(args, "threads", 0)) < 1:
+        print("[ERROR] --threads must be a positive integer", file=sys.stderr)
+        return 2
     if max_workers < 1:
         print("[ERROR] --max-workers must be a positive integer", file=sys.stderr)
         return 2
+    if getattr(args, "priority_file_scheduling", "file") == "url" and not exact_file_mode:
+        print("[ERROR] --priority-file-scheduling url requires -i/--priority-files-only", file=sys.stderr)
+        return 2
     exact_urlfiles: List[Path] = []
+    overflow_urlfiles: List[Path] = []
     if exact_file_mode:
         if not args.priority_files:
             print(
@@ -1680,7 +1707,8 @@ def run_main(
             print("[ERROR] No unique URL files were specified", file=sys.stderr)
             return 2
         requested_threads = args.threads
-        args.threads = len(exact_urlfiles)
+        args.threads = min(requested_threads, len(exact_urlfiles))
+        overflow_urlfiles = exact_urlfiles[args.threads :]
     max_workers = max(max_workers, int(args.threads))
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
@@ -1739,6 +1767,7 @@ def run_main(
         str(Path(item.value).resolve()): item for item in submission_queue.pending
     }
     exact_runtime_files: Deque[Path] = deque(Path(item.value).resolve() for item in submission_queue.pending)
+    priority_url_file_order: Deque[Path] = deque(exact_urlfiles)
 
     ytdlp_grid_db: Optional[Path] = None
     if args.yt_dlp_grid_search:
@@ -1904,80 +1933,94 @@ def run_main(
     domain_index_path: Optional[Path] = None
     domain_index_lock: Optional[DomainIndexFileLock] = None
 
-    _udl_active = not exact_file_mode and (
+    _udl_active = priority_url_mode or (not exact_file_mode and (
         (isinstance(getattr(args, "unique_domain_dls", -1), int) and args.unique_domain_dls >= 1)
         or bool(args.yt_dlp_grid_search)
-    )
+    ))
     if _udl_active:
         # Gather ALL URL files from roots (including finished ones) for a complete index
-        _all_url_files: List[Path] = []
-        for root in roots:
-            if root.exists():
-                _all_url_files.extend(sorted(root.rglob("*.txt")))
+        _all_url_files: List[Path] = list(exact_urlfiles) if priority_url_mode else []
+        if not priority_url_mode:
+            for root in roots:
+                if root.exists():
+                    _all_url_files.extend(sorted(root.rglob("*.txt")))
 
-        # domain_index.json always lives alongside the archive files
-        domain_index_path = archive_dir / "domain_index.json"
-        # Auto-migrate from old ./logs/ location on first run after upgrade
-        _old_idx = log_dir / "domain_index.json"
-        if not domain_index_path.exists() and _old_idx.exists():
-            try:
-                import shutil as _shutil
-                _shutil.copy2(str(_old_idx), str(domain_index_path))
-                mlog.info(f"Migrated domain index from {_old_idx} to {domain_index_path}")
-            except Exception as _mig_err:
-                mlog.warning(f"Could not auto-migrate domain index: {_mig_err}")
-        domain_index_lock = DomainIndexFileLock(domain_index_path)
-        try:
-            domain_index_lock.acquire()
-        except RuntimeError as exc:
-            mlog.error(str(exc))
-            return 2
-        _idx_log: List[str] = []
-        _should_rebuild = getattr(args, "rebuild_domain_index", False)
-
-        if not _should_rebuild and domain_index_path.exists():
-            try:
-                mlog.info(f"Loading domain index from {domain_index_path} …")
-                _loaded = DomainIndex.load(domain_index_path)
-                if _loaded.is_stale():
-                    mlog.info("Domain index is stale (URL files changed) – rebuilding.")
-                    _should_rebuild = True
-                else:
-                    domain_index = _loaded
-                    mlog.info(f"Domain index loaded: {domain_index.summary_line()}")
-            except Exception as exc:
-                mlog.error(f"Failed to load domain index: {exc} – rebuilding.")
-                _should_rebuild = True
-
-        if domain_index is None or _should_rebuild:
-            if _should_rebuild and domain_index_path and domain_index_path.exists():
+        # The explicit priority-file URL mode uses a private in-memory index so
+        # it cannot mutate the manager's shared persistent domain index.
+        domain_index_path = None if priority_url_mode else archive_dir / "domain_index.json"
+        if not priority_url_mode:
+            # Auto-migrate from old ./logs/ location on first run after upgrade
+            _old_idx = log_dir / "domain_index.json"
+            if not domain_index_path.exists() and _old_idx.exists():
                 try:
-                    domain_index_path.unlink()
-                    mlog.info(f"-M: deleted existing domain index {domain_index_path} for clean rebuild")
-                except Exception as _e:
-                    mlog.error(f"-M: failed to delete {domain_index_path}: {_e}")
-            mlog.info(f"Building domain index from {len(_all_url_files)} URL file(s) …")
-            finished_urls = _load_archive_finished_urls(archive_dir)
-            if finished_urls:
-                mlog.info(f"Seeding domain index from archive: {len(finished_urls)} finished URL(s)")
+                    import shutil as _shutil
+                    _shutil.copy2(str(_old_idx), str(domain_index_path))
+                    mlog.info(f"Migrated domain index from {_old_idx} to {domain_index_path}")
+                except Exception as _mig_err:
+                    mlog.warning(f"Could not auto-migrate domain index: {_mig_err}")
+        _ephemeral_priority_index = priority_url_mode
+        if _ephemeral_priority_index:
+            domain_index = DomainIndex.build(
+                exact_urlfiles,
+                finished_urls=_load_archive_finished_urls(archive_dir),
+            )
+            mlog.info(
+                f"Built selected-file URL index for {len(exact_urlfiles)} priority URL file(s): "
+                f"{domain_index.summary_line()}"
+            )
+        else:
+            domain_index_lock = DomainIndexFileLock(domain_index_path)
+            try:
+                domain_index_lock.acquire()
+            except RuntimeError as exc:
+                mlog.error(str(exc))
+                return 2
+            _idx_log: List[str] = []
+            _should_rebuild = getattr(args, "rebuild_domain_index", False)
 
-            with LoadingIndicator("Building domain index") as startup_loading:
-                def _report_domain_index_progress(message: str) -> None:
-                    startup_loading.update(message)
-                    mlog.info(f"  {message}")
+            if not _should_rebuild and domain_index_path.exists():
+                try:
+                    mlog.info(f"Loading domain index from {domain_index_path} …")
+                    _loaded = DomainIndex.load(domain_index_path)
+                    if _loaded.is_stale():
+                        mlog.info("Domain index is stale (URL files changed) – rebuilding.")
+                        _should_rebuild = True
+                    else:
+                        domain_index = _loaded
+                        mlog.info(f"Domain index loaded: {domain_index.summary_line()}")
+                except Exception as exc:
+                    mlog.error(f"Failed to load domain index: {exc} – rebuilding.")
+                    _should_rebuild = True
 
-                domain_index = DomainIndex.build(
-                    _all_url_files,
-                    finished_urls=finished_urls,
-                    progress_cb=_report_domain_index_progress,
-                )
-                startup_loading.update("Saving domain index")
-                domain_index.save(domain_index_path)
-            mlog.info(f"Domain index saved to {domain_index_path}")
+            if domain_index is None or _should_rebuild:
+                if _should_rebuild and domain_index_path and domain_index_path.exists():
+                    try:
+                        domain_index_path.unlink()
+                        mlog.info(f"-M: deleted existing domain index {domain_index_path} for clean rebuild")
+                    except Exception as _e:
+                        mlog.error(f"-M: failed to delete {domain_index_path}: {_e}")
+                mlog.info(f"Building domain index from {len(_all_url_files)} URL file(s) …")
+                finished_urls = _load_archive_finished_urls(archive_dir)
+                if finished_urls:
+                    mlog.info(f"Seeding domain index from archive: {len(finished_urls)} finished URL(s)")
 
-        # Register save path for auto-save on updates
-        domain_index.save_debounced(domain_index_path, delay_s=5.0)
-        mlog.info(f"Domain index ready: {domain_index.summary_line()}")
+                with LoadingIndicator("Building domain index") as startup_loading:
+                    def _report_domain_index_progress(message: str) -> None:
+                        startup_loading.update(message)
+                        mlog.info(f"  {message}")
+
+                    domain_index = DomainIndex.build(
+                        _all_url_files,
+                        finished_urls=finished_urls,
+                        progress_cb=_report_domain_index_progress,
+                    )
+                    startup_loading.update("Saving domain index")
+                    domain_index.save(domain_index_path)
+                mlog.info(f"Domain index saved to {domain_index_path}")
+
+            # Register save path for auto-save on updates
+            domain_index.save_debounced(domain_index_path, delay_s=5.0)
+            mlog.info(f"Domain index ready: {domain_index.summary_line()}")
 
         # Partial promotion: scan _partial/ dirs and mark resumable URLs as partial
         # so pick_url() schedules them ahead of non-partial URLs (--prioritize-partial).
@@ -2005,6 +2048,9 @@ def run_main(
                 if not urls or all(domain_index.is_finished(url) for url in urls):
                     submission_queue.complete(item)
                     submission_by_path.pop(str(Path(item.value).resolve()), None)
+            if priority_url_mode:
+                for pending_path in reversed(pending_paths):
+                    priority_url_file_order.appendleft(pending_path)
             mlog.info(f"Restored {len(pending_paths)} pending manual submission(s), {added} URL(s) indexed")
         elif exact_file_mode:
             pass  # exact-mode assignments consume this durable queue directly
@@ -2021,7 +2067,9 @@ def run_main(
     auto_block_reason: Optional[str] = None
 
     workers: List[WorkerState] = [WorkerState(slot=i) for i in range(1, args.threads + 1)]
-    if exact_file_mode:
+    if file_level_exact_mode:
+        for urlfile in overflow_urlfiles:
+            exact_runtime_files.append(urlfile)
         for worker, urlfile in zip(workers, exact_urlfiles):
             worker.requested_urlfile = urlfile
     stop = threading.Event()
@@ -2034,13 +2082,16 @@ def run_main(
     if exact_file_mode:
         if requested_threads != len(exact_urlfiles):
             mlog.info(
-                f"Exact URL-file mode overrides threads={requested_threads}; "
-                f"creating {len(exact_urlfiles)} worker(s)"
+                f"Exact URL-file mode uses threads={args.threads} from requested threads={requested_threads}; "
+                f"{len(overflow_urlfiles)} remaining URL file(s) queued"
             )
-        mlog.info("Exact URL-file mode enabled; root scans and domain-index scheduling are disabled")
+        if priority_url_mode:
+            mlog.info("Priority URL mode enabled; selected URL files rotate one URL at a time")
+        else:
+            mlog.info("Exact URL-file mode enabled; root scans and persistent domain-index scheduling are disabled")
     mlog.info(f"Regular pool: {len(pool)} files | Priority pool: {len(priority_pool)} files")
 
-    url_rankings: Dict[str, int] = {}
+    url_rankings: Dict[str, int] = _priority_file_rankings(priority_url_file_order) if priority_url_mode else {}
     url_order_paths: List[Path] = []
     for submitted_path in submission_by_path:
         url_rankings[submitted_path] = -1_000_000_000
@@ -2782,6 +2833,8 @@ def run_main(
         _max_per = getattr(args, "unique_domain_dls", -1)
         if bool(args.yt_dlp_grid_search) and (not isinstance(_max_per, int) or _max_per < 1):
             _max_per = max(1, int(len(workers) or 1))
+        if priority_url_mode and (not isinstance(_max_per, int) or _max_per < 1):
+            _max_per = max(1, int(len(workers) or 1))
         _use_index = (
             domain_index is not None
             and isinstance(_max_per, int)
@@ -2806,12 +2859,16 @@ def run_main(
 
             # File-priority map: file_id -> rank (lower = better)
             fp_map: Dict[int, int] = {}
+            priority_ranks = _priority_file_rankings(priority_url_file_order) if priority_url_mode else {}
             for fid, fpath in domain_index._file_map.items():
                 fpath_key = str(Path(fpath).resolve())
-                fp_map[fid] = -1_000_000_000 if fpath_key in submission_by_path else url_rankings.get(fpath_key, 999_999)
+                if priority_url_mode:
+                    fp_map[fid] = priority_ranks.get(fpath_key, 999_999)
+                else:
+                    fp_map[fid] = -1_000_000_000 if fpath_key in submission_by_path else url_rankings.get(fpath_key, 999_999)
 
             prefer_domains: Optional[set[str]] = None
-            if _max_per > 0:
+            if _max_per > 0 and not priority_url_mode:
                 aebn_target = min(_max_per, max(1, len(workers) // 2))
                 aebn_workers = sum(count for d, count in active_counts.items() if "aebn.com" in d)
                 if aebn_workers < aebn_target:
@@ -2837,7 +2894,9 @@ def run_main(
             scan_log: List[ScanLogEntry] = []
             entry = domain_index.pick_url(
                 active_counts, _max_per, fp_map, scan_log,
-                prefer_partial=getattr(args, "prioritize_partial", True),
+                prefer_partial=(
+                    False if priority_url_mode else getattr(args, "prioritize_partial", True)
+                ),
                 prefer_domains=prefer_domains,
                 exclude_file_ids=exclude_file_ids,
                 url_pick_mode=getattr(args, "domain_url_pick", "first"),
@@ -2855,6 +2914,11 @@ def run_main(
                           f"all domain slots filled (max={_max_per}); will retry each tick")
                     mlog.info(f"[{ws.slot:02d}] DOMAIN_WAIT no URL available (max={_max_per}/domain)")
                 return False
+
+            if priority_url_mode:
+                _rotate_priority_file(priority_url_file_order, entry.file_path)
+                url_rankings.clear()
+                url_rankings.update(_priority_file_rankings(priority_url_file_order))
 
             # Write a single-URL temp file so downloader.py sees a normal URL file
             tmp_dir = Path(log_dir) / "tmp_urls"
@@ -2988,7 +3052,7 @@ def run_main(
             except Exception:
                 finished = set()
 
-        if exact_file_mode:
+        if file_level_exact_mode:
             if ws.requested_urlfile is not None:
                 urlfile = ws.requested_urlfile
                 ws.requested_urlfile = None
@@ -3043,7 +3107,7 @@ def run_main(
                     return False
                 mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
 
-        if not exact_file_mode:
+        if not file_level_exact_mode:
             manual_item = submission_by_path.get(str(urlfile.resolve()))
             if manual_item is not None:
                 ws.runtime_submission = submission_queue.claim(manual_item.submission_id)
@@ -3057,7 +3121,7 @@ def run_main(
         active.add(str(urlfile.resolve()))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
-        if not exact_file_mode and archive_dir and ws.url_count > 0:
+        if not file_level_exact_mode and archive_dir and ws.url_count > 0:
             prefix = "ae" if ("ae-stars" in str(urlfile.parent)) else "yt"
             arch = archive_dir / f"{prefix}-{urlfile.stem}.txt"
             if arch.exists():
@@ -3147,12 +3211,17 @@ def run_main(
             url_rankings[str(path)] = -1_000_000_000
         if domain_index is not None:
             domain_index.add_files(paths, finished_urls=_load_archive_finished_urls(archive_dir))
+            if priority_url_mode:
+                for path in reversed(paths):
+                    priority_url_file_order.appendleft(path)
+                url_rankings.clear()
+                url_rankings.update(_priority_file_rankings(priority_url_file_order))
             for item, path in zip(accepted, paths):
                 indexed_urls = domain_index.file_urls(path)
                 if not indexed_urls or all(domain_index.is_finished(url) for url in indexed_urls):
                     submission_queue.complete(item)
                     submission_by_path.pop(str(path), None)
-        elif exact_file_mode:
+        elif file_level_exact_mode:
             exact_runtime_files.extend(paths)
         else:
             priority_pool = list(dict.fromkeys([*paths, *priority_pool]))
@@ -3271,9 +3340,9 @@ def run_main(
                 submission_by_path.pop(str(Path(manual_item.value).resolve()), None)
             else:
                 submission_queue.restore(manual_item)
-                if exact_file_mode and ws.urlfile:
+                if file_level_exact_mode and ws.urlfile:
                     exact_runtime_files.appendleft(ws.urlfile)
-                elif not exact_file_mode and not domain_index and ws.urlfile:
+                elif not file_level_exact_mode and not domain_index and ws.urlfile:
                     priority_pool.insert(0, ws.urlfile)
         mlog.info(f"[{ws.slot:02d}] REQUEUE finished={finished} reason={reason}")
         ws.proc = None
@@ -3696,7 +3765,7 @@ def run_main(
                                         controlled_quit_sentinel,
                                         canonical_dir_override=w.canonical_dir,
                                         archive_source_file=w.original_urlfile,
-                                        wait_for_url_file_lock=exact_file_mode,
+                                        wait_for_url_file_lock=file_level_exact_mode,
                                         manager_pid=os.getpid(),
                                         url_file_lock_dir=url_file_lock_dir,
                                     )
@@ -3756,7 +3825,7 @@ def run_main(
                                         controlled_quit_sentinel,
                                         canonical_dir_override=w.canonical_dir,
                                         archive_source_file=w.original_urlfile,
-                                        wait_for_url_file_lock=exact_file_mode,
+                                        wait_for_url_file_lock=file_level_exact_mode,
                                         manager_pid=os.getpid(),
                                         url_file_lock_dir=url_file_lock_dir,
                                     )
@@ -3774,12 +3843,12 @@ def run_main(
                 ):
                     if (time.time() - ws.assign_t0) > args.time_limit:
                         _requeue(ws, finished=False, reason="time_limit")
-                        if exact_file_mode:
+                        if file_level_exact_mode:
                             ws.assignment_terminal = not exact_runtime_files and not submission_queue.pending
                             if not ws.assignment_terminal and not paused and not controlled_quit:
                                 _assign(ws)
                         _refresh_url_scan("time_limit")
-                        if not exact_file_mode and not paused and not controlled_quit:
+                        if not file_level_exact_mode and not paused and not controlled_quit:
                             _assign(ws)
                         continue
                 # exit
@@ -3788,12 +3857,12 @@ def run_main(
                     ws.rc = rc
                     finished = rc == 0 and not ws.controlled_stopped
                     _requeue(ws, finished=finished, reason=f"exit rc={rc}")
-                    if exact_file_mode:
+                    if file_level_exact_mode:
                         ws.assignment_terminal = not exact_runtime_files and not submission_queue.pending
                         if not ws.assignment_terminal and not paused and not controlled_quit:
                             _assign(ws)
                     # Assign a new one if available (only if not paused)
-                    if not exact_file_mode and not paused and not controlled_quit:
+                    if not file_level_exact_mode and not paused and not controlled_quit:
                         _assign(ws)
 
             # Build frame lines and redraw whole screen
@@ -4026,10 +4095,12 @@ def run_main(
             else:
                 # Downloads panel
                 active_workers = sum(1 for w in workers if w.proc)
-                if exact_file_mode:
-                    total_available = sum(
+                if file_level_exact_mode:
+                    total_available = len(exact_runtime_files) + sum(
                         1 for worker in workers if not worker.assignment_terminal and worker.proc is None
                     )
+                elif priority_url_mode and domain_index is not None:
+                    total_available = domain_index.total_queued
                 else:
                     current_regular, current_priority = _gather_from_roots(
                         roots, finished_log, args.priority_files
@@ -4541,7 +4612,18 @@ def run_main(
             if _controlled_quit_complete(controlled_quit, workers):
                 break
 
-            if exact_file_mode and all(worker.assignment_terminal for worker in workers) and not args.stay_open:
+            if file_level_exact_mode and all(worker.assignment_terminal for worker in workers) and not args.stay_open:
+                break
+
+            if (
+                priority_url_mode
+                and domain_index is not None
+                and all(worker.proc is None for worker in workers)
+                and domain_index.total_queued == 0
+                and not submission_queue.pending_count
+                and not submission_queue.in_progress_count
+                and not args.stay_open
+            ):
                 break
 
             # If all workers idle and both pools empty, stop
