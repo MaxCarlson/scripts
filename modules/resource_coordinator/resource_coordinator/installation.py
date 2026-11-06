@@ -228,33 +228,110 @@ def _listener_failure_reason(result: Dict[str, Any], host: str, port: int) -> st
     return f"{summary}" + (f" Evidence: {details}" if details else "")
 
 
-def _legacy_task_matches_listener(task: Optional[StartupTask], listener: Dict[str, Any],
-                                  paths: InstallationPaths) -> bool:
-    """Correlate a legacy runtime with its owned task and executable launcher."""
-    if not task or not task.owned or not _task_identity_valid(asdict(task)):
-        return False
-    executable = listener.get("executable")
-    if not executable or os.path.normcase(os.path.realpath(executable)) != os.path.normcase(
-            os.path.realpath(paths.python)):
-        return False
-    match = re.search(r"-File\s+\"([^\"]+\.ps1)\"", task.action, flags=re.IGNORECASE)
+def _same_path(left: Any, right: Any) -> bool:
+    return bool(left and right) and os.path.normcase(os.path.realpath(str(left))) == os.path.normcase(os.path.realpath(str(right)))
+
+
+def _option_value(args: List[str], option: str) -> Optional[str]:
+    matches = [i for i, value in enumerate(args) if value == option]
+    return args[matches[0] + 1] if len(matches) == 1 and matches[0] + 1 < len(args) else None
+
+
+def verify_legacy_evidence(evidence: Dict[str, Any], miner_name: Optional[str]) -> Dict[str, Any]:
+    """Verify a captured task/process chain without exposing process arguments."""
+    def fail(reason: str) -> Dict[str, Any]:
+        return {"verified": False, "shutdown_verified": False, "reason": reason}
+
+    engines, chain, listener = evidence.get("engine_pids"), evidence.get("chain"), evidence.get("listener") or {}
+    if not isinstance(engines, list) or len(engines) != 1 or not engines[0]:
+        return fail("Expected exactly one running Scheduled Task instance with an engine PID")
+    if not isinstance(chain, list) or len(chain) < 2 or len(chain) > 8:
+        return fail("Task-to-listener process ancestry is incomplete")
+    if chain[0].get("pid") != listener.get("pid") or not _same_process_creation_time(
+            chain[0].get("create_time"), listener.get("create_time")):
+        return fail("Listener PID or creation time changed during attribution")
+    if not _same_path(chain[0].get("executable"), listener.get("executable")):
+        return fail("Listener executable changed during attribution")
+    if chain[-1].get("pid") != engines[0]:
+        return fail("Listener ancestry does not reach the running task engine")
+    for child, parent in zip(chain, chain[1:]):
+        if child.get("ppid") != parent.get("pid") or not isinstance(child.get("create_time"), (int, float)) or not isinstance(parent.get("create_time"), (int, float)) or not math.isfinite(child["create_time"]) or not math.isfinite(parent["create_time"]) or parent["create_time"] > child["create_time"]:
+            return fail("Process ancestry or creation times are inconsistent")
+    engine_args = chain[-1].get("cmdline") or []
+    if not _same_path(_option_value([str(x).lower() if str(x).lower() == '-file' else str(x) for x in engine_args], "-file"), evidence.get("launcher")):
+        return fail("Task engine command does not identify the expected launcher")
+    for process in chain[:-1]:
+        args = process.get("cmdline") or []
+        executable = Path(str(process.get("executable") or "")).name.casefold()
+        if not re.fullmatch(r"python(?:w|[0-9.]*)?\.exe", executable):
+            return fail("Service ancestry contains an unexpected executable")
+        if not isinstance(args, list) or len(args) < 4 or args[1:4] != ["-m", "resource_coordinator.cli", "serve"]:
+            return fail("Process command is not the expected Resource Coordinator service")
+        if sum(value in ("-c", "--config") for value in args) != 1:
+            return fail("Service configuration argument is missing or ambiguous")
+        config = _option_value(args, "-c") or _option_value(args, "--config")
+        if not _same_path(config, evidence.get("config")):
+            return fail("Service configuration path is missing or differs from the installed configuration")
+        if miner_name and _option_value(args, "--stop-process-on-shutdown") != miner_name:
+            return fail("Service arguments do not guarantee shutdown of the configured miner")
+    return {"verified": True, "shutdown_verified": bool(miner_name), "reason": "Task engine and service ancestry verified"}
+
+
+def _legacy_attribution(task: Optional[StartupTask], listener: Dict[str, Any], paths: InstallationPaths,
+                        miner_name: Optional[str]) -> Dict[str, Any]:
+    if not task or not task.owned or not task.enabled or not _task_identity_valid(asdict(task)):
+        return {"verified": False, "reason": "Scheduled Task ownership or principal is unverified"}
+    if ";" in task.action:
+        return {"verified": False, "reason": "Scheduled Task has ambiguous launch actions"}
+    match = re.search(r'-File\s+"([^"]+\.ps1)"|-File\s+([^\s;]+\.ps1)', task.action, re.IGNORECASE)
     if not match:
-        match = re.search(r"-File\s+([^\s;]+\.ps1)", task.action, flags=re.IGNORECASE)
-    if not match:
-        return False
-    launcher = Path(match.group(1))
+        return {"verified": False, "reason": "Scheduled Task launcher path is unavailable"}
+    launcher = Path(match.group(1) or match.group(2))
     if not launcher.is_file():
-        return False
+        return {"verified": False, "reason": "Scheduled Task launcher is unavailable"}
+    if task.name not in {TASK_NAMES["boot"], TASK_NAMES["logon"]}:
+        return {"verified": False, "reason": "Scheduled Task name is not an owned coordinator task"}
+    script = ("$ErrorActionPreference='Stop'; $s=New-Object -ComObject Schedule.Service; $s.Connect(); "
+              f"$i=$s.GetFolder('\\').GetTask('{task.name}').GetInstances(0); "
+              "@($i | ForEach-Object { [int]$_.EnginePID }) | ConvertTo-Json -Compress")
     try:
-        contents = launcher.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return False
-    return (
-        str(paths.python).casefold() in contents.casefold()
-        and "resource_coordinator.cli" in contents.casefold()
-        and "serve" in contents.casefold()
-        and str(paths.config).casefold() in contents.casefold()
-    )
+        result = subprocess.run([shutil.which("pwsh.exe") or "powershell.exe", "-NoProfile", "-NonInteractive",
+                                 "-Command", script], capture_output=True, text=True, timeout=10, check=True)
+        engines = json.loads(result.stdout or "[]")
+        engines = engines if isinstance(engines, list) else [engines]
+        if len(engines) != 1 or not engines[0]:
+            return {"verified": False, "reason": "Scheduled Task must have exactly one running instance"}
+        chain = []
+        process = psutil.Process(int(listener["pid"]))
+        for _ in range(8):
+            snapshot = {"pid": process.pid, "ppid": process.ppid(), "create_time": process.create_time(),
+                        "executable": process.exe(), "cmdline": process.cmdline()}
+            chain.append(snapshot)
+            if process.pid == engines[0]:
+                break
+            process = psutil.Process(snapshot["ppid"])
+        engine_executable = chain[-1]["executable"]
+        if not task.action.casefold().startswith((engine_executable + " ").casefold()):
+            return {"verified": False, "reason": "Task engine executable differs from the registered action"}
+        if launcher.stat().st_mtime > chain[-1]["create_time"]:
+            return {"verified": False, "reason": "Launcher was modified after the task started"}
+        verified = verify_legacy_evidence({"engine_pids": engines, "listener": listener, "chain": chain,
+                                           "config": str(paths.config), "launcher": str(launcher)}, miner_name)
+        if verified["verified"]:
+            for item in chain:
+                current = psutil.Process(item["pid"])
+                if not _same_process_creation_time(current.create_time(), item["create_time"]) or current.ppid() != item["ppid"]:
+                    return {"verified": False, "reason": "Process identity changed during attribution"}
+            repeat = subprocess.run([shutil.which("pwsh.exe") or "powershell.exe", "-NoProfile", "-NonInteractive",
+                                     "-Command", script], capture_output=True, text=True, timeout=10, check=True)
+            repeat_engines = json.loads(repeat.stdout or "[]")
+            if not isinstance(repeat_engines, list):
+                repeat_engines = [repeat_engines]
+            if repeat_engines != engines:
+                return {"verified": False, "reason": "Scheduled Task instances changed during attribution"}
+        return verified
+    except (psutil.Error, OSError, RuntimeError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        return {"verified": False, "reason": "Task instance or process details are inaccessible; run the read-only preview with sufficient Windows privileges"}
 
 
 def _exact_process_is_alive(pid: int, create_time: float) -> Optional[bool]:
@@ -830,15 +907,7 @@ class ManagedInstallation:
             blockers.append(_listener_failure_reason(listener_details, "127.0.0.1", 1235))
         elif runtime_pid is not None and runtime_pid != listener.get("pid"):
             blockers.append("HTTP runtime PID does not match the process owning port 1235")
-        elif runtime_pid is None or not runtime.get("revision"):
-            if not _legacy_task_matches_listener(task, listener, self.paths):
-                blockers.append(
-                    "Legacy runtime identity is incomplete; the listener process could not be correlated "
-                    "with the owned startup task and its launcher"
-                )
-            else:
-                runtime = {**runtime, "pid": listener.get("pid", runtime_pid), "legacy_identity": True,
-                           "legacy_task_identity_verified": True}
+        legacy_needed = listener is not None and (runtime_pid is None or not runtime.get("revision"))
         if listener and runtime_create_time is not None and not _same_process_creation_time(
                 runtime_create_time, listener["create_time"]):
             blockers.append("HTTP runtime creation time does not match the process owning port 1235")
@@ -855,6 +924,16 @@ class ManagedInstallation:
             miner_name = _configured_miner(self.paths.config)
         except Exception as exc:
             blockers.append(f"configuration or durable journal cannot be verified: {exc}")
+
+        if legacy_needed:
+            attribution = _legacy_attribution(task, listener, self.paths, miner_name)
+            runtime = {**runtime, "legacy_attribution": attribution}
+            if not attribution.get("verified"):
+                blockers.append("Legacy task attribution blocked: " + attribution.get("reason", "identity unavailable"))
+            else:
+                runtime = {**runtime, "pid": listener["pid"], "legacy_identity": True,
+                           "legacy_task_identity_verified": True,
+                           "shutdown_miner_verified_from_launcher": attribution.get("shutdown_verified", False)}
 
         if journal and journal.gaming_mode.get("state", "inactive") != "inactive":
             blockers.append(f"gaming transition is {journal.gaming_mode.get('state')}; finish it before upgrade")
@@ -873,16 +952,8 @@ class ManagedInstallation:
         if miner_running and (not miner.get("is_coordinator_owned") or not miner.get("pid") or
                               miner.get("create_time") is None):
             blockers.append("running miner ownership or exact process identity is uncertain")
-        if miner_running and not runtime.get("stop_miner_on_shutdown"):
+        if miner_running and not (runtime.get("stop_miner_on_shutdown") or runtime.get("shutdown_miner_verified_from_launcher")):
             blockers.append("running service does not confirm stop-miner-on-shutdown; refusing to risk an orphan")
-        if journal and task and miner_running and not runtime.get("stop_miner_on_shutdown"):
-            launcher_match = re.search(r"-File\s+\"?([^\";]+\.ps1)", task.action, flags=re.IGNORECASE)
-            launcher_path = Path(launcher_match.group(1)) if launcher_match else None
-            if launcher_path and launcher_path.is_file():
-                launcher_text = launcher_path.read_text(encoding="utf-8", errors="replace")
-                if "--stop-process-on-shutdown" in launcher_text and miner_name in launcher_text:
-                    blockers = [b for b in blockers if "stop-miner-on-shutdown" not in b]
-                    runtime = {**runtime, "shutdown_miner_verified_from_launcher": True}
 
         if journal:
             uncertain_requests = [

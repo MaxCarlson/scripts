@@ -15,7 +15,6 @@ from resource_coordinator.installation import (
     TASK_MARKER,
     _clean_powershell_error,
     WindowsStartupTaskBackend,
-    _legacy_task_matches_listener,
 )
 from resource_coordinator.cli import parse_args
 
@@ -99,19 +98,6 @@ def _write_legacy_launcher(paths: InstallationPaths) -> Path:
     return launcher
 
 
-def test_legacy_listener_requires_owned_task_and_matching_launcher_evidence(tmp_path):
-    paths, _ = make_paths(tmp_path)
-    launcher = _write_legacy_launcher(paths)
-    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-                       f'powershell.exe -File "{launcher}"', True)
-    identity = {"pid": 51, "create_time": 10.0, "executable": str(paths.python)}
-
-    assert _legacy_task_matches_listener(task, identity, paths)
-    assert not _legacy_task_matches_listener(
-        StartupTask(**{**task.__dict__, "owned": False}), identity, paths)
-    assert not _legacy_task_matches_listener(task, {**identity, "executable": None}, paths)
-
-
 def _write_offline_journal(paths: InstallationPaths, *, requests: str = "") -> Path:
     state_path = paths.root / "coordinator_state.json"
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -159,6 +145,7 @@ def test_upgrade_cli_defaults_to_preview_and_supports_apply_json_and_non_interac
 
 def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monkeypatch):
     import resource_coordinator.installation as installation_module
+    monkeypatch.setattr(installation_module, "_legacy_attribution", lambda task, listener, paths, miner: {"verified": bool(listener.get("executable")), "shutdown_verified": True, "reason": "listener identity unavailable"})
 
     paths, _ = make_paths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -204,7 +191,7 @@ def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monke
             {"pid": 51, "create_time": 10.0, "executable": None}))
         legacy_blocked = manager.upgrade()
         assert legacy_blocked["status"] == "blocked"
-        assert any("could not be correlated" in item for item in legacy_blocked["preflight"]["blockers"])
+        assert any("listener identity unavailable" in item for item in legacy_blocked["preflight"]["blockers"])
         assert tasks.install_calls == []
         assert tasks.start_calls == []
 
@@ -279,6 +266,7 @@ def test_upgrade_noop_when_runtime_fingerprint_and_managed_launcher_match(tmp_pa
 
 def test_upgrade_shutdown_rejection_restores_prepared_launcher_and_leaves_task_untouched(tmp_path, monkeypatch):
     import resource_coordinator.installation as installation_module
+    monkeypatch.setattr(installation_module, "_legacy_attribution", lambda task, listener, paths, miner: {"verified": bool(listener.get("executable")), "shutdown_verified": True, "reason": "listener identity unavailable"})
 
     paths, _ = make_paths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -323,6 +311,7 @@ def test_upgrade_shutdown_rejection_restores_prepared_launcher_and_leaves_task_u
 
 def test_upgrade_preserves_manual_miner_hold_while_verifying_new_runtime(tmp_path, monkeypatch):
     import resource_coordinator.installation as installation_module
+    monkeypatch.setattr(installation_module, "_legacy_attribution", lambda task, listener, paths, miner: {"verified": bool(listener.get("executable")), "shutdown_verified": True, "reason": "listener identity unavailable"})
 
     paths, _ = make_paths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -489,6 +478,7 @@ def test_interrupted_upgrade_retries_only_after_old_owner_and_lock_are_gone(tmp_
 
 def test_upgrade_never_starts_replacement_while_original_miner_pid_is_alive(tmp_path, monkeypatch):
     import resource_coordinator.installation as installation_module
+    monkeypatch.setattr(installation_module, "_legacy_attribution", lambda task, listener, paths, miner: {"verified": bool(listener.get("executable")), "shutdown_verified": True, "reason": "listener identity unavailable"})
 
     paths, _ = make_paths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)

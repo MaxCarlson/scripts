@@ -82,8 +82,12 @@ TCP table when needed. A listener without a verifiable PID and process creation
 time is a blocker; diagnostics distinguish an absent listener, ambiguous
 owners, inaccessible process data, and TCP-table enumeration failures. A legacy
 service without the startup-captured runtime revision or runtime PID must also
-match the enabled RC-owned startup task, its Python executable, and its launcher
-script before it can be upgraded.
+match a unique running RC-owned task instance, its launcher, and the verified
+process ancestry and service arguments. The Python executables may differ across
+the virtual-environment launcher and its child. Missing task or process details
+block the upgrade; run the read-only preview with sufficient Windows privileges
+if those details are inaccessible. The configured miner's shutdown argument is
+checked in the actual service process arguments.
 Preflight does not change the service or startup task.
 
 ## Configure one process
