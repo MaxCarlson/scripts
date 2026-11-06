@@ -12,6 +12,8 @@ worker rather than the coordinator, carry out your assigned task directly.
 
 ## Choose and prepare the task
 
+Use a dedicated, non-main Git worktree for handoff work by default. Honor an explicit user, task, or more-specific project instruction to work in place. Before dispatch, check the selected workspace's branch and status, and preserve unrelated changes.
+
 Good tasks include exploring a bounded set of files, a focused review, drafting
 tests or documentation, and a small edit with clear acceptance criteria. Keep tiny
 tasks in the coordinator when composing and reviewing a handoff would cost more
@@ -74,3 +76,12 @@ integration. A completed tool response does not establish that the work is corre
 If the worker cannot make progress, narrow the task or finish it locally. Preserve
 its useful evidence and report unresolved work instead of repeating blind retries.
 The coordinator remains responsible for integration and the final user response.
+
+## Complete the handoff
+
+After reviewing the worker's result and completing focused validation, the coordinator owns the final Git steps:
+
+- Review the task-only diff and stage only changes belonging to the handoff.
+- In a handoff worktree, commit the completed changes on its non-main task branch, then push that branch to its upstream. If no upstream exists and `origin` is the configured project remote, set it with `git push -u origin HEAD`. This is the default handoff completion flow; do not leave a completed commit unpushed.
+- Push each commit on a task worktree or non-main task branch immediately after creating it. Never push main automatically.
+- Skip the commit when there are no task changes. Explicit instructions to stop before committing or pushing override the default. If no configured remote is usable or a push fails, report the exact blocker and do not claim publication. Do not force-push or rewrite history to work around a push failure.
