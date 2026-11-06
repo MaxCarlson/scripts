@@ -57,6 +57,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "-m", "--startup-mode", choices=("boot", "logon"), default="logon",
         help="Authoritative coordinator startup trigger (default: logon).",
     )
+    setup_parser.add_argument("--viewer", action="store_true", help="Install the optional visible log viewer at user logon.")
 
     doctor_parser = subparsers.add_parser("doctor", help="Check installation and operational health.")
     doctor_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")

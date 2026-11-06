@@ -214,6 +214,7 @@ configured, setup returns `degraded` and names the missing mining configuration.
 ```powershell
 resource-coordinator setup
 resource-coordinator setup --apply
+resource-coordinator setup --apply --viewer
 resource-coordinator doctor --json
 resource-coordinator startup status --json
 resource-coordinator startup install -m logon --apply
@@ -225,6 +226,10 @@ resource-coordinator startup uninstall --apply
 resource-coordinator teardown
 resource-coordinator teardown --apply
 ```
+
+The optional `--viewer` opens a separate read-only PowerShell window after
+user logon. Closing it only closes the viewer; mining remains owned by the
+coordinator.
 
 For a coordinator-owned miner start, use `resource-coordinator miner start`;
 do not launch KRig directly. The service task's configured run level supplies

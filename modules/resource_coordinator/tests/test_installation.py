@@ -28,6 +28,11 @@ class MemoryTasks:
         self.items[name] = task
         return task
 
+    def install_viewer(self, launcher):
+        task = StartupTask("KRig-Live-Output-Viewer", "viewer", False, "Ready", "mcarls", "Limited", str(launcher), True)
+        self.items[task.name] = task
+        return task
+
     def set_enabled(self, task, enabled, *, non_interactive=False):
         updated = StartupTask(task.name, task.mode, enabled, "Ready", task.user_id, task.run_level, task.action, task.owned)
         self.items[task.name] = updated
@@ -161,6 +166,30 @@ def test_setup_marks_valid_miner_identity_as_applied(tmp_path, monkeypatch):
     assert result["status"] == "applied"
     assert result["miner_identity_configured"] is True
     assert result["mining_warning"] is None
+
+
+def test_setup_installs_optional_read_only_viewer_without_starting_miner(tmp_path, monkeypatch):
+    paths, template = make_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.config.write_text(
+        "version: '1.0'\nprocesses:\n  krig_miner:\n    backend: fake\n"
+        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(paths.token))
+    monkeypatch.setattr("resource_coordinator.installation.load_or_create_token", lambda: "not printed")
+    monkeypatch.setattr("resource_coordinator.installation.credential_doctor", _secure_credential_report)
+    tasks = MemoryTasks()
+    manager = ManagedInstallation(paths, tasks, template=template)
+    manager._service_status = lambda: pytest.fail("startup install must not query or launch service")
+
+    result = manager.setup(apply=True, activate=False, viewer=True)
+
+    viewer = tasks.items["KRig-Live-Output-Viewer"]
+    assert result["viewer_task"]["name"] == viewer.name
+    assert viewer.enabled is True and viewer.mode == "viewer"
+    assert paths.viewer.read_text(encoding="utf-8").startswith(f"# {TASK_MARKER}")
+    assert "miner/pause" not in paths.viewer.read_text(encoding="utf-8")
 
 
 def test_setup_refuses_to_overwrite_unmarked_managed_launcher(tmp_path, monkeypatch):

@@ -37,6 +37,8 @@ def test_cli_parse_args_self_managed_operations():
     assert applied_setup.apply is True
     assert applied_setup.json is True
     assert applied_setup.non_interactive is True
+    viewer_setup = parse_args(["setup", "--viewer"])
+    assert viewer_setup.viewer is True
 
     doctor = parse_args(["doctor", "-j"])
     assert doctor.command == "doctor"

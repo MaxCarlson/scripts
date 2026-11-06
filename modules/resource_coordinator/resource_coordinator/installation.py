@@ -103,6 +103,8 @@ class StartupTaskBackend(Protocol):
 
     def install(self, mode: str, launcher: Path, *, non_interactive: bool = False) -> StartupTask: ...
 
+    def install_viewer(self, launcher: Path) -> StartupTask: ...
+
     def set_enabled(self, task: StartupTask, enabled: bool, *, non_interactive: bool = False) -> StartupTask: ...
 
     def uninstall(self, task: StartupTask, *, non_interactive: bool = False) -> None: ...
@@ -222,6 +224,34 @@ def render_launcher(paths: InstallationPaths) -> str:
     )
 
 
+def render_viewer(paths: InstallationPaths) -> str:
+    log_path = paths.logs / "krig_miner.log"
+    return "\n".join(
+        [
+            "# " + TASK_MARKER,
+            "$ErrorActionPreference = 'Continue'",
+            f"$logPath = {_ps_single_quote(log_path)}",
+            "$offset = [int64]0",
+            "$lastStatus = [datetime]::MinValue",
+            "Write-Host 'KRig output viewer (read-only); close this window to hide it.' -ForegroundColor Cyan",
+            "while ($true) {",
+            "  if ((Get-Date) - $lastStatus -gt [timespan]::FromSeconds(3)) {",
+            "    try { $s=Invoke-RestMethod -Uri 'http://127.0.0.1:1235/_coordinator/status' -TimeoutSec 2; $m=$s.processes.krig_miner; Write-Host ('[{0:HH:mm:ss}] coordinator={1} miner={2} PID={3} active={4} pending={5}' -f (Get-Date),$s.service_state,$m.state,$m.pid,$s.gpu_inference.active_count,$s.gpu_inference.pending_count) -ForegroundColor Green }",
+            "    catch { Write-Host ('[{0:HH:mm:ss}] coordinator unavailable; retrying' -f (Get-Date)) -ForegroundColor Yellow }",
+            "    $lastStatus = Get-Date",
+            "  }",
+            "  if (Test-Path -LiteralPath $logPath) {",
+            "    try {",
+            "      $fs=[IO.File]::Open($logPath,[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::ReadWrite)",
+            "      try { if ($fs.Length -lt $offset) { $offset=0 }; [void]$fs.Seek($offset,[IO.SeekOrigin]::Begin); $reader=[IO.StreamReader]::new($fs,[Text.Encoding]::UTF8,$true,1024,$true); $chunk=$reader.ReadToEnd(); $offset=$fs.Position; $reader.Dispose(); if ($chunk) { Write-Host -NoNewline $chunk } }",
+            "      finally { $fs.Dispose() }",
+            "    } catch { Write-Host ('Log temporarily unavailable: {0}' -f $_.Exception.Message) -ForegroundColor DarkYellow }",
+            "  }",
+            "  Start-Sleep -Milliseconds 500",
+            "}",
+            "",
+        ]
+    )
 def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
     """Classify collected facts without allowing an HTTP 200 to mask degraded operation."""
     warnings: List[str] = []
@@ -327,18 +357,29 @@ class WindowsStartupTaskBackend:
             raise InstallationError(f"Scheduled Task {TASK_NAMES[mode]} was not installed as an RC-owned task")
         return result
 
+    def install_viewer(self, launcher: Path) -> StartupTask:
+        self._run({"operation": "install_viewer", "launcher": str(launcher)})
+        result = next((task for task in self.status() if task.name == TASK_NAMES["viewer"]), None)
+        if result is None or not result.owned:
+            raise InstallationError("Optional log viewer task was not installed as an RC-owned task")
+        return result
+
     def set_enabled(self, task: StartupTask, enabled: bool, *, non_interactive: bool = False) -> StartupTask:
         if not task.owned:
             raise InstallationError(f"Refusing to change unowned Scheduled Task {task.name}")
-        self._run({"operation": "enable" if enabled else "disable", "task_name": task.name}, elevated=True,
-                  non_interactive=non_interactive)
+        self._run(
+            {"operation": "enable" if enabled else "disable", "task_name": task.name},
+            elevated=task.mode != "viewer", non_interactive=non_interactive,
+        )
         return next(item for item in self.status() if item.name == task.name)
 
     def uninstall(self, task: StartupTask, *, non_interactive: bool = False) -> None:
         if not task.owned:
             raise InstallationError(f"Refusing to remove unowned Scheduled Task {task.name}")
-        self._run({"operation": "uninstall", "task_name": task.name}, elevated=True,
-                  non_interactive=non_interactive)
+        self._run(
+            {"operation": "uninstall", "task_name": task.name},
+            elevated=task.mode != "viewer", non_interactive=non_interactive,
+        )
 
     def start(self, task: StartupTask, *, non_interactive: bool = False) -> None:
         if not task.owned or not task.enabled:
@@ -354,10 +395,10 @@ class ManagedInstallation:
         self.task_backend = task_backend
         self.template = template or paths.repository / "modules" / "resource_coordinator" / "config.production-template.yaml"
 
-    def plan_setup(self, mode: str = "logon") -> Dict[str, Any]:
+    def plan_setup(self, mode: str = "logon", *, viewer: bool = False) -> Dict[str, Any]:
         if mode not in {"boot", "logon"}:
             raise InstallationError(f"Unsupported startup mode: {mode}")
-        return {
+        plan = {
             "operation": "setup",
             "mode": mode,
             "changes": [
@@ -369,6 +410,11 @@ class ManagedInstallation:
             ],
             "preserved": [str(self.paths.state), str(self.paths.logs)],
         }
+        if viewer:
+            plan["changes"].append(
+                {"resource": "optional_log_viewer", "action": "install-at-user-logon", "path": str(self.paths.viewer)}
+            )
+        return plan
 
     @staticmethod
     def _write_managed(path: Path, content: str) -> bool:
@@ -382,13 +428,14 @@ class ManagedInstallation:
         return True
 
     def setup(self, *, apply: bool = False, mode: str = "logon", non_interactive: bool = False,
-              activate: bool = True) -> Dict[str, Any]:
-        plan = self.plan_setup(mode)
+              activate: bool = True, viewer: bool = False) -> Dict[str, Any]:
+        plan = self.plan_setup(mode, viewer=viewer)
         if not apply:
             return {"status": "planned", **plan}
         if not self.template.is_file() and not self.paths.config.is_file():
             raise InstallationError(f"Configuration template is missing: {self.template}")
         created: List[str] = []
+        viewer_task: Optional[StartupTask] = None
         completed: List[str] = []
         stage = "creating managed directories"
         try:
@@ -426,6 +473,15 @@ class ManagedInstallation:
             task = self.task_backend.install(mode, self.paths.launcher, non_interactive=non_interactive)
             task = self.task_backend.set_enabled(task, True, non_interactive=non_interactive)
             completed.append("startup task")
+            if viewer:
+                stage = "writing the optional log viewer"
+                if self._write_managed(self.paths.viewer, render_viewer(self.paths)):
+                    created.append("viewer")
+                completed.append("viewer script")
+                stage = "installing the optional log viewer task"
+                viewer_task = self.task_backend.install_viewer(self.paths.viewer)
+                viewer_task = self.task_backend.set_enabled(viewer_task, True, non_interactive=non_interactive)
+                completed.append("viewer task")
             activation = "not-started-by-startup-command" if not activate else "already-running"
             if activate:
                 stage = "starting and checking the coordinator"
@@ -464,6 +520,7 @@ class ManagedInstallation:
             "status": "applied" if successful_activation and mining_warning is None else "degraded",
             "created": created,
             "task": asdict(task),
+            "viewer_task": asdict(viewer_task) if viewer_task else None,
             "config_path": str(self.paths.config),
             "processes_configured": sorted(config.processes),
             "miner_identity_configured": miner_name is not None,
@@ -853,12 +910,13 @@ function Test-RcOwned($task) {
     if (-not $task) { return $false }
     if ($task.Description -like "*$marker*") { return $true }
     $root = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
+    $rootPrefix = $root.TrimEnd('\') + '\'
     foreach ($action in $task.Actions) {
       if ($task.TaskName -in @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon') -and $action.Arguments -match '-File\s+"?(.+?start-coordinator(?:-managed)?\.ps1)') {
-        try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
+        try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
       }
       if ($task.TaskName -eq 'KRig-Live-Output-Viewer' -and $action.Arguments -match '-File\s+"?(.+?view-krig(?:-managed)?\.ps1)') {
-        try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($root,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
+        try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
       }
     }
     return $false
@@ -877,14 +935,22 @@ switch ($payload.operation) {
     }
     ConvertTo-Json -InputObject @($items) -Depth 5 -Compress
   }
-  {$_ -in 'install','enable','disable','uninstall','start'} {
+  {$_ -in 'install','install_viewer','enable','disable','uninstall','start'} {
     if ($payload.operation -eq 'install') {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
       $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
       $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
       $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
-      if (-not $launcher.StartsWith($expectedRoot,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'start-coordinator-managed.ps1') { throw 'Launcher path is outside the managed installation.' }
+      $expectedPrefix = $expectedRoot.TrimEnd('\') + '\'
+      if (-not $launcher.StartsWith($expectedPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'start-coordinator-managed.ps1') { throw 'Launcher path is outside the managed installation.' }
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed launcher is missing.' }
+    } elseif ($payload.operation -eq 'install_viewer') {
+      $name='KRig-Live-Output-Viewer'
+      $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
+      $expectedRoot = [IO.Path]::GetFullPath((Join-Path $env:USERPROFILE '.resource_coordinator'))
+      $expectedPrefix = $expectedRoot.TrimEnd('\') + '\'
+      if (-not $launcher.StartsWith($expectedPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'view-krig-managed.ps1') { throw 'Viewer path is outside the managed installation.' }
+      if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed viewer is missing.' }
     } else { $name=[string]$payload.task_name }
     if ($name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
     $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
@@ -908,6 +974,16 @@ switch ($payload.operation) {
         $otherTask = Get-ScheduledTask -TaskName $other -ErrorAction SilentlyContinue
         if ($otherTask -and (Test-RcOwned $otherTask)) { Disable-ScheduledTask -TaskName $other | Out-Null }
       }
+      'install_viewer' {
+        $pwsh = (Get-Command pwsh.exe -ErrorAction SilentlyContinue).Source
+        if (-not $pwsh) { $pwsh = (Get-Command powershell.exe -ErrorAction Stop).Source }
+        $action = New-ScheduledTaskAction -Execute $pwsh -Argument ("-NoLogo -NoProfile -WindowStyle Normal -File `"$launcher`"")
+        $user = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $user
+        $principal = New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
+        $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0)
+        Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $marker -Force | Out-Null
+      }
       'enable' { Enable-ScheduledTask -TaskName $name | Out-Null }
       'disable' { Disable-ScheduledTask -TaskName $name | Out-Null }
       'uninstall' { Unregister-ScheduledTask -TaskName $name -Confirm:$false }
@@ -929,7 +1005,10 @@ def handle_installation_command(args: Any) -> int:
     backend = _powershell_backend()
     manager = ManagedInstallation(paths, backend)
     if args.command == "setup":
-        result = manager.setup(apply=args.apply, mode=args.startup_mode, non_interactive=args.non_interactive)
+        result = manager.setup(
+            apply=args.apply, mode=args.startup_mode, non_interactive=args.non_interactive,
+            viewer=getattr(args, "viewer", False),
+        )
     elif args.command == "doctor":
         result = manager.doctor()
     elif args.command == "teardown":
