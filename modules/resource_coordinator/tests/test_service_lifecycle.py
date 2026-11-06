@@ -96,6 +96,101 @@ async def test_manual_miner_http_control_requires_operator_token(tmp_path, monke
 
 
 @pytest.mark.asyncio
+async def test_manual_miner_http_controls_start_stop_pause_resume_and_status(tmp_path, monkeypatch):
+    from resource_coordinator.core.durable_state import StateCodec
+    from resource_coordinator.core.processes import ProcessState
+
+    state_path = tmp_path / "coordinator.json"
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(state_path)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(
+            name="stop", trigger_event="lmstudio.inference_requested", target_process="krig",
+            resource="gpu.inference", cooldown_seconds=0.05,
+        )],
+    )
+    system = build_system(config, use_fake_processes=True)
+    system.lease_mgr.set_resource_cooldown("gpu.model_loading", 0)
+    system.lease_mgr.set_resource_cooldown("gpu.inference", 0.05)
+    service = CoordinatorService(system, start_miner_on_ready=True, first_boot=True)
+    assert await service.start()
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    app = system.gateway.create_app(service)
+    headers = {"Authorization": "Bearer test-token"}
+
+    async def wait_for_inference_cooldown():
+        deadline = asyncio.get_running_loop().time() + 1.0
+        while system.lease_mgr.is_cooling_down("gpu.inference") and asyncio.get_running_loop().time() < deadline:
+            await asyncio.sleep(0.005)
+        assert not system.lease_mgr.is_cooling_down("gpu.inference")
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as client:
+        async with system.lease_mgr.acquire("gpu.inference", holder_id="inference-in-flight"):
+            blocked = await client.post(
+                "/_coordinator/miner/stop", headers=headers,
+                json={"operator": "test", "reason": "must respect inference"},
+            )
+            assert blocked.status_code == 409
+            assert blocked.json()["status"] == "blocked"
+            assert blocked.json()["reason"] == "GPU claims, cooldown, inhibition, or safety gate is active"
+            assert blocked.json()["operator_reason"] == "must respect inference"
+            assert (await system.miner_adapter.status()).state == ProcessState.RUNNING
+            gaming = await client.post(
+                "/_coordinator/gaming/start", headers=headers,
+                json={"operator": "test", "reason": "must respect inference"},
+            )
+            assert gaming.status_code == 409
+            assert gaming.json()["reason"] == "GPU claims, cooldown, inhibition, or safety gate is active"
+            assert gaming.json()["operator_reason"] == "must respect inference"
+
+        cooling_down = await client.post(
+            "/_coordinator/miner/stop", headers=headers,
+            json={"operator": "test", "reason": "must respect cooldown"},
+        )
+        assert cooling_down.status_code == 409
+        assert cooling_down.json()["status"] == "blocked"
+        assert cooling_down.json()["operator_reason"] == "must respect cooldown"
+        assert cooling_down.json()["reason"] == "GPU claims, cooldown, inhibition, or safety gate is active"
+        assert (await system.miner_adapter.status()).state == ProcessState.RUNNING
+        await wait_for_inference_cooldown()
+
+        stopped = await client.post(
+            "/_coordinator/miner/stop", headers=headers,
+            json={"operator": "test", "reason": "manual stop"},
+        )
+        assert stopped.status_code == 200 and stopped.json()["status"] == "stopped", stopped.text
+        persisted = StateCodec.load(state_path).processes["krig"]
+        assert persisted.is_manual_override and persisted.was_stopped_by_coordinator
+        await wait_for_inference_cooldown()
+
+        started = await client.post(
+            "/_coordinator/miner/start", headers=headers,
+            json={"operator": "test", "reason": "manual start"},
+        )
+        assert started.status_code == 200 and started.json()["status"] == "running"
+        await wait_for_inference_cooldown()
+
+        paused = await client.post(
+            "/_coordinator/miner/pause", headers=headers,
+            json={"operator": "test", "reason": "timed pause", "duration_seconds": 60},
+        )
+        assert paused.status_code == 200 and paused.json()["status"] == "paused"
+        await wait_for_inference_cooldown()
+
+        resumed = await client.post(
+            "/_coordinator/miner/resume", headers=headers,
+            json={"operator": "test", "reason": "manual resume"},
+        )
+        assert resumed.status_code == 200 and resumed.json()["status"] == "running"
+
+        status = await client.get("/_coordinator/miner/status")
+        assert status.status_code == 200
+        assert status.json()["process"]["state"] == "running"
+        assert status.json()["process"]["is_coordinator_owned"] is True
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_gaming_mode_unloads_models_then_restores_model_and_owned_miner(tmp_path):
     import json
     from resource_coordinator.core.durable_state import StateCodec

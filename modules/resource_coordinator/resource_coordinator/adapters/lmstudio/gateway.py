@@ -351,7 +351,8 @@ class LMStudioGateway:
             status_code = 400
         if result.get("status") == "unavailable":
             status_code = 503
-        result.update(operator=payload["operator"], reason=payload["reason"])
+        result.update(operator=payload["operator"], operator_reason=payload["reason"])
+        result.setdefault("reason", payload["reason"])
         return JSONResponse(result, status_code=status_code)
 
     async def handle_coordinator_gaming_status(self, request: Request) -> Response:
@@ -380,7 +381,8 @@ class LMStudioGateway:
             return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
         action = request.path_params.get("action")
         result = await service.gaming_control(action)
-        result.update(operator=payload["operator"], reason=payload["reason"])
+        result.update(operator=payload["operator"], operator_reason=payload["reason"])
+        result.setdefault("reason", payload["reason"])
         status_code = 200 if result.get("status") in {"active", "inactive"} else 409
         if result.get("status") == "unavailable":
             status_code = 503
