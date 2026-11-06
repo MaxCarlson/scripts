@@ -556,3 +556,30 @@ def test_doctor_degrades_when_configured_log_directory_is_not_writable():
 
     assert report["status"] == "degraded"
     assert any("capture path" in warning for warning in report["warnings"])
+
+
+def test_doctor_compares_running_source_to_expected_package_path(tmp_path):
+    from resource_coordinator.installation import _runtime_source_matches
+
+    expected = tmp_path / "resource_coordinator" / "__init__.py"
+    expected.parent.mkdir()
+    expected.write_text("", encoding="utf-8")
+
+    assert _runtime_source_matches(str(expected), expected)
+    assert not _runtime_source_matches(str(tmp_path / "old-checkout" / "__init__.py"), expected)
+    assert not _runtime_source_matches(None, expected)
+
+
+def test_doctor_degrades_for_stale_running_coordinator_source_or_version():
+    from resource_coordinator.installation import classify_doctor
+
+    report = classify_doctor({
+        "service_ready": True,
+        "credential_ready": True,
+        "task_ready": True,
+        "runtime_source_matches": False,
+        "runtime_version_matches": False,
+    })
+
+    assert report["status"] == "degraded"
+    assert any("source/version" in warning for warning in report["warnings"])

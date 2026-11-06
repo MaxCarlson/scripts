@@ -173,6 +173,12 @@ def _effective_log_path(process_name: str, process: Any, log_directory: Path) ->
     return Path(configured).expanduser() if configured else log_directory / f"{process_name}.log"
 
 
+def _runtime_source_matches(runtime_source: Optional[str], expected_source: Path) -> bool:
+    if not runtime_source:
+        return False
+    return os.path.normcase(os.path.realpath(runtime_source)) == os.path.normcase(os.path.realpath(expected_source))
+
+
 def _task_identity_valid(task: Dict[str, Any]) -> bool:
     identity = str(task.get("user_id", "")).casefold().strip()
     mode = task.get("mode")
@@ -273,6 +279,8 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
     blockers: List[str] = []
     if checks.get("service_ready") is not True:
         blockers.append("coordinator service is not ready")
+    if checks.get("runtime_source_matches") is not True or checks.get("runtime_version_matches") is not True:
+        warnings.append("running coordinator source/version does not match the installed Resource Coordinator package")
     if checks.get("credential_ready") is not True:
         blockers.append("operator credential is unavailable or insecure")
     if checks.get("task_ready") is not True:
@@ -681,6 +689,11 @@ class ManagedInstallation:
 
         service = checks.get("service") or {}
         checks["service_ready"] = service.get("service_state") == "ready"
+        runtime = service.get("runtime", {})
+        expected_source = Path(__file__).resolve().parent / "__init__.py"
+        checks["runtime"] = runtime
+        checks["runtime_source_matches"] = _runtime_source_matches(runtime.get("source_path"), expected_source)
+        checks["runtime_version_matches"] = runtime.get("version") == checks["source_version"]
         gpu = service.get("gpu_inference", {})
         checks["active_inferences"] = gpu.get("active_count")
         checks["pending_requests"] = gpu.get("pending_count")
@@ -728,6 +741,8 @@ class ManagedInstallation:
         )
         checks.update(classify_doctor({
             "service_ready": checks["service_ready"],
+            "runtime_source_matches": checks["runtime_source_matches"],
+            "runtime_version_matches": checks["runtime_version_matches"],
             "credential_ready": checks["credential_ready"],
             "task_ready": checks["task_ready"],
             "configured_power_limit_w": checks.get("configured_power_limit_w"),

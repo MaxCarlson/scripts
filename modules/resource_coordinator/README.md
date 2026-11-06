@@ -234,8 +234,9 @@ coordinator.
 For a coordinator-owned miner start, use `resource-coordinator miner start`;
 do not launch KRig directly. The service task's configured run level supplies
 the NVIDIA privileges needed by its child process. `doctor` compares the
-configured and observed GPU power limit and reports task inventory errors as
-degraded health. Teardown preserves the configuration, credential, journal,
+configured and observed GPU power limit, reports task inventory errors, checks
+the running package path/version, and verifies process-capture directory access;
+these conditions degrade health. Teardown preserves the configuration, credential, journal,
 and log files. If the service is unreachable, teardown requires a readable,
 valid idle journal and an unlocked instance lock; it refuses to act when a
 coordinator-owned miner is still running because the service's graceful

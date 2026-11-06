@@ -450,6 +450,11 @@ class LMStudioGateway:
                 "status": "online",
                 "service_state": svc.state.value if svc else "standalone",
                 "is_ready": svc.is_ready if svc else self.admission_controller.standalone,
+                "runtime": {
+                    "pid": os.getpid(),
+                    "version": __import__("resource_coordinator").__version__,
+                    "source_path": str(Path(__file__).resolve().parents[2] / "__init__.py"),
+                },
                 "upstream_url": self.upstream_url,
                 "processes": processes,
                 "gpu_inference": {
