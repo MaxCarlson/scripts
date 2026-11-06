@@ -2,6 +2,10 @@
 
 ## Current implementation continuation — 2026-11-06
 
+### Automatic operator credential checkpoint
+
+Commit in progress for `resource-coordinator` 0.8.0: authenticated CLI operations now discover a random local credential automatically, provisioned under `%USERPROFILE%\\.resource_coordinator\\secrets\\operator-token` with a Windows ACL for the interactive user and LocalSystem. `RESOURCE_COORDINATOR_OPERATOR_TOKEN` remains an advanced override. The server continues readiness/inference/miner supervision when credential storage is unavailable; privileged routes fail closed and retry file discovery when credentials are later provisioned. `auth doctor`, `auth repair`, and stopped-service-only `auth reinitialize` are offline. SYSTEM launchers must set `RESOURCE_COORDINATOR_TOKEN_FILE` to the same user-profile path; do not deploy a SYSTEM task until its access check passes. Tests in this checkpoint: 84 passed, 1 deselected, including a real temporary-file Windows ACL test; Ruff and `git diff --check` passed. No production credential was generated, no running service was restarted, and no live miner control was attempted.
+
 Latest lifecycle checkpoint: `3896f40f` fixes clean shutdown persistence of the temporary manual override used to stop the owned miner. The new regression verifies the journal remains unheld and a subsequent service start starts the miner as configured. The lifecycle file suite passed 17 tests; consolidated coordinator regressions passed 71 tests, 1 deselected; Ruff check and `git diff --check` passed. This commit continues the existing worktree described below.
 
 Active workspace: `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, starting HEAD `8618d84242de94587f0f04740b46b39568723309` (the lifecycle and protected-routing commits above the `bf6d3be3` checkpoint). This was the existing clean Resource Coordinator worktree; no new branch/worktree was created. The failed isolated-worktree creation did not register a worktree or branch. No other agent was active.

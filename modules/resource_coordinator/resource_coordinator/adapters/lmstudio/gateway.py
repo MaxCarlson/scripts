@@ -31,6 +31,7 @@ from resource_coordinator.adapters.lmstudio.admission import (
 from resource_coordinator.core.durable_state import RequestPhase, StateCodec
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
+from resource_coordinator.core.operator_credentials import CredentialError, load_token
 from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
@@ -177,6 +178,12 @@ class LMStudioGateway:
         self.state_persistence_path = state_persistence_path or ""
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+        try:
+            self.operator_token = load_token()
+        except CredentialError as exc:
+            # Credential storage must never take down inference or miner supervision.
+            self.operator_token = None
+            logger.error("Operator controls unavailable: %s", exc)
         self.admission_controller = admission_controller or AdmissionController(
             event_dispatcher=self.dispatcher, standalone=standalone
         )
@@ -244,8 +251,18 @@ class LMStudioGateway:
         app = Starlette(routes=routes, lifespan=lifespan)
         return app
 
+    def _current_operator_token(self) -> Optional[str]:
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.operator_token
+        if token is None:
+            try:
+                token = load_token()
+                self.operator_token = token
+            except CredentialError:
+                token = None
+        return token or self.recovery_token
+
     def _operator_authorized(self, request: Request) -> bool:
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        token = self._current_operator_token()
         supplied = request.headers.get("authorization", "")
         return bool(token and secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()))
 
@@ -365,7 +382,7 @@ class LMStudioGateway:
         service = self.admission_controller.service
         if service is None:
             return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        token = self._current_operator_token()
         if not token:
             return JSONResponse({"error": "Lifecycle control disabled: configure an operator token"}, status_code=503)
         supplied = request.headers.get("authorization", "")
@@ -441,7 +458,7 @@ class LMStudioGateway:
         svc = self.admission_controller.service
         if not svc:
             return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        token = self._current_operator_token()
         if not token:
             return JSONResponse({"error": "Abort API disabled: configure an operator token"}, status_code=503)
         supplied = request.headers.get("authorization", "")

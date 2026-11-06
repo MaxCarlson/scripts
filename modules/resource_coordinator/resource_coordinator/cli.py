@@ -19,6 +19,13 @@ import httpx
 import uvicorn
 
 from resource_coordinator import __version__
+from resource_coordinator.core.operator_credentials import (
+    CredentialError,
+    doctor as credential_doctor,
+    load_or_create_token,
+    reinitialize_token,
+    repair_permissions,
+)
 from resource_coordinator.config import build_system, load_config
 
 logger = logging.getLogger("resource_coordinator")
@@ -33,6 +40,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging.")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    auth_parser = subparsers.add_parser("auth", help="Diagnose or repair local operator credential storage.")
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
+    auth_sub.add_parser("doctor", help="Offline credential and ACL check.")
+    auth_sub.add_parser("repair", help="Repair credential ACLs without changing the token.")
+    auth_sub.add_parser("reinitialize", help="Rotate credential while the coordinator is stopped.")
 
     for action in ("restart", "shutdown"):
         lifecycle_parser = subparsers.add_parser(action, help=f"Gracefully {action} the running coordinator.")
@@ -293,9 +306,51 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _operator_token() -> Optional[str]:
+    try:
+        return (
+            os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
+            or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+            or load_or_create_token()
+        )
+    except CredentialError as exc:
+        print(f"Operator credential unavailable: {exc}. Run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        return None
+
+
+def cmd_auth(args: argparse.Namespace) -> int:
+    try:
+        if args.auth_command == "doctor":
+            report = credential_doctor()
+            print(json.dumps(report, indent=2))
+            return 0 if (
+                report["credential_valid"]
+                and report["credential_file_readable"]
+                and report["acl_restricted"]
+                and report["environment_override_matches_file"] is not False
+            ) else 1
+        if args.auth_command == "repair":
+            repair_permissions()
+            print("Operator credential ACL repaired; token unchanged.")
+            return 0
+        if os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN"):
+            raise CredentialError("Unset RESOURCE_COORDINATOR_OPERATOR_TOKEN before reinitializing")
+        reinitialize_token()
+        print("Operator credential reinitialized. It was not displayed.")
+        return 0
+    except CredentialError as exc:
+        print(f"Authentication maintenance failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
     from resource_coordinator.core.service import CoordinatorService
     while True:
+        try:
+            load_or_create_token()
+        except CredentialError as exc:
+            # Authentication failure disables privileged controls, not the coordinator.
+            logger.error("Operator credential unavailable; service remains operational: %s", exc)
         config = load_config(args.config)
         if args.listen:
             parts = args.listen.split(":")
@@ -338,11 +393,9 @@ def cmd_serve(args: argparse.Namespace) -> int:
 
 
 def cmd_lifecycle(args: argparse.Namespace) -> int:
-    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-    )
+    token = _operator_token()
     if not token:
-        print("Lifecycle control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+        print("Lifecycle control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/{args.command}"
     try:
@@ -475,11 +528,9 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
                     return 2
     headers = {}
     if method == "POST":
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-            "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-        )
+        token = _operator_token()
         if not token:
-            print("Miner control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+            print("Miner control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
             return 1
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -509,11 +560,9 @@ async def _async_gaming_command(args: argparse.Namespace) -> int:
     headers = {}
     payload = None
     if action != "status":
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-            "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-        )
+        token = _operator_token()
         if not token:
-            print("Gaming control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+            print("Gaming control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
             return 1
         headers["Authorization"] = f"Bearer {token}"
         payload = {"operator": getpass.getuser(), "reason": args.reason}
@@ -543,11 +592,9 @@ def cmd_gaming(args: argparse.Namespace) -> int:
 
 
 async def _async_logs(args: argparse.Namespace) -> int:
-    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-    )
+    token = _operator_token()
     if not token:
-        print("Captured logs require RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+        print("Captured logs require a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
         return 1
     if not 0 <= args.tail_bytes <= 262144:
         print("--tail-bytes must be between 0 and 262144.", file=sys.stderr)
@@ -846,11 +893,9 @@ def cmd_accept(args: argparse.Namespace) -> int:
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
-    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-    )
+    token = _operator_token()
     if not token:
-        print("Abort requires RESOURCE_COORDINATOR_OPERATOR_TOKEN (or the configured recovery token).", file=sys.stderr)
+        print("Abort requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/abort"
     try:
@@ -889,7 +934,9 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     code = 0
-    if args.command == "serve":
+    if args.command == "auth":
+        code = cmd_auth(args)
+    elif args.command == "serve":
         code = cmd_serve(args)
     elif args.command in {"restart", "shutdown"}:
         code = cmd_lifecycle(args)

@@ -204,8 +204,33 @@ python -m resource_coordinator.cli shutdown --reason "operator shutdown"
 
 ## Miner, gaming, and log controls
 
+Privileged CLI commands discover a local operator credential automatically.
+The first coordinator start or privileged CLI command provisions a random
+credential under `%USERPROFILE%\\.resource_coordinator\\secrets` on Windows
+(or `~/.resource_coordinator/secrets` elsewhere), with Windows ACLs limited to
+the current user and LocalSystem. The value is never printed or passed in
+process arguments. `RESOURCE_COORDINATOR_OPERATOR_TOKEN` remains an optional
+advanced override. A SYSTEM startup launcher must set
+`RESOURCE_COORDINATOR_TOKEN_FILE` to this same file path; run `auth doctor`
+under both identities before enabling that task.
+
+Credential diagnostics and recovery do not call the coordinator:
+
+```powershell
+resource-coordinator auth doctor
+resource-coordinator auth repair
+resource-coordinator auth reinitialize
+```
+
+`repair` reapplies restrictive ACLs without rotating the token. `reinitialize`
+rotates it only while the coordinator port is stopped; it refuses to run while
+the coordinator is listening. Missing, malformed, inaccessible, or mismatched
+credentials are reported and never silently replaced. Credential failures
+disable privileged operations but do not prevent read-only status, inference,
+or miner supervision from running.
+
 All mutations go through the ready coordinator and require
-`RESOURCE_COORDINATOR_OPERATOR_TOKEN`. They require a durable
+the automatically discovered operator credential. They require a durable
 `state_persistence_path`; the standalone CLI does not manage a miner locally.
 Controls refuse while GPU leases, inference/model-loading cooldowns, safety
 inhibitions, or lifecycle gates are active.

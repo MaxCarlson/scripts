@@ -110,14 +110,40 @@ def test_cli_parse_args_coordinator_lifecycle():
         assert args.json is True
 
 
-def test_cli_coordinator_lifecycle_requires_token(monkeypatch, capsys):
+def test_cli_coordinator_lifecycle_discovers_credential_automatically(monkeypatch):
+    from unittest.mock import MagicMock
+    import httpx
     from resource_coordinator.cli import cmd_lifecycle
 
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr("resource_coordinator.cli.load_or_create_token", lambda: "A" * 64)
+    response = MagicMock(status_code=202)
+    response.json.return_value = {"status": "draining"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
     args = parse_args(["shutdown"])
-    assert cmd_lifecycle(args) == 1
-    assert "requires RESOURCE_COORDINATOR_OPERATOR_TOKEN" in capsys.readouterr().err
+    assert cmd_lifecycle(args) == 0
+    assert client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer " + "A" * 64
+
+
+def test_auth_doctor_is_offline_and_never_prints_token(tmp_path, monkeypatch, capsys):
+    from resource_coordinator.cli import cmd_auth
+    from resource_coordinator.core import operator_credentials
+
+    token_path = tmp_path / "operator-token"
+    token_path.write_text("A" * 64, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
+    args = parse_args(["auth", "doctor"])
+
+    assert cmd_auth(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["credential_path"] == str(token_path)
+    assert "A" * 64 not in output
 
 
 def test_cli_cmd_preflight(tmp_path, capsys):

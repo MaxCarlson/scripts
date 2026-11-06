@@ -120,13 +120,16 @@ async def test_shutdown_stop_failure_is_not_success():
 
 
 @pytest.mark.asyncio
-async def test_abort_endpoint_authentication_and_terminal_recovery(monkeypatch):
+async def test_abort_endpoint_authentication_and_terminal_recovery(monkeypatch, tmp_path):
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(tmp_path / "missing-token"))
     system, service = assembled()
     await service.start()
     app = system.gateway.create_app(service)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        status = await client.get("/_coordinator/status")
+        assert status.status_code == 200
         denied = await client.post("/_coordinator/abort", json={"reason": "test", "operator": "test"})
         assert denied.status_code == 503
         assert service.is_ready
@@ -550,14 +553,17 @@ async def test_authenticated_raw_log_follow_reads_configured_file_by_offset(tmp_
 
 
 @pytest.mark.asyncio
-async def test_shutdown_control_is_disabled_without_operator_token(monkeypatch):
+async def test_shutdown_control_is_disabled_without_operator_token(monkeypatch, tmp_path):
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(tmp_path / "missing-token"))
     system, service = assembled()
     assert await service.start()
     async with httpx.AsyncClient(
         transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
     ) as client:
+        status = await client.get("/_coordinator/status")
+        assert status.status_code == 200
         response = await client.post("/_coordinator/shutdown", json={"operator": "test", "reason": "stop"})
     assert response.status_code == 503
     assert service.state == ServiceState.READY
