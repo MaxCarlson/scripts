@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import ctypes
+import hashlib
 import getpass
 import json
 import math
@@ -573,9 +574,14 @@ class WindowsStartupTaskBackend:
         operation_id = os.urandom(16).hex()
         operation_dir = Path(tempfile.mkdtemp(prefix=f"operation-{operation_id}-", dir=self.managed_root))
         request_path, output_path, error_path = (operation_dir / name for name in ("request.json", "stdout.txt", "stderr.txt"))
-        helper_path = self.managed_root / "rc-task-helper-v1.ps1"
+        helper_path = operation_dir / "helper.ps1"
         result: Optional[subprocess.CompletedProcess[str]] = None
         try:
+            root_acl = subprocess.run(["icacls.exe", str(self.managed_root), "/inheritance:r", "/grant:r",
+                                       f"{self.interactive_user}:(OI)(CI)F", "SYSTEM:(OI)(CI)F",
+                                       "Administrators:(OI)(CI)F"], capture_output=True, text=True, timeout=15)
+            if root_acl.returncode:
+                raise InstallationError("Could not restrict managed helper directory ACL")
             acl = subprocess.run(["icacls.exe", str(operation_dir), "/inheritance:r", "/grant:r",
                                   f"{self.interactive_user}:(OI)(CI)F", "SYSTEM:(OI)(CI)F",
                                   "Administrators:(OI)(CI)F"], capture_output=True, text=True, timeout=15)
@@ -585,42 +591,62 @@ class WindowsStartupTaskBackend:
                 "$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json",
                 "$payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json",
             )
-            helper = "param([Parameter(Mandatory)][string]$RequestPath)\n" + body
-            if helper_path.exists() and helper_path.is_symlink():
-                raise InstallationError("Task helper is a reparse point")
+            request = {**payload, "managed_root": str(self.managed_root), "interactive_user": self.interactive_user,
+                       "operation_id": operation_id, "result_path": str(output_path)}
+            request_bytes = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            request_hash = hashlib.sha256(request_bytes).hexdigest()
+            request_path.write_bytes(request_bytes)
+            helper = ("param([Parameter(Mandatory)][string]$RequestPath)\n$ErrorActionPreference='Stop'\n"
+                      f"$expectedOperation='{operation_id}'; $expectedHash='{request_hash}'\n"
+                      "$actualHash=(Get-FileHash -LiteralPath $RequestPath -Algorithm SHA256).Hash.ToLowerInvariant()\n"
+                      "if ($actualHash -ne $expectedHash) { throw 'Request integrity check failed.' }\n"
+                      "$payload=Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json\n"
+                      "if ([string]$payload.operation_id -ne $expectedOperation) { throw 'Operation ID mismatch.' }\n"
+                      "$captured = & {\n" + body.split("\n", 1)[1] + "\n} 2>&1 | Out-String\n"
+                      "$record=@{operation_id=[string]$payload.operation_id;request_sha256='" + request_hash +
+                      "';state='completed';exit_code=0;output=$captured}\n"
+                      "$tmp=[string]$payload.result_path+'.new'; $record | ConvertTo-Json -Depth 8 -Compress | "
+                      "Set-Content -LiteralPath $tmp -Encoding utf8; Move-Item -LiteralPath $tmp -Destination "
+                      "$payload.result_path -Force\n")
             helper_path.write_text(helper, encoding="utf-8")
-            helper_acl = subprocess.run(["icacls.exe", str(helper_path), "/inheritance:r", "/grant:r",
-                                         f"{self.interactive_user}:F", "SYSTEM:F", "Administrators:F"],
-                                        capture_output=True, text=True, timeout=15)
-            if helper_acl.returncode:
-                raise InstallationError("Could not restrict task helper ACL")
-            request = {**payload, "managed_root": str(self.managed_root), "interactive_user": self.interactive_user}
-            request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            helper_hash = hashlib.sha256(helper_path.read_bytes()).hexdigest()
             if elevated and not self._admin():
+                def ps_argument(value: Path) -> str:
+                    return '"' + str(value).replace('"', '\\"') + '"'
                 wrapper = (f"$p=Start-Process -FilePath {_ps_single_quote(self.powershell)} -Verb RunAs "
                            f"-WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-File',"
-                           f"'{helper_path}','-RequestPath','{request_path}') -RedirectStandardOutput "
-                           f"'{output_path}' -RedirectStandardError '{error_path}' -Wait -PassThru; exit $p.ExitCode")
+                           f"{_ps_single_quote(ps_argument(helper_path))},'-RequestPath',"
+                           f"{_ps_single_quote(ps_argument(request_path))}) -Wait -PassThru; exit $p.ExitCode")
                 result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
                                         capture_output=True, text=True, timeout=120)
-                if output_path.exists():
-                    result.stdout = output_path.read_text(encoding="utf-8", errors="replace")
-                if error_path.exists():
-                    result.stderr += error_path.read_text(encoding="utf-8", errors="replace")
             else:
                 result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-File",
                                          str(helper_path), "-RequestPath", str(request_path)],
                                         capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                message = _clean_powershell_error(result.stderr or result.stdout)
+                if "cancelled" in message.casefold() or "canceled" in message.casefold() or "0x800704c7" in message.casefold():
+                    raise ElevationRequired("Administrator approval was cancelled; the existing service was not changed.")
+                raise InstallationError(f"Task helper {operation_id} failed: {message or result.returncode}")
+            if not output_path.is_file() or output_path.is_symlink():
+                raise InstallationError(f"Task helper {operation_id} exited without a result record")
+            record = json.loads(output_path.read_text(encoding="utf-8-sig"))
+            if (record.get("operation_id") != operation_id or record.get("request_sha256") != request_hash
+                    or record.get("state") != "completed" or record.get("exit_code") != 0):
+                raise InstallationError(f"Task helper {operation_id} returned mismatched or incomplete evidence")
+            if hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash:
+                raise InstallationError(f"Task helper {operation_id} changed during execution")
+            result.stdout = record.get("output", "")
         except subprocess.TimeoutExpired as exc:
-            raise InstallationError(f"Task operation {operation_id} timed out; request artifacts retained at {operation_dir}") from exc
+            raise InstallationError(f"Task operation {operation_id} timed out; diagnostic artifacts retained at {operation_dir}") from exc
         finally:
-            if operation_dir.exists() and output_path.exists() and result is not None and result.returncode == 0:
+            if operation_dir.exists() and result is not None and result.returncode == 0:
                 shutil.rmtree(operation_dir, ignore_errors=True)
         if result.returncode:
             message = _clean_powershell_error(result.stderr or result.stdout) or f"PowerShell exited {result.returncode}"
             if "access is denied" in message.casefold() or "requires elevation" in message.casefold():
-                raise ElevationRequired(message)
-            raise InstallationError(message)
+                raise ElevationRequired(f"Task operation {operation_id} requires elevation: {message}")
+            raise InstallationError(f"Task operation {operation_id} failed; evidence retained at {operation_dir}: {message}")
         return result
 
     def status(self) -> List[StartupTask]:

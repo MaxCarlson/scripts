@@ -630,9 +630,14 @@ def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(
         if args[0] == "icacls.exe":
             return subprocess.CompletedProcess(args, 0, "", "")
         request = Path(args[-1])
-        payload = json.loads(request.read_text(encoding="utf-8"))
+        raw = request.read_bytes()
+        payload = json.loads(raw)
         assert len(payload["definition"]) == 100_000
-        return subprocess.CompletedProcess(args, 0, "{\"ok\":true}", "")
+        result_path = Path(payload["result_path"])
+        result_path.write_text(json.dumps({"operation_id": payload["operation_id"],
+                                           "request_sha256": __import__("hashlib").sha256(raw).hexdigest(),
+                                           "state": "completed", "exit_code": 0, "output": "{\"ok\":true}"}))
+        return subprocess.CompletedProcess(args, 0, "", "")
     monkeypatch.setattr(mod.os, "name", "nt")
     monkeypatch.setattr(mod.subprocess, "run", run)
     result = backend._run({"operation": "restore", "definition": "x" * 100_000, "enabled": True})
@@ -640,6 +645,7 @@ def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(
     assert result.stdout == '{"ok":true}'
     assert len(" ".join(ps_args)) < 2000
     assert "-EncodedCommand" not in ps_args
+    assert "-RedirectStandardOutput" not in ps_args
 
 
 def test_managed_launcher_consumes_one_shot_miner_start_suppression_policy(tmp_path):
