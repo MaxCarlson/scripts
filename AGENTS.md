@@ -26,5 +26,8 @@ This file applies to work in `scripts/`. Codex loads it automatically. Use `REPO
 
 - Use a lightweight path for small edits. For substantial work, use a dated plan under `project_root/docs/plans/` when multiple implementation or validation stages are needed; keep its status and checklist accurate.
 - Run focused tests for changed behavior, and broader tests when shared behavior is affected. Report exact commands and failures. Minimize routine test output.
-- Stage only intended files. Do not commit, push, or merge unless the user explicitly authorizes that action, including when another guide describes a remote workflow. A continuous-execution waiver must say which actions it authorizes.
+- For handoffs, use a dedicated, non-main Git worktree by default. Honor explicit user, task, or more-specific project instructions to work in place.
+- When finishing handoff work in a worktree, complete focused checks, review the task-only diff, stage only handoff changes, commit them on the task branch, then push to its upstream. Do not create an empty commit.
+- After any commit on a task worktree or non-main task branch, push it to its upstream immediately. If no upstream exists and `origin` is the configured project remote, push with `git push -u origin HEAD`. Never push main automatically.
+- Handoff task-branch commits and task-branch post-commit pushes are authorized by default as described above. Explicit instructions to stop before committing or pushing override that default. If no configured remote is usable or a push fails, report the blocker and do not claim publication. Do not merge or publish a release without explicit user authorization. A continuous-execution waiver must say which other actions it authorizes.
 - Stop for manual validation at a stage boundary when the active plan requires it or the user asks for it.
