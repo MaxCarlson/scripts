@@ -30,7 +30,7 @@ import types
 from collections import deque
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, TextIO
+from typing import Deque, Dict, List, Optional, Sequence, TextIO
 from urllib.parse import urlparse
 
 # Import EnforcedArgumentParser with fallback
@@ -45,6 +45,12 @@ except ImportError:
 from . import __version__ as YTAEDL_VERSION
 from . import _partial_utils, urlscan, yt_grid
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
+from .runtime_submissions import (
+    Submission,
+    SubmissionDialog,
+    SubmissionQueue,
+    allocate_initial_submissions,
+)
 from .downloader import ARCHIVE_PROCESSED_STATUSES, MAX_RESOLUTION_CHOICES, _merge_archive_status
 from .mp4_watcher import MP4Watcher, WatcherConfig, WatcherSnapshot
 from .urlfile_lock import probe_urlfile_lock
@@ -454,7 +460,7 @@ def _controlled_quit_complete(enabled: bool, workers: Sequence["WorkerState"]) -
 
 def _downloads_footer_text() -> str:
     return (
-        "Keys: w=watcher, u=url stats, d=downloads, Up/Down=select worker, "
+        "Keys: i=submit, w=watcher, u=url stats, d=downloads, Up/Down=select worker, j/k=scroll workers, "
         "P=toggle selected, p=pause/unpause all, x=controlled quit, h=toggle status, "
         "q=quit, v=cycle verbose, digit=prompt worker number"
     )
@@ -1035,6 +1041,7 @@ class WorkerState:
     urlfile_lock_owner: Optional[dict] = None
     urlfile_lock_path: Optional[str] = None
     assignment_terminal: bool = False
+    runtime_submission: Optional[Submission] = None
 
 
 def _clear_worker_progress_state(ws: WorkerState) -> None:
@@ -1347,6 +1354,10 @@ def _write_worker_log(log_path: Path, counter: int, elapsed_s: float, status: st
 def _add_run_core_args(dest) -> None:
     """Add all core run flags to *dest* (parser or argument_group)."""
     dest.add_argument("-t", "--threads", type=int, default=2, help="Number of concurrent download workers")
+    dest.add_argument("-H", "--max-workers", type=int, default=16,
+                      help="Maximum worker slots, including workers added with the runtime submission dialog")
+    dest.add_argument("-b", "--stay-open", action="store_true",
+                      help="Keep the manager open after current work finishes so URLs can be submitted with i")
     dest.add_argument("-l", "--time-limit", type=int, default=-1,
                       help="Max seconds a worker holds a urlfile (-1 for unlimited)")
     dest.add_argument("-u", "--max-ndjson-rate", type=float, default=5.0,
@@ -1648,6 +1659,10 @@ def run_main(
         argv_list = list(argv) if argv is not None else sys.argv[1:]
         args = make_parser().parse_args(argv_list)
     exact_file_mode = bool(getattr(args, "priority_files_only", False))
+    max_workers = int(getattr(args, "max_workers", 16))
+    if max_workers < 1:
+        print("[ERROR] --max-workers must be a positive integer", file=sys.stderr)
+        return 2
     exact_urlfiles: List[Path] = []
     if exact_file_mode:
         if not args.priority_files:
@@ -1666,6 +1681,7 @@ def run_main(
             return 2
         requested_threads = args.threads
         args.threads = len(exact_urlfiles)
+    max_workers = max(max_workers, int(args.threads))
     t0 = time.time()
     deadline = (t0 + args.exit_at_time) if (args.exit_at_time and args.exit_at_time > 0) else None
 
@@ -1711,6 +1727,18 @@ def run_main(
     manager_log_path = log_dir / f"dlmanager-{ts}-{os.getpid()}.log"
     controlled_quit_sentinel = log_dir / f"controlled-quit-{ts}-{os.getpid()}.stop"
     mlog = ManagerLogger(manager_log_path)
+    try:
+        submission_queue = SubmissionQueue(
+            log_dir / "pending_manual_submissions.json",
+            log_dir / "manual_submissions",
+        )
+    except ValueError as exc:
+        mlog.error(str(exc))
+        return 2
+    submission_by_path: Dict[str, Submission] = {
+        str(Path(item.value).resolve()): item for item in submission_queue.pending
+    }
+    exact_runtime_files: Deque[Path] = deque(Path(item.value).resolve() for item in submission_queue.pending)
 
     ytdlp_grid_db: Optional[Path] = None
     if args.yt_dlp_grid_search:
@@ -1965,6 +1993,25 @@ def run_main(
                     f"[PARTIAL] Promoted {_promoted} partial URL(s) to front of domain queues"
                 )
 
+    if submission_queue.pending:
+        pending_paths = [Path(item.value).resolve() for item in submission_queue.pending]
+        if domain_index is not None:
+            added = domain_index.add_files(
+                pending_paths,
+                finished_urls=_load_archive_finished_urls(archive_dir),
+            )
+            for item in submission_queue.pending:
+                urls = domain_index.file_urls(item.value)
+                if not urls or all(domain_index.is_finished(url) for url in urls):
+                    submission_queue.complete(item)
+                    submission_by_path.pop(str(Path(item.value).resolve()), None)
+            mlog.info(f"Restored {len(pending_paths)} pending manual submission(s), {added} URL(s) indexed")
+        elif exact_file_mode:
+            pass  # exact-mode assignments consume this durable queue directly
+        else:
+            priority_pool = list(dict.fromkeys([*pending_paths, *priority_pool]))
+            mlog.info(f"Restored {len(pending_paths)} pending manual submission(s) at scheduling priority")
+
     active: set[str] = set()
     watcher_log_scroll = 0
     watcher_log_follow = True
@@ -1995,6 +2042,8 @@ def run_main(
 
     url_rankings: Dict[str, int] = {}
     url_order_paths: List[Path] = []
+    for submitted_path in submission_by_path:
+        url_rankings[submitted_path] = -1_000_000_000
     url_scan_state: Optional[urlscan.ScanResult] = None
     url_scan_interval = (
         float(args.url_rescan_seconds) if args.url_rescan_seconds and args.url_rescan_seconds > 0 else None
@@ -2732,7 +2781,7 @@ def run_main(
 
         _max_per = getattr(args, "unique_domain_dls", -1)
         if bool(args.yt_dlp_grid_search) and (not isinstance(_max_per, int) or _max_per < 1):
-            _max_per = max(1, int(args.threads or 1))
+            _max_per = max(1, int(len(workers) or 1))
         _use_index = (
             domain_index is not None
             and isinstance(_max_per, int)
@@ -2758,11 +2807,12 @@ def run_main(
             # File-priority map: file_id -> rank (lower = better)
             fp_map: Dict[int, int] = {}
             for fid, fpath in domain_index._file_map.items():
-                fp_map[fid] = url_rankings.get(str(Path(fpath).resolve()), 999_999)
+                fpath_key = str(Path(fpath).resolve())
+                fp_map[fid] = -1_000_000_000 if fpath_key in submission_by_path else url_rankings.get(fpath_key, 999_999)
 
             prefer_domains: Optional[set[str]] = None
             if _max_per > 0:
-                aebn_target = min(_max_per, max(1, args.threads // 2))
+                aebn_target = min(_max_per, max(1, len(workers) // 2))
                 aebn_workers = sum(count for d, count in active_counts.items() if "aebn.com" in d)
                 if aebn_workers < aebn_target:
                     prefer_domains = {d for d in domain_index._url_queues.keys() if "aebn.com" in d}
@@ -2813,6 +2863,9 @@ def run_main(
             tmp_file.write_text(entry.url + "\n", encoding="utf-8")
 
             original_file = Path(entry.file_path)
+            manual_item = submission_by_path.get(str(original_file.resolve()))
+            if manual_item is not None:
+                submission_queue.claim(manual_item.submission_id)
             canonical_dir = (download_root / original_file.stem).resolve()
 
             # Track the per-URL partial dir so we can clean it up on terminal failure
@@ -2835,6 +2888,7 @@ def run_main(
             ws.is_waiting_domain = False
             ws.waiting_domain_since = 0.0
             ws.url_entry = entry
+            ws.runtime_submission = manual_item
             ws.original_urlfile = original_file
             # Pre-set url_current so domain counts are correct immediately
             ws.url_current = entry.url
@@ -2935,11 +2989,18 @@ def run_main(
                 finished = set()
 
         if exact_file_mode:
-            if ws.requested_urlfile is None:
+            if ws.requested_urlfile is not None:
+                urlfile = ws.requested_urlfile
+                ws.requested_urlfile = None
+                mlog.info(f"[{ws.slot:02d}] ASSIGN EXACT {urlfile}")
+            elif exact_runtime_files:
+                urlfile = exact_runtime_files.popleft()
+                manual_item = submission_by_path.get(str(urlfile.resolve()))
+                ws.runtime_submission = submission_queue.claim(manual_item.submission_id) if manual_item else None
+                mlog.info(f"[{ws.slot:02d}] ASSIGN SUBMITTED {urlfile}")
+            else:
                 ws.assignment_terminal = True
                 return False
-            urlfile = ws.requested_urlfile
-            mlog.info(f"[{ws.slot:02d}] ASSIGN EXACT {urlfile}")
         else:
             priority_avail = [
                 p
@@ -2981,6 +3042,11 @@ def run_main(
                         mlog.info(f"[{ws.slot:02d}] ASSIGN DEFERRED – domain slots full (max={_max_per})")
                     return False
                 mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
+
+        if not exact_file_mode:
+            manual_item = submission_by_path.get(str(urlfile.resolve()))
+            if manual_item is not None:
+                ws.runtime_submission = submission_queue.claim(manual_item.submission_id)
 
         ws.is_waiting_domain = False
         ws.waiting_domain_since = 0.0
@@ -3064,6 +3130,79 @@ def run_main(
         ws.reader.start()
         return True
 
+    def _submit_runtime_work(text: str, requested_workers: int = 0) -> None:
+        nonlocal priority_pool
+        try:
+            accepted = submission_queue.submit(text)
+        except ValueError as exc:
+            mlog.error(f"Submission rejected: {exc}")
+            return
+        if not accepted:
+            mlog.info("Submission contained no new work; all items were already pending or active.")
+            return
+
+        paths = [Path(item.value).resolve() for item in accepted]
+        for item, path in zip(accepted, paths):
+            submission_by_path[str(path)] = item
+            url_rankings[str(path)] = -1_000_000_000
+        if domain_index is not None:
+            domain_index.add_files(paths, finished_urls=_load_archive_finished_urls(archive_dir))
+            for item, path in zip(accepted, paths):
+                indexed_urls = domain_index.file_urls(path)
+                if not indexed_urls or all(domain_index.is_finished(url) for url in indexed_urls):
+                    submission_queue.complete(item)
+                    submission_by_path.pop(str(path), None)
+        elif exact_file_mode:
+            exact_runtime_files.extend(paths)
+        else:
+            priority_pool = list(dict.fromkeys([*paths, *priority_pool]))
+
+        capacity = max(0, max_workers - len(workers))
+        eligible_count = len(accepted)
+        if domain_index is not None:
+            eligible_count = sum(
+                1
+                for path in paths
+                for url in domain_index.file_urls(path)
+                if not domain_index.is_finished(url)
+            )
+        worker_items = accepted
+        if domain_index is not None and eligible_count > len(accepted):
+            worker_items = [
+                Submission(f"{item.submission_id}:{index}", item.kind, item.value)
+                for item in accepted
+                for index, url in enumerate(domain_index.file_urls(item.value))
+                if not domain_index.is_finished(url)
+            ]
+        initial_assignments, _overflow = allocate_initial_submissions(
+            worker_items, requested_workers, capacity
+        )
+        new_count = len(initial_assignments)
+        new_workers: List[WorkerState] = []
+        for _ in range(new_count):
+            ws = WorkerState(slot=len(workers) + 1)
+            workers.append(ws)
+            new_workers.append(ws)
+        # Retired exact-mode slots become eligible again while pending work exists.
+        for ws in workers:
+            if ws.proc is None and ws.assignment_terminal and (
+                submission_queue.pending or submission_queue.in_progress
+            ):
+                ws.assignment_terminal = False
+
+        for ws in new_workers:
+            if not paused and _can_assign_more():
+                _assign(ws)
+        for ws in workers:
+            if ws not in new_workers and ws.proc is None and not ws.assignment_terminal:
+                if submission_queue.pending or (domain_index and domain_index.total_queued):
+                    if not paused and _can_assign_more():
+                        _assign(ws)
+        mlog.info(
+            f"Accepted {len(accepted)} manual item(s); {submission_queue.pending_count} pending, "
+            f"{new_count} additional worker(s) started (worker slots {len(workers)}/{max_workers})."
+        )
+
     def _requeue(ws: WorkerState, finished: bool, reason: str):
         if ws.proc and ws.proc.poll() is None:
             if ws.is_paused:
@@ -3120,12 +3259,29 @@ def run_main(
                         f.write(_finished_line)
                 except Exception:
                     pass
+        manual_item = ws.runtime_submission
+        if manual_item is not None:
+            if domain_index is not None:
+                manual_urls = domain_index.file_urls(manual_item.value)
+                if manual_urls and all(domain_index.is_finished(url) for url in manual_urls):
+                    submission_queue.complete(manual_item)
+                    submission_by_path.pop(str(Path(manual_item.value).resolve()), None)
+            elif finished:
+                submission_queue.complete(manual_item)
+                submission_by_path.pop(str(Path(manual_item.value).resolve()), None)
+            else:
+                submission_queue.restore(manual_item)
+                if exact_file_mode and ws.urlfile:
+                    exact_runtime_files.appendleft(ws.urlfile)
+                elif not exact_file_mode and not domain_index and ws.urlfile:
+                    priority_pool.insert(0, ws.urlfile)
         mlog.info(f"[{ws.slot:02d}] REQUEUE finished={finished} reason={reason}")
         ws.proc = None
         ws.urlfile = None
         ws.canonical_dir = None
         ws.url_entry = None
         ws.original_urlfile = None
+        ws.runtime_submission = None
         ws.partial_dir = None
         _clear_ytdlp_grid_state(ws)
         ws.domain_search_file = None
@@ -3188,7 +3344,7 @@ def run_main(
             if key in finished_set or remaining == 0:
                 continue
             desired.append(key)
-            if len(desired) >= args.threads:
+            if len(desired) >= len(workers):
                 break
         if not desired:
             return
@@ -3234,6 +3390,7 @@ def run_main(
     # Pause/quit state
     paused = False
     quit_confirm = False
+    submission_dialog: Optional[SubmissionDialog] = None
 
     def _pause_worker_slot(ws: WorkerState) -> bool:
         if not ws.proc or ws.proc.poll() is not None or ws.is_paused:
@@ -3618,7 +3775,9 @@ def run_main(
                     if (time.time() - ws.assign_t0) > args.time_limit:
                         _requeue(ws, finished=False, reason="time_limit")
                         if exact_file_mode:
-                            ws.assignment_terminal = True
+                            ws.assignment_terminal = not exact_runtime_files and not submission_queue.pending
+                            if not ws.assignment_terminal and not paused and not controlled_quit:
+                                _assign(ws)
                         _refresh_url_scan("time_limit")
                         if not exact_file_mode and not paused and not controlled_quit:
                             _assign(ws)
@@ -3630,7 +3789,9 @@ def run_main(
                     finished = rc == 0 and not ws.controlled_stopped
                     _requeue(ws, finished=finished, reason=f"exit rc={rc}")
                     if exact_file_mode:
-                        ws.assignment_terminal = True
+                        ws.assignment_terminal = not exact_runtime_files and not submission_queue.pending
+                        if not ws.assignment_terminal and not paused and not controlled_quit:
+                            _assign(ws)
                     # Assign a new one if available (only if not paused)
                     if not exact_file_mode and not paused and not controlled_quit:
                         _assign(ws)
@@ -3889,7 +4050,7 @@ def run_main(
                     domain_lock_tag = td_utils.color_text(f" [D:{_udl}]", "cyan") if isinstance(_udl, int) and _udl >= 1 else ""
                     header = (
                         f"DL Manager{pause_tag}{quit_tag}{domain_lock_tag}"
-                        f"  |  threads={args.threads}"
+                        f"  |  threads={len(workers)}/{max_workers}"
                         f"  active={active_label}"
                         f"  pool={pool_label}"
                         f"  elapsed={_hms(manager_elapsed)}"
@@ -3913,6 +4074,11 @@ def run_main(
                         unique_total = domain_index.total_unique_domains if domain_index else 0
                         unique_suffix = f" / {unique_total} unique" if unique_total else ""
                         lines.append(f"Active domains: {domain_summary}{unique_suffix}"[:cols])
+                    if submission_queue.pending_count or submission_queue.in_progress_count:
+                        lines.append(
+                            f"Manual submissions: {submission_queue.pending_count} pending / "
+                            f"{submission_queue.in_progress_count} active"[:cols]
+                        )
                     for storage_line in _storage_summary_lines(
                         staging_stats,
                         destination_stats,
@@ -4111,13 +4277,19 @@ def run_main(
                         lines.append("     " + make_bar(ws.percent, barw, speed_color_prefix(ws.speed_bps))[:cols])
 
                 # Controls and optional verbose pane
-                if quit_confirm:
+                if submission_dialog is not None:
+                    downloads_footer_lines = submission_dialog.display_lines(cols)
+                elif quit_confirm:
                     downloads_footer_lines = ["Press Y to quit, N to cancel"[:cols]]
                 else:
                     downloads_footer_lines = [
                         line[:cols]
                         for line in _wrap_hotkey_lines(_downloads_footer_text(), cols)
                     ]
+                    downloads_footer_lines.append(
+                        f"Manual work: {submission_queue.pending_count} pending / "
+                        f"{submission_queue.in_progress_count} active"[:cols]
+                    )
                 verbose_lines = _build_verbose_lines(verbose_slot, verbose_mode, cols, rows)
                 # Reserve rows for the footer (always pinned last) and the verbose panel.
                 # This ensures the hotkey guide is always visible at the bottom of the screen
@@ -4154,6 +4326,27 @@ def run_main(
                                     _select_worker_delta(1)
                             continue
                         key = ch.lower() if ch else ""
+                        if submission_dialog is not None:
+                            action = submission_dialog.feed(ch)
+                            if action == "input":
+                                try:
+                                    SubmissionQueue.validate(submission_dialog.buffer)
+                                    submission_dialog.error = ""
+                                except ValueError as exc:
+                                    submission_dialog.stage = "input"
+                                    submission_dialog.error = str(exc)
+                            elif action == "cancel":
+                                submission_dialog = None
+                            elif action == "queue":
+                                _submit_runtime_work(submission_dialog.buffer)
+                                submission_dialog = None
+                            elif action == "workers":
+                                _submit_runtime_work(
+                                    submission_dialog.buffer,
+                                    requested_workers=submission_dialog.requested_workers,
+                                )
+                                submission_dialog = None
+                            continue
                         if quit_confirm:
                             # Handle quit confirmation
                             if key == "y":
@@ -4164,6 +4357,9 @@ def run_main(
                         else:
                             # Normal key handling
                             if not key:
+                                continue
+                            if key == "i":
+                                submission_dialog = SubmissionDialog()
                                 continue
                             if key == "d":
                                 active_panel = "downloads"
@@ -4319,6 +4515,13 @@ def run_main(
                                         selected_worker_slot = n
                                 except (ValueError, TypeError):
                                     pass
+                            elif key == "j":
+                                downloads_panel_scroll = min(
+                                    downloads_panel_scroll + 1,
+                                    downloads_panel_max_scroll,
+                                )
+                            elif key == "k":
+                                downloads_panel_scroll = max(0, downloads_panel_scroll - 1)
                             elif ch == "P":
                                 _toggle_selected_worker_pause()
                             elif key == "p":
@@ -4338,13 +4541,18 @@ def run_main(
             if _controlled_quit_complete(controlled_quit, workers):
                 break
 
-            if exact_file_mode and all(worker.assignment_terminal for worker in workers):
+            if exact_file_mode and all(worker.assignment_terminal for worker in workers) and not args.stay_open:
                 break
 
             # If all workers idle and both pools empty, stop
             if not exact_file_mode and all(w.proc is None for w in workers):
                 current_regular, current_priority = _gather_from_roots(roots, finished_log, args.priority_files)
-                if not current_regular and not current_priority:
+                if (
+                    not current_regular and not current_priority
+                    and not submission_queue.pending_count
+                    and not submission_queue.in_progress_count
+                    and not args.stay_open
+                ):
                     break
 
             time.sleep(refresh_dt)

@@ -298,6 +298,50 @@ class DomainIndex:
         self._url_queues[domain] = new_q
         return True
 
+    def add_files(self, url_files: List[Path], finished_urls: Optional[Dict[str, str]] = None) -> int:
+        """Append new URL files without rebuilding queues or disturbing active work."""
+        added = 0
+        with self._lock:
+            for path in url_files:
+                resolved_path = str(Path(path).resolve())
+                if resolved_path in self._file_map.values():
+                    continue
+                file_id = max(self._file_map, default=-1) + 1
+                lines = _read_url_lines(Path(path))
+                self._file_map[file_id] = resolved_path
+                self._file_url_counts[file_id] = len(lines)
+                for line_num, url in lines:
+                    if url in self._url_entry_map:
+                        continue
+                    domain = _extract_domain(url)
+                    if domain == "-":
+                        continue
+                    if domain not in self._base_map:
+                        self._base_map[domain] = len(self._domain_names)
+                        self._domain_names.append(domain)
+                    entry = UrlEntry(url, file_id, resolved_path, line_num)
+                    self._url_entry_map[url] = entry
+                    stem = Path(url.rstrip("/").split("/")[-1]).stem.lower()
+                    if stem:
+                        self._stem_to_url.setdefault(stem, url)
+                    if url in (finished_urls or {}):
+                        self._finished[url] = UrlStatus(
+                            url, file_id, resolved_path, line_num, (finished_urls or {})[url]
+                        )
+                    else:
+                        self._url_queues.setdefault(domain, deque()).append(entry)
+                        added += 1
+            for url, status in (finished_urls or {}).items():
+                entry = self._url_entry_map.get(url)
+                if entry:
+                    self._finished[url] = UrlStatus(
+                        url, entry.file_id, entry.file_path, entry.line_num, status
+                    )
+                    self._remove_from_queue(url)
+        self._built_at = time.time()
+        self._trigger_debounced_save()
+        return added
+
     # ------------------------------------------------------------------
     # URL selection
 
@@ -523,6 +567,10 @@ class DomainIndex:
     def finished_status(self, url: str) -> Optional[str]:
         s = self._finished.get(url)
         return s.status if s else None
+
+    def file_urls(self, file_path: Path | str) -> List[str]:
+        resolved = str(Path(file_path).resolve())
+        return [entry.url for entry in self._url_entry_map.values() if entry.file_path == resolved]
 
     # ------------------------------------------------------------------
     # Serialization
