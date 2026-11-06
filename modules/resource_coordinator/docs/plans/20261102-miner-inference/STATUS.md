@@ -2,6 +2,8 @@
 
 ## 2026-11-06 continuation checkpoint
 
+**Follow-up fix committed:** `3896f40f` preserves each supervisor's pre-shutdown manual hold across clean service stop. The shutdown freeze uses a temporary override while stopping the owned miner; without restoration, the journal could record that temporary hold and prevent the cleanly restarted service from starting mining. A regression test exercises state persistence and the subsequent service start. Verification: `test_service_lifecycle.py` passed 17 tests; the consolidated coordinator regression command passed 71 tests with 1 intentionally deselected; Ruff check and `git diff --check` passed. The lifecycle commit was made in the existing worktree at `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, based on `040d172d`.
+
 The follow-up implementation now provides authenticated `/restart` and `/shutdown` routes with lease draining and a `serve`-owned relaunch loop; the handler distinguishes the expected shutdown latch from an earlier safety block. Protected inference routing in `local_agent_bridge` defaults to the coordinator and rejects direct LM Studio inference URLs.
 
 Coordinator-mediated `miner start|stop|resume|pause|status` now uses safe-idle arbitration and durable timed holds. `miner pause --until-gpu-below PCT --window WINDOW` persists its condition and rolling samples, samples only with the miner verified stopped, and resumes only after a complete valid low-utilization window and cleared safety gates. Missing/invalid telemetry never counts as idle.

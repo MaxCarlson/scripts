@@ -2,6 +2,8 @@
 
 ## Current implementation continuation — 2026-11-06
 
+Latest lifecycle checkpoint: `3896f40f` fixes clean shutdown persistence of the temporary manual override used to stop the owned miner. The new regression verifies the journal remains unheld and a subsequent service start starts the miner as configured. The lifecycle file suite passed 17 tests; consolidated coordinator regressions passed 71 tests, 1 deselected; Ruff check and `git diff --check` passed. This commit continues the existing worktree described below.
+
 Active workspace: `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, starting HEAD `8618d84242de94587f0f04740b46b39568723309` (the lifecycle and protected-routing commits above the `bf6d3be3` checkpoint). This was the existing clean Resource Coordinator worktree; no new branch/worktree was created. The failed isolated-worktree creation did not register a worktree or branch. No other agent was active.
 
 Committed checkpoints in this continuation: `bdac870c` graceful authenticated lifecycle controls and `8618d842` protected local-agent routing were already present at entry; `41afe2f857c8b0f1d2e0d5ade1f6fab38fa60429` adds authenticated manual miner controls and durable timed holds; `73461f411bd48e5968ade26965df1689c1cef0db` adds gaming/model restore, raw process log following, and durable one-shot GPU-idle pause.
