@@ -226,6 +226,15 @@ def render_launcher(paths: InstallationPaths) -> str:
 
 def render_viewer(paths: InstallationPaths) -> str:
     log_path = paths.logs / "krig_miner.log"
+    if paths.config.is_file():
+        config = load_config(paths.config)
+        miner = next(
+            (process for name, process in config.processes.items()
+             if "miner" in name.casefold() or "krig" in name.casefold()),
+            None,
+        )
+        if miner and miner.stdout_log_path:
+            log_path = Path(miner.stdout_log_path)
     return "\n".join(
         [
             "# " + TASK_MARKER,

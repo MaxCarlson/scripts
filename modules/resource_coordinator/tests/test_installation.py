@@ -189,9 +189,10 @@ def test_setup_marks_valid_miner_identity_as_applied(tmp_path, monkeypatch):
 def test_setup_installs_optional_read_only_viewer_without_starting_miner(tmp_path, monkeypatch):
     paths, template = make_paths(tmp_path)
     paths.root.mkdir(parents=True)
+    log_path = paths.root / "captured-miner-output.log"
     paths.config.write_text(
         "version: '1.0'\nprocesses:\n  krig_miner:\n    backend: fake\n"
-        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        f"    arguments: ['--user', 'wallet/worker']\n    stdout_log_path: '{log_path}'\npolicies: []\n",
         encoding="utf-8",
     )
     monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(paths.token))
@@ -206,8 +207,10 @@ def test_setup_installs_optional_read_only_viewer_without_starting_miner(tmp_pat
     viewer = tasks.items["KRig-Live-Output-Viewer"]
     assert result["viewer_task"]["name"] == viewer.name
     assert viewer.enabled is True and viewer.mode == "viewer"
-    assert paths.viewer.read_text(encoding="utf-8").startswith(f"# {TASK_MARKER}")
-    assert "miner/pause" not in paths.viewer.read_text(encoding="utf-8")
+    viewer_script = paths.viewer.read_text(encoding="utf-8")
+    assert viewer_script.startswith(f"# {TASK_MARKER}")
+    assert str(log_path) in viewer_script
+    assert "miner/pause" not in viewer_script
 
 
 def test_setup_refuses_to_overwrite_unmarked_managed_launcher(tmp_path, monkeypatch):
