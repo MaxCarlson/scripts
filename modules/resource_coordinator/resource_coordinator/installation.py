@@ -389,46 +389,65 @@ class ManagedInstallation:
         if not self.template.is_file() and not self.paths.config.is_file():
             raise InstallationError(f"Configuration template is missing: {self.template}")
         created: List[str] = []
-        self.paths.root.mkdir(parents=True, exist_ok=True)
-        self.paths.logs.mkdir(parents=True, exist_ok=True)
-        self.paths.token.parent.mkdir(parents=True, exist_ok=True)
-        if not self.paths.config.exists():
-            shutil.copy2(self.template, self.paths.config)
-            created.append("configuration")
-        # Validation is read-only; existing comments and settings are preserved byte-for-byte.
-        config = load_config(self.paths.config)
-        load_or_create_token()
-        credential = credential_doctor()
-        if not (
-            credential.get("credential_file_exists")
-            and credential.get("credential_file_readable")
-            and credential.get("credential_valid")
-            and credential.get("acl_restricted") is True
-            and credential.get("environment_override_matches_file") is not False
-        ):
+        completed: List[str] = []
+        stage = "creating managed directories"
+        try:
+            self.paths.root.mkdir(parents=True, exist_ok=True)
+            self.paths.logs.mkdir(parents=True, exist_ok=True)
+            self.paths.token.parent.mkdir(parents=True, exist_ok=True)
+            completed.append("managed directories")
+            stage = "validating configuration"
+            if not self.paths.config.exists():
+                shutil.copy2(self.template, self.paths.config)
+                created.append("configuration")
+            # Validation is read-only; existing comments and settings are preserved byte-for-byte.
+            config = load_config(self.paths.config)
+            completed.append("configuration")
+            stage = "provisioning and checking the shared credential"
+            load_or_create_token()
+            credential = credential_doctor()
+            if not (
+                credential.get("credential_file_exists")
+                and credential.get("credential_file_readable")
+                and credential.get("credential_valid")
+                and credential.get("acl_restricted") is True
+                and credential.get("environment_override_matches_file") is not False
+            ):
+                raise InstallationError(
+                    "The shared operator credential is not usable by the interactive user and SYSTEM. "
+                    "Run 'resource-coordinator auth doctor' and repair its ACL or explicitly reinitialize it."
+                )
+            completed.append("operator credential")
+            stage = "writing the managed launcher"
+            if self._write_managed(self.paths.launcher, render_launcher(self.paths)):
+                created.append("launcher")
+            completed.append("launcher")
+            stage = "installing and enabling the startup task"
+            task = self.task_backend.install(mode, self.paths.launcher, non_interactive=non_interactive)
+            task = self.task_backend.set_enabled(task, True, non_interactive=non_interactive)
+            completed.append("startup task")
+            activation = "not-started-by-startup-command" if not activate else "already-running"
+            if activate:
+                stage = "starting and checking the coordinator"
+                service = self._service_status()
+                if service is None:
+                    self.task_backend.start(task, non_interactive=non_interactive)
+                    service = self._wait_for_service()
+                    activation = "started" if service else "starting"
+                elif service.get("service_state") == "ready":
+                    try:
+                        with httpx.Client(timeout=2.0) as client:
+                            route = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+                        if route.status_code != 200:
+                            activation = "running-older-api"
+                    except httpx.HTTPError:
+                        activation = "running-api-unverified"
+        except Exception as exc:
+            finished = ", ".join(completed) if completed else "none"
             raise InstallationError(
-                "The shared operator credential is not usable by the interactive user and SYSTEM. "
-                "Run 'resource-coordinator auth doctor' and repair its ACL or explicitly reinitialize it."
-            )
-        if self._write_managed(self.paths.launcher, render_launcher(self.paths)):
-            created.append("launcher")
-        task = self.task_backend.install(mode, self.paths.launcher, non_interactive=non_interactive)
-        task = self.task_backend.set_enabled(task, True, non_interactive=non_interactive)
-        service = self._service_status() if activate else None
-        activation = "not-started-by-startup-command" if not activate else "already-running"
-        if activate:
-            if service is None:
-                self.task_backend.start(task, non_interactive=non_interactive)
-                service = self._wait_for_service()
-                activation = "started" if service else "starting"
-            elif service.get("service_state") == "ready":
-                try:
-                    with httpx.Client(timeout=2.0) as client:
-                        route = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
-                    if route.status_code != 200:
-                        activation = "running-older-api"
-                except httpx.HTTPError:
-                    activation = "running-api-unverified"
+                f"Setup failed while {stage}; completed resources: {finished}. "
+                f"No credential values were displayed. Correct the issue and rerun setup --apply. Details: {exc}"
+            ) from exc
         miner_name = _configured_miner(self.paths.config)
         has_miner_process = any(
             "miner" in name.casefold() or "krig" in name.casefold() for name in config.processes

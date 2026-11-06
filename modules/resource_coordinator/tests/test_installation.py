@@ -198,6 +198,28 @@ def test_setup_refuses_insecure_credential_before_installing_task(tmp_path, monk
     assert tasks.install_calls == []
 
 
+def test_setup_failure_reports_completed_resources_without_exposing_credentials(tmp_path, monkeypatch):
+    paths, template = make_paths(tmp_path)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(paths.token))
+    monkeypatch.setattr("resource_coordinator.installation.load_or_create_token", lambda: "secret-that-must-not-print")
+    monkeypatch.setattr("resource_coordinator.installation.credential_doctor", _secure_credential_report)
+
+    class FailingTasks(MemoryTasks):
+        def install(self, mode, launcher, *, non_interactive=False):
+            raise RuntimeError("task registration denied")
+
+    manager = ManagedInstallation(paths, FailingTasks(), template=template)
+
+    with pytest.raises(InstallationError) as error:
+        manager.setup(apply=True)
+
+    message = str(error.value)
+    assert "installing and enabling the startup task" in message
+    assert "configuration, operator credential, launcher" in message
+    assert "task registration denied" in message
+    assert "secret-that-must-not-print" not in message
+
+
 def test_startup_status_names_only_enabled_owned_task_as_authoritative(tmp_path):
     paths, _ = make_paths(tmp_path)
     tasks = MemoryTasks()
