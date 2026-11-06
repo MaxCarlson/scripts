@@ -12,12 +12,20 @@ import logging
 import os
 import sys
 import time
+import re
 from typing import List, Optional
 
 import httpx
 import uvicorn
 
 from resource_coordinator import __version__
+from resource_coordinator.core.operator_credentials import (
+    CredentialError,
+    doctor as credential_doctor,
+    load_or_create_token,
+    reinitialize_token,
+    repair_permissions,
+)
 from resource_coordinator.config import build_system, load_config
 
 logger = logging.getLogger("resource_coordinator")
@@ -32,6 +40,20 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging.")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
+
+    auth_parser = subparsers.add_parser("auth", help="Diagnose or repair local operator credential storage.")
+    auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
+    auth_sub.add_parser("doctor", help="Offline credential and ACL check.")
+    auth_sub.add_parser("repair", help="Repair credential ACLs without changing the token.")
+    auth_sub.add_parser("reinitialize", help="Rotate credential while the coordinator is stopped.")
+
+    for action in ("restart", "shutdown"):
+        lifecycle_parser = subparsers.add_parser(action, help=f"Gracefully {action} the running coordinator.")
+        lifecycle_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
+        lifecycle_parser.add_argument(
+            "-r", "--reason", default=f"Operator requested {action}", help="Reason recorded with the request."
+        )
+        lifecycle_parser.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
 
     # serve
     serve_parser = subparsers.add_parser("serve", help="Run the coordination reverse proxy service.")
@@ -179,15 +201,38 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     miner_parser = subparsers.add_parser("miner", help="Manage miner workload and overrides.")
     miner_sub = miner_parser.add_subparsers(dest="miner_command", required=True)
     m_status = miner_sub.add_parser("status", help="Get current miner process status.")
-    m_status.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    m_status.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
     m_status.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
 
-    m_pause = miner_sub.add_parser("pause", help="Pause mining process and set manual override.")
-    m_pause.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
-    m_pause.add_argument("-t", "--timeout", type=float, default=10.0, help="Stop timeout in seconds.")
+    for action in ("start", "stop", "resume", "pause"):
+        miner_action = miner_sub.add_parser(action, help=f"Coordinator-mediated miner {action}.")
+        miner_action.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
+        miner_action.add_argument("-r", "--reason", default=f"Operator requested miner {action}.")
+        miner_action.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
+        if action == "pause":
+            pause_mode = miner_action.add_mutually_exclusive_group(required=True)
+            pause_mode.add_argument("-d", "--duration", help="Hold duration, e.g. 2h, 30m, or 90s.")
+            pause_mode.add_argument("--until-gpu-below", type=float, metavar="PCT",
+                                    help="Resume after GPU utilization stays below this percent for a full window.")
+            miner_action.add_argument("--window", default="60s", help="GPU sampling window, e.g. 60s or 2m.")
+    m_status.add_argument("-c", "--config", default=None, help=argparse.SUPPRESS)
 
-    m_resume = miner_sub.add_parser("resume", help="Clear manual override and resume mining.")
-    m_resume.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
+    gaming_parser = subparsers.add_parser("gaming", help="Safely unload and restore local models for gaming.")
+    gaming_sub = gaming_parser.add_subparsers(dest="gaming_command", required=True)
+    gaming_status = gaming_sub.add_parser("status", help="Show gaming mode state.")
+    gaming_status.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    gaming_status.add_argument("-j", "--json", action="store_true")
+    for action in ("start", "stop"):
+        gaming_action = gaming_sub.add_parser(action, help=f"Gaming mode {action}.")
+        gaming_action.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+        gaming_action.add_argument("-r", "--reason", default=f"Operator requested gaming {action}.")
+        gaming_action.add_argument("-j", "--json", action="store_true")
+
+    logs_parser = subparsers.add_parser("logs", help="Read or follow captured raw process output.")
+    logs_parser.add_argument("process_name", help="Configured process name, e.g. krig.")
+    logs_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    logs_parser.add_argument("--tail-bytes", type=int, default=65536, help="Initial history bytes (max 256 KiB).")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Continue polling for appended output.")
 
     # diagnose
     diag_parser = subparsers.add_parser(
@@ -261,43 +306,117 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     return parser.parse_args(args)
 
 
+def _operator_token() -> Optional[str]:
+    try:
+        return (
+            os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
+            or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+            or load_or_create_token()
+        )
+    except CredentialError as exc:
+        print(f"Operator credential unavailable: {exc}. Run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        return None
+
+
+def cmd_auth(args: argparse.Namespace) -> int:
+    try:
+        if args.auth_command == "doctor":
+            report = credential_doctor()
+            print(json.dumps(report, indent=2))
+            return 0 if (
+                report["credential_valid"]
+                and report["credential_file_readable"]
+                and report["acl_restricted"]
+                and report["environment_override_matches_file"] is not False
+            ) else 1
+        if args.auth_command == "repair":
+            repair_permissions()
+            print("Operator credential ACL repaired; token unchanged.")
+            return 0
+        if os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN"):
+            raise CredentialError("Unset RESOURCE_COORDINATOR_OPERATOR_TOKEN before reinitializing")
+        reinitialize_token()
+        print("Operator credential reinitialized. It was not displayed.")
+        return 0
+    except CredentialError as exc:
+        print(f"Authentication maintenance failed: {exc}", file=sys.stderr)
+        return 1
+
+
 def cmd_serve(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    if args.listen:
-        parts = args.listen.split(":")
-        config.service.listen_host = parts[0]
-        config.service.listen_port = int(parts[1]) if len(parts) > 1 else 1235
-    if args.upstream:
-        config.service.upstream_url = args.upstream
-
-    system = build_system(config, use_fake_processes=args.fake_miner)
     from resource_coordinator.core.service import CoordinatorService
+    while True:
+        try:
+            load_or_create_token()
+        except CredentialError as exc:
+            # Authentication failure disables privileged controls, not the coordinator.
+            logger.error("Operator credential unavailable; service remains operational: %s", exc)
+        config = load_config(args.config)
+        if args.listen:
+            parts = args.listen.split(":")
+            config.service.listen_host = parts[0]
+            config.service.listen_port = int(parts[1]) if len(parts) > 1 else 1235
+        if args.upstream:
+            config.service.upstream_url = args.upstream
 
-    service = CoordinatorService(
-        system=system,
-        start_miner_on_ready=getattr(args, "start_miner", False),
-        stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
-        start_process_on_ready=getattr(args, "start_process", None),
-        stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
-        drain_timeout_seconds=getattr(args, "drain_timeout", 30.0),
-        first_boot=getattr(args, "first_boot", False),
-    )
-    app = system.gateway.create_app(service)
+        system = build_system(config, use_fake_processes=args.fake_miner)
+        service = CoordinatorService(
+            system=system,
+            start_miner_on_ready=getattr(args, "start_miner", False),
+            stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
+            start_process_on_ready=getattr(args, "start_process", None),
+            stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
+            drain_timeout_seconds=getattr(args, "drain_timeout", 30.0),
+            first_boot=getattr(args, "first_boot", False),
+        )
+        app = system.gateway.create_app(service)
+        app.state.restart_requested = False
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=config.service.listen_host,
+                port=config.service.listen_port,
+                log_level="info" if args.verbose else "warning",
+            )
+        )
+        app.state.request_server_exit = lambda: setattr(server, "should_exit", True)
 
-    print(f"Starting Resource Coordinator Gateway v{__version__}")
-    print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
-    print(f"Upstream host: {config.service.upstream_url}")
-    print(f"Managed procs: {list(system.supervisors.keys())}")
-    print(f"Service state: {service.state.value}")
-    print("Press Ctrl+C to terminate.")
-
-    uvicorn.run(
-        app,
-        host=config.service.listen_host,
-        port=config.service.listen_port,
-        log_level="info" if args.verbose else "warning",
-    )
+        print(f"Starting Resource Coordinator Gateway v{__version__}")
+        print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
+        print(f"Upstream host: {config.service.upstream_url}")
+        print(f"Managed procs: {list(system.supervisors.keys())}")
+        print(f"Service state: {service.state.value}")
+        server.run()
+        if not app.state.restart_requested or service.state.value != "stopped":
+            break
     return 0
+
+
+def cmd_lifecycle(args: argparse.Namespace) -> int:
+    token = _operator_token()
+    if not token:
+        print("Lifecycle control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        return 1
+    url = f"{args.url.rstrip('/')}/_coordinator/{args.command}"
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json={"operator": getpass.getuser(), "reason": args.reason},
+            )
+        if response.status_code == 202:
+            payload = response.json()
+            print(
+                json.dumps(payload, indent=2)
+                if args.json
+                else f"Coordinator {args.command} requested; draining active work."
+            )
+            return 0
+        print(f"Coordinator {args.command} failed ({response.status_code}): {response.text}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+    return 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -380,50 +499,141 @@ def cmd_config(args: argparse.Namespace) -> int:
     return 0
 
 
-async def _async_miner_status(config_path: Optional[str], as_json: bool) -> int:
-    config = load_config(config_path)
-    system = build_system(config)
-    if not system.miner_adapter:
-        print("No miner process configured.", file=sys.stderr)
-        return 1
-    st = await system.miner_adapter.status()
-    override = system.miner_adapter.is_manual_override
-    data = {**st.to_dict(), "manual_override": override}
-    if as_json:
-        print(json.dumps(data, indent=2))
+def _parse_hold_duration(value: str) -> float:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*(s|m|h|d)\s*", value, re.IGNORECASE)
+    if not match:
+        raise argparse.ArgumentTypeError("Duration must use s, m, h, or d (for example 2h).")
+    return float(match.group(1)) * {"s": 1, "m": 60, "h": 3600, "d": 86400}[match.group(2).lower()]
+
+
+async def _async_miner_command(args: argparse.Namespace) -> int:
+    if args.miner_command == "status":
+        method, endpoint, payload = "GET", "status", None
     else:
-        print(f"Miner Name:       {st.name}")
-        print(f"State:            {st.state.value}")
-        print(f"PID:              {st.pid}")
-        print(f"Coordinator owned:{st.is_coordinator_owned}")
-        print(f"Manual override:  {override}")
-    return 0
-
-
-async def _async_miner_pause(config_path: Optional[str], timeout: float) -> int:
-    print(
-        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
-        file=sys.stderr,
-    )
-    return 1
-
-
-async def _async_miner_resume(config_path: Optional[str]) -> int:
-    print(
-        "Standalone miner mutation is disabled: it cannot access the running coordinator's leases or overrides.",
-        file=sys.stderr,
-    )
-    return 1
+        method, endpoint = "POST", args.miner_command
+        payload = {"operator": getpass.getuser(), "reason": args.reason}
+        if args.miner_command == "pause":
+            if args.until_gpu_below is not None:
+                try:
+                    payload["until_gpu_below_pct"] = args.until_gpu_below
+                    payload["window_seconds"] = _parse_hold_duration(args.window)
+                except argparse.ArgumentTypeError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 2
+            else:
+                try:
+                    payload["duration_seconds"] = _parse_hold_duration(args.duration)
+                except argparse.ArgumentTypeError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 2
+    headers = {}
+    if method == "POST":
+        token = _operator_token()
+        if not token:
+            print("Miner control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+            return 1
+        headers["Authorization"] = f"Bearer {token}"
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.request(method, f"{args.url.rstrip('/')}/_coordinator/miner/{endpoint}",
+                                            headers=headers, json=payload)
+        data = response.json()
+        if response.status_code != 200:
+            print(f"Miner {args.miner_command} failed ({response.status_code}): {data}", file=sys.stderr)
+            return 1
+        if args.miner_command == "status" or getattr(args, "json", False):
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Miner control: {data.get('status')}")
+        return 0
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
 
 
 def cmd_miner(args: argparse.Namespace) -> int:
-    if args.miner_command == "status":
-        return asyncio.run(_async_miner_status(args.config, args.json))
-    elif args.miner_command == "pause":
-        return asyncio.run(_async_miner_pause(args.config, args.timeout))
-    elif args.miner_command == "resume":
-        return asyncio.run(_async_miner_resume(args.config))
-    return 0
+    return asyncio.run(_async_miner_command(args))
+
+
+async def _async_gaming_command(args: argparse.Namespace) -> int:
+    action = args.gaming_command
+    headers = {}
+    payload = None
+    if action != "status":
+        token = _operator_token()
+        if not token:
+            print("Gaming control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+            return 1
+        headers["Authorization"] = f"Bearer {token}"
+        payload = {"operator": getpass.getuser(), "reason": args.reason}
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.request(
+                "GET" if action == "status" else "POST",
+                f"{args.url.rstrip('/')}/_coordinator/gaming/{action}",
+                headers=headers, json=payload,
+            )
+        data = response.json()
+        if response.status_code != 200:
+            print(f"Gaming {action} failed ({response.status_code}): {data}", file=sys.stderr)
+            return 1
+        if args.json or action == "status":
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Gaming mode: {data.get('status')}")
+        return 0
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_gaming(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_gaming_command(args))
+
+
+async def _async_logs(args: argparse.Namespace) -> int:
+    token = _operator_token()
+    if not token:
+        print("Captured logs require a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        return 1
+    if not 0 <= args.tail_bytes <= 262144:
+        print("--tail-bytes must be between 0 and 262144.", file=sys.stderr)
+        return 2
+    headers = {"Authorization": f"Bearer {token}"}
+    offset = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while True:
+                params = {"tail_bytes": args.tail_bytes} if offset is None else {"offset": offset}
+                response = await client.get(
+                    f"{args.url.rstrip('/')}/_coordinator/logs/{args.process_name}",
+                    headers=headers, params=params,
+                )
+                if response.status_code != 200:
+                    print(f"Log request failed ({response.status_code}): {response.text}", file=sys.stderr)
+                    return 1
+                data = response.content
+                if data:
+                    stream = getattr(sys.stdout, "buffer", None)
+                    if stream is not None:
+                        stream.write(data)
+                        stream.flush()
+                    else:
+                        sys.stdout.write(data.decode("utf-8", errors="replace"))
+                        sys.stdout.flush()
+                offset = int(response.headers["x-log-offset"])
+                if not args.follow:
+                    return 0
+                await asyncio.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        print(f"Failed to follow logs at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_logs(args))
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
@@ -683,11 +893,9 @@ def cmd_accept(args: argparse.Namespace) -> int:
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
-    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
-        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
-    )
+    token = _operator_token()
     if not token:
-        print("Abort requires RESOURCE_COORDINATOR_OPERATOR_TOKEN (or the configured recovery token).", file=sys.stderr)
+        print("Abort requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/abort"
     try:
@@ -726,8 +934,12 @@ def main(argv: Optional[List[str]] = None) -> None:
     logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
     code = 0
-    if args.command == "serve":
+    if args.command == "auth":
+        code = cmd_auth(args)
+    elif args.command == "serve":
         code = cmd_serve(args)
+    elif args.command in {"restart", "shutdown"}:
+        code = cmd_lifecycle(args)
     elif args.command == "status":
         code = cmd_status(args)
     elif args.command == "recover":
@@ -736,6 +948,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         code = cmd_config(args)
     elif args.command == "miner":
         code = cmd_miner(args)
+    elif args.command == "gaming":
+        code = cmd_gaming(args)
+    elif args.command == "logs":
+        code = cmd_logs(args)
     elif args.command == "diagnose":
         code = cmd_diagnose(args)
     elif args.command == "preflight":

@@ -97,6 +97,7 @@ class PersistedProcess:
     lifecycle_owner: str = ProcessLifecycleOwner.UNMANAGED.value
     was_stopped_by_coordinator: bool = False
     is_manual_override: bool = False
+    manual_override_until: Optional[float] = None
     last_stopped_at: Optional[float] = None
     last_started_at: Optional[float] = None
 
@@ -113,6 +114,9 @@ class PersistedProcess:
             raise ValueError("Restart ownership must be a boolean")
         if type(data.get("is_manual_override", False)) is not bool:
             raise ValueError("Manual override must be a boolean")
+        hold_until = data.get("manual_override_until")
+        if hold_until is not None and not _valid_time(hold_until):
+            raise ValueError("Invalid manual override deadline")
         pid, created = data.get("pid"), data.get("create_time")
         if pid is not None and (type(pid) is not int or pid <= 0 or not _valid_time(created)):
             raise ValueError("A persisted PID requires a valid exact creation time")
@@ -133,6 +137,8 @@ class CoordinatorState:
     inhibitions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     processes: Dict[str, PersistedProcess] = field(default_factory=dict)
     requests: Dict[str, PersistedRequest] = field(default_factory=dict)
+    gaming_mode: Dict[str, Any] = field(default_factory=lambda: {"state": "inactive"})
+    gpu_idle_condition: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         res: Dict[str, Any] = {
@@ -143,13 +149,17 @@ class CoordinatorState:
         }
         if self.requests:
             res["requests"] = {k: v.to_dict() for k, v in self.requests.items()}
+        if self.gaming_mode.get("state", "inactive") != "inactive":
+            res["gaming_mode"] = dict(self.gaming_mode)
+        if self.gpu_idle_condition:
+            res["gpu_idle_condition"] = dict(self.gpu_idle_condition)
         return res
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> CoordinatorState:
         data = _mapping(data, "state")
         required = {"version", "updated_at", "inhibitions", "processes"}
-        allowed = required | {"requests"}
+        allowed = required | {"requests", "gaming_mode", "gpu_idle_condition"}
         if not (required.issubset(set(data)) and set(data).issubset(allowed)):
             raise ValueError("Incomplete or unsupported durable state schema")
         if data["version"] != "1.0" or not _valid_time(data["updated_at"]):
@@ -178,12 +188,46 @@ class CoordinatorState:
                 if request.request_id != key:
                     raise ValueError("Persisted request key/request_id mismatch")
                 reqs[key] = request
+        gaming = data.get("gaming_mode", {"state": "inactive"})
+        if not isinstance(gaming, dict) or gaming.get("state") not in {
+            "inactive", "stopping", "active", "restoring", "failed"
+        }:
+            raise ValueError("Invalid gaming mode state")
+        if gaming.get("state") != "inactive":
+            models = gaming.get("models")
+            if not isinstance(models, list) or type(gaming.get("miner_was_running")) is not bool:
+                raise ValueError("Invalid durable gaming mode snapshot")
+            if type(gaming.get("miner_override_before", False)) is not bool:
+                raise ValueError("Invalid prior miner override in gaming mode snapshot")
+            if gaming.get("miner_override_until_before") is not None and not _valid_time(
+                gaming["miner_override_until_before"]
+            ):
+                raise ValueError("Invalid prior miner override deadline in gaming mode snapshot")
+            for model in models:
+                if (not isinstance(model, dict) or not isinstance(model.get("model"), str)
+                        or not model["model"] or not isinstance(model.get("config", {}), dict)):
+                    raise ValueError("Invalid model in durable gaming mode snapshot")
+        gpu_condition = data.get("gpu_idle_condition", {})
+        if not isinstance(gpu_condition, dict):
+            raise ValueError("Invalid GPU-idle condition")
+        if gpu_condition:
+            threshold, window = gpu_condition.get("threshold_pct"), gpu_condition.get("window_seconds")
+            samples = gpu_condition.get("samples")
+            if (not _valid_time(threshold) or threshold > 100 or not _valid_time(window) or window <= 0
+                    or not isinstance(samples, list) or len(samples) > 4000):
+                raise ValueError("Invalid persisted GPU-idle condition settings")
+            for sample in samples:
+                if (not isinstance(sample, dict) or not _valid_time(sample.get("at"))
+                        or not _valid_time(sample.get("utilization_pct")) or sample["utilization_pct"] > 100):
+                    raise ValueError("Invalid persisted GPU-idle sample")
         return cls(
             version=data["version"],
             updated_at=data["updated_at"],
             inhibitions=dict(holds),
             processes=procs,
             requests=reqs,
+            gaming_mode=dict(gaming),
+            gpu_idle_condition=dict(gpu_condition),
         )
 
 
@@ -389,6 +433,7 @@ class StateCodec:
         lifecycle_owner: str,
         was_stopped_by_coordinator: bool,
         is_manual_override: Optional[bool] = None,
+        manual_override_until: Optional[float] = None,
     ) -> CoordinatorState:
         target = Path(target_path)
         now = time.time()
@@ -400,12 +445,75 @@ class StateCodec:
         proc.was_stopped_by_coordinator = was_stopped_by_coordinator
         if is_manual_override is not None:
             proc.is_manual_override = is_manual_override
+        proc.manual_override_until = manual_override_until if proc.is_manual_override else None
         if was_stopped_by_coordinator:
             proc.last_stopped_at = now
         elif pid is not None:
             proc.last_started_at = now
         state.processes[name] = proc
         state.updated_at = now
+        cls.save_atomic(state, target)
+        return state
+
+    @classmethod
+    def record_gaming_mode(
+        cls,
+        target_path: Path | str,
+        state_name: str,
+        *,
+        models: Optional[list[Dict[str, Any]]] = None,
+        miner_was_running: Optional[bool] = None,
+        miner_override_before: Optional[bool] = None,
+        miner_override_until_before: Optional[float] = None,
+    ) -> CoordinatorState:
+        if state_name not in {"inactive", "stopping", "active", "restoring", "failed"}:
+            raise ValueError("Invalid gaming mode state")
+        target = Path(target_path)
+        state = cls.load(target)
+        if state_name == "inactive":
+            state.gaming_mode = {"state": "inactive"}
+        else:
+            previous = state.gaming_mode
+            state.gaming_mode = {
+                "state": state_name,
+                "models": models if models is not None else previous.get("models", []),
+                "miner_was_running": (
+                    miner_was_running if miner_was_running is not None
+                    else previous.get("miner_was_running", False)
+                ),
+                "miner_override_before": (
+                    miner_override_before if miner_override_before is not None
+                    else previous.get("miner_override_before", False)
+                ),
+                "miner_override_until_before": (
+                    miner_override_until_before if miner_override_before is not None
+                    else previous.get("miner_override_until_before")
+                ),
+            }
+        state.updated_at = time.time()
+        cls.save_atomic(state, target)
+        return state
+
+    @classmethod
+    def record_gpu_idle_condition(
+        cls,
+        target_path: Path | str,
+        *,
+        threshold_pct: Optional[float] = None,
+        window_seconds: Optional[float] = None,
+        samples: Optional[list[Dict[str, float]]] = None,
+    ) -> CoordinatorState:
+        target = Path(target_path)
+        state = cls.load(target)
+        if threshold_pct is None or window_seconds is None:
+            state.gpu_idle_condition = {}
+        else:
+            state.gpu_idle_condition = {
+                "threshold_pct": float(threshold_pct),
+                "window_seconds": float(window_seconds),
+                "samples": list(samples or []),
+            }
+        state.updated_at = time.time()
         cls.save_atomic(state, target)
         return state
 
@@ -568,7 +676,7 @@ async def reconcile_startup_state(
             sup = supervisors[proc_name]
             sup.was_stopped_by_coordinator = proc.was_stopped_by_coordinator
             if proc.is_manual_override:
-                sup.set_manual_override(True, persist=False)
+                sup.set_manual_override(True, persist=False, until=proc.manual_override_until)
         outcome = reconcile_pid(proc.pid, proc.create_time, query_fn)
         audit["reconciled_processes"][proc_name] = {
             "pid": proc.pid,

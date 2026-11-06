@@ -150,6 +150,11 @@ How to inspect or attach to an existing OpenCode server:
     verify.add_argument("-j", "--json", action="store_true", help="Print structured verification results")
     verify.add_argument("-p", "--opencode-port", type=int, default=4096, help="OpenCode HTTP server port")
     verify.add_argument("-l", "--lms-port", type=int, default=1234, help="LM Studio HTTP port")
+    verify.add_argument(
+        "-i",
+        "--inference-url",
+        help="Expected OpenCode inference route (defaults to LOCAL_AGENT_INFERENCE_URL or the coordinator at :1235/v1)",
+    )
     verify.add_argument("-d", "--directory", type=Path, help="Project directory whose effective OpenCode config is checked")
     verify.add_argument("-c", "--context-length", type=int, help="Expected context limit")
     verify.add_argument("-o", "--output-tokens", type=int, help="Expected output limit")
@@ -174,6 +179,17 @@ How to inspect or attach to an existing OpenCode server:
         action.add_argument(
             "-l", "--lms-port", type=int, default=1234, help="LM Studio HTTP port"
         )
+        if name in {"rename", "remove"}:
+            action.add_argument(
+                "-i",
+                "--inference-url",
+                help="OpenAI-compatible route (defaults to the protected coordinator at :1235/v1)",
+            )
+            action.add_argument(
+                "--update-opencode-provider",
+                action="store_true",
+                help="Explicitly replace a conflicting OpenCode inference provider endpoint",
+            )
     opencode = groups.add_parser(
         "opencode",
         help="Check or attach to an existing OpenCode server",
@@ -764,6 +780,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.nickname,
                     opencode_port=args.opencode_port,
                     lms_port=args.lms_port,
+                    inference_url=args.inference_url,
                     directory=str(args.directory) if args.directory else None,
                     expected_context=args.context_length,
                     expected_output=args.output_tokens,
@@ -783,10 +800,21 @@ def main(argv: list[str] | None = None) -> int:
                 )
             elif args.action == "rename":
                 cli.handle_rename_model(
-                    args.nickname, args.new_nickname, args.lms_port, args.opencode_port
+                    args.nickname,
+                    args.new_nickname,
+                    args.lms_port,
+                    args.opencode_port,
+                    inference_url=args.inference_url,
+                    overwrite_provider=args.update_opencode_provider,
                 )
             else:
-                cli.handle_delete_model(args.nickname, args.opencode_port)
+                cli.handle_delete_model(
+                    args.nickname,
+                    args.opencode_port,
+                    args.lms_port,
+                    inference_url=args.inference_url,
+                    overwrite_provider=args.update_opencode_provider,
+                )
             return 0
         if args.action == "recover":
             result = recover_installation(

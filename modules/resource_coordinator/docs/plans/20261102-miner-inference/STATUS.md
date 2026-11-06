@@ -1,5 +1,44 @@
 # Status Ledger: Miner / Local LLM Coordination
 
+## 2026-11-06 merge validation continuation
+
+The automatic credential path now publishes a secured temporary file atomically,
+so a simultaneous first CLI/service startup cannot read a partially written token.
+The regression test deterministically exercises that race and verifies both callers
+load the same winning credential. Existing missing/mismatched credential, ACL
+failure, repair/reinitialize, offline doctor, automatic CLI discovery, and
+coordinator restart/recovery tests remain in the same focused suite.
+
+Fresh validation from the existing feature worktree used the intended local
+package imports: 148 passed, 2 unrelated shell tests deselected across auth, CLI,
+service lifecycle, safety/arbitration, and bridge routing. Ruff and diff checks
+passed. Against latest local `main` (`fcc95eac`), the Resource Coordinator feature
+has 26 changed paths with zero path overlap against main's 98 paths since the
+shared base. No coordinator, inference, LM Studio model, miner, or configuration
+operation was performed. The running deployment remains untouched; live
+activation and the Resource Coordinator TUI remain gated by operational
+acceptance after integration.
+
+## 2026-11-06 continuation checkpoint
+
+### Operator credential automation
+
+Committed as `05c6d71e`, with atomic ACL-repair hardening pending: replace manual profile token setup with automatic, fail-closed credential discovery. The service and CLI share `%USERPROFILE%\\.resource_coordinator\\secrets\\operator-token`; Windows ACL setup grants only the current account and LocalSystem. Reads are non-mutating, reinitialization is explicit and refuses while port 1235 is listening, and read-only status/service operation remains available if the credential cannot be loaded. `auth doctor` checks offline; `auth repair` preserves the token and atomically replaces it only after securing ACLs. Focused tests passed 85 with 1 deselected; temporary-file Windows ACL validation and ACL-failure preservation passed. Live service identity and SYSTEM startup access remain deployment gates. No live change performed.
+
+**Follow-up fix committed:** `3896f40f` preserves each supervisor's pre-shutdown manual hold across clean service stop. The shutdown freeze uses a temporary override while stopping the owned miner; without restoration, the journal could record that temporary hold and prevent the cleanly restarted service from starting mining. A regression test exercises state persistence and the subsequent service start. Verification: `test_service_lifecycle.py` passed 17 tests; the consolidated coordinator regression command passed 71 tests with 1 intentionally deselected; Ruff check and `git diff --check` passed. The lifecycle commit was made in the existing worktree at `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, based on `040d172d`.
+
+The follow-up implementation now provides authenticated `/restart` and `/shutdown` routes with lease draining and a `serve`-owned relaunch loop; the handler distinguishes the expected shutdown latch from an earlier safety block. Protected inference routing in `local_agent_bridge` defaults to the coordinator and rejects direct LM Studio inference URLs.
+
+Coordinator-mediated `miner start|stop|resume|pause|status` now uses safe-idle arbitration and durable timed holds. `miner pause --until-gpu-below PCT --window WINDOW` persists its condition and rolling samples, samples only with the miner verified stopped, and resumes only after a complete valid low-utilization window and cleared safety gates. Missing/invalid telemetry never counts as idle.
+
+Gaming mode snapshots loaded LM Studio models through the native v1 API, persists transitions, stops only the coordinator-owned miner, unloads models, and restores models before mining resumes. Raw authenticated log reads support byte offsets; the `logs --follow` client has no miner lifecycle effect. Model/control operations were tested only against fake miners and mock HTTP/telemetry providers. No live activation or inference was performed.
+
+Focused verification: 70 passed, 1 deselected across lifecycle, service, CLI, model-control, and safety-review tests. Ruff lint and `git diff --check` passed on changed Python files. Ruff format check reports formatting drift under installed Ruff 0.14.8, including pre-existing lines; no whole-file formatting rewrite was applied. The deployment still runs from the shared `main` checkout and cannot use these new endpoints until a separately authorized deploy/merge step; live activation was not attempted.
+
+Protected bridge-route regression verification from the same worktree: `model_limits_test.py` plus `audit_test.py` passed 51 tests, with the Git Bash shell/app-alias case deselected. A broader exploratory run included non-route checkpoint tests that assumed a temporary state directory outside the worktree and a shell test whose child `python` resolved to the Windows Store execution alias; those were excluded from this focused route result.
+
+Read-only recheck on 2026-11-06: the coordinator is ready and idle (0 active/pending, no cooldown/inhibition); coordinator-owned `krig_miner` PID 49928 is running. Persistent YAML has the requested `--gpu-plimit 550 --gpu-cclock 2400 --gpu-coffset 225 --gpu-mclock 7001`, while the current process command line has none. The configured raw output file does not exist yet and its viewer task is Ready. The running user-logon task invokes `C:\Users\mcarls\src\scripts` shared `main` at `f6aac8b98c29`; its launcher has no in-process clean-exit restart loop. Saved OpenCode provider base URL is `http://127.0.0.1:1235/v1`. Codex and both AGY `opencode_worker` entries invoke `npx.cmd opencode-mcp@3.0.0` without an explicit endpoint. The OpenCode runtime endpoint on port 4096 refused the read-only query, so Codex/AGY effective runtime routing remains unknown. No service restart, inference, LM Studio model operation, KRig mutation, or config edit occurred. Deployment/merge authorization remains the live activation blocker; TUI work remains deferred until P3 is completed.
+
 **Plan ID:** `miner-inference-coordination-20261102`  
 **Current Phase:** Stage 3 Live Hardware Acceptance COMPLETE (All Trials T01–T04 Verified on Real Hardware with Physical Compute Load & Stratum Connectivity; Integration Ready)  
 **Timestamp:** 2026-11-02T17:05:00-08:00  

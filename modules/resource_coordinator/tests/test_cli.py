@@ -19,10 +19,27 @@ def test_cli_parse_args_status():
 
 
 def test_cli_parse_args_miner():
-    args = parse_args(["miner", "pause", "-t", "5.0"])
+    args = parse_args(["miner", "pause", "-d", "2h"])
     assert args.command == "miner"
     assert args.miner_command == "pause"
-    assert args.timeout == 5.0
+    assert args.duration == "2h"
+
+
+def test_cli_miner_control_commands_and_duration_parser():
+    from resource_coordinator.cli import _parse_hold_duration
+
+    assert _parse_hold_duration("2h") == 7200
+    assert _parse_hold_duration("30m") == 1800
+    for action in ("start", "stop", "resume"):
+        args = parse_args(["miner", action])
+        assert args.miner_command == action
+    assert parse_args(["gaming", "start"]).gaming_command == "start"
+    assert parse_args(["gaming", "stop"]).gaming_command == "stop"
+    assert parse_args(["gaming", "status"]).gaming_command == "status"
+    logs = parse_args(["logs", "krig", "--follow", "--tail-bytes", "1024"])
+    assert logs.process_name == "krig" and logs.follow and logs.tail_bytes == 1024
+    conditional = parse_args(["miner", "pause", "--until-gpu-below", "20", "--window", "60s"])
+    assert conditional.until_gpu_below == 20 and conditional.window == "60s"
 
 
 def test_cli_config_show(capsys):
@@ -83,6 +100,50 @@ def test_cli_parse_args_abort():
     assert args.url == "http://localhost:1235"
     assert args.reason == "test emergency abort"
     assert args.json is True
+
+
+def test_cli_parse_args_coordinator_lifecycle():
+    for action in ("restart", "shutdown"):
+        args = parse_args([action, "-u", "http://localhost:1235", "-r", "activate config", "-j"])
+        assert args.command == action
+        assert args.reason == "activate config"
+        assert args.json is True
+
+
+def test_cli_coordinator_lifecycle_discovers_credential_automatically(monkeypatch):
+    from unittest.mock import MagicMock
+    import httpx
+    from resource_coordinator.cli import cmd_lifecycle
+
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr("resource_coordinator.cli.load_or_create_token", lambda: "A" * 64)
+    response = MagicMock(status_code=202)
+    response.json.return_value = {"status": "draining"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
+    args = parse_args(["shutdown"])
+    assert cmd_lifecycle(args) == 0
+    assert client.post.call_args.kwargs["headers"]["Authorization"] == "Bearer " + "A" * 64
+
+
+def test_auth_doctor_is_offline_and_never_prints_token(tmp_path, monkeypatch, capsys):
+    from resource_coordinator.cli import cmd_auth
+    from resource_coordinator.core import operator_credentials
+
+    token_path = tmp_path / "operator-token"
+    token_path.write_text("A" * 64, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
+    args = parse_args(["auth", "doctor"])
+
+    assert cmd_auth(args) == 0
+    output = json.loads(capsys.readouterr().out)
+    assert output["credential_path"] == str(token_path)
+    assert "A" * 64 not in output
 
 
 def test_cli_cmd_preflight(tmp_path, capsys):

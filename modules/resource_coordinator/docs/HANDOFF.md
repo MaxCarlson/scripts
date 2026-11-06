@@ -1,5 +1,47 @@
 # Resource Coordinator current handoff
 
+## Current implementation continuation — 2026-11-06
+
+### Integration and credential update
+
+The automatic credential implementation is committed and pushed at `05c6d71e`,
+with atomic repair hardening at `0e3db84f`. `resource-coordinator auth doctor`
+was run from the switched main checkout and verified the existing credential
+file at `C:\Users\mcarls\.resource_coordinator\secrets\operator-token`:
+readable, valid format, restricted ACL; the token was not printed. The
+reinitialization command correctly refused while port 1235 was listening. The
+coordinator and CLI run as `mcarls`; a future SYSTEM task still needs the
+explicit `RESOURCE_COORDINATOR_TOKEN_FILE` override and a real identity test.
+
+Integration review: local main `f6aac8b9`, feature `0e3db84f` at review start, merge base
+`bf6d3be3`, main 29 ahead / feature 12 ahead. A merge-tree simulation produced
+no textual conflicts. No merge occurred. Read-only live status still showed
+one ready coordinator and owned KRig PID 49928, no active/pending requests,
+and no requested GPU flags in its command line. The old running service returns
+404 for the new miner route and cannot use the new authenticated restart route.
+The existing hidden-task legacy stop path remains unverified, so no deployment,
+restart, mining operation, or inference was attempted. Latest validation: 86
+auth/CLI/lifecycle tests passed, 1 known shell-alias case deselected; 20
+adjacent arbitration tests and 51 bridge route tests passed, 1 shell alias case
+deselected. Ruff and diff checks passed. The detailed migration sequence and
+TUI gate are in the active [runbook](plans/20261102-miner-inference/RUNBOOK.md).
+
+### Automatic operator credential checkpoint
+
+Commits `05c6d71e` and `0e3db84f` implement automatic local credential discovery and atomic ACL repair for `resource-coordinator` 0.8.0. The existing credential at `%USERPROFILE%\\.resource_coordinator\\secrets\\operator-token` is valid and has the expected user/SYSTEM ACL; its secret was not printed. `auth reinitialize` correctly refused while port 1235 was listening. No credential rotation, service restart, or miner operation occurred. The current user task and coordinator run as `mcarls`; a future SYSTEM task still requires the explicit same-path override and an actual identity test.
+
+Latest lifecycle checkpoint: `3896f40f` fixes clean shutdown persistence of the temporary manual override used to stop the owned miner. The new regression verifies the journal remains unheld and a subsequent service start starts the miner as configured. The lifecycle file suite passed 17 tests; consolidated coordinator regressions passed 71 tests, 1 deselected; Ruff check and `git diff --check` passed. This commit continues the existing worktree described below.
+
+Active workspace: `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, starting HEAD `8618d84242de94587f0f04740b46b39568723309` (the lifecycle and protected-routing commits above the `bf6d3be3` checkpoint). This was the existing clean Resource Coordinator worktree; no new branch/worktree was created. The failed isolated-worktree creation did not register a worktree or branch. No other agent was active.
+
+Committed checkpoints in this continuation: `bdac870c` graceful authenticated lifecycle controls and `8618d842` protected local-agent routing were already present at entry; `41afe2f857c8b0f1d2e0d5ade1f6fab38fa60429` adds authenticated manual miner controls and durable timed holds; `73461f411bd48e5968ade26965df1689c1cef0db` adds gaming/model restore, raw process log following, and durable one-shot GPU-idle pause.
+
+Focused validation: 70 passed, 1 deselected across lifecycle/control/gaming/GPU/log/CLI tests; 20 passed across adjacent inference arbitration and lease tests; 51 passed, 1 deselected across local-agent-bridge route/model-switch regressions. Ruff lint and `git diff --check` passed on changed Python files. Ruff format check under installed Ruff 0.14.8 reports formatting drift (including pre-existing lines); no unrelated formatter rewrite was applied.
+
+Read-only deployment evidence from 2026-11-06: coordinator reports `ready`, upstream `127.0.0.1:1234`, zero active/pending requests, no cooldown/inhibition; `krig_miner` PID 49928 is running and coordinator-owned. Persistent YAML contains all four requested flags/values (`550`, `2400`, `225`, `7001`), while the current miner command line contains none. The configured raw output path does not exist yet, and the separate output-viewer task is Ready, not running. The user-logon task is Running with RestartCount 3 / RestartInterval 1 minute, but its launcher at `C:\Users\mcarls\.resource_coordinator\start-coordinator.ps1` invokes `C:\Users\mcarls\src\scripts` (shared `main` HEAD `f6aac8b98c29`) and has no clean-exit relaunch loop. OpenCode's saved provider points to `http://127.0.0.1:1235/v1`. Codex and both AGY `opencode_worker` entries invoke `npx.cmd opencode-mcp@3.0.0` and contain no explicit endpoint; OpenCode's saved provider configuration is protected, but the OpenCode runtime endpoint on port 4096 refused the read-only query. Therefore Codex/AGY effective runtime routing is not verified. No restart, inference, model, miner, or config mutation was performed.
+
+Live activation is blocked because the running launcher still uses shared `main` and no merge/deployment was authorized; the existing task's behavior on clean exit is not a verified relaunch path. Do not activate the 550 W flags against PID 49928 through an unreviewed source/config swap. Next: obtain the deployment boundary/merge authorization or install the reviewed source through the approved deployment path, then use the new authenticated graceful restart and verify the exact miner args/log capture before claiming activation. Do not start TUI work until this operational priority is completed.
+
 Current workstream: **minimal LM Studio activity automation**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, based on preflight commit `44ce5d6ec9b56ecb75c2cfb4ff848b85964c2764`.
 
 Offline implementation adds explicit known model-load handling on the existing `gpu.inference` resource with an exclusive lease, matching process-stop policy and the same cooldown as inference. Pending exclusive reservations now prevent later shared admission, and final idle restart actions share an arbitration lock with request registration. Generic opt-in service/CLI process lifecycle controls were added while retaining legacy miner flags. `LeaseManager` accepts a monotonic clock and async sleeper for deterministic cooldown tests. See [minimal automation configuration and route limits](../README.md) and [implementation plan/status](plans/20261019-1600_minimal-lmstudio-activity/STATUS.md).

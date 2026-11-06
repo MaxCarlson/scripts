@@ -221,6 +221,14 @@ require `--update-model-limits`. Incompatible explicit LM Studio provider settin
 require `--update-opencode-provider`. Unrelated model fields, provider options,
 comments, other providers and file links are preserved.
 
+The LM Studio control API remains on `--lms-port` (default `1234`). OpenCode
+inference uses the protected coordinator at `http://127.0.0.1:1235/v1` by
+default; use `--inference-url` or `LOCAL_AGENT_INFERENCE_URL` for an OpenAI
+compatible LLM Monitor endpoint that is itself configured to forward through
+the coordinator. Direct loopback inference to port `1234` is rejected, and
+switches will not overwrite a conflicting provider URL without
+`--update-opencode-provider`.
+
 The tested Q4_K_M `qwen38_23GB` profile uses 8,192 output tokens. That is a
 profile-specific recommendation, not a universal default. Other aliases keep the
 32,768 context default and need `-o` when an explicit context is configured. A

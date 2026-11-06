@@ -120,13 +120,16 @@ async def test_shutdown_stop_failure_is_not_success():
 
 
 @pytest.mark.asyncio
-async def test_abort_endpoint_authentication_and_terminal_recovery(monkeypatch):
+async def test_abort_endpoint_authentication_and_terminal_recovery(monkeypatch, tmp_path):
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(tmp_path / "missing-token"))
     system, service = assembled()
     await service.start()
     app = system.gateway.create_app(service)
     async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        status = await client.get("/_coordinator/status")
+        assert status.status_code == 200
         denied = await client.post("/_coordinator/abort", json={"reason": "test", "operator": "test"})
         assert denied.status_code == 503
         assert service.is_ready
@@ -416,19 +419,74 @@ def test_cli_serve_runs_real_factory_and_lifespan_offline(monkeypatch):
     monkeypatch.setattr(cli, "load_config", lambda path: config)
     observed = []
 
-    def fake_uvicorn(app, **kwargs):
-        async def run():
-            async with app.router.lifespan_context(app):
-                async with httpx.AsyncClient(
-                    transport=httpx.ASGITransport(app=app), base_url="http://gateway"
-                ) as client:
-                    observed.append((await client.get("/_coordinator/status")).json()["is_ready"])
+    class FakeServer:
+        def __init__(self, config):
+            self.config = config
+            self.should_exit = False
 
-        asyncio.run(run())
+        def run(self):
+            app = self.config.app
 
-    monkeypatch.setattr(cli.uvicorn, "run", fake_uvicorn)
+            async def run_app():
+                async with app.router.lifespan_context(app):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=app), base_url="http://gateway"
+                    ) as client:
+                        observed.append((await client.get("/_coordinator/status")).json()["is_ready"])
+
+            asyncio.run(run_app())
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
     assert cli.cmd_serve(cli.parse_args(["serve", "--fake-miner", "--start-miner", "--stop-miner-on-shutdown"])) == 0
     assert observed == [True]
+
+
+def test_cli_serve_relaunches_only_after_supervised_clean_restart(monkeypatch):
+    from resource_coordinator.config import CoordinatorConfig
+    from resource_coordinator import cli
+
+    config = CoordinatorConfig(
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[
+            PolicyConfig(
+                name="stop",
+                trigger_event="lmstudio.inference_requested",
+                target_process="krig",
+                resource="gpu.inference",
+            )
+        ],
+    )
+    config_loads = []
+    observed_ready = []
+    monkeypatch.setattr(cli, "load_config", lambda path: config_loads.append(path) or config)
+
+    class FakeServer:
+        launches = 0
+
+        def __init__(self, server_config):
+            self.app = server_config.app
+            self.should_exit = False
+
+        def run(self):
+            FakeServer.launches += 1
+
+            async def run_app():
+                async with self.app.router.lifespan_context(self.app):
+                    async with httpx.AsyncClient(
+                        transport=httpx.ASGITransport(app=self.app), base_url="http://gateway"
+                    ) as client:
+                        observed_ready.append((await client.get("/_coordinator/status")).json()["is_ready"])
+                    if FakeServer.launches == 1:
+                        self.app.state.restart_requested = True
+                        self.should_exit = True
+
+            asyncio.run(run_app())
+
+    monkeypatch.setattr(cli.uvicorn, "Server", FakeServer)
+    assert cli.cmd_serve(cli.parse_args(["serve", "--fake-miner"])) == 0
+    assert FakeServer.launches == 2
+    assert len(config_loads) == 2
+    assert observed_ready == [True, True]
 
 
 @pytest.mark.parametrize(
@@ -447,3 +505,66 @@ def test_unknown_route_shapes_fail_closed(method, path):
         OperationKind.UNSUPPORTED_MUTATING,
         OperationKind.UNKNOWN_READ,
     }
+
+
+@pytest.mark.asyncio
+async def test_authenticated_restart_drains_and_requests_supervised_relaunch(monkeypatch):
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    system, service = assembled()
+    assert await service.start()
+    app = system.gateway.create_app(service)
+    app.state.restart_requested = False
+    exit_requests = []
+    app.state.request_server_exit = lambda: exit_requests.append(True)
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        unauthorized = await client.post("/_coordinator/restart", json={"operator": "test", "reason": "apply config"})
+        assert unauthorized.status_code == 403
+        response = await client.post(
+            "/_coordinator/restart",
+            headers={"Authorization": "Bearer test-token"},
+            json={"operator": "test", "reason": "apply config"},
+        )
+
+    assert response.status_code == 202
+    assert service.state == ServiceState.STOPPED
+    assert app.state.restart_requested is True
+    assert exit_requests == [True]
+
+
+@pytest.mark.asyncio
+async def test_authenticated_raw_log_follow_reads_configured_file_by_offset(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    system, service = assembled()
+    assert await service.start()
+    log_path = tmp_path / "miner.log"
+    log_path.write_bytes(b"first\r\nsecond\n")
+    system.supervisors["krig"].backend.stdout_log_path = str(log_path)
+    app = system.gateway.create_app(service)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        denied = await client.get("/_coordinator/logs/krig")
+        assert denied.status_code == 403
+        response = await client.get("/_coordinator/logs/krig?offset=7",
+                                   headers={"Authorization": "Bearer test-token"})
+    assert response.status_code == 200
+    assert response.content == b"second\n"
+    assert response.headers["x-log-offset"] == str(log_path.stat().st_size)
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_control_is_disabled_without_operator_token(monkeypatch, tmp_path):
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(tmp_path / "missing-token"))
+    system, service = assembled()
+    assert await service.start()
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        status = await client.get("/_coordinator/status")
+        assert status.status_code == 200
+        response = await client.post("/_coordinator/shutdown", json={"operator": "test", "reason": "stop"})
+    assert response.status_code == 503
+    assert service.state == ServiceState.READY
+    await service.stop()

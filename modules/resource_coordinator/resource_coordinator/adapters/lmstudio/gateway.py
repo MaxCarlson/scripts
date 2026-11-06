@@ -6,14 +6,17 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import secrets
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Set
 
 import anyio
 import httpx
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -28,6 +31,7 @@ from resource_coordinator.adapters.lmstudio.admission import (
 from resource_coordinator.core.durable_state import RequestPhase, StateCodec
 from resource_coordinator.core.events import EventDispatcher, VetoOperation
 from resource_coordinator.core.leases import LeaseManager, LeaseType
+from resource_coordinator.core.operator_credentials import CredentialError, load_token
 from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
@@ -174,6 +178,12 @@ class LMStudioGateway:
         self.state_persistence_path = state_persistence_path or ""
         self._http_client: Optional[httpx.AsyncClient] = None
         self.recovery_token = recovery_token or os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+        try:
+            self.operator_token = load_token()
+        except CredentialError as exc:
+            # Credential storage must never take down inference or miner supervision.
+            self.operator_token = None
+            logger.error("Operator controls unavailable: %s", exc)
         self.admission_controller = admission_controller or AdmissionController(
             event_dispatcher=self.dispatcher, standalone=standalone
         )
@@ -227,12 +237,191 @@ class LMStudioGateway:
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
+            Route("/_coordinator/miner/status", self.handle_coordinator_miner_status, methods=["GET"]),
+            Route("/_coordinator/miner/{action:str}", self.handle_coordinator_miner_control, methods=["POST"]),
+            Route("/_coordinator/gaming/status", self.handle_coordinator_gaming_status, methods=["GET"]),
+            Route("/_coordinator/gaming/{action:str}", self.handle_coordinator_gaming_control, methods=["POST"]),
+            Route("/_coordinator/logs/{process_name:str}", self.handle_coordinator_logs, methods=["GET"]),
+            Route("/_coordinator/restart", self.handle_coordinator_restart, methods=["POST"]),
+            Route("/_coordinator/shutdown", self.handle_coordinator_shutdown, methods=["POST"]),
             Route("/_coordinator/recover", self.handle_coordinator_recover, methods=["POST"]),
             Route("/_coordinator/abort", self.handle_coordinator_abort, methods=["POST"]),
             Route("/{path:path}", self.handle_proxy, methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]),
         ]
         app = Starlette(routes=routes, lifespan=lifespan)
         return app
+
+    def _current_operator_token(self) -> Optional[str]:
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.operator_token
+        if token is None:
+            try:
+                token = load_token()
+                self.operator_token = token
+            except CredentialError:
+                token = None
+        return token or self.recovery_token
+
+    def _operator_authorized(self, request: Request) -> bool:
+        token = self._current_operator_token()
+        supplied = request.headers.get("authorization", "")
+        return bool(token and secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()))
+
+    async def handle_coordinator_logs(self, request: Request) -> Response:
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        service = self.admission_controller.service
+        name = request.path_params.get("process_name", "")
+        supervisor = service.system.supervisors.get(name) if service is not None else None
+        log_path = getattr(getattr(supervisor, "backend", None), "stdout_log_path", None)
+        if not log_path:
+            return JSONResponse({"error": "No captured log is configured for that process"}, status_code=404)
+        try:
+            offset = int(request.query_params.get("offset", "0"))
+            tail_bytes = int(request.query_params.get("tail_bytes", "65536"))
+            if offset < 0 or tail_bytes < 0 or tail_bytes > 262144:
+                raise ValueError
+            path = Path(log_path)
+            size = path.stat().st_size
+            if "offset" not in request.query_params:
+                offset = max(0, size - tail_bytes)
+            elif offset > size:
+                offset = 0
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                content = stream.read(262144)
+                next_offset = stream.tell()
+        except ValueError:
+            return JSONResponse({"error": "offset and tail_bytes must be valid bounded integers"}, status_code=400)
+        except OSError:
+            return JSONResponse({"error": "Configured process log is not currently readable"}, status_code=404)
+        return Response(content, media_type="application/octet-stream", headers={"X-Log-Offset": str(next_offset)})
+
+    async def handle_coordinator_miner_status(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        result = await service.manual_miner_control("status")
+        return JSONResponse(result, status_code=200 if result.get("status") == "ok" else 503)
+
+    async def handle_coordinator_miner_control(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        if not service.is_ready:
+            return JSONResponse({"error": "Coordinator is not ready"}, status_code=409)
+        action = request.path_params.get("action")
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A control request body is required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        duration = payload.get("duration_seconds")
+        threshold = payload.get("until_gpu_below_pct")
+        window = payload.get("window_seconds")
+        if action == "pause" and threshold is not None:
+            if (type(threshold) not in (int, float) or not math.isfinite(threshold) or not 0 <= threshold <= 100
+                    or type(window) not in (int, float) or not math.isfinite(window) or window <= 0):
+                return JSONResponse({"error": "pause GPU condition requires a threshold 0..100 and positive window"},
+                                    status_code=400)
+        elif action == "pause" and (
+            type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0
+        ):
+            return JSONResponse({"error": "pause requires duration_seconds or a GPU-idle condition"}, status_code=400)
+        result = await service.manual_miner_control(
+            action, duration_seconds=duration, threshold_pct=threshold, window_seconds=window
+        )
+        status_code = 200 if result.get("status") in {"running", "paused", "stopped"} else 409
+        if result.get("status") == "invalid":
+            status_code = 400
+        if result.get("status") == "unavailable":
+            status_code = 503
+        result.update(operator=payload["operator"], reason=payload["reason"])
+        return JSONResponse(result, status_code=status_code)
+
+    async def handle_coordinator_gaming_status(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        result = await service.gaming_control("status")
+        return JSONResponse(result, status_code=200 if result.get("status") != "unavailable" else 503)
+
+    async def handle_coordinator_gaming_control(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        if not service.is_ready:
+            return JSONResponse({"error": "Coordinator is not ready"}, status_code=409)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "An attributed gaming request body is required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        action = request.path_params.get("action")
+        result = await service.gaming_control(action)
+        result.update(operator=payload["operator"], reason=payload["reason"])
+        status_code = 200 if result.get("status") in {"active", "inactive"} else 409
+        if result.get("status") == "unavailable":
+            status_code = 503
+        if result.get("status") == "invalid":
+            status_code = 400
+        return JSONResponse(result, status_code=status_code)
+
+    async def _request_lifecycle_action(self, request: Request, *, restart: bool) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        token = self._current_operator_token()
+        if not token:
+            return JSONResponse({"error": "Lifecycle control disabled: configure an operator token"}, status_code=503)
+        supplied = request.headers.get("authorization", "")
+        if not secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Operator and reason are required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        if service.state != ServiceState.READY:
+            return JSONResponse({"error": f"Coordinator is not ready ({service.state.value})"}, status_code=409)
+
+        async def drain_and_exit() -> None:
+            await service.stop(reason=f"{payload['operator']}: {payload['reason']}")
+            if service.state != ServiceState.STOPPED:
+                return
+            request.app.state.restart_requested = restart
+            callback = getattr(request.app.state, "request_server_exit", None)
+            if callback is not None:
+                callback()
+
+        return JSONResponse(
+            {"status": "draining", "action": "restart" if restart else "shutdown"},
+            status_code=202,
+            background=BackgroundTask(drain_and_exit),
+        )
+
+    async def handle_coordinator_restart(self, request: Request) -> Response:
+        """Drain safely, then let the serving supervisor rebuild the service from config."""
+        return await self._request_lifecycle_action(request, restart=True)
+
+    async def handle_coordinator_shutdown(self, request: Request) -> Response:
+        """Drain safely and exit the serving process without an emergency abort."""
+        return await self._request_lifecycle_action(request, restart=False)
 
     async def handle_coordinator_status(self, request: Request) -> JSONResponse:
         """Expose internal coordinator health, lease metrics, and restart inhibition state."""
@@ -269,7 +458,7 @@ class LMStudioGateway:
         svc = self.admission_controller.service
         if not svc:
             return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
-        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        token = self._current_operator_token()
         if not token:
             return JSONResponse({"error": "Abort API disabled: configure an operator token"}, status_code=503)
         supplied = request.headers.get("authorization", "")
