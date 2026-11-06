@@ -7,7 +7,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import getpass
-import json
 import logging
 import os
 import sys
@@ -19,6 +18,16 @@ import httpx
 import uvicorn
 
 from resource_coordinator import __version__
+from resource_coordinator.cli_dispatch import normalize_dispatch_args
+from resource_coordinator.cli_parser import parse_args
+from resource_coordinator.presentation import (
+    emit_error,
+    emit_json,
+    emit_text,
+    render_coordinator_status,
+    render_result,
+    set_color_mode,
+)
 from resource_coordinator.core.operator_credentials import (
     CredentialError,
     doctor as credential_doctor,
@@ -31,330 +40,6 @@ from resource_coordinator.config import build_system, load_config
 logger = logging.getLogger("resource_coordinator")
 
 
-def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        prog="resource-coordinator",
-        description="General-purpose resource coordination framework and LM Studio proxy gateway.",
-    )
-    parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
-    parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging.")
-
-    subparsers = parser.add_subparsers(dest="command", required=True)
-
-    auth_parser = subparsers.add_parser("auth", help="Diagnose or repair local operator credential storage.")
-    auth_sub = auth_parser.add_subparsers(dest="auth_command", required=True)
-    auth_sub.add_parser("doctor", help="Offline credential and ACL check.")
-    auth_sub.add_parser("repair", help="Repair credential ACLs without changing the token.")
-    auth_sub.add_parser("reinitialize", help="Rotate credential while the coordinator is stopped.")
-
-    setup_parser = subparsers.add_parser("setup", help="Install or repair the managed Resource Coordinator setup.")
-    setup_parser.add_argument("-a", "--apply", action="store_true", help="Apply the planned setup changes.")
-    setup_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
-    setup_parser.add_argument(
-        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
-    )
-    setup_parser.add_argument(
-        "-m", "--startup-mode", choices=("boot", "logon"), default="logon",
-        help="Authoritative coordinator startup trigger (default: logon).",
-    )
-    setup_parser.add_argument("--viewer", action="store_true", help="Install the optional visible log viewer at user logon.")
-
-    upgrade_parser = subparsers.add_parser("upgrade", help="Safely activate the current Resource Coordinator source.")
-    upgrade_parser.add_argument("-a", "--apply", action="store_true", help="Apply the prepared upgrade.")
-    upgrade_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
-    upgrade_parser.add_argument(
-        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
-    )
-
-    doctor_parser = subparsers.add_parser("doctor", help="Check installation and operational health.")
-    doctor_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
-
-    repair_parser = subparsers.add_parser("repair", help="Repair RC-owned installation resources.")
-    repair_parser.add_argument("-a", "--apply", action="store_true", help="Apply safe repairs.")
-    repair_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
-    repair_parser.add_argument("-n", "--non-interactive", action="store_true")
-
-    teardown_parser = subparsers.add_parser("teardown", help="Safely decommission Resource Coordinator ownership.")
-    teardown_parser.add_argument("-a", "--apply", action="store_true", help="Apply the planned teardown.")
-    teardown_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
-    teardown_parser.add_argument(
-        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
-    )
-
-    startup_parser = subparsers.add_parser("startup", help="Inspect or manage RC-owned startup tasks.")
-    startup_sub = startup_parser.add_subparsers(dest="startup_command", required=True)
-    startup_status = startup_sub.add_parser("status", help="Show RC startup task state.")
-    startup_status.add_argument("-j", "--json", action="store_true")
-    for startup_action in ("enable", "disable", "repair", "uninstall"):
-        action_parser = startup_sub.add_parser(startup_action, help=f"{startup_action.capitalize()} RC startup tasks.")
-        action_parser.add_argument("-a", "--apply", action="store_true", help="Apply the requested change.")
-        action_parser.add_argument("-j", "--json", action="store_true")
-        action_parser.add_argument("-n", "--non-interactive", action="store_true")
-    startup_install = startup_sub.add_parser("install", help="Install one authoritative RC startup task.")
-    startup_install.add_argument("-m", "--mode", choices=("boot", "logon"), required=True)
-    startup_install.add_argument("-a", "--apply", action="store_true", help="Apply the requested change.")
-    startup_install.add_argument("-j", "--json", action="store_true")
-    startup_install.add_argument("-n", "--non-interactive", action="store_true")
-
-    for action in ("restart", "shutdown"):
-        lifecycle_parser = subparsers.add_parser(action, help=f"Gracefully {action} the running coordinator.")
-        lifecycle_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
-        lifecycle_parser.add_argument(
-            "-r", "--reason", default=f"Operator requested {action}", help="Reason recorded with the request."
-        )
-        lifecycle_parser.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
-
-    # serve
-    serve_parser = subparsers.add_parser("serve", help="Run the coordination reverse proxy service.")
-    serve_parser.add_argument(
-        "-l",
-        "--listen",
-        default=None,
-        help="Host:port to bind the gateway (default: 127.0.0.1:1235).",
-    )
-    serve_parser.add_argument(
-        "-u",
-        "--upstream",
-        default=None,
-        help="Upstream LM Studio URL (default: http://127.0.0.1:1234).",
-    )
-    serve_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    serve_parser.add_argument(
-        "-f",
-        "--fake-miner",
-        "--fake-process",
-        action="store_true",
-        help="Use in-memory fake process backends instead of real processes.",
-    )
-    serve_parser.add_argument(
-        "-m",
-        "--start-miner",
-        action="store_true",
-        dest="start_miner",
-        help="Start the legacy miner target during service startup if configured.",
-    )
-    serve_parser.add_argument(
-        "--start-process", metavar="NAME", help="Explicitly start a configured process at startup."
-    )
-    serve_parser.add_argument(
-        "-s",
-        "--stop-miner-on-shutdown",
-        action="store_true",
-        help="Stop miner during service shutdown if configured.",
-    )
-    serve_parser.add_argument(
-        "--stop-process-on-shutdown", metavar="NAME", help="Stop a coordinator-owned configured process at shutdown."
-    )
-    serve_parser.add_argument(
-        "-t",
-        "--drain-timeout",
-        type=float,
-        default=30.0,
-        help="Timeout in seconds for draining active requests during shutdown (default: 30.0).",
-    )
-    serve_parser.add_argument(
-        "--first-boot",
-        action="store_true",
-        help="Initialize a fresh durable state journal if it does not already exist.",
-    )
-
-    # preflight
-    preflight_parser = subparsers.add_parser(
-        "preflight",
-        help="Run preflight validation on coordinator configuration and environment.",
-    )
-    preflight_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    preflight_parser.add_argument(
-        "-f",
-        "--fake-miner",
-        "--fake-process",
-        action="store_true",
-        help="Use in-memory fake process backends.",
-    )
-    preflight_parser.add_argument("-j", "--json", action="store_true", help="Output preflight result in JSON format.")
-    preflight_parser.add_argument(
-        "--check-live",
-        action="store_true",
-        help="Run read-only live acceptance preflight (checks external miners, locks, LM Studio model, and GPU VRAM).",
-    )
-    preflight_parser.add_argument(
-        "--min-free-vram-mb",
-        type=float,
-        default=1024.0,
-        help="Minimum free GPU VRAM (MiB) required for live preflight (default: 1024.0).",
-    )
-
-    # abort
-    abort_parser = subparsers.add_parser(
-        "abort",
-        help="Trigger emergency abort on running coordinator service.",
-    )
-    abort_parser.add_argument(
-        "-u",
-        "--url",
-        default="http://127.0.0.1:1235",
-        help="Coordinator gateway URL (default: http://127.0.0.1:1235).",
-    )
-    abort_parser.add_argument(
-        "-r",
-        "--reason",
-        default="Manual operator emergency abort",
-        help="Reason for emergency abort.",
-    )
-    abort_parser.add_argument("-j", "--json", action="store_true", help="Output abort response in JSON format.")
-
-    # status
-    status_parser = subparsers.add_parser("status", help="Query coordinator service status.")
-    status_parser.add_argument(
-        "-u",
-        "--url",
-        default="http://127.0.0.1:1235",
-        help="Coordinator gateway URL (default: http://127.0.0.1:1235).",
-    )
-    status_parser.add_argument("-j", "--json", action="store_true", help="Output status in JSON format.")
-
-    # recover
-    recover_parser = subparsers.add_parser("recover", help="Clear restart inhibition on coordinator.")
-    recover_parser.add_argument(
-        "-u",
-        "--url",
-        default="http://127.0.0.1:1235",
-        help="Coordinator gateway URL (default: http://127.0.0.1:1235).",
-    )
-    recover_parser.add_argument(
-        "-r",
-        "--resource",
-        default="gpu.inference",
-        help="Resource name to clear inhibition for (default: gpu.inference).",
-    )
-
-    recover_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Explicitly override unverifiable upstream state.",
-    )
-    recover_parser.add_argument("-n", "--reason", required=True, help="Operator evidence/reason for recovery.")
-
-    # config
-    config_parser = subparsers.add_parser("config", help="Inspect or validate configuration.")
-    config_sub = config_parser.add_subparsers(dest="config_command", required=True)
-    show_parser = config_sub.add_parser("show", help="Show active configuration.")
-    show_parser.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
-    show_parser.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
-
-    validate_parser = config_sub.add_parser("validate", help="Validate a configuration file.")
-    validate_parser.add_argument("-c", "--config", required=True, help="Path to configuration YAML.")
-
-    # miner
-    miner_parser = subparsers.add_parser("miner", help="Manage miner workload and overrides.")
-    miner_sub = miner_parser.add_subparsers(dest="miner_command", required=True)
-    m_status = miner_sub.add_parser("status", help="Get current miner process status.")
-    m_status.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
-    m_status.add_argument("-j", "--json", action="store_true", help="Output in JSON format.")
-
-    for action in ("start", "stop", "resume", "pause"):
-        miner_action = miner_sub.add_parser(action, help=f"Coordinator-mediated miner {action}.")
-        miner_action.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
-        miner_action.add_argument("-r", "--reason", default=f"Operator requested miner {action}.")
-        miner_action.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
-        if action == "pause":
-            pause_mode = miner_action.add_mutually_exclusive_group(required=True)
-            pause_mode.add_argument("-d", "--duration", help="Hold duration, e.g. 2h, 30m, or 90s.")
-            pause_mode.add_argument("--until-gpu-below", type=float, metavar="PCT",
-                                    help="Resume after GPU utilization stays below this percent for a full window.")
-            miner_action.add_argument("--window", default="60s", help="GPU sampling window, e.g. 60s or 2m.")
-    m_status.add_argument("-c", "--config", default=None, help=argparse.SUPPRESS)
-
-    gaming_parser = subparsers.add_parser("gaming", help="Safely unload and restore local models for gaming.")
-    gaming_sub = gaming_parser.add_subparsers(dest="gaming_command", required=True)
-    gaming_status = gaming_sub.add_parser("status", help="Show gaming mode state.")
-    gaming_status.add_argument("-u", "--url", default="http://127.0.0.1:1235")
-    gaming_status.add_argument("-j", "--json", action="store_true")
-    for action in ("start", "stop"):
-        gaming_action = gaming_sub.add_parser(action, help=f"Gaming mode {action}.")
-        gaming_action.add_argument("-u", "--url", default="http://127.0.0.1:1235")
-        gaming_action.add_argument("-r", "--reason", default=f"Operator requested gaming {action}.")
-        gaming_action.add_argument("-j", "--json", action="store_true")
-
-    logs_parser = subparsers.add_parser("logs", help="Read or follow captured raw process output.")
-    logs_parser.add_argument("process_name", help="Configured process name, e.g. krig.")
-    logs_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235")
-    logs_parser.add_argument("--tail-bytes", type=int, default=65536, help="Initial history bytes (max 256 KiB).")
-    logs_parser.add_argument("-f", "--follow", action="store_true", help="Continue polling for appended output.")
-
-    # diagnose
-    diag_parser = subparsers.add_parser(
-        "diagnose",
-        help="Run read-only preflight diagnostic checks on hardware and coordinator.",
-    )
-    diag_parser.add_argument("-c", "--config", default=None, help="Path to configuration YAML.")
-    diag_parser.add_argument(
-        "-u",
-        "--url",
-        default="http://127.0.0.1:1235",
-        help="Coordinator URL (default: http://127.0.0.1:1235).",
-    )
-    diag_parser.add_argument("-j", "--json", action="store_true", help="Output diagnostics in JSON format.")
-
-    # accept
-    accept_parser = subparsers.add_parser(
-        "accept",
-        help="Run automated supervised acceptance trials for miner/LLM coordination.",
-    )
-    accept_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    accept_parser.add_argument(
-        "-m",
-        "--mode",
-        choices=["simulated", "disposable_helper", "live"],
-        default="simulated",
-        help="Execution mode (default: simulated).",
-    )
-    accept_parser.add_argument(
-        "--allow-live-lmstudio",
-        action="store_true",
-        help="Explicitly authorize connection to live LM Studio upstream.",
-    )
-    accept_parser.add_argument(
-        "--allow-real-miner",
-        action="store_true",
-        help="Explicitly authorize launching the configured real miner process.",
-    )
-    accept_parser.add_argument(
-        "-u",
-        "--upstream",
-        default=None,
-        help="Upstream LM Studio URL override.",
-    )
-    accept_parser.add_argument(
-        "-w",
-        "--work-dir",
-        default=None,
-        help="Work directory for isolated run evidence (default: creates temp dir or uses .live_acceptance_work).",
-    )
-    accept_parser.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help="Optional destination path to write acceptance_report.json.",
-    )
-    accept_parser.add_argument(
-        "--trials",
-        nargs="+",
-        default=None,
-        help="Specific trials to run (e.g. --trials T01 or --trials T02 T03 T04).",
-    )
-    accept_parser.add_argument(
-        "--cooldown",
-        type=float,
-        default=None,
-        help="Override cooldown seconds (live mode enforces >= 10.0s).",
-    )
-    accept_parser.add_argument("-j", "--json", action="store_true", help="Output acceptance report in JSON format.")
-
-    return parser.parse_args(args)
-
-
 def _operator_token() -> Optional[str]:
     try:
         return (
@@ -363,7 +48,7 @@ def _operator_token() -> Optional[str]:
             or load_or_create_token()
         )
     except CredentialError as exc:
-        print(f"Operator credential unavailable: {exc}. Run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        emit_error(f"Operator credential unavailable: {exc}. Run 'resource-coordinator system auth doctor'.")
         return None
 
 
@@ -371,7 +56,10 @@ def cmd_auth(args: argparse.Namespace) -> int:
     try:
         if args.auth_command == "doctor":
             report = credential_doctor()
-            print(json.dumps(report, indent=2))
+            if getattr(args, "json", False):
+                emit_json(report)
+            else:
+                render_result("Operator Credentials", report)
             return 0 if (
                 report["credential_valid"]
                 and report["credential_file_readable"]
@@ -380,15 +68,26 @@ def cmd_auth(args: argparse.Namespace) -> int:
             ) else 1
         if args.auth_command == "repair":
             repair_permissions()
-            print("Operator credential ACL repaired; token unchanged.")
+            result = {"status": "repaired", "message": "Operator credential ACL repaired; token unchanged."}
+            if getattr(args, "json", False):
+                emit_json(result)
+            else:
+                emit_text(result["message"], style="green")
             return 0
         if os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN"):
             raise CredentialError("Unset RESOURCE_COORDINATOR_OPERATOR_TOKEN before reinitializing")
         reinitialize_token()
-        print("Operator credential reinitialized. It was not displayed.")
+        result = {"status": "reinitialized", "message": "Operator credential reinitialized. It was not displayed."}
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            emit_text(result["message"], style="green")
         return 0
     except CredentialError as exc:
-        print(f"Authentication maintenance failed: {exc}", file=sys.stderr)
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "auth", "message": str(exc)})
+        else:
+            emit_error(f"Authentication maintenance failed: {exc}")
         return 1
 
 
@@ -430,11 +129,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
         )
         app.state.request_server_exit = lambda: setattr(server, "should_exit", True)
 
-        print(f"Starting Resource Coordinator Gateway v{__version__}")
-        print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
-        print(f"Upstream host: {config.service.upstream_url}")
-        print(f"Managed procs: {list(system.supervisors.keys())}")
-        print(f"Service state: {service.state.value}")
+        emit_text(f"Starting Resource Coordinator Gateway v{__version__}", style="bold")
+        emit_text(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
+        emit_text(f"Upstream host: {config.service.upstream_url}")
+        emit_text(f"Managed procs: {', '.join(system.supervisors.keys()) or 'None'}")
+        emit_text(f"Service state: {service.state.value}")
         server.run()
         if not app.state.restart_requested or service.state.value != "stopped":
             break
@@ -444,7 +143,11 @@ def cmd_serve(args: argparse.Namespace) -> int:
 def cmd_lifecycle(args: argparse.Namespace) -> int:
     token = _operator_token()
     if not token:
-        print("Lifecycle control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        message = "Lifecycle control requires a local operator credential; run 'resource-coordinator system auth doctor'."
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": args.command, "message": message})
+        else:
+            emit_error(message)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/{args.command}"
     try:
@@ -456,15 +159,31 @@ def cmd_lifecycle(args: argparse.Namespace) -> int:
             )
         if response.status_code == 202:
             payload = response.json()
-            print(
-                json.dumps(payload, indent=2)
-                if args.json
-                else f"Coordinator {args.command} requested; draining active work."
-            )
+            if args.json:
+                emit_json(payload)
+            else:
+                render_result(f"Coordinator {args.command.title()}", payload)
             return 0
-        print(f"Coordinator {args.command} failed ({response.status_code}): {response.text}", file=sys.stderr)
+        detail = response.text
+        try:
+            body = response.json()
+            if isinstance(body, dict):
+                detail = body.get("message") or body.get("error") or body.get("reason") or detail
+            else:
+                detail = body
+        except ValueError:
+            body = {"message": detail}
+        if args.json:
+            emit_json({"status": "error", "operation": args.command, "http_status": response.status_code,
+                       "detail": body})
+        else:
+            emit_error(f"Coordinator {args.command} failed ({response.status_code}): {detail}")
     except Exception as exc:
-        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to contact coordinator at {args.url}: {exc}"
+        if args.json:
+            emit_json({"status": "error", "operation": args.command, "message": message})
+        else:
+            emit_error(message)
     return 1
 
 
@@ -476,44 +195,29 @@ def cmd_status(args: argparse.Namespace) -> int:
             if resp.status_code == 200:
                 data = resp.json()
                 if args.json:
-                    print(json.dumps(data, indent=2))
+                    emit_json(data)
                 else:
-                    print(f"Coordinator Status: {data.get('status')}")
-                    print(f"Service State:      {data.get('service_state')}")
-                    print(f"Ready:              {data.get('is_ready')}")
-                    print(f"Upstream URL:       {data.get('upstream_url')}")
-                    gpu_data = data.get("gpu_inference", {})
-                    print(f"Active inferences:  {gpu_data.get('active_count')}")
-                    print(f"Pending requests:   {gpu_data.get('pending_count')}")
-                    print(f"Cooling down:       {gpu_data.get('is_cooling_down')}")
-                    if gpu_data.get("is_cooling_down"):
-                        print(f"Cooldown remaining: {gpu_data.get('cooldown_remaining')}s")
-                    inhibited = gpu_data.get("is_restart_inhibited", False)
-                    print(f"Restart inhibited:  {inhibited}")
-                    if inhibited and gpu_data.get("inhibition"):
-                        inh = gpu_data["inhibition"]
-                        print(f"  Reason:           {inh.get('reason')}")
-                        print(f"  Holder ID:        {inh.get('holder_id')}")
-                    processes = data.get("processes", {})
-                    if processes:
-                        for name, process in processes.items():
-                            print(
-                                f"Process {name}: {process.get('state')} "
-                                f"(PID: {process.get('pid')}, owner: {process.get('lifecycle_owner')}, "
-                                f"coordinator-owned: {process.get('is_coordinator_owned')}, "
-                                f"stopped by coordinator: {process.get('was_stopped_by_coordinator')})"
-                            )
-                    else:
-                        print("Managed processes:  None")
+                    render_coordinator_status(data)
                 return 0
             else:
-                print(
-                    f"Error querying coordinator ({resp.status_code}): {resp.text}",
-                    file=sys.stderr,
-                )
+                detail = resp.text
+                try:
+                    body = resp.json()
+                    detail = body.get("message") or body.get("error") or detail if isinstance(body, dict) else body
+                except ValueError:
+                    body = {"message": detail}
+                if args.json:
+                    emit_json({"status": "error", "operation": "status", "http_status": resp.status_code,
+                               "detail": body})
+                else:
+                    emit_error(f"Error querying coordinator ({resp.status_code}): {detail}")
                 return 1
     except Exception as exc:
-        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to connect to coordinator at {args.url}: {exc}"
+        if args.json:
+            emit_json({"status": "error", "operation": "status", "message": message})
+        else:
+            emit_error(message)
         return 1
 
 
@@ -528,22 +232,30 @@ def cmd_config(args: argparse.Namespace) -> int:
             "policies": [p.__dict__ for p in config.policies],
         }
         if args.json:
-            print(json.dumps(data, indent=2))
+            emit_json(data)
         else:
-            print(f"Version:   {config.version}")
-            print(f"Listen:    {config.service.listen_host}:{config.service.listen_port}")
-            print(f"Upstream:  {config.service.upstream_url}")
-            print(f"Processes: {list(config.processes.keys())}")
-            print(f"Policies:  {[p.name for p in config.policies]}")
+            render_result("Configuration", {
+                "status": "valid", "version": config.version,
+                "listen": f"{config.service.listen_host}:{config.service.listen_port}",
+                "upstream": config.service.upstream_url,
+                "processes": list(config.processes.keys()),
+                "policies": [p.name for p in config.policies],
+            })
         return 0
 
     elif args.config_command == "validate":
         try:
             load_config(args.config)
-            print("Configuration is valid.")
+            if getattr(args, "json", False):
+                emit_json({"status": "valid", "path": args.config})
+            else:
+                render_result("Configuration Validation", {"status": "valid", "path": args.config})
             return 0
         except Exception as exc:
-            print(f"Configuration validation failed: {exc}", file=sys.stderr)
+            if getattr(args, "json", False):
+                emit_json({"status": "error", "path": args.config, "message": str(exc)})
+            else:
+                emit_error(f"Configuration validation failed: {exc}")
             return 1
     return 0
 
@@ -567,19 +279,23 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
                     payload["until_gpu_below_pct"] = args.until_gpu_below
                     payload["window_seconds"] = _parse_hold_duration(args.window)
                 except argparse.ArgumentTypeError as exc:
-                    print(str(exc), file=sys.stderr)
+                    emit_error(str(exc))
                     return 2
             else:
                 try:
                     payload["duration_seconds"] = _parse_hold_duration(args.duration)
                 except argparse.ArgumentTypeError as exc:
-                    print(str(exc), file=sys.stderr)
+                    emit_error(str(exc))
                     return 2
     headers = {}
     if method == "POST":
         token = _operator_token()
         if not token:
-            print("Miner control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+            message = "Miner control requires a local operator credential; run 'resource-coordinator system auth doctor'."
+            if getattr(args, "json", False):
+                emit_json({"status": "error", "operation": args.miner_command, "message": message})
+            else:
+                emit_error(message)
             return 1
         headers["Authorization"] = f"Bearer {token}"
     try:
@@ -588,15 +304,24 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
                                             headers=headers, json=payload)
         data = response.json()
         if response.status_code != 200:
-            print(f"Miner {args.miner_command} failed ({response.status_code}): {data}", file=sys.stderr)
+            if getattr(args, "json", False):
+                emit_json({"status": "error", "operation": args.miner_command,
+                           "http_status": response.status_code, "detail": data})
+            else:
+                reason = data.get("reason") or data.get("error") or data.get("message") if isinstance(data, dict) else str(data)
+                emit_error(f"Miner {args.miner_command} failed ({response.status_code}): {reason}")
             return 1
-        if args.miner_command == "status" or getattr(args, "json", False):
-            print(json.dumps(data, indent=2))
+        if getattr(args, "json", False):
+            emit_json(data)
         else:
-            print(f"Miner control: {data.get('status')}")
+            render_result("Miner", data)
         return 0
     except Exception as exc:
-        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to contact coordinator at {args.url}: {exc}"
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": args.miner_command, "message": message})
+        else:
+            emit_error(message)
         return 1
 
 
@@ -611,7 +336,11 @@ async def _async_gaming_command(args: argparse.Namespace) -> int:
     if action != "status":
         token = _operator_token()
         if not token:
-            print("Gaming control requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+            message = "Gaming control requires a local operator credential; run 'resource-coordinator system auth doctor'."
+            if getattr(args, "json", False):
+                emit_json({"status": "error", "operation": action, "message": message})
+            else:
+                emit_error(message)
             return 1
         headers["Authorization"] = f"Bearer {token}"
         payload = {"operator": getpass.getuser(), "reason": args.reason}
@@ -624,15 +353,24 @@ async def _async_gaming_command(args: argparse.Namespace) -> int:
             )
         data = response.json()
         if response.status_code != 200:
-            print(f"Gaming {action} failed ({response.status_code}): {data}", file=sys.stderr)
+            if getattr(args, "json", False):
+                emit_json({"status": "error", "operation": action, "http_status": response.status_code,
+                           "detail": data})
+            else:
+                reason = data.get("reason") or data.get("error") or data.get("message") if isinstance(data, dict) else str(data)
+                emit_error(f"Gaming {action} failed ({response.status_code}): {reason}")
             return 1
-        if args.json or action == "status":
-            print(json.dumps(data, indent=2))
+        if getattr(args, "json", False):
+            emit_json(data)
         else:
-            print(f"Gaming mode: {data.get('status')}")
+            render_result("Gaming Mode", data)
         return 0
     except Exception as exc:
-        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to contact coordinator at {args.url}: {exc}"
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": action, "message": message})
+        else:
+            emit_error(message)
         return 1
 
 
@@ -643,10 +381,10 @@ def cmd_gaming(args: argparse.Namespace) -> int:
 async def _async_logs(args: argparse.Namespace) -> int:
     token = _operator_token()
     if not token:
-        print("Captured logs require a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        emit_error("Captured logs require a local operator credential; run 'resource-coordinator system auth doctor'.")
         return 1
     if not 0 <= args.tail_bytes <= 262144:
-        print("--tail-bytes must be between 0 and 262144.", file=sys.stderr)
+        emit_error("--tail-bytes must be between 0 and 262144.")
         return 2
     headers = {"Authorization": f"Bearer {token}"}
     offset = None
@@ -659,7 +397,16 @@ async def _async_logs(args: argparse.Namespace) -> int:
                     headers=headers, params=params,
                 )
                 if response.status_code != 200:
-                    print(f"Log request failed ({response.status_code}): {response.text}", file=sys.stderr)
+                    detail = response.text
+                    try:
+                        body = response.json()
+                        if isinstance(body, dict):
+                            detail = body.get("message") or body.get("error") or body.get("reason") or detail
+                        else:
+                            detail = body
+                    except ValueError:
+                        pass
+                    emit_error(f"Log request failed ({response.status_code}): {detail}")
                     return 1
                 data = response.content
                 if data:
@@ -677,7 +424,7 @@ async def _async_logs(args: argparse.Namespace) -> int:
     except KeyboardInterrupt:
         return 0
     except Exception as exc:
-        print(f"Failed to follow logs at {args.url}: {exc}", file=sys.stderr)
+        emit_error(f"Failed to follow logs at {args.url}: {exc}")
         return 1
 
 
@@ -688,10 +435,11 @@ def cmd_logs(args: argparse.Namespace) -> int:
 def cmd_recover(args: argparse.Namespace) -> int:
     token = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
     if not args.force or not token:
-        print(
-            "Recovery requires --force and RESOURCE_COORDINATOR_RECOVERY_TOKEN; verify upstream has stopped first.",
-            file=sys.stderr,
-        )
+        message = "Recovery requires --force and RESOURCE_COORDINATOR_RECOVERY_TOKEN; verify upstream has stopped first."
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "recover", "message": message})
+        else:
+            emit_error(message)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/recover"
     try:
@@ -708,19 +456,30 @@ def cmd_recover(args: argparse.Namespace) -> int:
             )
             if resp.status_code == 200:
                 data = resp.json()
-                if data.get("status") == "cleared":
-                    print(f"Cleared restart inhibition on resource '{args.resource}'. Idle cooldown restored.")
+                if getattr(args, "json", False):
+                    emit_json(data)
                 else:
-                    print(f"No active restart inhibition found on resource '{args.resource}'.")
+                    render_result("Safety Recovery", data)
                 return 0
             else:
-                print(
-                    f"Error recovering coordinator ({resp.status_code}): {resp.text}",
-                    file=sys.stderr,
-                )
+                detail = resp.text
+                try:
+                    body = resp.json()
+                    detail = body.get("message") or body.get("error") or body.get("reason") or detail if isinstance(body, dict) else body
+                except ValueError:
+                    body = {"message": detail}
+                if getattr(args, "json", False):
+                    emit_json({"status": "error", "operation": "recover", "http_status": resp.status_code,
+                               "detail": body})
+                else:
+                    emit_error(f"Error recovering coordinator ({resp.status_code}): {detail}")
                 return 1
     except Exception as exc:
-        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to connect to coordinator at {args.url}: {exc}"
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "recover", "message": message})
+        else:
+            emit_error(message)
         return 1
 
 
@@ -778,25 +537,9 @@ async def _async_diagnose(config_path: Optional[str], url: str, as_json: bool) -
     }
 
     if as_json:
-        print(json.dumps(diag, indent=2))
+        emit_json(diag)
     else:
-        print("=== Resource Coordinator Read-Only Diagnostics ===")
-        print("Execution state: UNVERIFIED. Telemetry does not authorize recovery or restart.")
-        print(f"CPU Utilization:    {cpu_pct:.1f}%")
-        if gpu_metrics:
-            for g in gpu_metrics:
-                print(
-                    f"GPU [{g.device_id}]:        {g.utilization_pct:.1f}% util | {g.memory_used_mb:.0f}/{g.memory_total_mb:.0f} MB VRAM | {g.power_draw_w:.1f} W"
-                )
-        else:
-            print("GPU Telemetry:      nvidia-smi not detected or no NVIDIA devices found")
-        print(f"Gateway ({url}): {'ONLINE' if gateway_online else 'OFFLINE (not running)'}")
-        if miner_status_info:
-            print(
-                f"Managed Miner:      {miner_status_info.get('name')} (State: {miner_status_info.get('state')}, PID: {miner_status_info.get('pid')})"
-            )
-        else:
-            print("Managed Miner:      None configured")
+        render_result("Read-only Diagnostics", diag)
     return 0
 
 
@@ -818,26 +561,9 @@ async def _async_preflight(
         live_result = await run_live_acceptance_preflight(config, min_free_vram_mb=min_free_vram_mb)
         ready = bool(live_result.get("ready_for_supervised_live"))
         if as_json:
-            print(json.dumps(live_result, indent=2))
+            emit_json(live_result)
         else:
-            print(f"Live Acceptance Preflight: {'READY' if ready else 'BLOCKED'}")
-            loaded = live_result.get("loaded_model")
-            if loaded:
-                print(
-                    f"  Loaded Model:     {loaded.get('model_id')} "
-                    f"(source: {loaded.get('source')}, context: {loaded.get('loaded_context_length')})"
-                )
-            vram = live_result.get("vram_headroom")
-            if vram:
-                print(
-                    f"  GPU VRAM Free:    {vram.get('free_mb'):.0f} MiB free / "
-                    f"{vram.get('memory_total_mb'):.0f} MiB total "
-                    f"(min required: {vram.get('min_required_free_mb'):.0f} MiB)"
-                )
-            for warn in live_result.get("warnings", []):
-                print(f"  WARNING: {warn}")
-            for reason in live_result.get("blocking_reasons", []):
-                print(f"  BLOCKING: {reason}")
+            render_result("Live Acceptance Preflight", {"status": "ready" if ready else "blocked", **live_result})
         return 0 if ready else 1
 
     system = build_system(config, use_fake_processes=fake_miner)
@@ -853,11 +579,11 @@ async def _async_preflight(
             "errors": [m for m in messages if m.startswith("ERROR")],
             "warnings": [m for m in messages if m.startswith("WARNING")],
         }
-        print(json.dumps(data, indent=2))
+        emit_json(data)
     else:
-        print(f"Preflight status: {'PASSED' if passed else 'FAILED'}")
-        for msg in messages:
-            print(f"  {msg}")
+        render_result("Preflight", {"status": "passed" if passed else "failed", "messages": messages,
+                                     "errors": [m for m in messages if m.startswith("ERROR")],
+                                     "warnings": [m for m in messages if m.startswith("WARNING")]})
     return 0 if passed else 1
 
 
@@ -911,29 +637,17 @@ async def _async_accept(args: argparse.Namespace) -> int:
 
     try:
         report = await harness.run_all(output_file=getattr(args, "output", None))
+        report_data = report.to_dict()
         if getattr(args, "json", False):
-            print(json.dumps(report.to_dict(), indent=2))
+            emit_json(report_data)
         else:
-            print(f"=== Resource Coordinator Acceptance Run: {report.run_id} ===")
-            print(f"Mode:               {report.mode}")
-            print(f"Process Backend:    {report.process_backend}")
-            print(f"Upstream Type:      {report.upstream_type}")
-            print(f"Verification Level: {report.verification_level}")
-            print(f"Run Directory:      {report.run_dir}")
-            print(f"Trials executed:    {len(report.trials)}")
-            for t in report.trials:
-                print(f"  [{t.status}] {t.trial_id}: {t.name}")
-                if getattr(t, "error", None):
-                    print(f"      Error: {t.error}")
-            summary = report.summary
-            all_passed = bool(summary.get("all_passed"))
-            print(f"Result:             {'PASS' if all_passed else 'FAIL'}")
-            print(f"Passed:             {summary.get('passed', 0)} / {summary.get('total_trials', 0)}")
-            if summary.get("mock_only_trials_skipped"):
-                print(f"Mock trials skipped:{summary.get('mock_only_trials_skipped')}")
+            render_result("Acceptance Run", report_data)
         return 0 if report.summary.get("all_passed") else 1
     except Exception as exc:
-        print(f"Acceptance run failed: {exc}", file=sys.stderr)
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "accept", "message": str(exc)})
+        else:
+            emit_error(f"Acceptance run failed: {exc}")
         return 1
 
 
@@ -944,7 +658,11 @@ def cmd_accept(args: argparse.Namespace) -> int:
 def cmd_abort(args: argparse.Namespace) -> int:
     token = _operator_token()
     if not token:
-        print("Abort requires a local operator credential; run 'resource-coordinator auth doctor'.", file=sys.stderr)
+        message = "Abort requires a local operator credential; run 'resource-coordinator system auth doctor'."
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "abort", "message": message})
+        else:
+            emit_error(message)
         return 1
     url = f"{args.url.rstrip('/')}/_coordinator/abort"
     try:
@@ -957,67 +675,86 @@ def cmd_abort(args: argparse.Namespace) -> int:
             if resp.status_code == 200:
                 data = resp.json()
                 if args.json:
-                    print(json.dumps(data, indent=2))
+                    emit_json(data)
                 else:
-                    print("Emergency abort acknowledged by coordinator:")
-                    print(f"  Status:        {data.get('status')}")
-                    print(f"  Service State: {data.get('service_state') or data.get('state')}")
-                    print(f"  Reason:        {data.get('reason')}")
-                    if data.get("inhibited_resources"):
-                        print(f"  Inhibited:     {', '.join(data['inhibited_resources'])}")
+                    render_result("Emergency Abort", data)
                 return 0
             else:
-                print(
-                    f"Error triggering coordinator abort ({resp.status_code}): {resp.text}",
-                    file=sys.stderr,
-                )
+                detail = resp.text
+                try:
+                    body = resp.json()
+                    detail = body.get("message") or body.get("error") or body.get("reason") or detail if isinstance(body, dict) else body
+                except ValueError:
+                    body = {"message": detail}
+                if getattr(args, "json", False):
+                    emit_json({"status": "error", "operation": "abort", "http_status": resp.status_code,
+                               "detail": body})
+                else:
+                    emit_error(f"Error triggering coordinator abort ({resp.status_code}): {detail}")
                 return 1
     except Exception as exc:
-        print(f"Failed to connect to coordinator at {args.url}: {exc}", file=sys.stderr)
+        message = f"Failed to connect to coordinator at {args.url}: {exc}"
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "abort", "message": message})
+        else:
+            emit_error(message)
         return 1
 
 
 def main(argv: Optional[List[str]] = None) -> None:
-    args = parse_args(argv)
-    log_level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    parsed = parse_args(argv)
+    set_color_mode(parsed.color)
+    args = normalize_dispatch_args(parsed)
+    log_level = logging.DEBUG if args.verbose else logging.WARNING
+    logging.basicConfig(level=log_level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+                        stream=sys.stderr)
+    logging.getLogger("httpx").setLevel(logging.DEBUG if args.verbose else logging.WARNING)
 
-    code = 0
-    if args.command == "auth":
-        code = cmd_auth(args)
-    elif args.command in {"setup", "upgrade", "teardown", "doctor", "startup", "repair"}:
-        from resource_coordinator.installation import handle_installation_command
-        try:
-            code = handle_installation_command(args)
-        except Exception as exc:
-            print(f"Resource Coordinator {args.command} failed: {exc}", file=sys.stderr)
-            code = 1
-    elif args.command == "serve":
-        code = cmd_serve(args)
-    elif args.command in {"restart", "shutdown"}:
-        code = cmd_lifecycle(args)
-    elif args.command == "status":
-        code = cmd_status(args)
-    elif args.command == "recover":
-        code = cmd_recover(args)
-    elif args.command == "config":
-        code = cmd_config(args)
-    elif args.command == "miner":
-        code = cmd_miner(args)
-    elif args.command == "gaming":
-        code = cmd_gaming(args)
-    elif args.command == "logs":
-        code = cmd_logs(args)
-    elif args.command == "diagnose":
-        code = cmd_diagnose(args)
-    elif args.command == "preflight":
-        code = cmd_preflight(args)
-    elif args.command == "accept":
-        code = cmd_accept(args)
-    elif args.command == "abort":
-        code = cmd_abort(args)
-
+    operation_id = args.operation_id
+    handlers = {
+        "status": cmd_status,
+        "control.miner.status": cmd_miner, "control.miner.start": cmd_miner,
+        "control.miner.stop": cmd_miner, "control.miner.pause": cmd_miner,
+        "control.miner.resume": cmd_miner,
+        "control.gaming.status": cmd_gaming, "control.gaming.on": cmd_gaming,
+        "control.gaming.off": cmd_gaming,
+        "service.restart": cmd_lifecycle, "service.shutdown": cmd_lifecycle,
+        "service.abort": cmd_abort, "service.recover": cmd_recover, "service.run": cmd_serve,
+        "system.setup": _cmd_installation, "system.upgrade": _cmd_installation,
+        "system.repair": _cmd_installation, "system.teardown": _cmd_installation,
+        "system.startup.status": _cmd_installation, "system.startup.install": _cmd_installation,
+        "system.startup.enable": _cmd_installation, "system.startup.disable": _cmd_installation,
+        "system.startup.repair": _cmd_installation, "system.startup.uninstall": _cmd_installation,
+        "system.auth.doctor": cmd_auth, "system.auth.repair": cmd_auth,
+        "system.auth.reinitialize": cmd_auth,
+        "check.health": _cmd_installation, "check.telemetry": cmd_diagnose,
+        "check.preflight": cmd_preflight, "check.accept": cmd_accept,
+        "config.show": cmd_config, "config.validate": cmd_config,
+        "logs": cmd_logs,
+    }
+    handler = handlers.get(operation_id)
+    if handler is None:
+        emit_error(f"Unsupported Resource Coordinator operation: {operation_id}")
+        sys.exit(2)
+    try:
+        code = handler(args)
+    except Exception as exc:
+        if args.verbose:
+            logger.exception("Operation %s failed", operation_id)
+        else:
+            logger.error("Operation %s failed: %s", operation_id, exc)
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": operation_id, "message": str(exc)})
+        else:
+            emit_error(f"Resource Coordinator {operation_id} failed: {exc}")
+        code = 1
     sys.exit(code)
+
+
+def _cmd_installation(args: argparse.Namespace) -> int:
+    from resource_coordinator.installation import handle_installation_command
+
+    return handle_installation_command(args)
 
 
 if __name__ == "__main__":

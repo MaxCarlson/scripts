@@ -103,7 +103,9 @@ def test_cli_config_show_text(capsys):
     code = cmd_config(args)
     assert code == 0
     captured = capsys.readouterr()
-    assert "Version:   1.0" in captured.out
+    assert "Configuration" in captured.out
+    assert "Version" in captured.out
+    assert "1.0" in captured.out
     assert "127.0.0.1:1235" in captured.out
 
 
@@ -114,7 +116,8 @@ def test_cli_config_validate(tmp_path, capsys):
     code = cmd_config(args)
     assert code == 0
     captured = capsys.readouterr()
-    assert "Configuration is valid." in captured.out
+    assert "Configuration Validation" in captured.out
+    assert "valid" in captured.out
 
 
 def test_cli_parse_args_serve_options():
@@ -184,7 +187,7 @@ def test_auth_doctor_is_offline_and_never_prints_token(tmp_path, monkeypatch, ca
     monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
-    args = parse_args(["auth", "doctor"])
+    args = parse_args(["auth", "doctor", "-j"])
 
     assert cmd_auth(args) == 0
     output = json.loads(capsys.readouterr().out)
@@ -270,6 +273,8 @@ def test_cli_status_displays_managed_process_state(monkeypatch, capsys):
     args = parse_args(["status", "--url", "http://127.0.0.1:1235"])
     assert cmd_status(args) == 0
     output = capsys.readouterr().out
-    assert "Process background_worker: stopped" in output
-    assert "stopped by coordinator: True" in output
-    assert "Cooldown remaining: 17.2s" in output
+    assert "Managed Processes" in output
+    assert "background_worker" in output
+    assert "unmanaged" in output
+    assert "Stopped by coordinator" in output
+    assert "Active (17.2s remaining)" in output

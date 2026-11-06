@@ -614,7 +614,7 @@ class ManagedInstallation:
             ):
                 raise InstallationError(
                     "The shared operator credential is not usable by the interactive user and SYSTEM. "
-                    "Run 'resource-coordinator auth doctor' and repair its ACL or explicitly reinitialize it."
+                    "Run 'resource-coordinator system auth doctor' and repair its ACL or explicitly reinitialize it."
                 )
             completed.append("operator credential")
             stage = "writing the managed launcher"
@@ -690,7 +690,7 @@ class ManagedInstallation:
             "mining_warning": mining_warning,
             "service_activation": activation,
             "runtime_upgrade_available": upgrade_available,
-            "recommendation": "Run 'resource-coordinator upgrade --apply' to activate the current source."
+            "recommendation": "Run 'resource-coordinator system upgrade --apply' to activate the current source."
             if upgrade_available else None,
             "preserved": [str(self.paths.state), str(self.paths.logs)],
         }
@@ -1584,7 +1584,7 @@ class ManagedInstallation:
         except Exception as exc:
             raise InstallationError(
                 "Cannot authenticate teardown with the existing operator credential; no resource was changed. "
-                "Run 'resource-coordinator auth doctor' offline and repair the credential first."
+                "Run 'resource-coordinator system auth doctor' offline and repair the credential first."
             ) from exc
         try:
             response = self._request_graceful_shutdown(token)
@@ -1720,7 +1720,7 @@ class ManagedInstallation:
                     f"(verified PID(s): {live_owned}); the original coordinator's process-group handle "
                     "cannot be recovered by starting a new instance. Offline teardown therefore refuses "
                     "to stop the miner or remove its startup task. Restore coordinator control and retry "
-                    "'resource-coordinator teardown --apply'; if the original supervisor cannot be restored, "
+                    "'resource-coordinator system teardown --apply'; if the original supervisor cannot be restored, "
                     "leave the miner and installation intact until the miner exits."
                 )
             else:
@@ -1867,21 +1867,20 @@ def _powershell_backend(paths: InstallationPaths) -> WindowsStartupTaskBackend:
 
 def handle_installation_command(args: Any) -> int:
     """CLI entry point; command execution remains separate from core logic for testing."""
+    from resource_coordinator.presentation import emit_json, render_result
+
     paths = InstallationPaths.discover()
     backend = _powershell_backend(paths)
     manager = ManagedInstallation(paths, backend)
     if args.command == "upgrade":
         result = manager.upgrade(apply=args.apply, non_interactive=args.non_interactive)
         if getattr(args, "json", False):
-            print(json.dumps(result, indent=2))
+            emit_json(result)
         else:
-            print(f"Resource Coordinator upgrade: {result.get('status')} ({result.get('phase', 'PREFLIGHT')})")
-            for blocker in result.get("preflight", {}).get("blockers", []):
-                print(f"  BLOCKED: {blocker}")
-            if result.get("blocker"):
-                print(f"  BLOCKED: {result['blocker']}")
+            display = dict(result)
             if result.get("status") == "planned":
-                print("  Apply with: resource-coordinator upgrade --apply")
+                display["next_command"] = "resource-coordinator system upgrade --apply"
+            render_result("Resource Coordinator Upgrade", display)
         return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
     if args.command == "setup":
         result = manager.setup(
@@ -1907,12 +1906,7 @@ def handle_installation_command(args: Any) -> int:
     else:
         raise InstallationError(f"Unsupported installation command: {args.command}")
     if getattr(args, "json", False):
-        print(json.dumps(result, indent=2))
+        emit_json(result)
     else:
-        status = result.get("status", "reported")
-        print(f"Resource Coordinator {args.command}: {status}")
-        for key, value in result.items():
-            if key == "status":
-                continue
-            print(f"{key.replace('_', ' ').capitalize()}: {value}")
+        render_result(f"Resource Coordinator {args.command.title()}", result)
     return 0

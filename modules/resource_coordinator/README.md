@@ -1,5 +1,60 @@
 # Resource Coordinator MVP
 
+## Command line
+
+The CLI groups operations by intent. Human-readable, color-aware output is the
+default; add `-j`/`--json` to structured commands for one JSON document on
+stdout. `--color auto|always|never` controls human output. In `auto` mode,
+`NO_COLOR` or redirected output disables color; explicit `always` and `never`
+take precedence. Verbose transport diagnostics use stderr (`-v`/`--verbose`).
+Captured miner logs remain an unformatted raw stream.
+
+```text
+resource-coordinator
+├── status
+├── control
+│   ├── miner status|start|stop|pause|resume
+│   └── gaming status|on|off
+├── service restart|shutdown|abort|recover|run
+├── system setup|upgrade|repair|teardown
+│   ├── startup status|install|enable|disable|repair|uninstall
+│   └── auth doctor|repair|reinitialize
+├── config show|validate
+├── check health|telemetry|preflight|accept
+└── logs
+```
+
+Examples:
+
+```powershell
+resource-coordinator status
+resource-coordinator control miner pause -d 2h
+resource-coordinator control gaming on
+resource-coordinator service restart --reason "activate reviewed settings"
+resource-coordinator system upgrade --apply --json
+resource-coordinator check health --json
+resource-coordinator logs miner --follow
+```
+
+Existing command paths remain supported as compatibility aliases, with the
+same flags and operational behavior:
+
+| Existing path | Canonical path |
+| --- | --- |
+| `miner status/start/stop/pause/resume` | `control miner status/start/stop/pause/resume` |
+| `gaming status/start/stop` | `control gaming status/on/off` |
+| `restart/shutdown/abort/recover/serve` | `service restart/shutdown/abort/recover/run` |
+| `setup/upgrade/repair/teardown` | `system setup/upgrade/repair/teardown` |
+| `startup <action>` | `system startup <action>` |
+| `auth <action>` | `system auth <action>` |
+| `doctor/diagnose/preflight/accept` | `check health/telemetry/preflight/accept` |
+| `config show/validate`, `status`, `logs` | Unchanged |
+
+`serve` remains supported for existing managed launchers. `service restart`
+restarts the running coordinator; `system upgrade` activates updated code.
+`service recover` clears a safety inhibition only through its existing
+authorization checks. These operations are deliberately distinct.
+
 The Resource Coordinator is a loopback reverse proxy for LM Studio that pauses
 one coordinator-owned Windows process while protected model work is active. It
 restarts that process after the configured idle cooldown. Use it with a process
@@ -212,22 +267,22 @@ If the copied template still has a placeholder wallet/worker or no miner is
 configured, setup returns `degraded` and names the missing mining configuration.
 
 ```powershell
-resource-coordinator setup
-resource-coordinator setup --apply
-resource-coordinator setup --apply --viewer
-resource-coordinator doctor --json
-resource-coordinator upgrade
-resource-coordinator upgrade --apply
-resource-coordinator upgrade --apply --json
-resource-coordinator startup status --json
-resource-coordinator startup install -m logon --apply
-resource-coordinator startup install -m boot --apply
-resource-coordinator startup disable --apply
-resource-coordinator startup enable --apply
-resource-coordinator startup repair --apply
-resource-coordinator startup uninstall --apply
-resource-coordinator teardown
-resource-coordinator teardown --apply
+resource-coordinator system setup
+resource-coordinator system setup --apply
+resource-coordinator system setup --apply --viewer
+resource-coordinator check health --json
+resource-coordinator system upgrade
+resource-coordinator system upgrade --apply
+resource-coordinator system upgrade --apply --json
+resource-coordinator system startup status --json
+resource-coordinator system startup install -m logon --apply
+resource-coordinator system startup install -m boot --apply
+resource-coordinator system startup disable --apply
+resource-coordinator system startup enable --apply
+resource-coordinator system startup repair --apply
+resource-coordinator system startup uninstall --apply
+resource-coordinator system teardown
+resource-coordinator system teardown --apply
 ```
 
 The optional `--viewer` opens a separate read-only PowerShell window after
@@ -242,7 +297,7 @@ source fingerprint, protected gateway controls, upstream, and effective GPU
 power limit before restoring prior mining activity. A legacy runtime without a
 fingerprint is treated as needing migration. If any ownership, shutdown, task,
 runtime, or GPU check is uncertain, upgrade fails closed and records the exact
-phase for `resource-coordinator upgrade --apply` to safely retry. Use
+phase for `resource-coordinator system upgrade --apply` to safely retry. Use
 `--non-interactive` to reject the transition before shutdown when UAC is needed.
 The command does not force-terminate the coordinator or miner.
 
@@ -252,7 +307,7 @@ does not change when the source checkout later advances. `doctor` reports
 or `unknown`. `setup` remains a non-interrupting installation repair and
 recommends `upgrade --apply` when a ready process is running old code.
 
-For a coordinator-owned miner start, use `resource-coordinator miner start`;
+For a coordinator-owned miner start, use `resource-coordinator control miner start`;
 do not launch KRig directly. The service task's configured run level supplies
 the NVIDIA privileges needed by its child process. `doctor` compares the
 configured and observed GPU power limit, reports task inventory errors, checks
@@ -280,9 +335,9 @@ interactive user and LocalSystem access before registering startup.
 Credential diagnostics and recovery do not call the coordinator:
 
 ```powershell
-resource-coordinator auth doctor
-resource-coordinator auth repair
-resource-coordinator auth reinitialize
+resource-coordinator system auth doctor
+resource-coordinator system auth repair
+resource-coordinator system auth reinitialize
 ```
 
 `repair` reapplies restrictive ACLs without rotating the token. `reinitialize`
@@ -301,15 +356,15 @@ use `gaming stop` to restore the saved model and return miner control to normal
 coordination before issuing a miner mutation.
 
 ```powershell
-python -m resource_coordinator.cli miner status
-python -m resource_coordinator.cli miner pause --duration 2h
-python -m resource_coordinator.cli miner pause --until-gpu-below 20 --window 60s
-python -m resource_coordinator.cli miner stop
-python -m resource_coordinator.cli miner resume
-python -m resource_coordinator.cli miner start
-python -m resource_coordinator.cli gaming status
-python -m resource_coordinator.cli gaming start
-python -m resource_coordinator.cli gaming stop
+python -m resource_coordinator.cli control miner status
+python -m resource_coordinator.cli control miner pause --duration 2h
+python -m resource_coordinator.cli control miner pause --until-gpu-below 20 --window 60s
+python -m resource_coordinator.cli control miner stop
+python -m resource_coordinator.cli control miner resume
+python -m resource_coordinator.cli control miner start
+python -m resource_coordinator.cli control gaming status
+python -m resource_coordinator.cli control gaming on
+python -m resource_coordinator.cli control gaming off
 python -m resource_coordinator.cli logs miner --follow
 python -m resource_coordinator.cli logs krig_miner --follow
 ```
