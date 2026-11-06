@@ -13,7 +13,8 @@
 2. [x] Implement Windows native listener identity and fail-closed upgrade diagnostics.
 3. [x] Implement schema-aware human renderers while preserving JSON.
 4. [x] Run focused and regression validation, update docs, review scoped diff.
-5. [ ] Commit, integrate into latest main, and push after validating remote state.
+5. [x] Commit as `a7fe8b93`, fast-forward local `main`, verify remote `main` was still at
+   the reviewed parent, and push the integrated implementation.
 
 ## Latest validation
 
