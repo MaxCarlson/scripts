@@ -648,7 +648,7 @@ class ProcessSupervisor:
 
             success = await self.backend.stop(timeout=timeout)
             if success:
-                if origin == "coordinator":
+                if origin in {"coordinator", "manual", "gaming"}:
                     self.was_stopped_by_coordinator = True
                     self.consecutive_unexpected_exits = 0
                     self._stopped_external = info.lifecycle_owner == ProcessLifecycleOwner.EXTERNAL

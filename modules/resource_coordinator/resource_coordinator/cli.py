@@ -197,8 +197,29 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         miner_action.add_argument("-r", "--reason", default=f"Operator requested miner {action}.")
         miner_action.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
         if action == "pause":
-            miner_action.add_argument("-d", "--duration", required=True, help="Hold duration, e.g. 2h, 30m, or 90s.")
+            pause_mode = miner_action.add_mutually_exclusive_group(required=True)
+            pause_mode.add_argument("-d", "--duration", help="Hold duration, e.g. 2h, 30m, or 90s.")
+            pause_mode.add_argument("--until-gpu-below", type=float, metavar="PCT",
+                                    help="Resume after GPU utilization stays below this percent for a full window.")
+            miner_action.add_argument("--window", default="60s", help="GPU sampling window, e.g. 60s or 2m.")
     m_status.add_argument("-c", "--config", default=None, help=argparse.SUPPRESS)
+
+    gaming_parser = subparsers.add_parser("gaming", help="Safely unload and restore local models for gaming.")
+    gaming_sub = gaming_parser.add_subparsers(dest="gaming_command", required=True)
+    gaming_status = gaming_sub.add_parser("status", help="Show gaming mode state.")
+    gaming_status.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    gaming_status.add_argument("-j", "--json", action="store_true")
+    for action in ("start", "stop"):
+        gaming_action = gaming_sub.add_parser(action, help=f"Gaming mode {action}.")
+        gaming_action.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+        gaming_action.add_argument("-r", "--reason", default=f"Operator requested gaming {action}.")
+        gaming_action.add_argument("-j", "--json", action="store_true")
+
+    logs_parser = subparsers.add_parser("logs", help="Read or follow captured raw process output.")
+    logs_parser.add_argument("process_name", help="Configured process name, e.g. krig.")
+    logs_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    logs_parser.add_argument("--tail-bytes", type=int, default=65536, help="Initial history bytes (max 256 KiB).")
+    logs_parser.add_argument("-f", "--follow", action="store_true", help="Continue polling for appended output.")
 
     # diagnose
     diag_parser = subparsers.add_parser(
@@ -439,11 +460,19 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
         method, endpoint = "POST", args.miner_command
         payload = {"operator": getpass.getuser(), "reason": args.reason}
         if args.miner_command == "pause":
-            try:
-                payload["duration_seconds"] = _parse_hold_duration(args.duration)
-            except argparse.ArgumentTypeError as exc:
-                print(str(exc), file=sys.stderr)
-                return 2
+            if args.until_gpu_below is not None:
+                try:
+                    payload["until_gpu_below_pct"] = args.until_gpu_below
+                    payload["window_seconds"] = _parse_hold_duration(args.window)
+                except argparse.ArgumentTypeError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 2
+            else:
+                try:
+                    payload["duration_seconds"] = _parse_hold_duration(args.duration)
+                except argparse.ArgumentTypeError as exc:
+                    print(str(exc), file=sys.stderr)
+                    return 2
     headers = {}
     if method == "POST":
         token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
@@ -473,6 +502,91 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
 
 def cmd_miner(args: argparse.Namespace) -> int:
     return asyncio.run(_async_miner_command(args))
+
+
+async def _async_gaming_command(args: argparse.Namespace) -> int:
+    action = args.gaming_command
+    headers = {}
+    payload = None
+    if action != "status":
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
+            "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
+        )
+        if not token:
+            print("Gaming control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+            return 1
+        headers["Authorization"] = f"Bearer {token}"
+        payload = {"operator": getpass.getuser(), "reason": args.reason}
+    try:
+        async with httpx.AsyncClient(timeout=180.0) as client:
+            response = await client.request(
+                "GET" if action == "status" else "POST",
+                f"{args.url.rstrip('/')}/_coordinator/gaming/{action}",
+                headers=headers, json=payload,
+            )
+        data = response.json()
+        if response.status_code != 200:
+            print(f"Gaming {action} failed ({response.status_code}): {data}", file=sys.stderr)
+            return 1
+        if args.json or action == "status":
+            print(json.dumps(data, indent=2))
+        else:
+            print(f"Gaming mode: {data.get('status')}")
+        return 0
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_gaming(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_gaming_command(args))
+
+
+async def _async_logs(args: argparse.Namespace) -> int:
+    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
+        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
+    )
+    if not token:
+        print("Captured logs require RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+        return 1
+    if not 0 <= args.tail_bytes <= 262144:
+        print("--tail-bytes must be between 0 and 262144.", file=sys.stderr)
+        return 2
+    headers = {"Authorization": f"Bearer {token}"}
+    offset = None
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            while True:
+                params = {"tail_bytes": args.tail_bytes} if offset is None else {"offset": offset}
+                response = await client.get(
+                    f"{args.url.rstrip('/')}/_coordinator/logs/{args.process_name}",
+                    headers=headers, params=params,
+                )
+                if response.status_code != 200:
+                    print(f"Log request failed ({response.status_code}): {response.text}", file=sys.stderr)
+                    return 1
+                data = response.content
+                if data:
+                    stream = getattr(sys.stdout, "buffer", None)
+                    if stream is not None:
+                        stream.write(data)
+                        stream.flush()
+                    else:
+                        sys.stdout.write(data.decode("utf-8", errors="replace"))
+                        sys.stdout.flush()
+                offset = int(response.headers["x-log-offset"])
+                if not args.follow:
+                    return 0
+                await asyncio.sleep(0.5)
+    except KeyboardInterrupt:
+        return 0
+    except Exception as exc:
+        print(f"Failed to follow logs at {args.url}: {exc}", file=sys.stderr)
+        return 1
+
+
+def cmd_logs(args: argparse.Namespace) -> int:
+    return asyncio.run(_async_logs(args))
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
@@ -787,6 +901,10 @@ def main(argv: Optional[List[str]] = None) -> None:
         code = cmd_config(args)
     elif args.command == "miner":
         code = cmd_miner(args)
+    elif args.command == "gaming":
+        code = cmd_gaming(args)
+    elif args.command == "logs":
+        code = cmd_logs(args)
     elif args.command == "diagnose":
         code = cmd_diagnose(args)
     elif args.command == "preflight":

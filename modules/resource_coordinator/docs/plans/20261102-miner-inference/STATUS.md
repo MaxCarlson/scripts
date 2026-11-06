@@ -1,5 +1,15 @@
 # Status Ledger: Miner / Local LLM Coordination
 
+## 2026-11-06 continuation checkpoint
+
+The follow-up implementation now provides authenticated `/restart` and `/shutdown` routes with lease draining and a `serve`-owned relaunch loop; the handler distinguishes the expected shutdown latch from an earlier safety block. Protected inference routing in `local_agent_bridge` defaults to the coordinator and rejects direct LM Studio inference URLs.
+
+Coordinator-mediated `miner start|stop|resume|pause|status` now uses safe-idle arbitration and durable timed holds. `miner pause --until-gpu-below PCT --window WINDOW` persists its condition and rolling samples, samples only with the miner verified stopped, and resumes only after a complete valid low-utilization window and cleared safety gates. Missing/invalid telemetry never counts as idle.
+
+Gaming mode snapshots loaded LM Studio models through the native v1 API, persists transitions, stops only the coordinator-owned miner, unloads models, and restores models before mining resumes. Raw authenticated log reads support byte offsets; the `logs --follow` client has no miner lifecycle effect. Model/control operations were tested only against fake miners and mock HTTP/telemetry providers. No live activation or inference was performed.
+
+Focused verification: 70 passed, 1 deselected across lifecycle, service, CLI, model-control, and safety-review tests. Ruff lint and `git diff --check` passed on changed Python files. Ruff format check reports formatting drift under installed Ruff 0.14.8, including pre-existing lines; no whole-file formatting rewrite was applied. The deployment still runs from the shared `main` checkout and cannot use these new endpoints until a separately authorized deploy/merge step; live activation was not attempted.
+
 **Plan ID:** `miner-inference-coordination-20261102`  
 **Current Phase:** Stage 3 Live Hardware Acceptance COMPLETE (All Trials T01–T04 Verified on Real Hardware with Physical Compute Load & Stratum Connectivity; Integration Ready)  
 **Timestamp:** 2026-11-02T17:05:00-08:00  

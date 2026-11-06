@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
+import os
 import time
 from enum import Enum
 from pathlib import Path
@@ -57,6 +58,8 @@ class CoordinatorService:
         self.start_process_on_ready = start_process_on_ready
         self.stop_process_on_shutdown = stop_process_on_shutdown
         self.first_boot = bool(kwargs.get("first_boot", False))
+        self._lmstudio_client_factory = kwargs.get("lmstudio_client_factory")
+        self._gpu_monitor = kwargs.get("gpu_monitor")
         self.supervision_poll_interval = float(kwargs.get("supervision_poll_interval", 1.0))
         self._supervision_task: Optional[asyncio.Task] = None
         self._state = ServiceState.CREATED
@@ -216,6 +219,8 @@ class CoordinatorService:
                 except Exception as exc:
                     raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
                 await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
+                if loaded_state.gaming_mode.get("state") != "inactive" and self.system.miner_adapter is not None:
+                    self.system.miner_adapter.supervisor.set_manual_override(True, persist=False)
                 for supervisor in self.system.supervisors.values():
                     if not supervisor.state_persistence_path:
                         supervisor.state_persistence_path = str(state_path)
@@ -396,11 +401,34 @@ class CoordinatorService:
             "managed_processes": list(self.system.supervisors),
         }
 
+    async def _persist_supervisor_state(self, supervisor: Any, *, was_stopped_by_coordinator: Optional[bool] = None) -> None:
+        """Strictly persist a process snapshot before or after a privileged manual transition."""
+        path = getattr(self.system.config.service, "state_persistence_path", "")
+        if not path:
+            raise RuntimeError("Durable state persistence is required for process control")
+        info = await supervisor.status()
+        running = info.state in {ProcessState.RUNNING, ProcessState.EXTERNAL_RUNNING}
+        StateCodec.record_process_state(
+            path,
+            supervisor.name,
+            pid=info.pid if running else None,
+            create_time=info.create_time if running else None,
+            lifecycle_owner=info.lifecycle_owner.value,
+            was_stopped_by_coordinator=(
+                supervisor.was_stopped_by_coordinator
+                if was_stopped_by_coordinator is None else was_stopped_by_coordinator
+            ),
+            is_manual_override=supervisor.is_manual_override,
+            manual_override_until=supervisor.manual_override_until,
+        )
+
     async def manual_miner_control(
         self,
         action: str,
         *,
         duration_seconds: Optional[float] = None,
+        threshold_pct: Optional[float] = None,
+        window_seconds: Optional[float] = None,
         timeout_seconds: float = 10.0,
     ) -> Dict[str, Any]:
         """Perform a miner mutation only while all GPU claims and cooldowns are clear."""
@@ -416,36 +444,66 @@ class CoordinatorService:
                 "status": "ok", "process": info.to_dict(),
                 "manual_override": adapter.is_manual_override,
                 "manual_override_until": adapter.supervisor.manual_override_until,
+                "gpu_idle_condition": StateCodec.load(state_path).gpu_idle_condition if state_path else {},
             }
         if not state_path:
             return {"status": "unavailable", "reason": "Durable state persistence is required for manual controls"}
-        if action == "pause" and (
+        gpu_condition = threshold_pct is not None or window_seconds is not None
+        if action == "pause" and gpu_condition and (
+            threshold_pct is None or window_seconds is None or not math.isfinite(threshold_pct)
+            or not 0 <= threshold_pct <= 100 or not math.isfinite(window_seconds) or window_seconds <= 0
+        ):
+            return {"status": "invalid", "reason": "GPU-idle pause requires threshold 0..100 and a positive window"}
+        if action == "pause" and not gpu_condition and (
             duration_seconds is None or not math.isfinite(duration_seconds) or duration_seconds <= 0
         ):
-            return {"status": "invalid", "reason": "Pause requires a finite positive duration"}
+            return {"status": "invalid", "reason": "Pause requires a finite positive duration or GPU-idle condition"}
 
         supervisor = adapter.supervisor
         async def mutate() -> None:
             if not self.is_ready:
                 raise RuntimeError("Coordinator stopped admitting work")
             if action in {"pause", "stop"}:
-                deadline = time.time() + duration_seconds if action == "pause" else None
-                supervisor.set_manual_override(True, until=deadline)
+                if gpu_condition:
+                    info = await adapter.status()
+                    if info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                        raise RuntimeError("GPU-idle pause requires a running coordinator-owned miner")
+                deadline = time.time() + duration_seconds if action == "pause" and not gpu_condition else None
+                supervisor.set_manual_override(True, persist=False, until=deadline)
+                await self._persist_supervisor_state(supervisor, was_stopped_by_coordinator=True)
                 stopped = await adapter.pause(timeout=timeout_seconds, origin="manual")
                 verified = await adapter.status()
                 if not stopped or verified.state != ProcessState.STOPPED:
-                    supervisor.set_manual_override(False)
+                    supervisor.set_manual_override(False, persist=False)
+                    await self._persist_supervisor_state(supervisor)
+                    if gpu_condition:
+                        StateCodec.record_gpu_idle_condition(state_path)
                     raise RuntimeError("Miner stop was not verified; manual hold cleared")
+                await self._persist_supervisor_state(supervisor, was_stopped_by_coordinator=True)
+                if gpu_condition:
+                    StateCodec.record_gpu_idle_condition(
+                        state_path, threshold_pct=threshold_pct, window_seconds=window_seconds, samples=[]
+                    )
                 result.update(status="paused" if action == "pause" else "stopped", manual_override_until=deadline)
+                if gpu_condition:
+                    result["gpu_idle_condition"] = {"threshold_pct": threshold_pct, "window_seconds": window_seconds}
                 return
             if action in {"start", "resume"}:
-                supervisor.set_manual_override(False)
+                previous_override = supervisor.is_manual_override
+                previous_deadline = supervisor.manual_override_until
+                supervisor.set_manual_override(False, persist=False)
+                await self._persist_supervisor_state(supervisor)
+                StateCodec.record_gpu_idle_condition(state_path)
                 started = await adapter.resume(
                     origin="manual", only_if_stopped_by_coordinator=(action == "resume")
                 )
                 verified = await adapter.status()
                 if not started or verified.state != ProcessState.RUNNING or not verified.is_coordinator_owned:
+                    if previous_override:
+                        supervisor.set_manual_override(True, persist=False, until=previous_deadline)
+                        await self._persist_supervisor_state(supervisor)
                     raise RuntimeError("Coordinator-owned miner start was not verified")
+                await self._persist_supervisor_state(supervisor)
                 result.update(status="running", manual_override_until=None)
 
         result: Dict[str, Any] = {}
@@ -461,6 +519,204 @@ class CoordinatorService:
             return {"status": "blocked", "reason": "GPU claims, cooldown, inhibition, or safety gate is active"}
         return result
 
+    async def gaming_control(self, action: str) -> Dict[str, Any]:
+        """Unload and later restore LM Studio models under the GPU arbitration gate."""
+        if action == "status":
+            path = getattr(self.system.config.service, "state_persistence_path", "")
+            if not path:
+                return {"status": "unavailable", "reason": "Durable state persistence is required"}
+            state = StateCodec.load(path).gaming_mode
+            miner = await self.system.miner_adapter.status() if self.system.miner_adapter else None
+            return {**state, "miner_state": miner.state.value if miner else "unconfigured"}
+        if action not in {"start", "stop"}:
+            return {"status": "invalid", "reason": "Unsupported gaming action"}
+        path = getattr(self.system.config.service, "state_persistence_path", "")
+        if not path:
+            return {"status": "unavailable", "reason": "Durable state persistence is required"}
+        if not self.is_ready:
+            return {"status": "blocked", "reason": "Coordinator is not ready"}
+        current = StateCodec.load(path).gaming_mode
+        if action == "start" and current.get("state") == "active":
+            return {**current, "status": "active"}
+        if action == "start" and current.get("state") != "inactive":
+            return {**current, "status": "blocked", "reason": "Gaming transition requires operator reconciliation"}
+        if action == "stop" and current.get("state") == "inactive":
+            return {"state": "inactive", "status": "inactive"}
+
+        async def transition() -> None:
+            if not self.is_ready:
+                raise RuntimeError("Coordinator stopped admitting work")
+            import httpx
+            from resource_coordinator.adapters.lmstudio.models import NativeModelController
+
+            base_url = self.system.config.service.upstream_url.rstrip("/")
+            if base_url.endswith("/v1"):
+                base_url = base_url[:-3]
+            headers = {}
+            token = os.environ.get("LM_STUDIO_API_TOKEN") or os.environ.get("LM_API_TOKEN")
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+            client_factory = self._lmstudio_client_factory or httpx.AsyncClient
+            async with client_factory(base_url=base_url, headers=headers, timeout=120.0) as client:
+                controller = NativeModelController(client)
+                if action == "start":
+                    miner_info = await self.system.miner_adapter.status() if self.system.miner_adapter else None
+                    miner_supervisor = self.system.miner_adapter.supervisor if self.system.miner_adapter else None
+                    miner_was_running = bool(
+                        miner_info and miner_info.state == ProcessState.RUNNING
+                        and miner_info.is_coordinator_owned
+                    )
+                    loaded = await controller.snapshot_loaded()
+                    snapshot = [{"model": item["model"], "type": item["type"], "config": item["config"]}
+                                for item in loaded]
+                    StateCodec.record_gaming_mode(path, "stopping", models=snapshot,
+                                                  miner_was_running=miner_was_running,
+                                                  miner_override_before=(miner_supervisor.is_manual_override
+                                                                         if miner_supervisor else False),
+                                                  miner_override_until_before=(miner_supervisor.manual_override_until
+                                                                               if miner_supervisor else None))
+                    if self.system.miner_adapter is not None:
+                        supervisor = self.system.miner_adapter.supervisor
+                        supervisor.set_manual_override(True, persist=False)
+                        await self._persist_supervisor_state(
+                            supervisor, was_stopped_by_coordinator=miner_was_running
+                        )
+                        if miner_info and miner_info.state == ProcessState.RUNNING:
+                            stopped = await self.system.miner_adapter.pause(timeout=10.0, origin="gaming")
+                            verified = await self.system.miner_adapter.status()
+                            if not stopped or verified.state != ProcessState.STOPPED:
+                                raise RuntimeError("Miner stop was not verified; gaming mode remains held")
+                            await self._persist_supervisor_state(supervisor, was_stopped_by_coordinator=True)
+                    await controller.unload(loaded)
+                    StateCodec.record_gaming_mode(path, "active")
+                    result.update(status="active", state="active", unloaded_models=len(snapshot))
+                else:
+                    snapshot = current.get("models", [])
+                    StateCodec.record_gaming_mode(path, "restoring")
+                    await controller.restore(snapshot)
+                    cooldown = max(
+                        self.system.lease_mgr.get_resource_cooldown("gpu.inference"),
+                        self.system.lease_mgr.get_resource_cooldown("gpu.model_loading"),
+                    )
+                    if cooldown > 0:
+                        await asyncio.sleep(cooldown)
+                    if current.get("miner_was_running") and self.system.miner_adapter is not None:
+                        supervisor = self.system.miner_adapter.supervisor
+                        supervisor.set_manual_override(False, persist=False)
+                        await self._persist_supervisor_state(supervisor)
+                        try:
+                            started = await self.system.miner_adapter.resume(origin="gaming_restore")
+                            verified = await self.system.miner_adapter.status()
+                            if not started or verified.state != ProcessState.RUNNING or not verified.is_coordinator_owned:
+                                raise RuntimeError("Model restored but prior coordinator-owned miner did not restart")
+                            await self._persist_supervisor_state(supervisor)
+                        except Exception:
+                            supervisor.set_manual_override(True, persist=False)
+                            await self._persist_supervisor_state(supervisor)
+                            raise
+                    elif self.system.miner_adapter is not None:
+                        supervisor = self.system.miner_adapter.supervisor
+                        supervisor.set_manual_override(
+                            bool(current.get("miner_override_before", False)),
+                            persist=False,
+                            until=current.get("miner_override_until_before"),
+                        )
+                        await self._persist_supervisor_state(supervisor)
+                    StateCodec.record_gaming_mode(path, "inactive")
+                    result.update(status="inactive", state="inactive", restored_models=len(snapshot))
+
+        result: Dict[str, Any] = {}
+        try:
+            allowed = await self.system.lease_mgr.run_if_idle(
+                "gpu.inference", transition,
+                additionally_guarded_resources={"gpu.model_loading"},
+                check_self_cooldown=True,
+            )
+        except Exception as exc:
+            try:
+                StateCodec.record_gaming_mode(path, "failed")
+            except Exception:
+                logger.exception("Could not persist failed gaming transition")
+            return {"status": "failed", "state": "failed", "reason": str(exc)}
+        if not allowed:
+            return {"status": "blocked", "reason": "GPU claims, cooldown, inhibition, or safety gate is active"}
+        return result
+
+    async def _sample_gpu_idle_condition(self, condition: Dict[str, Any], state_path: str, adapter: Any) -> None:
+        """Sample only while mining is verified stopped; resume after a complete valid low-util window."""
+        info = await adapter.status()
+        if info.state != ProcessState.STOPPED:
+            return
+        try:
+            if self._gpu_monitor is None:
+                from resource_coordinator.monitors.gpu import NvidiaGpuMonitor
+
+                self._gpu_monitor = NvidiaGpuMonitor()
+            metrics = await self._gpu_monitor.get_metrics()
+            values = [float(item.utilization_pct) for item in metrics]
+            if not values or not all(math.isfinite(value) and 0 <= value <= 100 for value in values):
+                return
+        except Exception as exc:
+            logger.debug("GPU-idle sampling unavailable; keeping miner paused: %s", exc)
+            return
+
+        now = time.time()
+        window = float(condition["window_seconds"])
+        threshold = float(condition["threshold_pct"])
+        cutoff = now - window
+        previous = list(condition.get("samples", []))
+        samples_in_window = [item for item in previous if item["at"] >= cutoff]
+        boundary = [item for item in previous if item["at"] < cutoff]
+        samples = ([boundary[-1]] if boundary else []) + samples_in_window
+        samples.append({"at": now, "utilization_pct": max(values)})
+        samples = samples[-4000:]
+        StateCodec.record_gpu_idle_condition(
+            state_path, threshold_pct=threshold, window_seconds=window, samples=samples
+        )
+        condition["samples"] = samples
+
+        poll = max(0.01, self.supervision_poll_interval)
+        max_gap = max(2.5 * poll, min(5.0, window / 4.0))
+        complete = (
+            len(samples) >= 2
+            and samples[0]["at"] <= cutoff
+            and samples[-1]["at"] >= now - 2.0 * poll
+            and all(right["at"] - left["at"] <= max_gap for left, right in zip(samples, samples[1:]))
+        )
+        window_samples = [item for item in samples if item["at"] >= cutoff]
+        if not complete or not window_samples or (
+            sum(item["utilization_pct"] for item in window_samples) / len(window_samples) > threshold
+        ):
+            return
+
+        supervisor = adapter.supervisor
+
+        async def resume_after_window() -> None:
+            supervisor.set_manual_override(False, persist=False)
+            StateCodec.record_gpu_idle_condition(state_path)
+            try:
+                await self._persist_supervisor_state(supervisor)
+                started = await adapter.resume(origin="gpu_idle_window")
+                verified = await adapter.status()
+                if not started or verified.state != ProcessState.RUNNING or not verified.is_coordinator_owned:
+                    raise RuntimeError("Coordinator-owned miner restart was not verified")
+                await self._persist_supervisor_state(supervisor)
+            except Exception:
+                supervisor.set_manual_override(True, persist=False)
+                await self._persist_supervisor_state(supervisor)
+                StateCodec.record_gpu_idle_condition(
+                    state_path, threshold_pct=threshold, window_seconds=window, samples=samples
+                )
+                logger.error("GPU-idle condition passed but coordinator-owned miner restart was not verified")
+
+        resumed = await self.system.lease_mgr.run_if_idle(
+            "gpu.inference", resume_after_window,
+            additionally_guarded_resources={"gpu.model_loading"},
+            check_self_cooldown=True,
+        )
+        if resumed:
+            logger.info("GPU-idle pause condition satisfied; miner resumed after safety gates cleared")
+
     async def _run_supervision_loop(self) -> None:
         """
         Continuous supervision loop: inspects managed processes configured for restart.
@@ -475,15 +731,25 @@ class CoordinatorService:
                 adapter = self.system.miner_adapter
                 if adapter is not None:
                     supervisor = adapter.supervisor
+                    state_path = getattr(self.system.config.service, "state_persistence_path", "")
+                    condition = StateCodec.load(state_path).gpu_idle_condition if state_path else {}
+                    if condition and supervisor.is_manual_override:
+                        await self._sample_gpu_idle_condition(condition, state_path, adapter)
                     deadline = supervisor.manual_override_until
                     if supervisor.is_manual_override and deadline is not None and deadline <= time.time():
                         async def resume_expired_hold() -> None:
-                            supervisor.set_manual_override(False)
+                            supervisor.set_manual_override(False, persist=False)
                             if supervisor.was_stopped_by_coordinator:
-                                started = await adapter.resume(origin="manual_deadline")
-                                info = await adapter.status()
-                                if not started or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
-                                    supervisor.set_manual_override(True, until=deadline)
+                                try:
+                                    await self._persist_supervisor_state(supervisor)
+                                    started = await adapter.resume(origin="manual_deadline")
+                                    info = await adapter.status()
+                                    if not started or info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
+                                        raise RuntimeError("Coordinator-owned miner restart was not verified")
+                                    await self._persist_supervisor_state(supervisor)
+                                except Exception:
+                                    supervisor.set_manual_override(True, persist=False, until=deadline)
+                                    await self._persist_supervisor_state(supervisor)
                                     logger.error("Expired manual miner hold could not safely resume")
                         await self.system.lease_mgr.run_if_idle(
                             "gpu.inference", resume_expired_hold,

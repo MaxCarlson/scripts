@@ -189,10 +189,53 @@ stopped it. A stopped target is eligible for restart only when the coordinator
 owns the stop and no active, pending, or uncertain operation inhibits restart.
 
 Before normal shutdown, wait for `Active inferences: 0`, `Pending requests: 0`,
-and `Restart inhibited: False`, then press Ctrl+C once in the serve terminal.
-Because status becomes unavailable after shutdown, note the managed PID first
-and independently confirm that exact PID has exited. Do not terminate a
-process by image name.
+and `Restart inhibited: False`. Set `RESOURCE_COORDINATOR_OPERATOR_TOKEN` in
+the coordinator and operator shell, then use the authenticated graceful
+control. A successful `restart` drains work and relaunches the service through
+the `serve` command's in-process supervisor loop; `shutdown` drains and exits.
+The user-logon task is not assumed to restart a clean exit. A drain timeout or
+uncertain request leaves the service stopped from admission and retains its
+instance lock for reconciliation.
+
+```powershell
+python -m resource_coordinator.cli restart --reason "activate reviewed config"
+python -m resource_coordinator.cli shutdown --reason "operator shutdown"
+```
+
+## Miner, gaming, and log controls
+
+All mutations go through the ready coordinator and require
+`RESOURCE_COORDINATOR_OPERATOR_TOKEN`. They require a durable
+`state_persistence_path`; the standalone CLI does not manage a miner locally.
+Controls refuse while GPU leases, inference/model-loading cooldowns, safety
+inhibitions, or lifecycle gates are active.
+
+```powershell
+python -m resource_coordinator.cli miner status
+python -m resource_coordinator.cli miner pause --duration 2h
+python -m resource_coordinator.cli miner pause --until-gpu-below 20 --window 60s
+python -m resource_coordinator.cli miner stop
+python -m resource_coordinator.cli miner resume
+python -m resource_coordinator.cli miner start
+python -m resource_coordinator.cli gaming status
+python -m resource_coordinator.cli gaming start
+python -m resource_coordinator.cli gaming stop
+python -m resource_coordinator.cli logs krig --follow
+```
+
+Timed holds and GPU-idle conditions are journaled. The conditional pause keeps
+the miner stopped until valid telemetry covers the complete rolling window and
+the average is below the threshold; missing samples never count as idle. Gaming
+mode saves the loaded LM Studio model identifiers and supported load settings,
+stops the coordinator-owned miner, then unloads models through LM Studio's
+native model API. Gaming stop restores models, observes the configured cooldown,
+and restarts mining only if the miner was running under coordinator ownership
+before gaming mode. If a transition fails, it retains the miner hold and
+durable recovery state for an explicit retry.
+
+`logs` reads only the configured process output file through the authenticated
+coordinator endpoint. It returns raw appended bytes. Stopping the viewer only
+ends log polling; it has no miner lifecycle effect.
 
 ## Routes and limits
 
@@ -202,7 +245,9 @@ process by image name.
 - Supported explicit model-load routes are `POST /api/v0/model/load` and
   `POST /api/v1/models/load`; they use an exclusive `gpu.inference` reservation
   and require the matching policy above.
-- Model unload and unknown state-mutating routes are rejected. Inference is
+- Client model unload and unknown state-mutating routes are rejected. Gaming
+  model unload/restore is available only through the authenticated coordinator
+  gaming control. Inference is
   protected before forwarding even if LM Studio internally loads a model just
   in time.
 - Direct LM Studio GUI operations, `lms load`, and other direct clients bypass

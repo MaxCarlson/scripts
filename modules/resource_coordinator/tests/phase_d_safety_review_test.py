@@ -530,6 +530,26 @@ async def test_authenticated_restart_drains_and_requests_supervised_relaunch(mon
 
 
 @pytest.mark.asyncio
+async def test_authenticated_raw_log_follow_reads_configured_file_by_offset(tmp_path, monkeypatch):
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "test-token")
+    system, service = assembled()
+    assert await service.start()
+    log_path = tmp_path / "miner.log"
+    log_path.write_bytes(b"first\r\nsecond\n")
+    system.supervisors["krig"].backend.stdout_log_path = str(log_path)
+    app = system.gateway.create_app(service)
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://gateway") as client:
+        denied = await client.get("/_coordinator/logs/krig")
+        assert denied.status_code == 403
+        response = await client.get("/_coordinator/logs/krig?offset=7",
+                                   headers={"Authorization": "Bearer test-token"})
+    assert response.status_code == 200
+    assert response.content == b"second\n"
+    assert response.headers["x-log-offset"] == str(log_path.stat().st_size)
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_shutdown_control_is_disabled_without_operator_token(monkeypatch):
     monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
     monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)

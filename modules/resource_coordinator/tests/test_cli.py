@@ -33,6 +33,13 @@ def test_cli_miner_control_commands_and_duration_parser():
     for action in ("start", "stop", "resume"):
         args = parse_args(["miner", action])
         assert args.miner_command == action
+    assert parse_args(["gaming", "start"]).gaming_command == "start"
+    assert parse_args(["gaming", "stop"]).gaming_command == "stop"
+    assert parse_args(["gaming", "status"]).gaming_command == "status"
+    logs = parse_args(["logs", "krig", "--follow", "--tail-bytes", "1024"])
+    assert logs.process_name == "krig" and logs.follow and logs.tail_bytes == 1024
+    conditional = parse_args(["miner", "pause", "--until-gpu-below", "20", "--window", "60s"])
+    assert conditional.until_gpu_below == 20 and conditional.window == "60s"
 
 
 def test_cli_config_show(capsys):

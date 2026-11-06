@@ -1,5 +1,13 @@
 # Resource Coordinator current handoff
 
+## Current implementation continuation — 2026-11-06
+
+Active workspace: `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`, branch `feature/miner-inference-coordination-20261102`, starting HEAD `8618d84242de94587f0f04740b46b39568723309` (the lifecycle and protected-routing commits above the `bf6d3be3` checkpoint). This was the existing clean Resource Coordinator worktree; no new branch/worktree was created. The failed isolated-worktree creation did not register a worktree or branch. No other agent was active.
+
+Committed checkpoints in this continuation: `bdac870c` graceful authenticated lifecycle controls and `8618d842` protected local-agent routing were already present at entry; `41afe2f857c8b0f1d2e0d5ade1f6fab38fa60429` adds remote manual miner controls, durable timed holds, and supervised restart correction. The next in-progress feature set adds gaming start/stop/model restore, raw process log following, and durable one-shot GPU-idle pause. Latest focused validation before commit: 70 passed, 1 deselected; Ruff lint and `git diff --check` passed. Full-module tests are avoided because they include live/hardware acceptance cases and the current deployment has a running miner.
+
+No live service, model, inference, or miner operation has been performed. Live activation remains blocked until the reviewed branch is deployed to the launcher source; the active coordinator still runs from the shared main checkout, and no merge/deployment permission was provided. Next: finish focused tests and commit the in-progress feature set; verify the current user-logon supervisor and endpoints read-only, then record the exact activation blocker without touching live inference or KRig.
+
 Current workstream: **minimal LM Studio activity automation**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, based on preflight commit `44ce5d6ec9b56ecb75c2cfb4ff848b85964c2764`.
 
 Offline implementation adds explicit known model-load handling on the existing `gpu.inference` resource with an exclusive lease, matching process-stop policy and the same cooldown as inference. Pending exclusive reservations now prevent later shared admission, and final idle restart actions share an arbitration lock with request registration. Generic opt-in service/CLI process lifecycle controls were added while retaining legacy miner flags. `LeaseManager` accepts a monotonic clock and async sleeper for deterministic cooldown tests. See [minimal automation configuration and route limits](../README.md) and [implementation plan/status](plans/20261019-1600_minimal-lmstudio-activity/STATUS.md).

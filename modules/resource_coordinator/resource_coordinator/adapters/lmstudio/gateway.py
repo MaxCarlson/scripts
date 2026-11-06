@@ -10,6 +10,7 @@ import math
 import os
 import secrets
 import uuid
+from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Set
 
 import anyio
@@ -231,6 +232,9 @@ class LMStudioGateway:
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
             Route("/_coordinator/miner/status", self.handle_coordinator_miner_status, methods=["GET"]),
             Route("/_coordinator/miner/{action:str}", self.handle_coordinator_miner_control, methods=["POST"]),
+            Route("/_coordinator/gaming/status", self.handle_coordinator_gaming_status, methods=["GET"]),
+            Route("/_coordinator/gaming/{action:str}", self.handle_coordinator_gaming_control, methods=["POST"]),
+            Route("/_coordinator/logs/{process_name:str}", self.handle_coordinator_logs, methods=["GET"]),
             Route("/_coordinator/restart", self.handle_coordinator_restart, methods=["POST"]),
             Route("/_coordinator/shutdown", self.handle_coordinator_shutdown, methods=["POST"]),
             Route("/_coordinator/recover", self.handle_coordinator_recover, methods=["POST"]),
@@ -244,6 +248,36 @@ class LMStudioGateway:
         token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
         supplied = request.headers.get("authorization", "")
         return bool(token and secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()))
+
+    async def handle_coordinator_logs(self, request: Request) -> Response:
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        service = self.admission_controller.service
+        name = request.path_params.get("process_name", "")
+        supervisor = service.system.supervisors.get(name) if service is not None else None
+        log_path = getattr(getattr(supervisor, "backend", None), "stdout_log_path", None)
+        if not log_path:
+            return JSONResponse({"error": "No captured log is configured for that process"}, status_code=404)
+        try:
+            offset = int(request.query_params.get("offset", "0"))
+            tail_bytes = int(request.query_params.get("tail_bytes", "65536"))
+            if offset < 0 or tail_bytes < 0 or tail_bytes > 262144:
+                raise ValueError
+            path = Path(log_path)
+            size = path.stat().st_size
+            if "offset" not in request.query_params:
+                offset = max(0, size - tail_bytes)
+            elif offset > size:
+                offset = 0
+            with path.open("rb") as stream:
+                stream.seek(offset)
+                content = stream.read(262144)
+                next_offset = stream.tell()
+        except ValueError:
+            return JSONResponse({"error": "offset and tail_bytes must be valid bounded integers"}, status_code=400)
+        except OSError:
+            return JSONResponse({"error": "Configured process log is not currently readable"}, status_code=404)
+        return Response(content, media_type="application/octet-stream", headers={"X-Log-Offset": str(next_offset)})
 
     async def handle_coordinator_miner_status(self, request: Request) -> Response:
         service = self.admission_controller.service
@@ -271,15 +305,60 @@ class LMStudioGateway:
         ):
             return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
         duration = payload.get("duration_seconds")
-        if action == "pause" and (type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0):
-            return JSONResponse({"error": "pause requires a finite positive duration_seconds"}, status_code=400)
-        result = await service.manual_miner_control(action, duration_seconds=duration)
+        threshold = payload.get("until_gpu_below_pct")
+        window = payload.get("window_seconds")
+        if action == "pause" and threshold is not None:
+            if (type(threshold) not in (int, float) or not math.isfinite(threshold) or not 0 <= threshold <= 100
+                    or type(window) not in (int, float) or not math.isfinite(window) or window <= 0):
+                return JSONResponse({"error": "pause GPU condition requires a threshold 0..100 and positive window"},
+                                    status_code=400)
+        elif action == "pause" and (
+            type(duration) not in (int, float) or not math.isfinite(duration) or duration <= 0
+        ):
+            return JSONResponse({"error": "pause requires duration_seconds or a GPU-idle condition"}, status_code=400)
+        result = await service.manual_miner_control(
+            action, duration_seconds=duration, threshold_pct=threshold, window_seconds=window
+        )
         status_code = 200 if result.get("status") in {"running", "paused", "stopped"} else 409
         if result.get("status") == "invalid":
             status_code = 400
         if result.get("status") == "unavailable":
             status_code = 503
         result.update(operator=payload["operator"], reason=payload["reason"])
+        return JSONResponse(result, status_code=status_code)
+
+    async def handle_coordinator_gaming_status(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        result = await service.gaming_control("status")
+        return JSONResponse(result, status_code=200 if result.get("status") != "unavailable" else 503)
+
+    async def handle_coordinator_gaming_control(self, request: Request) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        if not service.is_ready:
+            return JSONResponse({"error": "Coordinator is not ready"}, status_code=409)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "An attributed gaming request body is required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        action = request.path_params.get("action")
+        result = await service.gaming_control(action)
+        result.update(operator=payload["operator"], reason=payload["reason"])
+        status_code = 200 if result.get("status") in {"active", "inactive"} else 409
+        if result.get("status") == "unavailable":
+            status_code = 503
+        if result.get("status") == "invalid":
+            status_code = 400
         return JSONResponse(result, status_code=status_code)
 
     async def _request_lifecycle_action(self, request: Request, *, restart: bool) -> Response:
