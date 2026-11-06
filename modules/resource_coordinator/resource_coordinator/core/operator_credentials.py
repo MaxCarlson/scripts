@@ -148,8 +148,11 @@ def reinitialize_token(*, coordinator_is_running: bool | None = None) -> str:
         path.parent.mkdir(parents=True, exist_ok=True)
         _secure_path(path.parent)
         token = secrets.token_urlsafe(48)
-        temporary = path.with_name(path.name + ".new")
-        temporary.write_text(token, encoding="ascii")
+        temporary = path.with_name(path.name + ".new-" + secrets.token_hex(8))
+        with temporary.open("x", encoding="ascii") as stream:
+            stream.write(token)
+            stream.flush()
+            os.fsync(stream.fileno())
         _secure_path(temporary)
         os.replace(temporary, path)
         _secure_path(path)
@@ -165,14 +168,27 @@ def repair_permissions() -> None:
         raise CredentialError("Run auth repair as the interactive user so its ACL remains available")
     if not path.is_file():
         raise CredentialError(f"No operator credential at {path}; use auth reinitialize")
-    _secure_path(path.parent)
-    _secure_path(path)
     try:
         token = path.read_text(encoding="ascii")
     except (OSError, UnicodeError) as exc:
         raise CredentialError(f"Cannot read operator credential at {path}") from exc
     if not _TOKEN_RE.fullmatch(token):
         raise CredentialError(f"Operator credential at {path} is invalid; use auth reinitialize")
+    _secure_path(path.parent)
+    temporary = path.with_name(path.name + ".repair-" + secrets.token_hex(8))
+    try:
+        with temporary.open("x", encoding="ascii") as stream:
+            stream.write(token)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _secure_path(temporary)
+        os.replace(temporary, path)
+    except (OSError, CredentialError) as exc:
+        try:
+            temporary.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise CredentialError(f"Cannot repair operator credential ACL at {path}") from exc
 
 
 def _acl_is_restricted(path: Path) -> bool:

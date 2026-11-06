@@ -110,8 +110,26 @@ def test_repair_permissions_preserves_token(tmp_path, monkeypatch):
 
     credentials.repair_permissions()
 
-    assert secured == [path.parent, path]
+    assert secured[0] == path.parent
+    assert secured[1].name.startswith(path.name + ".repair-")
     assert path.read_text(encoding="ascii") == token
+
+
+def test_repair_acl_failure_preserves_existing_token(tmp_path, monkeypatch):
+    path = tmp_path / "operator-token"
+    original = "A" * 64
+    path.write_text(original, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(path))
+    def fail_temp_acl(target):
+        if target != path.parent:
+            raise credentials.CredentialError("ACL failure")
+
+    monkeypatch.setattr(credentials, "_secure_path", fail_temp_acl)
+
+    with pytest.raises(credentials.CredentialError, match="ACL"):
+        credentials.repair_permissions()
+    assert path.read_text(encoding="ascii") == original
+    assert not list(tmp_path.glob("operator-token.repair-*"))
 
 
 @pytest.mark.skipif(os.name != "nt", reason="Windows ACL integration")
