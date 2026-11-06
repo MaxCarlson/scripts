@@ -189,9 +189,9 @@ stopped it. A stopped target is eligible for restart only when the coordinator
 owns the stop and no active, pending, or uncertain operation inhibits restart.
 
 Before normal shutdown, wait for `Active inferences: 0`, `Pending requests: 0`,
-and `Restart inhibited: False`. Set `RESOURCE_COORDINATOR_OPERATOR_TOKEN` in
-the coordinator and operator shell, then use the authenticated graceful
-control. A successful `restart` drains work and relaunches the service through
+and `Restart inhibited: False`. The CLI and coordinator discover the shared
+operator credential automatically; no profile edit is needed. A successful
+`restart` drains work and relaunches the service through
 the `serve` command's in-process supervisor loop; `shutdown` drains and exits.
 The user-logon task is not assumed to restart a clean exit. A drain timeout or
 uncertain request leaves the service stopped from admission and retains its
@@ -201,6 +201,36 @@ instance lock for reconciliation.
 python -m resource_coordinator.cli restart --reason "activate reviewed config"
 python -m resource_coordinator.cli shutdown --reason "operator shutdown"
 ```
+
+## Managed installation commands
+
+The Resource Coordinator CLI can inspect or reconcile its own installation.
+`setup` is a dry run unless `--apply` is supplied. Setup preserves existing
+configuration, state, and logs. Scheduled Task changes may prompt for UAC;
+noninteractive calls fail with an elevation diagnostic instead of prompting.
+
+```powershell
+resource-coordinator setup
+resource-coordinator setup --apply
+resource-coordinator doctor --json
+resource-coordinator startup status --json
+resource-coordinator startup install -m logon --apply
+resource-coordinator startup install -m boot --apply
+resource-coordinator startup disable --apply
+resource-coordinator startup enable --apply
+resource-coordinator startup repair --apply
+resource-coordinator startup uninstall --apply
+resource-coordinator teardown
+resource-coordinator teardown --apply
+```
+
+For a coordinator-owned miner start, use `resource-coordinator miner start`;
+do not launch KRig directly. The service task's configured run level supplies
+the NVIDIA privileges needed by its child process. `doctor` compares the
+configured and observed GPU power limit and reports task inventory errors as
+degraded health. Teardown preserves the configuration, credential, journal,
+and log files; it refuses to proceed if coordinator state is unavailable or
+inference is active or pending.
 
 ## Miner, gaming, and log controls
 
@@ -245,7 +275,8 @@ python -m resource_coordinator.cli miner start
 python -m resource_coordinator.cli gaming status
 python -m resource_coordinator.cli gaming start
 python -m resource_coordinator.cli gaming stop
-python -m resource_coordinator.cli logs krig --follow
+python -m resource_coordinator.cli logs miner --follow
+python -m resource_coordinator.cli logs krig_miner --follow
 ```
 
 Timed holds and GPU-idle conditions are journaled. The conditional pause keeps

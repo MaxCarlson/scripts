@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
@@ -256,7 +257,16 @@ def load_config(path: Optional[Union[str, Path]] = None) -> CoordinatorConfig:
     with open(file_path, "r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
 
-    return CoordinatorConfig.from_dict(data)
+    config = CoordinatorConfig.from_dict(data)
+    state_path = os.environ.get("RESOURCE_COORDINATOR_STATE_PATH")
+    if not config.service.state_persistence_path and state_path:
+        config.service.state_persistence_path = state_path
+    log_dir = os.environ.get("RESOURCE_COORDINATOR_LOG_DIR")
+    if log_dir:
+        for process_name, process_config in config.processes.items():
+            if not process_config.stdout_log_path:
+                process_config.stdout_log_path = str(Path(log_dir) / f"{process_name}.log")
+    return config
 
 
 @dataclass

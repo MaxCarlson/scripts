@@ -25,6 +25,50 @@ def test_cli_parse_args_miner():
     assert args.duration == "2h"
 
 
+def test_cli_parse_args_self_managed_operations():
+    from resource_coordinator.cli import parse_args
+
+    setup = parse_args(["setup"])
+    assert setup.command == "setup"
+    assert setup.apply is False
+    assert setup.json is False
+
+    applied_setup = parse_args(["setup", "--apply", "--json", "--non-interactive"])
+    assert applied_setup.apply is True
+    assert applied_setup.json is True
+    assert applied_setup.non_interactive is True
+
+    doctor = parse_args(["doctor", "-j"])
+    assert doctor.command == "doctor"
+    assert doctor.json is True
+
+    repair = parse_args(["repair", "--apply", "--non-interactive"])
+    assert repair.command == "repair"
+    assert repair.apply is True
+    assert repair.non_interactive is True
+
+    teardown = parse_args(["teardown", "-a"])
+    assert teardown.command == "teardown"
+    assert teardown.apply is True
+
+    startup_status = parse_args(["startup", "status", "-j"])
+    assert startup_status.startup_command == "status"
+    assert startup_status.json is True
+
+    boot_install = parse_args(["startup", "install", "-m", "boot", "-a"])
+    assert boot_install.startup_command == "install"
+    assert boot_install.mode == "boot"
+    assert boot_install.apply is True
+
+    logon_install = parse_args(["startup", "install", "-m", "logon", "-a"])
+    assert logon_install.mode == "logon"
+
+    for action in ("enable", "disable", "repair", "uninstall"):
+        parsed = parse_args(["startup", action, "-a"])
+        assert parsed.startup_command == action
+        assert parsed.apply is True
+
+
 def test_cli_miner_control_commands_and_duration_parser():
     from resource_coordinator.cli import _parse_hold_duration
 

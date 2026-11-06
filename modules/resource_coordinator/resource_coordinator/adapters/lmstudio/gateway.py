@@ -271,10 +271,20 @@ class LMStudioGateway:
             return JSONResponse({"error": "Unauthorized"}, status_code=403)
         service = self.admission_controller.service
         name = request.path_params.get("process_name", "")
-        supervisor = service.system.supervisors.get(name) if service is not None else None
+        supervisors = service.system.supervisors if service is not None else {}
+        supervisor = supervisors.get(name)
+        if supervisor is None and name.casefold() in {"miner", "krig"}:
+            matches = [
+                candidate for process_name, candidate in supervisors.items()
+                if "miner" in process_name.casefold() or "krig" in process_name.casefold()
+            ]
+            if len(matches) == 1:
+                supervisor = matches[0]
+        if supervisor is None:
+            return JSONResponse({"error": f"Unknown configured process: {name}"}, status_code=404)
         log_path = getattr(getattr(supervisor, "backend", None), "stdout_log_path", None)
         if not log_path:
-            return JSONResponse({"error": "No captured log is configured for that process"}, status_code=404)
+            return JSONResponse({"error": f"No captured log is configured for process: {name}"}, status_code=404)
         try:
             offset = int(request.query_params.get("offset", "0"))
             tail_bytes = int(request.query_params.get("tail_bytes", "65536"))

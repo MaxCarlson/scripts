@@ -44,6 +44,36 @@ policies:
     assert cfg.policies[0].cooldown_seconds == 15.0
 
 
+def test_load_config_uses_managed_paths_only_when_config_omits_them(tmp_path: Path, monkeypatch):
+    config_file = tmp_path / "coordinator.yaml"
+    config_file.write_text(
+        'version: "1.0"\nprocesses:\n  krig_miner:\n    backend: fake\n', encoding="utf-8"
+    )
+    monkeypatch.setenv("RESOURCE_COORDINATOR_STATE_PATH", str(tmp_path / "coordinator_state.json"))
+    monkeypatch.setenv("RESOURCE_COORDINATOR_LOG_DIR", str(tmp_path / "logs"))
+
+    config = load_config(config_file)
+
+    assert config.service.state_persistence_path == str(tmp_path / "coordinator_state.json")
+    assert config.processes["krig_miner"].stdout_log_path == str(tmp_path / "logs" / "krig_miner.log")
+
+
+def test_load_config_preserves_explicit_persistent_paths_over_managed_defaults(tmp_path: Path, monkeypatch):
+    config_file = tmp_path / "coordinator.yaml"
+    config_file.write_text(
+        'version: "1.0"\nservice:\n  state_persistence_path: explicit.json\nprocesses:\n'
+        '  krig_miner:\n    backend: fake\n    stdout_log_path: explicit.log\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RESOURCE_COORDINATOR_STATE_PATH", str(tmp_path / "default.json"))
+    monkeypatch.setenv("RESOURCE_COORDINATOR_LOG_DIR", str(tmp_path / "logs"))
+
+    config = load_config(config_file)
+
+    assert config.service.state_persistence_path == "explicit.json"
+    assert config.processes["krig_miner"].stdout_log_path == "explicit.log"
+
+
 def test_build_system_from_config():
     cfg = load_config(None)
     system = build_system(cfg, use_fake_processes=True)

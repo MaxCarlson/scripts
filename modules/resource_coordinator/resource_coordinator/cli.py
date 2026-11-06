@@ -47,6 +47,47 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     auth_sub.add_parser("repair", help="Repair credential ACLs without changing the token.")
     auth_sub.add_parser("reinitialize", help="Rotate credential while the coordinator is stopped.")
 
+    setup_parser = subparsers.add_parser("setup", help="Install or repair the managed Resource Coordinator setup.")
+    setup_parser.add_argument("-a", "--apply", action="store_true", help="Apply the planned setup changes.")
+    setup_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
+    setup_parser.add_argument(
+        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
+    )
+    setup_parser.add_argument(
+        "-m", "--startup-mode", choices=("boot", "logon"), default="logon",
+        help="Authoritative coordinator startup trigger (default: logon).",
+    )
+
+    doctor_parser = subparsers.add_parser("doctor", help="Check installation and operational health.")
+    doctor_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
+
+    repair_parser = subparsers.add_parser("repair", help="Repair RC-owned installation resources.")
+    repair_parser.add_argument("-a", "--apply", action="store_true", help="Apply safe repairs.")
+    repair_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
+    repair_parser.add_argument("-n", "--non-interactive", action="store_true")
+
+    teardown_parser = subparsers.add_parser("teardown", help="Safely decommission Resource Coordinator ownership.")
+    teardown_parser.add_argument("-a", "--apply", action="store_true", help="Apply the planned teardown.")
+    teardown_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable result.")
+    teardown_parser.add_argument(
+        "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
+    )
+
+    startup_parser = subparsers.add_parser("startup", help="Inspect or manage RC-owned startup tasks.")
+    startup_sub = startup_parser.add_subparsers(dest="startup_command", required=True)
+    startup_status = startup_sub.add_parser("status", help="Show RC startup task state.")
+    startup_status.add_argument("-j", "--json", action="store_true")
+    for startup_action in ("enable", "disable", "repair", "uninstall"):
+        action_parser = startup_sub.add_parser(startup_action, help=f"{startup_action.capitalize()} RC startup tasks.")
+        action_parser.add_argument("-a", "--apply", action="store_true", help="Apply the requested change.")
+        action_parser.add_argument("-j", "--json", action="store_true")
+        action_parser.add_argument("-n", "--non-interactive", action="store_true")
+    startup_install = startup_sub.add_parser("install", help="Install one authoritative RC startup task.")
+    startup_install.add_argument("-m", "--mode", choices=("boot", "logon"), required=True)
+    startup_install.add_argument("-a", "--apply", action="store_true", help="Apply the requested change.")
+    startup_install.add_argument("-j", "--json", action="store_true")
+    startup_install.add_argument("-n", "--non-interactive", action="store_true")
+
     for action in ("restart", "shutdown"):
         lifecycle_parser = subparsers.add_parser(action, help=f"Gracefully {action} the running coordinator.")
         lifecycle_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
@@ -936,6 +977,13 @@ def main(argv: Optional[List[str]] = None) -> None:
     code = 0
     if args.command == "auth":
         code = cmd_auth(args)
+    elif args.command in {"setup", "teardown", "doctor", "startup", "repair"}:
+        from resource_coordinator.installation import handle_installation_command
+        try:
+            code = handle_installation_command(args)
+        except Exception as exc:
+            print(f"Resource Coordinator {args.command} failed: {exc}", file=sys.stderr)
+            code = 1
     elif args.command == "serve":
         code = cmd_serve(args)
     elif args.command in {"restart", "shutdown"}:

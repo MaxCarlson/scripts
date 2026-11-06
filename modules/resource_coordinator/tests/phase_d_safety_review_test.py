@@ -546,9 +546,17 @@ async def test_authenticated_raw_log_follow_reads_configured_file_by_offset(tmp_
         assert denied.status_code == 403
         response = await client.get("/_coordinator/logs/krig?offset=7",
                                    headers={"Authorization": "Bearer test-token"})
+        alias = await client.get("/_coordinator/logs/miner",
+                                 headers={"Authorization": "Bearer test-token"})
+        unknown = await client.get("/_coordinator/logs/not-a-process",
+                                   headers={"Authorization": "Bearer test-token"})
     assert response.status_code == 200
     assert response.content == b"second\n"
     assert response.headers["x-log-offset"] == str(log_path.stat().st_size)
+    assert alias.status_code == 200
+    assert alias.content.endswith(b"second\n")
+    assert unknown.status_code == 404
+    assert unknown.json()["error"] == "Unknown configured process: not-a-process"
     await service.stop()
 
 
