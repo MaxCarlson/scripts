@@ -187,6 +187,29 @@ async def test_service_drain_with_active_leases(minimal_system):
 
 
 @pytest.mark.asyncio
+async def test_shutdown_timeout_keeps_gateway_and_instance_lock_open(minimal_system, tmp_path):
+    service = CoordinatorService(
+        minimal_system,
+        drain_timeout_seconds=0.05,
+        lock_path=tmp_path / "coordinator.lock",
+    )
+    assert await service.start() is True
+    lock = service._instance_lock
+    assert lock is not None and lock.is_acquired
+
+    async with minimal_system.lease_mgr.acquire("gpu.inference", holder_id="uncertain"):
+        await service.stop()
+
+        assert service.state == ServiceState.RECONCILIATION_REQUIRED
+        assert minimal_system.gateway._http_client is None
+        assert lock.is_acquired is True
+
+    await service.stop()
+    assert service.state == ServiceState.STOPPED
+    assert lock.is_acquired is False
+
+
+@pytest.mark.asyncio
 async def test_service_emergency_abort(minimal_system):
     service = CoordinatorService(minimal_system)
     await service.start()

@@ -85,6 +85,24 @@ def test_cli_parse_args_abort():
     assert args.json is True
 
 
+def test_cli_parse_args_coordinator_lifecycle():
+    for action in ("restart", "shutdown"):
+        args = parse_args([action, "-u", "http://localhost:1235", "-r", "activate config", "-j"])
+        assert args.command == action
+        assert args.reason == "activate config"
+        assert args.json is True
+
+
+def test_cli_coordinator_lifecycle_requires_token(monkeypatch, capsys):
+    from resource_coordinator.cli import cmd_lifecycle
+
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    args = parse_args(["shutdown"])
+    assert cmd_lifecycle(args) == 1
+    assert "requires RESOURCE_COORDINATOR_OPERATOR_TOKEN" in capsys.readouterr().err
+
+
 def test_cli_cmd_preflight(tmp_path, capsys):
     from resource_coordinator.cli import cmd_preflight
 

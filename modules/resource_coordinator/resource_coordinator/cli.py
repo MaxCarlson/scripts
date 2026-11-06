@@ -33,6 +33,14 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
     subparsers = parser.add_subparsers(dest="command", required=True)
 
+    for action in ("restart", "shutdown"):
+        lifecycle_parser = subparsers.add_parser(action, help=f"Gracefully {action} the running coordinator.")
+        lifecycle_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
+        lifecycle_parser.add_argument(
+            "-r", "--reason", default=f"Operator requested {action}", help="Reason recorded with the request."
+        )
+        lifecycle_parser.add_argument("-j", "--json", action="store_true", help="Output the JSON response.")
+
     # serve
     serve_parser = subparsers.add_parser("serve", help="Run the coordination reverse proxy service.")
     serve_parser.add_argument(
@@ -262,42 +270,76 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
 
 def cmd_serve(args: argparse.Namespace) -> int:
-    config = load_config(args.config)
-    if args.listen:
-        parts = args.listen.split(":")
-        config.service.listen_host = parts[0]
-        config.service.listen_port = int(parts[1]) if len(parts) > 1 else 1235
-    if args.upstream:
-        config.service.upstream_url = args.upstream
-
-    system = build_system(config, use_fake_processes=args.fake_miner)
     from resource_coordinator.core.service import CoordinatorService
+    while True:
+        config = load_config(args.config)
+        if args.listen:
+            parts = args.listen.split(":")
+            config.service.listen_host = parts[0]
+            config.service.listen_port = int(parts[1]) if len(parts) > 1 else 1235
+        if args.upstream:
+            config.service.upstream_url = args.upstream
 
-    service = CoordinatorService(
-        system=system,
-        start_miner_on_ready=getattr(args, "start_miner", False),
-        stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
-        start_process_on_ready=getattr(args, "start_process", None),
-        stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
-        drain_timeout_seconds=getattr(args, "drain_timeout", 30.0),
-        first_boot=getattr(args, "first_boot", False),
-    )
-    app = system.gateway.create_app(service)
+        system = build_system(config, use_fake_processes=args.fake_miner)
+        service = CoordinatorService(
+            system=system,
+            start_miner_on_ready=getattr(args, "start_miner", False),
+            stop_miner_on_shutdown=getattr(args, "stop_miner_on_shutdown", False),
+            start_process_on_ready=getattr(args, "start_process", None),
+            stop_process_on_shutdown=getattr(args, "stop_process_on_shutdown", None),
+            drain_timeout_seconds=getattr(args, "drain_timeout", 30.0),
+            first_boot=getattr(args, "first_boot", False),
+        )
+        app = system.gateway.create_app(service)
+        app.state.restart_requested = False
+        server = uvicorn.Server(
+            uvicorn.Config(
+                app,
+                host=config.service.listen_host,
+                port=config.service.listen_port,
+                log_level="info" if args.verbose else "warning",
+            )
+        )
+        app.state.request_server_exit = lambda: setattr(server, "should_exit", True)
 
-    print(f"Starting Resource Coordinator Gateway v{__version__}")
-    print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
-    print(f"Upstream host: {config.service.upstream_url}")
-    print(f"Managed procs: {list(system.supervisors.keys())}")
-    print(f"Service state: {service.state.value}")
-    print("Press Ctrl+C to terminate.")
-
-    uvicorn.run(
-        app,
-        host=config.service.listen_host,
-        port=config.service.listen_port,
-        log_level="info" if args.verbose else "warning",
-    )
+        print(f"Starting Resource Coordinator Gateway v{__version__}")
+        print(f"Listening on:  http://{config.service.listen_host}:{config.service.listen_port}")
+        print(f"Upstream host: {config.service.upstream_url}")
+        print(f"Managed procs: {list(system.supervisors.keys())}")
+        print(f"Service state: {service.state.value}")
+        server.run()
+        if not app.state.restart_requested or service.state.value != "stopped":
+            break
     return 0
+
+
+def cmd_lifecycle(args: argparse.Namespace) -> int:
+    token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or os.environ.get(
+        "RESOURCE_COORDINATOR_RECOVERY_TOKEN"
+    )
+    if not token:
+        print("Lifecycle control requires RESOURCE_COORDINATOR_OPERATOR_TOKEN.", file=sys.stderr)
+        return 1
+    url = f"{args.url.rstrip('/')}/_coordinator/{args.command}"
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                url,
+                headers={"Authorization": f"Bearer {token}"},
+                json={"operator": getpass.getuser(), "reason": args.reason},
+            )
+        if response.status_code == 202:
+            payload = response.json()
+            print(
+                json.dumps(payload, indent=2)
+                if args.json
+                else f"Coordinator {args.command} requested; draining active work."
+            )
+            return 0
+        print(f"Coordinator {args.command} failed ({response.status_code}): {response.text}", file=sys.stderr)
+    except Exception as exc:
+        print(f"Failed to contact coordinator at {args.url}: {exc}", file=sys.stderr)
+    return 1
 
 
 def cmd_status(args: argparse.Namespace) -> int:
@@ -728,6 +770,8 @@ def main(argv: Optional[List[str]] = None) -> None:
     code = 0
     if args.command == "serve":
         code = cmd_serve(args)
+    elif args.command in {"restart", "shutdown"}:
+        code = cmd_lifecycle(args)
     elif args.command == "status":
         code = cmd_status(args)
     elif args.command == "recover":

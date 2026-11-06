@@ -14,6 +14,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Set
 import anyio
 import httpx
 from starlette.applications import Starlette
+from starlette.background import BackgroundTask
 from starlette.requests import Request
 from starlette.responses import JSONResponse, Response, StreamingResponse
 from starlette.routing import Route
@@ -227,12 +228,61 @@ class LMStudioGateway:
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
+            Route("/_coordinator/restart", self.handle_coordinator_restart, methods=["POST"]),
+            Route("/_coordinator/shutdown", self.handle_coordinator_shutdown, methods=["POST"]),
             Route("/_coordinator/recover", self.handle_coordinator_recover, methods=["POST"]),
             Route("/_coordinator/abort", self.handle_coordinator_abort, methods=["POST"]),
             Route("/{path:path}", self.handle_proxy, methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "HEAD"]),
         ]
         app = Starlette(routes=routes, lifespan=lifespan)
         return app
+
+    async def _request_lifecycle_action(self, request: Request, *, restart: bool) -> Response:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.recovery_token
+        if not token:
+            return JSONResponse({"error": "Lifecycle control disabled: configure an operator token"}, status_code=503)
+        supplied = request.headers.get("authorization", "")
+        if not secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "Operator and reason are required"}, status_code=400)
+        if not isinstance(payload, dict) or any(
+            not isinstance(payload.get(key), str) or not payload[key].strip() or len(payload[key]) > 1024
+            for key in ("operator", "reason")
+        ):
+            return JSONResponse({"error": "Nonempty bounded operator and reason are required"}, status_code=400)
+        if service.state != ServiceState.READY:
+            return JSONResponse({"error": f"Coordinator is not ready ({service.state.value})"}, status_code=409)
+
+        async def drain_and_exit() -> None:
+            await service.stop(reason=f"{payload['operator']}: {payload['reason']}")
+            if service.state != ServiceState.STOPPED:
+                return
+            if restart and service.system.lease_mgr.restarts_blocked:
+                return
+            request.app.state.restart_requested = restart
+            callback = getattr(request.app.state, "request_server_exit", None)
+            if callback is not None:
+                callback()
+
+        return JSONResponse(
+            {"status": "draining", "action": "restart" if restart else "shutdown"},
+            status_code=202,
+            background=BackgroundTask(drain_and_exit),
+        )
+
+    async def handle_coordinator_restart(self, request: Request) -> Response:
+        """Drain safely, then let the serving supervisor rebuild the service from config."""
+        return await self._request_lifecycle_action(request, restart=True)
+
+    async def handle_coordinator_shutdown(self, request: Request) -> Response:
+        """Drain safely and exit the serving process without an emergency abort."""
+        return await self._request_lifecycle_action(request, restart=False)
 
     async def handle_coordinator_status(self, request: Request) -> JSONResponse:
         """Expose internal coordinator health, lease metrics, and restart inhibition state."""

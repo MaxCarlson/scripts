@@ -313,7 +313,10 @@ class CoordinatorService:
                 while claimed() and time.monotonic() < deadline:
                     await asyncio.sleep(min(0.05, max(0, deadline - time.monotonic())))
                 uncertain = claimed()
-                if self.stop_miner_on_shutdown and self.system.miner_adapter:
+                # A timed-out drain is not proof that an inference has ended. Keep the
+                # upstream client and instance lock alive so an uncertain request is
+                # never interrupted and a second coordinator cannot take ownership.
+                if not uncertain and self.stop_miner_on_shutdown and self.system.miner_adapter:
                     info = await self.system.miner_adapter.status()
                     if info.state != ProcessState.STOPPED:
                         if not info.is_coordinator_owned:
@@ -326,7 +329,7 @@ class CoordinatorService:
                             uncertain = (
                                 uncertain or (await self.system.miner_adapter.status()).state != ProcessState.STOPPED
                             )
-                if self.stop_process_on_shutdown:
+                if not uncertain and self.stop_process_on_shutdown:
                     supervisor = self.system.supervisors[self.stop_process_on_shutdown]
                     info = await supervisor.status()
                     if info.state != ProcessState.STOPPED:
@@ -341,7 +344,8 @@ class CoordinatorService:
                             )
                             uncertain = uncertain or not stopped
                             uncertain = uncertain or (await supervisor.status()).state != ProcessState.STOPPED
-                await asyncio.wait_for(self.system.gateway.close(), timeout=2.0)
+                if not uncertain:
+                    await asyncio.wait_for(self.system.gateway.close(), timeout=2.0)
                 self._state = (
                     ServiceState.RECONCILIATION_REQUIRED if uncertain or self._aborted else ServiceState.STOPPED
                 )
@@ -356,7 +360,7 @@ class CoordinatorService:
             self._failure_reason = f"Shutdown failed: {exc}"
             logger.error(self._failure_reason)
         finally:
-            if self._instance_lock is not None and self._owns_instance_lock:
+            if self._state == ServiceState.STOPPED and self._instance_lock is not None and self._owns_instance_lock:
                 self._instance_lock.release()
 
     async def emergency_abort(self, reason: str) -> Dict[str, Any]:
