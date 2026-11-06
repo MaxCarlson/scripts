@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
+import csv
+import io
 import os
 import re
 import secrets
 import stat
 import subprocess
-import csv
-import io
 from pathlib import Path
 
 
@@ -73,6 +73,13 @@ def _secure_path(path: Path) -> None:
         path.chmod(0o700 if path.is_dir() else 0o600)
 
 
+def _remove_temporary_file(path: Path) -> None:
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+
+
 def load_or_create_token() -> str:
     """Load the configured override or securely provision the shared token once."""
     override = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
@@ -83,31 +90,34 @@ def load_or_create_token() -> str:
         return load_token()
     if os.name == "nt" and _windows_user_sid() == "S-1-5-18":
         raise CredentialError("Run a normal user CLI command once to provision the shared credential before SYSTEM startup")
+    temporary = path.with_name(path.name + ".new-" + secrets.token_hex(8))
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         _secure_path(path.parent)
+        token = secrets.token_urlsafe(48)
+        if not _TOKEN_RE.fullmatch(token):
+            raise CredentialError("Generated operator credential is invalid")
+        with temporary.open("x", encoding="ascii") as stream:
+            stream.write(token)
+            stream.flush()
+            os.fsync(stream.fileno())
+        _secure_path(temporary)
         try:
-            with path.open("x", encoding="ascii") as stream:
-                token = secrets.token_urlsafe(48)
-                stream.write(token)
-                stream.flush()
-                os.fsync(stream.fileno())
+            if os.name == "nt":
+                os.rename(temporary, path)
+            else:
+                os.link(temporary, path)
         except FileExistsError:
-            pass
-        _secure_path(path)
-        token = path.read_text(encoding="ascii")
+            _remove_temporary_file(temporary)
+            return load_token()
+        _remove_temporary_file(temporary)
+        return token
     except CredentialError:
-        if 'token' in locals() and path.exists():
-            try:
-                path.unlink()
-            except OSError:
-                pass
+        _remove_temporary_file(temporary)
         raise
     except (OSError, UnicodeError) as exc:
+        _remove_temporary_file(temporary)
         raise CredentialError(f"Cannot read or provision operator credential at {path}") from exc
-    if not _TOKEN_RE.fullmatch(token):
-        raise CredentialError(f"Operator credential at {path} is invalid; use explicit auth reinitialize")
-    return token
 
 
 def load_token() -> str:

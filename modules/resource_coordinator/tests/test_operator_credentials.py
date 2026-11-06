@@ -1,10 +1,46 @@
 from __future__ import annotations
 
 import os
+from concurrent.futures import ThreadPoolExecutor
+from threading import Event, Lock
 
 import pytest
 
 from resource_coordinator.core import operator_credentials as credentials
+
+
+def test_concurrent_first_provisioning_never_reads_a_partial_credential(tmp_path, monkeypatch):
+    path = tmp_path / "operator-token"
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setattr(credentials, "_secure_path", lambda _target: None)
+    first_writer_started = Event()
+    release_first_writer = Event()
+    call_lock = Lock()
+    call_count = 0
+
+    def controlled_token(_size):
+        nonlocal call_count
+        with call_lock:
+            call_count += 1
+            is_first = call_count == 1
+        if is_first:
+            first_writer_started.set()
+            assert release_first_writer.wait(timeout=5)
+            return "A" * 64
+        return "B" * 64
+
+    monkeypatch.setattr(credentials.secrets, "token_urlsafe", controlled_token)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(credentials.load_or_create_token)
+        assert first_writer_started.wait(timeout=2)
+        second = executor.submit(credentials.load_or_create_token)
+        try:
+            assert second.result(timeout=2) == "B" * 64
+        finally:
+            release_first_writer.set()
+        assert first.result(timeout=2) == "B" * 64
+    assert path.read_text(encoding="ascii") == "B" * 64
 
 
 def test_missing_credential_is_created_once_and_never_printed(tmp_path, monkeypatch):
@@ -20,7 +56,10 @@ def test_missing_credential_is_created_once_and_never_printed(tmp_path, monkeypa
     assert len(first) >= 64
     assert second == first
     assert path.read_text(encoding="ascii") == first
-    assert secured == [path.parent, path]
+    assert secured[0] == path.parent
+    assert secured[1].parent == path.parent
+    assert secured[1].name.startswith(path.name + ".new-")
+    assert not secured[1].exists()
 
 
 def test_environment_override_takes_precedence_without_rewriting_file(tmp_path, monkeypatch):

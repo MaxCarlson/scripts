@@ -1,5 +1,24 @@
 # Status Ledger: Miner / Local LLM Coordination
 
+## 2026-11-06 merge validation continuation
+
+The automatic credential path now publishes a secured temporary file atomically,
+so a simultaneous first CLI/service startup cannot read a partially written token.
+The regression test deterministically exercises that race and verifies both callers
+load the same winning credential. Existing missing/mismatched credential, ACL
+failure, repair/reinitialize, offline doctor, automatic CLI discovery, and
+coordinator restart/recovery tests remain in the same focused suite.
+
+Fresh validation from the existing feature worktree used the intended local
+package imports: 148 passed, 2 unrelated shell tests deselected across auth, CLI,
+service lifecycle, safety/arbitration, and bridge routing. Ruff and diff checks
+passed. Against latest local `main` (`fcc95eac`), the Resource Coordinator feature
+has 26 changed paths with zero path overlap against main's 98 paths since the
+shared base. No coordinator, inference, LM Studio model, miner, or configuration
+operation was performed. The running deployment remains untouched; live
+activation and the Resource Coordinator TUI remain gated by operational
+acceptance after integration.
+
 ## 2026-11-06 continuation checkpoint
 
 ### Operator credential automation
