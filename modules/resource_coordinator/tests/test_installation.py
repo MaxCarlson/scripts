@@ -619,6 +619,29 @@ def test_task_helper_snapshots_and_restores_exact_owned_task_definition(tmp_path
     assert "Enable-ScheduledTask -TaskName $name" in restore_script
 
 
+def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(tmp_path, monkeypatch):
+    import subprocess
+    import resource_coordinator.installation as mod
+
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / "managed", interactive_user="test-user")
+    calls = []
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        if args[0] == "icacls.exe":
+            return subprocess.CompletedProcess(args, 0, "", "")
+        request = Path(args[-1])
+        payload = json.loads(request.read_text(encoding="utf-8"))
+        assert len(payload["definition"]) == 100_000
+        return subprocess.CompletedProcess(args, 0, "{\"ok\":true}", "")
+    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    result = backend._run({"operation": "restore", "definition": "x" * 100_000, "enabled": True})
+    ps_args = calls[-1][0]
+    assert result.stdout == '{"ok":true}'
+    assert len(" ".join(ps_args)) < 2000
+    assert "-EncodedCommand" not in ps_args
+
+
 def test_managed_launcher_consumes_one_shot_miner_start_suppression_policy(tmp_path):
     paths, _ = make_paths(tmp_path)
     paths.root.mkdir(parents=True, exist_ok=True)

@@ -15,6 +15,7 @@ import shutil
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -564,27 +565,57 @@ class WindowsStartupTaskBackend:
              non_interactive: bool = False) -> subprocess.CompletedProcess[str]:
         if os.name != "nt":
             raise InstallationError("Windows Scheduled Tasks are available only on Windows")
-        script = self._script(payload)
-        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        if elevated and not self._admin():
-            if non_interactive:
-                raise ElevationRequired("Administrator approval is required; rerun interactively or elevate PowerShell.")
-            wrapper = (
-                f"$encoded='{encoded}'; $exe={_ps_single_quote(self.powershell)}; "
-                "$p=Start-Process -FilePath $exe -Verb RunAs -WindowStyle Hidden "
-                "-ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -Wait -PassThru; "
-                "exit $p.ExitCode"
+        if elevated and not self._admin() and non_interactive:
+            raise ElevationRequired("Administrator approval is required; rerun interactively or elevate PowerShell.")
+        self.managed_root.mkdir(parents=True, exist_ok=True)
+        if self.managed_root.is_symlink():
+            raise InstallationError("Managed helper directory is a reparse point; refusing privileged execution")
+        operation_id = os.urandom(16).hex()
+        operation_dir = Path(tempfile.mkdtemp(prefix=f"operation-{operation_id}-", dir=self.managed_root))
+        request_path, output_path, error_path = (operation_dir / name for name in ("request.json", "stdout.txt", "stderr.txt"))
+        helper_path = self.managed_root / "rc-task-helper-v1.ps1"
+        result: Optional[subprocess.CompletedProcess[str]] = None
+        try:
+            acl = subprocess.run(["icacls.exe", str(operation_dir), "/inheritance:r", "/grant:r",
+                                  f"{self.interactive_user}:(OI)(CI)F", "SYSTEM:(OI)(CI)F",
+                                  "Administrators:(OI)(CI)F"], capture_output=True, text=True, timeout=15)
+            if acl.returncode:
+                raise InstallationError("Could not restrict helper operation directory ACL: " + _clean_powershell_error(acl.stderr))
+            body = _TASKS_POWERSHELL.replace(
+                "$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json",
+                "$payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json",
             )
-            wrapper_encoded = base64.b64encode(wrapper.encode("utf-16le")).decode("ascii")
-            result = subprocess.run(
-                [self.powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", wrapper_encoded],
-                capture_output=True, text=True, timeout=120,
-            )
-        else:
-            result = subprocess.run(
-                [self.powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                capture_output=True, text=True, timeout=120,
-            )
+            helper = "param([Parameter(Mandatory)][string]$RequestPath)\n" + body
+            if helper_path.exists() and helper_path.is_symlink():
+                raise InstallationError("Task helper is a reparse point")
+            helper_path.write_text(helper, encoding="utf-8")
+            helper_acl = subprocess.run(["icacls.exe", str(helper_path), "/inheritance:r", "/grant:r",
+                                         f"{self.interactive_user}:F", "SYSTEM:F", "Administrators:F"],
+                                        capture_output=True, text=True, timeout=15)
+            if helper_acl.returncode:
+                raise InstallationError("Could not restrict task helper ACL")
+            request = {**payload, "managed_root": str(self.managed_root), "interactive_user": self.interactive_user}
+            request_path.write_text(json.dumps(request, ensure_ascii=False), encoding="utf-8")
+            if elevated and not self._admin():
+                wrapper = (f"$p=Start-Process -FilePath {_ps_single_quote(self.powershell)} -Verb RunAs "
+                           f"-WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-File',"
+                           f"'{helper_path}','-RequestPath','{request_path}') -RedirectStandardOutput "
+                           f"'{output_path}' -RedirectStandardError '{error_path}' -Wait -PassThru; exit $p.ExitCode")
+                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                                        capture_output=True, text=True, timeout=120)
+                if output_path.exists():
+                    result.stdout = output_path.read_text(encoding="utf-8", errors="replace")
+                if error_path.exists():
+                    result.stderr += error_path.read_text(encoding="utf-8", errors="replace")
+            else:
+                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-File",
+                                         str(helper_path), "-RequestPath", str(request_path)],
+                                        capture_output=True, text=True, timeout=120)
+        except subprocess.TimeoutExpired as exc:
+            raise InstallationError(f"Task operation {operation_id} timed out; request artifacts retained at {operation_dir}") from exc
+        finally:
+            if operation_dir.exists() and output_path.exists() and result is not None and result.returncode == 0:
+                shutil.rmtree(operation_dir, ignore_errors=True)
         if result.returncode:
             message = _clean_powershell_error(result.stderr or result.stdout) or f"PowerShell exited {result.returncode}"
             if "access is denied" in message.casefold() or "requires elevation" in message.casefold():
