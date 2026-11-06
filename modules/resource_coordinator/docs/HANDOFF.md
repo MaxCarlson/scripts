@@ -2,9 +2,33 @@
 
 ## Current implementation continuation — 2026-11-06
 
+### Integration and credential update
+
+The automatic credential implementation is committed and pushed at `05c6d71e`,
+with atomic repair hardening at `0e3db84f`. `resource-coordinator auth doctor`
+was run from the switched main checkout and verified the existing credential
+file at `C:\Users\mcarls\.resource_coordinator\secrets\operator-token`:
+readable, valid format, restricted ACL; the token was not printed. The
+reinitialization command correctly refused while port 1235 was listening. The
+coordinator and CLI run as `mcarls`; a future SYSTEM task still needs the
+explicit `RESOURCE_COORDINATOR_TOKEN_FILE` override and a real identity test.
+
+Integration review: local main `f6aac8b9`, feature `0e3db84f` at review start, merge base
+`bf6d3be3`, main 29 ahead / feature 12 ahead. A merge-tree simulation produced
+no textual conflicts. No merge occurred. Read-only live status still showed
+one ready coordinator and owned KRig PID 49928, no active/pending requests,
+and no requested GPU flags in its command line. The old running service returns
+404 for the new miner route and cannot use the new authenticated restart route.
+The existing hidden-task legacy stop path remains unverified, so no deployment,
+restart, mining operation, or inference was attempted. Latest validation: 86
+auth/CLI/lifecycle tests passed, 1 known shell-alias case deselected; 20
+adjacent arbitration tests and 51 bridge route tests passed, 1 shell alias case
+deselected. Ruff and diff checks passed. The detailed migration sequence and
+TUI gate are in the active [runbook](plans/20261102-miner-inference/RUNBOOK.md).
+
 ### Automatic operator credential checkpoint
 
-Committed as `05c6d71e` for `resource-coordinator` 0.8.0, with atomic ACL-repair hardening pending: authenticated CLI operations discover a random local credential automatically, provisioned under `%USERPROFILE%\\.resource_coordinator\\secrets\\operator-token` with a Windows ACL for the interactive user and LocalSystem. `RESOURCE_COORDINATOR_OPERATOR_TOKEN` remains an advanced override. The server continues readiness/inference/miner supervision when credential storage is unavailable; privileged routes fail closed and retry file discovery when credentials are later provisioned. `auth doctor`, `auth repair`, and stopped-service-only `auth reinitialize` are offline. SYSTEM launchers must set `RESOURCE_COORDINATOR_TOKEN_FILE` to the same user-profile path; do not deploy a SYSTEM task until its access check passes. Latest tests: 85 passed, 1 deselected, including a real temporary-file Windows ACL test and atomic repair failure path; Ruff and `git diff --check` passed. No production credential was generated, no running service was restarted, and no live miner control was attempted.
+Commits `05c6d71e` and `0e3db84f` implement automatic local credential discovery and atomic ACL repair for `resource-coordinator` 0.8.0. The existing credential at `%USERPROFILE%\\.resource_coordinator\\secrets\\operator-token` is valid and has the expected user/SYSTEM ACL; its secret was not printed. `auth reinitialize` correctly refused while port 1235 was listening. No credential rotation, service restart, or miner operation occurred. The current user task and coordinator run as `mcarls`; a future SYSTEM task still requires the explicit same-path override and an actual identity test.
 
 Latest lifecycle checkpoint: `3896f40f` fixes clean shutdown persistence of the temporary manual override used to stop the owned miner. The new regression verifies the journal remains unheld and a subsequent service start starts the miner as configured. The lifecycle file suite passed 17 tests; consolidated coordinator regressions passed 71 tests, 1 deselected; Ruff check and `git diff --check` passed. This commit continues the existing worktree described below.
 

@@ -159,6 +159,39 @@ def test_gateway_instances_reuse_provisioned_token_after_service_restart(tmp_pat
     assert after_restart.operator_token == before_restart.operator_token
 
 
+@pytest.mark.asyncio
+async def test_credential_survives_coordinator_service_restart(tmp_path, monkeypatch):
+    from resource_coordinator.config import CoordinatorConfig, PolicyConfig, ProcessConfig, ServiceConfig, build_system
+    from resource_coordinator.core.service import CoordinatorService
+
+    path = tmp_path / "operator-token"
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.setattr(credentials, "_secure_path", lambda _target: None)
+    credential = credentials.load_or_create_token()
+    config = CoordinatorConfig(
+        service=ServiceConfig(),
+        processes={"worker": ProcessConfig(name="worker", backend="fake")},
+        policies=[
+            PolicyConfig(
+                name="stop-worker", trigger_event="lmstudio.inference_requested", target_process="worker",
+                resource="gpu.inference", cooldown_seconds=0,
+            )
+        ],
+    )
+    first_system = build_system(config, use_fake_processes=True)
+    first_service = CoordinatorService(first_system)
+    assert await first_service.start()
+    assert first_system.gateway.operator_token == credential
+    await first_service.stop()
+
+    second_system = build_system(config, use_fake_processes=True)
+    second_service = CoordinatorService(second_system)
+    assert await second_service.start()
+    assert second_system.gateway.operator_token == credential
+    await second_service.stop()
+
+
 def test_cli_discovers_file_credential_automatically(tmp_path, monkeypatch):
     from resource_coordinator import cli
 

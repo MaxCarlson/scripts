@@ -208,6 +208,70 @@ Invoke-RestMethod -Method POST -Uri "http://127.0.0.1:1235/_coordinator/recover?
 
 ## 4. Startup, Shutdown & Crash Recovery Safety
 
+### One-time migration gate — 2026-11-06 (not executed)
+
+The review branch is `feature/miner-inference-coordination-20261102` at
+`0e3db84f`; local `main` is `f6aac8b9`. They share merge base `bf6d3be3`
+and have diverged (main is 29 commits ahead, the feature is 12 commits ahead
+at this checkpoint). `git merge-tree --write-tree main feature/...` completed
+without textual conflicts, but the branches have **not** been merged. Review
+the full affected-module diff and run tests on the eventual merge result before
+requesting deployment authorization.
+
+The current logon task is `ResourceCoordinator-KRig-UserLogon`, principal
+`mcarls` with interactive logon and limited run level. Its launcher passes
+`--start-process krig_miner --stop-process-on-shutdown krig_miner`, reads
+`C:\Users\mcarls\.resource_coordinator\config.yaml`, and starts code from
+`C:\Users\mcarls\src\scripts`. There is no SYSTEM boot task. The checked live
+state had one ready coordinator, zero active/pending requests, and coordinator-
+owned KRig PID 49928. That process did not have the requested GPU flags.
+
+The existing process does not expose the new authenticated miner or lifecycle
+routes (`miner status` returns 404). It cannot use the new safe shutdown path.
+Do not terminate its scheduled task, use abort, force-kill a process, or reboot
+as a substitute. A controlled stop mechanism for this legacy hidden task is
+still required before switching code. If no supported graceful signal can be
+verified for that task instance, stop here and preserve the running service and
+miner.
+
+The shared operator credential exists at
+`C:\Users\mcarls\.resource_coordinator\secrets\operator-token`; `auth doctor`
+verified file readability, token format, and ACL entries for `mcarls` and
+LocalSystem without printing the secret. `auth reinitialize` was tested against
+the live listener and correctly refused to rotate it. The service task runs as
+`mcarls`, so it resolves the same default profile path. A future SYSTEM task
+must set `RESOURCE_COORDINATOR_TOKEN_FILE` to this exact path. SYSTEM access is
+present in the ACL; no SYSTEM task currently exists to test actual runtime
+access.
+
+Once merge/deployment is separately authorized and a graceful legacy stop path
+is verified, the migration sequence is:
+
+1. Recheck status, inference clients, miner PID/ownership, config paths, and
+   listener immediately before the change. Back up `config.yaml` and the
+   durable state/lock metadata without exposing credentials; record file hashes.
+2. Validate the integrated source, Python import paths, LM Studio upstream,
+   configured miner executable, 10-second cooldown, and stop-on-shutdown flag.
+3. Stop new requests, wait until active and pending counts reach zero, and
+   require no restart inhibition. Use only the verified graceful stop mechanism.
+4. Confirm the old coordinator and owned miner have exited and the instance
+   lock is released. If any identity or exit is uncertain, do not start another
+   owner.
+5. Start the integrated service with the existing config and normal-restart
+   arguments (no `--first-boot`). Confirm exactly one coordinator and one
+   coordinator-owned miner, then verify actual KRig flags, pool activity, and
+   append-only log output.
+6. Verify inference through `:1235`, automatic stop before forwarding, and
+   restart after completion/cooldown. Preserve existing model identity/context
+   during gaming checks. Use mock tests for failure injection.
+
+Rollback only after the new process has relinquished ownership and the lock is
+released. Restore the backed-up code/configuration and durable state only after
+checking that the older version can read that journal format. If the miner
+fails to restart, retain the safety hold and evidence; never launch a second
+miner while ownership is uncertain. TUI implementation remains blocked until
+these live acceptance gates pass.
+
 1. **Preflight Refusal of Conflicting External Miners:**
    - On startup, the coordinator actively scans host processes for existing unmanaged instances of the target executable (`krig-miner.exe`).
    - If an unowned external miner is running, the service fails closed and refuses to start, preventing dual-ownership collisions, overlapping GPU compute thrashing, or clock interference.
