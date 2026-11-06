@@ -40,6 +40,16 @@ def test_generate_html_report_empty():
     assert "No efficiency data available" in html_output
 
 
+def test_experimental_analysis_is_visible_and_escaped():
+    report = ReportData(experiment_id="synthetic", metadata={
+        "experimental_analysis": {"compatibility": "blocked <script>alert(1)</script>", "paired_tasks": 4}
+    })
+    output = generate_html_report(report)
+    assert "Preregistered Experimental Comparison" in output
+    assert "&lt;script&gt;" in output
+    assert "<script>alert(1)</script>" not in output
+
+
 def test_generate_html_report_full(tmp_path: Path):
     v1 = VariantReportRow(
         variant_id="model_fast",

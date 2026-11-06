@@ -1217,6 +1217,12 @@ def _render_unranked_section(variants: list[VariantReportRow]) -> str:
 
 def _render_condition_sections(metadata: dict) -> str:
     sections = []
+    experimental = metadata.get("experimental_analysis")
+    if isinstance(experimental, dict):
+        sections.append('<section style="margin-top:32px"><h2>Preregistered Experimental Comparison</h2>'
+                        '<p>Interpret estimates only with the compatibility and evidence gates shown here. '
+                        'Task-cluster intervals assume independent sampled tasks.</p><pre>'
+                        + html.escape(json.dumps(experimental, indent=2, sort_keys=True)) + '</pre></section>')
     if metadata.get("comparison_contract"):
         sections.append('<details style="margin-top:32px"><summary>Primary comparison conditions</summary><pre>'
                         + html.escape(json.dumps(metadata["comparison_contract"], indent=2)) + '</pre></details>')

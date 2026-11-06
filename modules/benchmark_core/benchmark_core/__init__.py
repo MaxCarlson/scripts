@@ -2,7 +2,7 @@
 benchmark_core — Lightweight, reusable benchmarking results and reporting utility.
 """
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"
 
 from .compare import (
     AggregatedVariantMetrics,
@@ -20,6 +20,14 @@ from .compare import (
     render_experiment_comparison_md,
 )
 from .importers import import_hyperfine
+from .experimental import (
+    ExperimentalComparison,
+    check_condition_compatibility,
+    compare_paired_trials,
+    evaluate_decision_eligibility,
+    holm_adjust,
+    validate_decision_record,
+)
 from .models import (
     Experiment,
     ExperimentConfig,
@@ -180,4 +188,10 @@ __all__ = [
     "render_experiment_comparison_md",
     # Importers
     "import_hyperfine",
+    "ExperimentalComparison",
+    "check_condition_compatibility",
+    "compare_paired_trials",
+    "evaluate_decision_eligibility",
+    "holm_adjust",
+    "validate_decision_record",
 ]
