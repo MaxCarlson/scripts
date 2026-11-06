@@ -90,6 +90,28 @@ if those details are inaccessible. The configured miner's shutdown argument is
 checked in the actual service process arguments.
 Preflight does not change the service or startup task.
 
+### Interrupted upgrade recovery
+
+The host recovery CLI works when the coordinator HTTP service is unavailable:
+
+```powershell
+resource-coordinator system recovery status
+resource-coordinator system recovery diagnose -j
+resource-coordinator system recovery restore
+resource-coordinator system recovery reconcile
+```
+
+`restore` and `reconcile` preview by default. Add `--apply` only after reviewing
+the evidence. Restore starts the snapshotted owned task only after port 1235 and
+the exact prior coordinator and miner PID/creation-time pairs are proven absent.
+It refuses when the prior miner state was held or intentionally stopped, because
+the legacy launcher may start it. Reconcile archives a failed receipt only when
+the running listener is attributed to the enabled owned task, the service is
+ready, inference is idle, and the durable receipt has no active gaming transition.
+If task or process evidence is unavailable, the command blocks without changing
+the receipt or task. Elevated task access may require launching the CLI from an
+approved elevated PowerShell session.
+
 ## Configure one process
 
 Create `config.local.yaml` in this directory. Git ignores that machine-local

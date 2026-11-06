@@ -576,12 +576,8 @@ class WindowsStartupTaskBackend:
         request_path, output_path, error_path = (operation_dir / name for name in ("request.json", "stdout.txt", "stderr.txt"))
         helper_path = operation_dir / "helper.ps1"
         result: Optional[subprocess.CompletedProcess[str]] = None
+        operation_verified = False
         try:
-            root_acl = subprocess.run(["icacls.exe", str(self.managed_root), "/inheritance:r", "/grant:r",
-                                       f"{self.interactive_user}:(OI)(CI)F", "SYSTEM:(OI)(CI)F",
-                                       "Administrators:(OI)(CI)F"], capture_output=True, text=True, timeout=15)
-            if root_acl.returncode:
-                raise InstallationError("Could not restrict managed helper directory ACL")
             acl = subprocess.run(["icacls.exe", str(operation_dir), "/inheritance:r", "/grant:r",
                                   f"{self.interactive_user}:(OI)(CI)F", "SYSTEM:(OI)(CI)F",
                                   "Administrators:(OI)(CI)F"], capture_output=True, text=True, timeout=15)
@@ -595,7 +591,9 @@ class WindowsStartupTaskBackend:
                        "operation_id": operation_id, "result_path": str(output_path)}
             request_bytes = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             request_hash = hashlib.sha256(request_bytes).hexdigest()
-            request_path.write_bytes(request_bytes)
+            request_tmp = request_path.with_suffix(".new")
+            request_tmp.write_bytes(request_bytes)
+            os.replace(request_tmp, request_path)
             helper = ("param([Parameter(Mandatory)][string]$RequestPath)\n$ErrorActionPreference='Stop'\n"
                       f"$expectedOperation='{operation_id}'; $expectedHash='{request_hash}'\n"
                       "$actualHash=(Get-FileHash -LiteralPath $RequestPath -Algorithm SHA256).Hash.ToLowerInvariant()\n"
@@ -605,9 +603,9 @@ class WindowsStartupTaskBackend:
                       "$captured = & {\n" + body.split("\n", 1)[1] + "\n} 2>&1 | Out-String\n"
                       "$record=@{operation_id=[string]$payload.operation_id;request_sha256='" + request_hash +
                       "';state='completed';exit_code=0;output=$captured}\n"
-                      "$tmp=[string]$payload.result_path+'.new'; $record | ConvertTo-Json -Depth 8 -Compress | "
-                      "Set-Content -LiteralPath $tmp -Encoding utf8; Move-Item -LiteralPath $tmp -Destination "
-                      "$payload.result_path -Force\n")
+                      "$resultPath=[string]$payload.result_path; if (Test-Path -LiteralPath $resultPath) { throw 'Result path already exists.' }; "
+                      "$tmp=$resultPath+'.new'; $record | ConvertTo-Json -Depth 8 -Compress | "
+                      "Set-Content -LiteralPath $tmp -Encoding utf8; [IO.File]::Move($tmp,$resultPath,$false)\n")
             helper_path.write_text(helper, encoding="utf-8")
             helper_hash = hashlib.sha256(helper_path.read_bytes()).hexdigest()
             if elevated and not self._admin():
@@ -637,10 +635,13 @@ class WindowsStartupTaskBackend:
             if hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash:
                 raise InstallationError(f"Task helper {operation_id} changed during execution")
             result.stdout = record.get("output", "")
+            operation_verified = True
         except subprocess.TimeoutExpired as exc:
             raise InstallationError(f"Task operation {operation_id} timed out; diagnostic artifacts retained at {operation_dir}") from exc
+        except OSError as exc:
+            raise InstallationError(f"Task operation {operation_id} could not launch: {exc}; artifacts retained at {operation_dir}") from exc
         finally:
-            if operation_dir.exists() and result is not None and result.returncode == 0:
+            if operation_dir.exists() and operation_verified:
                 shutil.rmtree(operation_dir, ignore_errors=True)
         if result.returncode:
             message = _clean_powershell_error(result.stderr or result.stdout) or f"PowerShell exited {result.returncode}"
@@ -1346,6 +1347,162 @@ class ManagedInstallation:
         finally:
             lock.release()
 
+    def recovery(self, action: str, *, apply: bool = False,
+                 non_interactive: bool = False) -> Dict[str, Any]:
+        """Inspect and reconcile a failed upgrade without requiring service availability."""
+        receipt = None
+        receipt_error = None
+        if self.paths.upgrade_receipt.is_file():
+            try:
+                receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+                if not isinstance(receipt, dict):
+                    raise ValueError("receipt root is not an object")
+            except (OSError, ValueError) as exc:
+                receipt_error = f"Upgrade receipt cannot be read: {exc}"
+        try:
+            tasks = self.task_backend.status()
+            task_error = None
+        except Exception as exc:
+            tasks, task_error = [], f"Scheduled Task inspection failed: {exc}"
+        service = self._service_status()
+        listener_result = _listener_identity_details()
+        listener = listener_result.get("identity") if listener_result.get("verified") else None
+        miner_name = None
+        try:
+            miner_name = _configured_miner(self.paths.config)
+        except Exception:
+            pass
+        task = next((item for item in tasks if item.owned and item.name in {TASK_NAMES["boot"], TASK_NAMES["logon"]}
+                     and item.enabled), None)
+        attribution = (_legacy_attribution(task, listener, self.paths, miner_name)
+                       if task and listener else {"verified": False, "reason": "task or listener identity unavailable"})
+        processes = (service or {}).get("processes", {})
+        miner = processes.get(miner_name, {}) if miner_name else {}
+        active = (service or {}).get("gpu_inference", {})
+        blockers = []
+        if receipt_error:
+            blockers.append(receipt_error)
+        if not receipt:
+            blockers.append("No pending upgrade receipt exists")
+        if task_error:
+            blockers.append(task_error)
+        report = {
+            "status": "blocked" if blockers else ("ready" if service and service.get("service_state") == "ready" else "degraded"),
+            "action": action, "receipt_phase": (receipt or {}).get("phase"),
+            "failed_at": (receipt or {}).get("failed_at"), "error": (receipt or {}).get("error"),
+            "service_state": (service or {}).get("service_state", "offline"),
+            "listener": listener, "listener_discovery": listener_result.get("category"),
+            "task": asdict(task) if task else None, "task_attribution": attribution,
+            "miner_state": miner.get("state", "unavailable"), "miner_pid": miner.get("pid"),
+            "miner_owned": miner.get("is_coordinator_owned"),
+            "active_inferences": active.get("active_count"), "pending_inferences": active.get("pending_count"),
+            "gaming_state": ((receipt or {}).get("durable_state") or {}).get("gaming_mode", {}).get("state"),
+            "blockers": blockers,
+        }
+        if action in {"status", "diagnose"}:
+            return report
+        if action == "resume":
+            if not apply:
+                return {**report, "status": "planned", "changes": [
+                    "resume only a receipt-backed upgrade after exact old owner and miner exit are verified"]}
+            preflight = self._upgrade_preflight(non_interactive=non_interactive)
+            lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+            if not lock.acquire():
+                return {**report, "status": "blocked", "blockers": ["Another upgrade or recovery operation holds the transaction lock"]}
+            try:
+                result = self._resume_interrupted_upgrade(preflight, non_interactive=non_interactive, timeout=45.0)
+                return result or {**report, "status": "blocked", "blockers": [
+                    "Receipt phase is not resumable or required ownership evidence is unavailable"]}
+            finally:
+                lock.release()
+        if action == "restore":
+            if not receipt or receipt_error or not apply:
+                return {**report, "status": "planned" if receipt else "blocked",
+                        "changes": ["restore the snapshotted owned task", "start and verify its coordinator"]}
+            if receipt.get("phase") != "RECOVERY_REQUIRED" or not receipt.get("task_snapshot"):
+                return {**report, "status": "blocked", "blockers": ["Receipt has no verified prior task snapshot"]}
+            if miner_name and not receipt.get("miner_resume_allowed"):
+                return {**report, "status": "blocked", "blockers": [
+                    "Prior miner state was intentionally stopped or held; automatic restore cannot prove the legacy launcher will preserve that hold"]}
+            if listener_result.get("category") != "not-found":
+                return {**report, "status": "blocked", "blockers": ["Port 1235 is not proven free; no owner will be started"]}
+            old_pid = receipt.get("old_service_pid")
+            old_created = receipt.get("old_service_create_time")
+            if old_pid and old_created is not None and _exact_process_is_alive(int(old_pid), float(old_created)) is not False:
+                return {**report, "status": "blocked", "blockers": ["Prior coordinator identity is still alive or unverifiable"]}
+            old_miner = receipt.get("old_miner") or {}
+            if old_miner.get("pid") and old_miner.get("create_time") is not None and _exact_process_is_alive(
+                    int(old_miner["pid"]), float(old_miner["create_time"])) is not False:
+                return {**report, "status": "blocked", "blockers": ["Prior miner identity is still alive or unverifiable"]}
+            task_value = receipt.get("task") or {}
+            try:
+                prior_task = StartupTask(**task_value)
+                self.task_backend.restore_snapshot(prior_task, receipt["task_snapshot"],
+                                                   non_interactive=non_interactive)
+                restored_task = next((item for item in self.task_backend.status()
+                                      if item.name == prior_task.name and item.owned and item.enabled), None)
+                if not restored_task:
+                    raise InstallationError("Prior owned task was not restored as enabled")
+                self.task_backend.start(restored_task, non_interactive=non_interactive)
+                service = self._wait_for_service(timeout=45.0)
+                listener = _listener_identity()
+                runtime = (service or {}).get("runtime") or {}
+                if not service or service.get("service_state") != "ready" or not listener or listener.get("pid") != runtime.get("pid"):
+                    raise InstallationError("Restored coordinator did not become ready with verified listener ownership")
+                receipt.update(phase="RESTORED_LEGACY", rollback_verified_at=time.time(),
+                               restored_runtime=runtime, restored_task=asdict(restored_task))
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
+                return {**report, "status": "restored", "phase": "RESTORED_LEGACY", "runtime": runtime}
+            except Exception as exc:
+                receipt.update(phase="RECOVERY_REQUIRED", rollback_error=str(exc), updated_at=time.time())
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
+                return {**report, "status": "recovery-required", "blockers": [str(exc)]}
+        if action != "reconcile":
+            raise InstallationError(f"Unsupported recovery action: {action}")
+        if not receipt or receipt_error:
+            return {**report, "status": "blocked"}
+        if receipt.get("phase") != "RECOVERY_REQUIRED" or receipt.get("failed_at") not in {
+                "OLD_STOPPED", "TASK_UPDATED", "NEW_READY"}:
+            blockers.append("Receipt phase is not eligible for legacy reconciliation")
+        if not service or service.get("service_state") != "ready":
+            blockers.append("A ready coordinator must be running before receipt reconciliation")
+        if listener is None or not attribution.get("verified"):
+            blockers.append("Running listener cannot be attributed to the enabled owned startup task")
+        if miner_name and (miner.get("state") == "running" and not miner.get("is_coordinator_owned")):
+            blockers.append("Miner ownership is not verified")
+        if active.get("active_count") != 0 or active.get("pending_count") != 0:
+            blockers.append("Inference activity is unavailable or nonzero")
+        if ((receipt.get("durable_state") or {}).get("gaming_mode") or {}).get("state", "inactive") != "inactive":
+            blockers.append("Receipt records an active or incomplete gaming transition")
+        report.update(status="blocked" if blockers else "planned", blockers=blockers,
+                      changes=["archive completed failed-upgrade receipt", "remove verified one-shot start policy"])
+        if blockers or not apply:
+            return report
+        lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+        if not lock.acquire():
+            return {**report, "status": "blocked", "blockers": ["Another upgrade or recovery operation holds the transaction lock"]}
+        try:
+            current = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+            if current != receipt or self._service_status() != service:
+                return {**report, "status": "blocked", "blockers": ["Receipt or live service changed since diagnosis"]}
+            operation_id = os.urandom(8).hex()
+            audit = self.paths.root / f"upgrade-receipt-reconciled-{operation_id}.json"
+            receipt["reconciled_at"] = time.time()
+            receipt["reconciled_by"] = getpass.getuser()
+            _write_json_atomic(audit, receipt)
+            self.paths.upgrade_receipt.unlink()
+            if self.paths.upgrade_policy.is_file():
+                try:
+                    policy = json.loads(self.paths.upgrade_policy.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    return {**report, "status": "recovery-required", "blockers": [
+                        "Receipt archived, but one-shot policy is unreadable; it was preserved"]}
+                if policy == {"start_miner": False}:
+                    self.paths.upgrade_policy.unlink()
+            return {**report, "status": "reconciled", "audit_record": str(audit), "receipt_phase": "RESTORED_LEGACY"}
+        finally:
+            lock.release()
+
     def _upgrade_impl(self, *, apply: bool, non_interactive: bool, timeout: float,
                       preflight: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Orchestrate an external, receipt-backed service upgrade without hot reload."""
@@ -1385,6 +1542,11 @@ class ManagedInstallation:
 
         assert preflight["task"] is not None
         task = StartupTask(**preflight["task"])
+        if isinstance(self.task_backend, WindowsStartupTaskBackend):
+            # Obtain UAC consent and exercise the exact helper path before stopping
+            # the current coordinator or miner.
+            self.task_backend._run({"operation": "validate", "task_name": task.name},
+                                   elevated=True, non_interactive=non_interactive)
         original_launcher_text = self.paths.launcher.read_text(encoding="utf-8") if self.paths.launcher.exists() else None
         receipt = {
             "schema": 1,
@@ -1548,6 +1710,12 @@ class ManagedInstallation:
                 except Exception as restore_error:
                     receipt["launcher_restore_error"] = str(restore_error)
             update_phase("RECOVERY_REQUIRED", failed_at=failed_at, error=str(exc))
+            if failed_at in {"OLD_STOPPED", "TASK_UPDATED", "NEW_READY"} and self._service_status() is None:
+                rollback = self.recovery("restore", apply=True, non_interactive=non_interactive)
+                receipt["automatic_rollback"] = {"status": rollback.get("status"),
+                                                  "phase": rollback.get("phase"),
+                                                  "blockers": rollback.get("blockers", [])}
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
             raise InstallationError(
                 f"Upgrade stopped during {failed_at}; no process was force-terminated. "
                 f"Inspect {self.paths.upgrade_receipt} before retrying. Details: {exc}"
@@ -2001,7 +2169,14 @@ switch ($payload.operation) {
     }
     ConvertTo-Json -InputObject @($items) -Depth 5 -Compress
   }
-  {$_ -in 'install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
+  {$_ -in 'validate','install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
+    if ($payload.operation -eq 'validate') {
+      if ($payload.task_name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
+      $null = Get-ScheduledTask -TaskName ([string]$payload.task_name) -ErrorAction Stop
+      $null = Get-Command Register-ScheduledTask -ErrorAction Stop
+      ConvertTo-Json -Compress -InputObject @{status='validated'; task_name=[string]$payload.task_name}
+      break
+    }
     if ($payload.operation -eq 'install') {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
       $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
@@ -2087,6 +2262,14 @@ def handle_installation_command(args: Any) -> int:
             emit_json(result)
         else:
             render_upgrade_result(result)
+        return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
+    if args.command == "recovery":
+        result = manager.recovery(args.recovery_command, apply=getattr(args, "apply", False),
+                                  non_interactive=getattr(args, "non_interactive", False))
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            render_result(f"Resource Coordinator Recovery — {args.recovery_command.title()}", result)
         return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
     if args.command == "setup":
         result = manager.setup(

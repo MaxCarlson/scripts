@@ -646,6 +646,73 @@ def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(
     assert len(" ".join(ps_args)) < 2000
     assert "-EncodedCommand" not in ps_args
     assert "-RedirectStandardOutput" not in ps_args
+    assert all(Path(call[0][1]) != backend.managed_root for call in calls if call[0][0] == "icacls.exe")
+
+
+def test_task_transport_retains_artifacts_when_completion_record_is_invalid(tmp_path, monkeypatch):
+    import subprocess
+    import resource_coordinator.installation as mod
+
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / "managed", interactive_user="test-user")
+    operation_dirs = []
+    def run(args, **kwargs):
+        if args[0] == "icacls.exe":
+            operation_dirs.append(Path(args[1]))
+            return subprocess.CompletedProcess(args, 0, "", "")
+        request = Path(args[-1])
+        payload = json.loads(request.read_bytes())
+        Path(payload["result_path"]).write_text(json.dumps({"operation_id": "wrong", "state": "completed"}))
+        return subprocess.CompletedProcess(args, 0, "", "")
+    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(InstallationError, match="mismatched or incomplete evidence"):
+        backend._run({"operation": "status"})
+    assert operation_dirs and operation_dirs[0].exists()
+
+
+def test_recovery_status_works_offline_and_preserves_receipt(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.upgrade_receipt.write_text(json.dumps({"phase": "RECOVERY_REQUIRED", "failed_at": "OLD_STOPPED"}))
+    manager = ManagedInstallation(paths, MemoryTasks())
+    manager._service_status = lambda: None
+    result = manager.recovery("status")
+    assert result["receipt_phase"] == "RECOVERY_REQUIRED"
+    assert result["service_state"] == "offline"
+    assert paths.upgrade_receipt.is_file()
+
+
+def test_recovery_reconcile_archives_restored_legacy_receipt_without_restarting(tmp_path, monkeypatch):
+    import resource_coordinator.installation as mod
+
+    paths, _ = make_paths(tmp_path)
+    paths.root.mkdir(parents=True, exist_ok=True)
+    legacy = _write_legacy_launcher(paths)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Running", "mcarls", "Highest",
+                       f'powershell.exe -File "{legacy}"', True)
+    tasks = MemoryTasks()
+    tasks.items[task.name] = task
+    service = {"service_state": "ready", "runtime": {"pid": 51},
+               "gpu_inference": {"active_count": 0, "pending_count": 0},
+               "processes": {}}
+    monkeypatch.setattr(mod, "_listener_identity_details", lambda: {"verified": True,
+        "identity": {"pid": 51, "create_time": 10.0}, "category": "identified"})
+    monkeypatch.setattr(mod, "_legacy_attribution", lambda *args: {"verified": True})
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: service
+    receipt = {"phase": "RECOVERY_REQUIRED", "failed_at": "OLD_STOPPED",
+               "durable_state": {"gaming_mode": {"state": "inactive"}}}
+    paths.upgrade_receipt.write_text(json.dumps(receipt))
+    paths.upgrade_policy.write_text(json.dumps({"start_miner": False}))
+    preview = manager.recovery("reconcile")
+    assert preview["status"] == "planned"
+    assert paths.upgrade_receipt.exists()
+    result = manager.recovery("reconcile", apply=True)
+    assert result["status"] == "reconciled"
+    assert Path(result["audit_record"]).is_file()
+    assert not paths.upgrade_receipt.exists()
+    assert not paths.upgrade_policy.exists()
+    assert not tasks.start_calls
 
 
 def test_managed_launcher_consumes_one_shot_miner_start_suppression_policy(tmp_path):

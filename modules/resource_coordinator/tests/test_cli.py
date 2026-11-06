@@ -70,6 +70,11 @@ def test_cli_parse_args_self_managed_operations():
         assert parsed.startup_command == action
         assert parsed.apply is True
 
+    recovery = parse_args(["system", "recovery", "reconcile", "-a", "-j"])
+    assert recovery.operation_id == "system.recovery.reconcile"
+    assert recovery.recovery_command == "reconcile"
+    assert recovery.apply and recovery.json
+
 
 def test_cli_miner_control_commands_and_duration_parser():
     from resource_coordinator.cli import _parse_hold_duration
