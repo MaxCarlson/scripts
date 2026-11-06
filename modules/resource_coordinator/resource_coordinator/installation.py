@@ -337,7 +337,8 @@ class ManagedInstallation:
         os.replace(temporary, path)
         return True
 
-    def setup(self, *, apply: bool = False, mode: str = "logon", non_interactive: bool = False) -> Dict[str, Any]:
+    def setup(self, *, apply: bool = False, mode: str = "logon", non_interactive: bool = False,
+              activate: bool = True) -> Dict[str, Any]:
         plan = self.plan_setup(mode)
         if not apply:
             return {"status": "planned", **plan}
@@ -369,22 +370,25 @@ class ManagedInstallation:
             created.append("launcher")
         task = self.task_backend.install(mode, self.paths.launcher, non_interactive=non_interactive)
         task = self.task_backend.set_enabled(task, True, non_interactive=non_interactive)
-        service = self._service_status()
-        activation = "already-running"
-        if service is None:
-            self.task_backend.start(task, non_interactive=non_interactive)
-            service = self._wait_for_service()
-            activation = "started" if service else "starting"
-        elif service.get("service_state") == "ready":
-            try:
-                with httpx.Client(timeout=2.0) as client:
-                    route = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
-                if route.status_code != 200:
-                    activation = "running-older-api"
-            except httpx.HTTPError:
-                activation = "running-api-unverified"
+        service = self._service_status() if activate else None
+        activation = "not-started-by-startup-command" if not activate else "already-running"
+        if activate:
+            if service is None:
+                self.task_backend.start(task, non_interactive=non_interactive)
+                service = self._wait_for_service()
+                activation = "started" if service else "starting"
+            elif service.get("service_state") == "ready":
+                try:
+                    with httpx.Client(timeout=2.0) as client:
+                        route = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+                    if route.status_code != 200:
+                        activation = "running-older-api"
+                except httpx.HTTPError:
+                    activation = "running-api-unverified"
         return {
-            "status": "applied" if activation in {"already-running", "started"} else "degraded",
+            "status": "applied" if activation in {
+                "already-running", "started", "not-started-by-startup-command"
+            } else "degraded",
             "created": created,
             "task": asdict(task),
             "config_path": str(self.paths.config),
@@ -418,7 +422,8 @@ class ManagedInstallation:
             if not apply:
                 return {"status": "planned", "operation": action, "mode": selected_mode,
                         "task": TASK_NAMES[selected_mode], "preserves_running_service": True}
-            return self.setup(apply=True, mode=selected_mode, non_interactive=non_interactive)
+            return self.setup(apply=True, mode=selected_mode, non_interactive=non_interactive,
+                              activate=False)
         if action not in {"enable", "disable", "uninstall"}:
             raise InstallationError(f"Unsupported startup operation: {action}")
         if not apply:

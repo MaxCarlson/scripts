@@ -16,6 +16,7 @@ class MemoryTasks:
     def __init__(self):
         self.items = {}
         self.install_calls = []
+        self.start_calls = []
 
     def status(self):
         return list(self.items.values())
@@ -36,7 +37,7 @@ class MemoryTasks:
         self.items.pop(task.name, None)
 
     def start(self, task, *, non_interactive=False):
-        return None
+        self.start_calls.append(task.name)
 
 
 def make_paths(tmp_path: Path):
@@ -182,6 +183,22 @@ def test_startup_disable_is_idempotent_and_does_not_stop_running_service(tmp_pat
     assert report["status"] == "applied"
     assert tasks.items[task.name].enabled is False
     assert manager._service_status()["service_state"] == "ready"
+
+
+def test_startup_install_registers_task_without_starting_service(tmp_path, monkeypatch):
+    paths, template = make_paths(tmp_path)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(paths.token))
+    monkeypatch.setattr("resource_coordinator.installation.load_or_create_token", lambda: "not printed")
+    monkeypatch.setattr("resource_coordinator.installation.credential_doctor", _secure_credential_report)
+    tasks = MemoryTasks()
+    manager = ManagedInstallation(paths, tasks, template=template)
+    manager._service_status = lambda: pytest.fail("startup install must not query or launch service")
+
+    result = manager.startup("install", apply=True, mode="logon")
+
+    assert result["status"] == "applied"
+    assert result["service_activation"] == "not-started-by-startup-command"
+    assert tasks.start_calls == []
 
 
 @pytest.mark.parametrize(
