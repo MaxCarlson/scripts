@@ -19,6 +19,9 @@ from typing import Any, Dict, List, Optional, Protocol
 import httpx
 
 from resource_coordinator.config import load_config
+from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+from resource_coordinator.core.lock import SingleInstanceLock
+from resource_coordinator.core.processes import ProcessLifecycleOwner
 from resource_coordinator.core.operator_credentials import (
     credential_path,
     doctor as credential_doctor,
@@ -560,10 +563,7 @@ class ManagedInstallation:
             return plan
         status = self._service_status()
         if status is None:
-            raise InstallationError(
-                "Coordinator is unreachable; the journal cannot prove inference is idle and miner ownership safe. "
-                "No task or process was changed."
-            )
+            return self._offline_teardown(plan, non_interactive=non_interactive)
         gpu = status.get("gpu_inference", {})
         if int(gpu.get("active_count", 0)) or int(gpu.get("pending_count", 0)):
             raise InstallationError("Teardown refused while inference is active or pending.")
@@ -628,6 +628,104 @@ class ManagedInstallation:
                 removed.append(str(path))
         return {"status": "applied", "tasks_uninstalled": remaining, "launchers_removed": removed,
                 "preserved": plan["preserved"]}
+
+    def _offline_teardown(self, plan: Dict[str, Any], *, non_interactive: bool) -> Dict[str, Any]:
+        """Remove startup artifacts only when the lock and durable state prove it is safe.
+
+        A running coordinator-owned process cannot be stopped here: the service's
+        process-group handle is gone, so the offline path deliberately refuses
+        to signal it and leaves startup resources intact.
+        """
+        try:
+            config = load_config(self.paths.config)
+            state_path = Path(config.service.state_persistence_path)
+            state = StateCodec.load(state_path)
+        except Exception as exc:
+            raise InstallationError(
+                "Coordinator is unreachable and durable state is missing, unreadable, or invalid; "
+                "offline teardown made no changes. Restore the coordinator or repair its journal first."
+            ) from exc
+
+        unresolved = [
+            request.request_id for request in state.requests.values()
+            if request.phase in {
+                RequestPhase.RESERVED.value,
+                RequestPhase.POSSIBLY_FORWARDED.value,
+                RequestPhase.UNCERTAIN.value,
+            }
+        ]
+        if unresolved or state.inhibitions:
+            raise InstallationError(
+                "Coordinator is unreachable and the journal contains unresolved inference or safety holds; "
+                "offline teardown made no changes."
+            )
+        if state.gaming_mode.get("state", "inactive") != "inactive":
+            raise InstallationError(
+                "Coordinator is unreachable during a gaming-mode transition; offline teardown made no changes."
+            )
+
+        lock_path = state_path.with_suffix(".lock")
+        lock = SingleInstanceLock(lock_path)
+        if not lock.acquire():
+            raise InstallationError(
+                "Coordinator is unreachable but its instance lock is held; offline teardown made no changes."
+            )
+        try:
+            import psutil
+
+            live_owned: List[int] = []
+            uncertain_owned: List[str] = []
+            for name, process in state.processes.items():
+                if process.lifecycle_owner != ProcessLifecycleOwner.COORDINATOR.value or process.pid is None:
+                    continue
+                try:
+                    actual = psutil.Process(process.pid)
+                    actual_create_time = actual.create_time()
+                except psutil.NoSuchProcess:
+                    continue
+                except (psutil.AccessDenied, psutil.Error) as exc:
+                    uncertain_owned.append(f"{name} (PID {process.pid}: {exc})")
+                    continue
+                if process.create_time is None:
+                    uncertain_owned.append(f"{name} (PID {process.pid}: missing creation time)")
+                elif actual_create_time == process.create_time:
+                    if "miner" in name.casefold() or "krig" in name.casefold():
+                        live_owned.append(process.pid)
+                    else:
+                        uncertain_owned.append(f"{name} (PID {process.pid} still running)")
+            if uncertain_owned:
+                raise InstallationError(
+                    "Offline teardown cannot verify all coordinator-owned process identities: "
+                    + "; ".join(uncertain_owned)
+                    + ". No task or process was changed."
+                )
+            if live_owned:
+                raise InstallationError(
+                    "Coordinator is unreachable while its miner is still running "
+                    f"(verified PID(s): {live_owned}); no safe process-group handle is available, "
+                    "so no task or process was changed. Restore coordinator service, stop the miner "
+                    "through its control API, then retry teardown."
+                )
+
+            removed_tasks: List[str] = []
+            for task in self.task_backend.status():
+                if task.owned:
+                    self.task_backend.uninstall(task, non_interactive=non_interactive)
+                    removed_tasks.append(task.name)
+            removed_paths: List[str] = []
+            for path in (self.paths.launcher, self.paths.viewer):
+                if path.is_file() and TASK_MARKER in path.read_text(encoding="utf-8", errors="replace"):
+                    path.unlink()
+                    removed_paths.append(str(path))
+            return {
+                "status": "applied",
+                "offline_recovery": True,
+                "tasks_uninstalled": removed_tasks,
+                "launchers_removed": removed_paths,
+                "preserved": plan["preserved"],
+            }
+        finally:
+            lock.release()
 
 
 _TASKS_POWERSHELL = r'''

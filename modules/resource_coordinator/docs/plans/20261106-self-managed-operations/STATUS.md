@@ -7,7 +7,7 @@
 - [x] Implement dry-run-first setup/startup CLI scaffolding and mock-backed manager paths.
 - [ ] Complete Windows task privilege/elevation validation and fresh-install repair coverage.
 - [x] Implement health doctor and bounded repair CLI dispatch (offline code path).
-- [ ] Complete safe teardown and offline ownership recovery.
+- [ ] Complete safe teardown when a running owned miner must be stopped offline; current fallback removes startup artifacts only after the instance lock and journal prove idle, and refuses if an owned miner is still alive.
 - [x] Fix miner log alias and distinguish unknown process from missing log.
 - [ ] Revalidate existing controls, integrations, gaming, and GPU-idle behavior.
 - [ ] Implement TUI last, after all previous gates pass.
@@ -29,5 +29,5 @@ Continue setup/teardown recovery tests and operational diagnostics, then audit e
 - Doctor compares configured and live GPU power limit, checks upstream reachability, service/miner state, credential ACL, tasks, and configured logs; inaccessible Task Scheduler inventory is reported as unavailable rather than an empty healthy result.
 - Teardown refuses to act when coordinator state is unreachable or inference is active/pending; offline destructive recovery remains unfinished.
 - `logs miner` and `logs krig` resolve to the single configured miner; unknown process and missing log configuration return distinct errors.
-- Focused validation: 24 tests passed; Ruff, Python compilation, and `git diff --check` passed. Startup task installation is tested not to start the service; log aliases and authorization passed a direct handler test. Full service lifecycle, operator-credential, and integrated ASGI raw-log test attempts stalled in the Windows sandbox before producing assertions, so those runtime paths remain unverified here.
+- Focused validation: 27 tests passed; Ruff, Python compilation, and `git diff --check` passed. Startup task installation is tested not to start the service; offline teardown is tested for idle journal recovery, unresolved inference refusal, and refusal to disturb a verified running miner; log aliases and authorization passed a direct handler test. Full service lifecycle, operator-credential, and integrated ASGI raw-log test attempts stalled in the Windows sandbox before producing assertions, so those runtime paths remain unverified here.
 - Read-only Task Scheduler verification was blocked by Windows CIM access (`Access to a CIM resource was not available to the client`); no live tasks, coordinator, or miner were changed.

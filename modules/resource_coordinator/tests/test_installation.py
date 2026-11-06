@@ -60,6 +60,22 @@ def _secure_credential_report():
     }
 
 
+def _write_offline_journal(paths: InstallationPaths, *, requests: str = "") -> Path:
+    state_path = paths.root / "coordinator_state.json"
+    paths.root.mkdir(parents=True, exist_ok=True)
+    paths.config.write_text(
+        f"version: '1.0'\nservice:\n  state_persistence_path: '{state_path}'\nprocesses: {{}}\npolicies: []\n",
+        encoding="utf-8",
+    )
+    from resource_coordinator.core.durable_state import StateCodec
+
+    StateCodec.initialize(state_path)
+    if requests:
+        request_id, phase = requests.split(":", 1)
+        StateCodec.record_request_phase(state_path, request_id, "gpu.inference", phase)
+    return state_path
+
+
 def test_setup_without_apply_is_a_plan_and_does_not_create_files(tmp_path):
     paths, template = make_paths(tmp_path)
     tasks = MemoryTasks()
@@ -204,7 +220,7 @@ def test_startup_install_registers_task_without_starting_service(tmp_path, monke
 @pytest.mark.parametrize(
     "status, message",
     [
-        (None, "cannot prove inference is idle"),
+        (None, "durable state is missing"),
         ({"gpu_inference": {"active_count": 1, "pending_count": 0}}, "inference is active or pending"),
         ({"gpu_inference": {"active_count": 0, "pending_count": 1}}, "inference is active or pending"),
     ],
@@ -222,6 +238,73 @@ def test_teardown_refuses_unknown_or_active_service_state_without_changing_tasks
 
     assert task.name in tasks.items
     assert tasks.items[task.name].enabled is True
+
+
+def test_offline_teardown_removes_owned_startup_artifacts_and_preserves_durable_data(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    state_path = _write_offline_journal(paths)
+    paths.launcher.write_text(f"# {TASK_MARKER}\n", encoding="utf-8")
+    paths.viewer.write_text(f"# {TASK_MARKER}\n", encoding="utf-8")
+    paths.logs.mkdir(parents=True)
+    log = paths.logs / "miner.log"
+    log.write_text("preserved", encoding="utf-8")
+    tasks = MemoryTasks()
+    task = tasks.install("logon", paths.launcher)
+    tasks.set_enabled(task, True)
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: None
+
+    result = manager.teardown(apply=True)
+
+    assert result["offline_recovery"] is True
+    assert result["tasks_uninstalled"] == [task.name]
+    assert not paths.launcher.exists() and not paths.viewer.exists()
+    assert state_path.is_file() and paths.config.is_file() and log.read_text(encoding="utf-8") == "preserved"
+
+
+def test_offline_teardown_refuses_uncertain_inference_journal(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    _write_offline_journal(paths, requests="request-1:possibly_forwarded")
+    tasks = MemoryTasks()
+    task = tasks.install("logon", paths.launcher)
+    tasks.set_enabled(task, True)
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: None
+
+    with pytest.raises(InstallationError, match="unresolved inference"):
+        manager.teardown(apply=True)
+
+    assert task.name in tasks.items
+
+
+def test_offline_teardown_never_terminates_a_verified_running_owned_miner(tmp_path, monkeypatch):
+    import psutil
+
+    from resource_coordinator.core.durable_state import PersistedProcess, StateCodec
+
+    paths, _ = make_paths(tmp_path)
+    state_path = _write_offline_journal(paths)
+    state = StateCodec.load(state_path)
+    state.processes["krig_miner"] = PersistedProcess(
+        name="krig_miner", pid=24680, create_time=1234.5, lifecycle_owner="coordinator"
+    )
+    StateCodec.save_atomic(state, state_path)
+
+    class LiveProcess:
+        def create_time(self):
+            return 1234.5
+
+    monkeypatch.setattr(psutil, "Process", lambda pid: LiveProcess())
+    tasks = MemoryTasks()
+    task = tasks.install("logon", paths.launcher)
+    tasks.set_enabled(task, True)
+    manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: None
+
+    with pytest.raises(InstallationError, match=r"verified PID\(s\): \[24680\]"):
+        manager.teardown(apply=True)
+
+    assert task.name in tasks.items
 
 
 def test_teardown_plan_preserves_configuration_credentials_journal_and_logs(tmp_path):
