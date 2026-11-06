@@ -368,7 +368,7 @@ class TestDownloader:
         assert stalled_events
         assert stalled_events[-1]["reason"] == "pre_transfer_no_output"
 
-    def test_run_one_aebndl_does_not_use_yt_dlp_pre_transfer_stall_window(self, monkeypatch):
+    def test_run_one_aebndl_does_not_use_yt_dlp_pre_transfer_stall_window(self, monkeypatch, tmp_path):
         current_time = [0.0]
 
         def fake_time():
@@ -389,7 +389,7 @@ class TestDownloader:
             urls=["https://straight.aebn.com/straight/movies/190977/example#scene-900595"],
             out_dir=Path("."),
             canonical_out_dir=Path("."),
-            partial_root=Path("."),
+            partial_root=tmp_path,
             raw_dir=Path("."),
             url_index=1,
             proglog=self._NoopProgLogger(),
@@ -407,7 +407,7 @@ class TestDownloader:
             skip_simulate_check=True,
         )
 
-        assert rc == 0
+        assert rc != 0  # No validated AEBN completion was emitted.
         assert not any(evt.get("event") == "stalled" for evt in emitted)
 
     def test_run_one_aebndl_complete_event_reports_finished_size(self, monkeypatch):
@@ -420,7 +420,8 @@ class TestDownloader:
             current_time[0] = 1.0
             yield {"event": "destination", "path": str(Path("scene.mp4").resolve())}
             current_time[0] = 2.0
-            yield {"event": "complete", "path": str(Path("scene.mp4").resolve()), "file_size": 12345}
+            yield {"event": "complete", "path": str(Path("scene.mp4").resolve()), "file_size": 12345,
+                   "validation": {"valid": True}}
 
         emitted = []
         proc = self._FakeProc(rc=0)
@@ -458,6 +459,73 @@ class TestDownloader:
         assert not proc.terminated
         assert any(evt.get("event") == "complete" for evt in emitted)
         assert not any(evt.get("event") == "stalled" for evt in emitted)
+
+    def test_aebn_preview_limit_does_not_retry(self, monkeypatch, tmp_path):
+        launches = []
+        def popen(*args, **kwargs):
+            launches.append(args)
+            return self._FakeProc(rc=77)
+        monkeypatch.setattr(downloader.subprocess, "Popen", popen)
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter([{"event": "preview_fallback"}]))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, _ = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=tmp_path, canonical_out_dir=tmp_path, partial_root=tmp_path, raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=3, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == 77
+        assert len(launches) == 1
+
+    def test_aebn_canonical_filename_does_not_terminate_download(self, monkeypatch, tmp_path):
+        canonical = tmp_path / "canonical"
+        output = tmp_path / "output"
+        canonical.mkdir()
+        output.mkdir()
+        original = canonical / "scene.mp4"
+        original.write_bytes(b"unverified existing file")
+        destination = output / "scene.mp4"
+        events = [
+            {"event": "destination", "path": str(destination)},
+            {"event": "complete", "path": str(destination), "file_size": 123,
+             "validation": {"valid": True}},
+        ]
+        proc = self._FakeProc(rc=0)
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: proc)
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter(events))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, info = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=output, canonical_out_dir=canonical, partial_root=tmp_path / "partial", raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=0, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == 0 and not info["already"]
+        assert not proc.terminated
+        assert original.read_bytes() == b"unverified existing file"
+
+    @pytest.mark.parametrize("validation,expected_rc", [(None, 1), ({"valid": True}, 0), ({"valid": False}, 1)])
+    def test_aebn_already_requires_validation(self, monkeypatch, tmp_path, validation, expected_rc):
+        event = {"event": "already", "path": str(tmp_path / "scene.mp4")}
+        if validation is not None:
+            event["validation"] = validation
+        monkeypatch.setattr(downloader.subprocess, "Popen", lambda *a, **k: self._FakeProc(rc=0))
+        monkeypatch.setattr(downloader, "iter_parsed_events", lambda *a, **k: iter([event]))
+        monkeypatch.setattr(downloader, "_emit_json", lambda event: None)
+        rc, info = downloader._run_one(
+            tool="aebndl", urls=["https://straight.aebn.com/straight/movies/1/test#scene-1"],
+            out_dir=tmp_path, canonical_out_dir=tmp_path, partial_root=tmp_path / "partial", raw_dir=tmp_path,
+            url_index=1, proglog=self._NoopProgLogger(), timeout=None, retries=0, quiet=True,
+            dry_run=False, progress_freq_s=None, max_ndjson_rate=-1, stall_seconds=4,
+            program_deadline=None, max_dl_speed=None, max_height=None, extdl_fallback=False,
+            skip_simulate_check=True,
+        )
+        assert rc == expected_rc
+        assert info["already"] is (expected_rc == 0)
 
     def test_run_one_successful_fallback_uses_fallback_progress(self, monkeypatch):
         current_time = [0.0]

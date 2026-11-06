@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import logging
 import subprocess
 import shutil
@@ -241,18 +243,20 @@ def add_metadata(
         duration = scene.end_timing - scene.start_timing
         if duration <= 0:
             raise ValueError("Selected scene has invalid chapter timing")
+        scene_title = f"Scene {scene_n}: " + ", ".join(scene.performers or [])
         metadata_content += (
             "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\n"
-            f"END={duration * 1000}\ntitle={escape(f'Scene {scene_n}: {', '.join(scene.performers or [])}')}\n\n"
+            f"END={duration * 1000}\ntitle={escape(scene_title)}\n\n"
         )
     else:
         for index, scene in enumerate(movie.scenes, start=1):
             start_time_ms = int(scene.start_timing * 1000)
             end_time_ms = int(scene.end_timing * 1000)
+            scene_title = f"Scene {index}: " + ", ".join(scene.performers or [])
             metadata_content += (
                 "[CHAPTER]\nTIMEBASE=1/1000\n"
                 f"START={start_time_ms}\nEND={end_time_ms}\n"
-                f"title={escape(f'Scene {index}: {', '.join(scene.performers or [])}')}\n\n"
+                f"title={escape(scene_title)}\n\n"
             )
 
     cmd = [

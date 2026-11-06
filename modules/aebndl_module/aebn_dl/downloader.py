@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import datetime
 import email.utils as eut
 import glob as _glob
 import logging
+import math
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock, Event, Thread
 
@@ -16,7 +19,7 @@ from . import utils
 from .custom_session import CustomSession
 from .models import MediaStream
 from .movie_scraper import Movie
-from .manifest_parser import Manifest
+from .manifest_parser import Manifest, PreviewAccessError
 from .exceptions import Forbidden
 import json
 import atexit
@@ -568,14 +571,19 @@ class Downloader:
             parts.append(f"[{self.target_stream}]")
         if scraped_movie.studio_name:
             parts.append(scraped_movie.studio_name)
-        parts.append("-")
+            parts.append("-")
         if scraped_movie.title:
             parts.append(scraped_movie.title)
         if self.scene_n:
             parts.append(f"Scene {self.scene_n}")
         base = " ".join(filter(None, parts))
-        pattern = os.path.join(self.output_dir, f"{_glob.escape(base)}*p.mp4")
-        for path in _glob.glob(pattern):
+        bases = [base]
+        if not scraped_movie.studio_name:
+            bases.append(f"- {base}")
+        paths = [path for name in bases for path in _glob.glob(
+            os.path.join(self.output_dir, f"{_glob.escape(name)}*p.mp4")
+        )]
+        for path in paths:
             try:
                 if os.path.isfile(path) and os.path.getsize(path) > 0:
                     validation = self._validate_output(path, expected_duration)
@@ -701,13 +709,27 @@ class Downloader:
             target_height=self.target_height,
             force_resolution=self.force_resolution,
         )
+        if self.scene_n:
+            scraped_movie.calculate_scenes_boundaries(1.0)
+            if self.scene_n < 1 or self.scene_n > len(scraped_movie.scenes):
+                raise ValueError(f"Scene {self.scene_n} not found")
+            scene = scraped_movie.scenes[self.scene_n - 1]
+            self.manifest.requested_interval = (scene.start_timing, scene.end_timing)
         try:
             self.manifest.process_manifest()
+        except PreviewAccessError as exc:
+            self._json_log("preview_fallback", error_type=type(exc).__name__, message=str(exc))
+            raise
         except Exception as exc:
             self._json_log("manifest_error", error_type=type(exc).__name__, message=str(exc))
             raise
         self._json_log("manifest_ready", url=self.input_url)
-        scraped_movie.calculate_scenes_boundaries(self.manifest.segment_duration)
+        if self.scene_n:
+            for scene in scraped_movie.scenes:
+                scene.start_segment = math.floor(scene.start_timing / self.manifest.segment_duration)
+                scene.end_segment = math.ceil(scene.end_timing / self.manifest.segment_duration)
+        else:
+            scraped_movie.calculate_scenes_boundaries(self.manifest.segment_duration)
 
     def _scrape_movie_info(self) -> Movie:
         """Scrapes movie information from the input URL."""

@@ -1,5 +1,16 @@
 # Status
 
+## Review-correction checkpoint (in progress)
+
+- The delivery response window is retained and checked before manifest or media fragment fetching. An uncovered or malformed window raises a structured preview/access limitation and CLI status 77; the ytaedl worker does not retry status 77. Scene timing is fetched once and reused for access and segment selection.
+- AEBN canonical filename matches no longer terminate downloads as successful; zero exit now requires a validated `complete` or `already` event. Secondary canonical files are not yet independently validated or recognized as duplicates.
+- The archive validator resolves scene identity/timing and passes expected duration to the real existing-output finder; inability to verify reports unknown. Current and historical absent-studio filename patterns are recognized.
+- Nested f-strings were removed and postponed annotations added for declared Python 3.9 compatibility; all 10 package modules parse under Python 3.9 grammar. No Python 3.9 interpreter was available for a runtime test.
+- Current focused offline results: 89 AEBN tests passed; 145 ytaedl/archive/reconciliation/domain-index/pause tests passed. The preview-window tests include rejection before media fetch and non-retryable worker handling.
+- Critical work remains: acquisition-time fragment identity against DASH semantics; full internal video timeline validation and reconciliation contract invalidation; representation-safe manifest refresh; verified-secondary canonical duplicate support; archive/domain-index verification-state policy; metadata utility compatibility; and focused performance and forensic checks. Do not call this checkpoint integration ready.
+- Local commit `96213bc9` confirms the switch back to `isPreview=true` and its assumption of unrestricted fragment access. The reported historical May–July versus October–November transition has not been independently verified here.
+- The user-authorized Eporner control downloaded one 360p file through the isolated ytaedl worker: video 196.966667s/5909 frames; audio 196.950998s/8482 frames; FFmpeg full decode reported no errors. Worker and raw logs are under `modules/ytaedl/.pytest_tmp_root/eporner-control-20261106/`.
+
 - Branch: `codex/aebn-media-integrity-20261106`
 - Base: `c12779ab7dc69bac133b495757dc97989a51dcf9`
 - Worktree: `.worktrees/aebn-media-integrity-20261106`

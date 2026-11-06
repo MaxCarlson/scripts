@@ -1,9 +1,12 @@
+from __future__ import annotations
+
 import argparse
 import logging
 import signal
 from typing import Literal
 
 from . import Downloader
+from .manifest_parser import PreviewAccessError
 
 
 def download_movie(args):
@@ -109,6 +112,9 @@ def main(argv: list[str] | None = None):
 
     try:
         download_movie(args)
+    except PreviewAccessError as exc:
+        logging.error("AEBN access limitation: %s", exc)
+        return 77
     except Exception as exc:
         logging.error("AEBN download failed: %s", exc)
         return 1

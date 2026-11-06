@@ -1713,6 +1713,7 @@ def _run_one(
     last_destination_path: Optional[Path] = None
     last_error_event: Optional[dict] = None
     complete_event: Optional[dict] = None
+    validated_aebn_outcome = False
 
     try:
         # internal heartbeat for scheduling; also used for stall detection
@@ -1731,8 +1732,11 @@ def _run_one(
         )
         for evt in iter_parsed_events(tool, proc.stdout, raw_log_path=raw_path, heartbeat_secs=hb):
             # track 'already' to classify FINISH_DUPLICATE later for yt-dlp
-            if evt.get("event") == "already":
+            if evt.get("event") == "already" and (tool != "aebndl" or
+                    isinstance(evt.get("validation"), dict) and evt["validation"].get("valid") is True):
                 already_seen = True
+                if tool == "aebndl":
+                    validated_aebn_outcome = True
                 # Short-circuit this URL: file already exists at destination
                 try:
                     proc.terminate()
@@ -1751,6 +1755,8 @@ def _run_one(
             if evt.get("event") == "destination":
                 raw_dest = evt.get("path")
                 if raw_dest:
+                    last_destination_path = Path(raw_dest).expanduser().resolve()
+                if raw_dest and tool != "aebndl":
                     candidate = Path(raw_dest).expanduser().resolve()
                     last_destination_path = candidate
                     # Check all canonical dirs for an existing duplicate
@@ -1797,6 +1803,8 @@ def _run_one(
                 last_progress = evt
             if evt.get("event") == "complete":
                 complete_event = dict(evt)
+                if tool == "aebndl" and isinstance(evt.get("validation"), dict) and evt["validation"].get("valid") is True:
+                    validated_aebn_outcome = True
             if evt.get("event") in {"error", "manifest_error"}:
                 last_error_event = dict(evt)
             now = time.time()
@@ -1885,6 +1893,11 @@ def _run_one(
         # Treat as non-fatal for the file: return 130 so caller can advance to next URL
         info = {"elapsed_s": time.time() - t_url_start, "downloaded": (last_progress or {}).get("downloaded"), "total": (last_progress or {}).get("total"), "already": False, "downloader": tool}
         return 130, info
+
+    if rc == 0 and tool == "aebndl" and not validated_aebn_outcome:
+        rc = 1
+        last_error_event = {"event": "error", "error_type": "UnverifiedAebnOutput",
+                            "message": "AEBN exited without a validated complete or already event"}
 
     if terminate_for_canonical_duplicate and cleanup_proxy_path:
         try:
@@ -2002,7 +2015,7 @@ def _run_one(
         "error_type": (last_error_event or {}).get("error_type"),
         "error_message": (last_error_event or {}).get("message"),
     }
-    if rc != 0 and retries > 0:
+    if rc not in (0, 77, 130, 131) and retries > 0:
         return _run_one(
             tool,
             urls,

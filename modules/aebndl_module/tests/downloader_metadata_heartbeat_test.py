@@ -1,5 +1,4 @@
 import json
-import os
 import time
 from pathlib import Path
 
@@ -63,6 +62,21 @@ def test_find_existing_output_requires_media_validation(tmp_path, monkeypatch):
     large = tmp_path / "TestStudio - My Great Movie 1440p.mp4"
     large.write_bytes(b"x" * (200 * 1024 * 1024))  # 200 MiB
     assert dl._find_existing_output(movie) == str(large)
+
+
+@pytest.mark.parametrize("studio,filename", [
+    ("", "Movie Scene 2 720p.mp4"),
+    ("", "- Movie Scene 2 720p.mp4"),
+    ("Studio", "Studio - Movie Scene 2 720p.mp4"),
+])
+def test_existing_scene_matches_current_and_legacy_names(tmp_path, monkeypatch, studio, filename):
+    movie = type("Movie", (), {"studio_name": studio, "title": "Movie"})()
+    dl = Downloader("https://straight.aebn.com/straight/movies/1/title", output_dir=str(tmp_path), no_part=True)
+    dl.scene_n = 2
+    path = tmp_path / filename
+    path.write_bytes(b"fixture")
+    monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": True, "errors": []})
+    assert dl._find_existing_output(movie, 30) == str(path)
 
 
 def test_run_emits_already_only_after_manifest_validation(tmp_path, monkeypatch, capsys):
