@@ -1,4 +1,4 @@
-<!-- version: 2.18.1 -->
+<!-- version: 2.18.2 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.

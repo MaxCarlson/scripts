@@ -1764,18 +1764,27 @@ def run_main(
     except ValueError as exc:
         mlog.error(str(exc))
         return 2
+
+    def _urlfile_key(path: Path | str) -> str:
+        return os.path.normcase(str(Path(path).expanduser().resolve()))
+
     submission_by_path: Dict[str, Submission] = {
-        str(Path(item.value).resolve()): item for item in submission_queue.pending
+        _urlfile_key(item.value): item for item in submission_queue.pending
     }
     exact_file_failure_attempts: Dict[str, int] = {}
     unresolved_exact_files: set[str] = set()
     exact_runtime_files: Deque[Path] = deque(Path(item.value).resolve() for item in submission_queue.pending)
+    if file_level_exact_mode:
+        explicitly_selected = {_urlfile_key(path) for path in exact_urlfiles}
+        exact_runtime_files = deque(
+            path for path in exact_runtime_files if _urlfile_key(path) not in explicitly_selected
+        )
     priority_url_file_order: Deque[Path] = deque(exact_urlfiles)
 
     def _persist_exact_file(path: Path, item: Optional[Submission] = None) -> Optional[Submission]:
         """Keep an incomplete exact-mode source file in the durable submission queue."""
         resolved = path.expanduser().resolve()
-        key = str(resolved)
+        key = _urlfile_key(resolved)
         known = item or submission_by_path.get(key)
         if known is not None:
             submission_queue.restore(known)
@@ -2069,7 +2078,7 @@ def run_main(
                 urls = domain_index.file_urls(item.value)
                 if not urls or all(domain_index.is_finished(url) for url in urls):
                     submission_queue.complete(item)
-                    submission_by_path.pop(str(Path(item.value).resolve()), None)
+                    submission_by_path.pop(_urlfile_key(item.value), None)
             if priority_url_mode:
                 for pending_path in reversed(pending_paths):
                     priority_url_file_order.appendleft(pending_path)
@@ -2889,7 +2898,11 @@ def run_main(
                 if priority_url_mode:
                     fp_map[fid] = priority_ranks.get(fpath_key, 999_999)
                 else:
-                    fp_map[fid] = -1_000_000_000 if fpath_key in submission_by_path else url_rankings.get(fpath_key, 999_999)
+                    fp_map[fid] = (
+                        -1_000_000_000
+                        if _urlfile_key(fpath) in submission_by_path
+                        else url_rankings.get(fpath_key, url_rankings.get(_urlfile_key(fpath), 999_999))
+                    )
 
             prefer_domains: Optional[set[str]] = None
             if _max_per > 0 and not priority_url_mode:
@@ -2961,7 +2974,7 @@ def run_main(
             tmp_file.write_text(entry.url + "\n", encoding="utf-8")
 
             original_file = Path(entry.file_path)
-            manual_item = submission_by_path.get(str(original_file.resolve()))
+            manual_item = submission_by_path.get(_urlfile_key(original_file))
             if manual_item is not None:
                 submission_queue.claim(manual_item.submission_id)
             canonical_dir = (download_root / original_file.stem).resolve()
@@ -3090,11 +3103,26 @@ def run_main(
         if file_level_exact_mode:
             if ws.requested_urlfile is not None:
                 urlfile = ws.requested_urlfile
+                if _urlfile_key(urlfile) in active:
+                    return False
                 ws.requested_urlfile = None
+                manual_item = submission_by_path.get(_urlfile_key(urlfile))
+                ws.runtime_submission = (
+                    submission_queue.claim(manual_item.submission_id) if manual_item else None
+                )
                 mlog.info(f"[{ws.slot:02d}] ASSIGN EXACT {urlfile}")
             elif exact_runtime_files:
-                urlfile = exact_runtime_files.popleft()
-                manual_item = submission_by_path.get(str(urlfile.resolve()))
+                urlfile = None
+                for _ in range(len(exact_runtime_files)):
+                    candidate = exact_runtime_files.popleft()
+                    if _urlfile_key(candidate) in active:
+                        exact_runtime_files.append(candidate)
+                        continue
+                    urlfile = candidate
+                    break
+                if urlfile is None:
+                    return False
+                manual_item = submission_by_path.get(_urlfile_key(urlfile))
                 ws.runtime_submission = submission_queue.claim(manual_item.submission_id) if manual_item else None
                 mlog.info(f"[{ws.slot:02d}] ASSIGN SUBMITTED {urlfile}")
             else:
@@ -3104,7 +3132,7 @@ def run_main(
             priority_avail = [
                 p
                 for p in priority_pool
-                if str(p.resolve()) not in active
+                if _urlfile_key(p) not in active
                 and str(p.resolve()) not in finished
                 and _remaining_for_path(p) != 0
                 and probe_urlfile_lock(p, url_file_lock_dir).status == "available"
@@ -3124,7 +3152,7 @@ def run_main(
                 avail = [
                     p
                     for p in pool
-                    if str(p.resolve()) not in active
+                    if _urlfile_key(p) not in active
                     and str(p.resolve()) not in finished
                     and _remaining_for_path(p) != 0
                     and probe_urlfile_lock(p, url_file_lock_dir).status == "available"
@@ -3143,7 +3171,7 @@ def run_main(
                 mlog.info(f"[{ws.slot:02d}] ASSIGN {urlfile}")
 
         if not file_level_exact_mode:
-            manual_item = submission_by_path.get(str(urlfile.resolve()))
+            manual_item = submission_by_path.get(_urlfile_key(urlfile))
             if manual_item is not None:
                 ws.runtime_submission = submission_queue.claim(manual_item.submission_id)
 
@@ -3154,7 +3182,7 @@ def run_main(
         ws.original_urlfile = None
         _begin_worker_assignment(ws)
         _clear_ytdlp_grid_state(ws)
-        active.add(str(urlfile.resolve()))
+        active.add(_urlfile_key(urlfile))
         ws.urlfile = urlfile
         ws.url_count = len(_read_urls(urlfile))
         if not file_level_exact_mode and archive_dir and ws.url_count > 0:
@@ -3172,7 +3200,7 @@ def run_main(
                             f.write(str(urlfile.resolve()) + "\n")
                     except Exception:
                         pass
-                    active.discard(str(urlfile.resolve()))
+                    active.discard(_urlfile_key(urlfile))
                     mlog.info(f"[{ws.slot:02d}] SKIP finished {urlfile}")
                     return _assign(ws)
         ws.url_index = None
@@ -3243,8 +3271,8 @@ def run_main(
 
         paths = [Path(item.value).resolve() for item in accepted]
         for item, path in zip(accepted, paths):
-            submission_by_path[str(path)] = item
-            url_rankings[str(path)] = -1_000_000_000
+            submission_by_path[_urlfile_key(path)] = item
+            url_rankings[_urlfile_key(path)] = -1_000_000_000
         if domain_index is not None:
             domain_index.add_files(paths, finished_urls=_load_archive_finished_urls(archive_dir))
             if priority_url_mode:
@@ -3256,7 +3284,7 @@ def run_main(
                 indexed_urls = domain_index.file_urls(path)
                 if not indexed_urls or all(domain_index.is_finished(url) for url in indexed_urls):
                     submission_queue.complete(item)
-                    submission_by_path.pop(str(path), None)
+                    submission_by_path.pop(_urlfile_key(path), None)
         elif file_level_exact_mode:
             exact_runtime_files.extend(paths)
         else:
@@ -3351,7 +3379,7 @@ def run_main(
             except Exception:
                 pass
         if ws.urlfile is not None:
-            key = str(ws.urlfile.resolve())
+            key = _urlfile_key(ws.urlfile)
             active.discard(key)
             if finished:
                 try:
@@ -3398,10 +3426,10 @@ def run_main(
                 manual_urls = domain_index.file_urls(manual_item.value)
                 if manual_urls and all(domain_index.is_finished(url) for url in manual_urls):
                     submission_queue.complete(manual_item)
-                    submission_by_path.pop(str(Path(manual_item.value).resolve()), None)
+                    submission_by_path.pop(_urlfile_key(manual_item.value), None)
             elif finished:
                 submission_queue.complete(manual_item)
-                submission_by_path.pop(str(Path(manual_item.value).resolve()), None)
+                submission_by_path.pop(_urlfile_key(manual_item.value), None)
             else:
                 submission_queue.restore(manual_item)
                 if file_level_exact_mode and ws.urlfile:
@@ -4184,8 +4212,8 @@ def run_main(
                         roots, finished_log, args.priority_files
                     )
                     total_available = len(
-                        [p for p in current_regular if str(p.resolve()) not in active]
-                    ) + len([p for p in current_priority if str(p.resolve()) not in active])
+                        [p for p in current_regular if _urlfile_key(p) not in active]
+                    ) + len([p for p in current_priority if _urlfile_key(p) not in active])
                 if controlled_quit:
                     controlled_label = td_utils.color_text("CONTROLLED QUIT", "red")
                     lines.append(f"{controlled_label} eta {_controlled_quit_eta_label(workers)}"[:cols])

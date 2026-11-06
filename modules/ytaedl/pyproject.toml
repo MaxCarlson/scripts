@@ -4,7 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.18.1"
+version = "2.18.2"
+# 2.18.2 — PATCH: deduplicate restored exact-mode files and claim their persisted submissions.
 # 2.18.1 — PATCH: honor the worker cap, retry idle priority URL slots, and persist incomplete exact files.
 # 2.18.0 — MINOR: cap exact-mode workers at -t and add rotating priority URL-file scheduling.
 # 2.17.0 — MINOR: add resumable AEBN historical scene reconciliation and guarded replacement review.

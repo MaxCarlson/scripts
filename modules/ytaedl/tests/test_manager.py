@@ -479,6 +479,169 @@ class TestManager:
         assert (log_dir / "finished_urls.txt").exists()
         assert "https://failed.example/one" not in (log_dir / "finished_urls.txt").read_text(encoding="utf-8")
 
+    def test_restored_pending_file_explicitly_selected_is_claimed_once(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("https://first.example/one\n", encoding="utf-8")
+        second.write_text("https://second.example/one\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        state_path = log_dir / "pending_manual_submissions.json"
+        state_path.parent.mkdir(parents=True)
+        queue = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        queue.submit(str(first))
+
+        launched = []
+        active_by_path = {}
+        max_active_by_path = {}
+        state_when_second_completed = []
+        first_active_when_second_completed = []
+
+        def make_process(command, **kwargs):
+            source = Path(command[command.index("-f") + 1]).resolve()
+            launched.append(source)
+            active_by_path[source] = active_by_path.get(source, 0) + 1
+            max_active_by_path[source] = max(
+                max_active_by_path.get(source, 0), active_by_path[source]
+            )
+            calls = 0
+            done = False
+
+            class Process:
+                stdout = iter([])
+
+                def poll(self):
+                    nonlocal calls, done
+                    if done:
+                        return 0
+                    calls += 1
+                    if source == second.resolve() and calls == 1:
+                        state_when_second_completed.append(json.loads(state_path.read_text(encoding="utf-8")))
+                        first_active_when_second_completed.append(active_by_path[first.resolve()])
+                    threshold = 1 if source == second.resolve() else 5
+                    if calls >= threshold:
+                        done = True
+                        active_by_path[source] -= 1
+                        return 0
+                    return None
+
+                def wait(self, timeout=None):
+                    return self.poll()
+
+            return Process()
+
+        argv = [
+            "-i", "-t", "2", "-p", str(first), "-p", str(second),
+            "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert launched == [first.resolve(), second.resolve()]
+        assert max_active_by_path == {first.resolve(): 1, second.resolve(): 1}
+        assert state_when_second_completed
+        assert first_active_when_second_completed == [1]
+        assert state_when_second_completed[0]["pending"] == []
+        assert [row["value"] for row in state_when_second_completed[0]["in_progress"]] == [
+            str(first.resolve())
+        ]
+        recovered = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        assert recovered.pending == []
+        assert recovered.in_progress == []
+
+        empty_stars = tmp_path / "empty-stars"
+        empty_aebn = tmp_path / "empty-aebn"
+        empty_stars.mkdir()
+        empty_aebn.mkdir()
+        with patch("subprocess.Popen") as popen:
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main([
+                        "-t", "1", "-s", str(empty_stars), "-d", str(empty_aebn),
+                        "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+                        "-L", str(tmp_path / "media"),
+                    ]) == 0
+        popen.assert_not_called()
+
+    def test_restored_pending_file_failure_stays_recoverable(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("https://first.example/one\n", encoding="utf-8")
+        second.write_text("https://second.example/one\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        state_path = log_dir / "pending_manual_submissions.json"
+        queue = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        queue.submit(str(first))
+        launched = []
+        first_attempts = 0
+
+        def make_process(command, **kwargs):
+            nonlocal first_attempts
+            source = Path(command[command.index("-f") + 1]).resolve()
+            launched.append(source)
+            process = MagicMock()
+            process.stdout = iter([])
+            if source == first.resolve():
+                first_attempts += 1
+                process.poll.return_value = 1
+            else:
+                process.poll.return_value = 0
+            process.wait.return_value = process.poll.return_value
+            return process
+
+        argv = [
+            "-i", "-t", "2", "-p", str(first), "-p", str(second),
+            "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert first_attempts == 2
+        assert launched.count(first.resolve()) == 2
+        recovered = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        assert [Path(item.value).resolve() for item in recovered.pending] == [first.resolve()]
+        assert recovered.in_progress == []
+
+    def test_restored_pending_overflow_file_is_claimed_and_completed(self, tmp_path):
+        first = tmp_path / "first.txt"
+        second = tmp_path / "second.txt"
+        first.write_text("https://first.example/one\n", encoding="utf-8")
+        second.write_text("https://second.example/one\n", encoding="utf-8")
+        log_dir = tmp_path / "logs"
+        state_path = log_dir / "pending_manual_submissions.json"
+        queue = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        queue.submit(str(second))
+        launched = []
+
+        def make_process(command, **kwargs):
+            source = Path(command[command.index("-f") + 1]).resolve()
+            launched.append(source)
+            process = MagicMock()
+            process.stdout = iter([])
+            process.poll.return_value = 0
+            process.wait.return_value = 0
+            return process
+
+        argv = [
+            "-i", "-t", "1", "-p", str(first), "-p", str(second),
+            "-g", str(log_dir), "-a", str(tmp_path / "archive"),
+            "-L", str(tmp_path / "media"),
+        ]
+        with patch("subprocess.Popen", side_effect=make_process):
+            with patch("os.get_terminal_size", return_value=MagicMock(columns=100, lines=30)):
+                with patch("sys.stdout"):
+                    assert manager.run_main(argv) == 0
+
+        assert launched == [first.resolve(), second.resolve()]
+        recovered = manager.SubmissionQueue(state_path, log_dir / "manual_submissions")
+        assert recovered.pending == []
+        assert recovered.in_progress == []
+
     def test_priority_url_mode_retries_file_after_lock_clears(self, tmp_path):
         source = tmp_path / "temporarily locked.txt"
         source.write_text("https://unlocked.example/video#scene-1171754\n", encoding="utf-8")
