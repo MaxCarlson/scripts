@@ -22,7 +22,7 @@ def approval_fingerprint(store: ReconciliationStore, candidate_id: int) -> str:
     scenes = []
     for scene in store.execute(
         """SELECT s.movie_key,s.scene_id,s.ordinal,s.status,s.start_seconds,s.end_seconds,
-                  j.output_path,j.verification_status
+                  j.output_path,j.verification_status,j.verification_json
            FROM candidate_scenes cs JOIN requested_scenes s USING(movie_key,scene_id)
            LEFT JOIN download_jobs j USING(movie_key,scene_id)
            WHERE cs.candidate_id=? ORDER BY s.scene_id""", (candidate_id,)
@@ -40,7 +40,9 @@ def approval_fingerprint(store: ReconciliationStore, candidate_id: int) -> str:
         scenes.append({"movie_key": scene["movie_key"], "scene_id": scene["scene_id"],
                        "ordinal": scene["ordinal"], "status": scene["status"],
                        "start": scene["start_seconds"], "end": scene["end_seconds"],
-                       "verification": scene["verification_status"], "output": output_stat})
+                       "verification": scene["verification_status"],
+                       "verification_evidence": json.loads(scene["verification_json"] or "{}"),
+                       "output": output_stat})
     payload = {
         "path": str(path.resolve()), "size": stat.st_size, "mtime_ns": stat.st_mtime_ns,
         "device_id": str(stat.st_dev), "file_id": str(stat.st_ino),
@@ -103,6 +105,10 @@ def decide_candidate(store: ReconciliationStore, candidate_id: int, decision: st
                 if output_path.is_symlink() or not output_path.is_file() or output_path.resolve() == Path(row["path"]).resolve():
                     raise ValueError(f"replacement output is not a separate regular file for scene {replacement['scene_id']}")
                 verification = json.loads(replacement["verification_json"] or "{}")
+                coverage = verification.get("av_coverage", {}).get("streams", {})
+                if (verification.get("verification_contract") != 2
+                        or not {"video", "audio"}.issubset(coverage)):
+                    raise ValueError(f"replacement scene {replacement['scene_id']} lacks current audio/video verification evidence")
                 if verification.get("size_bytes") is not None:
                     if (verification["size_bytes"] != output_stat.st_size
                             or verification.get("mtime_ns") != output_stat.st_mtime_ns):

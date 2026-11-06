@@ -13,6 +13,36 @@ from .store import ReconciliationStore
 
 
 _SCENE_NAME = re.compile(r"(?:^|[\s._\-[(])scene[\s._-]*(\d+)(?=$|[\s._\-\])])", re.IGNORECASE)
+VERIFICATION_CONTRACT = 2
+
+
+def _validate_av_coverage(facts: dict, expected: float) -> dict:
+    """Require bounded timestamp and duration evidence for both A/V streams."""
+    errors = []
+    streams = facts.get("streams") or {}
+    tolerance = max(8.0, expected * 0.05)
+    evidence = {"expected_duration_s": expected, "tolerance_s": tolerance, "streams": {}}
+    for kind in ("video", "audio"):
+        stream = streams.get(kind)
+        if not stream:
+            errors.append(f"{kind} stream timing evidence is unavailable")
+            continue
+        duration = stream.get("duration")
+        timestamp_span = stream.get("timestamp_span")
+        packet_count = stream.get("packet_count")
+        if duration is None or abs(float(duration) - expected) > tolerance:
+            errors.append(f"{kind} stream duration does not cover the expected scene interval")
+        if timestamp_span is None or float(timestamp_span) < expected - tolerance:
+            errors.append(f"{kind} packet timestamps do not span the expected scene interval")
+        if packet_count is None or int(packet_count) <= 0:
+            errors.append(f"{kind} stream has no verified packets")
+        evidence["streams"][kind] = dict(stream)
+    if len(evidence["streams"]) == 2:
+        video_duration = evidence["streams"]["video"].get("duration")
+        audio_duration = evidence["streams"]["audio"].get("duration")
+        if video_duration is not None and audio_duration is not None and abs(float(video_duration) - float(audio_duration)) > tolerance:
+            errors.append("audio and video coverage differs materially")
+    return {"valid": not errors, "errors": errors, "evidence": evidence}
 
 
 def _content_edges(path: Path, block: int = 65536) -> str:
@@ -35,6 +65,12 @@ def verify_replacements(database_path: Path | str, *, probe_video_fn: Callable |
         scenes = store.list_scenes()
         for scene in scenes:
             if scene["ordinal"] is None or scene["metadata_status"] != "resolved":
+                detail = "scene identity or timing metadata is not resolved under the current verification contract"
+                store.execute("UPDATE requested_scenes SET status='scene_invalid',status_detail=? WHERE movie_key=? AND scene_id=?",
+                              (detail, scene["movie_key"], scene["scene_id"]))
+                store.execute("UPDATE download_jobs SET verification_status='failed',verification_json=? WHERE movie_key=? AND scene_id=?",
+                              (json.dumps({"verification_contract": VERIFICATION_CONTRACT, "error": detail}),
+                               scene["movie_key"], scene["scene_id"]))
                 skipped += 1
                 continue
             job = store.execute("SELECT * FROM download_jobs WHERE movie_key=? AND scene_id=?",
@@ -60,7 +96,8 @@ def verify_replacements(database_path: Path | str, *, probe_video_fn: Callable |
                 continue
             checked += 1
             path = Path(path_value)
-            evidence: dict = {"path": str(path), "scene_id": scene["scene_id"], "ordinal": scene["ordinal"],
+            evidence: dict = {"verification_contract": VERIFICATION_CONTRACT,
+                              "path": str(path), "scene_id": scene["scene_id"], "ordinal": scene["ordinal"],
                               "downloader_completed": bool(job and job["status"] == "downloaded" and job["exit_code"] == 0)}
             error = None
             try:
@@ -91,9 +128,13 @@ def verify_replacements(database_path: Path | str, *, probe_video_fn: Callable |
                 duration = float(facts.get("duration"))
                 if not _within_duration(duration, expected):
                     raise ValueError(f"duration {duration:.1f}s is implausible for expected scene duration {expected:.1f}s")
+                coverage = _validate_av_coverage(facts, expected)
+                evidence["av_coverage"] = coverage["evidence"]
+                if not coverage["valid"]:
+                    raise ValueError("audio/video stream coverage failed: " + "; ".join(coverage["errors"]))
                 evidence.update({"size_bytes": stat.st_size, "mtime_ns": stat.st_mtime_ns,
                                  "duration_seconds": duration, "expected_duration_seconds": expected,
-                                 "has_video": True})
+                                 "has_video": True, "verification_contract": VERIFICATION_CONTRACT})
                 other = store.execute(
                     """SELECT c.path FROM media_candidates c JOIN candidate_scenes cs USING(candidate_id)
                        WHERE cs.movie_key=? AND cs.scene_id!=? AND c.path!=?""",

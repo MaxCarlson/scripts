@@ -5,6 +5,7 @@ from pathlib import Path
 import os
 import re
 import sys
+import struct
 
 from tqdm import tqdm
 
@@ -67,19 +68,52 @@ def duration_to_seconds(duration: str) -> int:
 
 def ffmpeg_mux_streams(stream_path_1: str, stream_path_2: str, output_path: str, silent: bool = False) -> None:
     """Mux two media streams with ffmpeg"""
-    cmd = f'ffmpeg -i "{stream_path_1}" -i "{stream_path_2}" -y -c copy "{output_path}"'
-
+    cmd = ["ffmpeg", "-hide_banner", "-i", str(stream_path_1), "-i", str(stream_path_2),
+           "-map", "1:v:0", "-map", "0:a:0", "-c", "copy", "-y"]
     if silent:
-        cmd += " -loglevel warning"
-
-    out = subprocess.run(cmd, shell=True, capture_output=True, text=True, check=False)
-
-    if not out.returncode == 0:
+        cmd += ["-loglevel", "warning"]
+    cmd.append(str(output_path))
+    out = subprocess.run(cmd, capture_output=True, text=True, check=False)
+    if out.returncode != 0:
         raise FFmpegError(out.stderr)
 
 
 def natural_sort_key(s):
     return [int(text) if text.isdigit() else text.lower() for text in re.split(r"(\d+)", s)]
+
+
+def is_mp4_fragment(path: str | Path, *, initialization: bool) -> bool:
+    """Check top-level ISO-BMFF boxes without loading a whole fragment in memory."""
+    try:
+        file_path = Path(path)
+        size = file_path.stat().st_size
+        if not file_path.is_file() or size < 8:
+            return False
+        found: set[bytes] = set()
+        offset = 0
+        with file_path.open("rb") as stream:
+            while offset < size:
+                stream.seek(offset)
+                header = stream.read(8)
+                if len(header) != 8:
+                    return False
+                box_size, box_type = struct.unpack(">I4s", header)
+                header_size = 8
+                if box_size == 1:
+                    extended = stream.read(8)
+                    if len(extended) != 8:
+                        return False
+                    box_size = struct.unpack(">Q", extended)[0]
+                    header_size = 16
+                elif box_size == 0:
+                    box_size = size - offset
+                if box_size < header_size or offset + box_size > size:
+                    return False
+                found.add(box_type)
+                offset += box_size
+        return {b"moov"}.issubset(found) if initialization else {b"moof", b"mdat"}.issubset(found)
+    except OSError:
+        return False
 
 
 def concat_segments(files: list[str], output_path: str, tqdm_desc: str, aggressive_cleaning: bool, silent: bool = False):
@@ -120,62 +154,55 @@ def ffmpeg_check() -> None:
         raise FileNotFoundError("ffmpeg not found! Please add it to PATH.")
 
 
-def add_metadata(input_path: str | Path, movie: Movie) -> None:
-    """
-    Add title and chapter markers to a video file using ffmpeg based on Movie object.
-    Overwrites the input file.
+def add_metadata(
+    input_path: str | Path,
+    movie: Movie,
+    *,
+    output_path: str | Path | None = None,
+    scene_n: int | None = None,
+) -> Path:
+    """Write title/chapters to a separate candidate file using stream copy.
 
-    Args:
-        input_path: Path to the input video file (will be overwritten)
-        movie: Movie object containing movie metadata
+    The assembled input is never replaced here. The caller validates the
+    candidate and promotes it only after that validation passes.
     """
     input_path = Path(input_path)
+    output_path = Path(output_path) if output_path is not None else input_path.with_name(f"{input_path.stem}.metadata{input_path.suffix}")
 
-    # Build metadata content
-    metadata_content = ";FFMETADATA1\n\n"
-    metadata_content += f"title={movie.title}\n\n"
-    for i, scene in enumerate(movie.scenes):
-        # Convert timing to milliseconds
-        start_time_ms = scene.start_timing * 1000
-        end_time_ms = scene.end_timing * 1000
+    def escape(value: object) -> str:
+        text = str(value or "")
+        return text.replace("\\", "\\\\").replace("=", "\\=").replace(";", "\\;").replace("#", "\\#").replace("\n", "\\n")
 
-        # Add chapter metadata
-        metadata_content += f"[CHAPTER]\nTIMEBASE=1/1000\nSTART={start_time_ms}\nEND={end_time_ms}\ntitle=Scene {i + 1}: {', '.join(scene.performers)}\n\n"
+    metadata_content = f";FFMETADATA1\ntitle={escape(movie.title)}\n\n"
+    if scene_n is not None:
+        if scene_n < 1 or scene_n > len(movie.scenes):
+            raise ValueError(f"Scene ordinal {scene_n} is unavailable for chapter metadata")
+        scene = movie.scenes[scene_n - 1]
+        duration = scene.end_timing - scene.start_timing
+        if duration <= 0:
+            raise ValueError("Selected scene has invalid chapter timing")
+        metadata_content += (
+            "[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\n"
+            f"END={duration * 1000}\ntitle={escape(f'Scene {scene_n}: {', '.join(scene.performers or [])}')}\n\n"
+        )
+    else:
+        for index, scene in enumerate(movie.scenes, start=1):
+            start_time_ms = int(scene.start_timing * 1000)
+            end_time_ms = int(scene.end_timing * 1000)
+            metadata_content += (
+                "[CHAPTER]\nTIMEBASE=1/1000\n"
+                f"START={start_time_ms}\nEND={end_time_ms}\n"
+                f"title={escape(f'Scene {index}: {', '.join(scene.performers or [])}')}\n\n"
+            )
 
-    # Create temporary output path
-    temp_output = input_path.with_stem(f"{input_path.stem}_temp_chaptered")
-
-    try:
-        # Run ffmpeg with metadata piped via stdin
-        cmd = [
-            "ffmpeg",
-            "-i",
-            str(input_path),
-            "-f",
-            "ffmetadata",
-            "-i",
-            "-",  # Read metadata from stdin
-            "-map_metadata",
-            "1",
-            "-c",
-            "copy",  # Stream copy to avoid re-encoding
-            "-y",  # Overwrite output if exists
-            str(temp_output),
-        ]
-
-        # Execute with metadata piped in
-        process = subprocess.Popen(cmd, stdin=subprocess.PIPE)
-        process.communicate(input=metadata_content.encode("utf-8"))
-
-        if process.returncode != 0:
-            raise subprocess.CalledProcessError(process.returncode, cmd)
-
-        # Replace original file with the temporary output
-        os.replace(temp_output, input_path)
-        print(f"Successfully added chapters to {input_path}")
-
-    except Exception as e:
-        # Clean up temp file if something went wrong
-        if temp_output.exists():
-            temp_output.unlink()
-        raise e
+    cmd = [
+        "ffmpeg", "-hide_banner", "-i", str(input_path), "-f", "ffmetadata", "-i", "-",
+        "-map", "0:v?", "-map", "0:a?", "-map_metadata", "1", "-map_chapters", "1",
+        "-c", "copy", "-y", str(output_path),
+    ]
+    result = subprocess.run(cmd, input=metadata_content, capture_output=True, text=True, check=False)
+    if result.returncode != 0:
+        raise FFmpegError(result.stderr)
+    if not output_path.is_file() or output_path.stat().st_size == 0:
+        raise FFmpegError("ffmpeg produced no metadata candidate output")
+    return output_path

@@ -2153,7 +2153,12 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
     try:
         for i, url in enumerate(urls, 1):
             # Skip successfully processed URLs based on archive status.
-            if archive_file and url in archive_processed_urls:
+            # Historical AEBN scene successes may have recorded a full movie or
+            # an invalid remux. Re-enter aebndl so it can validate local output
+            # and repair missing/corrupt scene files; ordinary movie URLs retain
+            # the established archive fast path.
+            aebn_scene_recheck = _is_aebn(url) and bool(urlparse(url).fragment)
+            if archive_file and url in archive_processed_urls and not aebn_scene_recheck:
                 continue
             if _stop_sentinel_active(stop_sentinel):
                 _emit_json(
@@ -2228,6 +2233,8 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
                     status = 'stalled'
                 elif rc in (130, 131):
                     status = ''  # do not write on Ctrl+C/deadline
+                elif tool == "aebndl":
+                    status = ''  # preserve prior AEBN archive history on a failed scene attempt
                 else:
                     status = 'bad-url'
                 if status:

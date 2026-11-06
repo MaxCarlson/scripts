@@ -3,9 +3,18 @@ import os
 import json
 import shutil
 import tempfile
+import struct
 from unittest.mock import patch, MagicMock, Mock
 
 from aebn_dl import Downloader
+
+
+def _mp4_box(box_type: bytes, payload: bytes = b"") -> bytes:
+    return struct.pack(">I4s", len(payload) + 8, box_type) + payload
+
+
+def _media_fragment() -> bytes:
+    return _mp4_box(b"moof") + _mp4_box(b"mdat", b"fixture")
 
 
 class PartFileIntegrationTest(unittest.TestCase):
@@ -48,11 +57,11 @@ class PartFileIntegrationTest(unittest.TestCase):
         segment_v_0 = os.path.join(movie_work_dir, "v_stream2_0.mp4")
 
         with open(segment_a_0, 'wb') as f:
-            f.write(b'audio_data_0' * 100)
+            f.write(_media_fragment())
         with open(segment_a_1, 'wb') as f:
-            f.write(b'audio_data_1' * 100)
+            f.write(_media_fragment())
         with open(segment_v_0, 'wb') as f:
-            f.write(b'video_data_0' * 200)
+            f.write(_media_fragment())
 
         # Setup manifest
         from aebn_dl.manifest_parser import Manifest
@@ -86,7 +95,7 @@ class PartFileIntegrationTest(unittest.TestCase):
         mock_session = Mock()
         mock_response = Mock()
         mock_response.ok = True
-        mock_response.content = b'new_segment_data'
+        mock_response.content = _media_fragment()
         mock_session.get.return_value = mock_response
         downloader.session = mock_session
 
@@ -160,7 +169,7 @@ class PartFileIntegrationTest(unittest.TestCase):
         video_stream_data = part_data['streams']['v']
         self.assertEqual(video_stream_data['stream_id'], 'video_456')
         self.assertEqual(len(video_stream_data['downloaded_segments']), 2)
-        self.assertEqual(video_stream_data['downloaded_bytes'], 5000000)
+        self.assertEqual(video_stream_data['downloaded_bytes'], 0)
         self.assertEqual(video_stream_data['total_size'], 50000000)
 
     def test_different_resolution_creates_new_part_file(self):
@@ -309,8 +318,8 @@ class PartFileIntegrationTest(unittest.TestCase):
         self.assertIn('streams', part_data)
         self.assertIn('a', part_data['streams'])
         self.assertIn('v', part_data['streams'])
-        self.assertEqual(part_data['streams']['a']['downloaded_bytes'], 1000)
-        self.assertEqual(part_data['streams']['v']['downloaded_bytes'], 2000)
+        self.assertEqual(part_data['streams']['a']['downloaded_bytes'], 0)
+        self.assertEqual(part_data['streams']['v']['downloaded_bytes'], 0)
 
         # Part file should remain on disk for later resumption
         self.assertTrue(os.path.exists(part_file_path), "Part file should be preserved for resume")

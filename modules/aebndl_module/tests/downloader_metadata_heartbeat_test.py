@@ -1,6 +1,9 @@
 import json
 import os
 import time
+from pathlib import Path
+
+import pytest
 
 from aebn_dl import downloader as downloader_module
 from aebn_dl.downloader import Downloader
@@ -28,7 +31,7 @@ def test_scrape_movie_info_emits_metadata_fetch_while_blocked(monkeypatch, capsy
     assert any(event.get("event") == "metadata_fetch" for event in events)
 
 
-def test_find_existing_output_matches_resolution_variants(tmp_path):
+def test_find_existing_output_requires_media_validation(tmp_path, monkeypatch):
     class FakeMovie:
         studio_name = "TestStudio"
         title = "My Great Movie"
@@ -41,6 +44,10 @@ def test_find_existing_output_matches_resolution_variants(tmp_path):
         json_output=True,
     )
     movie = FakeMovie()
+    monkeypatch.setattr(
+        dl, "_validate_output",
+        lambda path, duration: {"valid": Path(path).stat().st_size > 50 * 1024 * 1024, "errors": ["fixture"]},
+    )
 
     # No files yet
     assert dl._find_existing_output(movie) is None
@@ -48,7 +55,9 @@ def test_find_existing_output_matches_resolution_variants(tmp_path):
     # Small file (preview-sized) — should not match
     small = tmp_path / "TestStudio - My Great Movie 1080p.mp4"
     small.write_bytes(b"x" * (10 * 1024 * 1024))  # 10 MiB
-    assert dl._find_existing_output(movie) is None
+    with pytest.raises(ValueError, match="invalid and was preserved"):
+        dl._find_existing_output(movie)
+    small.unlink()
 
     # Large file (real movie) — should match
     large = tmp_path / "TestStudio - My Great Movie 1440p.mp4"
@@ -56,13 +65,14 @@ def test_find_existing_output_matches_resolution_variants(tmp_path):
     assert dl._find_existing_output(movie) == str(large)
 
 
-def test_run_emits_already_when_output_exists_before_manifest(tmp_path, monkeypatch, capsys):
+def test_run_emits_already_only_after_manifest_validation(tmp_path, monkeypatch, capsys):
     class FakeMovie:
         studio_name = ""
         title = "Some Movie"
         performers = []
         scenes = []
         movie_id = "123"
+        total_duration_seconds = 1800
 
     existing_file = tmp_path / "- Some Movie 1080p.mp4"
     existing_file.write_bytes(b"x" * (300 * 1024 * 1024))  # 300 MiB
@@ -74,11 +84,20 @@ def test_run_emits_already_when_output_exists_before_manifest(tmp_path, monkeypa
         output_dir=str(tmp_path),
         json_output=True,
     )
-    # Patch _initialize_download and _process_manifest to verify manifest is NOT called
+    # Existing output requires current manifest and duration metadata.
     manifest_called = []
 
     monkeypatch.setattr(dl, "_initialize_download", lambda: None)
-    monkeypatch.setattr(dl, "_process_manifest", lambda m: manifest_called.append(True))
+    def prepare_manifest(_movie):
+        manifest_called.append(True)
+        dl.manifest = type(
+            "ManifestStub", (),
+            {"total_number_of_data_segments": 1, "video_stream": type("VideoStub", (), {"height": 480})()},
+        )()
+
+    monkeypatch.setattr(dl, "_process_manifest", prepare_manifest)
+    monkeypatch.setattr(dl, "_find_existing_output", lambda _movie, _duration=None: str(existing_file))
+    monkeypatch.setattr(dl, "_validate_output", lambda _path, _duration: {"valid": True, "evidence": {}})
 
     dl.run()
 
@@ -90,4 +109,4 @@ def test_run_emits_already_when_output_exists_before_manifest(tmp_path, monkeypa
     event_types = [e.get("event") for e in events]
     assert "already" in event_types
     assert "destination" in event_types
-    assert not manifest_called, "_process_manifest should not be called when output already exists"
+    assert manifest_called, "_process_manifest must run before validating an existing output"

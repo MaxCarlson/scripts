@@ -929,6 +929,27 @@ class TestIntegration:
         finally:
             os.unlink(temp_path)
 
+    def test_archived_aebn_scene_is_rechecked_and_failure_preserves_history(self, tmp_path):
+        url = "https://straight.aebn.com/straight/movies/215286/cum-eating-cuckolds-32#scene-983074"
+        urlfile = tmp_path / "scene.txt"
+        urlfile.write_text(url + "\n", encoding="utf-8")
+        archive_dir = tmp_path / "archive"
+        archive_dir.mkdir()
+        archive_file = archive_dir / "ae-scene.txt"
+        old_line = downloader._format_archive_line("downloaded", 10.0, "2026-11-06T08:00:00", 485.0, "old", url)
+        archive_file.write_text(old_line + "\n", encoding="utf-8")
+
+        with patch("sys.argv", ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir)]):
+            with patch("ytaedl.downloader._run_one", return_value=(2, {
+                "elapsed_s": 1.0, "downloaded": None, "total": None, "already": False, "downloader": "aebndl",
+            })) as mock_run:
+                result = downloader.main()
+
+        assert result != 0
+        mock_run.assert_called_once()
+        assert mock_run.call_args.kwargs["urls"] == [url]
+        assert archive_file.read_text(encoding="utf-8") == old_line + "\n"
+
     def test_main_archive_skips_by_url_not_line_position(self, tmp_path):
         urlfile = tmp_path / "urls.txt"
         urlfile.write_text(
