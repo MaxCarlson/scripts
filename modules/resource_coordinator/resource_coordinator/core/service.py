@@ -300,6 +300,11 @@ class CoordinatorService:
     async def stop(self, reason: str = "normal_shutdown") -> None:
         if self._state == ServiceState.STOPPED:
             return
+        was_operational = self._state in {ServiceState.READY, ServiceState.DRAINING}
+        manual_overrides = {
+            name: (supervisor.is_manual_override, supervisor.manual_override_until)
+            for name, supervisor in self.system.supervisors.items()
+        }
         if not self._aborted:
             self._state = ServiceState.DRAINING
         tasks = self._freeze(f"shutdown:{reason}")
@@ -352,6 +357,19 @@ class CoordinatorService:
                             uncertain = uncertain or (await supervisor.status()).state != ProcessState.STOPPED
                 if not uncertain:
                     await asyncio.wait_for(self.system.gateway.close(), timeout=2.0)
+                    state_path = getattr(self.system.config.service, "state_persistence_path", "")
+                    if was_operational and state_path:
+                        try:
+                            for name, (was_manually_held, held_until) in manual_overrides.items():
+                                supervisor = self.system.supervisors[name]
+                                supervisor.set_manual_override(
+                                    was_manually_held, persist=False, until=held_until
+                                )
+                                await self._persist_supervisor_state(supervisor)
+                        except Exception as exc:
+                            uncertain = True
+                            self._failure_reason = f"Could not persist clean shutdown hold state: {exc}"
+                            logger.error(self._failure_reason)
                 self._state = (
                     ServiceState.RECONCILIATION_REQUIRED if uncertain or self._aborted else ServiceState.STOPPED
                 )

@@ -227,6 +227,32 @@ async def test_gpu_idle_pause_keeps_miner_stopped_when_telemetry_is_missing(tmp_
 
 
 @pytest.mark.asyncio
+async def test_clean_restart_does_not_persist_temporary_shutdown_override(tmp_path):
+    from resource_coordinator.core.durable_state import StateCodec
+    from resource_coordinator.core.processes import ProcessState
+
+    state_path = tmp_path / "coordinator.json"
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(state_path)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="stop", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference", cooldown_seconds=0)],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True, stop_miner_on_shutdown=True, first_boot=True)
+    assert await service.start()
+    assert (await system.miner_adapter.status()).state == ProcessState.RUNNING
+    await service.stop()
+    assert StateCodec.load(state_path).processes["krig"].is_manual_override is False
+
+    restarted_system = build_system(config, use_fake_processes=True)
+    restarted = CoordinatorService(restarted_system, start_miner_on_ready=True, stop_miner_on_shutdown=True)
+    assert await restarted.start()
+    assert (await restarted_system.miner_adapter.status()).state == ProcessState.RUNNING
+    await restarted.stop()
+
+
+@pytest.mark.asyncio
 async def test_gaming_unload_failure_keeps_miner_held_and_records_reconciliation_state(tmp_path):
     from resource_coordinator.core.durable_state import StateCodec
     from resource_coordinator.core.processes import ProcessState
