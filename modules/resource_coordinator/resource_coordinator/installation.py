@@ -7,6 +7,7 @@ import csv
 import ctypes
 import getpass
 import json
+import math
 import os
 import psutil
 import re
@@ -32,6 +33,7 @@ from resource_coordinator.core.operator_credentials import (
     load_token,
 )
 from resource_coordinator.core.runtime_identity import build_runtime_identity
+from resource_coordinator.windows_listener import identify_tcp_listener
 
 
 TASK_MARKER = "ResourceCoordinator:Managed:v1"
@@ -185,6 +187,15 @@ def _runtime_source_matches(runtime_source: Optional[str], expected_source: Path
     return os.path.normcase(os.path.realpath(runtime_source)) == os.path.normcase(os.path.realpath(expected_source))
 
 
+def _same_process_creation_time(reported: Any, observed: Any, *, tolerance: float = 0.01) -> bool:
+    """Compare process creation timestamps conservatively; malformed data never matches."""
+    try:
+        left, right = float(reported), float(observed)
+        return math.isfinite(left) and math.isfinite(right) and abs(left - right) <= tolerance
+    except (TypeError, ValueError, OverflowError):
+        return False
+
+
 def _write_json_atomic(path: Path, value: Dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(path.name + ".new")
@@ -192,19 +203,58 @@ def _write_json_atomic(path: Path, value: Dict[str, Any]) -> None:
     os.replace(temporary, path)
 
 
-def _listener_identity(port: int = 1235) -> Optional[Dict[str, Any]]:
-    """Identify the local listener from the OS, not only from its HTTP response."""
+def _listener_identity_details(port: int = 1235, host: str = "127.0.0.1") -> Dict[str, Any]:
+    """Return verifiable listener identity plus diagnostics from both OS backends."""
+    return identify_tcp_listener(host, port).to_dict()
+
+
+def _listener_identity(port: int = 1235, host: str = "127.0.0.1") -> Optional[Dict[str, Any]]:
+    """Identify the local listener using OS evidence, not just its HTTP response."""
+    result = _listener_identity_details(port, host)
+    identity = result.get("identity")
+    return identity if result.get("verified") and isinstance(identity, dict) else None
+
+
+def _listener_failure_reason(result: Dict[str, Any], host: str, port: int) -> str:
+    category = result.get("category", "identity-unavailable")
+    if category == "not-found":
+        summary = f"No listening endpoint matching {host}:{port} was found."
+    elif category == "ambiguous":
+        summary = f"Multiple process identities match listener port {port}; ownership is ambiguous."
+    else:
+        summary = f"A listener may exist on port {port}, but its owning process identity could not be verified."
+    evidence = [str(item) for item in result.get("diagnostics", []) if item]
+    details = "; ".join(evidence[:4])
+    return f"{summary}" + (f" Evidence: {details}" if details else "")
+
+
+def _legacy_task_matches_listener(task: Optional[StartupTask], listener: Dict[str, Any],
+                                  paths: InstallationPaths) -> bool:
+    """Correlate a legacy runtime with its owned task and executable launcher."""
+    if not task or not task.owned or not _task_identity_valid(asdict(task)):
+        return False
+    executable = listener.get("executable")
+    if not executable or os.path.normcase(os.path.realpath(executable)) != os.path.normcase(
+            os.path.realpath(paths.python)):
+        return False
+    match = re.search(r"-File\s+\"([^\"]+\.ps1)\"", task.action, flags=re.IGNORECASE)
+    if not match:
+        match = re.search(r"-File\s+([^\s;]+\.ps1)", task.action, flags=re.IGNORECASE)
+    if not match:
+        return False
+    launcher = Path(match.group(1))
+    if not launcher.is_file():
+        return False
     try:
-        for connection in psutil.net_connections(kind="inet"):
-            if connection.status != psutil.CONN_LISTEN or not connection.laddr or connection.laddr.port != port:
-                continue
-            if connection.pid is None:
-                continue
-            process = psutil.Process(connection.pid)
-            return {"pid": connection.pid, "create_time": process.create_time()}
-    except (psutil.Error, OSError):
-        return None
-    return None
+        contents = launcher.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return False
+    return (
+        str(paths.python).casefold() in contents.casefold()
+        and "resource_coordinator.cli" in contents.casefold()
+        and "serve" in contents.casefold()
+        and str(paths.config).casefold() in contents.casefold()
+    )
 
 
 def _exact_process_is_alive(pid: int, create_time: float) -> Optional[bool]:
@@ -772,17 +822,25 @@ class ManagedInstallation:
             blockers.append(f"startup task {task.name} has an unexpected identity or privilege level")
 
         runtime = (service or {}).get("runtime") or {}
-        listener = _listener_identity()
+        listener_details = _listener_identity_details()
+        listener = listener_details.get("identity") if listener_details.get("verified") else None
         runtime_pid = runtime.get("pid")
+        runtime_create_time = runtime.get("process_create_time")
         if listener is None:
-            blockers.append("OS listener identity for port 1235 is unavailable")
+            blockers.append(_listener_failure_reason(listener_details, "127.0.0.1", 1235))
         elif runtime_pid is not None and runtime_pid != listener.get("pid"):
             blockers.append("HTTP runtime PID does not match the process owning port 1235")
-        elif runtime_pid is None:
-            runtime = {**runtime, "pid": listener.get("pid"), "legacy_identity": True}
-        runtime_create_time = runtime.get("process_create_time")
-        if (listener and runtime_create_time is not None and
-                abs(float(runtime_create_time) - float(listener["create_time"])) > 1.0):
+        elif runtime_pid is None or not runtime.get("revision"):
+            if not _legacy_task_matches_listener(task, listener, self.paths):
+                blockers.append(
+                    "Legacy runtime identity is incomplete; the listener process could not be correlated "
+                    "with the owned startup task and its launcher"
+                )
+            else:
+                runtime = {**runtime, "pid": listener.get("pid", runtime_pid), "legacy_identity": True,
+                           "legacy_task_identity_verified": True}
+        if listener and runtime_create_time is not None and not _same_process_creation_time(
+                runtime_create_time, listener["create_time"]):
             blockers.append("HTTP runtime creation time does not match the process owning port 1235")
 
         config = None
@@ -879,6 +937,7 @@ class ManagedInstallation:
             "runtime_current": runtime_current,
             "service": service,
             "listener": listener,
+            "listener_discovery": listener_details,
             "task": asdict(task) if task else None,
             "task_snapshot": snapshot,
             "miner_name": miner_name,
@@ -911,9 +970,11 @@ class ManagedInstallation:
         if receipt.get("source", {}).get("revision") != preflight["source"].get("revision"):
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["source changed since the interrupted upgrade; inspect the receipt before retrying"]}
-        expected_absent = {"coordinator status is unavailable; upgrade will not start a replacement owner",
-                           "OS listener identity for port 1235 is unavailable"}
+        expected_absent = {"coordinator status is unavailable; upgrade will not start a replacement owner"}
         blockers = list(preflight["blockers"])
+        listener_details = preflight.get("listener_discovery") or {}
+        if listener_details.get("category") == "not-found":
+            blockers = [item for item in blockers if not item.startswith("No listening endpoint matching 127.0.0.1:1235")]
         unknown_miner = next((item for item in blockers if item.startswith("configured miner state is unavailable")), None)
         if unknown_miner and preflight.get("miner_name"):
             miner_config = load_config(self.paths.config).processes[preflight["miner_name"]]
@@ -999,6 +1060,14 @@ class ManagedInstallation:
             _write_json_atomic(self.paths.upgrade_receipt, receipt)
             return {"status": "recovery-required", "phase": "NEW_READY",
                     "blocker": "Retry service identity could not be verified; mining remains held.",
+                    "receipt": str(self.paths.upgrade_receipt)}
+        created = runtime.get("process_create_time")
+        if created is None or not _same_process_creation_time(created, listener["create_time"]):
+            receipt.update(phase="RECOVERY_REQUIRED", failed_at="NEW_READY",
+                           error="runtime process creation time does not match the listener", updated_at=time.time())
+            _write_json_atomic(self.paths.upgrade_receipt, receipt)
+            return {"status": "recovery-required", "phase": "NEW_READY",
+                    "blocker": "Retry runtime creation time could not be matched to its OS listener; mining remains held.",
                     "receipt": str(self.paths.upgrade_receipt)}
         with httpx.Client(timeout=5.0) as client:
             control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
@@ -1162,7 +1231,9 @@ class ManagedInstallation:
         plan = {
             "status": "planned",
             "phase": "PREFLIGHT",
+            "source_version": preflight["source"].get("version"),
             "source_revision": preflight["source"]["revision"],
+            "runtime_version": preflight["runtime"].get("version"),
             "runtime_revision": preflight["runtime"].get("revision"),
             "runtime_legacy": preflight["runtime_legacy"],
             "startup_task": preflight["task"]["name"],
@@ -1229,7 +1300,9 @@ class ManagedInstallation:
             deadline = time.monotonic() + timeout
             lock_path = Path(load_config(self.paths.config).service.state_persistence_path).with_suffix(".lock")
             while time.monotonic() < deadline:
-                if self._service_status() is None and not self._coordinator_port_open():
+                listener_state = _listener_identity_details()
+                listener_closed = listener_state.get("category") == "not-found"
+                if (self._service_status() is None and not self._coordinator_port_open() and listener_closed):
                     probe = SingleInstanceLock(lock_path)
                     service_alive = _exact_process_is_alive(
                         int(preflight["listener"]["pid"]), float(preflight["listener"]["create_time"])
@@ -1272,9 +1345,11 @@ class ManagedInstallation:
             if new_listener is None or new_listener.get("pid") != runtime.get("pid"):
                 raise InstallationError("Ready coordinator PID does not own the port 1235 listener")
             new_create_time = runtime.get("process_create_time")
-            if (new_create_time is not None and
-                    abs(float(new_create_time) - float(new_listener["create_time"])) > 1.0):
+            if new_create_time is not None and not _same_process_creation_time(
+                    new_create_time, new_listener["create_time"]):
                 raise InstallationError("New coordinator runtime creation time does not match its listener")
+            if new_create_time is None:
+                raise InstallationError("New coordinator did not report a process creation time for listener verification")
             with httpx.Client(timeout=5.0) as client:
                 control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
             if control.status_code != 200:
@@ -1867,7 +1942,9 @@ def _powershell_backend(paths: InstallationPaths) -> WindowsStartupTaskBackend:
 
 def handle_installation_command(args: Any) -> int:
     """CLI entry point; command execution remains separate from core logic for testing."""
-    from resource_coordinator.presentation import emit_json, render_result
+    from resource_coordinator.presentation import (
+        emit_json, render_health_result, render_result, render_startup_status, render_upgrade_result,
+    )
 
     paths = InstallationPaths.discover()
     backend = _powershell_backend(paths)
@@ -1877,10 +1954,7 @@ def handle_installation_command(args: Any) -> int:
         if getattr(args, "json", False):
             emit_json(result)
         else:
-            display = dict(result)
-            if result.get("status") == "planned":
-                display["next_command"] = "resource-coordinator system upgrade --apply"
-            render_result("Resource Coordinator Upgrade", display)
+            render_upgrade_result(result)
         return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
     if args.command == "setup":
         result = manager.setup(
@@ -1908,5 +1982,10 @@ def handle_installation_command(args: Any) -> int:
     if getattr(args, "json", False):
         emit_json(result)
     else:
-        render_result(f"Resource Coordinator {args.command.title()}", result)
+        if args.command == "doctor":
+            render_health_result(result)
+        elif args.command == "startup" and getattr(args, "startup_command", None) == "status":
+            render_startup_status(result)
+        else:
+            render_result(f"Resource Coordinator {args.command.title()}", result)
     return 0

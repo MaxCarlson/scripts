@@ -61,6 +61,31 @@ restarts that process after the configured idle cooldown. Use it with a process
 that supports the configured Windows console stop mechanism; keep force
 termination and external process control disabled.
 
+## Readable status and upgrade diagnostics
+
+Common status commands show a concise human summary by default. Use `-j` to
+retain full nested process, journal, task, and runtime fields for scripts or
+troubleshooting:
+
+```powershell
+resource-coordinator control miner status
+resource-coordinator status
+resource-coordinator system startup status
+resource-coordinator check health
+resource-coordinator system upgrade
+resource-coordinator system upgrade -j
+```
+
+Upgrade preflight verifies the operating-system listener independently of its
+HTTP response. On Windows it first uses psutil and then the native IP Helper
+TCP table when needed. A listener without a verifiable PID and process creation
+time is a blocker; diagnostics distinguish an absent listener, ambiguous
+owners, inaccessible process data, and TCP-table enumeration failures. A legacy
+service without the startup-captured runtime revision or runtime PID must also
+match the enabled RC-owned startup task, its Python executable, and its launcher
+script before it can be upgraded.
+Preflight does not change the service or startup task.
+
 ## Configure one process
 
 Create `config.local.yaml` in this directory. Git ignores that machine-local

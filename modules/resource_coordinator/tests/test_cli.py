@@ -275,6 +275,6 @@ def test_cli_status_displays_managed_process_state(monkeypatch, capsys):
     output = capsys.readouterr().out
     assert "Managed Processes" in output
     assert "background_worker" in output
-    assert "unmanaged" in output
+    assert "Unmanaged" in output
     assert "Stopped by coordinator" in output
     assert "Active (17.2s remaining)" in output

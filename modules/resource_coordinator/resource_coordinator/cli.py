@@ -197,7 +197,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 if args.json:
                     emit_json(data)
                 else:
-                    render_coordinator_status(data)
+                    render_coordinator_status(data, gateway_url=args.url)
                 return 0
             else:
                 detail = resp.text
@@ -314,7 +314,11 @@ async def _async_miner_command(args: argparse.Namespace) -> int:
         if getattr(args, "json", False):
             emit_json(data)
         else:
-            render_result("Miner", data)
+            from resource_coordinator.presentation import render_miner_status
+            if getattr(args, "miner_command", None) == "status":
+                render_miner_status(data)
+            else:
+                render_result("Miner", data)
         return 0
     except Exception as exc:
         message = f"Failed to contact coordinator at {args.url}: {exc}"
@@ -363,7 +367,11 @@ async def _async_gaming_command(args: argparse.Namespace) -> int:
         if getattr(args, "json", False):
             emit_json(data)
         else:
-            render_result("Gaming Mode", data)
+            from resource_coordinator.presentation import render_gaming_status
+            if action == "status":
+                render_gaming_status(data)
+            else:
+                render_result("Gaming Mode", data)
         return 0
     except Exception as exc:
         message = f"Failed to contact coordinator at {args.url}: {exc}"

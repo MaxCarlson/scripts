@@ -318,6 +318,204 @@ def test_semantic_status_colors_keep_intentional_stop_and_unknown_neutral():
     assert _status_style("unknown") is None
 
 
+def test_miner_status_renderer_uses_sections_and_human_time_without_flattening():
+    from datetime import datetime, timezone
+    from io import StringIO
+    from resource_coordinator.presentation import render_miner_status
+
+    output = StringIO()
+    render_miner_status({
+        "status": "running", "name": "krig_miner", "pid": 73392,
+        "owner": "coordinator", "is_coordinator_owned": True,
+        "executable": r"C:\Program Files\krig-miner.exe",
+        "create_time": datetime(2026, 11, 6, 14, 39, tzinfo=timezone.utc).timestamp(),
+        "manual_override": False, "manual_override_until": None,
+        "gpu_idle_condition": {}, "debug": {"nested": "must not flatten"},
+    }, stream=output, color="never", width=80)
+    rendered = output.getvalue()
+
+    assert "Miner — krig_miner" in rendered
+    assert "Process" in rendered and "Controls" in rendered
+    assert "Ownership" in rendered and "Coordinator" in rendered
+    assert "Manual hold" in rendered and "Inactive" in rendered
+    assert "GPU-idle resume" in rendered and "Not configured" in rendered
+    assert "Started" in rendered and "Nov 6, 2026" in rendered
+    assert "create_time" not in rendered and "must not flatten" not in rendered
+    assert "Manual override u" not in rendered
+
+
+@pytest.mark.parametrize("width", [80, 100, 120])
+def test_miner_status_renderer_keeps_operational_labels_at_common_widths(width):
+    from io import StringIO
+    from resource_coordinator.presentation import render_miner_status
+
+    output = StringIO()
+    render_miner_status({"status": "running", "name": "krig_miner", "pid": 1,
+                         "is_coordinator_owned": True, "executable": "C:/" + ("deep/" * 40) + "krig.exe",
+                         "create_time": 1793975984.0, "manual_override": False,
+                         "manual_override_until": None, "gpu_idle_condition": {}},
+                        stream=output, color="never", width=width)
+    rendered = output.getvalue()
+    assert "Manual hold" in rendered and "GPU-idle resume" in rendered
+    assert "Started" in rendered and "Ownership" in rendered
+
+
+def test_coordinator_status_renderer_does_not_claim_upstream_connected_or_duplicate_ready():
+    from io import StringIO
+    from resource_coordinator.presentation import render_coordinator_status
+
+    output = StringIO()
+    render_coordinator_status({
+        "is_ready": True, "service_state": "ready", "listen_url": "127.0.0.1:1235",
+        "upstream_url": "http://127.0.0.1:1234", "gpu_inference": {
+            "active_count": 0, "pending_count": 0, "is_cooling_down": False,
+            "is_restart_inhibited": False,
+        }, "processes": {"krig_miner": {
+            "state": "running", "pid": 73392, "is_coordinator_owned": True,
+            "lifecycle_owner": "coordinator", "was_stopped_by_coordinator": False,
+        }},
+    }, stream=output, color="never", width=100)
+    rendered = output.getvalue()
+    assert "READY" in rendered
+    assert "127.0.0.1:1235" in rendered and "127.0.0.1:1234" in rendered
+    assert "connected" not in rendered.casefold()
+    assert "Coordinator" in rendered
+    assert "coordinator;" not in rendered
+    assert "Ready: Yes" not in rendered
+
+
+def test_upgrade_renderer_hides_internal_task_xml_and_journal_by_default():
+    from io import StringIO
+    from resource_coordinator.presentation import render_upgrade_result
+
+    output = StringIO()
+    render_upgrade_result({
+        "status": "blocked", "phase": "PREFLIGHT", "blockers": ["Listener identity unavailable"],
+        "source": {"version": "0.11.0", "revision": "abc"},
+        "runtime": {"version": "0.10.0", "pid": 55},
+        "task": {"name": "ResourceCoordinator-KRig-UserLogon"},
+        "task_snapshot": {"definition": "<Task>secret xml</Task>"},
+        "journal": {"requests": {"id": "raw durable journal"}},
+        "elevation_required": True,
+    }, stream=output, color="never", width=80)
+    rendered = output.getvalue()
+    assert "BLOCKED" in rendered and "Listener identity unavailable" in rendered
+    assert "0.11.0" in rendered and "ResourceCoordinator-KRig-UserLogon" in rendered
+    assert "secret xml" not in rendered and "raw durable journal" not in rendered
+    assert "task_snapshot" not in rendered and "journal" not in rendered
+
+
+def test_upgrade_plan_renderer_shows_source_task_and_elevation_without_preflight_dump():
+    from io import StringIO
+    from resource_coordinator.presentation import render_upgrade_result
+
+    output = StringIO()
+    render_upgrade_result({
+        "status": "planned", "phase": "PREFLIGHT", "source_version": "0.11.1",
+        "source_revision": "private-revision", "runtime_version": None, "runtime_legacy": True,
+        "startup_task": "ResourceCoordinator-KRig-UserLogon", "elevation_required": True,
+        "configured_gpu_settings": {"power_limit_w": 550.0}, "effective_gpu_settings": {"power_limit_w": 550.0},
+        "changes": ["gracefully stop current coordinator and owned miner"],
+    }, stream=output, color="never", width=80)
+    rendered = output.getvalue()
+    assert "0.11.1" in rendered and "Legacy installation" in rendered
+    assert "ResourceCoordinator-KRig-UserLogon" in rendered and "Required" in rendered
+    assert "private-revision" not in rendered and "gracefully stop" not in rendered
+
+
+def test_specialized_renderer_json_remains_complete_and_redacted():
+    from io import StringIO
+    import json
+    from resource_coordinator.presentation import render_miner_status
+
+    output = StringIO()
+    render_miner_status({"status": "stopped", "pid": None, "operator_token": "hidden",
+                         "process_details": {"create_time": 123.0}}, as_json=True, stream=output)
+    result = json.loads(output.getvalue())
+    assert result["process_details"]["create_time"] == 123.0
+    assert result["operator_token"] == "[REDACTED]"
+
+
+def test_specialized_human_renderers_redact_secret_fields():
+    from io import StringIO
+    from resource_coordinator.presentation import render_miner_status
+
+    output = StringIO()
+    render_miner_status({"status": "stopped", "operator_token": "do-not-print", "reason": "normal"},
+                        stream=output, color="never", width=80)
+    assert "do-not-print" not in output.getvalue()
+
+
+def test_health_and_startup_renderers_show_operational_summary_without_nested_dumps():
+    from io import StringIO
+    from resource_coordinator.presentation import render_health_result, render_startup_status
+
+    health_output = StringIO()
+    render_health_result({
+        "status": "degraded", "service": {"service_state": "ready"}, "service_ready": True,
+        "runtime_current": False, "credential_ready": True,
+        "gpu": {"power_limit_w": 550.0, "memory_clock_mhz": 7001.0},
+        "gpu_policy_verification": {"power_limit_w": "verified", "memory_clock_mhz": "verified"},
+        "warnings": ["Runtime identity mismatch"], "runtime": {"revision": "opaque"},
+        "credential": {"secret": "not for display"},
+    }, stream=health_output, color="never", width=80)
+    health = health_output.getvalue()
+    assert "DEGRADED" in health and "Runtime identity" in health
+    assert "550 W — verified" in health and "7001 MHz — verified" in health
+    assert "opaque" not in health and "not for display" not in health
+
+    startup_output = StringIO()
+    render_startup_status({"authoritative": "ResourceCoordinator-KRig-UserLogon", "tasks": [{
+        "name": "ResourceCoordinator-KRig-UserLogon", "mode": "logon", "enabled": True,
+        "state": "Running", "run_level": "Highest", "action": "long internal command",
+    }]}, stream=startup_output, color="never", width=80)
+    startup = startup_output.getvalue()
+    assert "Startup Tasks" in startup and "User logon" in startup
+    assert "Enabled / Running" in startup and "Highest" in startup
+    assert "long internal command" not in startup
+
+
+def test_gaming_renderer_summarizes_saved_model_state():
+    from io import StringIO
+    from resource_coordinator.presentation import render_gaming_status
+
+    output = StringIO()
+    render_gaming_status({"status": "active", "state": "active", "miner_state": "stopped",
+                          "models": {"model-id": {"temperature": 0.2}},
+                          "reason": "Game session"}, stream=output, color="never", width=80)
+    rendered = output.getvalue()
+    assert "Gaming Mode" in rendered and "ACTIVE" in rendered
+    assert "Miner" in rendered and "Stopped" in rendered
+    assert "1 saved model settings (see --json)" in rendered
+    assert "temperature" not in rendered
+
+
+def test_health_renderer_does_not_call_partial_credentials_verified():
+    from io import StringIO
+    from resource_coordinator.presentation import render_health_result
+
+    output = StringIO()
+    render_health_result({"status": "degraded", "credential": {
+        "credential_valid": True, "credential_file_readable": True, "acl_restricted": False,
+    }, "runtime": {"version": "0.11.0"}}, stream=output, color="never", width=80)
+    rendered = output.getvalue()
+    assert "Credentials" in rendered and "Degraded" in rendered
+    assert "Legacy / unverified" in rendered
+    assert "Runtime identity" in rendered
+
+
+def test_generic_renderer_summarizes_nested_objects_instead_of_flattening():
+    from io import StringIO
+    from resource_coordinator.presentation import render_result
+
+    output = StringIO()
+    render_result("Example", {"status": "ready", "process": {"name": "miner", "pid": 10}},
+                  stream=output, color="never", width=80)
+    rendered = output.getvalue()
+    assert "2 structured fields (see --json)" in rendered
+    assert "name: miner; pid: 10" not in rendered
+
+
 @pytest.mark.parametrize(
     ("legacy", "canonical", "handler_name", "expected_command", "expected_action"),
     [

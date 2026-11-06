@@ -15,6 +15,7 @@ from resource_coordinator.installation import (
     TASK_MARKER,
     _clean_powershell_error,
     WindowsStartupTaskBackend,
+    _legacy_task_matches_listener,
 )
 from resource_coordinator.cli import parse_args
 
@@ -82,6 +83,35 @@ def _secure_credential_report():
     }
 
 
+def _listener_details(identity=None, *, category="identified", diagnostics=()):
+    return {"category": category, "verified": identity is not None, "identity": identity,
+            "diagnostics": list(diagnostics), "candidates": []}
+
+
+def _write_legacy_launcher(paths: InstallationPaths) -> Path:
+    launcher = paths.root / "start-coordinator.ps1"
+    paths.root.mkdir(parents=True, exist_ok=True)
+    launcher.write_text(
+        f"$python = '{paths.python}'\n$config = '{paths.config}'\n"
+        "& $python -m resource_coordinator.cli serve -c $config\n",
+        encoding="utf-8",
+    )
+    return launcher
+
+
+def test_legacy_listener_requires_owned_task_and_matching_launcher_evidence(tmp_path):
+    paths, _ = make_paths(tmp_path)
+    launcher = _write_legacy_launcher(paths)
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -File "{launcher}"', True)
+    identity = {"pid": 51, "create_time": 10.0, "executable": str(paths.python)}
+
+    assert _legacy_task_matches_listener(task, identity, paths)
+    assert not _legacy_task_matches_listener(
+        StartupTask(**{**task.__dict__, "owned": False}), identity, paths)
+    assert not _legacy_task_matches_listener(task, {**identity, "executable": None}, paths)
+
+
 def _write_offline_journal(paths: InstallationPaths, *, requests: str = "") -> Path:
     state_path = paths.root / "coordinator_state.json"
     paths.root.mkdir(parents=True, exist_ok=True)
@@ -138,9 +168,10 @@ def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monke
     )
     from resource_coordinator.core.durable_state import StateCodec
     StateCodec.initialize(paths.state)
+    legacy_launcher = _write_legacy_launcher(paths)
     task = StartupTask(
         TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-        f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True,
+        f'powershell.exe -File "{legacy_launcher}"', True,
     )
     tasks = MemoryTasks()
     tasks.items[task.name] = task
@@ -150,7 +181,10 @@ def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monke
         "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
         "processes": {},
     }
-    monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    listener = {"pid": 51, "create_time": 10.0, "executable": str(paths.python)}
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: listener)
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+        listener))
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
     monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
     monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
@@ -164,6 +198,27 @@ def test_upgrade_preview_is_read_only_and_reports_legacy_runtime(tmp_path, monke
     assert not paths.upgrade_policy.exists()
     assert tasks.install_calls == []
     assert tasks.start_calls == []
+
+    with monkeypatch.context() as context:
+        context.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+            {"pid": 51, "create_time": 10.0, "executable": None}))
+        legacy_blocked = manager.upgrade()
+        assert legacy_blocked["status"] == "blocked"
+        assert any("could not be correlated" in item for item in legacy_blocked["preflight"]["blockers"])
+        assert tasks.install_calls == []
+        assert tasks.start_calls == []
+
+    with monkeypatch.context() as context:
+        context.setattr(installation_module, "_listener_identity", lambda: None)
+        context.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+            category="discovery-error", diagnostics=["psutil: RuntimeError: TCP table access denied",
+                                                       "IPv4 GetExtendedTcpTable: Windows error 5"]))
+        blocked = manager.upgrade()
+        messages = " ".join(blocked["preflight"]["blockers"])
+        assert blocked["status"] == "blocked"
+        assert "access denied" in messages
+        assert tasks.install_calls == []
+        assert tasks.start_calls == []
 
     tasks._admin = lambda: False
     noninteractive = manager.upgrade(apply=True, non_interactive=True)
@@ -197,6 +252,8 @@ def test_upgrade_noop_when_runtime_fingerprint_and_managed_launcher_match(tmp_pa
         "processes": {},
     }
     monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+        {"pid": 51, "create_time": 10.0}))
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
     monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
     monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
@@ -231,8 +288,9 @@ def test_upgrade_shutdown_rejection_restores_prepared_launcher_and_leaves_task_u
     )
     from resource_coordinator.core.durable_state import StateCodec
     StateCodec.initialize(paths.state)
+    legacy_launcher = _write_legacy_launcher(paths)
     task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+                       f'powershell.exe -File "{legacy_launcher}"', True)
     tasks = MemoryTasks()
     tasks.items[task.name] = task
     manager = ManagedInstallation(paths, tasks)
@@ -241,7 +299,10 @@ def test_upgrade_shutdown_rejection_restores_prepared_launcher_and_leaves_task_u
         "gpu_inference": {"active_count": 0, "pending_count": 0, "is_restart_inhibited": False},
         "processes": {},
     }
-    monkeypatch.setattr(installation_module, "_listener_identity", lambda: {"pid": 51, "create_time": 10.0})
+    listener = {"pid": 51, "create_time": 10.0, "executable": str(paths.python)}
+    monkeypatch.setattr(installation_module, "_listener_identity", lambda: listener)
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+        listener))
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
     monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
     monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
@@ -279,8 +340,9 @@ def test_upgrade_preserves_manual_miner_hold_while_verifying_new_runtime(tmp_pat
         name="krig_miner", is_manual_override=True, lifecycle_owner="coordinator"
     )
     StateCodec.save_atomic(durable_state, paths.state)
+    legacy_launcher = _write_legacy_launcher(paths)
     task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+                       f'powershell.exe -File "{legacy_launcher}"', True)
     tasks = MemoryTasks()
     tasks.items[task.name] = task
     manager = ManagedInstallation(paths, tasks)
@@ -298,7 +360,7 @@ def test_upgrade_preserves_manual_miner_hold_while_verifying_new_runtime(tmp_pat
     statuses = iter([old_service, None, None])
     manager._service_status = lambda: next(statuses)
     new_service = {
-        "service_state": "ready", "runtime": {**runtime_identity, "pid": 52},
+        "service_state": "ready", "runtime": {**runtime_identity, "pid": 52, "process_create_time": 20.0},
         "upstream_url": "http://127.0.0.1:1234",
         "processes": {"krig_miner": {"name": "krig_miner", "state": "stopped",
                                       "is_coordinator_owned": False}},
@@ -308,11 +370,13 @@ def test_upgrade_preserves_manual_miner_hold_while_verifying_new_runtime(tmp_pat
     monkeypatch.setattr(installation_module, "_exact_process_is_alive", lambda pid, created: False)
     monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
-    listener_identities = iter([
-        {"pid": 51, "create_time": 10.0},
-        {"pid": 52, "create_time": 20.0},
-    ])
+    listener_identities = iter([{"pid": 52, "create_time": 20.0}])
     monkeypatch.setattr(installation_module, "_listener_identity", lambda: next(listener_identities))
+    listener_details = iter([
+        _listener_details({"pid": 51, "create_time": 10.0, "executable": str(paths.python)}),
+        _listener_details(category="not-found", diagnostics=["psutil: no matching listener"]),
+    ])
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: next(listener_details))
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: {"power_limit_w": 550.0})
     monkeypatch.setattr(installation_module, "load_token", lambda: "test-token")
     monkeypatch.setattr(installation_module, "credential_doctor", lambda: _secure_credential_report())
@@ -360,8 +424,9 @@ def test_interrupted_upgrade_retries_only_after_old_owner_and_lock_are_gone(tmp_
     )
     from resource_coordinator.core.durable_state import StateCodec
     StateCodec.initialize(paths.state)
+    legacy_launcher = _write_legacy_launcher(paths)
     task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+                       f'powershell.exe -File "{legacy_launcher}"', True)
     tasks = MemoryTasks()
     tasks.items[task.name] = task
     manager = ManagedInstallation(paths, tasks)
@@ -370,13 +435,16 @@ def test_interrupted_upgrade_retries_only_after_old_owner_and_lock_are_gone(tmp_
         "source_path": str(paths.repository / "modules/resource_coordinator/resource_coordinator/__init__.py"),
         "revision": "retry-revision",
     }
-    new_service = {"service_state": "ready", "runtime": {**runtime_identity, "pid": 52},
+    new_service = {"service_state": "ready", "runtime": {**runtime_identity, "pid": 52, "process_create_time": 20.0},
                    "upstream_url": "http://127.0.0.1:1234", "processes": {}}
     manager._service_status = lambda: None
     manager._wait_for_service = lambda timeout=30.0: new_service
     monkeypatch.setattr(installation_module, "build_runtime_identity", lambda package: runtime_identity)
-    listener_results = iter([None, None, {"pid": 52, "create_time": 20.0}])
+    listener_results = iter([None, {"pid": 52, "create_time": 20.0}])
     monkeypatch.setattr(installation_module, "_listener_identity", lambda: next(listener_results))
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: _listener_details(
+        category="not-found", diagnostics=["psutil: no matching listener",
+                                           "Windows IP Helper: no matching listening endpoint"]))
     monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
     monkeypatch.setattr(installation_module, "_exact_process_is_alive", lambda pid, created: False)
     monkeypatch.setattr(installation_module, "_effective_gpu_settings", lambda: None)
@@ -432,8 +500,9 @@ def test_upgrade_never_starts_replacement_while_original_miner_pid_is_alive(tmp_
     )
     from resource_coordinator.core.durable_state import StateCodec
     StateCodec.initialize(paths.state)
+    legacy_launcher = _write_legacy_launcher(paths)
     task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
-                       f'powershell.exe -File "{paths.root / "start-coordinator.ps1"}"', True)
+                       f'powershell.exe -File "{legacy_launcher}"', True)
     tasks = MemoryTasks()
     tasks.items[task.name] = task
     manager = ManagedInstallation(paths, tasks)
@@ -447,6 +516,11 @@ def test_upgrade_never_starts_replacement_while_original_miner_pid_is_alive(tmp_
     manager._service_status = lambda: next(statuses)
     monkeypatch.setattr(installation_module, "_listener_identity",
                         lambda: {"pid": 51, "create_time": 10.0})
+    listener_details = iter([
+        _listener_details({"pid": 51, "create_time": 10.0, "executable": str(paths.python)}),
+        _listener_details(category="not-found", diagnostics=["psutil: no matching listener"]),
+    ])
+    monkeypatch.setattr(installation_module, "_listener_identity_details", lambda: next(listener_details))
     monkeypatch.setattr(installation_module.ManagedInstallation, "_coordinator_port_open", staticmethod(lambda: False))
     monkeypatch.setattr(installation_module, "_exact_process_is_alive",
                         lambda pid, created: pid == 91)
