@@ -34,7 +34,7 @@ def host_monitor_origin(gateway_url: str, host_url: str | None = None) -> str:
     return _monitor_origin(gateway_url)
 
 
-def resolve_managed_monitor_auth(origin: str) -> str | None:
+def resolve_managed_monitor_auth(origin: str, *, correlation_write: bool = False) -> str | None:
     """Attempt to acquire a scoped read capability token for a local managed Monitor."""
     parsed = urlsplit(origin)
     if parsed.hostname in {"127.0.0.1", "localhost", "::1"}:
@@ -42,17 +42,24 @@ def resolve_managed_monitor_auth(origin: str) -> str | None:
         try:
             from llm_monitor.local_client import ManagedMonitorClient
             client = ManagedMonitorClient(port=port, host=parsed.hostname)
-            return client.acquire_capability_token()
+            scopes = None
+            if correlation_write:
+                scopes = ["inference:status:read", "recording:health:read", "history:verification:read", "benchmark:correlation:write"]
+            return client.acquire_capability_token(requested_scopes=scopes)
         except Exception:
             return None
     return None
 
 
-def _build_monitor_headers(origin: str) -> dict[str, str]:
+def _build_monitor_headers(origin: str, *, correlation_write: bool = False) -> dict[str, str]:
     headers = {"Origin": origin}
     auth = os.environ.get("LLM_MONITOR_AUTHORIZATION")
     if not auth:
-        token = resolve_managed_monitor_auth(origin)
+        token = (
+            resolve_managed_monitor_auth(origin, correlation_write=True)
+            if correlation_write
+            else resolve_managed_monitor_auth(origin)
+        )
         if token:
             auth = f"Bearer {token}"
     cookie = os.environ.get("LLM_MONITOR_SESSION_COOKIE")
@@ -114,6 +121,80 @@ def request_snapshot(*, monitor_url: str, client: httpx.Client | None = None) ->
     finally:
         if own_client:
             active_client.close()
+
+
+def register_execution(
+    *,
+    monitor_url: str,
+    run_id: str,
+    task_id: str,
+    execution_id: str,
+    repetition_id: str | None = None,
+    variant_id: str | None = None,
+) -> dict[str, Any]:
+    """Register one attempt and return its one-time gateway credential."""
+    origin = _monitor_origin(monitor_url)
+    headers = _build_monitor_headers(origin, correlation_write=True)
+    try:
+        response = httpx.post(
+            f"{origin}/api/inference/v1/correlation/executions",
+            headers=headers,
+            json={
+                "run_id": run_id,
+                "task_id": task_id,
+                "execution_id": execution_id,
+                "repetition_id": repetition_id,
+                "variant_id": variant_id,
+            },
+            timeout=3.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload.get("credential"), str) or not payload["credential"]:
+            raise ValueError("credential missing")
+        return payload
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise MonitorPreflightError(f"LLM Monitor correlation registration failed: {type(error).__name__}") from error
+
+
+def complete_execution(*, monitor_url: str, execution_id: str, trial_id: str | None) -> dict[str, Any]:
+    origin = _monitor_origin(monitor_url)
+    headers = _build_monitor_headers(origin, correlation_write=True)
+    try:
+        response = httpx.post(
+            f"{origin}/api/inference/v1/correlation/executions/{quote(execution_id, safe='')}/complete",
+            headers=headers,
+            json={"trial_id": trial_id},
+            timeout=3.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("execution_id") != execution_id:
+            raise ValueError("invalid correlation completion response")
+        return payload
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise MonitorPreflightError(f"LLM Monitor correlation completion failed: {type(error).__name__}") from error
+
+
+def correlated_execution_requests(*, monitor_url: str, execution_id: str) -> dict[str, Any]:
+    origin = _monitor_origin(monitor_url)
+    headers = _build_monitor_headers(origin)
+    try:
+        response = httpx.get(
+            f"{origin}/api/inference/v1/correlation/executions/{quote(execution_id, safe='')}/requests",
+            headers=headers,
+            timeout=3.0,
+            follow_redirects=False,
+        )
+        response.raise_for_status()
+        payload = response.json()
+        if not isinstance(payload, dict) or payload.get("execution_id") != execution_id:
+            raise ValueError("invalid correlation response")
+        return payload
+    except (httpx.HTTPError, ValueError, TypeError) as error:
+        raise MonitorPreflightError(f"LLM Monitor correlation lookup failed: {type(error).__name__}") from error
 
 
 def verify_recorded_requests(*, monitor_url: str, request_ids: list[str], recording: str,

@@ -23,6 +23,7 @@ from fastapi.responses import Response, StreamingResponse
 from .inference_analysis import correlate_request_hardware
 from .inference_models import ContentSegment, InferenceRequest
 from .live_store import LiveInferenceStore
+from .inference_correlation import ExecutionCredentialRegistry
 
 MAX_REQUEST_BYTES = 4 * 1024 * 1024
 MAX_EVENT_BYTES = 64 * 1024
@@ -181,7 +182,7 @@ class RequestEventHub:
 class OpenAIInferenceGateway:
     """Forward chat completions to a fixed loopback upstream and observe this request."""
 
-    def __init__(self, upstream: str, store: LiveInferenceStore, events: RequestEventHub, *, server_instance_id: str = "lmstudio-gateway", client: httpx.AsyncClient | None = None, timing_sink: Callable[[dict[str, Any]], None] | None = None, capture_enabled: bool = True, recorder: Any | None = None) -> None:
+    def __init__(self, upstream: str, store: LiveInferenceStore, events: RequestEventHub, *, server_instance_id: str = "lmstudio-gateway", client: httpx.AsyncClient | None = None, timing_sink: Callable[[dict[str, Any]], None] | None = None, capture_enabled: bool = True, recorder: Any | None = None, correlation_registry: ExecutionCredentialRegistry | None = None) -> None:
         self.upstream = validate_gateway_upstream(upstream)
         self.store = store
         self.events = events
@@ -190,6 +191,7 @@ class OpenAIInferenceGateway:
         self.timing_sink = timing_sink
         self.capture_enabled = capture_enabled
         self.recorder = recorder
+        self.correlation_registry = correlation_registry or ExecutionCredentialRegistry()
 
     async def close(self) -> None:
         await self._client.aclose()
@@ -223,6 +225,14 @@ class OpenAIInferenceGateway:
                     raise HTTPException(status_code=413, detail="Request body exceeds gateway limit")
                 body.extend(chunk)
             body = bytes(body)
+            trace_token = request.headers.get("x-benchmark-correlation-token")
+            correlation = None
+            if trace_token is not None:
+                if not self.capture_enabled:
+                    raise HTTPException(status_code=503, detail="Correlated requests require gateway capture")
+                correlation = self.correlation_registry.verify_and_record(trace_token, request_id)
+                if correlation is None:
+                    raise HTTPException(status_code=403, detail="Benchmark correlation credential is invalid or expired")
             timing.mark("body_read_ms")
             try:
                 payload = json.loads(body)
@@ -299,6 +309,7 @@ class OpenAIInferenceGateway:
                     "token_usage": "unavailable",
                     "request_timing": "gateway_timed",
                 },
+                benchmark_correlation=correlation.to_dict() if correlation is not None else None,
                 content=segments,
             )
             self.store.add_request(record)

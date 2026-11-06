@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 from pathlib import Path
 import time
-import pytest
 from fastapi.testclient import TestClient
 
 from llm_monitor.local_control import (
@@ -26,6 +25,7 @@ def test_capability_manager_issue_and_verify():
     assert token_record.token
     assert token_record.expires_in_seconds == 5.0
     assert "inference:models:read" in token_record.issued_scopes
+    assert "benchmark:correlation:write" not in token_record.issued_scopes
 
     # Valid verification
     assert manager.verify_token(token_record.token, "inference:models:read", "inst-test-123") is True
@@ -51,6 +51,14 @@ def test_capability_manager_expiration():
     assert manager.verify_token(token_record.token, "inference:models:read", "inst-exp-1") is True
     time.sleep(0.15)
     assert manager.verify_token(token_record.token, "inference:models:read", "inst-exp-1") is False
+
+
+def test_correlation_write_scope_is_explicit_and_scoped():
+    manager = LocalCapabilityManager(instance_id="inst-correlation")
+    token = manager.issue_read_capability(["benchmark:correlation:write"], ttl_seconds=30)
+    assert token.issued_scopes == ["benchmark:correlation:write"]
+    assert manager.verify_token(token.token, "benchmark:correlation:write", "inst-correlation")
+    assert not manager.verify_token(token.token, "history:verification:read", "inst-correlation")
 
 
 def test_local_control_ipc_round_trip(tmp_path: Path):

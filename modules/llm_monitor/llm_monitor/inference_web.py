@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel
 
 from .gateway import OpenAIInferenceGateway, RequestEventHub
@@ -19,6 +19,18 @@ SESSION_COOKIE_NAME = "llm_monitor_session"
 
 class RecordingModePayload(BaseModel):
     mode: str
+
+
+class CorrelationExecutionPayload(BaseModel):
+    run_id: str
+    task_id: str
+    execution_id: str
+    repetition_id: str | None = None
+    variant_id: str | None = None
+
+
+class CorrelationCompletionPayload(BaseModel):
+    trial_id: str | None = None
 
 
 def create_inference_web_app(
@@ -308,6 +320,38 @@ def create_inference_web_app(
             "request": data,
         }
 
+    if gateway is not None:
+        @router.post("/correlation/executions")
+        def register_correlation_execution(payload: CorrelationExecutionPayload) -> dict[str, Any]:
+            try:
+                context, credential = gateway.correlation_registry.register(
+                    payload.run_id,
+                    payload.task_id,
+                    payload.execution_id,
+                    repetition_id=payload.repetition_id,
+                    variant_id=payload.variant_id,
+                )
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail="Correlation execution could not be registered") from error
+            return {"context": context.to_dict(), "credential": credential}
+
+        @router.post("/correlation/executions/{execution_id}/complete")
+        def complete_correlation_execution(execution_id: str, payload: CorrelationCompletionPayload) -> dict[str, Any]:
+            try:
+                gateway.correlation_registry.complete(execution_id, payload.trial_id)
+            except (KeyError, ValueError) as error:
+                raise HTTPException(status_code=404, detail="Correlation execution not found") from error
+            if recorder is not None:
+                if not recorder.flush(timeout=3.0):
+                    raise HTTPException(status_code=503, detail="Inference correlation history is not durable yet")
+                current = gateway.correlation_registry.requests(execution_id)
+                recorder.store.update_execution_correlation(execution_id, current["context"])
+            return gateway.correlation_registry.requests(execution_id)
+
+        @router.get("/correlation/executions/{execution_id}/requests")
+        def correlation_execution_requests(execution_id: str) -> dict[str, Any]:
+            return gateway.correlation_registry.requests(execution_id)
+
     app = create_app(
         api_router=router,
         static_dir=static_dir,
@@ -317,9 +361,12 @@ def create_inference_web_app(
 
     if capability_manager is not None:
         def verify_capability(token: str, request: Request) -> bool:
+            path = request.url.path
+            if request.method == "POST" and path.startswith("/api/inference/v1/correlation/executions"):
+                scope = "benchmark:correlation:write"
+                return capability_manager.verify_token(token, scope, capability_manager.instance_id)
             if request.method != "GET":
                 return False
-            path = request.url.path
             if path == "/api/inference/v1/models":
                 scope = "inference:models:read"
             elif path == "/api/inference/v1/status":
@@ -328,6 +375,8 @@ def create_inference_web_app(
                 scope = "recording:health:read"
             elif path == "/api/inference/v1/requests":
                 scope = "requests:summary:read"
+            elif path.startswith("/api/inference/v1/correlation/executions/"):
+                scope = "history:verification:read"
             elif path.startswith("/api/inference/v1/history"):
                 scope = "history:verification:read"
             else:

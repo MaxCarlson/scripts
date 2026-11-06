@@ -10,6 +10,7 @@ import pytest
 
 from llm_monitor.gateway import MAX_REQUEST_BYTES, OpenAIInferenceGateway, RequestEventHub, _frame_boundary, _usage_payload, validate_gateway_upstream
 from llm_monitor.live_store import LiveInferenceStore
+from llm_monitor.inference_correlation import ExecutionCredentialRegistry
 
 
 def test_gateway_rejects_non_loopback_and_unpinned_upstreams():
@@ -505,3 +506,35 @@ def test_completed_request_sparse_scope_labeling():
     assert len(requests) == 1
     # When no samples are in the store, gpu_scope should be None (unavailable)
     assert requests[0].gpu_scope is None
+
+
+@pytest.mark.asyncio
+async def test_gateway_verifies_execution_token_records_request_and_strips_upstream():
+    seen = []
+    def upstream(request):
+        seen.append(dict(request.headers))
+        return httpx.Response(200, json={"choices": [{"message": {"role": "assistant", "content": "ok"}}]})
+
+    registry = ExecutionCredentialRegistry()
+    context, token = registry.register("run-1", "task-1", "exec-1")
+    store = LiveInferenceStore()
+    client = httpx.AsyncClient(transport=httpx.MockTransport(upstream))
+    gateway = OpenAIInferenceGateway(
+        "http://127.0.0.1:1234", store, RequestEventHub(), client=client, correlation_registry=registry
+    )
+    app = FastAPI()
+    app.include_router(gateway.router())
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://test") as test_client:
+        headers = {"x-benchmark-correlation-token": token}
+        response = await test_client.post("/v1/chat/completions", json={"model": "m", "messages": []}, headers=headers)
+        assert response.status_code == 200
+        forged = await test_client.post(
+            "/v1/chat/completions", json={"model": "m", "messages": []},
+            headers={"x-benchmark-correlation-token": "forged-token-which-is-long-enough"},
+        )
+        assert forged.status_code == 403
+    recorded = store.requests()[0]
+    assert recorded.benchmark_correlation == context.to_dict()
+    assert registry.requests("exec-1")["request_ids"] == [recorded.request_id]
+    assert len(seen) == 1
+    assert "x-benchmark-correlation-token" not in seen[0]

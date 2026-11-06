@@ -72,6 +72,10 @@ P06 compiles an authorized feature configuration into a deterministic, non-mutat
 |---|---|---|
 | **P03 Identity** | Must reference `lio-experiment-v1` and `lio-variant-v1` digests. | `contracts.py` fingerprint verification. |
 | **P04 Evidence** | Must emit strictly typed `lio-evidence-v1` observations. | `contracts.py` `validate_evidence()`. |
+
+### P04 request ownership evidence
+
+Request ownership is established outside `lio-evidence-v1` by `benchmark-inference-correlation-v1`: Monitor-issued execution credentials bind a run/task/attempt context to gateway-assigned request IDs, then reconcile the native Harbor trial ID after execution. The authenticated correlation API and schema-v4 history carry only identifiers and verification provenance. A `monitor_request_observations` adapter may consume requests only after this upstream relation is verified. Correlation does not change the evidence stages and cannot promote configuration or request parameters to `effective`.
 | **P02 Baseline** | Must never mutate or override the sealed P02 baseline reference. | Fixed baseline comparison checks. |
 | **P07 Gate** | No-op parity verification must pass before any optimized feature run. | Matched control trial comparison. |
 | **Safety / Isolation**| No runtime modification without explicit receipt journal and rollback. | Fail-closed capability and receipt validation. |

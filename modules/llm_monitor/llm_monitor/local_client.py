@@ -71,10 +71,10 @@ class ManagedMonitorClient:
         self._descriptor = desc
         return desc
 
-    def acquire_capability_token(self, force_refresh: bool = False) -> str:
+    def acquire_capability_token(self, force_refresh: bool = False, requested_scopes: list[str] | None = None) -> str:
         """Acquire a scoped read capability token, reusing cached unexpired token if valid."""
         now = time.time()
-        if not force_refresh and self._capability_token and now < (self._token_expires_at - 5.0):
+        if requested_scopes is None and not force_refresh and self._capability_token and now < (self._token_expires_at - 5.0):
             return self._capability_token
 
         desc = self.ensure_descriptor()
@@ -94,7 +94,7 @@ class ManagedMonitorClient:
         client = LocalControlClient(endpoint, desc.instance_id)
         try:
             resp = client.issue_read_capability(
-                requested_scopes=[
+                requested_scopes=requested_scopes or [
                     "inference:models:read",
                     "inference:status:read",
                     "recording:health:read",

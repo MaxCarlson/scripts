@@ -234,6 +234,8 @@ def build_manifest(
             "repetition": study_repetition,
             "randomization_seed": study_seed,
         }
+    if llm_monitor and agent.lower() == "opencode" and study_adapter:
+        result["benchmark_inference_correlation"] = "benchmark-inference-correlation-v1"
     digest_payload = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
     result["manifest_sha256"] = hashlib.sha256(digest_payload).hexdigest()
     return result
@@ -507,7 +509,12 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
             else None,
             "tasks_with_observed_requests": sum(bool(item.get("monitor_request_ids")) for item in tasks),
             "planned_tasks": len(tasks),
-            "task_request_correlation": "unavailable_without_trustworthy_request_id_link",
+            "task_request_correlation": (
+                "execution-scoped-correlation-v1"
+                if any(item.get("execution_id") for item in tasks)
+                else "unavailable_without_trustworthy_request_id_link"
+            ),
+            "tasks_with_eligible_inference_evidence": sum(item.get("evidence_eligibility") == "eligible" for item in tasks),
         },
         "recording_configuration": checkpoint.get("recording_configuration"),
         "recording_health": (
@@ -537,6 +544,9 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
                     "log",
                     "monitor_request_ids",
                     "monitor_requests",
+                    "execution_id",
+                    "evidence_eligibility",
+                    "correlation_error",
                 )
                 if row.get(key) is not None
             }
@@ -550,20 +560,32 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
 def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     manifest = store.manifest
     from .suite_output import capture_process_output
-    from .suite_monitor import host_monitor_origin, request_snapshot, validate_monitor, verify_recorded_requests
+    from .suite_monitor import (
+        complete_execution,
+        correlated_execution_requests,
+        host_monitor_origin,
+        register_execution,
+        request_snapshot,
+        validate_monitor,
+        verify_recorded_requests,
+    )
 
     log_path = store.run_dir / "logs" / f"{task}.log"
     saved: Path | None = None
     started_at = _now()
+    strict_correlation = manifest.get("benchmark_inference_correlation") == "benchmark-inference-correlation-v1"
+    execution_id = str(uuid4()) if strict_correlation else None
     store.update_task(
         task,
         status="running",
         started_at=started_at,
         log=str(log_path),
+        **({"execution_id": execution_id} if execution_id else {}),
         **({"prompt_policy": manifest["prompt_policy"]} if manifest.get("study_adapter") else {}),
     )
     try:
         monitor_before = None
+        correlation_registration = None
         if manifest["provenance"]["llm_monitor_required"]:
             host_url = host_monitor_origin(
                 manifest["provenance"]["monitor_url"], manifest["provenance"].get("monitor_host_url")
@@ -576,7 +598,20 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 recording=manifest["provenance"]["recording_required"],
                 api_format=manifest["provenance"]["effective_api_format"],
             )
-            monitor_before = request_snapshot(monitor_url=host_url)
+            if strict_correlation:
+                correlation_registration = register_execution(
+                    monitor_url=host_url,
+                    run_id=store.run_dir.name,
+                    task_id=task,
+                    execution_id=execution_id,
+                    repetition_id=(
+                        str(manifest["study_design"]["repetition"])
+                        if manifest.get("study_design", {}).get("repetition") is not None
+                        else None
+                    ),
+                )
+            else:
+                monitor_before = request_snapshot(monitor_url=host_url)
         plan = plan_benchmark(
             manifest["dataset"],
             agent=manifest["agent"],
@@ -610,6 +645,7 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 study_design=manifest.get("study_design"),
                 study_manifest=manifest if manifest.get("study_adapter") else None,
                 study_run_dir=store.run_dir if manifest.get("study_adapter") else None,
+                correlation_credential=correlation_registration.get("credential") if correlation_registration else None,
             )
         status = (
             "infrastructure_invalid"
@@ -622,6 +658,11 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
         )
         observed_revision = summary.get("dataset_source_revision")
         if observed_revision != manifest["source_revision"]:
+            if strict_correlation and execution_id is not None:
+                try:
+                    complete_execution(monitor_url=host_url, execution_id=execution_id, trial_id=None)
+                except Exception:
+                    pass
             return {
                 "status": "infrastructure_invalid",
                 "trial_id": None,
@@ -630,6 +671,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
                 "native_artifacts": [str(saved)],
                 "error_code": "SOURCE_REVISION_MISMATCH",
                 "error_detail": f"expected {manifest['source_revision']}; Harbor recorded {observed_revision}",
+                "execution_id": execution_id,
+                "evidence_eligibility": "ineligible_incomplete_correlation" if strict_correlation else None,
             }
         trial_id = None
         duration = content_fingerprint = None
@@ -647,7 +690,50 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
             duration = content_fingerprint = None
         request_ids: list[str] = []
         recording_coverage = None
-        if monitor_before is not None:
+        evidence_eligibility = "not_applicable"
+        correlation_error = None
+        correlated_rows: list[dict[str, Any]] = []
+        if strict_correlation:
+            try:
+                complete_execution(
+                    monitor_url=host_url, execution_id=execution_id, trial_id=trial_id
+                )
+                correlation = correlated_execution_requests(monitor_url=host_url, execution_id=execution_id)
+                raw_request_ids = correlation.get("request_ids")
+                if not isinstance(raw_request_ids, list) or any(not isinstance(item, str) for item in raw_request_ids):
+                    raise ValueError("Monitor returned invalid correlated request IDs")
+                request_ids = raw_request_ids
+                correlated_rows = [{"request_id": item} for item in request_ids]
+                evidence_eligibility = (
+                    "eligible"
+                    if request_ids
+                    and trial_id is not None
+                    and correlation.get("trial_id") == trial_id
+                    and correlation.get("verification_status") == "verified"
+                    else "ineligible_incomplete_correlation"
+                )
+                if manifest["provenance"]["recording_required"] != "off" and request_ids:
+                    recording_coverage = verify_recorded_requests(
+                        monitor_url=host_url,
+                        request_ids=request_ids,
+                        recording=manifest["provenance"]["recording_required"],
+                    )
+                elif request_ids and evidence_eligibility == "eligible":
+                    evidence_eligibility = "ineligible_recording_disabled"
+                post_health = validate_monitor(
+                    agent=manifest["agent"],
+                    model=manifest["model"],
+                    monitor_url=manifest["provenance"]["monitor_url"],
+                    monitor_host_url=host_url,
+                    recording=manifest["provenance"]["recording_required"],
+                    api_format=manifest["provenance"]["effective_api_format"],
+                )
+                if post_health["dropped_observations"] != monitor_health["dropped_observations"]:
+                    evidence_eligibility = "ineligible_capture_dropped"
+            except Exception as error:
+                correlation_error = f"{type(error).__name__}: {error}"
+                evidence_eligibility = "ineligible_incomplete_correlation"
+        elif monitor_before is not None:
             monitor_health_after = validate_monitor(
                 agent=manifest["agent"],
                 model=manifest["model"],
@@ -693,9 +779,17 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
             "error_code": "HARBOR_INFRASTRUCTURE_ERROR" if status == "infrastructure_invalid" else None,
             "monitor_request_ids": request_ids,
             "recording_coverage": recording_coverage,
-            "monitor_requests": new_requests if monitor_before is not None else [],
+            "execution_id": execution_id,
+            "evidence_eligibility": evidence_eligibility,
+            "correlation_error": correlation_error,
+            "monitor_requests": correlated_rows if strict_correlation else (new_requests if monitor_before is not None else []),
         }
     except Exception as error:  # subprocess and result parsing boundary
+        if strict_correlation and execution_id is not None:
+            try:
+                complete_execution(monitor_url=host_url, execution_id=execution_id, trial_id=None)
+            except Exception:
+                pass
         with log_path.open("a", encoding="utf-8", errors="replace") as logfile:
             logfile.write(f"{type(error).__name__}: {error}\n")
         from .suite_monitor import MonitorPreflightError
@@ -713,6 +807,8 @@ def _run_one(store: RunStore, task: str) -> dict[str, Any]:
             ),
             "error_detail": str(error),
             "native_artifacts": [str(saved)] if saved else [],
+            "execution_id": execution_id,
+            "evidence_eligibility": "ineligible_incomplete_correlation" if strict_correlation else None,
         }
 
 

@@ -231,6 +231,7 @@ def execute_harbor_run(
     study_design: dict[str, Any] | None = None,
     study_manifest: dict[str, Any] | None = None,
     study_run_dir: Path | None = None,
+    correlation_credential: str | None = None,
 ) -> tuple[Path, dict[str, Any]]:
     """
     Execute a planned Harbor benchmark under explicit authorization and import results.
@@ -319,6 +320,10 @@ def execute_harbor_run(
     )
 
     run_env = os.environ.copy()
+    if correlation_credential is not None:
+        if not study_adapter or plan.agent != "opencode" or not correlation_credential.isascii() or not 20 <= len(correlation_credential) <= 128:
+            raise PreflightCheckError("execution correlation requires a valid isolated OpenCode v1 credential")
+        run_env["BENCHMARK_CORRELATION_TOKEN"] = correlation_credential
     if os.name == "nt":
         run_env["PYTHONUTF8"] = "1"
         run_env["PYTHONIOENCODING"] = "utf-8"
