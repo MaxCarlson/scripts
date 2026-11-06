@@ -97,13 +97,24 @@ def test_dialog_accepts_multiline_paste_then_queue_choice() -> None:
     for key in "https://two.example/b#scene-1171754":
         dialog.feed(key)
 
-    assert dialog.feed("\x13") == "input"
+    assert dialog.feed("\x13") is None
+    assert dialog.stage == "input"
+    assert dialog.feed("\t") == "input"
+    assert dialog.stage == "schedule"
     assert dialog.feed("1") == "queue"
     assert dialog.completed
     assert dialog.buffer.splitlines() == [
         "https://one.example/a",
         "https://two.example/b#scene-1171754",
     ]
+    assert dialog.display_lines()[0] == "SCHEDULE SUBMISSIONS"
+
+
+def test_dialog_shows_tab_to_continue_without_control_s():
+    dialog = SubmissionDialog()
+
+    assert "Tab to continue" in dialog.display_lines()[-1]
+    assert "Ctrl+S" not in dialog.display_lines()[-1]
 
 
 def test_dialog_requests_worker_count_after_stage_two() -> None:

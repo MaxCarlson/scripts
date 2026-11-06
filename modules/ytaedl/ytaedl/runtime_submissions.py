@@ -195,7 +195,7 @@ class SubmissionDialog:
             buffer_lines = self.buffer.splitlines()[-3:]
             lines = ["SUBMIT WORK: one URL or existing URL-file path per line"]
             lines.extend(buffer_lines or [""])
-            lines.append("Ctrl+S to continue · Esc to cancel")
+            lines.append("Tab to continue · Enter for another line · Esc to cancel")
         elif self.stage == "schedule":
             lines = ["SCHEDULE SUBMISSIONS", "1 Queue all items", "2 Start additional workers", "Esc to cancel"]
         else:
@@ -210,7 +210,7 @@ class SubmissionDialog:
             self.cancelled = True
             return "cancel"
         if self.stage == "input":
-            if key in ("\x13",):  # Ctrl+S validates a pasted multiline block.
+            if key == "\t":  # Tab avoids Ctrl+S terminal flow-control behavior.
                 if not self.buffer.strip():
                     self.error = "Enter one or more URLs or existing URL-file paths."
                     return None
