@@ -22,12 +22,13 @@ Investigated FlitKey, Lintalist, and Espanso. FlitKey documents per-snippet hotk
 - Worktree: `.worktrees/cli-managed-snippets`
 - Branch: `codex/cli-managed-snippets-20261106`
 - Base: `58dbc4775fbc1bd429db489d386311ee0795befc`
+- Feature commit: `91b2dd30` (`feat(snips): add CLI-managed Windows snippets`), pushed to `origin/codex/cli-managed-snippets-20261106`.
 - Implemented the schema, atomic config/runtime deployment with rollback, CLI, AutoHotkey backend discovery/install, HKCU Run startup, help registry entry, tests, and user documentation.
 - The backend reuses an existing AutoHotkey v2, checks Scoop install roots, and installs in WinGet → Scoop Extras → official installer order. The official fallback selects the numerically newest stable v2 setup and uses its `/silent` switch.
 - On 2026-11-06, AutoHotkey v2.0.30.0 was detected at `C:\Program Files\AutoHotkey\v2\AutoHotkey64.exe`. `snips install --apply --json` refreshed the runtime at `C:\Users\mcarls\AppData\Local\snips\runtime`, confirmed the existing startup value without replacing it, and started PID 132292. Subsequent `status` and `doctor` reported the process running, schema-1 config valid with two bindings, and startup configured.
 - Focused suite: `python -m pytest -q -o "addopts=-ra" --basetemp=.pytest_tmp_root/final-suite` → 25 passed, including generated AHK parse/registration in validation mode. `ruff check` and `ruff format --check --line-length 120` pass. `compileall` and `--help` for every subcommand pass.
 - Interactive Notepad/browser/editor tests and clipboard/caret interaction checks were not performed because the user prohibited further computer UI interaction after an earlier AutoHotkey popup. No GUI validation is claimed.
 
-## Next action
+## Handoff
 
-Complete final task-only review, update the checklist, and commit/push the requested task branch. Keep the worktree because it is the user's reviewable feature branch.
+Implementation, validation, task-only review, commit, and task-branch push are complete. Keep the worktree available for review. No merge to `main` was performed.

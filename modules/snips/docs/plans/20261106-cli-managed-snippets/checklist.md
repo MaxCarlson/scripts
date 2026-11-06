@@ -8,4 +8,4 @@
 - [x] Add scripts-help registry entry and user documentation.
 - [x] Run focused Python tests and AHK v2 syntax/runtime registration checks.
 - [ ] Perform Notepad and browser editor validation — not run because the user prohibited further computer UI interaction; no interactive validation is claimed.
-- [ ] Review task-only diff, commit task branch, and push only to configured upstream per repository workflow.
+- [x] Review task-only diff, commit task branch, and push only to configured upstream per repository workflow.
