@@ -208,6 +208,8 @@ The Resource Coordinator CLI can inspect or reconcile its own installation.
 `setup` is a dry run unless `--apply` is supplied. Setup preserves existing
 configuration, state, and logs. Scheduled Task changes may prompt for UAC;
 noninteractive calls fail with an elevation diagnostic instead of prompting.
+If the copied template still has a placeholder wallet/worker or no miner is
+configured, setup returns `degraded` and names the missing mining configuration.
 
 ```powershell
 resource-coordinator setup
@@ -229,8 +231,10 @@ do not launch KRig directly. The service task's configured run level supplies
 the NVIDIA privileges needed by its child process. `doctor` compares the
 configured and observed GPU power limit and reports task inventory errors as
 degraded health. Teardown preserves the configuration, credential, journal,
-and log files; it refuses to proceed if coordinator state is unavailable or
-inference is active or pending.
+and log files. If the service is unreachable, teardown requires a readable,
+valid idle journal and an unlocked instance lock; it refuses to act when a
+coordinator-owned miner is still running because the service's graceful
+process-group handle is unavailable.
 
 ## Miner, gaming, and log controls
 
@@ -240,9 +244,8 @@ credential under `%USERPROFILE%\\.resource_coordinator\\secrets` on Windows
 (or `~/.resource_coordinator/secrets` elsewhere), with Windows ACLs limited to
 the current user and LocalSystem. The value is never printed or passed in
 process arguments. `RESOURCE_COORDINATOR_OPERATOR_TOKEN` remains an optional
-advanced override. A SYSTEM startup launcher must set
-`RESOURCE_COORDINATOR_TOKEN_FILE` to this same file path; run `auth doctor`
-under both identities before enabling that task.
+advanced override. Setup verifies that the credential file ACL grants the
+interactive user and LocalSystem access before registering startup.
 
 Credential diagnostics and recovery do not call the coordinator:
 

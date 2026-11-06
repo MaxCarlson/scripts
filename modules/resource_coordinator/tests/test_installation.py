@@ -115,7 +115,8 @@ def test_setup_preserves_existing_configuration_and_is_idempotent(tmp_path, monk
     first = manager.setup(apply=True, mode="logon")
     second = manager.setup(apply=True, mode="logon")
 
-    assert first["status"] == "applied"
+    assert first["status"] == "degraded"
+    assert first["mining_warning"] is not None
     assert paths.config.read_bytes() == original
     assert paths.state.exists() is False
     assert paths.launcher.read_text(encoding="utf-8").startswith(f"# {TASK_MARKER}")
@@ -133,9 +134,33 @@ def test_setup_copies_template_only_when_configuration_is_missing(tmp_path, monk
     manager._service_status = lambda: None
     manager._wait_for_service = lambda timeout=30.0: {"service_state": "ready"}
 
-    manager.setup(apply=True)
+    result = manager.setup(apply=True)
 
     assert paths.config.read_bytes() == template.read_bytes()
+    assert result["status"] == "degraded"
+    assert "No miner process" in result["mining_warning"]
+
+
+def test_setup_marks_valid_miner_identity_as_applied(tmp_path, monkeypatch):
+    paths, template = make_paths(tmp_path)
+    paths.root.mkdir(parents=True)
+    paths.config.write_text(
+        "version: '1.0'\nprocesses:\n  krig_miner:\n    backend: fake\n"
+        "    arguments: ['--user', 'wallet/worker']\npolicies: []\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(paths.token))
+    monkeypatch.setattr("resource_coordinator.installation.load_or_create_token", lambda: "not printed")
+    monkeypatch.setattr("resource_coordinator.installation.credential_doctor", _secure_credential_report)
+    manager = ManagedInstallation(paths, MemoryTasks(), template=template)
+    manager._service_status = lambda: None
+    manager._wait_for_service = lambda timeout=30.0: {"service_state": "ready"}
+
+    result = manager.setup(apply=True)
+
+    assert result["status"] == "applied"
+    assert result["miner_identity_configured"] is True
+    assert result["mining_warning"] is None
 
 
 def test_setup_refuses_to_overwrite_unmarked_managed_launcher(tmp_path, monkeypatch):
@@ -212,7 +237,7 @@ def test_startup_install_registers_task_without_starting_service(tmp_path, monke
 
     result = manager.startup("install", apply=True, mode="logon")
 
-    assert result["status"] == "applied"
+    assert result["status"] == "degraded"
     assert result["service_activation"] == "not-started-by-startup-command"
     assert tasks.start_calls == []
 

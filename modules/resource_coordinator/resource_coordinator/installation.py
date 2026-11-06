@@ -428,15 +428,26 @@ class ManagedInstallation:
                         activation = "running-older-api"
                 except httpx.HTTPError:
                     activation = "running-api-unverified"
+        miner_name = _configured_miner(self.paths.config)
+        has_miner_process = any(
+            "miner" in name.casefold() or "krig" in name.casefold() for name in config.processes
+        )
+        mining_warning = None
+        if not has_miner_process:
+            mining_warning = "No miner process is configured; mining will not start until configuration is supplied."
+        elif miner_name is None:
+            mining_warning = "Miner account is still a placeholder; mining will not start until it is configured."
+        successful_activation = activation in {
+            "already-running", "started", "not-started-by-startup-command"
+        }
         return {
-            "status": "applied" if activation in {
-                "already-running", "started", "not-started-by-startup-command"
-            } else "degraded",
+            "status": "applied" if successful_activation and mining_warning is None else "degraded",
             "created": created,
             "task": asdict(task),
             "config_path": str(self.paths.config),
             "processes_configured": sorted(config.processes),
-            "miner_identity_configured": _configured_miner(self.paths.config) is not None,
+            "miner_identity_configured": miner_name is not None,
+            "mining_warning": mining_warning,
             "service_activation": activation,
             "preserved": [str(self.paths.state), str(self.paths.logs)],
         }
