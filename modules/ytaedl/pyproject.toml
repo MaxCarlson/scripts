@@ -4,7 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "ytaedl"
-version = "2.16.0"
+version = "2.17.0"
+# 2.17.0 — MINOR: add resumable AEBN historical scene reconciliation and guarded replacement review.
 # 2.16.0 — MINOR: accept durable runtime submissions and grow manager workers from the TUI.
 # 2.15.0 — MINOR: pass AEBN scene IDs explicitly and fail closed on malformed scene URL fragments.
 # Version history (MAJOR.MINOR.PATCH per MODULE_STANDARDS.md):

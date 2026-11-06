@@ -1,4 +1,4 @@
-<!-- version: 2.16.0 -->
+<!-- version: 2.17.0 -->
 # ytaedl
 
 `ytaedl` is a batch download manager for URL text files. It coordinates multiple worker processes, tracks progress from `yt-dlp` and AEBN downloaders, and can optionally move completed MP4 files from a staging/proxy disk to the final media destination.
@@ -13,6 +13,7 @@ ytaedl cleanup  index   [options]    # Rebuild domain URL index
 ytaedl urls     [options]            # URL file scanning and stats
 ytaedl archive  [options]            # Archive file management
 ytaedl summary  [options]            # Display active instance stats and locks
+ytaedl reconcile-aebn [stage]         # Replace historical full movies with verified scenes
 ```
 
 Run `ytaedl <subcommand> --help` for the full option list of each subcommand.
@@ -106,6 +107,71 @@ Each manager instance periodically writes its runtime, active workers count, com
 The `summary` command reads these files, automatically archives any stale files from dead or unresponsive managers, and displays a color-coded, aligned grid showing each active manager instance and its held locks grouped by parent directory.
 
 Total stats files (active + archived) are capped at 50, automatically deleting the oldest archived files on startup.
+
+## AEBN Historical Scene Reconciliation
+
+Use reconciliation when an AEBN scene URL was historically marked complete even
+though ytaedl saved the full movie. The workflow reads ordinary scene URL files
+with their original `#scene-<id>` fragments, resolves IDs from AEBN movie
+metadata, inventories only the roots you specify, downloads missing scenes into
+a separate replacement directory, and verifies each output before any original
+can be approved.
+
+Start with a read-only scan (metadata requests are made unless `--offline` is
+used):
+
+The Python environment that runs `ytaedl` must also be able to import the
+repository's `aebn_dl` package, because scene replacement runs
+`python -m aebn_dl.cli` in that same environment. From the repository root,
+install both packages into the active environment when needed:
+
+```powershell
+python -m pip install -e modules/ytaedl -e modules/aebndl_module
+```
+
+```powershell
+ytaedl reconcile-aebn scan `
+  -f 'C:\downloads\aebn-scenes.txt' `
+  -L 'B:\stars' `
+  -a 'C:\downloads\archive' `
+  -p 'C:\downloads\reconcile\state.sqlite'
+```
+
+Each stage is explicit and resumable:
+
+```powershell
+ytaedl reconcile-aebn status -p 'C:\downloads\reconcile\state.sqlite'
+ytaedl reconcile-aebn download -p 'C:\downloads\reconcile\state.sqlite' -n
+ytaedl reconcile-aebn download -p 'C:\downloads\reconcile\state.sqlite' --apply -t 2
+ytaedl reconcile-aebn verify -p 'C:\downloads\reconcile\state.sqlite'
+ytaedl reconcile-aebn review -p 'C:\downloads\reconcile\state.sqlite'
+ytaedl reconcile-aebn archive-sync -p 'C:\downloads\reconcile\state.sqlite' -n
+ytaedl reconcile-aebn delete -p 'C:\downloads\reconcile\state.sqlite'
+```
+
+Replacement downloads use the installed `aebn_dl` downloader with an explicit
+`-I <scene-id>` argument. They are isolated under
+`<download-root>/AEBN Scene Replacements/<movie-id>` and are not suppressed by
+old ytaedl archive entries. The SQLite database uses schema version 1 and WAL;
+it stores metadata, source lines, file identities, download/verification state,
+approvals, and an append-only event journal. `export -f csv` or `export -j`
+produces reviewable reports.
+
+Full-movie matching requires title/studio token evidence and a plausible
+movie-length probe. Weaker or colliding matches remain ambiguous and require
+manual identity confirmation. A historical archive status is never verification
+evidence. Every requested scene linked to an original must verify before that
+original can be approved. Approval is bound to the original file identity and
+replacement evidence; changed or missing evidence makes it stale.
+
+Removal is a separate operation. It defaults to a dry-run and, after recorded
+per-file approval, `--apply --confirm 'DELETE N'` moves originals into a
+same-volume `.ytaedl-reconcile-quarantine` directory. Quarantine is reversible
+and does not itself free disk space. Permanent deletion requires both
+`--permanent` and `--confirm-permanent 'PERMANENTLY DELETE N'`. The tool never
+falls back from quarantine to permanent removal. Archive sync is separate and
+uses the existing source-file and domain-index locks; it defers when a lock is
+held. Scans do not modify archives, indexes, or media.
 
 ## yt-dlp Worker Defaults
 

@@ -2,17 +2,17 @@
 
 ## Current Branch
 
-`ytaedl-summary-subcommand-20260622-1417`
+`codex/aebn-historical-reconciliation-20261106`
 
 ## Active Stage / Plan
 
-Manual validation pending for the startup-loading indicator used during domain-index rebuilds.
+Implementing the AEBN historical download reconciliation workflow.
 
-* Plan: [00_implementation-plan.md](plans/20260719-0000_startup-loading-indicator/00_implementation-plan.md)
-* Status: [STATUS.md](plans/20260719-0000_startup-loading-indicator/STATUS.md)
-* Checklist: [checklist.md](plans/20260719-0000_startup-loading-indicator/checklist.md)
+* Plan: [00-implementation-plan.md](plans/20261106-aebn-historical-reconciliation/00-implementation-plan.md)
+* Status: [STATUS.md](plans/20261106-aebn-historical-reconciliation/STATUS.md)
+* Checklist: [checklist.md](plans/20261106-aebn-historical-reconciliation/checklist.md)
 
 ## Verification and Commands
 
-* pytest command: `pytest modules/ytaedl/tests -q`
-* Latest result: `350 passed, 1 skipped` on 2026-07-19.
+* Focused test command: `pytest tests/aebn_reconcile_test.py -q` (run from `modules/ytaedl`).
+* No production scan, media download, archive update, or deletion has been performed.
