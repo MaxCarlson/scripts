@@ -48,12 +48,14 @@ class Downloader:
         keep_logs: bool = False,
         json_output: bool = False,
         no_part: bool = False,
+        scene_id: str | None = None,
     ):
         """
         Args:
             url: The URL of the movie.
             target_height: The desired height of the movie in pixels.
             scene_n: The scene number of the movie.
+            scene_id: The AEBN scene ID to resolve to a scene ordinal.
             start_segment: Set the start segment.
             end_segment: Set the end segment.
             output_dir: The directory where the output file will be saved.
@@ -82,6 +84,7 @@ class Downloader:
         self.include_performer_names = include_performer_names
         self.no_metadata = no_metadata
         self.scene_n = scene_n
+        self.scene_id = scene_id
         self.download_covers = download_covers
         self.overwrite_existing_files = overwrite_existing_files
         self.target_stream = target_stream
@@ -298,6 +301,9 @@ class Downloader:
 
             self._initialize_download()
             scraped_movie = self._scrape_movie_info()
+            if self.scene_id is not None:
+                self.scene_n = scraped_movie.scene_ordinal_for_id(self.scene_id)
+                self._json_log("scene_selected", scene_id=self.scene_id, scene_ordinal=self.scene_n)
             if not self.overwrite_existing_files:
                 existing = self._find_existing_output(scraped_movie)
                 if existing is not None:

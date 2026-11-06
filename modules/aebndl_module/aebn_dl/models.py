@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 @dataclass
 class Scene:
     performers: list
+    scene_id: str | None = None
     start_timing: int = field(init=False)
     end_timing: int = field(init=False)
     start_segment: int = field(init=False)

@@ -16,6 +16,7 @@ def download_movie(args):
         include_performer_names=args.names,
         no_metadata=args.no_metadata,
         scene_n=args.scene,
+        scene_id=getattr(args, "scene_id", None),
         start_segment=args.start_segment,
         end_segment=args.end_segment,
         download_covers=args.covers,
@@ -67,7 +68,7 @@ def log_error(future):
         logging.error(f"Exception occurred: {e}")
 
 
-def main():
+def main(argv: list[str] | None = None):
     # Make Ctrl-C work when threads are running
     signal.signal(signal.SIGINT, signal.SIG_DFL)
 
@@ -79,7 +80,9 @@ def main():
     parser.add_argument("-f", "--force-resolution", action="store_true", help="If the target resolution not available, exit with an error")
     parser.add_argument("-n", "--names", action="store_true", help="Include performer names in the output filename")
     parser.add_argument("-nm", "--no-metadata", action="store_true", help="Disable adding title and chapter markers to the output video")
-    parser.add_argument("-s", "--scene", type=int, help="Download a single scene using the relevant scene number on AEBN")
+    scene_group = parser.add_mutually_exclusive_group()
+    scene_group.add_argument("-s", "--scene", type=int, help="Download a single scene using its 1-based ordinal")
+    scene_group.add_argument("-I", "--scene-id", type=str, help="Download a single scene by its AEBN scene ID")
     parser.add_argument("-ss", "--start-segment", type=int, help="Specify the start segment")
     parser.add_argument("-es", "--end-segment", type=int, help="Specify the end segment")
     parser.add_argument("-p", "--proxy", type=str, help="Proxy to use (format: protocol://username:password@ip:port)")
@@ -102,10 +105,15 @@ def main():
     parser.add_argument("-l", "--log-level", choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"], default="INFO", help="Set the logging level (default: INFO) Any level above INFO would also disable progress bars")
     parser.add_argument("--json", action="store_true", help="Output progress and events as NDJSON. Suppresses all other output.")
     parser.add_argument("--no-part", action="store_true", help="Disable .part file creation for resumable downloads")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
-    download_movie(args)
+    try:
+        download_movie(args)
+    except Exception as exc:
+        logging.error("AEBN download failed: %s", exc)
+        return 1
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

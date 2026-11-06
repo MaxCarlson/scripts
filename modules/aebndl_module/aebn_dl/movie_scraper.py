@@ -1,4 +1,5 @@
 import math
+import re
 from lxml import html
 
 from . import utils
@@ -24,7 +25,9 @@ class Movie:
 
     def _scrape_info(self):
         """Scrape movie metadata from aebn.com"""
-        content = html.fromstring(self.session.get(self.input_url).content)
+        response = self.session.get(self.input_url)
+        response.raise_for_status()
+        content = html.fromstring(response.content)
         self.url_content_type = self.input_url.split("/")[3]
         self.movie_id = self.input_url.split("/")[5]
         self.studio_name = self._extract_studio_name(content)
@@ -37,7 +40,9 @@ class Movie:
         scene_elements = content.xpath('//section[@id[starts-with(., "scene")]]')
         for scene_element in scene_elements:
             scene_performers = scene_element.xpath('.//li[@class="dts-scene-strip-stars"]//a/text()')
-            scene = Scene(performers=scene_performers)
+            raw_scene_id = scene_element.get("id", "")
+            match = re.fullmatch(r"scene-(\d+)", raw_scene_id)
+            scene = Scene(performers=scene_performers, scene_id=match.group(1) if match else None)
             self.scenes.append(scene)
         cover_front_sources = content.xpath('//*[@class="dts-movie-boxcover-front"]//img/@src')
         if cover_front_sources:
@@ -56,14 +61,42 @@ class Movie:
     def calculate_scenes_boundaries(self, segment_duration: float):
         """Calculate scene segment boundaries with data from m.aebn.net"""
         response = self.session.get(f"https://m.aebn.net/movie/{self.movie_id}")
+        response.raise_for_status()
         html_tree = html.fromstring(response.content)
         scene_elems = html_tree.xpath('//div[@class="scroller"]')
+        if len(scene_elems) != len(self.scenes):
+            raise ValueError(
+                f"AEBN scene count mismatch: movie page has {len(self.scenes)} scenes "
+                f"but timeline has {len(scene_elems)} entries"
+            )
         for i, scene_el in enumerate(scene_elems):
             target_scene = self.scenes[i]
             target_scene.start_timing = int(scene_el.get("data-time-start"))
             target_scene.end_timing = target_scene.start_timing + int(scene_el.get("data-time-duration"))
             target_scene.start_segment = math.floor(int(target_scene.start_timing) / segment_duration)
             target_scene.end_segment = math.ceil(int(target_scene.end_timing) / segment_duration)
+
+    def scene_ordinal_for_id(self, scene_id: str) -> int:
+        """Resolve a numeric AEBN scene ID to its 1-based movie-page ordinal."""
+        if not re.fullmatch(r"\d+", str(scene_id)):
+            raise ValueError(f"Malformed AEBN scene ID: {scene_id!r}")
+
+        seen: set[str] = set()
+        for scene in self.scenes:
+            if scene.scene_id is None:
+                raise ValueError("Missing or malformed scene ID metadata in AEBN movie page")
+            if not re.fullmatch(r"\d+", scene.scene_id):
+                raise ValueError(f"Malformed AEBN scene ID metadata: {scene.scene_id!r}")
+            if scene.scene_id in seen:
+                raise ValueError(f"Duplicate AEBN scene ID metadata: {scene.scene_id}")
+            seen.add(scene.scene_id)
+
+        if not self.scenes:
+            raise ValueError("Missing scene ID metadata in AEBN movie page")
+        try:
+            return next(index for index, scene in enumerate(self.scenes, start=1) if scene.scene_id == scene_id)
+        except StopIteration as exc:
+            raise ValueError(f"AEBN scene ID {scene_id} not found in movie") from exc
 
     @staticmethod
     def _normalize_cover_url(raw_url: str) -> str:

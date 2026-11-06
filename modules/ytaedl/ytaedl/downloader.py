@@ -844,53 +844,15 @@ def _reject_short_preview_candidate(candidate_url: str, destination: Optional[Pa
     return False, duration_s, path
 
 
-def _extract_aebn_scene_id(url: str) -> str:
-    """Return the AEBN scene ID from a URL fragment like #scene-1310191, or empty string."""
-    try:
-        from urllib.parse import urlparse
-        frag = urlparse(url).fragment or ""
-        if "scene-" in frag:
-            return frag.split("scene-")[1].strip()
-    except Exception:
-        pass
-    return ""
-
-
-# Movie-level scene-list cache: {movie_url_without_fragment: [(ordinal, scene_id), ...]}
-_aebn_scene_list_cache: dict[str, list[tuple[int, str]]] = {}
-
-
-def _aebn_scene_ordinal(url: str) -> Optional[int]:
-    """Resolve an AEBN scene URL fragment (#scene-XXXXXXXX) to its 1-based ordinal position.
-
-    Makes one HTTP request per unique movie URL (cached for the process lifetime).
-    Returns None if the URL has no scene fragment, the lookup fails, or the scene is not found.
-    """
-    scene_id = _extract_aebn_scene_id(url)
-    if not scene_id:
+def _extract_aebn_scene_id(url: str) -> Optional[str]:
+    """Return a numeric AEBN scene ID, rejecting malformed non-empty fragments."""
+    fragment = urlparse(url).fragment
+    if not fragment:
         return None
-    movie_url = url.split("#")[0]
-    scenes = _aebn_scene_list_cache.get(movie_url)
-    if scenes is None:
-        try:
-            from aebn_dl.custom_session import CustomSession as _AEBNSession
-            from lxml import html as _lhtml
-            _s = _AEBNSession(impersonate="chrome")
-            _s.headers.update({
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
-            })
-            _s.cookies.update({"ageGated": "true", "terms": "true"})
-            _resp = _s.get(movie_url, timeout=15)
-            _content = _lhtml.fromstring(_resp.content)
-            _sections = _content.xpath('//section[@id[starts-with(., "scene-")]]')
-            scenes = [(i, sec.get("id", "").replace("scene-", "", 1)) for i, sec in enumerate(_sections, start=1)]
-        except Exception:
-            scenes = []
-        _aebn_scene_list_cache[movie_url] = scenes
-    for ordinal, sid in scenes:
-        if sid == scene_id:
-            return ordinal
-    return None
+    match = re.fullmatch(r"scene-(\d+)", fragment)
+    if not match:
+        raise ValueError(f"invalid AEBN scene fragment: #{fragment}")
+    return match.group(1)
 
 
 def _build_aebndl_cmd(
@@ -899,6 +861,7 @@ def _build_aebndl_cmd(
     work_dir: Path,
     max_height: Optional[int] = None,
     scene: Optional[int] = None,
+    scene_id: Optional[str] = None,
 ) -> List[str]:
     # Keep default logging level (INFO) to have progress; do NOT pass -c by default
     cmd = ["aebndl", "--json", "-o", str(out_dir), "-w", str(work_dir)]
@@ -906,6 +869,10 @@ def _build_aebndl_cmd(
         cmd += ["-r", str(max_height)]
     if isinstance(scene, int) and scene >= 1:
         cmd += ["-s", str(scene)]
+    if scene_id is not None:
+        if not re.fullmatch(r"\d+", scene_id):
+            raise ValueError(f"invalid AEBN scene ID: {scene_id!r}")
+        cmd += ["-I", scene_id]
     cmd.append(url)
     return cmd
 def _coerce_progress_number(value):
@@ -1555,6 +1522,33 @@ def _run_one(
     """
     assert len(urls) == 1
     url = urls[0]
+    scene_id: Optional[str] = None
+    if tool == "aebndl":
+        try:
+            scene_id = _extract_aebn_scene_id(url)
+        except ValueError as exc:
+            reason = str(exc)
+            invalid_attempt_id = _attempt_id(worker_slot, url_index, "normal", 1)
+            proglog.start(url_index, len(urls), url)
+            _emit_json({"event": "start", "downloader": tool, "url_index": url_index,
+                        "attempt_id": invalid_attempt_id, "url": url})
+            _emit_json({
+                "event": "finish",
+                "attempt_id": invalid_attempt_id,
+                "downloader": tool,
+                "url_index": url_index,
+                "url": url,
+                "rc": 2,
+                "reason": reason,
+                "elapsed_s": 0.0,
+                "downloaded": None,
+                "total": None,
+                "already": False,
+                "raw_log_path": None,
+            })
+            proglog.finish(url_index, 0.0, "FINISH_FAILED", reason)
+            return 2, {"elapsed_s": 0.0, "downloaded": None, "total": None, "already": False,
+                       "downloader": tool, "reason": reason}
     stem = _urlfile_stem(Path(url))
     simulate_attempt_id = _attempt_id(worker_slot, url_index, "simulate", 1)
     normal_attempt_id = _attempt_id(worker_slot, url_index, "normal", 1)
@@ -1655,8 +1649,7 @@ def _run_one(
 
     # choose command
     if tool == "aebndl":
-        _scene_n = _aebn_scene_ordinal(url)
-        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height, scene=_scene_n)
+        cmd = _build_aebndl_cmd(url, out_dir, url_work_dir, max_height, scene_id=scene_id)
     else:
         cmd = _build_ytdlp_cmd(
             [url],

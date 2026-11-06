@@ -38,6 +38,7 @@ _SUBCOMMAND_HELP = {
     "urls":    "URL file scanning, statistics, and ranking",
     "archive": "Archive file management (rebuild, validate, apply-plan)",
     "summary": "Display real-time statistics and active locks across ytaedl instances",
+    "scene": "Inspect AEBN scene IDs without downloading media",
 }
 
 _EXAMPLES = textwrap.dedent("""\
@@ -149,6 +150,10 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if subcommand == "summary":
         from .summary import main as summary_main
         return summary_main(rest)
+
+    if subcommand == "scene":
+        from .scene_cli import main as scene_main
+        return scene_main(rest)
 
     # Unknown subcommand
     print(f"ytaedl: unknown subcommand '{subcommand}'", file=sys.stderr)
