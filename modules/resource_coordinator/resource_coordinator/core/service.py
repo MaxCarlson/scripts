@@ -29,6 +29,16 @@ def _gpu_idle_sampling_allowed(condition: Dict[str, Any], gaming_mode: Dict[str,
     return bool(condition) and manual_override and gaming_mode.get("state", "inactive") == "inactive"
 
 
+def _manual_action_clears_gpu_idle_condition(action: str, *, gpu_idle_pause: bool) -> bool:
+    """A new explicit pause/stop supersedes an older automatic-resume condition."""
+    return action in {"pause", "stop"} and not gpu_idle_pause
+
+
+def _manual_miner_mutations_allowed(gaming_mode: Dict[str, Any]) -> bool:
+    """Gaming owns all miner mutations until its restore/reconciliation completes."""
+    return gaming_mode.get("state", "inactive") == "inactive"
+
+
 class ServiceState(str, Enum):
     """Observable lifecycle states of the Resource Coordinator service."""
 
@@ -472,6 +482,9 @@ class CoordinatorService:
             }
         if not state_path:
             return {"status": "unavailable", "reason": "Durable state persistence is required for manual controls"}
+        gaming_mode = StateCodec.load(state_path).gaming_mode
+        if not _manual_miner_mutations_allowed(gaming_mode):
+            return {"status": "blocked", "reason": "Gaming mode or recovery hold owns miner controls; use gaming stop"}
         gpu_condition = threshold_pct is not None or window_seconds is not None
         if action == "pause" and gpu_condition and (
             threshold_pct is None or window_seconds is None or not math.isfinite(threshold_pct)
@@ -492,6 +505,8 @@ class CoordinatorService:
                     info = await adapter.status()
                     if info.state != ProcessState.RUNNING or not info.is_coordinator_owned:
                         raise RuntimeError("GPU-idle pause requires a running coordinator-owned miner")
+                elif _manual_action_clears_gpu_idle_condition(action, gpu_idle_pause=gpu_condition):
+                    StateCodec.record_gpu_idle_condition(state_path)
                 deadline = time.time() + duration_seconds if action == "pause" and not gpu_condition else None
                 supervisor.set_manual_override(True, persist=False, until=deadline)
                 await self._persist_supervisor_state(supervisor, was_stopped_by_coordinator=True)

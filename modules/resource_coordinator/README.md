@@ -275,7 +275,9 @@ All mutations go through the ready coordinator and require
 the automatically discovered operator credential. They require a durable
 `state_persistence_path`; the standalone CLI does not manage a miner locally.
 Controls refuse while GPU leases, inference/model-loading cooldowns, safety
-inhibitions, or lifecycle gates are active.
+inhibitions, gaming mode/recovery, or lifecycle gates are active. During gaming,
+use `gaming stop` to restore the saved model and return miner control to normal
+coordination before issuing a miner mutation.
 
 ```powershell
 python -m resource_coordinator.cli miner status

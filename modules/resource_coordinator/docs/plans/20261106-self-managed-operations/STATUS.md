@@ -2,13 +2,14 @@
 
 ## Current checkpoint
 
-- [x] Confirmed current source repository is `C:/Users/mcarls/src/scripts`, branch `main`; validated checkpoints are `3cd1da96` (log retention) and `b1505a4d` (runtime identity doctor). Current uncommitted changes are based on `b1505a4d`. No RC source worktree was created.
+- [x] Confirmed current source repository is `C:/Users/mcarls/src/scripts`, branch `main`; validated checkpoints are `3cd1da96` (log retention), `b1505a4d` (runtime identity doctor), and `4b590ac2` (initial GPU-idle/game gate). Current manual-hold changes are based on `4b590ac2`. No RC source worktree was created.
 - [x] Existing setup, doctor, repair, teardown, startup task management, auth provisioning, optional viewer, and `miner`/`krig` log aliases are present in merged mainline history.
 - [x] Added bounded append-only miner output retention: rotate at 64 MiB, preserve three prior files, and keep an empty active file ready for capture.
 - [x] Doctor now resolves default capture paths, checks capture-directory access, and compares the running service's reported package path/version against the installed source.
 - [x] Doctor labels the power limit and memory clock verified/mismatched/unavailable, and does not claim independent verification of dynamic core clock or the unexposed core offset.
 - [x] GPU-idle sampling now pauses while gaming is stopping, active, restoring, or failed, so an old conditional pause cannot restart mining during gaming/reconciliation; 4 synchronous gate regressions pass.
-- [x] Focused installation/config/log/CLI tests: latest run 42 passed; credential and automatic CLI auth regression selection: 17 passed, 1 async test deselected.
+- [x] Manual miner mutations are blocked during active/recovering gaming; a newer timed pause/stop clears any stale GPU-idle auto-resume condition. Synchronous gate coverage passes.
+- [x] Focused installation/config/log/CLI tests: latest run 56 passed; credential regression selection: 15 passed, 1 async test deselected.
 - [x] Protected inference route regression tests: 5 passed.
 - [x] Ruff, `py_compile`, and submodule-safe `git diff --check` passed for current source changes.
 - [ ] Validate service lifecycle controls (manual miner, gaming, GPU-idle) on a functioning async test runner. A focused `pytest -vv -s` invocation reached the first manual-control test and then stalled without assertion output; interrupted only that test process.
@@ -52,4 +53,5 @@ Resolve the service-test runner hang or use a supported test context; finish set
 - Log retention follow-up: `test_log_rotation.py` verifies preservation of prior bytes and bounded three-file rotation. Retention + installation + alias validation passed; protected provider/model-switch routing passed 5 regressions. Ruff, `py_compile`, and submodule-safe `git diff --check` passed. Focused `test_service_lifecycle.py` invocation stalled in the first test and was interrupted; no assertion result was produced.
 - Doctor/runtime follow-up: implicit process capture paths resolve to the managed log directory, explicit paths remain authoritative, and an unwritable capture parent degrades health. Status reports serving PID, package version, and source path; doctor marks mismatches degraded. It also represents driver observability honestly. Latest installation/config/log/CLI suite passed 47; credential regressions passed 15 with one async service-restart test deselected; protected routing regressions passed 5. Ruff, compilation, and diff checks passed. Package version advanced from 0.8.0 to 0.9.0.
 - Gaming/GPU-idle guard: four synchronous cases verify that GPU-idle sampling is suppressed while gaming is stopping, active, restoring, or failed, and that sampling requires the persisted manual hold. The async integration lifecycle remains unexecuted because `asyncio.run(asyncio.sleep(0))` hangs in this runner.
+- Manual-control precedence: five states verify that all manual mutations are blocked during gaming/recovery, and four cases verify that timed/manual stop supersedes an older GPU-idle resume condition. The latest combined suite passed 56 RC tests, 15 credential tests (one async excluded), and 5 routing tests; Ruff, compilation, and diff checks passed.
 - Read-only Task Scheduler verification was blocked by Windows CIM access (`Access to a CIM resource was not available to the client`); no live tasks, coordinator, or miner were changed.

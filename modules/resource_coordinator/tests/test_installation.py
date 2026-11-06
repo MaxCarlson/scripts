@@ -612,3 +612,28 @@ def test_gpu_idle_condition_cannot_resume_mining_during_gaming_or_reconciliation
     assert _gpu_idle_sampling_allowed(condition, {"state": "inactive"}, manual_override=True)
     assert not _gpu_idle_sampling_allowed(condition, {"state": gaming_state}, manual_override=True)
     assert not _gpu_idle_sampling_allowed(condition, {"state": "inactive"}, manual_override=False)
+
+
+@pytest.mark.parametrize(
+    "action,is_gpu_pause,should_clear",
+    [("pause", False, True), ("stop", False, True), ("pause", True, False), ("resume", False, False)],
+)
+def test_manual_pause_or_stop_replaces_stale_gpu_idle_condition(action, is_gpu_pause, should_clear):
+    from resource_coordinator.core.service import _manual_action_clears_gpu_idle_condition
+
+    assert _manual_action_clears_gpu_idle_condition(action, gpu_idle_pause=is_gpu_pause) is should_clear
+
+
+@pytest.mark.parametrize("gaming_state", ["stopping", "active", "restoring", "failed"])
+def test_manual_miner_mutations_are_blocked_during_gaming_hold(gaming_state):
+    from resource_coordinator.core.service import _manual_miner_mutations_allowed
+
+    allowed = _manual_miner_mutations_allowed({"state": gaming_state})
+
+    assert not allowed
+
+
+def test_manual_miner_mutations_are_available_outside_gaming():
+    from resource_coordinator.core.service import _manual_miner_mutations_allowed
+
+    assert _manual_miner_mutations_allowed({"state": "inactive"})
