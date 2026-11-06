@@ -9,7 +9,7 @@ from pathlib import Path
 from urllib.parse import urlsplit
 
 
-AEBN_VALIDATION_CONTRACT = 3
+AEBN_VALIDATION_CONTRACT = 4
 _NAME = "aebn-verified-media.sqlite3"
 
 
@@ -62,7 +62,7 @@ def validated_aebn_event(event: dict) -> bool:
                 return False
         if not all(math.isfinite(float(continuity[key])) for key in required):
             return False
-        limit = max(10.0, duration * 0.05)
+        limit = min(30.0, max(10.0, duration * 0.05))
         return (continuity["packet_count"] > 0 and continuity["invalid_packets"] == 0
                 and (duration < 60 or continuity["packet_count"] / duration >= 0.2)
                 and continuity["dts_regressions"] == 0 and continuity["max_pts_gap_s"] <= limit
@@ -123,4 +123,30 @@ def current_verified_urls(archive_dir: Path | None) -> set[str]:
                     if contract == AEBN_VALIDATION_CONTRACT and is_aebn_url(url)
                     and _identity(Path(file_path)) == (file_path, device, inode, size, mtime, ctime)}
     except (OSError, sqlite3.Error, ValueError, OverflowError):
+        return set()
+
+
+def record_revalidation_attempt(archive_dir: Path, url: str, outcome: str) -> bool:
+    """Record a bounded batch result separately from the historical archive."""
+    try:
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        with sqlite3.connect(str(archive_dir / _NAME), timeout=5) as db:
+            db.execute("PRAGMA busy_timeout=5000")
+            db.execute("CREATE TABLE IF NOT EXISTS revalidation_attempts "
+                       "(url TEXT PRIMARY KEY, outcome TEXT NOT NULL, contract INTEGER NOT NULL)")
+            db.execute("INSERT OR REPLACE INTO revalidation_attempts VALUES (?, ?, ?)",
+                       (url, outcome, AEBN_VALIDATION_CONTRACT))
+        return True
+    except (OSError, sqlite3.Error):
+        return False
+
+
+def attempted_revalidations(archive_dir: Path | None) -> set[str]:
+    if archive_dir is None or not (archive_dir / _NAME).is_file():
+        return set()
+    try:
+        with sqlite3.connect((archive_dir / _NAME).resolve().as_uri() + "?mode=ro", uri=True, timeout=5) as db:
+            return {row[0] for row in db.execute("SELECT url FROM revalidation_attempts WHERE contract = ?",
+                                                  (AEBN_VALIDATION_CONTRACT,))}
+    except (OSError, sqlite3.Error):
         return set()

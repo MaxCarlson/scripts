@@ -128,7 +128,7 @@ def test_secondary_existing_output_is_independently_validated(tmp_path, monkeypa
     assert hashlib.sha256(candidate.read_bytes()).hexdigest() == original_hash
 
 
-def test_run_emits_already_only_after_manifest_validation(tmp_path, monkeypatch, capsys):
+def test_run_recognizes_valid_local_movie_without_delivery(tmp_path, monkeypatch, capsys):
     class FakeMovie:
         studio_name = ""
         title = "Some Movie"
@@ -172,4 +172,42 @@ def test_run_emits_already_only_after_manifest_validation(tmp_path, monkeypatch,
     event_types = [e.get("event") for e in events]
     assert "already" in event_types
     assert "destination" in event_types
-    assert manifest_called, "_process_manifest must run before validating an existing output"
+    assert not manifest_called, "local verification must not require delivery access"
+
+
+def test_existing_output_checks_all_resolution_variants(tmp_path, monkeypatch):
+    movie = type("Movie", (), {"studio_name": "", "title": "Movie"})()
+    dl = Downloader("https://straight.aebn.com/straight/movies/1/title", output_dir=str(tmp_path), no_part=True)
+    bad, good = tmp_path / "Movie 480p.mp4", tmp_path / "- Movie 1080p.mp4"
+    bad.write_bytes(b"bad")
+    good.write_bytes(b"good")
+    monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": Path(path) == good, "errors": ["bad"]})
+    assert dl._find_existing_output(movie, 30) == str(good)
+    assert bad.read_bytes() == b"bad"
+
+
+def test_existing_output_rejects_ambiguous_movie_title(tmp_path, monkeypatch):
+    movie = type("Movie", (), {"studio_name": "", "title": "Movie", "performers": []})()
+    dl = Downloader("https://straight.aebn.com/straight/movies/1/title", output_dir=str(tmp_path), no_part=True)
+    (tmp_path / "Movie Sequel 1080p.mp4").write_bytes(b"other")
+    monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": True, "errors": []})
+    assert dl._find_existing_output(movie, 30) is None
+
+
+def test_valid_scene_is_found_without_delivery(tmp_path, monkeypatch, capsys):
+    from types import SimpleNamespace
+    scene = SimpleNamespace(start_timing=5, end_timing=35, performers=[])
+    movie = SimpleNamespace(studio_name="", title="Movie", performers=[], scenes=[scene],
+                            movie_id="1", total_duration_seconds=40,
+                            calculate_scenes_boundaries=lambda duration: None,
+                            scene_ordinal_for_id=lambda scene_id: 1)
+    path = tmp_path / "Movie Scene 1 720p.mp4"
+    path.write_bytes(b"fixture")
+    dl = Downloader("https://straight.aebn.com/straight/movies/1/title#scene-10", scene_id="10",
+                    output_dir=str(tmp_path), no_part=True, json_output=True)
+    monkeypatch.setattr(dl, "_initialize_download", lambda: None)
+    monkeypatch.setattr(dl, "_scrape_movie_info", lambda: movie)
+    monkeypatch.setattr(dl, "_process_manifest", lambda movie: pytest.fail("must not request delivery"))
+    monkeypatch.setattr(dl, "_validate_output", lambda path, duration: {"valid": duration == 30, "errors": []})
+    dl.run()
+    assert any(json.loads(line).get("event") == "already" for line in capsys.readouterr().out.splitlines())

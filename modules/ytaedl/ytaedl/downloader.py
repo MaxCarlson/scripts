@@ -109,6 +109,10 @@ def make_parser() -> argparse.ArgumentParser:
     p.add_argument("-U", "--max-ndjson-rate", type=float, default=5.0,
                    help="Max NDJSON progress events printed per second (-1 for unlimited). Applies to 'progress' events.")
     p.add_argument("-a", "--archive-dir", type=str, default=None, help="Directory to store per-urlfile archive status files.")
+    p.add_argument("-e", "--aebn-revalidate-limit", type=int, default=0, metavar="N",
+                   help="Revalidate at most N historical unverified AEBN archive entries")
+    p.add_argument("-l", "--aebn-revalidate-retry", action="store_true",
+                   help="Include previously attempted AEBN revalidations in this bounded batch")
     p.add_argument("-O", "--archive-source-file", type=str, default=None,
                    help="Original URL file used for archive naming and status lookup; defaults to --url-file.")
     p.add_argument("-S", "--stall-seconds", type=int, default=4, help="If no non-heartbeat events arrive for N seconds, treat URL as stalled and try fallback methods.")
@@ -2169,11 +2173,13 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
             except Exception:
                 pass
     verified_aebn_urls = aebn_cache.current_verified_urls(archive_dir)
+    attempted_aebn_urls = aebn_cache.attempted_revalidations(archive_dir)
     if not urls:
         print("[ERROR] No URLs found.", file=sys.stderr)
         return 3
 
     overall_rc = 0
+    revalidation_count = 0
     try:
         for i, url in enumerate(urls, 1):
             # Skip successfully processed URLs based on archive status.
@@ -2181,8 +2187,17 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
             # an invalid remux. Re-enter aebndl to validate unverified AEBN
             # output; a current file-bound result permits the archive fast path.
             aebn_recheck = aebn_cache.is_aebn_url(url) and url not in verified_aebn_urls
-            if archive_file and url in archive_processed_urls and not aebn_recheck:
-                continue
+            revalidating = False
+            if archive_file and url in archive_processed_urls:
+                if not aebn_recheck:
+                    continue
+                if ((url in attempted_aebn_urls and not args.aebn_revalidate_retry)
+                        or revalidation_count >= max(0, args.aebn_revalidate_limit)):
+                    _emit_json({"event": "aebn_revalidation_deferred", "url": url,
+                                "reason": "historical archive success has no current verification"})
+                    continue
+                revalidation_count += 1
+                revalidating = True
             if _stop_sentinel_active(stop_sentinel):
                 _emit_json(
                     {
@@ -2249,8 +2264,11 @@ def _main_with_urlfile_lock_held(argv: Optional[List[str]] = None) -> int:
             if rc == 0 and tool == "aebndl" and archive_dir and info.get("verified_aebn_event"):
                 if aebn_cache.record_verified_output(archive_dir, url, info["verified_aebn_event"]):
                     verified_aebn_urls.add(url)
+            if revalidating and archive_dir:
+                outcome = "verified" if rc == 0 else "preview-unavailable" if rc == 77 else "unverified"
+                aebn_cache.record_revalidation_attempt(archive_dir, url, outcome)
             # Update archive status (skip marking on Ctrl-C abort rc==130)
-            if archive_file:
+            if archive_file and not revalidating:
                 if rc == 0:
                     status = 'already' if info.get('already') else 'downloaded'
                 elif rc == 77:

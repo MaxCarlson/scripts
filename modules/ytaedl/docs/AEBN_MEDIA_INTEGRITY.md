@@ -29,8 +29,8 @@ Constant-duration DASH templates check fragment track identity and timing.
 Ambiguous templates, including SegmentTimeline, are rejected; manifest refresh
 must retain representation and timing identity.
 
-Verification contract 3 scans all video packets. It rejects timestamp gaps
-above the larger of 10 seconds or 5% of expected duration, runs of 100
+Verification contract 4 scans all video packets. It rejects timestamp gaps
+above the larger of 10 seconds or 5% of expected duration, capped at 30 seconds, runs of 100
 sub-millisecond durations or decode increments, and fewer than 0.2 packets per
 second for videos at least a minute long. These conservative rules can reject
 unusual legitimate variable-rate or long-still content; missing evidence fails
@@ -38,10 +38,18 @@ closed. One local 196-second, 5,909-packet control took about 0.08 seconds to
 scan; large and remote-file performance is unmeasured. Reconciliation rechecks
 replacements under the current contract before removal.
 
-Successful AEBN archive skips require a current result bound to the file's
-identity, size and timestamps in `aebn-verified-media.sqlite3`. Unverified
-historical successes remain in the archive but are revalidated when encountered;
-unavailable provider access can prevent revalidation.
+Verified AEBN results are bound to the file's identity, size and timestamps in
+`aebn-verified-media.sqlite3`. Historical archive successes without current
+verification remain recorded but are deferred by default, not treated as proof
+of healthy media. An explicit worker batch `ytaedl worker -f <file> -a <archive>
+-e <N>` revalidates up to N unverified historical URLs; verified local files are
+checked first without obtaining a delivery manifest. If no local file exists,
+this worker can request delivery and download, so use it only when that is
+intended. Attempt results persist in the cache so later batches advance; add
+`-l` to include previously attempted entries. An unavailable provider does not
+establish that local media is corrupt. The manager does not automatically
+requeue historical successes. Explicit partial-segment ranges fail closed and
+do not produce a certified completed output.
 
 Read-only historical inspection found an edit list hid many packets in a larger
 file, while a smaller file retained only the visible subset. Different durations

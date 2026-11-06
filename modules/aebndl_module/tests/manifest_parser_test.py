@@ -191,7 +191,7 @@ def test_scene_manifest_uses_one_consistent_timeline(monkeypatch):
     monkeypatch.setattr(module, "Manifest", FakeManifest)
     dl = Downloader("https://straight.aebn.com/straight/movies/123/title", scene_n=1, no_part=True)
     dl._process_manifest(movie)
-    assert calls == [1.0]
+    assert calls == []
     assert (scene.start_segment, scene.end_segment) == (5, 15)
 
 

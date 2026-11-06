@@ -178,6 +178,11 @@ def test_downloader_reports_resolved_scene_id_and_ordinal(monkeypatch, capsys):
     )
     monkeypatch.setattr(instance, "_initialize_download", lambda: None)
     monkeypatch.setattr(instance, "_scrape_movie_info", lambda: movie)
+    def prepare_boundaries(_segment_duration):
+        for scene in movie.scenes:
+            scene.start_timing = 0
+            scene.end_timing = 10
+    monkeypatch.setattr(movie, "calculate_scenes_boundaries", prepare_boundaries)
     monkeypatch.setattr(instance, "_find_existing_output", lambda _movie, _duration=None: "already-downloaded.mp4")
     def prepare_manifest(_movie):
         instance.manifest = type(

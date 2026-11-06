@@ -1,5 +1,27 @@
 # Status
 
+## Final review corrections
+
+- Local movie/scene candidates are independently validated before a delivery
+  manifest is requested. All plausible resolution variants are inspected;
+  invalid files are preserved. Final validation precedes atomic no-overwrite
+  promotion. Explicit partial segment selections fail closed.
+- Resume state records representation and timeline identity instead of signed
+  delivery URLs. Legacy signed-URL records are not trusted; retained fragments
+  are checked against current identity. Contract 4 caps timeline-gap tolerance
+  at 30 seconds, invalidating old cache and reconciliation approval evidence.
+- Historical archive successes are deferred by default. The worker's `-e N`
+  enables a bounded explicit revalidation batch, persisted separately from
+  archive records; `-l` includes prior attempts. A missing local file may cause
+  a download in this explicit mode. No production batch was run.
+- A bounded manager-suite run stalled in the runtime-submission test because
+  that test sends Ctrl+S while the current dialog advances on Tab. This is an
+  unrelated stale test; targeted manager and scheduler checks pass in the
+  focused suite. Final offline results: 117 AEBN tests and 172 ytaedl,
+  reconciliation, scheduler and parser tests passed. Ruff, compileall,
+  Python 3.9 grammar parsing and `git diff --check` passed. No live AEBN test
+  was run; both review patches remain untracked and unchanged.
+
 ## Current offline correction work
 
 - Preview-window checks precede fragment scheduling. Constant-duration DASH

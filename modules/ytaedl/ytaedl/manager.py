@@ -44,7 +44,6 @@ except ImportError:
 
 from . import __version__ as YTAEDL_VERSION
 from . import _partial_utils, urlscan, yt_grid
-from .aebn_validation_cache import current_verified_urls, is_aebn_url
 from .domain_index import DomainIndex, ScanLogEntry, _extract_domain as _domain_of_url
 from .runtime_submissions import (
     Submission,
@@ -236,12 +235,11 @@ def _load_archive_finished_urls(archive_dir: Optional[Path]) -> Dict[str, str]:
     if not archive_dir or not archive_dir.exists():
         return {}
     finished: Dict[str, str] = {}
-    verified_aebn = current_verified_urls(archive_dir)
     for path in sorted(archive_dir.glob("*.txt")):
         if path.name.endswith(".rebuild.txt"):
             continue
         for url, status in _archive_statuses_from_file(path).items():
-            if status in ARCHIVE_PROCESSED_STATUSES and (not is_aebn_url(url) or url in verified_aebn):
+            if status in ARCHIVE_PROCESSED_STATUSES:
                 finished[url] = status
     return finished
 
@@ -1976,11 +1974,6 @@ def run_main(
                 startup_loading.update("Saving domain index")
                 domain_index.save(domain_index_path)
             mlog.info(f"Domain index saved to {domain_index_path}")
-
-        requeued = domain_index.requeue_unverified_aebn(current_verified_urls(archive_dir))
-        if requeued:
-            mlog.info(f"Requeued {requeued} AEBN URL(s) lacking current file-bound verification")
-            domain_index.save(domain_index_path)
 
         # Register save path for auto-save on updates
         domain_index.save_debounced(domain_index_path, delay_s=5.0)

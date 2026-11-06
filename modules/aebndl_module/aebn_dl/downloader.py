@@ -159,6 +159,20 @@ class Downloader:
         """Generate path to .part file for given output"""
         return os.path.join(self.output_dir, f"{output_file_name}.part")
 
+    def _resume_representation(self) -> dict:
+        manifest = self.manifest
+        templates = getattr(manifest, "segment_templates", None)
+        if not isinstance(templates, dict):
+            templates = None
+        duration = getattr(manifest, "segment_duration", None)
+        if not isinstance(duration, (int, float)):
+            duration = None
+        video = getattr(manifest, "video_stream", None)
+        audio = getattr(manifest, "audio_stream", None)
+        return {"video_id": getattr(video, "stream_id", None), "video_height": getattr(video, "height", None),
+                "audio_id": getattr(audio, "stream_id", None), "segment_duration": duration,
+                "segment_templates": templates}
+
     def _load_part_file(self, part_file_path: str) -> dict | None:
         """Load and validate existing .part file"""
         if not os.path.exists(part_file_path):
@@ -190,9 +204,11 @@ class Downloader:
             if data.get('segment_range') and current_range and data['segment_range'] != current_range:
                 self.logger.warning(f".part file scene segment range differs, ignoring: {part_file_path}")
                 return None
-            current_base_url = getattr(self.manifest, 'base_stream_url', None)
-            if data.get('base_stream_url') and current_base_url and data['base_stream_url'] != current_base_url:
+            if data.get('representation') is not None and data['representation'] != self._resume_representation():
                 self.logger.warning(f".part file manifest representation differs, ignoring: {part_file_path}")
+                return None
+            if data.get('base_stream_url') and 'representation' not in data:
+                self.logger.warning(f"Legacy .part identity needs fragment revalidation: {part_file_path}")
                 return None
             current_segment_count = getattr(self.manifest, 'total_number_of_data_segments', None)
             if data.get('total_number_of_data_segments') is not None and current_segment_count is not None and data['total_number_of_data_segments'] != current_segment_count:
@@ -241,7 +257,7 @@ class Downloader:
                     'scene_n': self.scene_n,
                     'scene_id': self.scene_id,
                     'target_stream': self.target_stream,
-                    'base_stream_url': getattr(self.manifest, 'base_stream_url', None),
+                    'representation': self._resume_representation(),
                     'total_number_of_data_segments': getattr(self.manifest, 'total_number_of_data_segments', None),
                     'segment_range': list(self.required_segment_range) if self.required_segment_range else None,
                     'streams': streams_data,
@@ -383,18 +399,23 @@ class Downloader:
             if self.scene_id is not None:
                 self.scene_n = scraped_movie.scene_ordinal_for_id(self.scene_id)
                 self._json_log("scene_selected", scene_id=self.scene_id, scene_ordinal=self.scene_n)
-            self._process_manifest(scraped_movie)
-            self.required_segment_range = self._segment_range(scraped_movie)
-            output_file_name = self._generate_output_name(scraped_movie)
-            output_path = os.path.join(self.output_dir, output_file_name)
+            if self.start_segment or self.end_segment is not None:
+                raise ValueError("Explicit partial segment ranges are diagnostic and cannot be certified as completed media")
+            if self.scene_n:
+                scraped_movie.calculate_scenes_boundaries(1.0)
             expected_duration = self._expected_duration(scraped_movie)
             if not self.overwrite_existing_files:
                 existing = None
+                rejected = []
                 original_output_dir = self.output_dir
                 try:
                     for existing_dir in [original_output_dir, *self.existing_output_dirs]:
                         self.output_dir = existing_dir
-                        existing = self._find_existing_output(scraped_movie, expected_duration)
+                        try:
+                            existing = self._find_existing_output(scraped_movie, expected_duration)
+                        except ValueError as exc:
+                            rejected.append(str(exc))
+                            continue
                         if existing is not None:
                             break
                 finally:
@@ -404,6 +425,12 @@ class Downloader:
                     self._json_log("already", path=existing, validation=getattr(self, "_last_existing_validation", None))
                     self.download_interrupted = False
                     return
+                if rejected:
+                    raise ValueError("; ".join(rejected))
+            self._process_manifest(scraped_movie)
+            self.required_segment_range = self._segment_range(scraped_movie)
+            output_file_name = self._generate_output_name(scraped_movie)
+            output_path = os.path.join(self.output_dir, output_file_name)
             self._json_log("destination", path=output_path)
             if not self.overwrite_existing_files and os.path.exists(output_path):
                 validation = self._validate_output(output_path, expected_duration)
@@ -446,10 +473,25 @@ class Downloader:
 
             if os.path.exists(output_path) and not self.overwrite_existing_files:
                 raise FileExistsError(f"Refusing to overwrite existing AEBN output: {output_path}")
-            os.replace(final_stage_path, output_path)
-            final_validation = self._validate_output(output_path, expected_duration)
+            before_validation = os.stat(final_stage_path)
+            final_validation = self._validate_output(final_stage_path, expected_duration)
             if not final_validation["valid"]:
-                raise ValueError(f"Promoted AEBN output failed final validation: {final_validation['errors']}")
+                raise ValueError(f"AEBN output failed final validation before promotion: {final_validation['errors']}")
+            after_validation = os.stat(final_stage_path)
+            if (before_validation.st_dev, before_validation.st_ino, before_validation.st_size,
+                    before_validation.st_mtime_ns) != (after_validation.st_dev, after_validation.st_ino,
+                                                        after_validation.st_size, after_validation.st_mtime_ns):
+                raise ValueError("AEBN staging output changed during final validation")
+            if self.overwrite_existing_files:
+                os.replace(final_stage_path, output_path)
+            elif os.name == "nt":
+                # Windows rename fails if the destination already exists.
+                os.rename(final_stage_path, output_path)
+            else:
+                # Atomic create-if-absent: unlike replace, this cannot overwrite
+                # a file created after the existence check by another process.
+                os.link(final_stage_path, output_path)
+                os.unlink(final_stage_path)
             self._json_log("complete", path=output_path, file_size=os.path.getsize(output_path), validation=final_validation)
             if stage_path != output_path and os.path.exists(stage_path):
                 os.remove(stage_path)
@@ -603,21 +645,31 @@ class Downloader:
         paths = [(name, path) for name in bases for path in _glob.glob(
             os.path.join(self.output_dir, f"{_glob.escape(name)}*p.mp4")
         )]
-        for name, path in paths:
+        rejected = []
+        for name, path in sorted(paths, key=lambda pair: pair[1].casefold()):
             suffix = Path(path).name[len(name):]
-            if self.scene_n and suffix[:1].isdigit():
+            match = re.fullmatch(r"\s+(?:(.+)\s+)?\d+p\.mp4", suffix, re.IGNORECASE)
+            if not match:
                 continue
-            if not self.scene_n and re.search(r"(?:^|[\s._-])scene[\s._-]*\d+(?=$|[\s._-])", suffix, re.IGNORECASE):
-                continue
+            if match.group(1):
+                performers = (getattr(scraped_movie.scenes[self.scene_n - 1], "performers", None)
+                              if self.scene_n and getattr(scraped_movie, "scenes", None)
+                              else getattr(scraped_movie, "performers", None)) or []
+                if match.group(1) != ", ".join(performers):
+                    continue
             try:
                 if os.path.isfile(path) and os.path.getsize(path) > 0:
                     validation = self._validate_output(path, expected_duration)
                     if validation["valid"]:
                         self._last_existing_validation = validation
                         return path
-                    raise ValueError(f"Existing AEBN output is invalid and was preserved: {path}: {validation['errors']}")
-            except OSError:
-                continue
+                    rejected.append(f"{path}: {validation['errors']}")
+                else:
+                    rejected.append(f"{path}: missing, empty, or not a regular file")
+            except OSError as exc:
+                rejected.append(f"{path}: {type(exc).__name__}")
+        if rejected:
+            raise ValueError("Existing AEBN output is invalid and was preserved: " + "; ".join(rejected))
         return None
 
     def _cleanup(self) -> None:
@@ -735,9 +787,11 @@ class Downloader:
             force_resolution=self.force_resolution,
         )
         if self.scene_n:
-            scraped_movie.calculate_scenes_boundaries(1.0)
             if self.scene_n < 1 or self.scene_n > len(scraped_movie.scenes):
                 raise ValueError(f"Scene {self.scene_n} not found")
+            scene = scraped_movie.scenes[self.scene_n - 1]
+            if getattr(scene, "start_timing", None) is None or getattr(scene, "end_timing", None) is None:
+                scraped_movie.calculate_scenes_boundaries(1.0)
             scene = scraped_movie.scenes[self.scene_n - 1]
             self.manifest.requested_interval = (scene.start_timing, scene.end_timing)
         try:

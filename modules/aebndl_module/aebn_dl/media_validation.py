@@ -14,7 +14,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-VALIDATION_CONTRACT = 3
+VALIDATION_CONTRACT = 4
 
 
 def summarize_video_packets(packets) -> dict:
@@ -72,7 +72,7 @@ def validate_video_continuity(stats: dict | None, expected_duration: float) -> l
     if not stats or not required.issubset(stats) or not stats.get("packet_count") or stats.get("invalid_packets"):
         return ["video packet timing evidence is unavailable or malformed"]
     issues = []
-    gap_limit = max(10.0, expected_duration * 0.05)
+    gap_limit = min(30.0, max(10.0, expected_duration * 0.05))
     if stats.get("dts_regressions", 0):
         issues.append("video decode timestamps regress")
     if max(stats.get("max_pts_gap_s", 0), stats.get("max_dts_gap_s", 0)) > gap_limit:

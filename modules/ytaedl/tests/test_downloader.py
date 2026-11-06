@@ -12,7 +12,7 @@ from ytaedl.urlfile_lock import LOCK_HELD_RC, UrlFileLock
 
 def _aebn_validation():
     stream = {"duration_s": 30.0, "packet_span_s": 29.96, "packet_count": 750}
-    return {"valid": True, "validation_contract": 3, "evidence": {
+    return {"valid": True, "validation_contract": 4, "evidence": {
         "expected_duration_s": 30, "streams": {"video": stream, "audio": stream},
         "video_continuity": {"packet_count": 750, "invalid_packets": 0, "dts_regressions": 0,
                              "max_pts_gap_s": 0.04, "max_dts_gap_s": 0.04,
@@ -1051,7 +1051,7 @@ class TestIntegration:
         old_line = downloader._format_archive_line("downloaded", 10.0, "2026-11-06T08:00:00", 485.0, "old", url)
         archive_file.write_text(old_line + "\n", encoding="utf-8")
 
-        with patch("sys.argv", ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir)]):
+        with patch("sys.argv", ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive_dir), "-e", "1"]):
             with patch("ytaedl.downloader._run_one", return_value=(2, {
                 "elapsed_s": 1.0, "downloaded": None, "total": None, "already": False, "downloader": "aebndl",
             })) as mock_run:
@@ -1061,6 +1061,40 @@ class TestIntegration:
         mock_run.assert_called_once()
         assert mock_run.call_args.kwargs["urls"] == [url]
         assert archive_file.read_text(encoding="utf-8") == old_line + "\n"
+
+    def test_historical_aebn_success_is_deferred_by_default(self, tmp_path, capsys):
+        url = "https://straight.aebn.com/straight/movies/1/title#scene-1"
+        source = tmp_path / "ae-stars" / "scene.txt"
+        source.parent.mkdir()
+        source.write_text(url + "\n", encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        old = downloader._format_archive_line("downloaded", 1, "date", 1, "", url)
+        (archive / "ae-scene.txt").write_text(old + "\n", encoding="utf-8")
+        with patch("sys.argv", ["ytaedl", "-f", str(source), "-a", str(archive)]), \
+                patch("ytaedl.downloader._run_one") as run:
+            assert downloader.main() == 0
+            run.assert_not_called()
+        assert "aebn_revalidation_deferred" in capsys.readouterr().out
+        assert (archive / "ae-scene.txt").read_text(encoding="utf-8") == old + "\n"
+
+    def test_revalidation_batch_advances_after_preview_failure_on_restart(self, tmp_path):
+        urls = [f"https://straight.aebn.com/straight/movies/1/title#scene-{i}" for i in range(3)]
+        source = tmp_path / "ae-stars" / "scene.txt"
+        source.parent.mkdir()
+        source.write_text("\n".join(urls), encoding="utf-8")
+        archive = tmp_path / "archive"
+        archive.mkdir()
+        original = "".join(downloader._format_archive_line("downloaded", 1, "date", 1, "", u) + "\n" for u in urls)
+        (archive / "ae-scene.txt").write_text(original, encoding="utf-8")
+        args = ["ytaedl", "-f", str(source), "-a", str(archive), "-e", "1"]
+        info = {"elapsed_s": 1.0, "downloaded": None, "total": None, "already": False,
+                "downloader": "aebndl"}
+        for expected in urls[:2]:
+            with patch("sys.argv", args), patch("ytaedl.downloader._run_one", return_value=(77, info)) as run:
+                assert downloader.main() != 0
+                assert run.call_count == 1 and run.call_args.kwargs["urls"] == [expected]
+        assert (archive / "ae-scene.txt").read_text(encoding="utf-8") == original
 
     def test_verified_aebn_archive_skips_until_output_identity_changes(self, tmp_path):
         url = "https://straight.aebn.com/straight/movies/1/title#scene-1"
@@ -1077,7 +1111,7 @@ class TestIntegration:
         event = {"event": "already", "path": str(output), "validation": _aebn_validation()}
         info = {"elapsed_s": 1.0, "downloaded": 10, "already": True, "downloader": "aebndl",
                 "verified_aebn_event": event}
-        args = ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive)]
+        args = ["ytaedl", "-f", str(urlfile), "--archive-dir", str(archive), "-e", "1", "-l"]
         with patch("sys.argv", args), patch("ytaedl.downloader._run_one", return_value=(0, info)) as run:
             assert downloader.main() == 0
             run.assert_called_once()

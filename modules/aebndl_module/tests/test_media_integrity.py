@@ -289,6 +289,74 @@ def test_bad_metadata_candidate_never_replaces_intermediate_or_emits_complete(tm
     assert not any(event["event"] == "complete" for event in events)
 
 
+def test_final_verification_failure_never_promotes_destination(tmp_path: Path, monkeypatch, capsys) -> None:
+    instance, _ = _offline_downloader(tmp_path, monkeypatch)
+    calls = []
+    def validate(path, expected):
+        calls.append(path)
+        return {**_fake_valid_evidence(), "valid": len(calls) < 3, "errors": ["injected final failure"]}
+    monkeypatch.setattr(instance, "_validate_output", validate)
+    with pytest.raises(ValueError, match="final validation"):
+        instance.run()
+    assert not (tmp_path / "Fixture Studio - Fixture Movie 480p.mp4").exists()
+    assert list(tmp_path.glob("*.metadata-*.mp4"))
+    assert not any(json.loads(line).get("event") == "complete" for line in capsys.readouterr().out.splitlines())
+
+
+def test_promotion_does_not_overwrite_racing_existing_file(tmp_path: Path, monkeypatch, capsys) -> None:
+    from aebn_dl import downloader as module
+    instance, _ = _offline_downloader(tmp_path, monkeypatch)
+    destination = tmp_path / "Fixture Studio - Fixture Movie 480p.mp4"
+    original_promote = module.os.rename if module.os.name == "nt" else module.os.link
+    def race(source, target):
+        Path(target).write_bytes(b"another process")
+        return original_promote(source, target)
+    monkeypatch.setattr(module.os, "rename" if module.os.name == "nt" else "link", race)
+    with pytest.raises(FileExistsError):
+        instance.run()
+    assert destination.read_bytes() == b"another process"
+    assert list(tmp_path.glob("*.metadata-*.mp4"))
+    assert not any(json.loads(line).get("event") == "complete" for line in capsys.readouterr().out.splitlines())
+
+
+def test_long_video_internal_freeze_is_rejected():
+    from aebn_dl.media_validation import validate_video_continuity
+    stats = {"packet_count": 36000, "invalid_packets": 0, "dts_regressions": 0,
+             "max_pts_gap_s": 70, "max_dts_gap_s": 70,
+             "longest_tiny_duration_run": 0, "longest_tiny_dts_run": 0}
+    assert validate_video_continuity(stats, 7200)
+
+
+def test_resume_uses_stable_identity_not_signed_delivery_url(tmp_path):
+    from aebn_dl.downloader import Downloader
+    from aebn_dl.models import AudioStream, VideoStream
+    dl = Downloader("https://straight.aebn.com/straight/movies/123/test", no_part=False,
+                    output_dir=str(tmp_path), work_dir=str(tmp_path))
+    dl.movie_work_dir = str(tmp_path / "123")
+    Path(dl.movie_work_dir).mkdir()
+    dl.part_file_path = str(tmp_path / "test.part")
+    audio, video = AudioStream(), VideoStream()
+    audio.stream_id, video.stream_id, video.height = "audio", "video", 480
+    dl.manifest = SimpleNamespace(base_stream_url="https://cdn.invalid/secret-token-123",
+        segment_templates={"v": {"timescale": "1", "duration": "2"}}, segment_duration=2,
+        total_number_of_data_segments=100, audio_stream=audio, video_stream=video)
+    dl._save_part_file(force=True)
+    assert "secret-token-123" not in Path(dl.part_file_path).read_text()
+    dl.manifest.base_stream_url = "https://cdn.invalid/new-token"
+    assert dl._load_part_file(dl.part_file_path) is not None
+    dl.manifest.segment_templates["v"]["duration"] = "3"
+    assert dl._load_part_file(dl.part_file_path) is None
+
+
+def test_partial_segment_selection_fails_before_download(tmp_path, monkeypatch, capsys):
+    instance, _ = _offline_downloader(tmp_path, monkeypatch)
+    instance.start_segment = 1
+    monkeypatch.setattr(instance, "_process_manifest", lambda movie: pytest.fail("must not request delivery"))
+    with pytest.raises(ValueError, match="partial segment ranges"):
+        instance.run()
+    assert not any(json.loads(line).get("event") == "complete" for line in capsys.readouterr().out.splitlines())
+
+
 def test_exhausted_required_segment_task_propagates_failure(tmp_path: Path, monkeypatch) -> None:
     from aebn_dl.downloader import Downloader
     from aebn_dl.models import VideoStream

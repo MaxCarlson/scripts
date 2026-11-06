@@ -528,11 +528,17 @@ class DomainIndex:
                 q.append(entry)
             return True
 
-    def requeue_unverified_aebn(self, verified_urls: set[str]) -> int:
+    def requeue_unverified_aebn(self, verified_urls: set[str], *, limit: int = 0) -> int:
         """Requeue old AEBN successes that lack current file-bound verification."""
         changed = 0
         with self._lock:
+            pending = {entry.url for queue in self._url_queues.values() for entry in queue
+                       if is_aebn_url(entry.url) and entry.url not in verified_urls}
+            pending.update(url for url in self._in_progress if is_aebn_url(url) and url not in verified_urls)
+            remaining = max(0, limit - len(pending))
             for url, status in list(self._finished.items()):
+                if changed >= remaining:
+                    break
                 if status.status not in {"downloaded", "already", "preexisting"}:
                     continue
                 if not is_aebn_url(url) or url in verified_urls:

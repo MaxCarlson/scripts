@@ -428,7 +428,7 @@ def test_reconciliation_rejects_two_second_video_with_full_scene_audio(tmp_path)
         assert scene["status"] == "scene_invalid"
         assert "video" in scene["status_detail"]
         evidence = json.loads(job["verification_json"])
-        assert evidence["verification_contract"] == 3
+        assert evidence["verification_contract"] == 4
         assert job["verification_status"] == "failed"
 
 
