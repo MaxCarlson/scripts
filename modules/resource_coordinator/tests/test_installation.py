@@ -328,12 +328,40 @@ def test_health_status_is_degraded_for_limit_mismatch_not_healthy_for_http_200()
             "credential_ready": True,
             "configured_power_limit_w": 550,
             "effective_power_limit_w": 600,
+            "configured_gpu_settings": {"memory_clock_mhz": 7001},
+            "gpu": {"memory_clock_mhz": 5000},
             "miner_owned": True,
         }
     )
 
     assert report["status"] == "degraded"
     assert "effective GPU power limit 600 W does not match configured 550 W" in report["warnings"]
+    assert any("observed GPU memory clock 5000 MHz" in item for item in report["warnings"])
+
+
+def test_doctor_reports_requested_gpu_flags_without_claiming_dynamic_clock_is_effective():
+    from resource_coordinator.config import CoordinatorConfig, ProcessConfig
+    from resource_coordinator.installation import _configured_gpu_settings
+
+    config = CoordinatorConfig(
+        processes={
+            "krig_miner": ProcessConfig(
+                name="krig_miner",
+                arguments=[
+                    "--gpu-plimit", "550", "--gpu-cclock", "2400",
+                    "--gpu-coffset", "225", "--gpu-mclock", "7001",
+                ],
+                backend="fake",
+            )
+        }
+    )
+
+    assert _configured_gpu_settings(config) == {
+        "power_limit_w": 550.0,
+        "core_clock_mhz": 2400.0,
+        "core_offset_mhz": 225.0,
+        "memory_clock_mhz": 7001.0,
+    }
 
 
 def test_health_status_reports_unavailable_task_inventory_as_degraded():
@@ -350,3 +378,13 @@ def test_health_status_reports_unavailable_task_inventory_as_degraded():
 
     assert report["status"] == "degraded"
     assert any("CIM access denied" in warning for warning in report["warnings"])
+
+
+def test_startup_task_health_requires_the_expected_service_identity(monkeypatch):
+    from resource_coordinator.installation import _task_identity_valid
+
+    monkeypatch.setattr("resource_coordinator.installation.getpass.getuser", lambda: "mcarls")
+
+    assert _task_identity_valid({"mode": "boot", "user_id": "S-1-5-18"})
+    assert _task_identity_valid({"mode": "logon", "user_id": "XERES\\mcarls"})
+    assert not _task_identity_valid({"mode": "logon", "user_id": "other-user"})

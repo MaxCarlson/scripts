@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import ctypes
+import getpass
 import json
 import os
 import re
@@ -142,6 +143,38 @@ def _configured_miner(config_path: Path) -> Optional[str]:
     return None
 
 
+def _configured_gpu_settings(config: Any) -> Dict[str, float]:
+    flags = {
+        "--gpu-plimit": "power_limit_w",
+        "--gpu-cclock": "core_clock_mhz",
+        "--gpu-coffset": "core_offset_mhz",
+        "--gpu-mclock": "memory_clock_mhz",
+    }
+    found: Dict[str, float] = {}
+    for process in config.processes.values():
+        arguments = process.arguments
+        for index, argument in enumerate(arguments[:-1]):
+            field = flags.get(argument)
+            if field is None:
+                continue
+            try:
+                found[field] = float(arguments[index + 1])
+            except (TypeError, ValueError):
+                continue
+    return found
+
+
+def _task_identity_valid(task: Dict[str, Any]) -> bool:
+    identity = str(task.get("user_id", "")).casefold().strip()
+    mode = task.get("mode")
+    if mode == "boot":
+        return identity in {"system", "nt authority\\system", "s-1-5-18"}
+    if mode != "logon":
+        return False
+    username = getpass.getuser().casefold()
+    return identity == username or identity.endswith("\\" + username)
+
+
 def render_launcher(paths: InstallationPaths) -> str:
     """Render the managed launcher while keeping all values as quoted literals."""
     modules = paths.repository / "modules"
@@ -204,6 +237,13 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
     effective = checks.get("effective_power_limit_w")
     if configured is not None and effective is not None and abs(float(configured) - float(effective)) > 0.5:
         warnings.append(f"effective GPU power limit {effective:g} W does not match configured {configured:g} W")
+    configured_memory = checks.get("configured_gpu_settings", {}).get("memory_clock_mhz")
+    observed_memory = (checks.get("gpu") or {}).get("memory_clock_mhz")
+    if configured_memory is not None and observed_memory is not None and abs(float(configured_memory) - float(observed_memory)) > 100:
+        warnings.append(
+            f"observed GPU memory clock {observed_memory:g} MHz does not match configured "
+            f"{configured_memory:g} MHz"
+        )
     if checks.get("miner_expected") and checks.get("miner_owned") is not True:
         warnings.append("configured miner is not running under coordinator ownership")
     if checks.get("upstream_ready") is False:
@@ -485,14 +525,8 @@ class ManagedInstallation:
             config = load_config(self.paths.config)
             checks["config_valid"] = True
             checks["processes"] = sorted(config.processes)
-            configured_limit = None
-            for process in config.processes.values():
-                for index, arg in enumerate(process.arguments[:-1]):
-                    if arg == "--gpu-plimit":
-                        try:
-                            configured_limit = float(process.arguments[index + 1])
-                        except ValueError:
-                            pass
+            checks["configured_gpu_settings"] = _configured_gpu_settings(config)
+            configured_limit = checks["configured_gpu_settings"].get("power_limit_w")
             checks["configured_power_limit_w"] = configured_limit
             checks["log_paths"] = {
                 name: {
@@ -525,7 +559,10 @@ class ManagedInstallation:
         checks["miner_owned"] = bool(miner.get("is_coordinator_owned"))
 
         tasks = [task for task in checks["tasks"] if task["owned"] and task["mode"] in {"boot", "logon"}]
-        checks["task_ready"] = any(task["enabled"] and task["run_level"] == "Highest" for task in tasks)
+        checks["task_ready"] = any(
+            task["enabled"] and task["run_level"] == "Highest" and _task_identity_valid(task)
+            for task in tasks
+        )
         if task_inventory_error:
             checks["task_ready"] = False
         try:
@@ -534,8 +571,21 @@ class ManagedInstallation:
                 capture_output=True, text=True, timeout=5, check=True,
             )
             row = next(csv.reader([result.stdout.strip()]))
-            checks["gpu"] = {"name": row[0], "power_limit_w": float(row[1]), "power_draw_w": float(row[2]),
-                             "graphics_clock_mhz": float(row[3]), "memory_clock_mhz": float(row[4])}
+            def number(value: str) -> Optional[float]:
+                try:
+                    return float(value.strip())
+                except ValueError:
+                    return None
+
+            checks["gpu"] = {
+                "name": row[0],
+                "power_limit_w": number(row[1]),
+                "power_draw_w": number(row[2]),
+                "graphics_clock_mhz": number(row[3]),
+                "memory_clock_mhz": number(row[4]),
+                "core_offset_mhz": None,
+                "core_offset_note": "NVIDIA nvidia-smi does not expose an effective live offset in this query.",
+            }
             checks["effective_power_limit_w"] = checks["gpu"]["power_limit_w"]
         except (OSError, subprocess.SubprocessError, ValueError, IndexError, StopIteration):
             checks["gpu"] = None
