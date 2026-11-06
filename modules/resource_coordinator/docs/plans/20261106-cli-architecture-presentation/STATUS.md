@@ -54,7 +54,13 @@ No live coordinator, miner, GPU, LM Studio, or Scheduled Task was queried or cha
 - `pyproject.toml`, `resource_coordinator/__init__.py`: Rich dependency and package version `0.11.0`.
 - `README.md`: command hierarchy and compatibility documentation.
 
-Pending: scoped final diff review, package-install verification if required by integration, checkpoint commit, and safe merge into the latest `main`. No live deployment is authorized by this phase.
+### Integration checkpoint
+
+- Commit `96991f3b251dc0f9fe4154a97fb76115e5e47d2c` was fast-forwarded into local `main` from the verified `c12779ab` base.
+- `main` was pushed to `origin`; GitHub's `main` ref was read back as `96991f3b251dc0f9fe4154a97fb76115e5e47d2c`.
+- The existing primary checkout changes in `docs/HANDOFF.md` and unrelated untracked paths were preserved. The Resource Coordinator feature worktree is clean.
+- Package install was not run because it would mutate the shared Python environment; the worktree package was imported via `PYTHONPATH`, Rich imports succeeded, and package/version/dependency metadata has a regression test.
+- No live deployment or TUI work was performed. The installed coordinator/miner still require a separately authorized upgrade to use this CLI.
 
 ## Initial repository facts
 
