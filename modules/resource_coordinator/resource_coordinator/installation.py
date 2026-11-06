@@ -167,6 +167,12 @@ def _configured_gpu_settings(config: Any) -> Dict[str, float]:
     return found
 
 
+def _effective_log_path(process_name: str, process: Any, log_directory: Path) -> Path:
+    """Resolve the path build_system will use for capture when config omits one."""
+    configured = getattr(process, "stdout_log_path", None)
+    return Path(configured).expanduser() if configured else log_directory / f"{process_name}.log"
+
+
 def _task_identity_valid(task: Dict[str, Any]) -> bool:
     identity = str(task.get("user_id", "")).casefold().strip()
     mode = task.get("mode")
@@ -288,6 +294,9 @@ def classify_doctor(checks: Dict[str, Any]) -> Dict[str, Any]:
         warnings.append("configured miner is not running under coordinator ownership")
     if checks.get("upstream_ready") is False:
         warnings.append("configured inference upstream is not responding")
+    for name, log_check in checks.get("log_paths", {}).items():
+        if log_check.get("parent_writable") is not True:
+            warnings.append(f"process output capture path for '{name}' is not writable")
     return {
         "status": "blocked" if blockers else ("degraded" if warnings else "healthy"),
         "warnings": warnings,
@@ -653,11 +662,10 @@ class ManagedInstallation:
             checks["configured_power_limit_w"] = configured_limit
             checks["log_paths"] = {
                 name: {
-                    "path": process.stdout_log_path,
-                    "exists": bool(process.stdout_log_path and Path(process.stdout_log_path).is_file()),
+                    "path": str(log_path := _effective_log_path(name, process, self.paths.logs)),
+                    "exists": log_path.is_file(),
                     "parent_writable": bool(
-                        process.stdout_log_path and Path(process.stdout_log_path).parent.exists()
-                        and os.access(Path(process.stdout_log_path).parent, os.W_OK)
+                        log_path.parent.exists() and os.access(log_path.parent, os.W_OK)
                     ),
                 }
                 for name, process in config.processes.items()
@@ -727,6 +735,7 @@ class ManagedInstallation:
             "miner_expected": checks["miner_expected"],
             "miner_owned": checks["miner_owned"],
             "upstream_ready": checks.get("upstream_ready"),
+            "log_paths": checks.get("log_paths", {}),
         }))
         return checks
 

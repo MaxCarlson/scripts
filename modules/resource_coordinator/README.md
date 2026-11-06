@@ -301,6 +301,12 @@ durable recovery state for an explicit retry.
 coordinator endpoint. It returns raw appended bytes. Stopping the viewer only
 ends log polling; it has no miner lifecycle effect.
 
+Coordinator-captured process output is append-only between restarts. To bound
+disk use, a file is rotated before a new miner launch once it reaches 64 MiB;
+the three most recent files are kept as `.1`, `.2`, and `.3` beside the active
+log. Rotation preserves prior bytes, and the log follower continues from the
+active file after a miner restart.
+
 ## Routes and limits
 
 - Protected inference routes include `/v1/chat/completions`, `/v1/completions`,

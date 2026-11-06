@@ -525,3 +525,34 @@ def test_startup_task_health_requires_the_expected_service_identity(monkeypatch)
     assert _task_identity_valid({"mode": "boot", "user_id": "S-1-5-18"})
     assert _task_identity_valid({"mode": "logon", "user_id": "XERES\\mcarls"})
     assert not _task_identity_valid({"mode": "logon", "user_id": "other-user"})
+
+
+def test_doctor_resolves_implicit_capture_path_to_managed_log_directory(tmp_path):
+    from resource_coordinator.installation import _effective_log_path
+
+    process = type("Process", (), {"stdout_log_path": None})()
+
+    assert _effective_log_path("krig_miner", process, tmp_path / "logs") == tmp_path / "logs" / "krig_miner.log"
+
+
+def test_doctor_preserves_explicit_capture_path(tmp_path):
+    from resource_coordinator.installation import _effective_log_path
+
+    explicit = tmp_path / "custom" / "miner-output.txt"
+    process = type("Process", (), {"stdout_log_path": str(explicit)})()
+
+    assert _effective_log_path("krig_miner", process, tmp_path / "logs") == explicit
+
+
+def test_doctor_degrades_when_configured_log_directory_is_not_writable():
+    from resource_coordinator.installation import classify_doctor
+
+    report = classify_doctor({
+        "service_ready": True,
+        "credential_ready": True,
+        "task_ready": True,
+        "log_paths": {"krig_miner": {"parent_writable": False}},
+    })
+
+    assert report["status"] == "degraded"
+    assert any("capture path" in warning for warning in report["warnings"])

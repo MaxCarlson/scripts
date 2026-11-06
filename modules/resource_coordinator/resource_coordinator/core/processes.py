@@ -20,6 +20,29 @@ from .events import EventDispatcher
 
 logger = logging.getLogger(__name__)
 
+MINER_LOG_MAX_BYTES = 64 * 1024 * 1024
+MINER_LOG_BACKUPS = 3
+
+
+def _rotate_log_file(path: Path, *, max_bytes: int = MINER_LOG_MAX_BYTES,
+                     backups: int = MINER_LOG_BACKUPS) -> None:
+    """Rotate an oversized append-only process log while preserving bounded history."""
+    if max_bytes <= 0 or backups < 0:
+        raise ValueError("max_bytes must be positive and backups cannot be negative")
+    if not path.exists() or path.stat().st_size < max_bytes:
+        return
+    if backups == 0:
+        path.write_bytes(b"")
+        return
+    oldest = path.with_name(f"{path.name}.{backups}")
+    oldest.unlink(missing_ok=True)
+    for index in range(backups - 1, 0, -1):
+        source = path.with_name(f"{path.name}.{index}")
+        if source.exists():
+            os.replace(source, path.with_name(f"{path.name}.{index + 1}"))
+    os.replace(path, path.with_name(f"{path.name}.1"))
+    path.touch()
+
 
 class ProcessState(str, Enum):
     STOPPED = "stopped"
@@ -384,6 +407,7 @@ class WindowsProcessBackend:
             self._close_log_file()
             log_dir = Path(self.stdout_log_path).parent
             log_dir.mkdir(parents=True, exist_ok=True)
+            _rotate_log_file(Path(self.stdout_log_path))
             self._log_file_handle = open(self.stdout_log_path, "a", encoding="utf-8", buffering=1)
             launch_kwargs["stdout"] = self._log_file_handle
             launch_kwargs["stderr"] = subprocess.STDOUT
