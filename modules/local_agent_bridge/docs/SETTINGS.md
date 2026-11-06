@@ -40,6 +40,15 @@ separate `--update-opencode-provider` correction option. Display names, extra
 model fields such as `limit.input`, quantization/runtime options, comments, and
 other providers remain intact.
 
+The LM Studio control API stays on `--lms-port` (default `1234`) for model
+listing, load state, and model operations. OpenCode inference defaults to the
+protected coordinator at `http://127.0.0.1:1235/v1`; model switches preserve
+that route and refuse an existing direct `:1234` provider unless
+`--update-opencode-provider` is explicitly supplied. Set `--inference-url` or
+`LOCAL_AGENT_INFERENCE_URL` to an OpenAI-compatible Monitor URL when that
+Monitor is configured to forward upstream through the coordinator. The bridge
+rejects loopback port `1234` as an inference target.
+
 Run `local-agent model verify qwen38_23GB -c 65536 -o 8192 -d C:\\src\\project -j`
 to compare the requested pair, static OpenCode alias, effective OpenCode provider
 resolution for that project directory, and the context LM Studio reports as

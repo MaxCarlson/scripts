@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import ipaddress
 import json
 import os
 import re
@@ -39,7 +40,7 @@ import time
 import tomllib
 import urllib.error
 import urllib.request
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlsplit, urlunsplit
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -55,6 +56,7 @@ QWEN38_23GB_OUTPUT_TOKENS = 8192
 DEFAULT_GPU = "max"
 DEFAULT_LMS_PORT = 1234
 DEFAULT_OPENCODE_PORT = 4096
+DEFAULT_INFERENCE_URL = os.environ.get("LOCAL_AGENT_INFERENCE_URL", "http://127.0.0.1:1235/v1")
 
 PROVIDER_ID = "lmstudio"
 BRIDGE_NAME = "opencode_worker"
@@ -822,8 +824,44 @@ def resolve_run_limits(
     return context, output
 
 
+def normalize_inference_url(inference_url: str | None = None) -> str:
+    """Return an OpenAI-compatible inference base URL, defaulting to the protected coordinator."""
+    candidate = (inference_url or DEFAULT_INFERENCE_URL).strip().rstrip("/")
+    parsed = urlsplit(candidate)
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or not parsed.hostname
+        or parsed.username
+        or parsed.password
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Inference URL must be an absolute HTTP(S) URL")
+    try:
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Inference URL contains an invalid port") from exc
+    hostname = parsed.hostname.casefold()
+    try:
+        is_loopback = ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        is_loopback = hostname == "localhost"
+    if is_loopback and port == DEFAULT_LMS_PORT:
+        raise ValueError("Inference URL cannot point directly to the LM Studio control port 1234")
+    path = parsed.path.rstrip("/")
+    if not path.endswith("/v1"):
+        path += "/v1"
+    return urlunsplit((parsed.scheme, parsed.netloc, path, parsed.query, parsed.fragment))
+
+
 def validate_opencode_provider_config(
-    cfg: dict[str, Any], nickname: str, lms_port: int, *, overwrite: bool = False
+    cfg: dict[str, Any],
+    nickname: str,
+    lms_port: int,
+    *,
+    inference_url: str | None = None,
+    overwrite: bool = False,
 ) -> None:
     """Reject incompatible explicit provider data before a run changes runtime state."""
     providers = cfg.get("provider")
@@ -838,7 +876,7 @@ def validate_opencode_provider_config(
             raise RuntimeError(f"OpenCode provider '{PROVIDER_ID}' options are not an object; reconcile them first.")
         expected = {
             "npm": "@ai-sdk/openai-compatible",
-            "baseURL": f"http://127.0.0.1:{lms_port}/v1",
+            "baseURL": normalize_inference_url(inference_url),
         }
         values = {"npm": provider.get("npm")}
         if isinstance(options, dict):
@@ -848,7 +886,7 @@ def validate_opencode_provider_config(
             is_explicit = key in provider if key == "npm" else isinstance(options, dict) and key in options
             if is_explicit and current != wanted and not overwrite:
                 raise RuntimeError(
-                    f"OpenCode provider '{PROVIDER_ID}' {key} conflicts with LM Studio setup; "
+                    f"OpenCode provider '{PROVIDER_ID}' {key} conflicts with the configured inference route; "
                     "pass --update-opencode-provider to correct it explicitly."
                 )
         models = provider.get("models")
@@ -857,6 +895,31 @@ def validate_opencode_provider_config(
         alias = models.get(nickname) if isinstance(models, dict) else None
         if alias is not None and not isinstance(alias, dict):
             raise RuntimeError(f"OpenCode alias '{nickname}' is not an object; reconcile it before running.")
+
+
+def configure_opencode_inference_route(
+    cfg: dict[str, Any],
+    nickname: str,
+    lms_port: int,
+    inference_url: str | None = None,
+    *,
+    overwrite: bool = False,
+) -> str:
+    """Validate and install the protected provider endpoint without changing LM Studio control routing."""
+    provider_url = normalize_inference_url(inference_url)
+    validate_opencode_provider_config(cfg, nickname, lms_port, inference_url=provider_url, overwrite=overwrite)
+    providers = cfg.setdefault("provider", {})
+    provider = providers.setdefault(PROVIDER_ID, {})
+    if overwrite:
+        provider["npm"] = "@ai-sdk/openai-compatible"
+    else:
+        provider.setdefault("npm", "@ai-sdk/openai-compatible")
+    options = provider.setdefault("options", {})
+    if overwrite:
+        options["baseURL"] = provider_url
+    else:
+        options.setdefault("baseURL", provider_url)
+    return provider_url
 
 
 def extract_model_spec_from_opencode(cfg: dict[str, Any], nickname: str) -> str | None:
@@ -884,30 +947,18 @@ def update_opencode_for_model(
     *,
     overwrite_limits: bool = False,
     overwrite_provider: bool = False,
+    inference_url: str | None = None,
 ) -> bool:
     cfg = load_opencode_config()
     if context_limit is not None and output_limit is not None:
         validate_model_limits(context_limit, output_limit)
-    validate_opencode_provider_config(cfg, nickname, lms_port, overwrite=overwrite_provider)
+    configure_opencode_inference_route(cfg, nickname, lms_port, inference_url, overwrite=overwrite_provider)
     if "$schema" not in cfg:
         cfg["$schema"] = "https://opencode.ai/config.json"
-    if not isinstance(cfg.get("provider"), dict):
-        cfg["provider"] = {}
-    providers = cfg["provider"]
-    if not isinstance(providers.get(PROVIDER_ID), dict):
-        providers[PROVIDER_ID] = {}
-    lms_prov = providers[PROVIDER_ID]
+    lms_prov = cfg["provider"][PROVIDER_ID]
     if overwrite_provider:
         lms_prov["npm"] = "@ai-sdk/openai-compatible"
-    else:
-        lms_prov.setdefault("npm", "@ai-sdk/openai-compatible")
     lms_prov.setdefault("name", "LM Studio Local")
-    if not isinstance(lms_prov.get("options"), dict):
-        lms_prov["options"] = {}
-    if overwrite_provider:
-        lms_prov["options"]["baseURL"] = f"http://127.0.0.1:{lms_port}/v1"
-    else:
-        lms_prov["options"].setdefault("baseURL", f"http://127.0.0.1:{lms_port}/v1")
 
     if not isinstance(lms_prov.get("models"), dict):
         lms_prov["models"] = {}
@@ -954,6 +1005,7 @@ def verify_model_configuration(
     *,
     opencode_port: int = DEFAULT_OPENCODE_PORT,
     lms_port: int = DEFAULT_LMS_PORT,
+    inference_url: str | None = None,
     directory: str | None = None,
     expected_context: int | None = None,
     expected_output: int | None = None,
@@ -976,9 +1028,9 @@ def verify_model_configuration(
     options = provider.get("options", {}) if isinstance(provider, dict) else {}
     base_url = options.get("baseURL") if isinstance(options, dict) else None
     provider_npm = provider.get("npm") if isinstance(provider, dict) else None
-    expected_base = f"http://127.0.0.1:{lms_port}/v1"
+    expected_base = normalize_inference_url(inference_url)
     if base_url != expected_base:
-        diagnostics.append(f"Configured LM Studio baseURL is '{base_url or 'unset'}', expected '{expected_base}'.")
+        diagnostics.append(f"Configured inference baseURL is '{base_url or 'unset'}', expected '{expected_base}'.")
     if provider_npm != "@ai-sdk/openai-compatible":
         diagnostics.append(
             f"Configured LM Studio provider package is '{provider_npm or 'unset'}', expected '@ai-sdk/openai-compatible'."
@@ -1036,7 +1088,7 @@ def verify_model_configuration(
                 )
         effective_options = effective_provider.get("options", {}) if isinstance(effective_provider, dict) else {}
         effective_base = effective_options.get("baseURL") if isinstance(effective_options, dict) else None
-        if effective_base and effective_base != expected_base:
+        if effective_base != expected_base:
             diagnostics.append(f"Effective OpenCode provider baseURL is '{effective_base}', expected '{expected_base}'.")
         if effective_context != configured_context or effective_output != configured_output:
             diagnostics.append(
@@ -1261,13 +1313,27 @@ def remove_agy_mcp_configs() -> None:
 # ---------------------------------------------------------------------------
 # Named Model Delete & Rename Operations
 # ---------------------------------------------------------------------------
-def handle_delete_model(nickname: str, opencode_port: int) -> None:
+def handle_delete_model(
+    nickname: str,
+    opencode_port: int,
+    lms_port: int = DEFAULT_LMS_PORT,
+    *,
+    inference_url: str | None = None,
+    overwrite_provider: bool = False,
+) -> None:
     print_header(f"Removing named model '{nickname}'...")
 
     cfg = load_opencode_config()
     models_map = get_configured_models_map(cfg)
     if nickname not in models_map:
         raise RuntimeError(f"Nickname '{nickname}' does not exist in {OPENCODE_CONFIG_PATH}.")
+
+    remaining = [name for name in models_map if name != nickname]
+    switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(remaining)
+    if switches_active:
+        configure_opencode_inference_route(
+            cfg, remaining[0], lms_port, inference_url, overwrite=overwrite_provider
+        )
 
     loaded, _ = get_loaded_instance(nickname)
     if loaded is not None:
@@ -1281,6 +1347,12 @@ def handle_delete_model(nickname: str, opencode_port: int) -> None:
         cfg = load_opencode_config()
         models_map = get_configured_models_map(cfg)
         if nickname in models_map:
+            remaining = [name for name in models_map if name != nickname]
+            switches_active = cfg.get("model") == f"{PROVIDER_ID}/{nickname}" and bool(remaining)
+            if switches_active:
+                configure_opencode_inference_route(
+                    cfg, remaining[0], lms_port, inference_url, overwrite=overwrite_provider
+                )
             del models_map[nickname]
             print_ok(f"Removed '{nickname}' from {OPENCODE_CONFIG_PATH}")
         else:
@@ -1317,7 +1389,15 @@ def handle_delete_model(nickname: str, opencode_port: int) -> None:
         print_info(f"OpenCode config file {OPENCODE_CONFIG_PATH} does not exist.")
 
 
-def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_port: int) -> None:
+def handle_rename_model(
+    old_nick: str,
+    new_nick: str,
+    lms_port: int,
+    opencode_port: int,
+    *,
+    inference_url: str | None = None,
+    overwrite_provider: bool = False,
+) -> None:
     print_header(f"Renaming model nickname '{old_nick}' -> '{new_nick}'...")
     if not re.match(r"^[A-Za-z0-9][A-Za-z0-9._-]*$", new_nick):
         raise RuntimeError(f"Invalid new nickname '{new_nick}'.")
@@ -1331,6 +1411,12 @@ def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_po
     if new_nick in models_map:
         raise RuntimeError(f"Nickname '{new_nick}' already exists; choose an unused nickname.")
 
+    was_active = cfg.get("model") == f"{PROVIDER_ID}/{old_nick}"
+    if was_active:
+        configure_opencode_inference_route(
+            cfg, new_nick, lms_port, inference_url, overwrite=overwrite_provider
+        )
+
     loaded, _ = get_loaded_instance(old_nick)
     if loaded is not None and loaded.context_length is None:
         raise RuntimeError(
@@ -1340,7 +1426,6 @@ def handle_rename_model(old_nick: str, new_nick: str, lms_port: int, opencode_po
 
     entry = models_map.pop(old_nick)
     models_map[new_nick] = entry
-    was_active = cfg.get("model") == f"{PROVIDER_ID}/{old_nick}"
     if was_active:
         cfg["model"] = f"{PROVIDER_ID}/{new_nick}"
 
@@ -1548,6 +1633,7 @@ def verify_opencode_provider(
     nickname: str,
     context_limit: int | None = None,
     output_limit: int | None = None,
+    inference_url: str | None = None,
 ) -> tuple[bool, str]:
     cfg = http_get_json(f"{opencode_url}/config")
     if not cfg:
@@ -1563,6 +1649,12 @@ def verify_opencode_provider(
     lm_prov = next((p for p in providers if p.get("id") == PROVIDER_ID), None)
     if not lm_prov:
         return False, f"provider '{PROVIDER_ID}' not loaded"
+    options = lm_prov.get("options") if isinstance(lm_prov, dict) else None
+    effective_base = options.get("baseURL") if isinstance(options, dict) else None
+    expected_base = normalize_inference_url(inference_url)
+    if effective_base != expected_base:
+        configured_base = effective_base or "unset"
+        return False, f"provider baseURL is '{configured_base}', expected '{expected_base}'"
     models = lm_prov.get("models") or {}
     if nickname not in models:
         return False, f"nickname '{nickname}' not listed in OpenCode provider models"
@@ -1602,6 +1694,7 @@ def run_opencode_server_foreground(
     enable_agy: bool,
     context_limit: int | None = None,
     output_limit: int | None = None,
+    inference_url: str | None = None,
 ) -> None:
     opencode_url = f"http://127.0.0.1:{opencode_port}"
     print_header(f"Starting/verifying OpenCode HTTP server on 127.0.0.1:{opencode_port}...")
@@ -1614,7 +1707,7 @@ def run_opencode_server_foreground(
         raise RuntimeError(f'Existing OpenCode service is unhealthy at {opencode_url}; inspect it before restarting.')
 
     if health and health.get("healthy"):
-        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit)
+        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit, inference_url)
         if ok:
             opencode_state = f"Already running (v{health.get('version', 'unknown')})"
             print_ok(
@@ -1654,7 +1747,7 @@ def run_opencode_server_foreground(
             raise RuntimeError(
                 f"OpenCode server failed health check at {opencode_url}/global/health."
             )
-        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit)
+        ok, reason = verify_opencode_provider(opencode_url, nickname, context_limit, output_limit, inference_url)
         if not ok:
             if proc:
                 proc.terminate()
@@ -1667,6 +1760,7 @@ def run_opencode_server_foreground(
     # Print active servers summary banner
     print_header("Active Services & Bridge Status")
     print_ok(f"LM Studio HTTP API  : {lms_state} -> http://127.0.0.1:{lms_port}/v1 (model: '{nickname}')")
+    print_ok(f"OpenCode inference : {normalize_inference_url(inference_url)}")
     print_ok(f"OpenCode HTTP Server: {opencode_state} -> {opencode_url} ({PROVIDER_ID}/{nickname})")
     if enable_codex:
         print_ok(f"Codex MCP Bridge    : Configured ('{BRIDGE_NAME}' in {CODEX_CONFIG_PATH})")
@@ -1823,7 +1917,7 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
     parser.add_argument(
         "--update-opencode-provider",
         action="store_true",
-        help="Explicitly replace conflicting LM Studio provider npm/baseURL values in OpenCode config.",
+        help="Explicitly replace conflicting OpenCode provider package/baseURL values with the configured inference route.",
     )
     parser.add_argument(
         "-g",
@@ -1879,6 +1973,15 @@ def build_parser(*, runtime_only: bool = False) -> argparse.ArgumentParser:
         type=int,
         default=DEFAULT_LMS_PORT,
         help=f"Port for LM Studio local HTTP server (default: {DEFAULT_LMS_PORT}).",
+    )
+    parser.add_argument(
+        "-i",
+        "--inference-url",
+        default=DEFAULT_INFERENCE_URL,
+        help=(
+            "OpenAI-compatible inference route configured in OpenCode (default: protected coordinator at "
+            f"{DEFAULT_INFERENCE_URL}; set LOCAL_AGENT_INFERENCE_URL or pass this option for an LLM Monitor route)."
+        ),
     )
     parser.add_argument(
         "--models-dir",
@@ -2002,7 +2105,13 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
 
         # 2. Handle `-D / --delete-model`
         if args.delete_model:
-            handle_delete_model(args.delete_model.strip(), args.opencode_port)
+            handle_delete_model(
+                args.delete_model.strip(),
+                args.opencode_port,
+                args.lms_port,
+                inference_url=args.inference_url,
+                overwrite_provider=args.update_opencode_provider,
+            )
             return 0
 
         # 3. Handle `--rename-model`
@@ -2012,6 +2121,8 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
                 args.rename_model[1].strip(),
                 args.lms_port,
                 args.opencode_port,
+                inference_url=args.inference_url,
+                overwrite_provider=args.update_opencode_provider,
             )
             return 0
 
@@ -2035,6 +2146,7 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             cfg_before_run,
             nickname,
             args.lms_port,
+            inference_url=args.inference_url,
             overwrite=args.update_opencode_provider,
         )
         effective_context, effective_output = resolve_run_limits(
@@ -2140,6 +2252,7 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             effective_output,
             overwrite_limits=args.update_model_limits,
             overwrite_provider=args.update_opencode_provider,
+            inference_url=args.inference_url,
         )
         print_ok(
             f"OpenCode config ({OPENCODE_CONFIG_PATH}): "
@@ -2181,7 +2294,8 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
                 [c for c, en in [("Codex", enable_codex), ("Gemini `agy`", enable_agy)] if en]
             ) or "OpenCode"
             print(
-                f"\n{Style.GREEN}{Style.BOLD}==> CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> LM Studio/{nickname} ({selection.display}){Style.RESET}"
+                f"\n{Style.GREEN}{Style.BOLD}==> CONFIGURED: [{clients_str}] -> {BRIDGE_NAME} -> OpenCode -> "
+                f"{normalize_inference_url(args.inference_url)} ({nickname}; {selection.display}){Style.RESET}"
             )
             return 0
 
@@ -2195,6 +2309,7 @@ def main(argv: list[str] | None = None, *, runtime_only: bool = False) -> int:
             enable_agy,
             effective_context,
             effective_output,
+            args.inference_url,
         )
         return 0
 

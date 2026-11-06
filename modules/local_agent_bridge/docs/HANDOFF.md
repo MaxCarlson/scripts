@@ -1,5 +1,27 @@
 # Local agent setup handoff
 
+## Protected inference route regression — 2026-11-06
+
+Branch: `feature/miner-inference-coordination-20261102`, continuing the
+Resource Coordinator worktree at `C:/Users/mcarls/src/scripts/.worktrees/miner-inference-coordination-20261102`.
+
+The LM Studio management API remains on `--lms-port` (default `1234`). OpenCode
+inference now defaults to `http://127.0.0.1:1235/v1`, with an explicit
+`--inference-url` / `LOCAL_AGENT_INFERENCE_URL` override for an OpenAI-compatible
+Monitor that forwards through the coordinator. Reconfiguration, active rename,
+and active delete switches preserve the inference route and fail closed on a
+direct loopback `:1234` provider unless `--update-opencode-provider` is used.
+`model verify` now checks both static and effective OpenCode provider URLs.
+No user profile, running OpenCode server, Codex worker, or AGY worker was
+inspected or changed; their runtime state remains unverified.
+
+Offline verification against this worktree source: `model_limits_test.py`,
+`audit_test.py` excluding its Git Bash environment test, and the model parser
+test passed (52 passed, 1 deselected); Ruff passed on changed Python paths.
+Next: finish review, commit the bridge routing change, then continue the
+coordinator manual controls and gaming workflow. Do not run live model/config
+operations as part of offline verification.
+
 ## P15a MTP structural inspection — 2026-11-02
 
 Branch: `agent/local-inference-p15a-20261102`. The read-only inspector validates every descriptor payload range for overlap,

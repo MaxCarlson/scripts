@@ -69,7 +69,7 @@ def test_opencode_model_limits_are_written_without_losing_user_fields(opencode_c
     assert model["options"] == {"temperature": 0.2}
     assert saved["provider"]["lmstudio"]["options"] == {
         "headers": {"X-User": "keep"},
-        "baseURL": "http://127.0.0.1:1234/v1",
+        "baseURL": "http://127.0.0.1:1235/v1",
     }
     assert saved["provider"]["other"] == {"models": {"keep": {"name": "untouched"}}}
     assert saved["permission"] == {"bash": "ask"}
@@ -141,7 +141,7 @@ def test_opencode_jsonc_comments_and_structure_survive_limit_updates(opencode_co
     }
     assert saved["provider"]["lmstudio"]["options"] == {
         "headers": {"X-User": "keep"},
-        "baseURL": "http://127.0.0.1:1234/v1",
+        "baseURL": "http://127.0.0.1:1235/v1",
     }
     assert saved["permission"]["bash"] == "ask"
 
@@ -173,8 +173,104 @@ def test_opencode_provider_conflict_requires_explicit_correction(opencode_config
     saved = json.loads(opencode_config.read_text(encoding="utf-8"))
     provider = saved["provider"]["lmstudio"]
     assert provider["npm"] == "@ai-sdk/openai-compatible"
-    assert provider["options"]["baseURL"] == "http://127.0.0.1:1234/v1"
+    assert provider["options"]["baseURL"] == "http://127.0.0.1:1235/v1"
     assert provider["options"]["headers"] == {"X-User": "keep"}
+
+
+def test_inference_route_defaults_to_coordinator_and_cannot_fall_back_to_lm_studio(opencode_config):
+    opencode_config.parent.mkdir(parents=True)
+    opencode_config.write_text(
+        json.dumps(
+            {
+                "provider": {
+                    "lmstudio": {
+                        "options": {"baseURL": "http://127.0.0.1:1234/v1"},
+                        "models": {"qwen": {"limit": {"context": 32768, "output": 4096}}},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(RuntimeError, match="--update-opencode-provider"):
+        cli.update_opencode_for_model("qwen", "qwen/Qwen3", 1234, 32768, 4096)
+
+    cli.update_opencode_for_model("qwen", "qwen/Qwen3", 1234, 32768, 4096, overwrite_provider=True)
+    saved = json.loads(opencode_config.read_text(encoding="utf-8"))
+    assert saved["provider"]["lmstudio"]["options"]["baseURL"] == "http://127.0.0.1:1235/v1"
+
+
+def test_explicit_inference_route_supports_monitor_and_rejects_direct_control_port(opencode_config):
+    assert cli.normalize_inference_url("http://127.0.0.1:4567/monitor") == "http://127.0.0.1:4567/monitor/v1"
+    with pytest.raises(ValueError, match="control port 1234"):
+        cli.normalize_inference_url("http://localhost:1234/v1")
+
+    opencode_config.parent.mkdir(parents=True)
+    opencode_config.write_text("{}", encoding="utf-8")
+    cli.update_opencode_for_model(
+        "qwen", "qwen/Qwen3", 1234, inference_url="http://127.0.0.1:4567/monitor"
+    )
+    saved = json.loads(opencode_config.read_text(encoding="utf-8"))
+    assert saved["provider"]["lmstudio"]["options"]["baseURL"] == "http://127.0.0.1:4567/monitor/v1"
+
+
+def test_active_rename_preserves_protected_route_and_rejects_direct_route(opencode_config, monkeypatch):
+    opencode_config.parent.mkdir(parents=True)
+    opencode_config.write_text(
+        json.dumps(
+            {
+                "model": "lmstudio/qwen",
+                "provider": {
+                    "lmstudio": {
+                        "options": {"baseURL": "http://127.0.0.1:1234/v1"},
+                        "models": {"qwen": {"limit": {"context": 32768, "output": 4096}}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    before = opencode_config.read_bytes()
+    with pytest.raises(RuntimeError, match="--update-opencode-provider"):
+        cli.handle_rename_model("qwen", "qwen-renamed", 1234, 4096)
+    assert opencode_config.read_bytes() == before
+
+    monkeypatch.setattr(cli, "get_loaded_instance", lambda _: (None, ""))
+    monkeypatch.setattr(cli, "update_codex_mcp_toml", lambda *args: True)
+    monkeypatch.setattr(cli, "update_agy_mcp_configs", lambda *args: (True, ("global", "cli")))
+    cli.handle_rename_model("qwen", "qwen-renamed", 1234, 4096, overwrite_provider=True)
+    saved = json.loads(opencode_config.read_text(encoding="utf-8"))
+    assert saved["provider"]["lmstudio"]["options"]["baseURL"] == "http://127.0.0.1:1235/v1"
+
+
+def test_active_delete_switch_uses_coordinator_route(opencode_config, monkeypatch):
+    opencode_config.parent.mkdir(parents=True)
+    opencode_config.write_text(
+        json.dumps(
+            {
+                "model": "lmstudio/qwen",
+                "provider": {
+                    "lmstudio": {
+                        "models": {
+                            "qwen": {"limit": {"context": 32768, "output": 4096}},
+                            "other": {"limit": {"context": 32768, "output": 4096}},
+                        }
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "get_loaded_instance", lambda _: (None, ""))
+    monkeypatch.setattr(cli, "update_codex_mcp_toml", lambda *args: True)
+    monkeypatch.setattr(cli, "update_agy_mcp_configs", lambda *args: (True, ("global", "cli")))
+
+    cli.handle_delete_model("qwen", 4096)
+
+    saved = json.loads(opencode_config.read_text(encoding="utf-8"))
+    assert saved["model"] == "lmstudio/other"
+    assert saved["provider"]["lmstudio"]["options"]["baseURL"] == "http://127.0.0.1:1235/v1"
 
 
 def test_run_limits_keep_32k_default_and_use_named_profile_output(opencode_config):
@@ -271,7 +367,7 @@ def test_model_verify_reports_static_effective_and_loaded_values(opencode_config
                 "provider": {
                     "lmstudio": {
                         "npm": "@ai-sdk/openai-compatible",
-                        "options": {"baseURL": "http://127.0.0.1:1234/v1"},
+                        "options": {"baseURL": "http://127.0.0.1:1235/v1"},
                         "models": {"qwen": {"limit": {"context": 65536, "output": 8192}}},
                     }
                 },
@@ -286,7 +382,11 @@ def test_model_verify_reports_static_effective_and_loaded_values(opencode_config
         if "/config/providers" in url:
             return {
                 "providers": [
-                    {"id": "lmstudio", "models": {"qwen": {"limit": {"context": 65536, "output": 8192}}}}
+                    {
+                        "id": "lmstudio",
+                        "options": {"baseURL": "http://127.0.0.1:1235/v1"},
+                        "models": {"qwen": {"limit": {"context": 65536, "output": 8192}}},
+                    }
                 ],
                 "default": {"lmstudio": "qwen"},
             }
@@ -320,7 +420,7 @@ def test_model_verify_reports_static_effective_and_loaded_values(opencode_config
         "alias": "qwen",
         "context": 65536,
         "output": 8192,
-        "base_url": None,
+        "base_url": "http://127.0.0.1:1235/v1",
     }
     assert result["loaded_lm_studio"]["context"] == 65536
     assert any("directory=" in url and "project+space" in url for url in requests)
@@ -335,7 +435,7 @@ def test_model_verify_static_fallback_is_explicitly_lower_confidence(opencode_co
                 "provider": {
                     "lmstudio": {
                         "npm": "@ai-sdk/openai-compatible",
-                        "options": {"baseURL": "http://127.0.0.1:1234/v1"},
+                        "options": {"baseURL": "http://127.0.0.1:1235/v1"},
                         "models": {"qwen": {"limit": {"context": 32768, "output": 4096}}},
                     }
                 },
@@ -352,6 +452,31 @@ def test_model_verify_static_fallback_is_explicitly_lower_confidence(opencode_co
     assert result["loaded_lm_studio"]["context"] is None
     assert result["requested"] == {"context": None, "output": None}
     assert any("offline" in warning.lower() for warning in result["warnings"])
+
+
+def test_model_verify_accepts_explicit_monitor_route(opencode_config, monkeypatch, capsys):
+    opencode_config.parent.mkdir(parents=True)
+    opencode_config.write_text(
+        json.dumps(
+            {
+                "model": "lmstudio/qwen",
+                "provider": {
+                    "lmstudio": {
+                        "npm": "@ai-sdk/openai-compatible",
+                        "options": {"baseURL": "http://127.0.0.1:4567/monitor/v1"},
+                        "models": {"qwen": {"limit": {"context": 32768, "output": 4096}}},
+                    }
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(cli, "http_get_json", lambda *a, **k: None)
+    monkeypatch.setattr(cli, "get_loaded_instance", lambda _: (None, ""))
+
+    assert main(["model", "verify", "qwen", "--inference-url", "http://127.0.0.1:4567/monitor", "-j"]) == 0
+    result = json.loads(capsys.readouterr().out)
+    assert result["configured"]["base_url"] == "http://127.0.0.1:4567/monitor/v1"
 
 
 def test_model_verify_detects_configured_and_effective_mismatches(opencode_config, monkeypatch, capsys):
