@@ -258,5 +258,3 @@ class ReconciliationStore:
             "INSERT INTO settings(key,value_json) VALUES(?,?) ON CONFLICT(key) DO UPDATE SET value_json=excluded.value_json",
             (key, json.dumps(value, ensure_ascii=False)),
         )
-
-\n
