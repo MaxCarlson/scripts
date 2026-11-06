@@ -3,7 +3,8 @@
 - Branch: `codex/ytaedl-priority-file-queue-20261106`
 - Worktree: `.worktrees/ytaedl-priority-file-queue-20261106`
 - Base: `86c106bc2176e16a9646df3f8ed7c802bf927fb1`
-- State: review corrections implemented and validated; ready for feature-branch commit/push.
+- State: review corrections validated, committed, and pushed; awaiting explicit merge approval.
+- Correction commit: `24582d1a9a2e8a9da93d5d2516295d70d694d93f`.
 - Review findings addressed: `-H` now bounds initial/runtime worker slots while
   `-t` requests initial workers; `-pf/--priority-file-scheduling` parses both
   `file` and `url`; URL mode retries idle workers periodically and keeps queued
