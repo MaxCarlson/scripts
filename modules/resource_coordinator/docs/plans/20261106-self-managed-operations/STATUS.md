@@ -52,7 +52,7 @@ Continue P1/P2 acceptance without live service disruption: review the GPU policy
 - [x] Documented `resource-coordinator upgrade` in the module README and advanced package version to 0.10.0.
 - [x] Focused offline installation/runtime-identity suite passed after the final change; async lifecycle/safety suite passed in the normal-permission runner. Scoped Ruff, package compileall and `git diff --check` passed.
 - [ ] Windows Task Scheduler/UAC execution, migration from the actual legacy task, and live GPU/service transition remain unverified. No production coordinator, miner, task, GPU, or LM Studio state was changed. Do not deploy as part of this source checkpoint.
-- [ ] Review and integrate the worktree branch into the latest `main` only after current remote state and concurrent work are checked; the primary checkout remains on `main` with its unrelated dirty/untracked files preserved.
+- [x] Fetched and verified `origin/main` at `9d64dd55`, confirmed no competing active agent, then fast-forwarded the validated worktree commit into local `main` and pushed it. Integrated `main` is `4b3afd43`; unrelated dirty/untracked primary-checkout files remain preserved. No live deployment was performed.
 
 ## Work completed in current execution
 
