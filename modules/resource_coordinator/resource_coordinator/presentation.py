@@ -312,6 +312,72 @@ def render_upgrade_result(
         console.print(Text(f"Recovery receipt  {data['receipt']}"))
 
 
+def render_recovery_result(
+    data: Mapping[str, Any], *, stream: Optional[TextIO] = None,
+    color: Optional[str] = None, width: Optional[int] = None,
+) -> None:
+    """Render the actionable recovery summary without dumping nested evidence."""
+    data = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    action = str(data.get("action") or "status")
+    status = str(data.get("status") or "unknown").replace("_", "-")
+    heading = Text(f"Resource Coordinator Recovery - {action.title()}")
+    heading.append("  ")
+    heading.append(status.upper(), style=_status_style(status))
+    console.print(heading)
+
+    task = data.get("task") if isinstance(data.get("task"), Mapping) else {}
+    listener = data.get("listener") if isinstance(data.get("listener"), Mapping) else {}
+    attribution = data.get("task_attribution") if isinstance(data.get("task_attribution"), Mapping) else {}
+    miner_owned = data.get("miner_owned")
+    ownership = "Coordinator" if miner_owned is True else "Unverified" if miner_owned is None else "External"
+    _table("Current state", [
+        ("Coordinator", data.get("service_state") or "Unavailable"),
+        ("Listener", f"Verified — PID {listener['pid']}" if listener.get("pid") else
+         "Absent" if data.get("listener_discovery") == "not-found" else "Unverified"),
+        ("Startup task", task.get("name") or "Unverified"),
+        ("Task attribution", "Verified" if attribution.get("verified") is True else
+         "Unverified" if data.get("listener") else "Not evaluated"),
+        ("Miner", str(data.get("miner_state") or "Unavailable").replace("_", " ").title()),
+        ("Miner ownership", ownership),
+        ("Gaming", str(data.get("gaming_state") or "Unavailable").replace("_", " ").title()),
+        ("Upgrade receipt", data.get("phase") or data.get("receipt_phase") or
+         ("None" if data.get("receipt_present") is False else "Unavailable")),
+        ("Failed phase", data.get("failed_at") or "None"),
+        ("Inference", f"{data.get('active_inferences', 'Unavailable')} active / "
+         f"{data.get('pending_inferences', 'Unavailable')} pending"),
+    ], console=console)
+
+    error = data.get("error")
+    if error:
+        console.print(Text("Last failure", style="bold red"))
+        console.print(Text(f"  {error}", style="red"))
+    blockers = data.get("blockers") or []
+    if blockers:
+        console.print(Text("Blockers", style="bold red"))
+        for blocker in blockers:
+            console.print(Text(f"  - {blocker}", style="red"))
+    changes = data.get("changes") or []
+    if changes:
+        console.print(Text("Planned actions" if status == "planned" else "Actions", style="bold cyan"))
+        for change in changes:
+            console.print(Text(f"  - {change}"))
+    if status in {"planned", "blocked"}:
+        console.print(Text("No changes made.", style="yellow"))
+    if data.get("audit_record"):
+        console.print(Text(f"Audit record  {data['audit_record']}"))
+
+    next_command = None
+    if action in {"restore", "resume", "reconcile"} and status == "planned":
+        next_command = f"resource-coordinator system recovery {action} -a"
+    elif action in {"status", "diagnose"} and data.get("receipt_phase") == "RESTORED_LEGACY":
+        next_command = "resource-coordinator system recovery reconcile"
+    elif status in {"blocked", "recovery-required"}:
+        next_command = "resource-coordinator system recovery diagnose"
+    if next_command:
+        console.print(Text(f"Next  {next_command}", style="bold cyan"))
+
+
 def render_health_result(
     data: Mapping[str, Any], *, as_json: bool = False, stream: Optional[TextIO] = None,
     color: Optional[str] = None, width: Optional[int] = None,
