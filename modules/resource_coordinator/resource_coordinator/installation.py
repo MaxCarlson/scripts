@@ -19,8 +19,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
@@ -419,6 +420,67 @@ def _task_identity_valid(task: Dict[str, Any]) -> bool:
         return False
     username = getpass.getuser().casefold()
     return identity == username or identity.endswith("\\" + username)
+
+
+def _validate_restore_task_definition(task: StartupTask, definition: str, managed_root: Path) -> None:
+    """Reject task snapshots that do not point to a managed RC PowerShell launcher."""
+    try:
+        root = ET.fromstring(definition)
+    except (ET.ParseError, TypeError) as exc:
+        raise InstallationError("Task recovery snapshot is not valid Scheduled Task XML") from exc
+    if root.tag.rsplit("}", 1)[-1] != "Task":
+        raise InstallationError("Task recovery snapshot has an unexpected XML root")
+
+    def named(parent: ET.Element, name: str) -> List[ET.Element]:
+        return [node for node in parent.iter() if node.tag.rsplit("}", 1)[-1] == name]
+
+    principals = named(root, "Principal")
+    actions = named(root, "Actions")
+    if len(principals) != 1 or len(actions) != 1:
+        raise InstallationError("Task recovery snapshot must contain one principal and one actions block")
+    principal = principals[0]
+    principal_values = {node.tag.rsplit("}", 1)[-1]: (node.text or "").strip()
+                        for node in list(principal)}
+    if (task.name != TASK_NAMES.get(task.mode) or principal_values.get("RunLevel") != "HighestAvailable" or
+            (task.mode == "boot" and principal_values.get("LogonType") != "ServiceAccount") or
+            (task.mode == "logon" and principal_values.get("LogonType") not in {"InteractiveToken", "Interactive"} ) or
+            task.mode not in {"boot", "logon"}):
+        raise InstallationError("Task recovery snapshot has an unexpected principal, logon type, or privilege level")
+
+    action_nodes = [node for node in list(actions[0]) if node.tag.rsplit("}", 1)[-1] == "Exec"]
+    if len(action_nodes) != 1 or len(list(actions[0])) != 1:
+        raise InstallationError("Task recovery snapshot must contain exactly one executable action")
+    action_values = {node.tag.rsplit("}", 1)[-1]: (node.text or "").strip()
+                     for node in list(action_nodes[0])}
+    command = action_values.get("Command", "")
+    if (not PureWindowsPath(command).is_absolute() or
+            PureWindowsPath(command).name.casefold() not in {"powershell.exe", "pwsh.exe"}):
+        raise InstallationError("Task recovery snapshot does not invoke an approved PowerShell executable")
+
+    arguments = action_values.get("Arguments", "")
+    match = re.fullmatch(
+        r"(?i)\s*(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-WindowStyle\s+Hidden\s+|"
+        r"-ExecutionPolicy\s+(?:Bypass|RemoteSigned|AllSigned|Restricted)\s+)*"
+        r"-File\s+(?:\"([^\"]+\.ps1)\"|([^\s\"]+\.ps1))\s*",
+        arguments,
+    )
+    launcher_value = next((item for item in match.groups() if item), None) if match else None
+    if not launcher_value:
+        raise InstallationError("Task recovery snapshot contains unsupported PowerShell arguments")
+    launcher = Path(launcher_value)
+    if (launcher.name.casefold() not in {"start-coordinator.ps1", "start-coordinator-managed.ps1"} or
+            not launcher.is_absolute() or _is_reparse_point(launcher)):
+        raise InstallationError("Task recovery snapshot does not reference a regular managed coordinator launcher")
+    root_path = os.path.normcase(str(managed_root.resolve()))
+    launcher_path = os.path.normcase(str(launcher.resolve()))
+    try:
+        if os.path.commonpath((root_path, launcher_path)) != root_path:
+            raise InstallationError("Task recovery snapshot launcher is outside the managed installation")
+        launcher_text = launcher.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        raise InstallationError(f"Managed task recovery launcher cannot be verified: {exc}") from exc
+    if TASK_MARKER not in launcher_text:
+        raise InstallationError("Task recovery launcher is missing its Resource Coordinator ownership marker")
 
 
 def render_launcher(paths: InstallationPaths) -> str:
@@ -833,6 +895,7 @@ class WindowsStartupTaskBackend:
         enabled = snapshot.get("enabled")
         if not isinstance(definition, str) or type(enabled) is not bool:
             raise InstallationError("Scheduled Task recovery snapshot is invalid")
+        _validate_restore_task_definition(task, definition, self.managed_root)
         self._run({"operation": "restore", "task_name": task.name,
                    "definition": definition, "enabled": enabled}, elevated=True,
                   non_interactive=non_interactive)
@@ -1199,8 +1262,10 @@ class ManagedInstallation:
             else:
                 try:
                     snapshot = snapshotter(task)
+                    if isinstance(self.task_backend, WindowsStartupTaskBackend):
+                        _validate_restore_task_definition(task, snapshot.get("definition", ""), self.paths.root)
                 except Exception as exc:
-                    blockers.append(f"startup task recovery snapshot failed: {exc}")
+                    blockers.append(f"startup task recovery snapshot is missing or unsafe to restore: {exc}")
 
         configured_gpu = _configured_gpu_settings(config) if config else {}
         persisted_miner = journal.processes.get(miner_name) if journal and miner_name else None
@@ -2736,6 +2801,38 @@ function Get-RcSid([string]$identity) {
   return ([Security.Principal.NTAccount]$identity).Translate([Security.Principal.SecurityIdentifier]).Value
 }
 $interactiveSid = Get-RcSid ([string]$payload.interactive_user)
+function Test-RcRestoreDefinition([string]$definition, [string]$taskName) {
+  if ($taskName -notin @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon')) { return $false }
+  try {
+    $xml = [xml]$definition
+    $principal = $xml.SelectSingleNode("//*[local-name()='Principal']")
+    $actions = $xml.SelectNodes("/*[local-name()='Task']/*[local-name()='Actions']/*")
+    if (-not $principal -or $actions.Count -ne 1 -or $actions[0].LocalName -ne 'Exec') { return $false }
+    if ([string]$principal.RunLevel -ne 'HighestAvailable') { return $false }
+    $principalSid = Get-RcSid ([string]$principal.UserId)
+    if ($taskName -eq 'ResourceCoordinator-KRig-Boot') {
+      if ($principalSid -ne 'S-1-5-18' -or [string]$principal.LogonType -ne 'ServiceAccount') { return $false }
+    } elseif ($principalSid -ne $interactiveSid -or [string]$principal.LogonType -notin @('InteractiveToken','Interactive')) { return $false }
+    $action = $actions[0]
+    $commandName = [IO.Path]::GetFileName([string]$action.Command)
+    if ($commandName -notin @('powershell.exe','pwsh.exe')) { return $false }
+    $commandFull = [IO.Path]::GetFullPath([string]$action.Command)
+    $resolvedCommand = (Get-Command $commandName -ErrorAction Stop).Source
+    if (-not [string]::Equals($commandFull,[IO.Path]::GetFullPath($resolvedCommand),[StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $commandItem = Get-Item -LiteralPath $commandFull -Force -ErrorAction Stop
+    if (($commandItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    $args = [string]$action.Arguments
+    $pattern = '(?i)^(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-WindowStyle\s+Hidden\s+|-ExecutionPolicy\s+(?:Bypass|RemoteSigned|AllSigned|Restricted)\s+)*-File\s+(?:"([^"]+\.ps1)"|([^\s"]+\.ps1))\s*$'
+    $match = [regex]::Match($args, $pattern)
+    if (-not $match.Success) { return $false }
+    $launcher = [IO.Path]::GetFullPath($(if ($match.Groups[1].Success) {$match.Groups[1].Value} else {$match.Groups[2].Value}))
+    if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path $launcher -Leaf) -notin @('start-coordinator.ps1','start-coordinator-managed.ps1')) { return $false }
+    $item = Get-Item -LiteralPath $launcher -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    return $true
+  } catch { return $false }
+}
 function Test-RcOwned($task) {
     if (-not $task) { return $false }
     try {
@@ -2834,6 +2931,7 @@ switch ($payload.operation) {
       }
       'restore' {
         if (-not $payload.definition -or $null -eq $payload.enabled) { throw 'Task recovery snapshot is incomplete.' }
+        if (-not (Test-RcRestoreDefinition ([string]$payload.definition) $name)) { throw 'Task recovery snapshot failed privileged ownership validation.' }
         Register-ScheduledTask -TaskName $name -Xml ([string]$payload.definition) -Force | Out-Null
         if ([bool]$payload.enabled) { Enable-ScheduledTask -TaskName $name | Out-Null }
         else { Disable-ScheduledTask -TaskName $name | Out-Null }

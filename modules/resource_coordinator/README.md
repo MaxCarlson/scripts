@@ -144,9 +144,11 @@ If any evidence is missing, RC leaves the live service/task untouched and keeps
 the receipt for `system recovery diagnose`; it does not force-terminate a process.
 Task operation request/result files are unique per invocation, kept outside
 command-line payloads, and retained when helper completion cannot be verified.
-The current Windows sandbox could not read Task Scheduler objects; successful
-elevated/UAC helper execution and disposable-task mutation therefore require a
-separate local Windows acceptance run before production upgrade.
+The agent sandbox could not read Task Scheduler objects. The user subsequently
+reported passing the UAC helper transport test and the disposable Scheduled Task
+registration/snapshot/restoration test on Windows with Resource Coordinator
+0.11.6. These are separate checks; they do not constitute a full production
+upgrade or prove task restoration through the entire elevated RC helper path.
 
 Upgrade recovery outcomes are intentionally conservative:
 

@@ -90,7 +90,7 @@ def _write_legacy_launcher(paths: InstallationPaths) -> Path:
     launcher = paths.root / "start-coordinator.ps1"
     paths.root.mkdir(parents=True, exist_ok=True)
     launcher.write_text(
-        f"$python = '{paths.python}'\n$config = '{paths.config}'\n"
+        f"# {TASK_MARKER}\n$python = '{paths.python}'\n$config = '{paths.config}'\n"
         "& $python -m resource_coordinator.cli serve -c $config\n",
         encoding="utf-8",
     )
@@ -324,7 +324,14 @@ def test_upgrade_validates_elevated_transport_before_requesting_service_shutdown
                        f'powershell.exe -File "{legacy}"', True)
     backend = WindowsStartupTaskBackend(managed_root=paths.root)
     backend.status = lambda: [task]
-    backend.snapshot = lambda observed: {"definition": "<Task />", "enabled": True}
+    task_xml = (
+        '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+        '<Principals><Principal id="Author"><UserId>mcarls</UserId><LogonType>InteractiveToken</LogonType>'
+        '<RunLevel>HighestAvailable</RunLevel></Principal></Principals>'
+        f'<Actions Context="Author"><Exec><Command>C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe</Command>'
+        f'<Arguments>-NoProfile -File "{legacy}"</Arguments></Exec></Actions></Task>'
+    )
+    backend.snapshot = lambda observed: {"definition": task_xml, "enabled": True}
     monkeypatch.setattr(backend, "_admin", lambda: True)
     transport_calls = []
 
@@ -994,6 +1001,47 @@ def test_task_helper_snapshots_and_restores_exact_owned_task_definition(tmp_path
     assert "Test-RcOwned $existing" in snapshot_script
     assert "Register-ScheduledTask -TaskName $name -Xml" in restore_script
     assert "Enable-ScheduledTask -TaskName $name" in restore_script
+    assert "Test-RcRestoreDefinition ([string]$payload.definition) $name" in restore_script
+
+
+def test_task_restore_rejects_untrusted_xml_and_accepts_owned_launcher(tmp_path, monkeypatch):
+    from xml.sax.saxutils import escape
+
+    paths, _ = make_paths(tmp_path)
+    managed_root = paths.root / "managed root & scripts"
+    managed_root.mkdir(parents=True)
+    launcher = managed_root / "start-coordinator.ps1"
+    launcher.write_text(f"# {TASK_MARKER}\n", encoding="utf-8")
+    task = StartupTask(TASK_NAMES["logon"], "logon", True, "Ready", "mcarls", "Highest",
+                       f'powershell.exe -NoProfile -File "{launcher}"', True)
+    backend = WindowsStartupTaskBackend(managed_root=managed_root, interactive_user="mcarls")
+    calls = []
+    monkeypatch.setattr(backend, "_run", lambda payload, **kwargs: calls.append((payload, kwargs)))
+
+    def definition(command="C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+                   arguments=None, logon_type="InteractiveToken"):
+        args = arguments if arguments is not None else f'-NoLogo -NoProfile -File "{launcher}"'
+        return (
+            '<Task xmlns="http://schemas.microsoft.com/windows/2004/02/mit/task">'
+            '<Principals><Principal id="Author"><UserId>mcarls</UserId>'
+            f'<LogonType>{logon_type}</LogonType><RunLevel>HighestAvailable</RunLevel></Principal></Principals>'
+            '<Actions Context="Author"><Exec><Command>' + escape(command) + '</Command><Arguments>' +
+            escape(args) + '</Arguments></Exec></Actions></Task>'
+        )
+
+    good = {"definition": definition(), "enabled": True}
+    backend.restore_snapshot(task, good)
+    assert calls[0][0]["definition"] == good["definition"]
+
+    for invalid in (
+        definition(arguments='-Command "Start-Process cmd.exe"'),
+        definition(command="cmd.exe", arguments=f'/c powershell -File "{launcher}"'),
+        definition(logon_type="Password"),
+        definition(arguments='-NoProfile -File "C:\\outside\\start-coordinator.ps1"'),
+    ):
+        with pytest.raises(InstallationError):
+            backend.restore_snapshot(task, {"definition": invalid, "enabled": True})
+    assert len(calls) == 1
 
 
 def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(tmp_path, monkeypatch):

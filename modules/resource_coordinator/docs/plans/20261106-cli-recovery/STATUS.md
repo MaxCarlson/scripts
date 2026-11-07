@@ -1,8 +1,8 @@
 # CLI lifecycle and recovery status
 
 - Active branch: `codex/resource-coordinator-windows-listener-readable-cli-20261106`.
-- Latest pushed base before this continuation: `fbd5e33039daccd2a1303276d3b26dfd9f257b60`.
-- Current source version: `0.11.5` (transport and recovery reliability fixes).
+- Reviewed feature checkpoint: `734294c070eff71f6c21717b81fccdffba93c9e8`.
+- Current source version: `0.11.7` (transport and recovery reliability fixes).
 
 ## Implemented
 
@@ -18,16 +18,40 @@
 
 ## Validation evidence
 
-- Installation + recovery presentation + Windows listener + transport suite: **101 passed, 3 skipped** (two opt-in helper/UAC tests; one disposable TCP table test cannot see the socket from this runner).
-- CLI architecture: **160 passed, 1 deselected** (raw log-follow byte-stream test hangs in this environment).
-- CLI: **17 passed, 1 deselected** (existing CLI preflight test hangs in this environment).
-- Protected local-agent-bridge route regression: **1 passed**.
-- Credential tests: with only the async restart test deselected, **14 passed, 1 failed, 1 deselected**. The failure is `test_windows_credential_acl_allows_user_and_system_only` against the sandbox-provided pytest temporary directory. Excluding that environment-specific ACL test as well: **14 passed, 2 deselected**.
-- Async lifecycle limitation: Python 3.12.10 / pytest-asyncio 1.3.0 hangs at the first `@pytest.mark.asyncio` test before its body runs. A standalone `asyncio.run(asyncio.sleep(0))` reproduced the hang. The two synchronous service-lifecycle tests passed; 25 async tests were deselected.
-- Validation tools: targeted Ruff check passed; `python -m compileall -q resource_coordinator` passed; `git diff --check` passed.
-- Real Windows normal-privilege integration: **1 passed** using the new read-only `transport_probe` with a 100 KiB request. This exercised PowerShell, the actual file-backed helper, ACL setup/verification, request integrity, result persistence/integrity, and cleanup without querying or changing Scheduled Tasks.
-- A separate real `status` helper attempt reached `Get-ScheduledTask` but was denied with `Access to a CIM resource was not available to the client`. Thus ordinary Task Scheduler inventory is not validated in this sandbox.
-- Successful elevated/UAC helper execution, task registration/restoration, and disposable elevated-task rollback remain unverified. The opt-in test command for a non-elevated interactive PowerShell session is documented in the README under `RC_WINDOWS_UAC_INTEGRATION=1`.
+### Agent-run regression and static checks
+
+- Installation + recovery presentation + Windows listener + transport suites: **103 passed, 4 skipped** after adding task XML restore validation.
+- CLI architecture + CLI suites: **177 passed, 2 deselected**. The deselections were the raw log-follow byte-stream test and existing CLI preflight test, which hang in this runner.
+- Credential tests: **15 passed, 1 deselected**; the deselected test is the async coordinator restart test.
+- Administrative-helper preflight failure regression: **1 passed**; it confirms helper validation failure occurs before the graceful shutdown request.
+- Real Windows normal-privilege helper probe: **1 passed, 2 skipped** with a 100 KiB request; the helper script parsed and ran, while Task Scheduler access was denied and UAC remained opt-in.
+- Ruff targeted checks, Python compilation, and `git diff --check`: passed.
+- ACL environment distinction: `test_windows_credential_acl_allows_user_and_system_only` failed under the sandbox AppContainer temp directory, then passed using a pytest `--basetemp` within the feature worktree. This is an execution-context ACL limitation, not a passing result from the default temp path.
+- Async limitation remains unresolved: Python 3.12.10 / pytest-asyncio 1.3.0 stalled at async tests, and a bounded subprocess running `asyncio.run(asyncio.sleep(0))` timed out after five seconds. The affected async restart test and the interrupted durable-state run remain unverified.
+
+### User-performed Windows acceptance (reported 2026-11-06)
+
+The user reports running these checks from an isolated Python 3.12 virtual environment with Resource Coordinator 0.11.6 and its development dependencies. These results were not independently re-executed by the agent.
+
+**Interactive UAC elevation — passed (1 test):**
+
+```powershell
+$env:RC_WINDOWS_UAC_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -rs -k uac_helper
+```
+
+The user approved the expected administrator prompt. This validates the elevated helper transport with a large request and verified completion evidence.
+
+**Disposable Scheduled Task lifecycle — passed (1 test):**
+
+```powershell
+$env:RC_WINDOWS_TASK_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -rs -k disposable_task
+```
+
+The test registered a uniquely named disposable task, exported a snapshot, changed its action, restored the snapshot, and verified the restored definition. The user then queried `RC-Disposable-*`; no matching task remained.
+
+The disposable task lifecycle uses Windows Task Scheduler cmdlets directly. It does **not** exercise task registration/restoration through the full elevated Resource Coordinator helper path. The UAC helper transport and Task Scheduler lifecycle were verified separately. Neither test is a full end-to-end transactional upgrade or rollback test.
 
 ## Safety and remaining validation
 
@@ -37,11 +61,13 @@
 
 ## Final targeted review — 2026-11-06
 
-- Reviewed the feature diff against its `81d740c2` merge base and checked divergence from current `origin/main` (`f37e27bf`): main is 9 commits ahead and this branch is 4 commits ahead. `git merge-tree` reported no textual conflicts; shared edits include Resource Coordinator README/package metadata and require semantic review during later integration. No merge/rebase was performed.
+- Reviewed the feature diff against its `81d740c2` merge base and checked divergence from `origin/main` (`f37e27bf`): main is 9 commits ahead and this branch is 5 commits ahead. The changed path sets do not overlap. `git merge-tree` reported no textual conflicts. No merge/rebase was performed.
 - Found and fixed an automatic rollback elevation-routing defect: internal `recovery("restore", _transaction_lock_held=True)` could relaunch the original CLI arguments (including `system upgrade -a`) instead of continuing rollback. Internal recovery now uses the bounded task helper directly. Regression was observed failing before the fix and passing afterward.
 - Added a disposable Windows Scheduled Task test that uses a unique `RC-Disposable-*` name, refuses collisions, registers disabled/future-trigger task, exports a snapshot, mutates, restores, verifies action/principal/enabled state and removes only that task.
 - Focused validation after the fix: installation/recovery/presentation/listener suite **102 passed, 4 skipped**; CLI suites **177 passed, 2 deselected**; credential suite with only async restart excluded **15 passed, 1 deselected**. The identity/attribution/state run was interrupted while hanging in `test_durable_state.py` after 15 displayed passes; the full state suite remains unverified in this runner.
 - Real Windows normal helper probe passed with a 100 KiB payload. The disposable Scheduled Task test was attempted and skipped with `Access to a CIM resource was not available to the client`; no task registration was confirmed. UAC test was not run because it requires an interactive approval prompt. The README now gives separate commands for the disposable task test and UAC helper test.
 - The credential ACL test fails when pytest uses the sandbox's AppContainer temp root, but passes with `--basetemp` inside the feature worktree. A bounded subprocess reproduction of `asyncio.run(asyncio.sleep(0))` timed out after 5 seconds; the async credential restart test remains unverified.
 - No production service, task, process, GPU setting, configuration or recovery artifact was changed. Read-only production state was not queried during this review.
-- Review correction was regression-tested red/green, linted, compiled and diff-checked; awaiting scoped commit/push. Do not merge or begin the dependent CLI addendum without the user's explicit integration approval.
+- Review correction was regression-tested red/green, linted, compiled, diff-checked, committed, and pushed at `734294c070eff71f6c21717b81fccdffba93c9e8`. The feature branch remains unmerged. Do not merge or begin the dependent CLI addendum without the user's explicit integration approval.
+- Final privileged-restore review found that recovery accepted task XML based on receipt shape without validating its action and principal before elevated registration. Python now validates task XML, restricted PowerShell arguments, launcher path/marker, task mode and privilege level during Windows preflight and before restore; the elevated helper independently validates task name, principal SID/logon type/run level, PowerShell executable, safe `-File` arguments and managed launcher path before `Register-ScheduledTask`. Acceptance/rejection tests pass. This new 0.11.7 hardening has not yet been exercised with an actual elevated restore; the user-performed 0.11.6 UAC and disposable-task tests are recorded above and remain distinct from this path.
+- Final regression after this guard: **103 passed, 4 skipped**; CLI **177 passed, 2 deselected**; credentials **15 passed, 1 deselected**; targeted Ruff, compilation and diff checks passed. The ordinary helper probe passed and compiled the updated PowerShell helper body. The feature is now 6 commits ahead of its merge base after the pending scoped checkpoint commit; verify exact branch counts after pushing.
