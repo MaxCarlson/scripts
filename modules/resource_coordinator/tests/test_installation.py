@@ -1280,6 +1280,26 @@ def test_recovery_status_works_offline_and_preserves_receipt(tmp_path):
     assert paths.upgrade_receipt.is_file()
 
 
+def test_internal_automatic_rollback_does_not_relaunch_original_upgrade_cli(tmp_path, monkeypatch):
+    import resource_coordinator.installation as mod
+
+    paths, _ = make_paths(tmp_path)
+    backend = WindowsStartupTaskBackend(managed_root=paths.root)
+    elevated_cli_calls = []
+    monkeypatch.setattr(backend, "_admin", lambda: False)
+    monkeypatch.setattr(backend, "run_elevated_cli", lambda arguments=None: elevated_cli_calls.append(arguments) or 0)
+    monkeypatch.setattr(backend, "status", lambda: [])
+    monkeypatch.setattr(mod, "_listener_identity_details", lambda: {"verified": False, "category": "not-found"})
+    manager = ManagedInstallation(paths, backend)
+    manager._service_status = lambda: None
+
+    result = manager.recovery("restore", apply=True, _transaction_lock_held=True)
+
+    assert result["status"] == "blocked"
+    assert "No pending upgrade receipt exists" in result["blockers"]
+    assert elevated_cli_calls == []
+
+
 def test_recovery_reconcile_archives_restored_legacy_receipt_without_restarting(tmp_path, monkeypatch):
     import resource_coordinator.installation as mod
 

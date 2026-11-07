@@ -187,6 +187,27 @@ The helper reports only the test payload length; it does not register, start,
 stop, or inspect any Scheduled Task. The test skips if launched from an already
 elevated shell because that would not exercise UAC.
 
+To validate real Scheduled Task registration, snapshot, restoration, and
+read-back in a disposable task, run this opt-in test from a Windows user
+session with Task Scheduler access:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\modules\resource_coordinator).Path
+$env:RC_WINDOWS_TASK_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -k disposable_task
+```
+
+It creates a uniquely named `RC-Disposable-*` task with a future trigger,
+disables it immediately, snapshots and changes its action, restores the saved
+definition, verifies the restored action/principal/disabled state, and removes
+only that disposable task in `finally`. A name collision is rejected without
+overwriting the existing task. If Task Scheduler access is denied, pytest
+reports the integration as skipped; run it in a normal user session with
+working Task Scheduler access. This test does not exercise the elevated helper
+for task registration because the helper intentionally limits writes to the
+three owned production task names. The UAC transport probe above separately
+tests elevation without touching any task.
+
 ## Configure one process
 
 Create `config.local.yaml` in this directory. Git ignores that machine-local

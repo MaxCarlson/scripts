@@ -1636,7 +1636,7 @@ class ManagedInstallation:
                  non_interactive: bool = False,
                  _transaction_lock_held: bool = False) -> Dict[str, Any]:
         """Inspect and reconcile a failed upgrade without requiring service availability."""
-        if (apply and action in {"restore", "resume"} and
+        if (apply and action in {"restore", "resume"} and not _transaction_lock_held and
                 isinstance(self.task_backend, WindowsStartupTaskBackend) and not self.task_backend._admin()):
             if non_interactive:
                 raise ElevationRequired("Administrator approval is required; non-interactive recovery will not prompt.")
