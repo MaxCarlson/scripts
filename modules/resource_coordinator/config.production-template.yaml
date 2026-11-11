@@ -20,8 +20,9 @@ service:
   listen_port: 1235
   upstream_url: "http://127.0.0.1:1234"
   # Overall deadline for a protected explicit model load after its GPU lease
-  # activates. Valid range: >0 and <=3600 seconds. Timeouts preserve the hold.
-  model_load_timeout_seconds: 600.0
+  # activates. Defaults to 1800 seconds; valid range: >0 and <=3600 seconds.
+  # Timeouts preserve the restart hold while upstream termination is uncertain.
+  model_load_timeout_seconds: 1800.0
   # Persistent writable state directory outside ephemeral git worktrees:
   state_persistence_path: "C:\\Users\\mcarls\\.resource_coordinator\\coordinator_state.json"
 

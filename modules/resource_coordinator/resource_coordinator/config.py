@@ -36,7 +36,7 @@ class ServiceConfig:
     upstream_url: str = "http://127.0.0.1:1234"
     state_persistence_path: str = ""
     bounded_drain_seconds: Optional[float] = None
-    model_load_timeout_seconds: float = 600.0
+    model_load_timeout_seconds: float = 1800.0
 
 
 @dataclass
@@ -85,7 +85,7 @@ class CoordinatorConfig:
         if str(data.get("version", "1.0")) != "1.0":
             raise ValueError("Unsupported configuration version")
         svc_raw = data.get("service", {})
-        if isinstance(svc_raw.get("model_load_timeout_seconds", 600.0), bool):
+        if isinstance(svc_raw.get("model_load_timeout_seconds", 1800.0), bool):
             raise TypeError("service.model_load_timeout_seconds must be numeric, not boolean")
         for section in [*data.get("processes", {}).values(), *data.get("policies", [])]:
             for key, value in section.items():
@@ -109,7 +109,7 @@ class CoordinatorConfig:
             bounded_drain_seconds=(
                 float(svc_raw["bounded_drain_seconds"]) if svc_raw.get("bounded_drain_seconds") is not None else None
             ),
-            model_load_timeout_seconds=float(svc_raw.get("model_load_timeout_seconds", 600.0)),
+            model_load_timeout_seconds=float(svc_raw.get("model_load_timeout_seconds", 1800.0)),
         )
 
         processes = {}

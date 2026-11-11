@@ -10,7 +10,7 @@ def test_load_default_config():
     assert cfg.version == "1.0"
     assert cfg.service.listen_host == "127.0.0.1"
     assert cfg.service.listen_port == 1235
-    assert cfg.service.model_load_timeout_seconds == 600.0
+    assert cfg.service.model_load_timeout_seconds == 1800.0
     assert "krig" in cfg.processes
     assert len(cfg.policies) >= 1
 
@@ -83,7 +83,7 @@ def test_build_system_from_config():
     assert "krig" in system.supervisors
     assert system.miner_adapter is not None
     assert system.gateway.upstream_url == "http://127.0.0.1:1234"
-    assert system.gateway.model_load_timeout_seconds == 600.0
+    assert system.gateway.model_load_timeout_seconds == 1800.0
 
 
 def test_build_system_passes_configured_model_load_timeout_to_gateway():

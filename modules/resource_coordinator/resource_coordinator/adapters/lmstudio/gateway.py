@@ -76,6 +76,7 @@ class StreamCompletionDetector:
         self.confirmed = False
         self.finish_reason: Optional[str] = None
         self.termination_state = "active"
+        self.model_load_reported_seconds: Optional[float] = None
         self._buffer = b""
         self._failed = False
 
@@ -110,6 +111,7 @@ class StreamCompletionDetector:
                 if isinstance(model_instance_id, str) and model_instance_id.strip() and valid_load_time:
                     self.confirmed = True
                     self.termination_state = "verified_model_load_success"
+                    self.model_load_reported_seconds = float(load_time)
                 else:
                     self._failed = True
                     self.termination_state = "invalid_model_load_terminal"
@@ -211,7 +213,7 @@ class LMStudioGateway:
         admission_controller: Optional[AdmissionController] = None,
         standalone: bool = False,
         state_persistence_path: Optional[str] = None,
-        model_load_timeout_seconds: float = 600.0,
+        model_load_timeout_seconds: float = 1800.0,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
@@ -813,6 +815,8 @@ class LMStudioGateway:
         terminal_evidence = "not_forwarded"
         completion_detector: Optional[StreamCompletionDetector] = None
         operation_deadline: Optional[float] = None
+        upstream_started_monotonic: Optional[float] = None
+        model_load_reported_seconds: Optional[float] = None
         upstream_timeout_seconds = (
             self.model_load_timeout_seconds if operation_type == "model_load" else self.timeout_seconds
         )
@@ -833,6 +837,11 @@ class LMStudioGateway:
             else:
                 evidence = "not_forwarded"
                 recommendation = None
+            reported_load_seconds = (
+                completion_detector.model_load_reported_seconds
+                if completion_detector is not None
+                else model_load_reported_seconds
+            )
             return {
                 "request_id": request_id,
                 "operation_type": operation_type,
@@ -844,6 +853,12 @@ class LMStudioGateway:
                 ),
                 "started_at": started_at,
                 "elapsed_seconds": round(max(0.0, time.monotonic() - started_monotonic), 3),
+                "upstream_elapsed_seconds": (
+                    round(max(0.0, time.monotonic() - upstream_started_monotonic), 3)
+                    if upstream_started_monotonic is not None
+                    else None
+                ),
+                "outcome": "succeeded" if completed else "execution_uncertain" if forwarded else "not_forwarded",
                 "configured_timeout_seconds": upstream_timeout_seconds,
                 "upstream_timeout_seconds": upstream_timeout_seconds,
                 "timeout_semantics": (
@@ -853,6 +868,7 @@ class LMStudioGateway:
                 ),
                 "lease_acquisition_timeout_seconds": self.timeout_seconds,
                 "connect_timeout_seconds": UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                "model_load_reported_seconds": reported_load_seconds,
                 "timeout_phase": (
                     "overall_operation_deadline"
                     if failure_kind == "upstream_operation_deadline"
@@ -997,6 +1013,7 @@ class LMStudioGateway:
                 )
             forwarded = True  # send may have reached upstream even if it raises/cancels
             await self.dispatcher.emit("lmstudio.inference_forwarded", event_data)
+            upstream_started_monotonic = time.monotonic()
             if operation_type == "model_load":
                 operation_deadline = time.monotonic() + self.model_load_timeout_seconds
                 upstream_resp = await asyncio.wait_for(
@@ -1091,6 +1108,20 @@ class LMStudioGateway:
             else:
                 content = await upstream_resp.aread()
             completed = StreamCompletionDetector.check_non_streaming(upstream_resp.status_code, content, path)
+            if completed and operation_type == "model_load":
+                try:
+                    load_result = json.loads(content)
+                except (ValueError, TypeError):
+                    load_result = None
+                if isinstance(load_result, dict):
+                    reported_seconds = load_result.get("load_time_seconds")
+                    if (
+                        isinstance(reported_seconds, (int, float))
+                        and not isinstance(reported_seconds, bool)
+                        and math.isfinite(reported_seconds)
+                        and reported_seconds >= 0
+                    ):
+                        model_load_reported_seconds = float(reported_seconds)
             terminal_evidence = "verified_non_streaming_response" if completed else "non_streaming_response_not_terminal"
             if upstream_resp.status_code >= 400:
                 failure_kind = "upstream_returned_error"
