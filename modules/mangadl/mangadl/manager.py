@@ -80,6 +80,8 @@ class DownloadManager:
         self.reader_done: set[int] = set()
         self.last_worker_status_log: dict[int, float] = {}
         self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, self.target_workers + 1)}
+        self.completed_bytes: int = 0
+        self.completed_images: int = 0
         self.stop_requested = False
         self.auth_store = ProfileStore(options.auth_dir)
         self.auth_refreshed_domains: set[str] = set()
@@ -242,6 +244,8 @@ class DownloadManager:
             budget=self.concurrency_budget,
             logical_cpus=self.logical_cpus,
             notice=notice,
+            completed_bytes=self.completed_bytes,
+            completed_images=self.completed_images,
         )
 
     def _visible_snapshots(self) -> dict[int, WorkerSnapshot]:
@@ -524,6 +528,8 @@ class DownloadManager:
                 self.last_worker_status_log[slot] = now
         elif event["event"] == "job_complete":
             state = JobState._value2member_map_.get(data.get("state"), JobState.SUCCEEDED)
+            self.completed_bytes += int(data.get("bytes_done") or snapshot.bytes_done or 0)
+            self.completed_images += int(data.get("images_done") or snapshot.images_done or 0)
             self.store.complete(event["job_id"], event["attempt_id"], state)
             status = (
                 "FINISH_SKIPPED"

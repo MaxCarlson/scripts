@@ -32,6 +32,8 @@ def test_branching_preserves_run_and_inherits_args():
     app.process_key(10)  # Run
     assert app.screen_mode == TuiScreenMode.RUNNING
 
+    # Toggle to TUI focus with Ctrl+F (or click status bar) so 's' branches instead of typing to program
+    app.process_key(6)
     # Press 's' (or Shift+Esc trigger) to branch
     app.process_key(ord("s"))
     assert len(app.workspace.panes) == 2

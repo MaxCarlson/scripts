@@ -279,45 +279,71 @@ def test_v_hotkey_and_navigation(tmp_path: Path) -> None:
 
 
 def test_manager_keyboard_reads_from_stdin_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    from mangadl.manager import Manager, Manga18FXConcurrencyPlan
-    from mangadl.options import RunOptions
+    from mangadl.manager import DownloadManager, RunOptions
+    from mangadl.state import StateStore
 
-    (tmp_path / "urls.txt").write_text("https://nhentai.net/g/123/\n", encoding="utf-8")
     options = RunOptions(
-        input_file=tmp_path / "urls.txt",
-        destination=tmp_path / "dest",
-        ui=True,
         run_id="test_run",
+        destination=tmp_path / "dest",
+        archive=tmp_path / "archive.sqlite3",
+        state_db=tmp_path / "state.sqlite3",
         log_dir=tmp_path / "logs",
-        auth_dir=tmp_path / "auth",
-        state_dir=tmp_path / "state",
+        workers=2,
+        retries=0,
+        retry_wait=0.01,
+        ui=True,
     )
-    plan = Manga18FXConcurrencyPlan(
-        requested_workers=4,
-        requested_image_workers=4,
-        requested_total=16,
-        effective_workers=4,
-        effective_image_workers=4,
-        effective_total=16,
-        maximum_workers=16,
-        logical_cpus=16,
-        budget=16,
-        adjusted=False,
-    )
+    store = StateStore(options.state_db)
     monkeypatch.setattr("sys.stdin.isatty", lambda: False)
-    manager = Manager(options, plan)
+    manager = DownloadManager(options, store)
 
     # Queue keys: workers_up ('+'), navigate down ('j'), toggle log ('v')
     manager._stdin_queue.put("+")
     manager._stdin_queue.put("j")
     manager._stdin_queue.put("v")
 
-    assert manager.target_workers == 4
+    assert manager.target_workers == 2
     assert manager.dashboard.selected == 1
     assert manager.dashboard.inline_log is False
 
     manager._keyboard()
 
-    assert manager.target_workers == 5
+    assert manager.target_workers == 3
     assert manager.dashboard.selected == 2
     assert manager.dashboard.inline_log is True
+    store.close()
+
+
+def test_dashboard_renders_completed_bytes_and_images() -> None:
+    worker = WorkerSnapshot(
+        1,
+        state="run",
+        url="https://nhentai.net/g/123/",
+        backend="gallery-dl",
+        site="nhentai",
+        images_done=5,
+        images_total=10,
+        bytes_done=5000,
+        current_bps=1000,
+        average_bps=500,
+        current_ips=1.0,
+        average_ips=0.5,
+    )
+    runtime = DashboardRuntime(
+        active_workers=1,
+        target_workers=1,
+        image_workers=1,
+        aggregate=1,
+        budget=4,
+        logical_cpus=8,
+        completed_bytes=15000,
+        completed_images=25,
+    )
+    output = render_dashboard("run", {"running": 1}, {1: worker}, width=120, runtime=runtime)
+    assert "Transferred 19.5 KiB (active 4.9 KiB)" in output
+    assert "Processed 30 img (active 5 img)" in output
+
+    idle_worker = WorkerSnapshot(1, state="idle")
+    output_idle = render_dashboard("run", {"succeeded": 1}, {1: idle_worker}, width=120, runtime=runtime)
+    assert "Transferred 14.6 KiB" in output_idle
+    assert "Processed 25 img" in output_idle

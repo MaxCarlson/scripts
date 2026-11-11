@@ -794,13 +794,20 @@ class CliTuiApp:
             if bstate & (btn1_clicked | btn1_pressed):
                 status_row = getattr(self, "_running_status_row", 0)
                 footer_row = getattr(self, "_running_footer_row", 9999)
-                if my <= status_row or my >= footer_row:
-                    self.workspace.active_pane.running_focus = RunningFocusMode.TUI
-                    self.last_message = "Focus: CLI-TUI"
+                current_focus = getattr(self.workspace.active_pane, "running_focus", RunningFocusMode.PROGRAM)
+                clicked_tui = (my <= status_row or my >= footer_row)
+                if clicked_tui:
+                    if current_focus != RunningFocusMode.TUI:
+                        self.workspace.active_pane.running_focus = RunningFocusMode.TUI
+                        self.last_message = "Focus: CLI-TUI"
+                        return True
+                    return False
                 else:
-                    self.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
-                    self.last_message = "Focus: PROGRAM"
-                return True
+                    if current_focus != RunningFocusMode.PROGRAM:
+                        self.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+                        self.last_message = "Focus: PROGRAM"
+                        return True
+                    return False
 
         return False
 
@@ -1888,6 +1895,7 @@ class CliTuiApp:
         badges = self._get_active_hotkey_badges(is_scrollable=is_scrollable)
         if width >= 120:
             compact_labels = {
+                "[Enter] Return to Form": "[Enter] Return",
                 "[Q] Force Quit": "[Q] Force",
                 "[Esc] Back": "[Esc]",
                 "[t] Telemetry: Full": "[t] Telemetry",
@@ -2242,7 +2250,7 @@ class CliTuiApp:
         curses.curs_set(0)
         stdscr.timeout(50)  # 50ms tick for smooth live runner updates
         try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+            curses.mousemask(curses.ALL_MOUSE_EVENTS)
         except Exception:
             pass
         if curses.has_colors():

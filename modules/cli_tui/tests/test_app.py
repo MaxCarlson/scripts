@@ -348,8 +348,8 @@ def test_running_dual_focus_toggle_and_key_forwarding():
         def terminate(self):
             self.is_running = False
 
-    cmd = CliCommand(name="mangadl", prog="mangadl run")
-    app = CliTuiApp(cmd, executable=[sys.executable])
+    parser = argparse.ArgumentParser(prog="mangadl run")
+    app = CliTuiApp(parser=parser, executable=[sys.executable])
     app.navigation.current_screen = TuiScreenMode.RUNNING
     dummy_runner = DummyRunner()
     app.runner = dummy_runner
@@ -383,17 +383,32 @@ def test_running_dual_focus_toggle_and_key_forwarding():
     assert hasattr(app, "_running_status_row")
     assert hasattr(app, "_running_footer_row")
 
-    # Click on status line sets focus to TUI
-    app.handle_mouse_click(mx=10, my=app._running_status_row)
+    # Click on status line sets focus to TUI (returns True because focus changed)
+    consumed = app.handle_mouse_click(mx=10, my=app._running_status_row)
+    assert consumed is True
     assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
 
-    # Click inside GUI program area sets focus to PROGRAM
-    app.handle_mouse_click(mx=10, my=app._running_status_row + 2)
+    # Subsequent click on status line when already in TUI focus does NOT consume event (allows drag selection)
+    consumed_again = app.handle_mouse_click(mx=10, my=app._running_status_row)
+    assert consumed_again is False
+
+    # Click inside GUI program area sets focus to PROGRAM (returns True because focus changed)
+    consumed = app.handle_mouse_click(mx=10, my=app._running_status_row + 2)
+    assert consumed is True
     assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
 
-    # Click on footer row sets focus to TUI
-    app.handle_mouse_click(mx=10, my=app._running_footer_row)
+    # Subsequent click inside GUI program area when already in PROGRAM focus does NOT consume event (allows drag selection)
+    consumed_again = app.handle_mouse_click(mx=10, my=app._running_status_row + 2)
+    assert consumed_again is False
+
+    # Click on footer row sets focus to TUI (returns True because focus changed)
+    consumed = app.handle_mouse_click(mx=10, my=app._running_footer_row)
+    assert consumed is True
     assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+
+    # Subsequent click on footer row when already in TUI focus does NOT consume event
+    consumed_again = app.handle_mouse_click(mx=10, my=app._running_footer_row)
+    assert consumed_again is False
 
     # Set back to PROGRAM focus for key forwarding verification
     app.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
@@ -448,9 +463,9 @@ def test_running_screen_rendering_colors_and_completion_box():
         def write_input(self, data: str) -> bool:
             return False
 
-    cmd = CliCommand(name="mangadl", prog="mangadl run")
-    app = CliTuiApp(cmd, executable=[sys.executable])
-    app.current_form = FormState(cmd)
+    parser = argparse.ArgumentParser(prog="mangadl run")
+    app = CliTuiApp(parser=parser, executable=[sys.executable])
+    app._open_form_for_command(app.root_command)
     app.navigation.current_screen = TuiScreenMode.RUNNING
     app.runner = FinishedRunner(exit_code=0)
     app.workspace.active_pane.running_focus = RunningFocusMode.TUI
