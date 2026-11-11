@@ -238,5 +238,35 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
     - Zero imports from `resource_coordinator`.
     - Zero spending ($0 spend; no external accounts, domains, or paid hosting).
 
+---
+
+## 9. Phase 05 Stabilization and Integration Checkpoint Status
+
+- **Integration Checkpoint Details**:
+  - **Branch**: `agent/notifications-p05-stabilization-integration-20261111`
+  - **Worktree**: `C:\Users\mcarls\src\scripts-notifications-integration`
+  - **Base Commit**: `3d1cefa0596cfba5a68e436589f3bba7edc04a53` (`origin/main`)
+  - **Merge Commit**: Preserves full ancestry of feature branch `agent/notifications-p06-security-p05-rc-monitor-20261111` (`6176474177e6f724fdc1c017dce14601a1d37c1f`).
+  - **Merge Base with Main**: `9102815920eff843c724f4f98a7957d94d46fbb2`.
+- **Phase 05 Defect Resolutions**:
+  - **Uncertainty Invariant (4.1)**: Strict type checking on `recovery.required`; missing/null/invalid non-boolean fields remain `None` (`unknown`) to prevent false resolution of safety holds. Contradictory payloads (e.g. `required=False` with active inhibition) mark state as degraded.
+  - **Durable Deduplication (4.2)**: `reconcile_incidents()` queries durable SQLite records via `storage.get_incident(inc_id)`. Restarts suppress duplicate outbox entries, notifications, and events. Preserves operator acknowledgements across restarts. Advisory file lock (`ObserverLock`) prevents concurrent poll collisions.
+  - **Provider Routing (4.3)**: `get_configured_provider_ids()` dynamically inspects active delivery providers (`windows`, `telegram`), excluding `fake_provider` in production. Publisher defaults to configured providers. CLI `--providers` flag added.
+  - **Bounded Transport (4.4)**: Enforced strict loopback canonical path whitelist (`{"/_coordinator/status", "/status"}`). Injected empty `ProxyHandler({})` and `SafeLoopbackRedirectHandler`. Enforced 512 KB payload response limit and JSON Content-Type validation. Redacted bearer tokens and file paths in error messages. Bounded incident summary lengths to 256 characters.
+  - **Observer Scheduled Task Lifecycle (4.5)**: Implemented `scripts-notify coordinator task status|install|uninstall` CLI subcommands running non-elevated user tasks with dry-run default.
+  - **Persistence & Pruning (4.6)**: Implemented `prune_rc_observations()` and `scripts-notify coordinator prune` CLI command with configurable age and record limits.
+- **Verification Evidence**:
+  - `modules/notifications/tests`: 150 passed, 1 skipped.
+  - `modules/remote_control/tests`: 44 passed.
+  - `modules/scripts_help/tests`: 55 passed.
+  - `modules/resource_coordinator/tests/test_recovery_presentation.py` & `test_cli.py`: 29 passed.
+  - `test_rc_integration_smoke.py`: synthetic server smoke test passed end-to-end.
+  - Total workspace: 278 passed, 1 skipped, 0 failed.
+- **Strict Boundaries Preserved**:
+  - `modules/resource_coordinator/` remained 100% clean and unmodified.
+  - Zero spending ($0 spend).
+  - Status: **Ready for authorized merge**.
+
+
 
 

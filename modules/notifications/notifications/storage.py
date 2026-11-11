@@ -1003,3 +1003,50 @@ class StorageEngine:
                 return _exec(c)
         except sqlite3.Error as exc:
             raise _map_sqlite_error(exc) from exc
+
+    def prune_rc_observations(
+        self,
+        max_age_days: int = 7,
+        max_records: int = 10000,
+        conn: Optional[sqlite3.Connection] = None,
+    ) -> int:
+        """Prune old Resource Coordinator observations exceeding age or record limits."""
+        cutoff = datetime.now(timezone.utc) - timedelta(days=max_age_days)
+        cutoff_iso = cutoff.isoformat().replace("+00:00", "Z")
+
+        def _exec(c: sqlite3.Connection) -> int:
+            deleted = 0
+            # 1. Delete by age
+            cur = c.execute("DELETE FROM rc_observations WHERE observed_at < ?", (cutoff_iso,))
+            deleted += cur.rowcount
+
+            # 2. Delete excess records if still exceeding max_records
+            cur_count = c.execute("SELECT COUNT(*) FROM rc_observations").fetchone()[0]
+            if cur_count > max_records:
+                excess = cur_count - max_records
+                cur_excess = c.execute(
+                    """
+                    DELETE FROM rc_observations
+                    WHERE id IN (
+                        SELECT id FROM rc_observations ORDER BY id ASC LIMIT ?
+                    )
+                    """,
+                    (excess,),
+                )
+                deleted += cur_excess.rowcount
+            return deleted
+
+        try:
+            if conn is not None:
+                return _exec(conn)
+            with self.connect() as c:
+                c.execute("BEGIN IMMEDIATE;")
+                try:
+                    res = _exec(c)
+                    c.execute("COMMIT;")
+                    return res
+                except Exception:
+                    c.execute("ROLLBACK;")
+                    raise
+        except sqlite3.Error as exc:
+            raise _map_sqlite_error(exc) from exc

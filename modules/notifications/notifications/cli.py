@@ -24,6 +24,9 @@ from notifications.models import EventEnvelopeV1, Incident, OutboxItem, Rendered
 from notifications.integrations.resource_coordinator import (
     DEFAULT_COORDINATOR_STATUS_URL,
     ResourceCoordinatorObserver,
+    get_coordinator_task_status,
+    install_coordinator_task,
+    uninstall_coordinator_task,
 )
 from notifications.outbox import OutboxWorker
 from notifications.publisher import Publisher
@@ -241,6 +244,7 @@ def build_parser() -> argparse.ArgumentParser:
     coord_poll = coord_sub.add_parser("poll", help="Execute one-shot read-only poll against Resource Coordinator loopback endpoint.")
     coord_poll.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help=f"Target loopback URL (default: {DEFAULT_COORDINATOR_STATUS_URL}).")
     coord_poll.add_argument("-t", "--timeout", type=float, default=5.0, help="HTTP read timeout in seconds (default: 5.0).")
+    coord_poll.add_argument("-p", "--providers", help="Comma-separated delivery provider IDs (e.g. 'windows,telegram').")
     coord_poll.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
     coord_poll.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
@@ -248,6 +252,32 @@ def build_parser() -> argparse.ArgumentParser:
     coord_test = coord_sub.add_parser("test", help="Test observer loopback configuration and contract capabilities in safe dry-run mode.")
     coord_test.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help="Target loopback URL to validate.")
     coord_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # coordinator prune
+    coord_prune = coord_sub.add_parser("prune", help="Prune old Resource Coordinator observations exceeding retention limits.")
+    coord_prune.add_argument("-a", "--apply", action="store_true", help="Apply deletion (defaults to dry-run).")
+    coord_prune.add_argument("--max-age-days", type=int, default=7, help="Maximum observation age in days (default: 7).")
+    coord_prune.add_argument("--max-records", type=int, default=10000, help="Maximum observation records to retain (default: 10000).")
+    coord_prune.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+    coord_prune.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # coordinator task
+    coord_task = coord_sub.add_parser("task", help="Manage Windows Scheduled Task for unattended background polling.")
+    coord_task_sub = coord_task.add_subparsers(dest="task_command", required=True)
+
+    task_stat = coord_task_sub.add_parser("status", help="Inspect Windows Scheduled Task installation and last run state.")
+    task_stat.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    task_inst = coord_task_sub.add_parser("install", help="Register Windows Scheduled Task for periodic background polling.")
+    task_inst.add_argument("-a", "--apply", action="store_true", help="Apply registration (defaults to dry-run).")
+    task_inst.add_argument("-i", "--interval-minutes", type=int, default=2, help="Polling interval in minutes (default: 2).")
+    task_inst.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help="Target loopback status URL.")
+    task_inst.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+    task_inst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    task_uninst = coord_task_sub.add_parser("uninstall", help="Unregister Windows Scheduled Task.")
+    task_uninst.add_argument("-a", "--apply", action="store_true", help="Apply removal (defaults to dry-run).")
+    task_uninst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     return parser
 
@@ -930,12 +960,16 @@ def handle_coordinator(args: argparse.Namespace) -> int:
         return 0
 
     elif args.coordinator_command == "poll":
+        providers = None
+        if getattr(args, "providers", None):
+            providers = [p.strip() for p in args.providers.split(",") if p.strip()]
+
         try:
             observer = ResourceCoordinatorObserver(
                 status_url=args.url,
                 timeout_seconds=args.timeout,
                 storage=storage,
-                publisher=publisher,
+                providers=providers,
             )
         except ValueError as exc:
             err = {"ok": False, "error": str(exc)}
@@ -958,6 +992,85 @@ def handle_coordinator(args: argparse.Namespace) -> int:
             if obs.error_message:
                 print(f" - Error: {obs.error_message}")
         return 0 if obs.status == "available" else 1
+
+    elif args.coordinator_command == "prune":
+        apply = getattr(args, "apply", False)
+        max_age = getattr(args, "max_age_days", 7)
+        max_recs = getattr(args, "max_records", 10000)
+        if not apply:
+            res = {
+                "ok": True,
+                "action": "prune",
+                "dry_run": True,
+                "max_age_days": max_age,
+                "max_records": max_recs,
+                "message": "Dry-run: pass -a/--apply to execute observation pruning.",
+            }
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Prune dry-run: pass -a/--apply to prune observations older than {max_age} days (max records: {max_recs}).")
+            return 0
+
+        deleted = storage.prune_rc_observations(max_age_days=max_age, max_records=max_recs)
+        res = {
+            "ok": True,
+            "action": "prune",
+            "applied": True,
+            "deleted_count": deleted,
+        }
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"Pruned {deleted} old Resource Coordinator observation record(s).")
+        return 0
+
+    elif args.coordinator_command == "task":
+        if args.task_command == "status":
+            res = get_coordinator_task_status()
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                inst = res.get("task_installed", False)
+                state = res.get("state", "Unknown")
+                print(f"Coordinator Observer Scheduled Task: {'INSTALLED' if inst else 'NOT INSTALLED'} ({state})")
+                if inst:
+                    print(f" - Last run: {res.get('last_run_time') or 'never'}")
+                    print(f" - Next run: {res.get('next_run_time') or 'unknown'}")
+                    print(f" - Last result: {res.get('last_task_result')}")
+            return 0 if res.get("ok", False) else 1
+
+        elif args.task_command == "install":
+            res = install_coordinator_task(
+                apply=getattr(args, "apply", False),
+                interval_minutes=getattr(args, "interval_minutes", 2),
+                status_url=getattr(args, "url", DEFAULT_COORDINATOR_STATUS_URL),
+                db_path=Path(db_path) if db_path else None,
+            )
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                if res.get("dry_run"):
+                    print(f"Dry-run task install: task '{res.get('task_name')}' would run every {res.get('interval_minutes')}m.")
+                    print("Pass -a/--apply to register with Windows Task Scheduler.")
+                elif res.get("installed"):
+                    print(f"Scheduled task '{res.get('task_name')}' successfully registered.")
+                else:
+                    print(f"Failed installing task: {res.get('error')}", file=sys.stderr)
+            return 0 if res.get("ok", False) else 1
+
+        elif args.task_command == "uninstall":
+            res = uninstall_coordinator_task(apply=getattr(args, "apply", False))
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                if res.get("dry_run"):
+                    print(f"Dry-run task uninstall: pass -a/--apply to unregister '{res.get('task_name')}'.")
+                elif res.get("uninstalled"):
+                    print(f"Scheduled task '{res.get('task_name')}' uninstalled successfully.")
+                else:
+                    print(f"Failed uninstalling task: {res.get('error')}", file=sys.stderr)
+            return 0 if res.get("ok", False) else 1
 
     elif args.coordinator_command == "test":
         try:

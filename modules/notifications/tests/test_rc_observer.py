@@ -364,3 +364,206 @@ def test_normalized_observation_persistence(storage: StorageEngine) -> None:
     assert latest["recovery_required"] is True
     assert latest["inhibition_reason"] == "upstream_read_timeout"
     assert latest["journal_status"] == "available"
+
+
+# ── Phase 05 Stabilization & Correctness Regression Tests ────────────────────
+
+def test_missing_and_null_recovery_required_field_remains_unknown(storage: StorageEngine) -> None:
+    """Missing, null, or non-boolean required fields must remain unknown (None)."""
+    observer = ResourceCoordinatorObserver(storage=storage)
+
+    # 1. Missing 'required' field entirely in recovery
+    payload_missing_req = {
+        "service": {"status": "ok"},
+        "gpu_inference": {
+            "recovery": {
+                "inhibition": {"reason": "timeout"},
+                "requests": [],
+            }
+        },
+    }
+    obs1 = observer.parse_status_payload(payload_missing_req)
+    assert obs1.has_recovery_contract is True
+    assert obs1.recovery_required is None  # Must remain unknown!
+    assert obs1.inhibition_active is True
+
+    # 2. Null 'required' field
+    payload_null_req = {
+        "service": {"status": "ok"},
+        "gpu_inference": {
+            "recovery": {
+                "required": None,
+                "inhibition": None,
+            }
+        },
+    }
+    obs2 = observer.parse_status_payload(payload_null_req)
+    assert obs2.has_recovery_contract is True
+    assert obs2.recovery_required is None  # Null must not be converted to False!
+
+    # 3. String / invalid type 'required' field
+    payload_str_req = {
+        "service": {"status": "ok"},
+        "gpu_inference": {
+            "recovery": {
+                "required": "true",
+                "inhibition": None,
+            }
+        },
+    }
+    obs3 = observer.parse_status_payload(payload_str_req)
+    assert obs3.recovery_required is None
+    assert obs3.status == "degraded"
+
+
+def test_contradictory_recovery_required_false_with_active_inhibition(
+    storage: StorageEngine, publisher: Publisher
+) -> None:
+    """Contradictory status (required=False but inhibition active) must not clear safety hold."""
+    observer = ResourceCoordinatorObserver(storage=storage, publisher=publisher)
+
+    # First open a valid safety hold
+    transport = MagicMock(return_value=MODERN_RECOVERY_REQUIRED_PAYLOAD)
+    observer._transport_fn = transport
+    observer.poll_once()
+    assert len(storage.list_incidents(status="open")) == 1
+
+    # Now observe contradictory payload: required=False, but inhibition.active=True
+    contradictory_payload = {
+        "service": {"status": "ok"},
+        "gpu_inference": {
+            "recovery": {
+                "required": False,
+                "inhibition": {"reason": "model load failed", "active": True},
+                "requests": [],
+            }
+        },
+    }
+    obs = observer.parse_status_payload(contradictory_payload)
+    assert obs.status == "degraded"
+    assert obs.recovery_required is None  # Overridden to unknown due to contradiction!
+    assert obs.inhibition_active is True
+
+    # Reconciling this must NEVER resolve the open safety incident
+    transport.return_value = contradictory_payload
+    observer.poll_once()
+    open_incidents = storage.list_incidents(status="open")
+    assert any(i.incident_key == "gpu_inference_recovery" for i in open_incidents)
+
+
+def test_durable_deduplication_across_fresh_observer_instances(storage: StorageEngine) -> None:
+    """Durable state prevents duplicate notifications and preserved operator acks across restarts."""
+    transport = MagicMock(return_value=MODERN_RECOVERY_REQUIRED_PAYLOAD)
+
+    # 1. Instance 1 polls and creates open incident
+    pub1 = Publisher(storage, default_providers=["fake_provider"])
+    obs1 = ResourceCoordinatorObserver(storage=storage, publisher=pub1, transport_fn=transport)
+    obs1.poll_once()
+
+    incidents = storage.list_incidents(status="open")
+    assert len(incidents) == 1
+    inc_id = incidents[0].incident_id
+
+    # 1 outbox item was queued
+    outbox_initial = storage.list_pending_outbox()
+    assert len(outbox_initial) == 1
+
+    # 2. Operator acknowledges incident
+    pub1.lifecycle.acknowledge_incident(inc_id, actor="operator-1", reason="Operator investigating")
+    inc_acked = storage.get_incident(inc_id)
+    assert inc_acked is not None
+    assert inc_acked.status == "acknowledged"
+
+    # 3. Instance 2 (fresh observer instance simulating process restart) polls SAME payload
+    pub2 = Publisher(storage, default_providers=["fake_provider"])
+    obs2 = ResourceCoordinatorObserver(storage=storage, publisher=pub2, transport_fn=transport)
+    obs2.poll_once()
+
+    # Invariant A: Status MUST REMAIN "acknowledged" (not wiped out to "open")
+    inc_after = storage.get_incident(inc_id)
+    assert inc_after is not None
+    assert inc_after.status == "acknowledged"
+
+    # Invariant B: No new outbox notification items enqueued
+    outbox_after = storage.list_pending_outbox()
+    assert len(outbox_after) == 1  # Still exactly 1, no duplicate queued!
+
+
+def test_provider_selection_routes_to_actual_providers(storage: StorageEngine) -> None:
+    """Observer routes outbox events to registered delivery provider IDs and never 'default'."""
+    transport = MagicMock(return_value=MODERN_RECOVERY_REQUIRED_PAYLOAD)
+
+    # Explicitly specify fake_provider
+    pub = Publisher(storage, default_providers=["fake_provider"])
+    observer = ResourceCoordinatorObserver(storage=storage, publisher=pub, transport_fn=transport)
+    observer.poll_once()
+
+    outbox = storage.list_pending_outbox()
+    assert len(outbox) == 1
+    assert outbox[0].provider_id == "fake_provider"
+    assert outbox[0].provider_id != "default"
+
+
+def test_observer_bounds_transport_and_rejects_arbitrary_paths() -> None:
+    """Observer rejects non-canonical paths and external hosts."""
+    # Arbitrary path rejected
+    with pytest.raises(ValueError, match="Prohibited status path"):
+        ResourceCoordinatorObserver(status_url="http://127.0.0.1:1235/admin/restart")
+
+    with pytest.raises(ValueError, match="Prohibited status path"):
+        ResourceCoordinatorObserver(status_url="http://127.0.0.1:1235/api/v1/delete")
+
+    # Canonical paths accepted
+    obs1 = ResourceCoordinatorObserver(status_url="http://127.0.0.1:1235/_coordinator/status")
+    assert obs1.status_url == "http://127.0.0.1:1235/_coordinator/status"
+
+    obs2 = ResourceCoordinatorObserver(status_url="http://127.0.0.1:1235/status")
+    assert obs2.status_url == "http://127.0.0.1:1235/status"
+
+
+def test_prune_old_rc_observations(storage: StorageEngine) -> None:
+    """Observations are pruned based on age and maximum record limits."""
+    # Seed 5 observations
+    for i in range(5):
+        ts = f"2026-11-0{i+1}T12:00:00Z"
+        storage.save_rc_observation({
+            "observed_at": ts,
+            "status": "available",
+            "contract_version": "v1",
+            "has_recovery_contract": True,
+            "recovery_required": False,
+            "inhibition_active": False,
+        })
+
+    # Prune keeping max 2 records
+    deleted = storage.prune_rc_observations(max_age_days=30, max_records=2)
+    assert deleted == 3
+
+    # Latest record is still preserved
+    latest = storage.get_latest_rc_observation()
+    assert latest is not None
+    assert latest["observed_at"] == "2026-11-05T12:00:00Z"
+
+
+def test_coordinator_task_management_dry_run() -> None:
+    """Task management functions support dry-run and status checks without executing mutations."""
+    from notifications.integrations.resource_coordinator import (
+        get_coordinator_task_status,
+        install_coordinator_task,
+        uninstall_coordinator_task,
+    )
+
+    stat = get_coordinator_task_status()
+    assert stat["ok"] is True
+    assert "task_installed" in stat
+
+    inst = install_coordinator_task(apply=False, interval_minutes=3)
+    assert inst["ok"] is True
+    assert inst["dry_run"] is True
+    assert inst["interval_minutes"] == 3
+    assert inst["requires_apply"] is True
+
+    uninst = uninstall_coordinator_task(apply=False)
+    assert uninst["ok"] is True
+    assert uninst["dry_run"] is True
+    assert uninst["requires_apply"] is True

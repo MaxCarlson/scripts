@@ -160,3 +160,48 @@ def test_cli_coordinator_status_and_test(tmp_path: Path, capsys):
     # Test non-loopback rejection
     ret_bad = main(["coordinator", "test", "-u", "http://example.com/status", "-j"])
     assert ret_bad == 1
+
+
+def test_cli_coordinator_prune_and_task_lifecycle(tmp_path: Path, capsys):
+    """Coordinator CLI commands support observation pruning and scheduled task dry-run."""
+    db_file = tmp_path / "cli.db"
+
+    # Prune dry-run
+    ret_prune_dry = main(["coordinator", "prune", "-d", str(db_file), "-j"])
+    assert ret_prune_dry == 0
+    cap_prune_dry = capsys.readouterr()
+    data_pd = json.loads(cap_prune_dry.out)
+    assert data_pd["ok"] is True
+    assert data_pd["dry_run"] is True
+
+    # Prune apply
+    ret_prune_app = main(["coordinator", "prune", "-a", "-d", str(db_file), "-j"])
+    assert ret_prune_app == 0
+    cap_prune_app = capsys.readouterr()
+    data_pa = json.loads(cap_prune_app.out)
+    assert data_pa["ok"] is True
+    assert data_pa["applied"] is True
+
+    # Task status
+    ret_task_stat = main(["coordinator", "task", "status", "-j"])
+    assert ret_task_stat == 0
+    cap_task_stat = capsys.readouterr()
+    data_ts = json.loads(cap_task_stat.out)
+    assert data_ts["ok"] is True
+
+    # Task install dry-run
+    ret_task_inst = main(["coordinator", "task", "install", "-i", "5", "-j"])
+    assert ret_task_inst == 0
+    cap_task_inst = capsys.readouterr()
+    data_ti = json.loads(cap_task_inst.out)
+    assert data_ti["ok"] is True
+    assert data_ti["dry_run"] is True
+    assert data_ti["interval_minutes"] == 5
+
+    # Task uninstall dry-run
+    ret_task_uninst = main(["coordinator", "task", "uninstall", "-j"])
+    assert ret_task_uninst == 0
+    cap_task_uninst = capsys.readouterr()
+    data_tu = json.loads(cap_task_uninst.out)
+    assert data_tu["ok"] is True
+    assert data_tu["dry_run"] is True

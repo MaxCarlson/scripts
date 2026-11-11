@@ -22,7 +22,12 @@ class Publisher:
     ) -> None:
         self.storage = storage
         self.lifecycle = lifecycle or IncidentLifecycleEngine(storage)
-        self.default_providers = default_providers or ["default"]
+        if default_providers is not None:
+            self.default_providers = list(default_providers)
+        else:
+            from notifications.delivery.registry import get_configured_provider_ids
+
+            self.default_providers = get_configured_provider_ids(storage=storage)
 
     def publish(
         self,

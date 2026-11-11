@@ -36,6 +36,40 @@ class UnconfiguredProvider(DeliveryProvider):
         )
 
 
+def get_configured_provider_ids(
+    storage: Optional[StorageEngine] = None,
+    *,
+    include_test: bool = False,
+) -> list[str]:
+    """
+    Resolve and return active, authorized delivery provider IDs.
+    Returns e.g. ['windows', 'telegram'] or whichever providers are truly configured.
+    Never returns fake_provider unless include_test=True.
+    Never returns dummy/phantom provider IDs like 'default'.
+    """
+    import sys
+    active: list[str] = []
+
+    # 1. Telegram: check credentials file
+    if load_telegram_credentials() is not None:
+        active.append("telegram")
+
+    # 2. Windows: check Windows platform
+    if sys.platform == "win32":
+        try:
+            from notifications.delivery.windows import WindowsDeliveryProvider
+
+            active.append("windows")
+        except (ImportError, ModuleNotFoundError):
+            pass
+
+    # 3. Test provider if explicitly requested
+    if include_test:
+        active.append("fake_provider")
+
+    return active
+
+
 def get_registered_providers(
     storage: Optional[StorageEngine] = None,
     *,
