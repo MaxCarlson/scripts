@@ -248,13 +248,21 @@ async def test_streaming_model_load_terminal_controls_fake_miner_restart(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_miner_once(tmp_path):
+async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_miner_once(tmp_path, monkeypatch):
+    from resource_coordinator.core import operator_credentials
     from resource_coordinator.config import CoordinatorConfig, build_system
     from resource_coordinator.core.durable_state import RequestPhase, StateCodec
     from resource_coordinator.core.processes import ProcessState
     from resource_coordinator.core.service import CoordinatorService
 
     journal = tmp_path / "coordinator-state.json"
+    token_path = tmp_path / "operator-token"
+    token = "T" * 64
+    token_path.write_text(token, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
     StateCodec.initialize(journal)
     config = CoordinatorConfig.from_dict(
         {
@@ -282,7 +290,6 @@ async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_
         }
     )
     system = build_system(config, use_fake_processes=True)
-    system.gateway.recovery_token = "test-recovery-token"
     service = CoordinatorService(system, start_miner_on_ready=True, first_boot=True)
     assert await service.start()
     backend = system.supervisors["krig"].backend
@@ -314,7 +321,7 @@ async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_
 
         recovery = await client.post(
             "/_coordinator/recover?resource=gpu.inference",
-            headers={"Authorization": "Bearer test-recovery-token"},
+            headers={"Authorization": f"Bearer {token}"},
             json={"override": True, "operator": "test-operator", "reason": "Verified upstream idle"},
         )
         assert recovery.status_code == 200
