@@ -255,16 +255,19 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - **Bounded Transport (4.4)**: Enforced strict loopback canonical path whitelist (`{"/_coordinator/status", "/status"}`). Injected empty `ProxyHandler({})` and `SafeLoopbackRedirectHandler`. Enforced 512 KB payload response limit and JSON Content-Type validation. Redacted bearer tokens and file paths in error messages. Bounded incident summary lengths to 256 characters.
   - **Observer Scheduled Task Lifecycle (4.5)**: Implemented `scripts-notify coordinator task status|install|uninstall` CLI subcommands running non-elevated user tasks with dry-run default.
   - **Persistence & Pruning (4.6)**: Implemented `prune_rc_observations()` and `scripts-notify coordinator prune` CLI command with configurable age and record limits.
+  - **Fail-Closed Locking (Correction A)**: Upgraded `ObserverLock` with `LockError`, `LockContentionError`, and `LockSetupError`. Polling and incident mutation fail closed immediately if exclusive synchronization cannot be established. Cleans up file descriptors on failure.
+  - **Safe Scheduled Task Arguments & Runtime Decoupling (Correction B)**: Uses `subprocess.list2cmdline` for safe Windows argument quoting (supporting spaces, parentheses, apostrophes, Unicode). Receives all parameters via structured stdin JSON in PowerShell. Decouples task from ephemeral development worktrees by defaulting working directory to `Path.home()`.
 - **Verification Evidence**:
-  - `modules/notifications/tests`: 150 passed, 1 skipped.
+  - `modules/notifications/tests`: 159 passed, 1 skipped.
   - `modules/remote_control/tests`: 44 passed.
   - `modules/scripts_help/tests`: 55 passed.
   - `modules/resource_coordinator/tests/test_recovery_presentation.py` & `test_cli.py`: 29 passed.
   - `test_rc_integration_smoke.py`: synthetic server smoke test passed end-to-end.
-  - Total workspace: 278 passed, 1 skipped, 0 failed.
+  - Total workspace: 287 passed, 1 skipped, 0 failed.
 - **Strict Boundaries Preserved**:
   - `modules/resource_coordinator/` remained 100% clean and unmodified.
   - Zero spending ($0 spend).
+  - Fast-forward eligible (15 ahead of `origin/main`, 0 behind).
   - Status: **Ready for authorized merge**.
 
 

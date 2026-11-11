@@ -567,3 +567,191 @@ def test_coordinator_task_management_dry_run() -> None:
     assert uninst["ok"] is True
     assert uninst["dry_run"] is True
     assert uninst["requires_apply"] is True
+
+
+def test_observer_lock_exclusive_acquisition_and_release(tmp_path: Path) -> None:
+    """ObserverLock acquires exclusive ownership and cleans up on exit."""
+    from notifications.integrations.resource_coordinator import ObserverLock
+
+    lock_path = tmp_path / "test.lock"
+    lock = ObserverLock(lock_path)
+    assert lock._fd is None
+
+    with lock:
+        assert lock._fd is not None
+        assert lock_path.exists()
+
+    assert lock._fd is None
+
+
+def test_observer_lock_contention_raises_lock_contention_error(tmp_path: Path) -> None:
+    """ObserverLock fails closed with LockContentionError when another process holds the lock."""
+    from notifications.integrations.resource_coordinator import (
+        LockAcquisitionError,
+        LockContentionError,
+        LockError,
+        ObserverLock,
+    )
+
+    lock_path = tmp_path / "test.lock"
+    lock1 = ObserverLock(lock_path)
+    lock2 = ObserverLock(lock_path)
+
+    with lock1:
+        with pytest.raises(LockContentionError) as exc_info:
+            with lock2:
+                pass
+        # Verifies exception inheritance hierarchy
+        assert isinstance(exc_info.value, LockAcquisitionError)
+        assert isinstance(exc_info.value, LockError)
+        assert "Another observer is currently running" in str(exc_info.value)
+        # Verify safe cleanup of lock2 after failed acquisition
+        assert lock2._fd is None
+
+    # After lock1 exits, lock2 can now acquire the lock
+    with lock2:
+        assert lock2._fd is not None
+    assert lock2._fd is None
+
+
+def test_observer_lock_setup_permission_denied(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ObserverLock raises LockSetupError when lock directory or file cannot be created."""
+    from notifications.integrations.resource_coordinator import LockError, LockSetupError, ObserverLock
+
+    lock_path = tmp_path / "subdir" / "test.lock"
+
+    def fail_mkdir(*args: Any, **kwargs: Any) -> None:
+        raise PermissionError("Access is denied")
+
+    monkeypatch.setattr(Path, "mkdir", fail_mkdir)
+
+    lock = ObserverLock(lock_path)
+    with pytest.raises(LockSetupError) as exc_info:
+        with lock:
+            pass
+    assert isinstance(exc_info.value, LockError)
+    assert "Failed to access or create observer lock file" in str(exc_info.value)
+    assert lock._fd is None
+
+
+def test_observer_lock_unexpected_locking_api_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """ObserverLock raises LockSetupError on unexpected locking API failures with clean fd cleanup."""
+    import sys
+    from notifications.integrations.resource_coordinator import LockSetupError, ObserverLock
+
+    lock_path = tmp_path / "test.lock"
+    lock = ObserverLock(lock_path)
+
+    if sys.platform == "win32":
+        import msvcrt
+
+        def fail_locking(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Unexpected Windows kernel trap")
+
+        monkeypatch.setattr(msvcrt, "locking", fail_locking)
+    else:
+        import fcntl
+
+        def fail_flock(*args: Any, **kwargs: Any) -> None:
+            raise RuntimeError("Unexpected POSIX kernel trap")
+
+        monkeypatch.setattr(fcntl, "flock", fail_flock)
+
+    with pytest.raises(LockSetupError) as exc_info:
+        with lock:
+            pass
+    assert "Unexpected locking API error" in str(exc_info.value)
+    assert lock._fd is None
+
+
+def test_observer_lock_failure_prevents_poll_and_mutations(storage: StorageEngine, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Observer lock failure halts poll_once immediately without mutating storage, incidents, or outbox."""
+    from notifications.integrations.resource_coordinator import (
+        LockContentionError,
+        ObserverLock,
+        ResourceCoordinatorObserver,
+    )
+
+    observer = ResourceCoordinatorObserver(storage=storage)
+    lock_path = storage.db_path.parent / ".rc_observer.lock"
+    holder = ObserverLock(lock_path)
+
+    with holder:
+        # Another process holds the lock
+        with pytest.raises(LockContentionError):
+            observer.poll_once()
+
+    # Verify no observation saved
+    assert storage.get_latest_rc_observation() is None
+    # Verify no active incidents
+    assert len(storage.list_incidents()) == 0
+    # Verify no outbox items
+    assert len(storage.list_pending_outbox()) == 0
+
+
+def test_install_coordinator_task_windows_quoting_spaces_and_special_chars() -> None:
+    """Task arguments are quoted safely with list2cmdline for paths with spaces and punctuation."""
+    from notifications.integrations.resource_coordinator import install_coordinator_task
+
+    complex_db = Path(r"C:\Users\John Doe (Dev)'s\events.db")
+    inst = install_coordinator_task(apply=False, db_path=complex_db)
+    assert inst["ok"] is True
+    # Verify quoted path inside arguments string
+    expected_arg = '-d "C:\\Users\\John Doe (Dev)\'s\\events.db"'
+    assert expected_arg in inst["arguments"]
+
+
+def test_install_coordinator_task_unicode_paths() -> None:
+    """Task installation safely preserves Unicode paths in command-line arguments."""
+    from notifications.integrations.resource_coordinator import install_coordinator_task
+
+    unicode_db = Path(r"C:\Users\José Müller\notifications\events.db")
+    inst = install_coordinator_task(apply=False, db_path=unicode_db)
+    assert inst["ok"] is True
+    assert r'-d "C:\Users\José Müller\notifications\events.db"' in inst["arguments"]
+
+
+def test_install_coordinator_task_validation_failures() -> None:
+    """Task installation rejects invalid URLs, intervals, and control characters."""
+    from notifications.integrations.resource_coordinator import install_coordinator_task
+
+    # Invalid non-loopback URL
+    res = install_coordinator_task(apply=False, status_url="http://example.com/status")
+    assert res["ok"] is False
+    assert "Invalid status URL" in res["error"]
+
+    # Invalid arbitrary endpoint path
+    res = install_coordinator_task(apply=False, status_url="http://127.0.0.1:8765/admin/restart")
+    assert res["ok"] is False
+    assert "Invalid status URL" in res["error"]
+
+    # Invalid interval
+    res = install_coordinator_task(apply=False, interval_minutes=0)
+    assert res["ok"] is False
+    assert "Invalid interval_minutes" in res["error"]
+
+    res = install_coordinator_task(apply=False, interval_minutes=2000)
+    assert res["ok"] is False
+    assert "Invalid interval_minutes" in res["error"]
+
+    # Control characters / newlines
+    res = install_coordinator_task(apply=False, db_path="C:/events\n.db")
+    assert res["ok"] is False
+    assert "newlines and null bytes are forbidden" in res["error"]
+
+
+def test_install_coordinator_task_working_directory_decoupled_from_worktree() -> None:
+    """Working directory defaults to durable user home rather than ephemeral git worktree."""
+    from notifications.integrations.resource_coordinator import install_coordinator_task
+
+    # Default working directory is user home
+    inst = install_coordinator_task(apply=False)
+    assert inst["ok"] is True
+    assert inst["working_directory"] == str(Path.home().resolve())
+
+    # Explicit working directory override
+    custom_dir = r"C:\ProgramData\NotificationsService"
+    inst_custom = install_coordinator_task(apply=False, working_directory=custom_dir)
+    assert inst_custom["ok"] is True
+    assert inst_custom["working_directory"] == custom_dir
+

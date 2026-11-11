@@ -23,6 +23,8 @@ from notifications.lifecycle import IncidentLifecycleEngine
 from notifications.models import EventEnvelopeV1, Incident, OutboxItem, RenderedNotification
 from notifications.integrations.resource_coordinator import (
     DEFAULT_COORDINATOR_STATUS_URL,
+    LockContentionError,
+    LockError,
     ResourceCoordinatorObserver,
     get_coordinator_task_status,
     install_coordinator_task,
@@ -273,6 +275,8 @@ def build_parser() -> argparse.ArgumentParser:
     task_inst.add_argument("-i", "--interval-minutes", type=int, default=2, help="Polling interval in minutes (default: 2).")
     task_inst.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help="Target loopback status URL.")
     task_inst.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+    task_inst.add_argument("--working-dir", default=None, help="Working directory for the task (default: user home).")
+    task_inst.add_argument("--executable", default=None, help="Executable path for the task (default: current python).")
     task_inst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     task_uninst = coord_task_sub.add_parser("uninstall", help="Unregister Windows Scheduled Task.")
@@ -976,7 +980,17 @@ def handle_coordinator(args: argparse.Namespace) -> int:
             print(json.dumps(err, indent=2) if args.json else f"Configuration error: {exc}", file=sys.stderr)
             return 1
 
-        obs = observer.poll_once()
+        try:
+            obs = observer.poll_once()
+        except LockContentionError as exc:
+            err = {"ok": False, "error": f"Lock contention: {exc}"}
+            print(json.dumps(err, indent=2) if args.json else f"Lock contention: {exc}", file=sys.stderr)
+            return 1
+        except LockError as exc:
+            err = {"ok": False, "error": f"Lock error: {exc}"}
+            print(json.dumps(err, indent=2) if args.json else f"Lock error: {exc}", file=sys.stderr)
+            return 1
+
         res = {
             "ok": obs.status == "available",
             "observation": obs.to_dict(),
@@ -1046,6 +1060,8 @@ def handle_coordinator(args: argparse.Namespace) -> int:
                 interval_minutes=getattr(args, "interval_minutes", 2),
                 status_url=getattr(args, "url", DEFAULT_COORDINATOR_STATUS_URL),
                 db_path=Path(db_path) if db_path else None,
+                executable=getattr(args, "executable", None),
+                working_directory=getattr(args, "working_dir", None),
             )
             if args.json:
                 print(json.dumps(res, indent=2))

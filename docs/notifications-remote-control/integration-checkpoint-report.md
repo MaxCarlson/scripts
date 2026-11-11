@@ -78,6 +78,26 @@ The checkpoint:
   - Added CLI command `scripts-notify coordinator prune [-a/--apply] [--max-age-days N] [--max-records N]` in `cli.py` with dry-run default.
   - Added observation count and size tracking in storage schema.
 
+### 4.7 Targeted Correction A: Fail-Closed Observer Locking
+- **Problem**: `ObserverLock.__enter__()` previously caught general exceptions during lock acquisition and logged that locking was skipped, allowing `poll_once()` to proceed without exclusive single-writer synchronization when filesystem permissions or unexpected errors occurred.
+- **Resolution**:
+  - Implemented fail-closed locking architecture with structured exception hierarchy:
+    - `LockError`: Base class for observer advisory lock failures.
+    - `LockAcquisitionError` / `LockContentionError`: Raised when the exclusive lock is held by another running observer instance.
+    - `LockSetupError`: Raised when filesystem permissions, directory creation, or unexpected OS locking APIs fail.
+  - Guarded `poll_once()` so that any lock failure halts execution immediately before making network requests, saving observations, updating incident lifecycle states, or queuing outbox items.
+  - Added robust file descriptor cleanup (`_cleanup_fd()`) to ensure partial setup failures never leave dangling handles.
+  - Updated background thread polling loop (`_run_loop`) to distinguish lock contention (warning) from lock errors (error) without crashing.
+  - Handled `LockError` in CLI (`scripts-notify coordinator poll`), exiting cleanly with code 1 and structured JSON error message.
+
+### 4.8 Targeted Correction B: Safe Scheduled Task Arguments & Runtime Decoupling
+- **Problem**: `install_coordinator_task()` constructed argument strings with `" ".join(args_list)`, which failed when paths contained spaces, parentheses, or punctuation. Furthermore, Scheduled Tasks risked hardcoding ephemeral agent worktree paths for working directory or executable, which would break after worktree removal.
+- **Resolution**:
+  - Replaced naive string concatenation with Windows-standard `subprocess.list2cmdline(args_list)` for the child argument vector, safely escaping spaces, quotes, and backslashes according to `CommandLineToArgvW` rules.
+  - Structured PowerShell execution: All Scheduled Task actions (`install`, `status`, `uninstall`) now receive structured parameters via standard input JSON (`[Console]::In.ReadToEnd() | ConvertFrom-Json`), eliminating PowerShell code string interpolation entirely.
+  - Input validation: Validates `status_url` against loopback canonical rules, bounds `interval_minutes` to `[1, 1440]`, and strictly rejects control characters and newlines (`\0`, `\r`, `\n`).
+  - Worktree Decoupling: Decoupled Scheduled Task execution from ephemeral development worktrees. Default `working_directory` is set to `Path.home().resolve()` rather than the active git worktree. When development worktrees are removed after merging, the Scheduled Task invokes `python.exe` in the shared virtual environment without depending on any deleted directory. Added `--working-dir` and `--executable` CLI overrides.
+
 ---
 
 ## 3. Comprehensive Verification Matrix
@@ -86,12 +106,12 @@ All tests were executed in the isolated integration worktree (`C:\Users\mcarls\s
 
 | Test Suite | Scope | Command | Passed | Skipped | Failed | Exit Code |
 | :--- | :--- | :--- | :---: | :---: | :---: | :---: |
-| **Notifications Full Suite** | Models, Broker, Outbox, Windows Toast, Telegram, Heartbeat, RC Observer, Storage, CLI | `pytest modules/notifications/tests --basetemp=.pytest_tmp -q` | 150 | 1 | 0 | 0 |
+| **Notifications Full Suite** | Models, Broker, Outbox, Windows Toast, Telegram, Heartbeat, RC Observer, Storage, CLI | `pytest modules/notifications/tests --basetemp=.pytest_tmp -q` | 159 | 1* | 0 | 0 |
 | **Remote Control Full Suite** | Auth, Argon2id, TOTP, Cookies, CSRF, PWA, Security Headers, Proxy Boundaries, Coordinator Read-Only API | `pytest modules/remote_control/tests --basetemp=.pytest_tmp -q` | 44 | 0 | 0 | 0 |
 | **Scripts Help Full Suite** | Command Registry, Formatting, Help CLI | `pytest modules/scripts_help/tests --basetemp=.pytest_tmp -q` | 55 | 0 | 0 | 0 |
 | **Resource Coordinator Contracts** | Recovery Presentation, Read-Only CLI Contracts | `pytest modules/resource_coordinator/tests/test_recovery_presentation.py modules/resource_coordinator/tests/test_cli.py --basetemp=.pytest_tmp -q` | 29 | 0 | 0 | 0 |
 | **RC Observer Integration Smoke** | End-to-end synthetic server, poll, durable deduplication, delivery, resolution | `pytest modules/notifications/tests/test_rc_integration_smoke.py --basetemp=.pytest_tmp -v` | 1 | 0 | 0 | 0 |
-| **Total Workspace Validation** | **All In-Scope Suites** | — | **278** | **1** | **0** | **0** |
+| **Total Workspace Validation** | **All In-Scope Suites** | — | **287** | **1** | **0** | **0** |
 
 *Note on skipped test:* The single skipped test in `modules/notifications/tests` corresponds to an intentional live-credential probe (`test_real_telegram_probe`) that requires external live bot tokens, which are intentionally bypassed in offline CI.
 
@@ -130,13 +150,28 @@ If this integration branch needs to be reverted or abandoned:
 
 ---
 
-## 6. Readiness Declaration
+## 6. Readiness Declaration and Operator Merge Instructions
 
 - [x] Phase 00–06 implementation stabilized and integrated.
-- [x] All 6 Phase 05 stabilization defect categories resolved and tested.
-- [x] Full test pass (278 passing, 0 failing across all suites).
-- [x] `modules/resource_coordinator/` completely clean and unmodified.
-- [x] Documentation updated and synchronized.
-- [x] Branch pushed to remote: `agent/notifications-p05-stabilization-integration-20261111`.
+- [x] All Phase 05 stabilization defect categories resolved and tested.
+- [x] Targeted Correction A (fail-closed observer locking) implemented and tested.
+- [x] Targeted Correction B (safe scheduled task arguments & worktree decoupling) implemented and tested.
+- [x] Full test pass: **287 passed, 1 skipped, 0 failing** across all workspace suites.
+- [x] `modules/resource_coordinator/` completely clean and unmodified (empty diff with `origin/main`).
+- [x] Zero mandatory spending ($0 spend; no external accounts, domains, or paid hosting).
+- [x] Fast-forward eligibility: 15 commits ahead of `origin/main`, 0 commits behind (clean fast-forward possible).
+- [x] Branch pushed to remote: `origin/agent/notifications-p05-stabilization-integration-20261111`.
+
+### Operator Instructions for Authorized Merge
+When the operator explicitly authorizes merging into `main`, the integration can be executed cleanly using fast-forward merge from the repository root:
+
+```powershell
+# In primary repository:
+cd C:\Users\mcarls\src\scripts
+git checkout main
+git pull origin main
+git merge --ff-only agent/notifications-p05-stabilization-integration-20261111
+git push origin main
+```
 
 **STATUS: READY FOR AUTHORIZED MERGE INTO MAIN.**

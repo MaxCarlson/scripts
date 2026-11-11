@@ -205,3 +205,20 @@ def test_cli_coordinator_prune_and_task_lifecycle(tmp_path: Path, capsys):
     data_tu = json.loads(cap_task_uninst.out)
     assert data_tu["ok"] is True
     assert data_tu["dry_run"] is True
+
+
+def test_cli_coordinator_poll_lock_contention(tmp_path: Path, capsys):
+    """Coordinator CLI poll command exits with code 1 and JSON error upon lock contention."""
+    from notifications.integrations.resource_coordinator import ObserverLock
+
+    db_file = tmp_path / "cli.db"
+    lock_file = tmp_path / ".rc_observer.lock"
+
+    with ObserverLock(lock_file):
+        ret = main(["coordinator", "poll", "-d", str(db_file), "-j"])
+        assert ret == 1
+        captured = capsys.readouterr()
+        err_data = json.loads(captured.err)
+        assert err_data["ok"] is False
+        assert "Lock contention" in err_data["error"]
+

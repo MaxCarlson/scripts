@@ -59,8 +59,20 @@ def _sanitize_error_message(exc: Exception | str) -> str:
     return msg or "Observer request failed"
 
 
-class LockAcquisitionError(Exception):
+class LockError(Exception):
+    """Base exception for observer advisory lock failures."""
+
+
+class LockAcquisitionError(LockError):
     """Raised when an observer advisory lock cannot be acquired."""
+
+
+class LockContentionError(LockAcquisitionError):
+    """Raised when the lock is held by another process or observer."""
+
+
+class LockSetupError(LockError):
+    """Raised when lock file creation, directory setup, or filesystem permissions fail."""
 
 
 class ObserverLock:
@@ -71,36 +83,71 @@ class ObserverLock:
         self._fd: Optional[Any] = None
 
     def __enter__(self) -> ObserverLock:
+        # 1. Directory and file setup
         try:
             self.lock_path.parent.mkdir(parents=True, exist_ok=True)
-            self._fd = open(self.lock_path, "w")
+            self._fd = open(self.lock_path, "a+")
+        except (PermissionError, OSError) as exc:
+            self._cleanup_fd()
+            raise LockSetupError(
+                f"Failed to access or create observer lock file at {self.lock_path}: {exc}"
+            ) from exc
+        except Exception as exc:
+            self._cleanup_fd()
+            raise LockSetupError(
+                f"Unexpected error creating observer lock file at {self.lock_path}: {exc}"
+            ) from exc
+
+        # 2. Acquire exclusive advisory lock
+        try:
             if sys.platform == "win32":
                 import msvcrt
 
+                self._fd.seek(0)
                 try:
                     msvcrt.locking(self._fd.fileno(), msvcrt.LK_NBLCK, 1)
-                except OSError:
-                    self._fd.close()
-                    self._fd = None
-                    raise LockAcquisitionError(
+                except (OSError, PermissionError) as exc:
+                    self._cleanup_fd()
+                    raise LockContentionError(
                         f"Another observer is currently running (lock held at {self.lock_path})."
-                    )
+                    ) from exc
             else:
                 import fcntl
 
                 try:
                     fcntl.flock(self._fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except (BlockingIOError, OSError):
-                    self._fd.close()
-                    self._fd = None
-                    raise LockAcquisitionError(
-                        f"Another observer is currently running (lock held at {self.lock_path})."
-                    )
-        except LockAcquisitionError:
+                except (BlockingIOError, OSError) as exc:
+                    self._cleanup_fd()
+                    import errno
+
+                    if (
+                        isinstance(exc, BlockingIOError)
+                        or getattr(exc, "errno", None)
+                        in (errno.EACCES, errno.EAGAIN, errno.EWOULDBLOCK)
+                    ):
+                        raise LockContentionError(
+                            f"Another observer is currently running (lock held at {self.lock_path})."
+                        ) from exc
+                    raise LockSetupError(
+                        f"Unexpected error acquiring lock at {self.lock_path}: {exc}"
+                    ) from exc
+        except LockError:
             raise
         except Exception as exc:
-            logger.debug("Advisory lock setup skipped: %s", exc)
+            self._cleanup_fd()
+            raise LockSetupError(
+                f"Unexpected locking API error for {self.lock_path}: {exc}"
+            ) from exc
+
         return self
+
+    def _cleanup_fd(self) -> None:
+        if self._fd is not None:
+            try:
+                self._fd.close()
+            except Exception:
+                pass
+            self._fd = None
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if self._fd is not None:
@@ -109,6 +156,7 @@ class ObserverLock:
                     import msvcrt
 
                     try:
+                        self._fd.seek(0)
                         msvcrt.locking(self._fd.fileno(), msvcrt.LK_UNLCK, 1)
                     except OSError:
                         pass
@@ -120,8 +168,7 @@ class ObserverLock:
                     except OSError:
                         pass
             finally:
-                self._fd.close()
-                self._fd = None
+                self._cleanup_fd()
 
 
 class SafeLoopbackRedirectHandler(urllib.request.HTTPRedirectHandler):
@@ -648,6 +695,10 @@ class ResourceCoordinatorObserver:
         while not self._stop_event.is_set():
             try:
                 self.poll_once()
+            except LockContentionError as exc:
+                logger.warning("Observer cycle skipped due to lock contention: %s", exc)
+            except LockError as exc:
+                logger.error("Observer cycle failed due to lock error: %s", exc)
             except Exception as exc:
                 logger.error("Error in observer polling loop: %s", exc, exc_info=True)
             self._stop_event.wait(self.poll_interval)
@@ -667,13 +718,15 @@ def get_coordinator_task_status() -> dict[str, Any]:
             "message": "Scheduled Tasks are only supported on Windows.",
         }
 
-    ps_cmd = f"""
+    ps_cmd = """
 $ErrorActionPreference = 'Stop'
-try {{
-    $task = Get-ScheduledTask -TaskName '{COORDINATOR_TASK_NAME}' -ErrorAction Stop
-    $info = Get-ScheduledTaskInfo -TaskName '{COORDINATOR_TASK_NAME}'
+$in = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$taskName = $in.TaskName
+try {
+    $task = Get-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    $info = Get-ScheduledTaskInfo -TaskName $taskName
     $action = $task.Actions | Select-Object -First 1
-    [PSCustomObject]@{{
+    [PSCustomObject]@{
         Installed = $true
         State = $task.State.ToString()
         LastRunTime = $info.LastRunTime.ToString('o')
@@ -681,23 +734,24 @@ try {{
         NextRunTime = $info.NextRunTime.ToString('o')
         Executable = $action.Execute
         Arguments = $action.Arguments
-    }} | ConvertTo-Json -Compress
-}} catch [Microsoft.PowerShell.Cmdletization.MethodInvocationException], [System.Management.Automation.ItemNotFoundException] {{
-    [PSCustomObject]@{{
+    } | ConvertTo-Json -Compress
+} catch [Microsoft.PowerShell.Cmdletization.MethodInvocationException], [System.Management.Automation.ItemNotFoundException] {
+    [PSCustomObject]@{
         Installed = $false
         State = "NotInstalled"
-    }} | ConvertTo-Json -Compress
-}} catch {{
-    [PSCustomObject]@{{
+    } | ConvertTo-Json -Compress
+} catch {
+    [PSCustomObject]@{
         Installed = $false
         State = "Error"
         Error = $_.Exception.Message
-    }} | ConvertTo-Json -Compress
-}}
+    } | ConvertTo-Json -Compress
+}
 """
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            input=json.dumps({"TaskName": COORDINATOR_TASK_NAME}),
             capture_output=True,
             text=True,
             check=False,
@@ -735,16 +789,52 @@ def install_coordinator_task(
     apply: bool = False,
     interval_minutes: int = 2,
     status_url: str = DEFAULT_COORDINATOR_STATUS_URL,
-    db_path: Optional[Path] = None,
+    db_path: Optional[Union[str, Path]] = None,
+    executable: Optional[Union[str, Path]] = None,
+    working_directory: Optional[Union[str, Path]] = None,
 ) -> dict[str, Any]:
     """Register the Coordinator Observer as a Windows Scheduled Task."""
-    eff_interval = max(1, int(interval_minutes))
-    python_exe = Path(sys.executable).resolve()
+    # 1. Parameter validation
+    try:
+        eff_interval = int(interval_minutes)
+        if eff_interval < 1 or eff_interval > 1440:
+            return {
+                "ok": False,
+                "error": f"Invalid interval_minutes: {interval_minutes}. Must be between 1 and 1440.",
+            }
+    except (TypeError, ValueError):
+        return {
+            "ok": False,
+            "error": f"Invalid interval_minutes: {interval_minutes}. Must be an integer between 1 and 1440.",
+        }
 
+    try:
+        ResourceCoordinatorObserver._validate_url(status_url)
+    except ValueError as exc:
+        return {"ok": False, "error": f"Invalid status URL: {exc}"}
+
+    for val_name, val in [
+        ("status_url", status_url),
+        ("db_path", str(db_path or "")),
+        ("executable", str(executable or "")),
+        ("working_directory", str(working_directory or "")),
+    ]:
+        if any(c in val for c in ("\x00", "\r", "\n")):
+            return {
+                "ok": False,
+                "error": f"Invalid characters in {val_name}: newlines and null bytes are forbidden.",
+            }
+
+    python_exe = Path(executable).resolve() if executable else Path(sys.executable).resolve()
+
+    # Durable default working directory (avoids hardcoding ephemeral git worktree)
+    work_dir = Path(working_directory).resolve() if working_directory else Path.home().resolve()
+
+    # Safe argument vector quoting via list2cmdline
     args_list = ["-m", "notifications.cli", "coordinator", "poll", "-u", status_url]
     if db_path:
-        args_list.extend(["-d", str(db_path.resolve())])
-    runner_args = " ".join(args_list)
+        args_list.extend(["-d", str(Path(db_path))])
+    runner_args = subprocess.list2cmdline(args_list)
 
     preview = {
         "ok": True,
@@ -753,6 +843,7 @@ def install_coordinator_task(
         "task_name": COORDINATOR_TASK_NAME,
         "executable": str(python_exe),
         "arguments": runner_args,
+        "working_directory": str(work_dir),
         "interval_minutes": eff_interval,
         "requires_apply": not apply,
     }
@@ -772,8 +863,8 @@ $in = [Console]::In.ReadToEnd() | ConvertFrom-Json
 $taskName = $in.TaskName
 $exe = $in.Executable
 $argsStr = $in.Arguments
+$workDir = $in.WorkingDirectory
 $intervalMin = [int]$in.IntervalMinutes
-$workDir = Split-Path $exe
 
 $action = New-ScheduledTaskAction -Execute $exe -Argument $argsStr -WorkingDirectory $workDir
 $timespan = New-TimeSpan -Minutes $intervalMin
@@ -801,6 +892,7 @@ Register-ScheduledTask `
         "TaskName": COORDINATOR_TASK_NAME,
         "Executable": str(python_exe),
         "Arguments": runner_args,
+        "WorkingDirectory": str(work_dir),
         "IntervalMinutes": eff_interval,
     })
 
@@ -843,20 +935,23 @@ def uninstall_coordinator_task(apply: bool = False) -> dict[str, Any]:
             "error": "Scheduled Task uninstallation is only supported on Windows.",
         }
 
-    ps_cmd = f"""
+    ps_cmd = """
 $ErrorActionPreference = 'Stop'
-try {{
-    Unregister-ScheduledTask -TaskName '{COORDINATOR_TASK_NAME}' -Confirm:$false -ErrorAction Stop
-    [PSCustomObject]@{{ Uninstalled = $true }} | ConvertTo-Json -Compress
-}} catch [Microsoft.PowerShell.Cmdletization.MethodInvocationException], [System.Management.Automation.ItemNotFoundException] {{
-    [PSCustomObject]@{{ Uninstalled = $true; AlreadyAbsent = $true }} | ConvertTo-Json -Compress
-}} catch {{
-    [PSCustomObject]@{{ Uninstalled = $false; Error = $_.Exception.Message }} | ConvertTo-Json -Compress
-}}
+$in = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$taskName = $in.TaskName
+try {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop
+    [PSCustomObject]@{ Uninstalled = $true } | ConvertTo-Json -Compress
+} catch [Microsoft.PowerShell.Cmdletization.MethodInvocationException], [System.Management.Automation.ItemNotFoundException] {
+    [PSCustomObject]@{ Uninstalled = $true; AlreadyAbsent = $true } | ConvertTo-Json -Compress
+} catch {
+    [PSCustomObject]@{ Uninstalled = $false; Error = $_.Exception.Message } | ConvertTo-Json -Compress
+}
 """
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            input=json.dumps({"TaskName": COORDINATOR_TASK_NAME}),
             capture_output=True,
             text=True,
             check=False,
