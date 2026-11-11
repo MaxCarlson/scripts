@@ -45,6 +45,57 @@ except ImportError:
         HIDDEN = "hidden"
 
 
+def copy_to_clipboard(text: str) -> bool:
+    """Copy text to system clipboard across Windows, macOS, and Linux."""
+    if not text:
+        return False
+
+    if sys.platform == "win32":
+        try:
+            import ctypes
+            from ctypes import wintypes
+
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+
+            kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+            kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+            kernel32.GlobalLock.restype = wintypes.LPVOID
+            kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+            kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+            user32.OpenClipboard.argtypes = [wintypes.HWND]
+            user32.SetClipboardData.restype = wintypes.HANDLE
+            user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+            if user32.OpenClipboard(None):
+                try:
+                    user32.EmptyClipboard()
+                    data = text.encode("utf-16le") + b"\x00\x00"
+                    h_mem = kernel32.GlobalAlloc(0x0042, len(data))  # GMEM_MOVEABLE | GMEM_ZEROINIT
+                    if h_mem:
+                        p_mem = kernel32.GlobalLock(h_mem)
+                        if p_mem:
+                            ctypes.memmove(p_mem, data, len(data))
+                            kernel32.GlobalUnlock(h_mem)
+                            user32.SetClipboardData(13, h_mem)  # CF_UNICODETEXT
+                            return True
+                finally:
+                    user32.CloseClipboard()
+        except Exception:
+            pass
+
+    # Terminal OSC 52 fallback (supported by Windows Terminal, iTerm2, Alacritty, Kitty, tmux, etc.)
+    try:
+        import base64
+
+        b64 = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        sys.stdout.write(f"\x1b]52;c;{b64}\x07")
+        sys.stdout.flush()
+        return True
+    except Exception:
+        return False
+
+
 def _color_metric(
     val_str: str,
     pct: Optional[float] = None,
@@ -300,6 +351,11 @@ class CliTuiApp:
                 self.sampler = None
         self._last_sys_stats: Optional[Any] = None
         self._last_proc_stats: Optional[Any] = None
+        self._mouse_down_pos: tuple[int, int] = (0, 0)
+        self._mouse_is_down: bool = False
+        self._mouse_drag_moved: bool = False
+        self._active_selection: Optional[tuple[tuple[int, int], tuple[int, int]]] = None
+        self._last_rendered_screen: List[str] = []
         self._load_saved_layout()
 
     def _load_saved_layout(self) -> None:
@@ -733,9 +789,99 @@ class CliTuiApp:
         )
 
     def handle_mouse_click(self, mx: int, my: int, bstate: int = 4) -> bool:
-        """Handle mouse clicks on form fields, buttons, and navigation."""
-        if self.screen_mode == TuiScreenMode.FORM:
-            # Check button boxes
+        """Handle mouse events including clicks, wheel scrolling, and drag selection."""
+        wheel_up = getattr(curses, "BUTTON4_PRESSED", 65536)
+        wheel_down = getattr(curses, "BUTTON5_PRESSED", 2097152)
+        if bstate & wheel_up:
+            self._active_selection = None
+            self.workspace.active_pane.viewport.scroll_up(3)
+            return True
+        elif bstate & wheel_down:
+            self._active_selection = None
+            self.workspace.active_pane.viewport.scroll_down(3)
+            return True
+
+        btn1_pressed = getattr(curses, "BUTTON1_PRESSED", 2)
+        btn1_released = getattr(curses, "BUTTON1_RELEASED", 1)
+        btn1_clicked = getattr(curses, "BUTTON1_CLICKED", 4)
+        report_pos = getattr(curses, "REPORT_MOUSE_POSITION", 536870912)
+
+        if bstate & btn1_pressed:
+            if getattr(self, "_mouse_is_down", False):
+                down_pos = getattr(self, "_mouse_down_pos", (mx, my))
+                if (mx, my) != down_pos:
+                    self._mouse_drag_moved = True
+                    self._active_selection = (down_pos, (mx, my))
+                    return True
+            else:
+                self._mouse_down_pos = (mx, my)
+                self._mouse_is_down = True
+                self._mouse_drag_moved = False
+                self._active_selection = None
+                return True
+
+        if bstate & report_pos:
+            if getattr(self, "_mouse_is_down", False):
+                down_pos = getattr(self, "_mouse_down_pos", (mx, my))
+                if (mx, my) != down_pos:
+                    self._mouse_drag_moved = True
+                    self._active_selection = (down_pos, (mx, my))
+                    return True
+            return False
+
+        if bstate & btn1_released:
+            if getattr(self, "_mouse_is_down", False):
+                self._mouse_is_down = False
+                down_pos = getattr(self, "_mouse_down_pos", (mx, my))
+                if getattr(self, "_mouse_drag_moved", False) or (mx, my) != down_pos:
+                    self._active_selection = (down_pos, (mx, my))
+                    text = self._extract_screen_text(down_pos, (mx, my))
+                    if text and text.strip():
+                        copy_to_clipboard(text)
+                        self.last_message = f"Copied {len(text)} chars to clipboard"
+                    return True
+                else:
+                    self._active_selection = None
+                    return self._handle_single_click(mx, my)
+            return False
+
+        if bstate & btn1_clicked:
+            if not getattr(self, "_mouse_is_down", False):
+                self._active_selection = None
+                return self._handle_single_click(mx, my)
+
+        return False
+
+    def _handle_single_click(self, mx: int, my: int) -> bool:
+        """Handle a single mouse click at (mx, my) without dragging."""
+        active_pane = self.workspace.active_pane
+        is_console = active_pane.pane_type == PaneType.CONSOLE
+        is_running = self.screen_mode == TuiScreenMode.RUNNING or is_console
+
+        if is_running:
+            status_row = getattr(self, "_running_status_row", 0)
+            footer_row = getattr(self, "_running_footer_row", 9999)
+            current_focus = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+            clicked_tui = (my <= status_row or my >= footer_row)
+            if clicked_tui:
+                if current_focus != RunningFocusMode.TUI:
+                    active_pane.running_focus = RunningFocusMode.TUI
+                    self.last_message = "Focus: CLI-TUI"
+                    return True
+                return False
+            else:
+                if current_focus != RunningFocusMode.PROGRAM:
+                    active_pane.running_focus = RunningFocusMode.PROGRAM
+                    if is_console:
+                        sh_name = getattr(active_pane.runner, "shell_name", "SHELL").upper()
+                        self.last_message = f"Focus: {sh_name}"
+                    else:
+                        cmd_name = (self.current_command.prog or self.current_command.name or "PROGRAM").split()[-1].upper()
+                        self.last_message = f"Focus: {cmd_name}"
+                    return True
+                return False
+
+        elif self.screen_mode == TuiScreenMode.FORM:
             for (by, bx_start, bx_end, action) in getattr(self, "_button_boxes", []):
                 if my == by and bx_start <= mx <= bx_end:
                     if action == "run":
@@ -752,7 +898,6 @@ class CliTuiApp:
                         self.form_widgets = []
                         return True
 
-            # Check widgets
             widget_row_map = getattr(self, "_widget_row_map", {})
             if my in widget_row_map:
                 target_idx, widget = widget_row_map[my]
@@ -761,9 +906,7 @@ class CliTuiApp:
                         self.form_widgets[self.form_cursor].is_editing = False
                     self.form_cursor = target_idx
 
-                if hasattr(widget, "set_cursor_from_click") and hasattr(
-                    widget, "text_start_offset"
-                ):
+                if hasattr(widget, "set_cursor_from_click") and hasattr(widget, "text_start_offset"):
                     start_col = 2 + widget.text_start_offset()
                     char_offset = max(0, mx - start_col)
                     widget.set_cursor_from_click(char_offset)
@@ -779,37 +922,26 @@ class CliTuiApp:
                         widget.handle_key(getattr(curses, "KEY_RIGHT", 261))
                     return True
 
-        elif self.screen_mode == TuiScreenMode.RUNNING:
-            wheel_up = getattr(curses, "BUTTON4_PRESSED", 65536)
-            wheel_down = getattr(curses, "BUTTON5_PRESSED", 2097152)
-            if bstate & wheel_up:
-                self.viewport.scroll_up(3)
-                return True
-            elif bstate & wheel_down:
-                self.viewport.scroll_down(3)
-                return True
-
-            btn1_clicked = getattr(curses, "BUTTON1_CLICKED", 4)
-            btn1_pressed = getattr(curses, "BUTTON1_PRESSED", 2)
-            if bstate & (btn1_clicked | btn1_pressed):
-                status_row = getattr(self, "_running_status_row", 0)
-                footer_row = getattr(self, "_running_footer_row", 9999)
-                current_focus = getattr(self.workspace.active_pane, "running_focus", RunningFocusMode.PROGRAM)
-                clicked_tui = (my <= status_row or my >= footer_row)
-                if clicked_tui:
-                    if current_focus != RunningFocusMode.TUI:
-                        self.workspace.active_pane.running_focus = RunningFocusMode.TUI
-                        self.last_message = "Focus: CLI-TUI"
-                        return True
-                    return False
-                else:
-                    if current_focus != RunningFocusMode.PROGRAM:
-                        self.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
-                        self.last_message = "Focus: PROGRAM"
-                        return True
-                    return False
-
         return False
+
+    def _extract_screen_text(self, start: tuple[int, int], end: tuple[int, int]) -> str:
+        """Extract plain text from the rendered screen buffer within coordinates (start, end)."""
+        lines = getattr(self, "_last_rendered_screen", [])
+        if not lines:
+            return ""
+        (sx, sy), (ex, ey) = start, end
+        (x0, y0), (x1, y1) = (sx, sy), (ex, ey)
+        if (y0, x0) > (y1, x1):
+            (x0, y0), (x1, y1) = (x1, y1), (x0, y0)
+
+        clean_lines = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in lines]
+        parts = []
+        for row in range(max(0, y0), min(len(clean_lines), y1 + 1)):
+            line = clean_lines[row]
+            left = max(0, x0 if row == y0 else 0)
+            right = max(left, (x1 + 1) if row == y1 else len(line))
+            parts.append(line[left:right].rstrip())
+        return "\n".join(parts)
 
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
@@ -819,6 +951,9 @@ class CliTuiApp:
                 return self.handle_mouse_click(mx, my, bstate)
             except Exception:
                 return False
+
+        # Clear visual text selection on any keyboard interaction
+        self._active_selection = None
 
         if self.is_showing_output_capture:
             return self._handle_output_capture_key(key)
@@ -844,45 +979,89 @@ class CliTuiApp:
                 return True
             return True
 
-        # 0d. Console pane active key routing
-        if self.workspace.active_pane.pane_type == PaneType.CONSOLE:
-            if key == 27:  # Esc opens pane manager
-                self.is_pane_manager_open = True
-                self.manager_cursor = self.workspace.active_index
-                return True
-            if key in (20, 353):  # Ctrl+T or Shift+Esc
-                self.branch_to_new_command_pane()
-                return True
-            runner = self.workspace.active_pane.runner
-            if runner and hasattr(runner, "handle_key"):
-                handled = runner.handle_key(key)
-                if getattr(runner, "is_terminated", False):
-                    self._close_output_capture(self.workspace.active_pane)
-                    self.workspace.delete_pane(self.workspace.active_index)
-                    self._restore_active_pane_state()
-                    return True
-                return handled
-            return False
+        # 0d. Focus toggle shortcut for RUNNING & CONSOLE modes (Ctrl+F, F6, or Ctrl+Alt+S / key 540)
+        active_pane = self.workspace.active_pane
+        is_console = active_pane.pane_type == PaneType.CONSOLE
+        is_running_mode = self.screen_mode == TuiScreenMode.RUNNING or is_console
 
-        # 0e. Focus toggle & program-focus routing in RUNNING mode
-        if self.screen_mode == TuiScreenMode.RUNNING:
-            if key in (6, getattr(curses, "KEY_F6", 270), 540):
-                active_pane = self.workspace.active_pane
-                current_focus = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
-                if current_focus == RunningFocusMode.PROGRAM:
-                    active_pane.running_focus = RunningFocusMode.TUI
-                    self.last_message = "Focus: CLI-TUI"
+        if is_running_mode and key in (6, getattr(curses, "KEY_F6", 270), 540):
+            current_focus = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+            if current_focus == RunningFocusMode.PROGRAM:
+                active_pane.running_focus = RunningFocusMode.TUI
+                self.last_message = "Focus: CLI-TUI"
+            else:
+                active_pane.running_focus = RunningFocusMode.PROGRAM
+                if is_console:
+                    sh_name = getattr(active_pane.runner, "shell_name", "SHELL").upper()
+                    self.last_message = f"Focus: {sh_name}"
                 else:
-                    active_pane.running_focus = RunningFocusMode.PROGRAM
-                    self.last_message = "Focus: PROGRAM"
-                return True
+                    cmd_name = (self.current_command.prog or self.current_command.name or "PROGRAM").split()[-1].upper()
+                    self.last_message = f"Focus: {cmd_name}"
+            return True
 
+        # 0e. Console pane key routing
+        if is_console:
+            focus_mode = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+            runner = active_pane.runner
+            if focus_mode == RunningFocusMode.PROGRAM:
+                if key in (20, 353):  # Ctrl+T or Shift+Esc
+                    self.branch_to_new_command_pane()
+                    return True
+                if key == 27:  # Esc: clear buffer if not empty, else toggle to TUI focus
+                    if runner and getattr(runner, "input_buffer", ""):
+                        runner.input_buffer = ""
+                        runner.cursor_pos = 0
+                        return True
+                    else:
+                        active_pane.running_focus = RunningFocusMode.TUI
+                        self.last_message = "Focus: CLI-TUI"
+                        return True
+                if key in (curses.KEY_PPAGE,):
+                    active_pane.viewport.scroll_page_up(15)
+                    return True
+                elif key in (curses.KEY_NPAGE,):
+                    active_pane.viewport.scroll_page_down(15)
+                    return True
+                if runner and hasattr(runner, "handle_key"):
+                    handled = runner.handle_key(key)
+                    if getattr(runner, "is_terminated", False):
+                        self._close_output_capture(active_pane)
+                        self.workspace.delete_pane(self.workspace.active_index)
+                        self._restore_active_pane_state()
+                        return True
+                    return handled
+                return False
+            else:
+                if key in (curses.KEY_UP, ord("k")):
+                    active_pane.viewport.scroll_up(1)
+                    return True
+                elif key in (curses.KEY_DOWN, ord("j")):
+                    active_pane.viewport.scroll_down(1)
+                    return True
+                elif key in (curses.KEY_PPAGE,):
+                    active_pane.viewport.scroll_page_up(15)
+                    return True
+                elif key in (curses.KEY_NPAGE,):
+                    active_pane.viewport.scroll_page_down(15)
+                    return True
+                elif key in (10, 13):
+                    active_pane.running_focus = RunningFocusMode.PROGRAM
+                    sh_name = getattr(active_pane.runner, "shell_name", "SHELL").upper()
+                    self.last_message = f"Focus: {sh_name}"
+                    return True
+
+        # 0f. Command RUNNING mode key routing
+        elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
             if runner and getattr(runner, "is_running", False):
-                active_pane = self.workspace.active_pane
                 focus_mode = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
                 if focus_mode == RunningFocusMode.PROGRAM:
                     return self._handle_running_key(key)
+                elif key in (10, 13):
+                    active_pane.running_focus = RunningFocusMode.PROGRAM
+                    cmd_name = (self.current_command.prog or self.current_command.name or "PROGRAM").split()[-1].upper()
+                    self.last_message = f"Focus: {cmd_name}"
+                    return True
 
         # 1. Immediate unconditional quit on 'Q'
         if key == ord("Q"):
@@ -1055,13 +1234,14 @@ class CliTuiApp:
             self.is_showing_new_pane_choice = False
             self.is_pane_manager_open = False
             self._save_current_pane_state()
+            console_runner = ConsolePaneRunner(cwd=os.getcwd())
             new_pane = self.workspace.create_pane(
-                title="Shell Console",
+                title=f"{console_runner.shell_name}",
                 pane_type=PaneType.CONSOLE,
                 screen_mode=TuiScreenMode.RUNNING,
             )
+            new_pane.running_focus = RunningFocusMode.PROGRAM
             new_pane.navigation.current_screen = TuiScreenMode.RUNNING
-            console_runner = ConsolePaneRunner(cwd=os.getcwd())
             new_pane.runner = console_runner
             new_pane.extra_data["console_runner"] = console_runner
             self._restore_active_pane_state()
@@ -1603,10 +1783,11 @@ class CliTuiApp:
         pane = self.workspace.active_pane
         runner = pane.runner
         lines: List[str] = list(telemetry_lines)
+        sh_label = getattr(runner, "shell_name", "Shell").capitalize()
         if len(self.workspace.panes) > 1:
             header = self.render_tab_strip(width)
         else:
-            header = f"┌─ {self.title} > Shell Console ".ljust(width - 1, "─") + "┐"
+            header = f"┌─ {self.title} > {sh_label} Console ".ljust(width - 1, "─") + "┐"
         lines.append(header)
 
         badge_map = {
@@ -1616,29 +1797,69 @@ class CliTuiApp:
         }
         telemetry_badge = badge_map.get(self.telemetry_mode, "[t] Telemetry: Full")
 
-        badges = [
-            "[Enter] Execute",
-            "[p] Panes",
-            telemetry_badge,
-            "[Shift+Esc] New Pane",
-        ]
-        if len(self.workspace.panes) > 1:
-            badges.append("[[]/[]] Prev/Next")
-        badges.extend(["[Esc] Panes", "[exit] Close"])
+        focus_mode = getattr(pane, "running_focus", RunningFocusMode.PROGRAM)
+        sh_name = getattr(runner, "shell_name", "SHELL").upper()
+        is_executing = runner and getattr(runner, "active_runner", None) and runner.active_runner.is_running
+        if is_executing:
+            status_str = "\x1b[33;1mRUNNING\x1b[0m"
+        else:
+            status_str = "\x1b[32;1mREADY\x1b[0m"
+
+        if focus_mode == RunningFocusMode.PROGRAM:
+            focus_badge = f"\x1b[34;1mFocus: {sh_name}\x1b[0m"
+            badges = [
+                "[Ctrl+F] Focus: TUI",
+                "[Enter] Execute",
+                telemetry_badge,
+                "[Esc] TUI Focus",
+                "[PgUp/PgDn] Scroll",
+                "[exit] Close",
+            ]
+        else:
+            focus_badge = "\x1b[31;1mFocus: CLI-TUI\x1b[0m"
+            badges = [
+                f"[Ctrl+F] Focus: {sh_name}",
+                "[Enter] Focus Console",
+                "[p] Panes",
+                telemetry_badge,
+            ]
+            if len(self.workspace.panes) > 1:
+                badges.append("[[]/[]] Prev/Next")
+            badges.extend(["[Shift+Esc] New Pane", "[↑/↓] Scroll", "[q] Quit", "[Q] Force Quit"])
+
+        if self.last_message:
+            badges.append(self.last_message)
         footer_lines = format_hotkey_footer(badges, width)
+
+        self._running_status_row = len(telemetry_lines) + 1
+        self._running_footer_row = height - len(footer_lines)
+
         inner_height = max(1, height - len(telemetry_lines) - 1 - len(footer_lines))
 
         raw_lines = runner.lines if runner else []
-        visible = pane.viewport.get_visible_lines(
-            raw_lines, height=max(1, inner_height - 2), width=max(10, width - 4)
+        visible_height = max(1, inner_height - 3)
+        visible_width = max(10, width - 4)
+        start_l, end_l, total_l = pane.viewport.get_scroll_bounds(
+            raw_lines, height=visible_height, width=visible_width
         )
-        content_lines = [""]
+        scroll_info = ""
+        if total_l > visible_height:
+            scroll_info = f"  |  Lines {start_l}-{end_l} of {total_l} (↑/↓ to scroll)"
+
+        content_lines = [
+            f"  Status: {status_str}  |  {focus_badge}  |  [Ctrl+F] Toggle Focus  |  Shell: {sh_name}{scroll_info}",
+            "",
+        ]
+
+        visible = pane.viewport.get_visible_lines(
+            raw_lines, height=visible_height, width=visible_width
+        )
         content_lines.extend(f"  {line}" for line in visible)
-        while len(content_lines) < inner_height - 1:
-            content_lines.append("")
         cwd = getattr(runner, "cwd", os.getcwd()) if runner else os.getcwd()
         inp = getattr(runner, "input_buffer", "") if runner else ""
         content_lines.append(f"  [{cwd}]> {inp}█")
+        while len(content_lines) < inner_height:
+            content_lines.append("")
         lines.extend(content_lines[:inner_height])
 
         lines.extend(footer_lines)
@@ -1794,6 +2015,11 @@ class CliTuiApp:
 
     def render_virtual_screen(self, height: int = 24, width: int = 80) -> List[str]:
         """Render text representation of the screen for unit testing and display."""
+        lines = self._generate_virtual_screen(height=height, width=width)
+        self._last_rendered_screen = list(lines)
+        return lines
+
+    def _generate_virtual_screen(self, height: int = 24, width: int = 80) -> List[str]:
         if self.is_confirming_layout_save:
             prompt = ["Save the current pane layout before exiting?", "[y] Save and exit", "[n] Exit without saving"]
             if self.last_message.startswith("Could not save"):
@@ -2250,7 +2476,7 @@ class CliTuiApp:
         curses.curs_set(0)
         stdscr.timeout(50)  # 50ms tick for smooth live runner updates
         try:
-            curses.mousemask(curses.ALL_MOUSE_EVENTS)
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | getattr(curses, "REPORT_MOUSE_POSITION", 0))
         except Exception:
             pass
         if curses.has_colors():
@@ -2270,6 +2496,21 @@ class CliTuiApp:
             stdscr.erase()
             for y, line in enumerate(lines[:max_y]):
                 addstr_ansi(stdscr, y, 0, line, max_x)
+
+            if getattr(self, "_active_selection", None):
+                (sx, sy), (ex, ey) = self._active_selection
+                (x0, y0), (x1, y1) = (sx, sy), (ex, ey)
+                if (y0, x0) > (y1, x1):
+                    (x0, y0), (x1, y1) = (x1, y1), (x0, y0)
+                for r in range(max(0, y0), min(max_y, y1 + 1)):
+                    left = max(0, x0 if r == y0 else 0)
+                    right = min(max_x, (x1 + 1) if r == y1 else max_x)
+                    count = max(0, right - left)
+                    if count > 0 and left < max_x:
+                        try:
+                            stdscr.chgat(r, left, count, curses.A_REVERSE)
+                        except Exception:
+                            pass
 
             if self._is_widget_editing():
                 try:

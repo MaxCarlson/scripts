@@ -497,3 +497,112 @@ def test_running_screen_rendering_colors_and_completion_box():
     assert app.screen_mode == TuiScreenMode.FORM
 
 
+def test_mouse_drag_selection_and_clipboard_copy(monkeypatch):
+    import curses
+    from cli_tui.state import RunningFocusMode
+
+    parser = argparse.ArgumentParser(prog="mangadl run")
+    app = CliTuiApp(parser=parser, executable=[sys.executable])
+    app._open_form_for_command(app.root_command)
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+    app.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+
+    # Render screen so _last_rendered_screen is populated
+    app.render_virtual_screen(24, 80)
+    assert len(app._last_rendered_screen) == 24
+
+    copied_texts = []
+    monkeypatch.setattr("cli_tui.app.copy_to_clipboard", lambda text: copied_texts.append(text) or True)
+
+    btn1_pressed = getattr(curses, "BUTTON1_PRESSED", 2)
+    btn1_released = getattr(curses, "BUTTON1_RELEASED", 1)
+    report_pos = getattr(curses, "REPORT_MOUSE_POSITION", 536870912)
+
+    # 1. Mouse down at (5, 2)
+    app.handle_mouse_click(5, 2, btn1_pressed)
+    assert app._mouse_is_down is True
+    assert app._mouse_down_pos == (5, 2)
+    assert app._mouse_drag_moved is False
+    assert app._active_selection is None
+
+    # 2. Mouse drag to (35, 4)
+    app.handle_mouse_click(35, 4, report_pos)
+    assert app._mouse_drag_moved is True
+    assert app._active_selection == ((5, 2), (35, 4))
+
+    # 3. Mouse release at (35, 4)
+    handled = app.handle_mouse_click(35, 4, btn1_released)
+    assert handled is True
+    assert app._mouse_is_down is False
+    assert len(copied_texts) == 1
+    assert len(copied_texts[0]) > 0
+    # Crucially, drag selection should NEVER change focus!
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+    assert "Copied" in app.last_message
+
+    # 4. Any key interaction clears active visual selection
+    app.process_key(curses.KEY_UP)
+    assert app._active_selection is None
+
+
+def test_mouse_single_click_in_focused_area_does_not_switch_focus():
+    import curses
+    from cli_tui.state import RunningFocusMode
+
+    parser = argparse.ArgumentParser(prog="mangadl run")
+    app = CliTuiApp(parser=parser, executable=[sys.executable])
+    app._open_form_for_command(app.root_command)
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+    app.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+
+    app.render_virtual_screen(24, 80)
+
+    btn1_clicked = getattr(curses, "BUTTON1_CLICKED", 4)
+
+    # Click inside program area (e.g. row 8) when already in PROGRAM focus -> does nothing
+    res = app.handle_mouse_click(20, 8, btn1_clicked)
+    assert res is False
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+    # Click on TUI status line (row <= _running_status_row) -> switches to TUI focus
+    status_row = app._running_status_row
+    res = app.handle_mouse_click(20, status_row, btn1_clicked)
+    assert res is True
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+    assert app.last_message == "Focus: CLI-TUI"
+
+    # Click on TUI status line again when already in TUI focus -> does nothing
+    res = app.handle_mouse_click(20, status_row, btn1_clicked)
+    assert res is False
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+
+    # Click inside program area (row 8) -> switches back to PROGRAM focus
+    res = app.handle_mouse_click(20, 8, btn1_clicked)
+    assert res is True
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+
+def test_extract_screen_text():
+    parser = argparse.ArgumentParser(prog="mangadl")
+    app = CliTuiApp(parser=parser)
+    app._last_rendered_screen = [
+        "Line 0: \x1b[32mHello\x1b[0m World",
+        "Line 1: Second line of text",
+        "Line 2: Third line of text",
+    ]
+
+    # Single line extraction
+    text = app._extract_screen_text((8, 0), (18, 0))
+    assert text == "Hello World"
+
+    # Multi-line extraction
+    text = app._extract_screen_text((8, 0), (13, 1))
+    assert "Hello World" in text
+    assert "Line 1" in text
+
+    # Reversed coordinates (dragged bottom-right to top-left)
+    text_rev = app._extract_screen_text((13, 1), (8, 0))
+    assert text_rev == text
+
+
+
