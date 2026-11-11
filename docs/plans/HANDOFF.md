@@ -1,5 +1,12 @@
 # Repository-Wide Plans Handoff
 
+2026-11-11 active plan: MangaDL / CLI-TUI Interactive, Completion UX, and Windows Path Fixes
+Location: docs/plans/20261111-0825_mangadl-tui-interactive-completion-and-ux/
+Branch: fix/mangadl-tui-interactive-completion-20261111
+Worktree: C:\Users\mcarls\src\scripts\.worktrees\mangadl-tui-interactive-completion-20261111
+Status: Stage 1 In Progress
+Scope: Windows path backslash preservation in argument tokens, TextWidget cursor visibility and navigation with mouse click positioning, subprocess stdin isolation with non-blocking key forwarding, and clear completion banner with Enter to return.
+
 2026-10-24 active plan: Shared Launchers and Invocation-History Infrastructure
 Location: docs/plans/20261024-0925_shared-launchers-and-invocation-history/
 Branch: shared-launchers-20261024-0925

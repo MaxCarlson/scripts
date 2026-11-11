@@ -50,6 +50,8 @@ class DashboardRuntime:
     budget: int
     logical_cpus: int
     notice: str = ""
+    completed_bytes: int = 0
+    completed_images: int = 0
 
 
 def human_bytes(value: float | int | None, suffix: str = "") -> str:
@@ -357,9 +359,11 @@ def render_dashboard(
     transfer_now = sum(worker.current_bps for worker in workers.values())
     transfer_average = sum(worker.average_bps for worker in workers.values())
     active_transferred = sum(worker.bytes_done for worker in workers.values())
+    total_transferred = active_transferred + (runtime.completed_bytes if runtime else 0)
     processing_now = sum(worker.current_ips for worker in workers.values())
     processing_average = sum(worker.average_ips for worker in workers.values())
     active_processed = sum(worker.images_done for worker in workers.values())
+    total_processed = active_processed + (runtime.completed_images if runtime else 0)
 
     lines = [
         clip(
@@ -382,11 +386,26 @@ def render_dashboard(
                 width,
             )
         )
+    if runtime is not None and (runtime.completed_bytes > 0 or runtime.completed_images > 0):
+        transferred_str = (
+            f"Transferred {human_bytes(total_transferred)}"
+            if not active_transferred or active_transferred == total_transferred
+            else f"Transferred {human_bytes(total_transferred)} (active {human_bytes(active_transferred)})"
+        )
+        processed_str = (
+            f"Processed {total_processed} img"
+            if not active_processed or active_processed == total_processed
+            else f"Processed {total_processed} img (active {active_processed} img)"
+        )
+    else:
+        transferred_str = f"Active transferred {human_bytes(active_transferred)}"
+        processed_str = f"Active processed {active_processed} img"
+
     lines.append(
         clip(
             f"Transfer now {td_utils.color_text(human_bytes(transfer_now, '/s'), 'cyan')} | "
             f"Active aggregate avg {human_bytes(transfer_average, '/s')} | "
-            f"Active transferred {human_bytes(active_transferred)}",
+            f"{transferred_str}",
             width,
         )
     )
@@ -394,7 +413,7 @@ def render_dashboard(
         clip(
             f"Processing now {td_utils.color_text(f'{processing_now:.2f} img/s', 'cyan')} | "
             f"Active aggregate avg {processing_average:.2f} img/s | "
-            f"Active processed {active_processed} img",
+            f"{processed_str}",
             width,
         )
     )
@@ -417,7 +436,7 @@ def render_dashboard(
             "-" * width,
             clip(
                 "Up/Down j/k Select | +/- Add/retire worker | [/] Image threads | "
-                "l Log | f Fullscreen | r Raw | p/P Pause | q Drain+quit | Ctrl+Q Stop now",
+                "v/l Log | f Fullscreen | r Raw | p/P Pause | q Drain+quit | Ctrl+Q Stop now",
                 width,
             ),
         ]
@@ -451,13 +470,17 @@ class ConsoleDashboard:
             return "images_up"
         elif key == "[":
             return "images_down"
-        elif key == "l":
+        elif key in {"l", "v"}:
             self.inline_log = not self.inline_log
             self.fullscreen_log = False
         elif key == "f":
             self.fullscreen_log = not self.fullscreen_log
-        elif key == "r" and (self.inline_log or self.fullscreen_log):
-            self.raw_view = not self.raw_view
+        elif key == "r":
+            if not self.inline_log and not self.fullscreen_log:
+                self.inline_log = True
+                self.raw_view = True
+            else:
+                self.raw_view = not self.raw_view
         elif key == "p":
             self.paused_workers.symmetric_difference_update({self.selected})
         elif key == "P":

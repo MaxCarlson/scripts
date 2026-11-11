@@ -247,6 +247,7 @@ class ProcessRunner:
 
         self._process = subprocess.Popen(
             self.argv,
+            stdin=subprocess.PIPE,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             bufsize=0,
@@ -256,6 +257,18 @@ class ProcessRunner:
 
         self._thread = threading.Thread(target=self._reader_loop, daemon=True)
         self._thread.start()
+
+    def write_input(self, data: str) -> bool:
+        """Write string data or control characters to the subprocess standard input pipe."""
+        if self._process is None or self._process.stdin is None or not self.is_running:
+            return False
+        try:
+            payload = data.encode("utf-8") if isinstance(data, str) else data
+            self._process.stdin.write(payload)
+            self._process.stdin.flush()
+            return True
+        except (BrokenPipeError, OSError):
+            return False
 
     def _reader_loop(self) -> None:
         if self._process is None or self._process.stdout is None:

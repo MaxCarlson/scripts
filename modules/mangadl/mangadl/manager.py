@@ -80,6 +80,8 @@ class DownloadManager:
         self.reader_done: set[int] = set()
         self.last_worker_status_log: dict[int, float] = {}
         self.snapshots = {slot: WorkerSnapshot(slot) for slot in range(1, self.target_workers + 1)}
+        self.completed_bytes: int = 0
+        self.completed_images: int = 0
         self.stop_requested = False
         self.auth_store = ProfileStore(options.auth_dir)
         self.auth_refreshed_domains: set[str] = set()
@@ -95,6 +97,21 @@ class DownloadManager:
         self.events_path = self.run_log / "events.jsonl"
         self.logger = self._logger()
         self.dashboard = ConsoleDashboard(options.ui, options.run_id, self.run_log)
+        self._stdin_queue: queue.Queue[str] = queue.Queue()
+        self._stdin_thread: threading.Thread | None = None
+        if self.options.ui and sys.stdin is not None and not sys.stdin.isatty():
+            def _stdin_reader() -> None:
+                while not self.stop_requested:
+                    try:
+                        ch = sys.stdin.read(1)
+                        if not ch:
+                            break
+                        self._stdin_queue.put(ch)
+                    except Exception:
+                        break
+
+            self._stdin_thread = threading.Thread(target=_stdin_reader, name="mangadl-stdin-reader", daemon=True)
+            self._stdin_thread.start()
         if plan.adjusted:
             self.logger.warning(self.runtime_notice)
 
@@ -227,6 +244,8 @@ class DownloadManager:
             budget=self.concurrency_budget,
             logical_cpus=self.logical_cpus,
             notice=notice,
+            completed_bytes=self.completed_bytes,
+            completed_images=self.completed_images,
         )
 
     def _visible_snapshots(self) -> dict[int, WorkerSnapshot]:
@@ -509,6 +528,8 @@ class DownloadManager:
                 self.last_worker_status_log[slot] = now
         elif event["event"] == "job_complete":
             state = JobState._value2member_map_.get(data.get("state"), JobState.SUCCEEDED)
+            self.completed_bytes += int(data.get("bytes_done") or snapshot.bytes_done or 0)
+            self.completed_images += int(data.get("images_done") or snapshot.images_done or 0)
             self.store.complete(event["job_id"], event["attempt_id"], state)
             status = (
                 "FINISH_SKIPPED"
@@ -557,19 +578,50 @@ class DownloadManager:
                 )
 
     def _keyboard(self) -> None:
-        if not self.options.ui or not sys.stdin.isatty():
+        if not self.options.ui:
             return
-        if os.name == "nt":
-            import msvcrt
 
-            while msvcrt.kbhit():
-                key = msvcrt.getwch()
-                if key in {"\x00", "\xe0"}:
-                    key = {"H": "UP", "P": "DOWN"}.get(msvcrt.getwch(), "")
-                visible = self._visible_snapshots()
-                action = self.dashboard.handle_key(key, max(visible, default=1))
-                if action:
-                    self._adjust_runtime(action)
+        keys_to_process: list[str] = []
+        if sys.stdin is not None and sys.stdin.isatty():
+            if os.name == "nt":
+                import msvcrt
+
+                while msvcrt.kbhit():
+                    key = msvcrt.getwch()
+                    if key in {"\x00", "\xe0"}:
+                        second = msvcrt.getwch() if msvcrt.kbhit() else ""
+                        key = {"H": "UP", "P": "DOWN"}.get(second, "")
+                    if key:
+                        keys_to_process.append(key)
+        else:
+            while not self._stdin_queue.empty():
+                try:
+                    ch = self._stdin_queue.get_nowait()
+                    if ch == "\x1b":
+                        seq = "\x1b"
+                        time.sleep(0.01)
+                        while not self._stdin_queue.empty():
+                            seq += self._stdin_queue.get_nowait()
+                            if len(seq) >= 3:
+                                break
+                        if seq == "\x1b[A":
+                            keys_to_process.append("UP")
+                        elif seq == "\x1b[B":
+                            keys_to_process.append("DOWN")
+                        elif seq == "\x1b[C":
+                            keys_to_process.append("]")
+                        elif seq == "\x1b[D":
+                            keys_to_process.append("[")
+                    elif ch and ch not in ("\r", "\n"):
+                        keys_to_process.append(ch)
+                except queue.Empty:
+                    break
+
+        for key in keys_to_process:
+            visible = self._visible_snapshots()
+            action = self.dashboard.handle_key(key, max(visible, default=1))
+            if action:
+                self._adjust_runtime(action)
 
     def run(self) -> int:
         self.store.recover_expired(self.options.run_id)
@@ -669,6 +721,8 @@ class DownloadManager:
         }
         (self.run_log / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True), encoding="utf-8")
         if self.options.ui:
+            print()
+            print(f"ALL DOWNLOADS COMPLETE - Status: {status.upper()}")
             print()
         print(json.dumps({"run_id": self.options.run_id, "status": status, "counts": counts}, sort_keys=True))
         return 1 if failed else 0

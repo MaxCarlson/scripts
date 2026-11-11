@@ -13,6 +13,9 @@ def isolated_inventory_state(tmp_path, monkeypatch):
 
 
 _MODULE_ROOT = Path(__file__).resolve().parents[1]
+import sys
+if str(_MODULE_ROOT) not in sys.path:
+    sys.path.insert(0, str(_MODULE_ROOT))
 _BASE_TEMP_ROOT = _MODULE_ROOT / ".pytest_tmp_root"
 
 

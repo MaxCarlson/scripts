@@ -187,3 +187,74 @@ def test_multichoice_widget_filters_invalid_choices():
     widget = MultiChoiceWidget(arg, options=arg.choices, value=["all", "auto"])
     assert widget.value == ["auto"]
 
+
+def test_text_widget_cursor_navigation_and_shortcuts():
+    arg = CliArgument(dest="path", flags=("-p", "--path"), default="")
+    widget = TextWidget(arg, value="hello world")
+
+    # Enter editing mode
+    widget.handle_key(10)
+    assert widget.is_editing is True
+    assert widget.cursor_pos == len("hello world")
+
+    # Left arrow moves cursor
+    widget.handle_key(curses.KEY_LEFT)
+    assert widget.cursor_pos == len("hello world") - 1
+
+    # Home jumps to 0
+    widget.handle_key(curses.KEY_HOME)
+    assert widget.cursor_pos == 0
+
+    # Right arrow
+    widget.handle_key(curses.KEY_RIGHT)
+    assert widget.cursor_pos == 1
+
+    # End jumps to end
+    widget.handle_key(curses.KEY_END)
+    assert widget.cursor_pos == len("hello world")
+
+    # Ctrl+W deletes word backward
+    widget.handle_key(23)
+    assert widget.value == "hello "
+    assert widget.cursor_pos == len("hello ")
+
+    # Ctrl+K kills to end
+    widget.handle_key(curses.KEY_HOME)
+    widget.handle_key(curses.KEY_RIGHT)  # pos 1
+    widget.handle_key(11)  # Ctrl+K
+    assert widget.value == "h"
+    assert widget.cursor_pos == 1
+
+    # Ctrl+U clears to start
+    widget.value = "my-test-value"
+    widget.cursor_pos = 5
+    widget.handle_key(21)  # Ctrl+U
+    assert widget.value == "st-value"
+    assert widget.cursor_pos == 0
+
+
+def test_text_widget_cursor_rendering_and_click_positioning():
+    arg = CliArgument(dest="destination", flags=("-d", "--destination"), default="")
+    widget = TextWidget(arg, value="test")
+
+    widget.is_editing = True
+    widget.cursor_pos = 1  # on 'e'
+    line = widget.render_line(width=60, is_focused=True)
+    # Character 'e' should be reverse video
+    assert "\x1b[7me\x1b[0m" in line
+
+    # Cursor at end
+    widget.cursor_pos = 4
+    line_end = widget.render_line(width=60, is_focused=True)
+    assert "\x1b[7m \x1b[0m" in line_end
+
+    # Click positioning
+    widget.set_cursor_from_click(2)
+    assert widget.cursor_pos == 2
+    assert widget.is_editing is True
+
+    # Click beyond end clamps to length
+    widget.set_cursor_from_click(999)
+    assert widget.cursor_pos == 4
+
+

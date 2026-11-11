@@ -164,3 +164,22 @@ def test_output_viewport_wrap_ansi_and_box_drawing():
     assert len(wrapped) == 2
     assert "\033[36m" in wrapped[0]
     assert "\033[36m" in wrapped[1]
+
+
+def test_process_runner_write_input():
+    script = (
+        "import sys\n"
+        "line = sys.stdin.readline().strip()\n"
+        "print(f'ECHO:{line}', flush=True)\n"
+    )
+    runner = ProcessRunner([sys.executable, "-c", script])
+    runner.start()
+    assert runner.is_running is True
+
+    success = runner.write_input("HELLO_FROM_PIPE\n")
+    assert success is True
+
+    runner.wait(timeout=5.0)
+    assert runner.is_running is False
+    assert runner.exit_code == 0
+    assert any("ECHO:HELLO_FROM_PIPE" in line for line in runner.lines)

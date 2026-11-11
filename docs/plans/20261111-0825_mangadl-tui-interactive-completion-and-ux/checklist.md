@@ -1,0 +1,29 @@
+# Plan Checklist: MangaDL / CLI-TUI Interactive, Completion UX, and Windows Path Fixes
+
+- [x] Stage 1: Windows Path Handling & TextWidget Cursor/Navigation/Mouse
+  - [x] Update `_split_arg_tokens` in `cli_tui/state.py` to preserve Windows backslashes
+  - [x] Fix cursor rendering in `TextWidget.render_line` to display cursor at `cursor_pos`
+  - [x] Add navigation shortcuts (Home, End, Ctrl+A, Ctrl+E, Ctrl+U, Ctrl+K) to `TextWidget.handle_key`
+  - [x] Add `set_cursor_from_click` to `TextWidget`
+  - [x] Add mouse handling in `cli_tui/app.py` for clicking to focus/position cursor on form fields and buttons
+  - [x] Enable hardware cursor display while in text editing mode
+  - [x] Unit tests for Windows path token splitting and `build_argv`
+  - [x] Unit tests for `TextWidget` cursor rendering, navigation, and mouse clicking
+- [x] Stage 2: Subprocess Stdin Isolation & Key Forwarding
+  - [x] Set `stdin=subprocess.PIPE` in `ProcessRunner`
+  - [x] Add `write_input(data: str)` to `ProcessRunner`
+  - [x] In `mangadl/manager.py`, guard `msvcrt.getwch()` from blocking on lone prefix bytes
+  - [x] In `mangadl/manager.py`, support non-blocking pipe reading from `sys.stdin`
+  - [x] Add `v` hotkey support in `ConsoleDashboard.handle_key` to toggle logs alongside `l`
+  - [x] Forward interactive keys to running process in `cli_tui/app.py`
+  - [x] Only cycle panes on `[` and `]` if multiple panes exist
+  - [x] Implement dual focus modes (`PROGRAM` vs `CLI-TUI`) with Ctrl+F/F6 toggle and mouse click routing
+  - [x] Unit tests for `ProcessRunner` stdin pipe and `write_input`
+  - [x] Unit tests for `ConsoleDashboard` hotkeys and pipe reading
+- [x] Stage 3: Abundantly Clear Completion UX & Final Verification
+  - [x] Format prominent color-coded status line (`RUNNING` yellow, `FINISHED` green, `FAILED` red, blue program focus, red TUI focus)
+  - [x] Add prominent completion box with `[Enter] to conclude` prompt in running screen
+  - [x] Place `[Enter] Return to Form` prominently in footer badges when finished
+  - [x] Emit clean completion message in `mangadl` before exit (`ALL DOWNLOADS COMPLETE - Status: ...`)
+  - [x] Run complete `cli_tui` test suite (106 passed)
+  - [x] Run complete `mangadl` test suite (329 passed)
