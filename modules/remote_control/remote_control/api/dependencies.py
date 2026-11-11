@@ -19,7 +19,7 @@ def get_effective_scheme(request: Request) -> str:
     client = request.client
     immediate_ip = client.host if client else "127.0.0.1"
     config = getattr(request.app.state, "config", None)
-    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+    trusted_proxies = getattr(config, "trusted_proxy_peers", getattr(config, "trusted_proxies", ["127.0.0.1", "::1"]))
 
     if immediate_ip in trusted_proxies:
         xfp = request.headers.get("X-Forwarded-Proto")
@@ -34,7 +34,7 @@ def get_effective_port(request: Request) -> int:
     client = request.client
     immediate_ip = client.host if client else "127.0.0.1"
     config = getattr(request.app.state, "config", None)
-    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+    trusted_proxies = getattr(config, "trusted_proxy_peers", getattr(config, "trusted_proxies", ["127.0.0.1", "::1"]))
     scheme = get_effective_scheme(request)
 
     if immediate_ip in trusted_proxies:
@@ -50,7 +50,7 @@ def get_client_ip(request: Request) -> str:
     client = request.client
     immediate_ip = client.host if client else "127.0.0.1"
     config = getattr(request.app.state, "config", None)
-    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+    trusted_proxies = getattr(config, "trusted_proxy_peers", getattr(config, "trusted_proxies", ["127.0.0.1", "::1"]))
 
     if immediate_ip in trusted_proxies:
         xff = request.headers.get("X-Forwarded-For")

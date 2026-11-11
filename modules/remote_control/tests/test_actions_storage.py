@@ -32,10 +32,10 @@ def test_additive_schema_migration(tmp_path: Path) -> None:
     # Operator row is preserved!
     assert auth_store.get_operator()["username"] == "admin"
 
-    # Schema version updated to 2
+    # Schema version updated to 3 (with additive v3 action_resource_barriers)
     with action_store._get_connection() as conn:
         ver = conn.execute("SELECT version FROM schema_version").fetchone()[0]
-        assert ver == 2
+        assert ver == 3
 
 
 def test_challenge_lifecycle_and_atomic_consumption(tmp_path: Path) -> None:

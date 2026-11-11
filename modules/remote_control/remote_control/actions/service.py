@@ -52,6 +52,20 @@ class ActionServiceError(Exception):
         return {"ok": False, "error": self.error_code, "message": self.message}
 
 
+class ResourceBarrierActiveError(ActionServiceError):
+    """Raised when an action is blocked by an active durable safety barrier (Amendment 1)."""
+
+    def __init__(self, resource_key: str, barrier: Dict[str, Any]) -> None:
+        exec_id = barrier.get("execution_id", "unknown")
+        reason = barrier.get("reason", "unknown")
+        super().__init__(
+            "locked_unresolved",
+            f"Resource '{resource_key}' is protected by an active unresolved barrier (execution {exec_id}: {reason}). Authoritative reconciliation required.",
+            status_code=409,
+        )
+        self.barrier = barrier
+
+
 class ActionNotFoundError(ActionServiceError):
     def __init__(self, message: str = "Action not found") -> None:
         super().__init__("action_not_found", message, status_code=404)
@@ -115,10 +129,12 @@ class ActionService:
         storage: ActionStorage,
         registry: ActionRegistry,
         auth_storage: AuthStorage,
+        config: Optional[Any] = None,
     ) -> None:
         self.storage = storage
         self.registry = registry
         self.auth_storage = auth_storage
+        self.config = config
         self._locks: Dict[str, asyncio.Lock] = {}
 
     def _get_lock(self, concurrency_key: str) -> asyncio.Lock:
@@ -172,6 +188,17 @@ class ActionService:
             raise ActionPermissionDeniedError(
                 f"Role '{actor_role}' does not have required permission '{action_def.required_permission}'."
             )
+
+        # Conservative public action policy enforcement
+        if self.config and getattr(self.config, "external_exposure_enabled", False):
+            policy = getattr(self.config, "public_action_policy", "conservative")
+            if policy == "conservative":
+                if action_def.effect == ActionEffect.MUTATION and action_id != "notifications.acknowledge_incident":
+                    raise ActionServiceError(
+                        "action_policy_violation",
+                        f"Mutation action '{action_id}' is forbidden under conservative public action policy.",
+                        status_code=403,
+                    )
 
         # Validate arguments using capability parameter schema
         try:
@@ -256,6 +283,17 @@ class ActionService:
                 f"Role '{actor_role}' does not have required permission '{action_def.required_permission}'."
             )
 
+        # Conservative public action policy enforcement
+        if self.config and getattr(self.config, "external_exposure_enabled", False):
+            policy = getattr(self.config, "public_action_policy", "conservative")
+            if policy == "conservative":
+                if action_def.effect == ActionEffect.MUTATION and action_id != "notifications.acknowledge_incident":
+                    raise ActionServiceError(
+                        "action_policy_violation",
+                        f"Mutation action '{action_id}' is forbidden under conservative public action policy.",
+                        status_code=403,
+                    )
+
         if action_def.effect != ActionEffect.READ:
             raise ActionValidationError(f"Action '{action_id}' is a mutating action, not a read action.")
 
@@ -307,6 +345,17 @@ class ActionService:
             raise ActionPermissionDeniedError(
                 f"Role '{actor_role}' does not have required permission '{action_def.required_permission}'."
             )
+
+        # Conservative public action policy enforcement
+        if self.config and getattr(self.config, "external_exposure_enabled", False):
+            policy = getattr(self.config, "public_action_policy", "conservative")
+            if policy == "conservative":
+                if action_def.effect == ActionEffect.MUTATION and action_id != "notifications.acknowledge_incident":
+                    raise ActionServiceError(
+                        "action_policy_violation",
+                        f"Mutation action '{action_id}' is forbidden under conservative public action policy.",
+                        status_code=403,
+                    )
 
         # Validate arguments strictly
         try:
@@ -422,24 +471,48 @@ class ActionService:
 
         handler = self.registry.get_handler(action_id)
 
-        # 6. Serialized Execution under Concurrency Lock & Cross-Process Resource Lease (Defect C)
+        # 6. Serialized Execution under Concurrency Lock & Cross-Process Resource Lease (Defect C & Amendment 1)
         lock = self._get_lock(action_def.concurrency_key)
         async with lock:
             # Acquire durable cross-process lock
             lock_acquired = False
+            lock_reason = None
             start_lock = asyncio.get_event_loop().time()
             lock_wait_timeout = min(5.0, float(action_def.timeout_seconds))
             while asyncio.get_event_loop().time() - start_lock < lock_wait_timeout:
-                if self.storage.acquire_resource_lock(
+                lock_acquired, lock_reason = self.storage.acquire_resource_lock_detailed(
                     action_def.concurrency_key,
                     execution_id,
                     ttl_seconds=action_def.timeout_seconds + 5.0,
-                ):
-                    lock_acquired = True
+                )
+                if lock_acquired:
+                    break
+                if lock_reason == "barrier_active":
+                    # Fail immediately; barriers are durable and cannot be waited out
                     break
                 await asyncio.sleep(0.05)
 
             if not lock_acquired:
+                if lock_reason == "barrier_active":
+                    barrier = self.storage.get_active_barrier(action_def.concurrency_key) or {}
+                    self.storage.update_execution(
+                        execution_id=execution_id,
+                        status=ExecutionState.DENIED,
+                        finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                        result_category="resource_barrier_active",
+                        error_code="locked_unresolved",
+                        summary=f"Resource '{action_def.concurrency_key}' is protected by an active unresolved barrier.",
+                    )
+                    self.storage.record_action_audit(
+                        actor_id=actor_id,
+                        action_id=action_id,
+                        execution_id=execution_id,
+                        decision="denied",
+                        ip_address=ip_address,
+                        details=f"Blocked by active barrier on {action_def.concurrency_key}.",
+                    )
+                    raise ResourceBarrierActiveError(action_def.concurrency_key, barrier)
+
                 self.storage.update_execution(
                     execution_id=execution_id,
                     status=ExecutionState.FAILED,
@@ -453,6 +526,23 @@ class ActionService:
                     f"Resource '{action_def.concurrency_key}' is locked by another operation.",
                     status_code=409,
                 )
+
+            # Background lease renewal task to maintain local ownership against routine TTL expiry
+            renew_stop = asyncio.Event()
+
+            async def _lease_renewer() -> None:
+                interval = max(0.5, action_def.timeout_seconds / 3.0)
+                while not renew_stop.is_set():
+                    try:
+                        await asyncio.wait_for(renew_stop.wait(), timeout=interval)
+                    except asyncio.TimeoutError:
+                        self.storage.renew_resource_lock(
+                            action_def.concurrency_key,
+                            execution_id,
+                            ttl_seconds=action_def.timeout_seconds + 5.0,
+                        )
+
+            renew_task = asyncio.create_task(_lease_renewer())
 
             try:
                 # Fresh State Check & Drift Detection INSIDE the lock boundary (TOCTOU elimination)
@@ -500,6 +590,14 @@ class ActionService:
                     )
                 except asyncio.TimeoutError:
                     logger.error("Execution timed out for action %s (exec_id=%s)", action_id, execution_id)
+                    # Mandatory Amendment 1: set durable barrier on uncertain mutation outcome
+                    if action_def.effect == ActionEffect.MUTATION:
+                        self.storage.set_resource_barrier(
+                            resource_key=action_def.concurrency_key,
+                            execution_id=execution_id,
+                            reason=f"Action '{action_id}' timed out after {action_def.timeout_seconds}s waiting for subsystem response.",
+                            barrier_status="locked_unresolved",
+                        )
                     self.storage.update_execution(
                         execution_id=execution_id,
                         status=ExecutionState.OUTCOME_UNKNOWN,
@@ -522,6 +620,14 @@ class ActionService:
                     logger.error("Adapter exception executing action %s: %s", action_id, exc, exc_info=True)
                     sanitized_err = redact_sensitive_data(str(exc))
                     bounded_summary = f"Adapter error: {sanitized_err}"[:256]
+                    # Mandatory Amendment 1: set durable barrier on uncertain mutation outcome if adapter failed post-dispatch
+                    if action_def.effect == ActionEffect.MUTATION:
+                        self.storage.set_resource_barrier(
+                            resource_key=action_def.concurrency_key,
+                            execution_id=execution_id,
+                            reason=bounded_summary,
+                            barrier_status="locked_unresolved",
+                        )
                     self.storage.update_execution(
                         execution_id=execution_id,
                         status=ExecutionState.FAILED,
@@ -548,6 +654,14 @@ class ActionService:
                     status = ExecutionState.DENIED if err_code in ("safety_refusal", "capability_disabled") else ExecutionState.FAILED
                     raw_summary = res.get("message") or res.get("reason") or f"Action '{action_id}' failed."
                     summary = redact_sensitive_data(raw_summary)[:256]
+
+                    if status == ExecutionState.OUTCOME_UNKNOWN and action_def.effect == ActionEffect.MUTATION:
+                        self.storage.set_resource_barrier(
+                            resource_key=action_def.concurrency_key,
+                            execution_id=execution_id,
+                            reason=summary,
+                            barrier_status="locked_unresolved",
+                        )
 
                     self.storage.update_execution(
                         execution_id=execution_id,
@@ -611,6 +725,12 @@ class ActionService:
                 )
                 return self.storage.get_execution(execution_id)  # type: ignore[return-value]
             finally:
+                renew_stop.set()
+                renew_task.cancel()
+                try:
+                    await renew_task
+                except (asyncio.CancelledError, Exception):
+                    pass
                 self.storage.release_resource_lock(action_def.concurrency_key, execution_id)
 
     # ── Journal Lookup ────────────────────────────────────────────────────────

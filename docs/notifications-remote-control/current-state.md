@@ -334,6 +334,50 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - `modules/resource_coordinator/`: 100% clean and unmodified (`git diff origin/main -- modules/resource_coordinator/` is empty).
   - Zero spend ($0 spend).
 
+---
+
+## 12. Phase 08 Public HTTPS Readiness, Funnel Lifecycle, and Final Action-Safety Gates
+
+- **Implementation Details**:
+  - **Branch**: `agent/remote-control-p08-https-readiness-20261111`
+  - **Worktree**: `C:\Users\mcarls\src\scripts-remote-control-p08`
+  - **Base Commit**: `6a57877b6304515172e75eaf4d28d2cce88514aa` (`main` / `origin/main` after fast-forward merge of Phase 07).
+- **Mandatory Amendments & Core Architectural Deliverables**:
+  - **Stage A — Mandatory Amendment 1: Durable Unresolved-Operation Safety**:
+    - **Database Schema V3 (`auth.db`)**: Added `action_resource_barriers` table with columns `resource_key`, `execution_id`, `reason`, `barrier_status` (`locked_unresolved`), `set_at`, `cleared_at`, `cleared_by`, `evidence`.
+    - **Fail-Closed Locking**: Upgraded `acquire_resource_lock_detailed()` and `renew_resource_lock()`. An active barrier immediately blocks lock acquisition (HTTP 409 `locked_unresolved`).
+    - **Uncertain Outcome Sealing**: Any mutating execution that experiences an `asyncio.TimeoutError`, an unhandled adapter exception, or returns `OUTCOME_UNKNOWN` automatically records a durable barrier with status `locked_unresolved`.
+    - **Durable Invariant**: Neither transient lock lease expiry nor background PID termination clears this barrier. No automatic retries occur for mutations with uncertain effects.
+    - **Multi-Process Validation**: Validated via `test_multiprocess_safety.py` using `ProcessPoolExecutor` across 7 fault-injection and concurrency scenarios.
+  - **Stage B & C — Public HTTPS & Reverse Proxy Hardening**:
+    - **Configuration (`RemoteControlConfig`)**: Added `public_origin`, `allowed_public_hosts`, `trusted_proxy_peers`, `cookie_security_mode`, `external_exposure_enabled`, `public_action_policy`.
+    - **Trusted Proxy Header Defense**: `security_middleware` and API dependencies reject spoofed `X-Forwarded-*` headers unless the immediate peer is in `trusted_proxy_peers` (`127.0.0.1`, `::1`).
+    - **Transport & Web Security**: Enforces `Strict-Transport-Security: max-age=31536000; includeSubDomains`, strict CSP, `Cache-Control: no-store, no-cache, must-revalidate, private` on all `/api/*` routes, and `__Host-` prefixed `Secure; HttpOnly; SameSite=Strict` session cookies.
+    - **Conservative Public Action Policy**: WAN exposure permits read actions and incident acknowledgement (`notifications.acknowledge_incident`); all other mutations reject with HTTP 403 `action_policy_violation`.
+    - **Unit/Integration Validation**: Tested in `test_proxy_security.py` (6 tests).
+  - **Stage D — Tailscale Funnel Lifecycle CLI & Mandatory Amendment 2**:
+    - **Lifecycle Engine (`remote_control.external`)**: Provided `TailscaleStatus`, `SimulatedTailscaleClient`, `RealTailscaleClient`, `ExternalDoctor`, and `ExternalExposureService`.
+    - **CLI Commands**:
+      - `external status`: Read-only status of Tailscale, Funnel, external exposure settings, and active barriers.
+      - `external doctor`: Read-only preflight and health checks.
+      - `external plan`: Dry-run configuration plan displaying proposed commands and topology without applying.
+      - `external enable -a/--apply`: Idempotent operator-approved Funnel activation.
+      - `external disable -a/--apply`: Instant public deactivation and decoupling.
+      - `external repair -a/--apply`: Automated configuration realignment.
+      - `reconcile-barrier`: Dedicated, explicit operation requiring `-a/--apply` and authoritative source evidence to clear an unresolved barrier.
+    - **Amendment 2 Invariant**: `external status` and `external doctor` are strictly 100% read-only and never mutate state or clear barriers.
+    - **Coordinator Recovery Protection**: Generic manual override of Resource Coordinator recovery barriers is strictly prohibited (`coordinator_recovery_prohibited`).
+    - **Verification**: Tested in `test_external_lifecycle.py` (7 tests).
+  - **Stage E — PWA Cache Hardening & Acceptance Runbooks**:
+    - Hardened `sw.js` with static shell whitelist cache (`/`, `/static/app.js`, `/static/style.css`, `/static/manifest.json`, `/static/icon.svg`) and network-only passthrough for `/api/*`.
+    - Authored `public-https-setup.md`, `cellular-acceptance-runbook.md` (W01–W05), and `failure-isolation-and-rollback.md`.
+- **Protected Boundaries**:
+  - `modules/resource_coordinator/` is 100% clean and unmodified.
+  - Production `resource_coordinator.request_guarded_recovery` strictly disabled (`capability_disabled`).
+  - No public Funnel was actually activated during testing; simulated client was utilized for all CLI workflows.
+  - Zero cloud spending ($0 spend).
+
+
 
 
 

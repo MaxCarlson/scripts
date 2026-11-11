@@ -79,6 +79,20 @@ CREATE INDEX IF NOT EXISTS idx_challenges_lookup ON action_challenges(challenge_
 CREATE INDEX IF NOT EXISTS idx_executions_action_time ON action_executions(action_id, started_at);
 """
 
+SCHEMA_V3 = SCHEMA_V2 + """
+CREATE TABLE IF NOT EXISTS action_resource_barriers (
+    resource_key TEXT PRIMARY KEY,
+    execution_id TEXT NOT NULL,
+    barrier_status TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    cleared_at TEXT,
+    cleared_by TEXT,
+    evidence TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_barriers_active ON action_resource_barriers(resource_key, cleared_at);
+"""
+
 
 class ActionStorage:
     """Manages persistent confirmation challenges, execution journal, and action audit."""
@@ -104,16 +118,16 @@ class ActionStorage:
         _secure_path(self.db_path.parent)
 
         with self._get_connection() as conn:
-            conn.executescript(SCHEMA_V2)
+            conn.executescript(SCHEMA_V3)
             conn.execute("BEGIN IMMEDIATE;")
             try:
-                # Ensure schema_version table exists and record v2
+                # Ensure schema_version table exists and record v3
                 conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);")
                 row = conn.execute("SELECT version FROM schema_version").fetchone()
                 if not row:
-                    conn.execute("INSERT INTO schema_version (version) VALUES (2);")
-                elif row["version"] < 2:
-                    conn.execute("UPDATE schema_version SET version = 2;")
+                    conn.execute("INSERT INTO schema_version (version) VALUES (3);")
+                elif row["version"] < 3:
+                    conn.execute("UPDATE schema_version SET version = 3;")
                 conn.execute("COMMIT;")
             except Exception:
                 conn.execute("ROLLBACK;")
@@ -473,14 +487,135 @@ class ActionStorage:
                 for r in rows
             ]
 
+    # ── Resource Barriers & Durable Safety (Amendment 1) ──────────────────────
+
+    def set_resource_barrier(
+        self,
+        resource_key: str,
+        execution_id: str,
+        reason: str,
+        barrier_status: str = "locked_unresolved",
+    ) -> None:
+        """Set a durable safety barrier on a resource key.
+
+        Subsequent mutations on this resource will be blocked fail-closed
+        until authoritatively cleared via clear_resource_barrier.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        cleaned_reason = redact_sensitive_data(reason)[:512]
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO action_resource_barriers (
+                        resource_key, execution_id, barrier_status, reason, created_at, cleared_at, cleared_by, evidence
+                    ) VALUES (?, ?, ?, ?, ?, NULL, NULL, NULL)
+                    ON CONFLICT(resource_key) DO UPDATE SET
+                        execution_id = excluded.execution_id,
+                        barrier_status = excluded.barrier_status,
+                        reason = excluded.reason,
+                        created_at = excluded.created_at,
+                        cleared_at = NULL,
+                        cleared_by = NULL,
+                        evidence = NULL
+                    """,
+                    (resource_key, execution_id, barrier_status, cleaned_reason, now_iso),
+                )
+                conn.execute("COMMIT;")
+            except Exception:
+                conn.execute("ROLLBACK;")
+                raise
+
+    def clear_resource_barrier(
+        self,
+        resource_key: str,
+        cleared_by: str,
+        evidence: str,
+    ) -> bool:
+        """Clear an active barrier with authoritative source evidence.
+
+        Returns True if an active barrier was found and cleared, False otherwise.
+        """
+        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        cleaned_evidence = redact_sensitive_data(evidence)[:2048]
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                row = conn.execute(
+                    "SELECT resource_key FROM action_resource_barriers WHERE resource_key = ? AND cleared_at IS NULL",
+                    (resource_key,),
+                ).fetchone()
+                if not row:
+                    conn.execute("COMMIT;")
+                    return False
+                conn.execute(
+                    """
+                    UPDATE action_resource_barriers
+                    SET cleared_at = ?, cleared_by = ?, evidence = ?
+                    WHERE resource_key = ? AND cleared_at IS NULL
+                    """,
+                    (now_iso, cleared_by, cleaned_evidence, resource_key),
+                )
+                conn.execute("COMMIT;")
+                return True
+            except Exception:
+                conn.execute("ROLLBACK;")
+                raise
+
+    def get_active_barrier(self, resource_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve active barrier for a resource key if present."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM action_resource_barriers WHERE resource_key = ? AND cleared_at IS NULL",
+                (resource_key,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "resource_key": row["resource_key"],
+                "execution_id": row["execution_id"],
+                "barrier_status": row["barrier_status"],
+                "reason": row["reason"],
+                "created_at": row["created_at"],
+                "cleared_at": row["cleared_at"],
+                "cleared_by": row["cleared_by"],
+                "evidence": row["evidence"],
+            }
+
+    def list_active_barriers(self) -> List[Dict[str, Any]]:
+        """List all active resource barriers."""
+        with self._get_connection() as conn:
+            rows = conn.execute(
+                "SELECT * FROM action_resource_barriers WHERE cleared_at IS NULL ORDER BY created_at DESC"
+            ).fetchall()
+            return [
+                {
+                    "resource_key": r["resource_key"],
+                    "execution_id": r["execution_id"],
+                    "barrier_status": r["barrier_status"],
+                    "reason": r["reason"],
+                    "created_at": r["created_at"],
+                    "cleared_at": r["cleared_at"],
+                    "cleared_by": r["cleared_by"],
+                    "evidence": r["evidence"],
+                }
+                for r in rows
+            ]
+
     # ── Concurrency & Resource Locks ──────────────────────────────────────────
 
-    def acquire_resource_lock(
-        self, resource_key: str, execution_id: str, ttl_seconds: float = 30.0
-    ) -> bool:
+    def acquire_resource_lock_detailed(
+        self,
+        resource_key: str,
+        execution_id: str,
+        ttl_seconds: float = 30.0,
+    ) -> Tuple[bool, Optional[str]]:
         """Atomically acquire an exclusive resource lease across processes.
 
-        Returns True if the lock was acquired, False if currently held by another execution.
+        Returns (True, None) if acquired.
+        Returns (False, 'barrier_active') if protected by an active unresolved barrier.
+        Returns (False, 'lock_contention') if held by another active execution lease.
         """
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat().replace("+00:00", "Z")
@@ -489,16 +624,25 @@ class ActionStorage:
         with self._get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE;")
             try:
+                # 1. Check if resource is guarded by an active barrier
+                barrier = conn.execute(
+                    "SELECT 1 FROM action_resource_barriers WHERE resource_key = ? AND cleared_at IS NULL",
+                    (resource_key,),
+                ).fetchone()
+                if barrier:
+                    conn.execute("COMMIT;")
+                    return False, "barrier_active"
+
+                # 2. Check transient resource lock
                 row = conn.execute(
                     "SELECT * FROM action_resource_locks WHERE resource_key = ?",
                     (resource_key,),
                 ).fetchone()
 
                 if row:
-                    # Check if active lock held by another execution
                     if row["expires_at"] > now_iso and row["holder_execution_id"] != execution_id:
                         conn.execute("COMMIT;")
-                        return False
+                        return False, "lock_contention"
 
                     conn.execute(
                         """
@@ -518,6 +662,59 @@ class ActionStorage:
                         (resource_key, execution_id, now_iso, expires_at),
                     )
 
+                conn.execute("COMMIT;")
+                return True, None
+            except Exception:
+                conn.execute("ROLLBACK;")
+                raise
+
+    def acquire_resource_lock(
+        self, resource_key: str, execution_id: str, ttl_seconds: float = 30.0
+    ) -> bool:
+        """Atomically acquire an exclusive resource lease across processes.
+
+        Returns True if the lock was acquired, False if currently held by another execution
+        or blocked by an active barrier.
+        """
+        acquired, _ = self.acquire_resource_lock_detailed(resource_key, execution_id, ttl_seconds=ttl_seconds)
+        return acquired
+
+    def renew_resource_lock(
+        self, resource_key: str, execution_id: str, ttl_seconds: float = 30.0
+    ) -> bool:
+        """Atomically renew an existing lock lease held by execution_id.
+
+        NOTE: Lease renewal maintains local process ownership against transient local TTL expiry.
+        It does NOT provide distributed fencing or source-side exactly-once semantics.
+        """
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
+
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                # Barrier blocks renewal
+                barrier = conn.execute(
+                    "SELECT 1 FROM action_resource_barriers WHERE resource_key = ? AND cleared_at IS NULL",
+                    (resource_key,),
+                ).fetchone()
+                if barrier:
+                    conn.execute("COMMIT;")
+                    return False
+
+                row = conn.execute(
+                    "SELECT * FROM action_resource_locks WHERE resource_key = ? AND holder_execution_id = ?",
+                    (resource_key, execution_id),
+                ).fetchone()
+                if not row:
+                    conn.execute("COMMIT;")
+                    return False
+
+                conn.execute(
+                    "UPDATE action_resource_locks SET expires_at = ? WHERE resource_key = ? AND holder_execution_id = ?",
+                    (expires_at, resource_key, execution_id),
+                )
                 conn.execute("COMMIT;")
                 return True
             except Exception:

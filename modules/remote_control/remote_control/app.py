@@ -71,7 +71,7 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
     action_registry.bind_handler("resource_coordinator.request_guarded_recovery", DisabledRecoveryAdapter())
     action_registry.freeze()
 
-    action_service = ActionService(action_storage, action_registry, auth_storage)
+    action_service = ActionService(action_storage, action_registry, auth_storage, config=cfg)
 
     app.state.config = cfg
     app.state.auth_storage = auth_storage
@@ -88,8 +88,17 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
         # 1. Host header validation
-        host_header = request.headers.get("host", "").split(":")[0].strip().lower()
-        if host_header and host_header not in [h.lower() for h in cfg.allowed_hosts]:
+        immediate_ip = request.client.host if request.client else "127.0.0.1"
+        trusted_peers = getattr(cfg, "trusted_proxy_peers", ["127.0.0.1", "::1"])
+
+        raw_host = request.headers.get("host", "").split(":")[0].strip().lower()
+        if immediate_ip in trusted_peers and request.headers.get("x-forwarded-host"):
+            host_header = request.headers.get("x-forwarded-host").split(":")[0].strip().lower()
+        else:
+            host_header = raw_host
+
+        allowed_host_list = [h.lower() for h in cfg.allowed_hosts]
+        if host_header and host_header not in allowed_host_list:
             return JSONResponse(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 content={"ok": False, "error": "invalid_host_header", "message": f"Host '{host_header}' is not in allowed hosts."},
@@ -184,6 +193,9 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
         response: Response = await call_next(request)
 
         # 3. Security Headers
+        if get_effective_scheme(request) == "https" or cfg.external_exposure_enabled or cfg.cookie_secure:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["X-Content-Type-Options"] = "nosniff"
         response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
