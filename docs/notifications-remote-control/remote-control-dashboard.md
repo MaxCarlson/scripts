@@ -43,7 +43,11 @@ The service implements a hardened authentication boundary designed from inceptio
 3. **Multi-Factor Authentication (RFC 6238 TOTP):**
    - Mandatory two-factor authentication on every login using a cryptographically random base32 seed.
    - Compatible with Google Authenticator, Aegis, Bitwarden, 1Password, etc.
-   - Enforces +/- 1 step (30s) drift tolerance with **strict replay prevention**: consumed timesteps (`timestamp // 30`) are persisted in SQLite, preventing reuse of the same 6-digit code within its validity window.
+   - Enforces +/- 1 step (30s) drift tolerance with **atomic exact-timestep replay prevention**:
+     - Determines the exact matching timestep (candidate sorted by distance from current time).
+     - Atomically consumes the matching timestep in SQLite under `BEGIN IMMEDIATE` transaction.
+     - Detects and rejects cross-window replay attempts, even if clock rolls over into the adjacent window.
+     - Concurrent login submissions using the same OTP allow exactly one winner and reject racers.
 4. **Brute-Force & Rate-Limit Defense:**
    - 5 failed login attempts within a 15-minute window immediately trigger a lockout (`HTTP 429 Too Many Requests`).
    - Constant-time string comparisons (`hmac.compare_digest`) prevent side-channel timing attacks on credentials and tokens.
@@ -62,23 +66,22 @@ The service implements a hardened authentication boundary designed from inceptio
 
 ## HTTP Security & CSRF Defense
 
-- **Cookie Flags:**
+- **Cookie Flags & __Host- Prefix Invariant:**
   - `HttpOnly`: Session cookies cannot be accessed by client JavaScript.
   - `SameSite=Strict` (configurable to `Lax`): Enforces browser origin boundaries.
-  - `Secure`: Required in production/HTTPS (`__Host-` cookie prefix applied).
+  - `Secure`: Required in production/HTTPS. The `__Host-rc_session` prefix is strictly bound to `Secure=True` and `Path=/`. The server never emits an insecure cookie under a `__Host-` name, and production mode fails closed by prohibiting fallback to an insecure un-prefixed cookie.
   - `Path=/`: Restricts scope to application root.
 - **CSRF Token Enforcement:**
   - All state-changing operations (`POST`, `PUT`, `DELETE`, `PATCH`) require a valid `X-CSRF-Token` header matching the authenticated session.
-- **Content Security Policy (CSP):**
-  - `default-src 'self'`: Disallows loading foreign resources.
-  - No `unsafe-eval` or inline scripts.
-  - `object-src 'none'`, `frame-ancestors 'none'` (`X-Frame-Options: DENY`).
-  - `X-Content-Type-Options: nosniff`.
-- **Cache-Control:**
-  - All `/api/*` endpoints enforce `Cache-Control: no-store, no-cache, must-revalidate` to prevent caching of incident data or evidence.
-- **Host & Origin Validation:**
+- **Exact-Origin & Host Validation:**
   - Incoming `Host` headers are validated against an allowed whitelist.
-  - Foreign `Origin` headers on state-changing requests are strictly rejected (`HTTP 403 Forbidden`).
+  - State-changing requests enforce **Exact-Origin verification** matching `scheme + hostname + effective port`.
+  - Differing schemes (e.g., HTTP origin to HTTPS endpoint) or differing ports (e.g., `:3000` to `:8443`) are strictly rejected (`HTTP 403 Forbidden`).
+  - `Origin: null` and cross-site fetch metadata (`Sec-Fetch-Site: cross-site`) are unconditionally rejected.
+  - Referer validation provides fallback for same-origin requests where Origin is omitted.
+- **Reverse-Proxy Trust Boundaries:**
+  - `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Port` are trusted **only** when the immediate socket peer (`request.client.host`) is explicitly listed in `trusted_proxies` (default: `127.0.0.1`, `::1`).
+  - Direct external clients cannot spoof protocol, client IP, or port via client-supplied forwarded headers.
 
 ---
 

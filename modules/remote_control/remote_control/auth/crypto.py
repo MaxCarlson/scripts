@@ -5,7 +5,8 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from typing import Optional
+import time
+from typing import List, Optional
 
 import pyotp
 from argon2 import PasswordHasher
@@ -63,12 +64,38 @@ def get_totp_provisioning_uri(secret: str, username: str) -> str:
     return totp.provisioning_uri(name=username, issuer_name="Scripts Remote Control")
 
 
-def verify_totp(secret: str, code: str, valid_window: int = 1) -> bool:
-    """Verify 6-digit TOTP code allowing up to +/- 1 timestep (30s) drift."""
+def find_matching_totp_timesteps(
+    secret: str,
+    code: str,
+    valid_window: int = 1,
+    current_time: Optional[float] = None,
+) -> List[int]:
+    """
+    Find all timesteps within [current - valid_window, current + valid_window] matching the code.
+    Returns matching timesteps sorted by distance from current timestep (closest first).
+    """
     if not secret or not code:
-        return False
+        return []
     clean_code = str(code).strip().replace(" ", "")
     if len(clean_code) != 6 or not clean_code.isdigit():
-        return False
+        return []
+
     totp = pyotp.TOTP(secret)
-    return bool(totp.verify(clean_code, valid_window=valid_window))
+    now = current_time if current_time is not None else time.time()
+    current_step = int(now // 30)
+
+    candidates = list(range(current_step - valid_window, current_step + valid_window + 1))
+    candidates.sort(key=lambda s: abs(s - current_step))
+
+    matches: List[int] = []
+    for step in candidates:
+        expected = totp.generate_otp(step)
+        if constant_time_compare(clean_code, expected):
+            matches.append(step)
+
+    return matches
+
+
+def verify_totp(secret: str, code: str, valid_window: int = 1) -> bool:
+    """Verify 6-digit TOTP code allowing up to +/- valid_window timestep drift."""
+    return len(find_matching_totp_timesteps(secret, code, valid_window=valid_window)) > 0

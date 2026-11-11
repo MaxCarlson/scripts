@@ -64,7 +64,7 @@ async def login(
 
         # Set secure HttpOnly session cookie
         cookie_name = get_cookie_name(request)
-        is_secure = getattr(request.app.state.config, "cookie_secure", False)
+        is_secure = cookie_name.startswith("__Host-") or getattr(request.app.state.config, "cookie_secure", False)
         samesite = getattr(request.app.state.config, "cookie_samesite", "strict")
         max_age = getattr(request.app.state.config, "session_max_age_seconds", 86400 * 7)
 

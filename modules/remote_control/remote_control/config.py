@@ -45,6 +45,8 @@ class RemoteControlConfig:
     max_login_attempts: int = 5
     lockout_duration_seconds: int = 900  # 15 minutes
     allowed_hosts: List[str] = field(default_factory=lambda: ["127.0.0.1", "localhost", "[::1]"])
+    allowed_origins: List[str] = field(default_factory=list)
+    trusted_proxies: List[str] = field(default_factory=lambda: ["127.0.0.1", "::1"])
 
     @classmethod
     def from_env(cls) -> RemoteControlConfig:
@@ -63,9 +65,24 @@ class RemoteControlConfig:
                 if clean and clean not in allowed:
                     allowed.append(clean)
 
+        allowed_origins: List[str] = []
+        extra_origins = os.environ.get("REMOTE_CONTROL_ALLOWED_ORIGINS")
+        if extra_origins:
+            for o in extra_origins.split(","):
+                clean = o.strip()
+                if clean and clean not in allowed_origins:
+                    allowed_origins.append(clean)
+
+        trusted_proxies = ["127.0.0.1", "::1"]
+        extra_proxies = os.environ.get("REMOTE_CONTROL_TRUSTED_PROXIES")
+        if extra_proxies:
+            trusted_proxies = [p.strip() for p in extra_proxies.split(",") if p.strip()]
+
         return cls(
             host=host,
             port=port,
             cookie_secure=cookie_secure,
             allowed_hosts=allowed,
+            allowed_origins=allowed_origins,
+            trusted_proxies=trusted_proxies,
         )

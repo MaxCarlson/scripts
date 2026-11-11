@@ -431,6 +431,48 @@ class AuthStorage:
             ).fetchone()
             return row is not None
 
+    def consume_totp_timestep(
+        self,
+        operator_id: str,
+        candidate_timesteps: List[int],
+    ) -> Optional[int]:
+        """
+        Atomically find the first unconsumed candidate timestep and mark it used.
+        Returns the consumed timestep if successful, or None if all candidate timesteps were already used.
+        Enforces atomic check-and-insert using SQLite transactions.
+        """
+        if not candidate_timesteps:
+            return None
+
+        now = time.time()
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                placeholders = ",".join("?" for _ in candidate_timesteps)
+                rows = conn.execute(
+                    f"SELECT timestep FROM used_totp_timesteps WHERE operator_id = ? AND timestep IN ({placeholders})",
+                    [operator_id] + candidate_timesteps,
+                ).fetchall()
+                consumed_steps = {r["timestep"] for r in rows}
+
+                for step in candidate_timesteps:
+                    if step not in consumed_steps:
+                        try:
+                            conn.execute(
+                                "INSERT INTO used_totp_timesteps (operator_id, timestep, used_at) VALUES (?, ?, ?)",
+                                (operator_id, step, now),
+                            )
+                            conn.commit()
+                            return step
+                        except sqlite3.IntegrityError:
+                            continue
+
+                conn.commit()
+                return None
+            except Exception:
+                conn.rollback()
+                raise
+
     def mark_totp_timestep_used(self, operator_id: str, timestep: int) -> None:
         with self._get_connection() as conn:
             conn.execute(

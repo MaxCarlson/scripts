@@ -96,6 +96,108 @@ def test_auth_service_totp_replay_prevention(auth_service: AuthService) -> None:
         )
 
 
+def test_totp_drift_windows_consumed_and_no_cross_window_replay(auth_service: AuthService) -> None:
+    """Matches in previous and next drift windows consume the exact matched timestep."""
+    op, secret, uri = auth_service.bootstrap(username="admin", password="ValidPassword123!")
+    totp = pyotp.TOTP(secret)
+
+    now = time.time()
+    prev_step = int(now // 30) - 1
+    prev_code = totp.generate_otp(prev_step)
+
+    # Login with previous window code
+    sess1, tok1 = auth_service.authenticate_login(
+        username="admin",
+        password="ValidPassword123!",
+        totp_code=prev_code,
+        device_id="dev-prev",
+        device_name="Phone",
+        ip_address="127.0.0.1",
+        user_agent="TestAgent",
+    )
+    assert sess1 is not None
+
+    # Replay of prev_code is rejected
+    with pytest.raises(AuthenticationError, match="already been used"):
+        auth_service.authenticate_login(
+            username="admin",
+            password="ValidPassword123!",
+            totp_code=prev_code,
+            device_id="dev-prev-replay",
+            device_name="Phone",
+            ip_address="127.0.0.1",
+            user_agent="TestAgent",
+        )
+
+    # Next window code can be consumed
+    next_step = int(now // 30) + 1
+    next_code = totp.generate_otp(next_step)
+    sess2, tok2 = auth_service.authenticate_login(
+        username="admin",
+        password="ValidPassword123!",
+        totp_code=next_code,
+        device_id="dev-next",
+        device_name="Phone",
+        ip_address="127.0.0.1",
+        user_agent="TestAgent",
+    )
+    assert sess2 is not None
+
+    # Replay of next_code is rejected
+    with pytest.raises(AuthenticationError, match="already been used"):
+        auth_service.authenticate_login(
+            username="admin",
+            password="ValidPassword123!",
+            totp_code=next_code,
+            device_id="dev-next-replay",
+            device_name="Phone",
+            ip_address="127.0.0.1",
+            user_agent="TestAgent",
+        )
+
+
+def test_totp_concurrent_consumption_atomicity(auth_service: AuthService) -> None:
+    """Concurrent login attempts with the same OTP allow exactly one winner."""
+    import concurrent.futures
+
+    op, secret, uri = auth_service.bootstrap(username="admin", password="ValidPassword123!")
+    totp = pyotp.TOTP(secret)
+    code = totp.now()
+
+    results = []
+    errors = []
+
+    def attempt_login(worker_id: int):
+        try:
+            sess, tok = auth_service.authenticate_login(
+                username="admin",
+                password="ValidPassword123!",
+                totp_code=code,
+                device_id=f"dev-concurrent-{worker_id}",
+                device_name="Concurrent Worker",
+                ip_address=f"127.0.0.{worker_id}",
+                user_agent="ConcurrentAgent",
+            )
+            return True, None
+        except Exception as exc:
+            return False, exc
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
+        futures = [executor.submit(attempt_login, i) for i in range(1, 5)]
+        for f in concurrent.futures.as_completed(futures):
+            success, err = f.result()
+            if success:
+                results.append(True)
+            else:
+                errors.append(err)
+
+    # Exactly one concurrent worker must succeed
+    assert len(results) == 1
+    # Remaining 3 workers must be rejected with replay error
+    assert len(errors) == 3
+    assert all("already been used" in str(e) for e in errors)
+
+
 def test_auth_service_brute_force_lockout(auth_service: AuthService) -> None:
     """Repeated failed attempts trigger temporary rate limit lockout."""
     op, secret, uri = auth_service.bootstrap(username="admin", password="ValidPassword123!")

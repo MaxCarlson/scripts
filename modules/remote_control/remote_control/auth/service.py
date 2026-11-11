@@ -12,6 +12,7 @@ import pyotp
 
 from remote_control.auth.crypto import (
     constant_time_compare,
+    find_matching_totp_timesteps,
     generate_opaque_token,
     generate_totp_secret,
     get_totp_provisioning_uri,
@@ -149,28 +150,26 @@ class AuthService:
             )
             raise AuthenticationError("Invalid username or password.")
 
-        # 4. Verify TOTP with replay protection
+        # 4. Verify TOTP with exact matching timestep and atomic single-use consumption
         secret = raw_op["totp_secret"]
-        totp_obj = pyotp.TOTP(secret)
-        current_timestep = int(time.time() // 30)
-
-        # Reject code reuse within the active timestep window
-        if self.storage.is_totp_timestep_used(raw_op["operator_id"], current_timestep):
-            self.storage.record_login_attempt(ip_address, success=False)
-            self.storage.record_audit_event(
-                AuditEvent(
-                    timestamp=now_ts,
-                    actor_id=raw_op["operator_id"],
-                    action="login",
-                    decision="deny",
-                    ip_address=ip_address,
-                    details="Rejected duplicate/replayed TOTP code.",
+        matching_steps = find_matching_totp_timesteps(secret, totp_code, valid_window=1)
+        if not matching_steps:
+            # Check if this code was recently used in an adjacent window (replay across window boundary)
+            extended_steps = find_matching_totp_timesteps(secret, totp_code, valid_window=2)
+            if extended_steps and any(self.storage.is_totp_timestep_used(raw_op["operator_id"], s) for s in extended_steps):
+                self.storage.record_login_attempt(ip_address, success=False)
+                self.storage.record_audit_event(
+                    AuditEvent(
+                        timestamp=now_ts,
+                        actor_id=raw_op["operator_id"],
+                        action="login",
+                        decision="deny",
+                        ip_address=ip_address,
+                        details=f"Rejected replayed TOTP code across window boundary for timesteps {extended_steps}.",
+                    )
                 )
-            )
-            raise AuthenticationError("TOTP code has already been used. Please wait for the next code.")
+                raise AuthenticationError("TOTP code has already been used. Please wait for the next code.")
 
-        totp_valid = verify_totp(secret, totp_code, valid_window=1)
-        if not totp_valid:
             self.storage.record_login_attempt(ip_address, success=False)
             self.storage.record_audit_event(
                 AuditEvent(
@@ -184,8 +183,20 @@ class AuthService:
             )
             raise AuthenticationError("Invalid two-factor verification code.")
 
-        # Mark timestep as consumed to prevent replay
-        self.storage.mark_totp_timestep_used(raw_op["operator_id"], current_timestep)
+        consumed_step = self.storage.consume_totp_timestep(raw_op["operator_id"], matching_steps)
+        if consumed_step is None:
+            self.storage.record_login_attempt(ip_address, success=False)
+            self.storage.record_audit_event(
+                AuditEvent(
+                    timestamp=now_ts,
+                    actor_id=raw_op["operator_id"],
+                    action="login",
+                    decision="deny",
+                    ip_address=ip_address,
+                    details=f"Rejected duplicate/replayed TOTP code for timesteps {matching_steps}.",
+                )
+            )
+            raise AuthenticationError("TOTP code has already been used. Please wait for the next code.")
 
         # 5. Device registration & validation
         eff_device_id = device_id or f"dev_{uuid.uuid4().hex[:12]}"

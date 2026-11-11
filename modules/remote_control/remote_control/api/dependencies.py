@@ -14,15 +14,55 @@ from remote_control.models import SessionModel
 logger = logging.getLogger(__name__)
 
 
-def get_client_ip(request: Request) -> str:
-    """Extract client IP address, handling proxy headers only from trusted local boundaries."""
+def get_effective_scheme(request: Request) -> str:
+    """Determine effective request scheme, trusting X-Forwarded-Proto only from configured trusted proxies."""
     client = request.client
-    return client.host if client else "127.0.0.1"
+    immediate_ip = client.host if client else "127.0.0.1"
+    config = getattr(request.app.state, "config", None)
+    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+
+    if immediate_ip in trusted_proxies:
+        xfp = request.headers.get("X-Forwarded-Proto")
+        if xfp:
+            return xfp.strip().lower()
+
+    return request.url.scheme.lower()
+
+
+def get_effective_port(request: Request) -> int:
+    """Determine effective request port, trusting X-Forwarded-Port only from configured trusted proxies."""
+    client = request.client
+    immediate_ip = client.host if client else "127.0.0.1"
+    config = getattr(request.app.state, "config", None)
+    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+    scheme = get_effective_scheme(request)
+
+    if immediate_ip in trusted_proxies:
+        xf_port = request.headers.get("X-Forwarded-Port")
+        if xf_port and xf_port.isdigit():
+            return int(xf_port)
+
+    return request.url.port or (443 if scheme == "https" else 80)
+
+
+def get_client_ip(request: Request) -> str:
+    """Extract client IP address, trusting X-Forwarded-For ONLY from configured trusted proxies."""
+    client = request.client
+    immediate_ip = client.host if client else "127.0.0.1"
+    config = getattr(request.app.state, "config", None)
+    trusted_proxies = getattr(config, "trusted_proxies", ["127.0.0.1", "::1"])
+
+    if immediate_ip in trusted_proxies:
+        xff = request.headers.get("X-Forwarded-For")
+        if xff:
+            return xff.split(",")[0].strip()
+
+    return immediate_ip
 
 
 def get_cookie_name(request: Request) -> str:
     """Determine cookie name based on scheme or configuration (__Host- prefix on HTTPS)."""
-    is_https = request.url.scheme == "https"
+    is_https = get_effective_scheme(request) == "https"
     cookie_secure = getattr(request.app.state.config, "cookie_secure", False)
     return "__Host-rc_session" if (is_https or cookie_secure) else "rc_session"
 
@@ -44,8 +84,11 @@ async def get_current_session(request: Request) -> SessionModel:
     cookie_name = get_cookie_name(request)
     raw_token = request.cookies.get(cookie_name)
 
-    # Also check fallback un-prefixed cookie if HTTPS cookie is not found
-    if not raw_token and cookie_name != "rc_session":
+    # In secure/production mode, never fall back to an insecure, un-prefixed cookie
+    config = getattr(request.app.state, "config", None)
+    cookie_secure = getattr(config, "cookie_secure", False)
+    effective_scheme = get_effective_scheme(request)
+    if not raw_token and not cookie_secure and effective_scheme != "https":
         raw_token = request.cookies.get("rc_session")
 
     # 2. Check Authorization header
