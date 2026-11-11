@@ -123,7 +123,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     # telegram enroll
     tg_enroll = tg_sub.add_parser("enroll", help="Securely enroll Telegram bot token and authorized chat ID.")
-    tg_enroll.add_argument("-t", "--token", required=True, help="Telegram Bot API token from @BotFather.")
+    tg_enroll.add_argument("-t", "--token", required=False, default=None, help="Telegram Bot API token from @BotFather (optional; prefer interactive prompt or NOTIFY_TELEGRAM_BOT_TOKEN).")
     tg_enroll.add_argument("-c", "--chat-id", required=True, help="Authorized recipient chat ID.")
     tg_enroll.add_argument("-u", "--dashboard-url", default=None, help="Optional read-only HTTPS dashboard URL.")
     tg_enroll.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to save credentials).")
@@ -256,8 +256,10 @@ def handle_outbox(args: argparse.Namespace) -> int:
         return 0
 
     elif args.outbox_command == "run":
-        fake_prov = FakeProvider(provider_id="fake_provider")
-        worker = OutboxWorker(storage, providers={"fake_provider": fake_prov})
+        from notifications.delivery.registry import get_registered_providers
+
+        providers = get_registered_providers(storage)
+        worker = OutboxWorker(storage, providers=providers)
         count = asyncio.run(worker.process_pending_once(limit=args.limit))
         res = {"ok": True, "processed": count}
         print(json.dumps(res, indent=2) if args.json else f"Processed {count} outbox delivery task(s).")
@@ -373,6 +375,24 @@ def handle_telegram(args: argparse.Namespace) -> int:
     from notifications.delivery.telegram import TelegramProvider
 
     if args.telegram_command == "enroll":
+        token = args.token
+        if token:
+            print("Warning: Passing bot token via CLI argument may expose secrets in process tables.", file=sys.stderr)
+        else:
+            import os
+            token = os.environ.get("NOTIFY_TELEGRAM_BOT_TOKEN")
+            if not token:
+                if sys.stdin.isatty():
+                    import getpass
+                    token = getpass.getpass("Enter Telegram Bot API Token: ").strip()
+                else:
+                    token = sys.stdin.readline().strip()
+
+        if not token:
+            err = {"ok": False, "error": "Bot token is required. Pass via interactive prompt, NOTIFY_TELEGRAM_BOT_TOKEN env var, or -t/--token."}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
         if not args.apply:
             res = {
                 "ok": True,
@@ -385,7 +405,7 @@ def handle_telegram(args: argparse.Namespace) -> int:
 
         try:
             creds = TelegramCredentials(
-                bot_token=args.token,
+                bot_token=token,
                 chat_id=args.chat_id,
                 dashboard_url=args.dashboard_url,
             )
