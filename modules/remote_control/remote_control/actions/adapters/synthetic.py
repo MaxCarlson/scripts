@@ -49,7 +49,7 @@ class SyntheticCoordinatorRecoveryAdapter:
         self.execution_count = 0
         self.last_params: Optional[Dict[str, Any]] = None
 
-    def get_source_state(self) -> Dict[str, Any]:
+    def get_source_state(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         """Return the current simulated Resource Coordinator observation."""
         if not self.source_available:
             return {
