@@ -69,6 +69,39 @@ Opt-in UAC and actual Windows Task Scheduler integration tests were not run; the
 
 ## Next actions
 
-1. Integration review against local main (no merge/push authorized).
+1. Source integration validation is recorded below; merging the candidate into `main` remains a separate approval-gated action.
 2. Before deployment, use an isolated Windows VM or approved disposable task environment to validate elevated registration, rollback, and the `TASK_INSTALLING` receipt path; preserve the protected recovery-token launcher, operator credentials, Scheduled Tasks, miner ownership/state, and persistent WSL LM Studio mask.
 3. Keep the no-terminal-negative-evidence limitation explicit until LM Studio documents a request-specific terminal failure/status/cancel contract.
+
+## v0.12.0 source integration validation (2026-11-11)
+
+- `origin/main` was fetched and verified at `9102815920eff843f1a9ec3abe60060a4ffbdd8f`. Feature branch `agent/resource-coordinator-upgrade-reliability-20261111` and its remote both pointed to `7a5fb2a50a31953f49f1da064f6971ff0ab8d6fb`; merge base is `origin/main`, feature is 11 commits ahead and zero behind. The isolated integration branch was fast-forwarded from `origin/main` to the feature commit. No textual or ancestry conflict occurred.
+- The complete comparison contains 24 paths, all under `modules/resource_coordinator/`, with 2,544 insertions and 74 deletions. Changed implementation is confined to inference/model-load gateway and admission, configuration, operator credentials, CLI recovery, and Windows installation/recovery. Tests and plan/status/interface documentation are included. No Mining or production configuration source was changed.
+- Test environment: Windows 10.0.26300, Python 3.12.10 from `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`, pytest 9.0.3, pytest-asyncio 1.3.0. Import resolved to this integration worktree's `resource_coordinator` package. Each test run used a distinct absolute directory under `modules/resource_coordinator/.pytest_tmp_root/integration-*`.
+
+| Command / test scope | Result |
+|---|---|
+| `python -m pytest -v -ra tests/test_gateway.py` | Exit 0; 45 passed. Includes configured HTTPX phase timeouts, extended model-load deadline, sync/stream completion, timeout uncertainty, recovery/admission rejection, loaded-model reuse, and fake-miner restart behavior. |
+| `python -m pytest -v -ra tests/test_cli.py tests/test_cli_architecture.py` | Exit 0; 188 passed. |
+| `python -m pytest -vv -ra tests/test_operator_credentials.py` | Exit 0; 16 passed. |
+| `python -m pytest -v -ra tests/test_durable_state.py tests/test_argon_adversarial_review.py` | Exit 0; 18 passed. |
+| `python -m pytest -v -ra tests/test_config.py` | Exit 0; 14 passed. |
+| `python -m pytest -v -ra tests/test_phase1_request_arbitration.py` | Exit 0; 10 passed. |
+| `python -m pytest -v -ra tests/test_factory_gateway_integration.py tests/test_phase4_unattended_reliability.py` | Exit 0; 14 passed. |
+| `python -m pytest -v -ra tests/test_leases.py tests/test_policies.py` | Exit 0; 8 passed. |
+| `python -m pytest -v -ra tests/test_service_lifecycle.py -k 'not test_gpu_idle_pause_persists_across_restart_and_resumes_after_complete_window'` | Exit 0; 18 passed, 1 deselected. The excluded test passed alone (1 passed); its in-suite failure is recorded above and was reproduced on unchanged `origin/main`. |
+| `python -m pytest -v -ra tests/test_installation.py` | Exit 0; 88 passed, including task-install rollback and `TASK_INSTALLING` recovery handling. |
+| Opt-in `test_windows_http_gateway_real_listener_with_mocked_success_and_cleanup` and `test_windows_http_gateway_mock_failure_keeps_restart_inhibited` | Exit 0; 2 passed. Uses unique disposable `cscript.exe` processes and a mock-only upstream; no LM Studio/GPU workload. |
+| PowerShell `$env:RC_WINDOWS_INTEGRATION='1'; python -m pytest -v -ra tests/test_windows_task_transport_integration.py -k windows_helper_processes_large_request` | Exit 0; 1 passed, 2 deselected. The protected file-backed helper processed a 100 KB request. |
+
+The test results total 423 passed, with the one documented lifecycle case deselected in-suite and verified alone. No actual UAC prompt or Scheduled Task registration test was run, as required. The source files tested are byte-identical to feature commit `7a5fb2a`; the integration branch's follow-up commit records validation only.
+
+Ruff passed for the changed Python files except `tests/test_phase1_request_arbitration.py`. Ruff reports nine existing unused-import/redefinition findings in that file; the same nine were reproduced from `origin/main`, and this branch's change there is limited to two test lines. No unrelated lint cleanup was made. `python -m compileall -q resource_coordinator` and `git diff --check origin/main...HEAD` passed.
+
+An initial gateway invocation used a module-local temp child before its parent `.pytest_tmp_root` existed; it failed during fixture setup, then passed after the parent was created. Several default-sandbox async runs stopped advancing; bounded retries with normal socket permissions passed. These were execution/setup issues, not failed product assertions.
+
+## Integration disposition
+
+- Source integration candidate is internally consistent and regression-tested at the feature source SHA. The candidate branch can be pushed for review and fast-forwarded to `main` after explicit merge authorization.
+- This does not validate elevated Scheduled Task replacement, startup, rollback, or the historical WinError 206. The disposable Windows Task Scheduler gate and production deployment remain blocked pending a separately authorized isolated Windows acceptance.
+- For a future isolated Mining maintenance-session branch, use the validated integration candidate commit after its source merge is approved; no maintenance-session implementation is included here.
