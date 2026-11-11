@@ -75,6 +75,7 @@
 - Worktree: `.worktrees/resource-coordinator-inference-recovery-20261111`.
 - Implementation checkpoint: `927fa3e3051f81ae9c19123974376527c236914f`.
 - Shared-token end-to-end regression checkpoint: `da504cf54341052a0a1ee74fedded90628a7b40b`.
+- CLI-to-ASGI protected-file recovery test: `c310177da304f727603d7b923f5a5f6b50da4f30`.
 
 ## Stage Outcome
 

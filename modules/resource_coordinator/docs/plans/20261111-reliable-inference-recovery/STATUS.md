@@ -7,6 +7,7 @@
 - Worktree: `.worktrees/resource-coordinator-inference-recovery-20261111`.
 - Implementation commit: `927fa3e3051f81ae9c19123974376527c236914f`.
 - Follow-up regression commit: `da504cf54341052a0a1ee74fedded90628a7b40b`.
+- CLI-to-ASGI integration regression commit: `c310177da304f727603d7b923f5a5f6b50da4f30`.
 - Primary checkout and prior integration worktree were not modified.
 - No live coordinator, miner, LM Studio, production credential, journal, Scheduled Task, GPU, or WSL setting was accessed or changed.
 
@@ -29,7 +30,7 @@ For the commands below, `$py` was `C:\Users\mcarls\src\scripts\.worktrees\resour
 | Command / scope | Result |
 |---|---|
 | `& $py -m pytest -q tests/test_gateway.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 22 passed. Includes read-timeout uncertainty, status projection/redaction, sync and streaming model-load completion, fake miner stop/restart, authenticated shared-token recovery, journal audit, and exactly-one restart. |
-| `& $py -m pytest -vv tests/test_cli.py tests/test_cli_architecture.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 187 passed. Includes no-environment protected-file discovery, missing/invalid/insecure credential rejection, explicit override precedence, mismatch handling, and server-echo secret redaction. |
+| `& $py -m pytest -q tests/test_cli.py tests/test_cli_architecture.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 188 passed. Includes no-environment protected-file discovery, missing/invalid/insecure credential rejection, explicit override precedence, mismatch handling, server-echo redaction, and an in-process CLI-to-ASGI recovery call using the protected file credential with no environment override. One upstream Starlette `TestClient`/HTTPX deprecation warning is emitted by that new test. |
 | `& $py -m pytest -vv tests/test_operator_credentials.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 16 passed. |
 | `& $py -m pytest -vv tests/test_durable_state.py tests/test_argon_adversarial_review.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 18 passed, including recovery audit and persistence-failure atomicity. |
 | `& $py -m pytest -vv tests/test_phase1_request_arbitration.py --basetemp <unique-absolute-temp> -ra` | Exit 0; 10 passed, including concurrent arbitration, terminal completion, and truncated stream inhibition. |
