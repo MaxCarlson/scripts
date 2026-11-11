@@ -175,6 +175,52 @@ def build_parser() -> argparse.ArgumentParser:
     win_run = win_sub.add_parser("run-helper", help="Run the Windows interactive helper directly.")
     win_run.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
 
+    # 8. heartbeat
+    hb_parser = subparsers.add_parser("heartbeat", help="Manage independent Healthchecks.io host outage monitoring.")
+    hb_sub = hb_parser.add_subparsers(dest="heartbeat_command", required=True)
+
+    # heartbeat configure
+    hb_conf = hb_sub.add_parser("configure", help="Configure Healthchecks ping URL and interval.")
+    hb_conf.add_argument("-u", "--url", default=None, help="Healthchecks ping URL (e.g. https://hc-ping.com/<uuid>).")
+    hb_conf.add_argument("-i", "--interval", type=int, default=5, help="Heartbeat interval in minutes (default: 5).")
+    hb_conf.add_argument("-n", "--name", default="Host Alive", help="Check name (default: 'Host Alive').")
+    hb_conf.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to save configuration).")
+    hb_conf.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat status
+    hb_status = hb_sub.add_parser("status", help="Show heartbeat configuration and Scheduled Task status.")
+    hb_status.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat test
+    hb_test = hb_sub.add_parser("test", help="Send a test heartbeat ping to Healthchecks.io.")
+    hb_test.add_argument("-a", "--apply", action="store_true", help="Apply modification (REQUIRED: sends real external ping).")
+    hb_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat ping (headless execution for Scheduled Task)
+    hb_ping = hb_sub.add_parser("ping", help="Execute single headless heartbeat ping (used by Scheduled Task).")
+    hb_ping.add_argument("-v", "--verbose", action="store_true", help="Verbose output.")
+
+    # heartbeat install
+    hb_inst = hb_sub.add_parser("install", help="Register Windows Scheduled Task for periodic heartbeat.")
+    hb_inst.add_argument("-i", "--interval", type=int, default=None, help="Heartbeat interval in minutes override.")
+    hb_inst.add_argument("--system", action="store_true", help="Register under NT AUTHORITY\\SYSTEM (requires elevation).")
+    hb_inst.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to register Scheduled Task).")
+    hb_inst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat repair
+    hb_repair = hb_sub.add_parser("repair", help="Repair heartbeat Scheduled Task and verify permissions.")
+    hb_repair.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to execute repairs).")
+    hb_repair.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat uninstall
+    hb_uninst = hb_sub.add_parser("uninstall", help="Unregister heartbeat Scheduled Task.")
+    hb_uninst.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to remove Scheduled Task).")
+    hb_uninst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # heartbeat doctor
+    hb_doc = hb_sub.add_parser("doctor", help="Run comprehensive diagnostic checks on host monitoring prerequisites.")
+    hb_doc.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
     return parser
 
 
@@ -587,6 +633,201 @@ def handle_windows(args: argparse.Namespace) -> int:
     return 2
 
 
+def handle_heartbeat(args: argparse.Namespace) -> int:
+    from notifications.monitoring.config import (
+        HealthchecksConfig,
+        load_healthchecks_config,
+        save_healthchecks_config,
+        redact_ping_url,
+    )
+    from notifications.monitoring.heartbeat import send_heartbeat
+    from notifications.monitoring.service import (
+        doctor,
+        get_heartbeat_task_status,
+        install_heartbeat_task,
+        uninstall_heartbeat_task,
+    )
+    import os
+
+    if args.heartbeat_command == "configure":
+        url = args.url
+        if url:
+            print("Warning: Passing ping URL via CLI argument may expose secrets in process tables.", file=sys.stderr)
+        else:
+            url = os.environ.get("NOTIFY_HEALTHCHECKS_PING_URL")
+            if not url:
+                if sys.stdin.isatty():
+                    import getpass
+                    url = getpass.getpass("Enter Healthchecks Ping URL (e.g. https://hc-ping.com/...): ").strip()
+                else:
+                    url = sys.stdin.readline().strip()
+
+        if not url:
+            err = {"ok": False, "error": "Ping URL is required. Pass via prompt, NOTIFY_HEALTHCHECKS_PING_URL env var, or -u/--url."}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
+        if not args.apply:
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "warning": "Dry-run: pass -a/--apply to save Healthchecks configuration.",
+                "check_name": args.name,
+                "interval_minutes": args.interval,
+                "ping_url_redacted": redact_ping_url(url),
+            }
+            print(json.dumps(res, indent=2) if args.json else res["warning"])
+            return 0
+
+        try:
+            cfg = HealthchecksConfig(
+                ping_url=url,
+                interval_minutes=args.interval,
+                check_name=args.name,
+            )
+            saved_path = save_healthchecks_config(cfg)
+            res = {
+                "ok": True,
+                "status": "configured",
+                "check_name": cfg.check_name,
+                "interval_minutes": cfg.interval_minutes,
+                "ping_url_redacted": redact_ping_url(cfg.ping_url),
+                "config_file": str(saved_path),
+            }
+            print(json.dumps(res, indent=2) if args.json else f"Healthchecks configured for '{cfg.check_name}' ({cfg.interval_minutes}m). Saved to {saved_path}")
+            return 0
+        except Exception as exc:
+            err = {"ok": False, "error": str(exc)}
+            print(json.dumps(err) if args.json else f"Configuration error: {exc}", file=sys.stderr)
+            return 1
+
+    elif args.heartbeat_command == "status":
+        status = get_heartbeat_task_status()
+        if args.json:
+            print(json.dumps(status, indent=2))
+        else:
+            print("Independent Outage Monitoring (Healthchecks.io) Status:")
+            print(f" - Configured: {'Yes' if status['configured'] else 'No (run scripts-notify heartbeat configure)'}")
+            if status["configured"]:
+                print(f" - Check Name: {status['check_name']} ({status['interval_minutes']}m interval)")
+                print(f" - Ping URL: {status['ping_url_redacted']}")
+            print(f" - Scheduled Task ({status['task_name']}): {'Installed' if status['task_installed'] else 'Not Installed'} (State: {status['task_state']})")
+            if status["task_installed"]:
+                print(f" - Last Run: {status['last_run_time']} (Result: {status['last_result']})")
+                print(f" - Next Run: {status['next_run_time']}")
+        return 0
+
+    elif args.heartbeat_command == "test":
+        cfg = load_healthchecks_config()
+        if not cfg:
+            err = {"ok": False, "error": "Healthchecks is not configured. Run 'scripts-notify heartbeat configure' first."}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
+        if not args.apply:
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "warning": "Dry-run: pass -a/--apply to send a live external ping to Healthchecks.io.",
+                "target_url_redacted": redact_ping_url(cfg.ping_url),
+                "check_name": cfg.check_name,
+            }
+            print(json.dumps(res, indent=2) if args.json else res["warning"])
+            return 0
+
+        res = send_heartbeat(cfg.ping_url)
+        out = {
+            "ok": res.success,
+            "status": "ping_accepted" if res.success else "ping_failed",
+            "status_code": res.status_code,
+            "duration_ms": res.duration_ms,
+            "error_category": res.error_category,
+            "error_message": res.error_message,
+        }
+        if args.json:
+            print(json.dumps(out, indent=2))
+        else:
+            if res.success:
+                print(f"Heartbeat ping confirmed by Healthchecks.io ({res.duration_ms}ms, HTTP {res.status_code}).")
+            else:
+                print(f"Heartbeat ping failed: {res.error_message}", file=sys.stderr)
+        return 0 if res.success else 1
+
+    elif args.heartbeat_command == "ping":
+        cfg = load_healthchecks_config()
+        if not cfg:
+            print("Error: Healthchecks is not configured.", file=sys.stderr)
+            return 1
+        res = send_heartbeat(cfg.ping_url)
+        if res.success:
+            if getattr(args, "verbose", False):
+                print(f"Heartbeat confirmed (HTTP {res.status_code}, {res.duration_ms}ms)")
+            return 0
+        else:
+            print(f"Heartbeat failed ({res.error_category}): {res.error_message}", file=sys.stderr)
+            return 1
+
+    elif args.heartbeat_command == "install":
+        res = install_heartbeat_task(
+            interval_minutes=args.interval,
+            system_account=args.system,
+            apply=args.apply,
+        )
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if not args.apply:
+                print(res.get("warning", "Dry-run"))
+                print(f"Target task: {res['task_name']} (repeats every {res['interval_minutes']}m)")
+                if res.get("elevation_notice"):
+                    print(res["elevation_notice"])
+            elif res.get("ok"):
+                print(f"Scheduled task '{res['task_name']}' registered successfully.")
+            else:
+                print(f"Installation failed: {res.get('error')}", file=sys.stderr)
+        return 0 if res.get("ok") else 1
+
+    elif args.heartbeat_command == "uninstall":
+        res = uninstall_heartbeat_task(apply=args.apply)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if not args.apply:
+                print(res.get("warning", "Dry-run"))
+            else:
+                print(res.get("message", "Task removed."))
+        return 0 if res.get("ok") else 1
+
+    elif args.heartbeat_command == "repair":
+        if not args.apply:
+            res = {"ok": True, "dry_run": True, "warning": "Dry-run: pass -a/--apply to repair heartbeat task and permissions."}
+            print(json.dumps(res, indent=2) if args.json else res["warning"])
+            return 0
+        cfg = load_healthchecks_config()
+        if cfg:
+            save_healthchecks_config(cfg)
+        install_res = install_heartbeat_task(apply=True)
+        res = {"ok": install_res.get("ok", False), "repaired": True, "task": install_res}
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print("Heartbeat task and configuration repaired.")
+        return 0 if res["ok"] else 1
+
+    elif args.heartbeat_command == "doctor":
+        doc = doctor()
+        if args.json:
+            print(json.dumps(doc, indent=2))
+        else:
+            print(f"Heartbeat Doctor Diagnosis: {'HEALTHY' if doc['healthy'] else 'ISSUES DETECTED'}")
+            for c in doc["checks"]:
+                mark = "[PASS]" if c["passed"] else "[FAIL]"
+                print(f" {mark} {c['name']}: {c['details']}")
+        return 0 if doc["healthy"] else 1
+
+    return 2
+
+
 def handle_health(args: argparse.Namespace) -> int:
     try:
         storage = _get_storage(args.db)
@@ -630,6 +871,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return handle_telegram(args)
     elif args.command == "windows":
         return handle_windows(args)
+    elif args.command == "heartbeat":
+        return handle_heartbeat(args)
 
     return 0
 

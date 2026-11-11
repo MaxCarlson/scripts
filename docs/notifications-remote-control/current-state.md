@@ -116,12 +116,39 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - Dynamic provider registry (`notifications.delivery.registry.get_registered_providers`) resolves `fake_provider`, `telegram`, and `windows`.
   - Outbox runner (`scripts-notify outbox run`) automatically dispatches to all registered providers with status tracking in `delivery_attempts`.
   - Secret-safe Telegram enrollment (`scripts-notify telegram enroll`) supports interactive masking and `NOTIFY_TELEGRAM_BOT_TOKEN` environment variable without mandatory CLI argument exposure.
-- **Phase 03 Windows Desktop Notifications**:
+- **Phase 03 Windows Desktop Notifications & Hardening**:
   - Interactive Session 1+ helper (`helper.ps1`) runs non-elevated (`asInvoker`) at user logon via Task Scheduler (`ScriptsNotificationsToastHelper`).
-  - Loopback IPC (`http://127.0.0.1:1238`) protected by Bearer token authentication matching the shared broker secret file.
-  - Delivery provider (`WindowsDeliveryProvider`) maps `provider_accepted`, `session_unavailable`, `unauthorized`, and `bad_payload` statuses with short deadlines (2.0s).
+  - Hard cumulative request body limit (32,768 bytes) enforced in `helper.ps1` with 5000ms read deadline, rejecting oversized or stalled requests with HTTP 413 or 408.
+  - Non-elevation guard strictly enforced: helper immediately aborts with exit code 3 if launched under Administrator privileges.
+  - Dedicated `/shutdown` loopback endpoint with dedicated shutdown token support.
+  - Safe parameter passing via structured JSON over `stdin` eliminates all PowerShell string interpolation vulnerabilities.
+  - Default token path aligned with `config.py` (`~/.scripts/notifications/secrets/broker-token`) with owner-restricted Windows ACLs (`icacls`).
   - Multi-provider isolation (N09) verified: Windows offline status never blocks or aborts Telegram delivery, and Telegram rate limiting never suppresses Windows desktop toasts.
   - Injection resistance (N10) and session availability semantics (N11) verified.
   - Full CLI management (`scripts-notify windows status/install/uninstall/test`) with dry-run default.
-  - Total automated notifications suite passing: 81 tests. Broader `scripts_help` test suite passing: 55 tests.
+
+---
+
+## 6. Phase 04 Independent Off-Host Outage Monitoring Status
+
+- **Architecture**:
+  - Implements the "dead man's snitch" pattern using Healthchecks.io outbound periodic pings.
+  - Healthchecks cloud integrates directly with Telegram via `@HealthchecksBot`, alerting the operator's phone if workstation pings cease for 10 minutes (5m period + 5m grace).
+  - $0 mandatory spend on Healthchecks.io free Hobbyist plan.
+- **Independence & Isolation (N12 / N13)**:
+  - Completely independent of the local notification broker daemon, SQLite `events.db`, local Telegram bot token, and interactive user desktop session.
+  - Zero imports or dependencies on `notifications.broker`, `notifications.storage`, `sqlite3`, or `modules/resource_coordinator/`.
+  - Standalone runner entrypoint: `python -m notifications.monitoring.runner`.
+- **Security & Redaction**:
+  - Secrets and UUIDs in ping URLs are automatically redacted (`[REDACTED_PING_UUID]`, `[REDACTED_UUID]`) from all logs, stdout, error messages, and JSON status reports.
+  - HTTPS scheme strictly enforced on ping URLs; plaintext HTTP rejected.
+  - Configuration saved to `~/.scripts/notifications/secrets/healthchecks.json` with owner-restricted ACLs (`icacls`).
+  - Task Scheduler registration script receives arguments as structured JSON via `stdin` to eliminate PowerShell interpolation risks.
+- **Diagnostics & Operations**:
+  - Full CLI suite: `scripts-notify heartbeat configure`, `status`, `test`, `ping`, `install`, `repair`, `uninstall`, and `doctor`.
+  - Diagnostic doctor probe checks configuration file ACLs, Task Scheduler status, and live HTTPS connectivity to `hc-ping.com`.
+  - All operational mutations default to dry-run and require `-a/--apply`.
+- **Automated Test Validation**:
+  - Total automated notifications suite: 124 passing tests (38 dedicated to Phase 04 monitoring).
+  - Broader repository test suite: 55 `scripts_help` tests passing.
 
