@@ -4,7 +4,7 @@
 
 - Repository: `C:\Users\mcarls\src\scripts`.
 - Worktree/branch: `.worktrees/resource-coordinator-v013-integration-restoration-20261111`, `agent/resource-coordinator-v013-integration-restoration-20261111`.
-- Target base at integration: `6a57877b6304515172e75eaf4d28d2cce88514aa`.
+- Initial target base at H2A integration: `6a57877b6304515172e75eaf4d28d2cce88514aa` (the candidate was later reconciled with newer `origin/main` as recorded below).
 - Maintenance source: `e6a28b929c0a6f8dc8ddf6f31f3553e15a44335e`; merge base `3d1cefa0596cfba5a68e436589f3bba7edc04a53`.
 - Integration merge: `d84865883baaa7e88af280eb3563d3a59694ae6e`.
 - H2A evidence commit: `b794d0e0c13b5aeab49adaf57aada63e4ac97f0e`.
@@ -84,8 +84,22 @@ The three skips are opt-in real Windows Scheduled Task, read-only helper, and UA
 
 H2A and H2C source work is complete on the isolated feature branch. This is not approval to merge or deploy. After the H2B client adds scope and process registration, run cross-repository protocol tests. Before enabling automatic release, independently qualify NVML setting readback and complete process attribution on the exact deployment hardware/driver. Preserve operator recovery as the fallback. The next source integration review should use the final pushed commit recorded by the completing agent.
 
-### Publication checkpoint
+### Initial publication checkpoint
 
 - A normal non-force push published the integration branch to `origin/agent/resource-coordinator-v013-integration-restoration-20261111` at `8c1fbd0509f20843829092827e094632a34aa75c`.
 - A subsequent fetch confirmed the remote feature ref matched that commit, `origin/main` remained `6a57877b6304515172e75eaf4d28d2cce88514aa`, and the target remained an ancestor. No `main` ref was updated.
-- Any later status-only commit and final remote SHA are reported in the completion message.
+- The later publication-status-only commit was `8f25a36c5f8dfc1a7ec2efb088434644ecbe4b22`.
+
+### Latest main reconciliation
+
+- After the initial publication, `origin/main` advanced from `6a57877b6304515172e75eaf4d28d2cce88514aa` to `0022c4fe9cab8a1c9cc2c03b346efbde0e69881a`.
+- The intervening commit changed four files, all under `modules/cli_tui/`; there was no Resource Coordinator path overlap.
+- The latest main was merged into this candidate without conflict at `023be5a1c1f182aa19edb06bf45f53c826749715`. The latest main SHA is now the candidate's merge base and ancestor.
+- Against the updated candidate, the integrated Resource Coordinator regression suites passed **233 tests, 1 deselected** (exit 0). The deselection remains the previously documented baseline GPU-idle/manual-hold test. Ruff, compilation, and `git diff --check origin/main...HEAD` passed (exit 0).
+- Exact rerun command, from `modules/resource_coordinator` with candidate `PYTHONPATH` and an isolated temp root:
+
+```powershell
+python -m pytest --override-ini 'addopts=' tests\test_maintenance.py tests\test_restoration.py tests\test_leases.py tests\test_durable_state.py tests\test_gateway.py tests\test_admission.py tests\test_factory_gateway_integration.py tests\test_service_lifecycle.py tests\test_integration_phase_d.py tests\test_policies.py tests\test_actions.py tests\test_processes.py tests\test_miner_adapter.py tests\test_phase2_miner_lifecycle.py tests\test_config.py tests\test_operator_credentials.py tests\test_cli.py -k 'not test_gpu_idle_pause_persists_across_restart_and_resumes_after_complete_window' -q -ra --basetemp <candidate>\modules\resource_coordinator\.pytest_tmp_h2c_latest_main
+```
+
+- The updated merge checkpoint is being published only to the isolated integration feature branch. No `main` ref or production resource was changed.
