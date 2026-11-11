@@ -30,5 +30,5 @@
 ## Delivery
 
 - [x] Update status and record exact commands/results.
-- [ ] Commit scoped work on feature branch.
-- [ ] Push feature branch; do not merge or deploy.
+- [x] Commit scoped work on feature branch (`1d6adb31e4382d55bca77fb7469fa0349f7e95ee`).
+- [x] Push feature branch to origin; do not merge or deploy.

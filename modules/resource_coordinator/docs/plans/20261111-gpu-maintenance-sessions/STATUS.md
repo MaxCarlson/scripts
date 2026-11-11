@@ -7,7 +7,7 @@
 - Branch: `agent/resource-coordinator-gpu-maintenance-20261111`.
 - Worktree: `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-gpu-maintenance-20261111`.
 - Source package version: `0.13.0`.
-- Current work is uncommitted; no push, merge, deployment, or production operation has occurred.
+- Implementation checkpoint `1d6adb31e4382d55bca77fb7469fa0349f7e95ee` is committed and pushed to `origin/agent/resource-coordinator-gpu-maintenance-20261111`. No merge, deployment, or production operation has occurred.
 - Root `main` checkout's pre-existing dirty paths remain untouched.
 - Runtime used: Windows (`platform win32`), Python 3.12.10, pytest 9.0.3, pytest-asyncio 1.3.0; package imports resolve to this feature worktree.
 
@@ -52,7 +52,6 @@ python -m pytest --override-ini addopts= tests\test_maintenance.py tests\test_le
 
 ## Next actions
 
-1. Complete final diff/security review and final static/test checks.
-2. Commit only Resource Coordinator maintenance implementation, regression tests, docs, and plan evidence.
-3. Push this feature branch to origin. Do not merge or deploy.
-4. Ask Mining owner to implement the documented client changes and schedule cross-repository mock acceptance. Production optimizer readiness requires that work plus separately approved Windows and hardware validation.
+1. Have the Mining owner implement the documented client changes and schedule cross-repository mock acceptance; Mining changes are outside this branch.
+2. Before source integration, review the commits that advanced `origin/main` beyond the recorded base `3d1cefa0596cfba5a68e436589f3bba7edc04a53` and integrate on an isolated worktree.
+3. Keep production optimizer readiness gated on Mining-client compatibility, disposable Windows upgrade acceptance, and separately authorized hardware validation.
