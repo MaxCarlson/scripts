@@ -100,7 +100,7 @@ scripts-notify heartbeat configure -i 5 -a
 ```
 
 ### 3.2 Security Controls Enforced
-1. **Owner-Restricted Filesystem ACLs:** Configuration is saved to `~/.scripts/notifications/secrets/healthchecks.json`. Windows `icacls` removes inheritance and restricts Full Control strictly to the user SID and `S-1-5-18` (`NT AUTHORITY\SYSTEM`).
+1. **Owner-Restricted Filesystem ACLs & Fail-Secure Atomic Replacement:** Configuration is saved to `~/.scripts/notifications/secrets/healthchecks.json`. Windows `icacls` removes inheritance and restricts Full Control strictly to the user SID and `S-1-5-18` (`NT AUTHORITY\SYSTEM`). Writes use an unpredictable temporary file in the same directory (`mkstemp`), secure its permissions before replacement, and atomically swap it into place (`os.replace`). Any failure cleans up the temporary file and preserves the existing valid configuration. Symlinks and reparse points are explicitly rejected.
 2. **HTTPS Scheme Enforcement:** Insecure `http://` URLs are rejected automatically unless `NOTIFICATIONS_ALLOW_INSECURE_PING=1` is set for offline unit tests.
 3. **No Embedded Credentials:** URLs with embedded credentials (`https://user:pass@...`) are rejected by schema validation.
 4. **Automatic Secret Redaction:** Ping UUIDs and slugs are redacted (`[REDACTED_PING_UUID]` / `[REDACTED_UUID]`) from all logs, stdout, error messages, and JSON status reports.
@@ -110,21 +110,33 @@ scripts-notify heartbeat configure -i 5 -a
 
 ## 4. Scheduled Task Registration & Maintenance
 
-### 4.1 Install Heartbeat Task
+### 4.1 Execution Modes: Headless vs Interactive-Only
+
+The Windows Scheduled Task supports two distinct operational modes:
+
+| Mode | Principal / Logon Type | Elevation Required? | Runs Logged Off? | Survives Reboots? | Recommended Use |
+|---|---|---|---|---|---|
+| **Headless (Recommended for 24/7)** | `NT AUTHORITY\SYSTEM` (`ServiceAccount`) | **Yes** (Administrator) | **Yes** | **Yes** (runs at boot before logon) | True 24/7 host outage and liveness monitoring |
+| **Interactive-Only** | `CurrentUser` (`InteractiveToken`) | No | **No** (suspends when logged off) | **No** (waits for user to log on) | Local testing or unprivileged development |
+
+> [!IMPORTANT]
+> Microsoft Windows Task Scheduler strictly prevents `InteractiveToken` tasks from launching without an active user desktop session. To achieve true 24/7 off-host outage detection that alerts you when the host loses power or crashes and does not depend on a user being logged in, always register using `--headless` from an elevated Administrator prompt.
+
+### 4.2 Install Heartbeat Task
 All mutations default to **dry-run** mode. Pass `-a/--apply` to execute real registrations:
 
 ```powershell
 # Dry-run preview:
 scripts-notify heartbeat install -i 5
 
-# Register scheduled task under interactive user account:
+# Register interactive-only task (standard user):
 scripts-notify heartbeat install -i 5 -a
 
-# (Optional) Register under SYSTEM account for headless reboots (requires Administrator PowerShell):
-scripts-notify heartbeat install -i 5 --system -a
+# Register headless task surviving reboots & logged-off state (requires Administrator PowerShell):
+scripts-notify heartbeat install --headless -i 5 -a
 ```
 
-### 4.2 Verify Status
+### 4.3 Verify Status
 ```powershell
 scripts-notify heartbeat status
 scripts-notify heartbeat status -j
@@ -136,11 +148,44 @@ Independent Outage Monitoring (Healthchecks.io) Status:
  - Check Name: Host Alive (5m interval)
  - Ping URL: https://hc-ping.com/[REDACTED_PING_UUID]
  - Scheduled Task (ScriptsNotificationsHostHeartbeat): Installed (State: Ready)
+ - Execution Mode: headless (SYSTEM / ServiceAccount)
+ - Logged-off Capable: Yes
  - Last Run: 11/11/2026 12:00:00 PM (Result: 0)
  - Next Run: 11/11/2026 12:05:00 PM
 ```
 
-### 4.3 Send Test Ping
+### 4.4 Windows-Local Logged-Off and Reboot Acceptance Procedure
+To verify that the headless host heartbeat operates without an active user logon session without performing an unsolicited reboot:
+
+1. **Register Headless Task:**
+   Open PowerShell as Administrator and run:
+   ```powershell
+   scripts-notify heartbeat install --headless -i 5 -a
+   ```
+2. **Confirm Headless Identity:**
+   ```powershell
+   scripts-notify heartbeat status
+   ```
+   Verify that `Execution Mode` shows `headless (SYSTEM / ServiceAccount)` and `Logged-off Capable: Yes`.
+3. **Trigger Manual Validation Ping:**
+   ```powershell
+   scripts-notify heartbeat test -a
+   ```
+   Confirm Healthchecks.io logs the successful ping.
+4. **Logged-Off Test:**
+   - Sign out of Windows (`Ctrl+Alt+Del` -> **Sign out**).
+   - Wait 10 minutes with the workstation powered on at the Windows Login screen.
+   - On your phone or secondary device, open the Healthchecks.io web dashboard and verify the `Host Alive` check received pings while the machine remained logged off.
+5. **Reboot Acceptance (Optional operator maintenance):**
+   - When ready for scheduled maintenance, restart the PC.
+   - Leave the machine at the Windows lock screen for 6–8 minutes before logging in.
+   - Log in and inspect the Task Scheduler history:
+     ```powershell
+     schtasks.exe /query /tn ScriptsNotificationsHostHeartbeat /v /fo csv
+     ```
+     Confirm the `Last Run Time` timestamp preceded your interactive logon.
+
+### 4.5 Send Test Ping
 ```powershell
 # Dry-run:
 scripts-notify heartbeat test
@@ -149,7 +194,7 @@ scripts-notify heartbeat test
 scripts-notify heartbeat test -a
 ```
 
-### 4.4 Run Diagnostic Doctor
+### 4.6 Run Diagnostic Doctor
 Verify end-to-end prerequisites (configuration presence, task state, and network connectivity to `hc-ping.com`):
 ```powershell
 scripts-notify heartbeat doctor
@@ -158,11 +203,11 @@ Sample output:
 ```text
 Heartbeat Doctor Diagnosis: HEALTHY
  [PASS] configuration: Configured for check 'Host Alive' (5m interval)
- [PASS] scheduled_task: Task 'ScriptsNotificationsHostHeartbeat' is Ready (Last result: 0)
+ [PASS] scheduled_task: Task 'ScriptsNotificationsHostHeartbeat' is Ready [Headless SYSTEM (runs logged off)] (Last result: 0)
  [PASS] network_connectivity: https://hc-ping.com responded with HTTP 200
 ```
 
-### 4.5 Task Uninstallation & Repair
+### 4.7 Task Uninstallation & Repair
 ```powershell
 # Repair configuration ACLs and task registration:
 scripts-notify heartbeat repair -a

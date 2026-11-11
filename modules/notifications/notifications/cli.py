@@ -203,7 +203,9 @@ def build_parser() -> argparse.ArgumentParser:
     # heartbeat install
     hb_inst = hb_sub.add_parser("install", help="Register Windows Scheduled Task for periodic heartbeat.")
     hb_inst.add_argument("-i", "--interval", type=int, default=None, help="Heartbeat interval in minutes override.")
-    hb_inst.add_argument("--system", action="store_true", help="Register under NT AUTHORITY\\SYSTEM (requires elevation).")
+    hb_inst.add_argument("--headless", action="store_true", help="Register as headless system task (NT AUTHORITY\\SYSTEM) that survives reboots and runs when logged off (requires Administrator).")
+    hb_inst.add_argument("--system", action="store_true", help="Alias for --headless (register under NT AUTHORITY\\SYSTEM).")
+    hb_inst.add_argument("--python-path", default=None, help="Explicit path to Python interpreter executable.")
     hb_inst.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to register Scheduled Task).")
     hb_inst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
@@ -713,8 +715,12 @@ def handle_heartbeat(args: argparse.Namespace) -> int:
                 print(f" - Ping URL: {status['ping_url_redacted']}")
             print(f" - Scheduled Task ({status['task_name']}): {'Installed' if status['task_installed'] else 'Not Installed'} (State: {status['task_state']})")
             if status["task_installed"]:
+                print(f" - Execution Mode: {status.get('execution_mode', 'Unknown')}")
+                print(f" - Logged-off Capable: {'Yes' if status.get('logged_off_capable') else 'No (Interactive only; will NOT run when logged off)'}")
                 print(f" - Last Run: {status['last_run_time']} (Result: {status['last_result']})")
                 print(f" - Next Run: {status['next_run_time']}")
+                if not status.get("logged_off_capable"):
+                    print(" ! Notice: Interactive-only task requires an active user session. Run 'scripts-notify heartbeat install --headless -a' as Administrator for 24/7 host outage detection across reboots.")
         return 0
 
     elif args.heartbeat_command == "test":
@@ -770,7 +776,9 @@ def handle_heartbeat(args: argparse.Namespace) -> int:
     elif args.heartbeat_command == "install":
         res = install_heartbeat_task(
             interval_minutes=args.interval,
-            system_account=args.system,
+            system_account=getattr(args, "system", False),
+            headless=getattr(args, "headless", False),
+            python_path=getattr(args, "python_path", None),
             apply=args.apply,
         )
         if args.json:
@@ -779,10 +787,14 @@ def handle_heartbeat(args: argparse.Namespace) -> int:
             if not args.apply:
                 print(res.get("warning", "Dry-run"))
                 print(f"Target task: {res['task_name']} (repeats every {res['interval_minutes']}m)")
+                print(f"Execution Identity: {res.get('identity')}")
                 if res.get("elevation_notice"):
                     print(res["elevation_notice"])
+                if res.get("interactive_notice"):
+                    print(res["interactive_notice"])
             elif res.get("ok"):
                 print(f"Scheduled task '{res['task_name']}' registered successfully.")
+                print(f"Execution Identity: {res.get('identity')}")
             else:
                 print(f"Installation failed: {res.get('error')}", file=sys.stderr)
         return 0 if res.get("ok") else 1

@@ -129,15 +129,50 @@ def save_healthchecks_config(
     config: HealthchecksConfig,
     path: Optional[Path] = None,
 ) -> Path:
-    """Save Healthchecks configuration with owner-restricted filesystem ACLs."""
-    file_path = path or default_healthchecks_config_path()
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    _secure_path(file_path.parent)
+    """Save Healthchecks configuration with owner-restricted filesystem ACLs using fail-secure atomic replacement."""
+    import tempfile
+
+    file_path = (path or default_healthchecks_config_path()).resolve()
+
+    # Reject symbolic links and reparse points
+    if file_path.is_symlink():
+        raise SecurityError(f"Refusing to save configuration to symbolic link: {file_path}")
+
+    parent_dir = file_path.parent
+    if parent_dir.is_symlink():
+        raise SecurityError(f"Refusing to save configuration in symbolic link directory: {parent_dir}")
+
+    parent_dir.mkdir(parents=True, exist_ok=True)
+    _secure_path(parent_dir)
 
     content = json.dumps(config.to_dict(), indent=2)
-    file_path.write_text(content, encoding="utf-8")
-    _secure_path(file_path)
-    return file_path
+
+    # Write to unpredictable temporary file in same directory for atomic rename
+    temp_fd, temp_path_str = tempfile.mkstemp(
+        dir=parent_dir,
+        prefix=".tmp_healthchecks_",
+        suffix=".json",
+    )
+    temp_path = Path(temp_path_str)
+
+    try:
+        with os.fdopen(temp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+
+        # Apply and verify owner-only permissions on the temporary file BEFORE moving into destination
+        _secure_path(temp_path)
+
+        # Atomically replace destination, preserving previous file if anything prior failed
+        os.replace(temp_path, file_path)
+        return file_path
+    except Exception:
+        # Fail-secure cleanup
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except Exception:
+                pass
+        raise
 
 
 def delete_healthchecks_config(path: Optional[Path] = None) -> bool:

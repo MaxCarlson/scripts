@@ -27,6 +27,26 @@ logger = logging.getLogger(__name__)
 TASK_NAME = "ScriptsNotificationsHostHeartbeat"
 
 
+def is_running_as_admin() -> bool:
+    """Check if the current process has Windows Administrator privileges."""
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except Exception:
+        pass
+    try:
+        proc = subprocess.run(
+            ["whoami.exe", "/groups", "/fo", "csv"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=5,
+        )
+        return "S-1-16-12288" in proc.stdout or "S-1-5-32-544" in proc.stdout
+    except Exception:
+        return False
+
+
 def get_heartbeat_task_status(config_path: Optional[Path] = None) -> dict[str, Any]:
     """Inspect Windows Scheduled Task and Healthchecks configuration status."""
     task_installed = False
@@ -34,6 +54,9 @@ def get_heartbeat_task_status(config_path: Optional[Path] = None) -> dict[str, A
     last_run_time: Optional[str] = None
     next_run_time: Optional[str] = None
     last_result: Optional[str] = None
+    logon_mode: Optional[str] = None
+    run_as_user: Optional[str] = None
+    task_to_run: Optional[str] = None
 
     # 1. Query Scheduled Task
     try:
@@ -52,6 +75,9 @@ def get_heartbeat_task_status(config_path: Optional[Path] = None) -> dict[str, A
                     last_run_time = row.get("Last Run Time")
                     next_run_time = row.get("Next Run Time")
                     last_result = row.get("Last Result")
+                    logon_mode = row.get("Logon Mode")
+                    run_as_user = row.get("Run As User") or row.get("Author")
+                    task_to_run = row.get("Task To Run")
                     break
         else:
             task_installed = False
@@ -63,6 +89,13 @@ def get_heartbeat_task_status(config_path: Optional[Path] = None) -> dict[str, A
     cfg = load_healthchecks_config(config_path)
     eff_path = config_path or default_healthchecks_config_path()
 
+    is_headless = False
+    if task_installed and logon_mode:
+        logon_lower = logon_mode.lower()
+        user_lower = (run_as_user or "").lower()
+        if "interactive only" not in logon_lower or "system" in user_lower:
+            is_headless = True
+
     return {
         "ok": True,
         "task_name": TASK_NAME,
@@ -71,6 +104,13 @@ def get_heartbeat_task_status(config_path: Optional[Path] = None) -> dict[str, A
         "last_run_time": last_run_time,
         "next_run_time": next_run_time,
         "last_result": last_result,
+        "logon_mode": logon_mode,
+        "run_as_user": run_as_user,
+        "task_to_run": task_to_run,
+        "headless": is_headless,
+        "execution_mode": "headless (SYSTEM / ServiceAccount)" if is_headless else "interactive_only (CurrentUser / InteractiveToken)",
+        "logged_off_capable": is_headless,
+        "reboot_survivable": is_headless,
         "configured": cfg is not None,
         "check_name": cfg.check_name if cfg else None,
         "interval_minutes": cfg.interval_minutes if cfg else None,
@@ -83,17 +123,27 @@ def install_heartbeat_task(
     interval_minutes: Optional[int] = None,
     config_path: Optional[Path] = None,
     system_account: bool = False,
+    headless: bool = False,
+    python_path: Optional[str] = None,
     apply: bool = False,
 ) -> dict[str, Any]:
     """
     Register Scheduled Task for independent host heartbeat.
     Ensures safe structured JSON argument passing to eliminate PowerShell interpolation.
+    Supports interactive user mode or headless (SYSTEM) mode surviving reboots/logged-off state.
     """
+    use_headless = system_account or headless
     cfg = load_healthchecks_config(config_path)
     eff_interval = interval_minutes or (cfg.interval_minutes if cfg else 5)
     eff_config_path = (config_path or default_healthchecks_config_path()).resolve()
 
-    python_exe = Path(sys.executable).resolve()
+    if python_path:
+        python_exe = Path(python_path).resolve()
+        if not python_exe.is_file():
+            return {"ok": False, "error": f"Specified Python interpreter not found: {python_exe}"}
+    else:
+        python_exe = Path(sys.executable).resolve()
+
     runner_args = f"-m notifications.monitoring.runner -c \"{eff_config_path}\""
 
     preview = {
@@ -104,8 +154,11 @@ def install_heartbeat_task(
         "executable": str(python_exe),
         "arguments": runner_args,
         "interval_minutes": eff_interval,
-        "identity": "NT AUTHORITY\\SYSTEM (ServiceAccount)" if system_account else "CurrentUser (Interactive)",
-        "elevation_required": system_account,
+        "identity": "NT AUTHORITY\\SYSTEM (ServiceAccount - Headless)" if use_headless else "CurrentUser (InteractiveToken - Interactive Only)",
+        "headless": use_headless,
+        "logged_off_capable": use_headless,
+        "reboot_survivable": use_headless,
+        "elevation_required": use_headless,
         "start_when_available": True,
         "multiple_instances_policy": "IgnoreNew (No overlap)",
         "execution_time_limit": "2 minutes",
@@ -113,9 +166,23 @@ def install_heartbeat_task(
 
     if not apply:
         preview["warning"] = "Dry-run: pass -a/--apply to register the Windows Scheduled Task."
-        if system_account:
-            preview["elevation_notice"] = "Registering with --system requires elevated (Administrator) PowerShell."
+        if use_headless:
+            preview["elevation_notice"] = "Registering headless mode (--headless/--system) requires elevated (Administrator) PowerShell."
+        else:
+            preview["interactive_notice"] = (
+                "Notice: Interactive-only mode requires an active logged-in user and will NOT run across reboots or when logged off. "
+                "Use --headless (requires Administrator) for true 24/7 host outage detection."
+            )
         return preview
+
+    if use_headless and not is_running_as_admin():
+        return {
+            "ok": False,
+            "error": (
+                "Registering headless heartbeat task under NT AUTHORITY\\SYSTEM requires elevated (Administrator) privileges. "
+                "Run terminal as Administrator or omit --headless/--system for interactive-only mode."
+            ),
+        }
 
     # Structured PowerShell script reading parameters from stdin JSON
     ps_cmd = """
@@ -126,8 +193,9 @@ $exe = $in.Executable
 $argsStr = $in.Arguments
 $intervalMin = [int]$in.IntervalMinutes
 $useSystem = [bool]$in.SystemAccount
+$workDir = Split-Path $exe
 
-$action = New-ScheduledTaskAction -Execute $exe -Argument $argsStr
+$action = New-ScheduledTaskAction -Execute $exe -Argument $argsStr -WorkingDirectory $workDir
 
 # Repeating trigger: starts now, repeats every X minutes indefinitely
 $timespan = New-TimeSpan -Minutes $intervalMin
@@ -161,7 +229,7 @@ Register-ScheduledTask `
         "Executable": str(python_exe),
         "Arguments": runner_args,
         "IntervalMinutes": eff_interval,
-        "SystemAccount": system_account,
+        "SystemAccount": use_headless,
     })
 
     try:
@@ -243,10 +311,12 @@ def doctor(config_path: Optional[Path] = None, client: Optional[httpx.Client] = 
     # 2. Scheduled Task check
     status = get_heartbeat_task_status(config_path)
     if status["task_installed"]:
+        mode_desc = "Headless SYSTEM (runs logged off)" if status.get("headless") else "Interactive-only (requires active user login)"
         checks.append({
             "name": "scheduled_task",
             "passed": True,
-            "details": f"Task '{TASK_NAME}' is {status['task_state']} (Last result: {status['last_result']})",
+            "details": f"Task '{TASK_NAME}' is {status['task_state']} [{mode_desc}] (Last result: {status['last_result']})",
+            "headless": status.get("headless", False),
         })
     else:
         checks.append({

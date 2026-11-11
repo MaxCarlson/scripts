@@ -131,6 +131,62 @@ def test_config_save_load_delete(tmp_path: Path):
     assert delete_healthchecks_config(path=secrets_file) is False
 
 
+def test_config_fail_secure_atomic_replacement(tmp_path: Path):
+    secrets_file = tmp_path / "secrets" / "healthchecks.json"
+    initial_cfg = HealthchecksConfig(
+        ping_url=SAMPLE_PING_URL,
+        interval_minutes=5,
+        check_name="Initial Valid Config",
+    )
+    save_healthchecks_config(initial_cfg, path=secrets_file)
+    original_content = secrets_file.read_text("utf-8")
+
+    # Attempt to save a new config, but simulate an ACL failure on the temp file
+    broken_cfg = HealthchecksConfig(
+        ping_url=f"https://hc-ping.com/99999999-9999-9999-9999-999999999999",
+        interval_minutes=10,
+        check_name="Broken Update",
+    )
+
+    call_count = [0]
+    real_secure = None
+    import notifications.monitoring.config as cfg_module
+    orig_secure = cfg_module._secure_path
+
+    def failing_secure(p: Path):
+        call_count[0] += 1
+        # Fail on temp file securing (the second call to _secure_path)
+        if ".tmp_healthchecks_" in str(p):
+            raise SecurityError("Simulated ACL permission denial on temp file")
+        return orig_secure(p)
+
+    with patch.object(cfg_module, "_secure_path", side_effect=failing_secure):
+        with pytest.raises(SecurityError, match="Simulated ACL permission denial"):
+            save_healthchecks_config(broken_cfg, path=secrets_file)
+
+    # Destination file MUST be preserved unmodified
+    assert secrets_file.is_file()
+    assert secrets_file.read_text("utf-8") == original_content
+    # No temporary files left behind in parent directory
+    temp_files = list(secrets_file.parent.glob(".tmp_healthchecks_*"))
+    assert len(temp_files) == 0
+
+
+def test_config_rejects_symlinks(tmp_path: Path):
+    target_file = tmp_path / "real.json"
+    target_file.write_text("{}", encoding="utf-8")
+    symlink_file = tmp_path / "symlink.json"
+
+    try:
+        symlink_file.symlink_to(target_file)
+    except (OSError, NotImplementedError):
+        pytest.skip("Symlinks not supported in current Windows environment")
+
+    cfg = HealthchecksConfig(ping_url=SAMPLE_PING_URL)
+    with pytest.raises(SecurityError, match="symbolic link"):
+        save_healthchecks_config(cfg, path=symlink_file)
+
+
 def test_config_env_var_precedence(tmp_path: Path, monkeypatch):
     secrets_file = tmp_path / "secrets" / "healthchecks.json"
     cfg = HealthchecksConfig(
@@ -348,6 +404,57 @@ def test_task_status_installed(tmp_path: Path):
     assert status["last_result"] == "0"
     assert status["configured"] is True
     assert SAMPLE_UUID not in status["ping_url_redacted"]
+
+
+def test_task_status_headless_vs_interactive(tmp_path: Path):
+    cfg_file = tmp_path / "healthchecks.json"
+    save_healthchecks_config(HealthchecksConfig(ping_url=SAMPLE_PING_URL), path=cfg_file)
+
+    # 1. SYSTEM / Headless task
+    csv_headless = (
+        '"Folder","TaskName","Next Run Time","Status","Logon Mode","Last Run Time","Last Result","Author","Task To Run","Start In","Comment","Scheduled Task State","Idle Time","Power Management","Run As User"\n'
+        f'"\\","{TASK_NAME}","11/11/2026 12:05:00 PM","Ready","Service account","11/11/2026 12:00:00 PM","0","SYSTEM","python.exe","N/A","N/A","Ready","Disabled","Disabled","NT AUTHORITY\\SYSTEM"\n'
+    )
+    def fake_headless(cmd, *args, **kwargs):
+        if "schtasks" in " ".join(str(c) for c in cmd):
+            return MagicMock(returncode=0, stdout=csv_headless, stderr="")
+        return _fake_win_exec(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", side_effect=fake_headless):
+        stat_h = get_heartbeat_task_status(config_path=cfg_file)
+    assert stat_h["headless"] is True
+    assert stat_h["logged_off_capable"] is True
+    assert "headless" in stat_h["execution_mode"]
+
+    # 2. Interactive-only task
+    csv_interactive = (
+        '"Folder","TaskName","Next Run Time","Status","Logon Mode","Last Run Time","Last Result","Author","Task To Run","Start In","Comment","Scheduled Task State","Idle Time","Power Management","Run As User"\n'
+        f'"\\","{TASK_NAME}","11/11/2026 12:05:00 PM","Ready","Interactive only","11/11/2026 12:00:00 PM","0","User","python.exe","N/A","N/A","Ready","Disabled","Disabled","User"\n'
+    )
+    def fake_interactive(cmd, *args, **kwargs):
+        if "schtasks" in " ".join(str(c) for c in cmd):
+            return MagicMock(returncode=0, stdout=csv_interactive, stderr="")
+        return _fake_win_exec(cmd, *args, **kwargs)
+
+    with patch("subprocess.run", side_effect=fake_interactive):
+        stat_i = get_heartbeat_task_status(config_path=cfg_file)
+    assert stat_i["headless"] is False
+    assert stat_i["logged_off_capable"] is False
+    assert "interactive_only" in stat_i["execution_mode"]
+
+
+def test_install_heartbeat_task_headless_admin_enforcement():
+    with patch("notifications.monitoring.service.is_running_as_admin", return_value=False):
+        res = install_heartbeat_task(headless=True, apply=True)
+    assert res["ok"] is False
+    assert "Administrator" in res["error"]
+
+
+def test_install_heartbeat_task_python_path_validation(tmp_path: Path):
+    invalid_py = tmp_path / "nonexistent" / "python.exe"
+    res = install_heartbeat_task(python_path=str(invalid_py), apply=False)
+    assert res["ok"] is False
+    assert "not found" in res["error"]
 
 
 def test_install_heartbeat_task_dry_run():
