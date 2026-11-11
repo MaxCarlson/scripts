@@ -112,7 +112,7 @@ Client (PWA)                 Remote Control API                 Subsystem / Adap
 
 ## 5. Acceptance Criteria & Validation Matrix (R05–R10)
 
-Automated testing in `test_synthetic_recovery.py` and `test_actions_workflow.py` validates all Phase 07 acceptance criteria:
+Automated testing in `test_synthetic_recovery.py`, `test_actions_workflow.py`, and `test_concurrency_defects.py` validates all Phase 07 acceptance criteria:
 
 - **R05 (Guarded Recovery Workflow):** End-to-end execution flow succeeds with valid state fingerprinting, TOTP step-up, and verified postcondition (`test_r05_successful_guarded_recovery_flow`).
 - **R06 (Expired Challenge):** Expired challenges strictly fail with `challenge_expired` (`test_r06_expired_challenge_rejection`).
@@ -120,7 +120,41 @@ Automated testing in `test_synthetic_recovery.py` and `test_actions_workflow.py`
 - **R08 (Safety Refusal):** Active/pending claims refuse recovery with `safety_refusal` and journal status `denied` (`test_r08_safety_refusal_on_active_claims`).
 - **R09 (Service Not Ready):** Degraded or unavailable subsystem causes clean refusal with `service_not_ready` (`test_r09_service_not_ready_refusal`).
 - **R10 (Timeout Handling):** Subsystem execution timeout updates journal record to `outcome_unknown` with result category `timeout` and does not crash the server (`test_r10_execution_timeout_journaled_as_outcome_unknown`).
-- **Concurrency Serialization:** Parallel execution requests for the same concurrency key are serialized without race conditions (`test_concurrency_serialization`).
+- **Concurrency Serialization:** Cross-process SQLite lease (`action_resource_locks`) serializes operations across workers without race conditions (`test_concurrency_serialization`, `test_defect_c_cross_process_locks_and_toctou_prevention`).
 - **Production Guarded Recovery Disabled:** Production `resource_coordinator.request_guarded_recovery` strictly fails closed with `capability_disabled` (`test_disabled_capability_fails_closed`).
-- **Incident Acknowledgement:** Transitions notifications broker incident to `acknowledged` with audit logging, without touching Resource Coordinator safety holds (`test_convenience_incident_acknowledge_endpoint`).
+- **Incident Acknowledgement:** Transitions notifications broker incident to `acknowledged` with audit logging, without touching Resource Coordinator safety holds (`test_convenience_incident_acknowledge_endpoint`, `test_defect_b_acknowledge_confirmation_bypass_and_reopen_scope`).
 - **PWA DOM Safety:** Zero `innerHTML`, `outerHTML`, or `document.write` in `app.js` (`test_app_js_strict_dom_safety`).
+
+---
+
+## 6. Security Stabilization & Concurrency Hardening (Defects A–G)
+
+During Phase 07 security stabilization, seven critical concurrency, authentication, and boundary defects were identified and resolved:
+
+### Defect A: Execution Reservation Tuple Unpacking
+- **Vulnerability:** `ActionStorage.reserve_execution()` returned a 2-tuple `Tuple[bool, ActionExecutionRecord]`. In Python, `bool((False, record))` evaluates to `True`, causing concurrent racers with identical idempotency keys to both dispatch external mutations.
+- **Remediation:** Explicitly unpacked `created, existing_or_new = self.storage.reserve_execution(record)`. When `created` is `False`, the existing record is returned without re-dispatching the mutation. Catch `sqlite3.IntegrityError` to safely handle database-level race conditions.
+
+### Defect B: Incident Acknowledgement Confirmation Bypass Elimination
+- **Vulnerability:** `POST /api/v1/incidents/{id}/acknowledge` contained an auto-prepare fallback that created and immediately consumed a challenge in a single HTTP request, bypassing operator confirmation. Furthermore, `eff_idempotency_key` was scoped only to session ID, causing reopened incidents to return cached acknowledgements from prior occurrences.
+- **Remediation:** Eliminated auto-prepare bypass; `/acknowledge` strictly requires `payload.challenge_id` and rejects missing challenges with HTTP 422 `challenge_required`. Scoped idempotency keys to `payload.challenge_id[:16]` so distinct incident occurrences and reopenings operate independently.
+
+### Defect C: Cross-Process Serialization & TOCTOU Elimination
+- **Vulnerability:** In-memory `asyncio.Lock` does not serialize operations across multiple uvicorn workers or separate CLI processes. Additionally, state fingerprint checking before lock acquisition created a Time-of-Check to Time-of-Use (TOCTOU) vulnerability where subsystem state could mutate while waiting for the lock.
+- **Remediation:** Introduced persistent SQLite-backed lease table `action_resource_locks` with atomic acquisition, expiration deadlines, and release. Re-reads and re-verifies source subsystem state *inside* the exclusive lock boundary immediately before adapter invocation. If state drifted while waiting for the lock, execution is denied with HTTP 409 `state_drift_detected`.
+
+### Defect D: Idempotency Context Binding
+- **Vulnerability:** Idempotency key lookup returned cached execution records without verifying whether the request matched the original actor, device, parameters, or action version.
+- **Remediation:** Bound idempotency validation to the full security context. Mismatched arguments, actor IDs, device IDs, or capability versions trigger HTTP 409 `idempotency_conflict`.
+
+### Defect E: Direct Read Actions Dispatch & Kwargs Normalization
+- **Vulnerability:** Read capabilities (`resource_coordinator.status`, `resource_coordinator.inspect_recovery`, `notifications.health`, `notifications.incident_detail`) defining `execute(params)` raised `TypeError: execute() got an unexpected keyword argument 'actor_id'` when invoked via `execute_action`.
+- **Remediation:** Added `execute_read_action()` pathway that bypasses confirmation challenges and TOTP step-up while enforcing `operator.read` permissions. Normalized all adapter `execute` signatures to accept `**kwargs: Any`.
+
+### Defect F: Step-Up Authentication Ordering
+- **Vulnerability:** TOTP timesteps were consumed *before* verifying confirmation challenge validity, burning operator 2FA tokens on expired or invalid challenges.
+- **Remediation:** Challenge pre-validation strictly precedes TOTP verification and consumption. If a challenge is expired, consumed, or invalid, the operation halts immediately without burning the operator's TOTP token.
+
+### Defect G: Error Redaction, Payload Bounding, and Audit Integrity
+- **Vulnerability:** Raw exception strings interpolated into summaries and audits leaked Windows user paths and bearer tokens. Details payloads lacked bounding, risking database bloat or invalid JSON slices.
+- **Remediation:** All exception strings and summaries are passed through `redact_sensitive_data()`, stripping Windows user paths (`C:\Users\[REDACTED_USER]\`), bearer tokens, and OTP codes. Oversized payloads (> 64KB) are cleanly truncated into valid, parseable JSON records. Audit logging failures are captured and surfaced.

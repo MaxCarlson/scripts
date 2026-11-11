@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -54,6 +54,24 @@ CREATE TABLE IF NOT EXISTS action_executions (
     postcondition_verified INTEGER NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     details_json TEXT
+);
+
+CREATE TABLE IF NOT EXISTS action_resource_locks (
+    resource_key TEXT PRIMARY KEY,
+    holder_execution_id TEXT NOT NULL,
+    acquired_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS audit_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    timestamp TEXT NOT NULL,
+    actor_id TEXT NOT NULL,
+    device_id TEXT,
+    action TEXT NOT NULL,
+    decision TEXT NOT NULL,
+    ip_address TEXT,
+    details TEXT
 );
 
 CREATE UNIQUE INDEX IF NOT EXISTS idx_exec_idempotency ON action_executions(action_id, idempotency_key_hash);
@@ -292,6 +310,12 @@ class ActionStorage:
                 )
                 conn.execute("COMMIT;")
                 return (True, execution)
+            except sqlite3.IntegrityError:
+                conn.execute("ROLLBACK;")
+                existing_rec = self.get_execution_by_idempotency_key(execution.action_id, execution.idempotency_key_hash)
+                if existing_rec:
+                    return (False, existing_rec)
+                raise
             except Exception:
                 conn.execute("ROLLBACK;")
                 raise
@@ -308,11 +332,16 @@ class ActionStorage:
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
         """Update an execution record upon outcome determination."""
-        # Sanitize and bound details payload (64KB max)
+        # Sanitize and bound details payload (64KB max of valid JSON)
         sanitized_details = redact_sensitive_data(details) if details else None
         details_str = json.dumps(sanitized_details) if sanitized_details else None
         if details_str and len(details_str) > 65536:
-            details_str = details_str[:65530] + "...}"
+            truncated_obj = {
+                "truncated": True,
+                "original_size": len(details_str),
+                "preview": details_str[:60000],
+            }
+            details_str = json.dumps(truncated_obj)
 
         bounded_summary = (summary or "")[:256]
 
@@ -443,6 +472,87 @@ class ActionStorage:
                 )
                 for r in rows
             ]
+
+    # ── Concurrency & Resource Locks ──────────────────────────────────────────
+
+    def acquire_resource_lock(
+        self, resource_key: str, execution_id: str, ttl_seconds: float = 30.0
+    ) -> bool:
+        """Atomically acquire an exclusive resource lease across processes.
+
+        Returns True if the lock was acquired, False if currently held by another execution.
+        """
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat().replace("+00:00", "Z")
+        expires_at = (now + timedelta(seconds=ttl_seconds)).isoformat().replace("+00:00", "Z")
+
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM action_resource_locks WHERE resource_key = ?",
+                    (resource_key,),
+                ).fetchone()
+
+                if row:
+                    # Check if active lock held by another execution
+                    if row["expires_at"] > now_iso and row["holder_execution_id"] != execution_id:
+                        conn.execute("COMMIT;")
+                        return False
+
+                    conn.execute(
+                        """
+                        UPDATE action_resource_locks
+                        SET holder_execution_id = ?, acquired_at = ?, expires_at = ?
+                        WHERE resource_key = ?
+                        """,
+                        (execution_id, now_iso, expires_at, resource_key),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        INSERT INTO action_resource_locks (
+                            resource_key, holder_execution_id, acquired_at, expires_at
+                        ) VALUES (?, ?, ?, ?)
+                        """,
+                        (resource_key, execution_id, now_iso, expires_at),
+                    )
+
+                conn.execute("COMMIT;")
+                return True
+            except Exception:
+                conn.execute("ROLLBACK;")
+                raise
+
+    def release_resource_lock(self, resource_key: str, execution_id: str) -> None:
+        """Release a resource lock if held by the given execution ID."""
+        with self._get_connection() as conn:
+            conn.execute("BEGIN IMMEDIATE;")
+            try:
+                conn.execute(
+                    "DELETE FROM action_resource_locks WHERE resource_key = ? AND holder_execution_id = ?",
+                    (resource_key, execution_id),
+                )
+                conn.execute("COMMIT;")
+            except Exception:
+                conn.execute("ROLLBACK;")
+                raise
+
+    def get_resource_lock(self, resource_key: str) -> Optional[Dict[str, Any]]:
+        """Retrieve current lock status for a resource key."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM action_resource_locks WHERE resource_key = ?",
+                (resource_key,),
+            ).fetchone()
+            if not row:
+                return None
+            return {
+                "resource_key": row["resource_key"],
+                "holder_execution_id": row["holder_execution_id"],
+                "acquired_at": row["acquired_at"],
+                "expires_at": row["expires_at"],
+            }
 
     # ── Action Audit Ledger ───────────────────────────────────────────────────
 

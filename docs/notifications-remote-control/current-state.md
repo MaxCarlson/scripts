@@ -310,6 +310,30 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - Production `resource_coordinator.request_guarded_recovery` strictly disabled (`capability_disabled`).
   - Zero cloud spending ($0 spend).
 
+---
+
+## 11. Phase 07 Security Stabilization & Integration Readiness
+
+- **Implementation Details**:
+  - **Branch**: `agent/remote-control-p07-guarded-actions-20261111`
+  - **Worktree**: `C:\Users\mcarls\src\scripts-remote-control-p07`
+  - **Reconciled Base**: `origin/main` at `e03c0419c55d4fb59269b1afc03ed39a85e2df2f` (merged cleanly with zero conflicts).
+- **Security & Concurrency Defects Resolved**:
+  - **Defect A (Reservation Tuple Unpacking)**: Corrected `reserve_execution()` return value unpacking (`created, existing_or_new = ...`) and handled `sqlite3.IntegrityError` safely to prevent dual-dispatch on concurrent race.
+  - **Defect B (Confirmation Bypass Elimination & Occurrence Scoping)**: Eliminated auto-prepare fallback in `POST /api/v1/incidents/{id}/acknowledge`; strictly requires pre-issued `challenge_id` (422 on omission); scoped idempotency key to `challenge_id` to prevent cross-occurrence collision when incidents reopen.
+  - **Defect C (Cross-Process Serialization & TOCTOU Elimination)**: Added SQLite table `action_resource_locks` for durable cross-process lease serialization; re-reads and validates source state fingerprint *inside* the exclusive lock boundary immediately before adapter execution.
+  - **Defect D (Idempotency Context Binding)**: Re-validated full security context (arguments digest, actor, device, action ID, version); rejected parameter and actor conflicts with HTTP 409 `idempotency_conflict`.
+  - **Defect E (Direct Read Actions Dispatch & Kwargs)**: Implemented explicit `execute_read_action()` pathway for authenticated read actions (`resource_coordinator.status`, `resource_coordinator.inspect_recovery`, `notifications.health`, `notifications.incident_detail`) without challenges or TOTP; normalized all adapter `execute()` signatures to accept `**kwargs: Any` avoiding `TypeError`.
+  - **Defect F (Step-Up Ordering)**: Pre-validates challenge existence, status, and expiration *before* consuming the operator's TOTP token, preventing 2FA token burn on invalid challenges.
+  - **Defect G (Error Redaction & Payload Bounding)**: Sanitized exception messages and summaries using `redact_sensitive_data()`; bounded details payloads to 64KB valid, parseable JSON; captured and surfaced audit failures.
+- **Verification Evidence**:
+  - `modules/remote_control/tests`: 76 passed, 0 failed.
+  - `modules/notifications/tests`: 160 passed, 1 skipped.
+  - Dedicated regression test suite: `test_concurrency_defects.py` (7 tests covering Defects A–G passed).
+  - Synthetic recovery suite: R05–R10 passed.
+  - `modules/resource_coordinator/`: 100% clean and unmodified (`git diff origin/main -- modules/resource_coordinator/` is empty).
+  - Zero spend ($0 spend).
+
 
 
 

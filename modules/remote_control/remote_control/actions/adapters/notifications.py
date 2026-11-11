@@ -18,7 +18,7 @@ class NotificationsHealthAdapter:
     def __init__(self, notifications_adapter: Any) -> None:
         self.notifications_adapter = notifications_adapter
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         """Fetch storage and broker operational health."""
         summary = self.notifications_adapter.get_summary()
         return {
@@ -34,7 +34,7 @@ class NotificationsIncidentDetailAdapter:
     def __init__(self, notifications_adapter: Any) -> None:
         self.notifications_adapter = notifications_adapter
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         """Fetch full details and event history for a specific incident."""
         incident_id = params.get("incident_id")
         if not incident_id:
@@ -83,7 +83,7 @@ class NotificationsAcknowledgeAdapter:
         state = self.get_source_state(params)
         return state is not None and state.get("status") in ("acknowledged", "resolved")
 
-    async def execute(self, params: Dict[str, Any], actor_id: str = "operator") -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], actor_id: str = "operator", **kwargs: Any) -> Dict[str, Any]:
         incident_id = params["incident_id"]
         reason = params.get("reason")
 

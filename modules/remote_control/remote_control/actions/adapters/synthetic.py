@@ -73,7 +73,7 @@ class SyntheticCoordinatorRecoveryAdapter:
             "observed_at": "2026-11-11T12:00:00Z",
         }
 
-    async def execute(self, params: Dict[str, Any], actor_id: str = "operator") -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], actor_id: str = "operator", **kwargs: Any) -> Dict[str, Any]:
         """Simulate guarded recovery execution."""
         self.execution_count += 1
         self.last_params = params

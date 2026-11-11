@@ -18,7 +18,7 @@ class RCStatusAdapter:
         status = self.coordinator_adapter.get_coordinator_status()
         return status.get("observation") or {}
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         """Fetch sanitized observation of Resource Coordinator."""
         status = self.coordinator_adapter.get_coordinator_status()
         return {
@@ -37,7 +37,7 @@ class RCInspectRecoveryAdapter:
         status = self.coordinator_adapter.get_coordinator_status()
         return status.get("observation") or {}
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         """Inspect detailed recovery conditions and inhibition state."""
         status = self.coordinator_adapter.get_coordinator_status()
         obs = status.get("observation") or {}
@@ -67,7 +67,7 @@ class DisabledRecoveryAdapter:
     def get_source_state(self, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
         return {"status": "disabled", "recovery_required": None, "inhibition_active": None}
 
-    async def execute(self, params: Dict[str, Any]) -> Dict[str, Any]:
+    async def execute(self, params: Dict[str, Any], **kwargs: Any) -> Dict[str, Any]:
         logger.warning("Rejected attempt to execute production Resource Coordinator recovery: capability disabled.")
         return {
             "ok": False,

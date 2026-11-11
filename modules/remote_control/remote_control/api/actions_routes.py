@@ -10,7 +10,7 @@ import uuid
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
-from remote_control.actions.models import ActionExecutionRecord
+from remote_control.actions.models import ActionDefinition, ActionEffect, ActionExecutionRecord
 from remote_control.actions.service import (
     ActionDisabledError,
     ActionNotFoundError,
@@ -139,6 +139,37 @@ async def execute_action(
     x_idempotency_key: Optional[str] = Header(None, alias="X-Idempotency-Key"),
 ) -> Dict[str, Any]:
     """Execute an action with challenge consumption, step-up TOTP, and postconditions."""
+    action_def = action_service.get_capability(action_id)
+    if not action_def:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"ok": False, "error": "action_not_found", "message": f"Action '{action_id}' not found."},
+        )
+
+    # Direct execution path for authenticated read actions without burning challenges or TOTP (Defect E)
+    if action_def.effect == ActionEffect.READ:
+        try:
+            read_result = await action_service.execute_read_action(
+                action_id=action_id,
+                arguments=payload.parameters,
+                actor_id=session.operator_id,
+                actor_role="operator",
+            )
+            return {
+                "ok": True,
+                "action_id": action_id,
+                "read_only": True,
+                "result": read_result,
+            }
+        except ActionNotFoundError as exc:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=exc.to_dict())
+        except (ActionDisabledError, ActionPermissionDeniedError) as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=exc.to_dict())
+        except ActionValidationError as exc:
+            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=exc.to_dict())
+        except ActionServiceError as exc:
+            raise HTTPException(status_code=exc.status_code, detail=exc.to_dict())
+
     session_id_hash = hashlib.sha256(session.session_id.encode("utf-8")).hexdigest()
     client_ip = get_client_ip(request)
 
@@ -264,20 +295,20 @@ async def acknowledge_incident(
     action_id = "notifications.acknowledge_incident"
     parameters = {"incident_id": incident_id, "reason": payload.reason}
 
-    # If challenge was not pre-issued, prepare one on the fly
+    # Elimination of auto-preparation bypass (Defect B): require pre-issued challenge_id
     challenge_id = payload.challenge_id
-    if not challenge_id:
-        prep = await action_service.prepare_action(
-            action_id=action_id,
-            arguments=parameters,
-            actor_id=session.operator_id,
-            actor_role="operator",
-            session_id_hash=session_id_hash,
-            device_id=session.device_id,
+    if not challenge_id or not challenge_id.strip():
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+            detail={
+                "ok": False,
+                "error": "challenge_required",
+                "message": "Confirmation challenge_id is required. Pre-issue challenge via prepare before execution.",
+            },
         )
-        challenge_id = prep["challenge_id"]
 
-    eff_idempotency_key = x_idempotency_key or f"ack_{incident_id}_{session.session_id[:8]}"
+    # Scope idempotency key by challenge_id so reopened incidents don't collide
+    eff_idempotency_key = x_idempotency_key or f"ack_{incident_id}_{challenge_id[:16]}"
 
     try:
         record = await action_service.execute_action(

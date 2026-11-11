@@ -287,9 +287,28 @@ def test_convenience_incident_acknowledge_endpoint(test_setup):
 
     step_up_otp = totp.at(int(time.time()) + 30)
 
-    res = client.post(
+    # 1. Calling without challenge_id must be rejected with 422 (Defect B: no auto-prepare bypass)
+    res_no_ch = client.post(
         f"/api/v1/incidents/{inc_id}/acknowledge",
         json={"reason": "Acknowledged via dashboard", "totp_code": step_up_otp},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+    )
+    assert res_no_ch.status_code == 422
+    assert res_no_ch.json()["error"] == "challenge_required"
+
+    # 2. Prepare confirmation challenge explicitly
+    prep_res = client.post(
+        "/api/v1/actions/notifications.acknowledge_incident/prepare",
+        json={"parameters": {"incident_id": inc_id, "reason": "Acknowledged via dashboard"}},
+        headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
+    )
+    assert prep_res.status_code == 200
+    challenge_id = prep_res.json()["challenge_id"]
+
+    # 3. Execute acknowledge with pre-issued challenge_id
+    res = client.post(
+        f"/api/v1/incidents/{inc_id}/acknowledge",
+        json={"reason": "Acknowledged via dashboard", "totp_code": step_up_otp, "challenge_id": challenge_id},
         headers={"Origin": "http://testserver", "X-CSRF-Token": csrf},
     )
     assert res.status_code == 200

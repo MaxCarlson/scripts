@@ -686,10 +686,23 @@
           btnAck.setAttribute("disabled", "disabled");
 
           try {
+            // 1. Prepare confirmation challenge (Defect B: eliminate auto-prepare bypass)
+            const prep = await apiFetch(`/api/v1/actions/notifications.acknowledge_incident/prepare`, {
+              method: "POST",
+              body: JSON.stringify({
+                parameters: {
+                  incident_id: incidentId,
+                  reason: reasonInput.value.trim() || undefined,
+                },
+              }),
+            });
+
+            // 2. Execute acknowledgement with pre-issued challenge_id
             await apiFetch(`/api/v1/incidents/${encodeURIComponent(incidentId)}/acknowledge`, {
               method: "POST",
               body: JSON.stringify({
                 reason: reasonInput.value.trim() || undefined,
+                challenge_id: prep.challenge_id,
                 totp_code: totpCode,
               }),
             });
