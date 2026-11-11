@@ -387,6 +387,8 @@ def test_upgrade_task_install_failure_automatically_restores_and_verifies_legacy
 
     class FailingInstallTasks(MemoryTasks):
         def install(self, *args, **kwargs):
+            receipt = json.loads(paths.upgrade_receipt.read_text(encoding="utf-8"))
+            assert receipt["phase"] == "TASK_INSTALLING"
             raise InstallationError("injected task registration failure")
 
     tasks = FailingInstallTasks()
@@ -1348,7 +1350,8 @@ def test_internal_automatic_rollback_does_not_relaunch_original_upgrade_cli(tmp_
     assert elevated_cli_calls == []
 
 
-def test_recovery_reconcile_archives_restored_legacy_receipt_without_restarting(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failed_at", ["OLD_STOPPED", "TASK_INSTALLING"])
+def test_recovery_reconcile_archives_restored_legacy_receipt_without_restarting(tmp_path, monkeypatch, failed_at):
     import resource_coordinator.installation as mod
 
     paths, _ = make_paths(tmp_path)
@@ -1367,7 +1370,7 @@ def test_recovery_reconcile_archives_restored_legacy_receipt_without_restarting(
     monkeypatch.setattr(mod, "_legacy_attribution", lambda *args: {"verified": True})
     manager = ManagedInstallation(paths, tasks)
     manager._service_status = lambda: service
-    receipt = {"phase": "RECOVERY_REQUIRED", "failed_at": "OLD_STOPPED",
+    receipt = {"phase": "RECOVERY_REQUIRED", "failed_at": failed_at,
                "durable_state": {"gaming_mode": {"state": "inactive"}}}
     paths.upgrade_receipt.write_text(json.dumps(receipt))
     paths.upgrade_policy.write_text(json.dumps({"start_miner": False}))
@@ -1527,6 +1530,7 @@ def test_recovery_restore_verifies_prior_miner_ownership_before_success(tmp_path
     monkeypatch.setattr(mod, "_exact_process_is_alive", lambda *args: False)
     monkeypatch.setattr(mod, "_listener_identity", lambda: {"pid": 52, "create_time": 20.0})
     manager = ManagedInstallation(paths, tasks)
+    manager._service_status = lambda: None
     manager._wait_for_service = lambda timeout=45.0: service
 
     result = manager.recovery("restore", apply=True)

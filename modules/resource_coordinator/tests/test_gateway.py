@@ -363,6 +363,193 @@ async def test_streaming_model_load_terminal_controls_fake_miner_restart(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_compatible_loaded_model_is_reused_without_stopping_fake_miner(tmp_path):
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.processes import ProcessState
+    from resource_coordinator.core.service import CoordinatorService
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"krig": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                    "cooldown_seconds": 0.01,
+                },
+                {
+                    "name": "stop-for-model-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 0.01,
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True)
+    assert await service.start()
+    backend = system.supervisors["krig"].backend
+    seen = []
+
+    async def upstream(request):
+        seen.append(request.url.path)
+        if request.method == "GET" and request.url.path == "/api/v1/models":
+            return httpx.Response(
+                200,
+                json={
+                    "models": [
+                        {
+                            "key": "test-model",
+                            "loaded_instances": [
+                                {"id": "instance-1", "config": {"context_length": 8192}}
+                            ],
+                        }
+                    ]
+                },
+            )
+        raise AssertionError(f"Compatible model should be reused, got {request.method} {request.url.path}")
+
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.post(
+            "/api/v1/models/load", json={"model": "test-model", "context_length": 8192}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "loaded"
+    assert response.json()["instance_id"] == "instance-1"
+    assert response.headers["x-coordinator-model-instance-reused"] == "true"
+    assert seen == ["/api/v1/models"]
+    assert system.lease_mgr.active_count("gpu.inference") == 0
+    assert (await system.supervisors["krig"].status()).state == ProcessState.RUNNING
+    assert backend.generation == 1
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_loaded_model_reuse_requires_positive_configuration_match():
+    from resource_coordinator.adapters.lmstudio.gateway import LMStudioGateway
+
+    async def upstream(_request):
+        return httpx.Response(
+            200,
+            json={
+                "models": [
+                    {
+                        "key": "test-model",
+                        "loaded_instances": [
+                            {"id": "instance-1", "config": {"context_length": 8192, "flash_attention": True}}
+                        ],
+                    }
+                ]
+            },
+        )
+
+    gateway = LMStudioGateway(standalone=True)
+    gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    assert await gateway._compatible_loaded_instance(
+        b'{"model":"test-model","context_length":8192,"flash_attention":true}'
+    ) == "instance-1"
+    assert await gateway._compatible_loaded_instance(
+        b'{"model":"test-model","context_length":16384,"flash_attention":true}'
+    ) is None
+    assert await gateway._compatible_loaded_instance(b'{"model":"test-model"}') is None
+    assert await gateway._compatible_loaded_instance(
+        b'{"model":"test-model","context_length":8192,"unverified_option":true}'
+    ) is None
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("status_code", [400, 500, 502])
+async def test_unclassified_model_load_http_errors_remain_uncertain(status_code, tmp_path):
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+    from resource_coordinator.core.processes import ProcessState
+    from resource_coordinator.core.service import CoordinatorService
+
+    journal = tmp_path / "coordinator-state.json"
+    StateCodec.initialize(journal)
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "service": {"state_persistence_path": str(journal)},
+            "processes": {"krig": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                    "cooldown_seconds": 0.01,
+                },
+                {
+                    "name": "stop-for-model-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 0.01,
+                },
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True)
+    assert await service.start()
+    backend = system.supervisors["krig"].backend
+    upstream_requests = []
+
+    async def upstream(_request):
+        upstream_requests.append(_request.url.path)
+        return httpx.Response(status_code, json={"error": "backend rejected load"})
+
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.post("/api/v1/models/load", json={"model": "test-model"})
+
+    assert response.status_code == status_code
+    assert system.lease_mgr.is_restart_inhibited("gpu.inference")
+    assert (await system.supervisors["krig"].status()).state == ProcessState.STOPPED
+    assert backend.generation == 1
+    record = next(iter(StateCodec.load(journal).requests.values()))
+    assert record.phase == RequestPhase.UNCERTAIN.value
+    assert record.details["terminal_evidence"] == "non_streaming_response_not_terminal"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        retry = await client.post("/api/v1/models/load", json={"model": "test-model"})
+        inference_retry = await client.post(
+            "/v1/chat/completions", json={"model": "test-model", "messages": [{"role": "user", "content": "hi"}]}
+        )
+    assert retry.status_code == 503
+    assert retry.json()["error"]["type"] == "recovery_required"
+    assert inference_retry.status_code == 503
+    assert inference_retry.json()["error"]["type"] == "recovery_required"
+    assert upstream_requests == ["/api/v1/models/load"]
+    assert backend.generation == 1
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_chat_model_load_end_does_not_release_inference_lease_before_chat_end():
     from resource_coordinator.config import CoordinatorConfig, build_system
     from resource_coordinator.core.processes import ProcessState
@@ -573,6 +760,10 @@ async def test_real_httpx_model_load_read_timeout_and_runtime_measurements(tmp_p
     service = CoordinatorService(system, start_miner_on_ready=True)
     try:
         assert await service.start()
+        recovery_events = []
+        system.gateway.dispatcher.on(
+            "resource_coordinator.recovery_required", lambda event: recovery_events.append(event.data)
+        )
         # Accelerate the ordinary inference phase and lease timeout. The load-specific
         # request must still use its separately configured HTTPX timeout of 0.4 seconds.
         system.gateway.timeout_seconds = 0.1
@@ -609,6 +800,7 @@ async def test_real_httpx_model_load_read_timeout_and_runtime_measurements(tmp_p
         assert record.details["connect_timeout_seconds"] == 10.0
         assert record.details["model_load_reported_seconds"] == 0.2
         assert record.details["upstream_elapsed_seconds"] >= 0.18
+        assert recovery_events == []
 
         await asyncio.sleep(0.05)
         assert (await system.supervisors["krig"].status()).state == ProcessState.RUNNING
@@ -687,6 +879,10 @@ async def test_real_httpx_model_load_deadline_keeps_restart_inhibited(tmp_path):
     service = CoordinatorService(system, start_miner_on_ready=True)
     try:
         assert await service.start()
+        recovery_events = []
+        system.gateway.dispatcher.on(
+            "resource_coordinator.recovery_required", lambda event: recovery_events.append(event.data)
+        )
         system.gateway.timeout_seconds = 0.01
         backend = system.supervisors["krig"].backend
         async with httpx.AsyncClient(
@@ -703,6 +899,11 @@ async def test_real_httpx_model_load_deadline_keeps_restart_inhibited(tmp_path):
         assert record.details["outcome"] == "execution_uncertain"
         assert record.details["configured_timeout_seconds"] == 0.05
         assert record.details["timeout_phase"] in {"overall_operation_deadline", "upstream_read_timeout"}
+        assert len(recovery_events) == 1
+        assert recovery_events[0]["request_id"] == response.json()["error"]["request_id"]
+        assert recovery_events[0]["severity"] == "critical"
+        assert recovery_events[0]["miner_state"] == "restart_inhibited"
+        assert recovery_events[0]["event_key"].endswith(recovery_events[0]["request_id"])
         await asyncio.sleep(0.08)
         assert system.lease_mgr.is_restart_inhibited("gpu.inference")
         assert (await system.supervisors["krig"].status()).state == ProcessState.STOPPED

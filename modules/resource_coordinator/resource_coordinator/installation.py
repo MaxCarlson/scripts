@@ -1315,7 +1315,7 @@ class ManagedInstallation:
         except (OSError, ValueError):
             return None
         if receipt.get("phase") not in {
-            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_UPDATED", "RECOVERY_REQUIRED"
+            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_INSTALLING", "TASK_UPDATED", "RECOVERY_REQUIRED"
         }:
             return None
         if receipt.get("source", {}).get("revision") != preflight["source"].get("revision"):
@@ -2037,7 +2037,7 @@ class ManagedInstallation:
         if not receipt or receipt_error:
             return {**report, "status": "blocked"}
         if receipt.get("phase") != "RECOVERY_REQUIRED" or receipt.get("failed_at") not in {
-                "OLD_STOPPED", "TASK_UPDATED", "NEW_READY"}:
+                "OLD_STOPPED", "TASK_INSTALLING", "TASK_UPDATED", "NEW_READY"}:
             blockers.append("Receipt phase is not eligible for legacy reconciliation")
 
         def current_reconciliation_safety_blockers(status: Optional[Dict[str, Any]]) -> List[str]:
@@ -2274,6 +2274,8 @@ class ManagedInstallation:
 
             self._write_managed(self.paths.launcher, render_launcher(self.paths))
             task_update_started = True
+            # Persist the non-idempotent Task Scheduler boundary before invoking it.
+            update_phase("TASK_INSTALLING")
             task = self.task_backend.install(task.mode, self.paths.launcher, non_interactive=non_interactive)
             update_phase("TASK_UPDATED", task_after=asdict(task))
             self.task_backend.start(task, non_interactive=non_interactive)
@@ -2372,7 +2374,7 @@ class ManagedInstallation:
                 except Exception as restore_error:
                     receipt["launcher_restore_error"] = str(restore_error)
             update_phase("RECOVERY_REQUIRED", failed_at=failed_at, error=str(exc))
-            if failed_at in {"OLD_STOPPED", "TASK_UPDATED", "NEW_READY"} and self._service_status() is None:
+            if failed_at in {"OLD_STOPPED", "TASK_INSTALLING", "TASK_UPDATED", "NEW_READY"} and self._service_status() is None:
                 rollback = self.recovery("restore", apply=True, non_interactive=non_interactive,
                                          _transaction_lock_held=True)
                 try:
@@ -2493,7 +2495,7 @@ class ManagedInstallation:
                 receipt = {"phase": "CORRUPT"}
         receipt_phase = (receipt or {}).get("phase")
         checks["upgrade_in_progress"] = receipt_phase in {
-            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_UPDATED", "NEW_READY"
+            "PREPARED", "DRAINING", "OLD_STOPPED", "TASK_INSTALLING", "TASK_UPDATED", "NEW_READY"
         }
         checks["upgrade_blocked"] = receipt_phase == "RECOVERY_REQUIRED"
         checks["upgrade_available"] = bool(checks["service_ready"] and not checks["runtime_current"])

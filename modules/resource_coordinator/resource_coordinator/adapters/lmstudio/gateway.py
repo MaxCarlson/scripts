@@ -39,6 +39,14 @@ from resource_coordinator.core.service import ServiceState
 logger = logging.getLogger(__name__)
 UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
 MAX_MODEL_LOAD_TIMEOUT_SECONDS = 3600.0
+MODEL_INVENTORY_PREFLIGHT_TIMEOUT_SECONDS = 5.0
+MODEL_LOAD_COMPATIBILITY_OPTIONS = {
+    "context_length",
+    "eval_batch_size",
+    "flash_attention",
+    "num_experts",
+    "offload_kv_cache_to_gpu",
+}
 
 # Hop-by-hop headers that should not be forwarded
 HOP_BY_HOP_HEADERS: Set[str] = {
@@ -759,6 +767,33 @@ class LMStudioGateway:
             return await self._forward_direct(request, path, body, request_id)
 
         if decision.operation_kind in {OperationKind.INFERENCE, OperationKind.MODEL_LOAD}:
+            if decision.operation_kind == OperationKind.MODEL_LOAD:
+                reusable = await self._compatible_loaded_instance(body)
+                if reusable is not None:
+                    response_body = {
+                        "status": "loaded",
+                        "instance_id": reusable,
+                        "load_time_seconds": 0.0,
+                    }
+                    if self._requested_load_config(body) is not None:
+                        response_body["load_config"] = self._requested_load_config(body)
+                    await self.dispatcher.emit(
+                        "resource_coordinator.model_load_reused",
+                        {
+                            "request_id": request_id,
+                            "model": model_name,
+                            "instance_id": reusable,
+                            "occurrence_timestamp": time.time(),
+                        },
+                        origin="lmstudio_gateway",
+                    )
+                    return JSONResponse(
+                        response_body,
+                        headers={
+                            "x-coordinator-request-id": request_id,
+                            "x-coordinator-model-instance-reused": "true",
+                        },
+                    )
             assert decision.resource is not None
             assert decision.lease_type is not None
             assert decision.event_name is not None
@@ -776,6 +811,75 @@ class LMStudioGateway:
             )
 
         return JSONResponse({"error": "Unhandled admission decision"}, status_code=500)
+
+    @staticmethod
+    def _requested_load_config(body: bytes) -> Optional[Dict[str, Any]]:
+        try:
+            payload = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        options = {key: payload[key] for key in MODEL_LOAD_COMPATIBILITY_OPTIONS if key in payload}
+        return options if options else None
+
+    async def _compatible_loaded_instance(self, body: bytes) -> Optional[str]:
+        """Return an exactly compatible loaded instance, failing closed to normal loading otherwise."""
+        try:
+            payload = json.loads(body)
+        except (ValueError, TypeError):
+            return None
+        if not isinstance(payload, dict):
+            return None
+        model = payload.get("model")
+        if not isinstance(model, str) or not model.strip():
+            return None
+        if type(payload.get("context_length")) is not int or payload["context_length"] <= 0:
+            return None
+        if "echo_load_config" in payload and type(payload["echo_load_config"]) is not bool:
+            return None
+        requested_options = self._requested_load_config(body) or {}
+        # Unknown settings may alter effective model behavior. Do not reuse an instance
+        # when the requested configuration cannot be compared against inventory.
+        if any(key not in MODEL_LOAD_COMPATIBILITY_OPTIONS and key not in {"model", "echo_load_config"}
+               for key in payload):
+            return None
+
+        timeout = min(MODEL_INVENTORY_PREFLIGHT_TIMEOUT_SECONDS, self.timeout_seconds)
+        try:
+            response = await asyncio.wait_for(
+                self.get_http_client().get(
+                    "/api/v1/models",
+                    timeout=httpx.Timeout(timeout, connect=min(UPSTREAM_CONNECT_TIMEOUT_SECONDS, timeout)),
+                ),
+                timeout=timeout + 0.25,
+            )
+            if response.status_code != 200:
+                return None
+            inventory = response.json()
+        except (asyncio.TimeoutError, httpx.HTTPError, ValueError, TypeError) as exc:
+            logger.info("Loaded-model reuse preflight unavailable (%s); using protected load", type(exc).__name__)
+            return None
+        models = inventory.get("models") if isinstance(inventory, dict) else None
+        if not isinstance(models, list):
+            return None
+        for item in models:
+            if not isinstance(item, dict) or item.get("key") != model:
+                continue
+            instances = item.get("loaded_instances")
+            if not isinstance(instances, list):
+                return None
+            for instance in instances:
+                if not isinstance(instance, dict):
+                    continue
+                instance_id = instance.get("id")
+                config = instance.get("config")
+                if not isinstance(instance_id, str) or not instance_id.strip() or not isinstance(config, dict):
+                    continue
+                if all(key in config and type(config[key]) is type(value) and config[key] == value
+                       for key, value in requested_options.items()):
+                    return instance_id
+        return None
 
     async def _proxy_with_coordination(
         self,
@@ -942,6 +1046,37 @@ class LMStudioGateway:
                                 request_id,
                                 {"model": model_name, "path": path},
                             )
+                    if operation_type == "model_load" and not completed:
+                        event_timestamp = time.time()
+                        safe_details = {
+                            "request_id": request_id,
+                            "event_key": f"resource_coordinator.model_load_failed:{request_id}",
+                            "occurrence_timestamp": event_timestamp,
+                            "severity": "critical" if forwarded else "warning",
+                            "operation_classification": "model_load",
+                            "model": model_name or None,
+                            "miner_state": "restart_inhibited" if forwarded else "unchanged",
+                            "failure_kind": failure_kind or "terminal_evidence_missing",
+                            "terminal_evidence": terminal_evidence if forwarded else "not_forwarded",
+                            "action": (
+                                "Keep mining inhibited until authenticated operator recovery verifies idle claims."
+                                if forwarded
+                                else "Correct the request or coordinator admission condition before retrying."
+                            ),
+                        }
+                        await self.dispatcher.emit(
+                            "resource_coordinator.model_load_failed", safe_details, origin="lmstudio_gateway"
+                        )
+                        if forwarded:
+                            for event_name in (
+                                "resource_coordinator.recovery_required",
+                                "resource_coordinator.miner_restart_inhibited",
+                            ):
+                                await self.dispatcher.emit(
+                                    event_name,
+                                    {**safe_details, "event_key": f"{event_name}:{request_id}"},
+                                    origin="lmstudio_gateway",
+                                )
                     await self.dispatcher.emit(
                         finish_event,
                         {

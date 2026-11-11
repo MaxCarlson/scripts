@@ -170,6 +170,19 @@ class AdmissionController:
                     error_message=f"Coordinator service is not ready to admit requests (state: {self.service.state.value})",
                     operation_kind=kind,
                 )
+            if kind in {OperationKind.INFERENCE, OperationKind.MODEL_LOAD}:
+                lease_manager = self.service.system.lease_mgr
+                if lease_manager.restarts_blocked or lease_manager.is_restart_inhibited("gpu.inference"):
+                    return AdmissionDecision(
+                        allowed=False,
+                        status_code=503,
+                        error_type="recovery_required",
+                        error_message=(
+                            "GPU execution is held because an earlier operation has uncertain termination; "
+                            "authenticated operator recovery is required before new inference or model loads"
+                        ),
+                        operation_kind=kind,
+                    )
 
         # Route evaluation
         if kind == OperationKind.UNKNOWN_READ:
