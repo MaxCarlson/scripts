@@ -9,13 +9,89 @@ from typing import Any, Callable, List, Optional
 from .process_runner import ProcessRunner
 
 
+def detect_shell() -> tuple[str, str, list[str]]:
+    """Detect the shell that spawned this process or is standard on the system.
+
+    Returns (executable_path, short_name, command_prefix_list).
+    """
+    if sys.platform != "win32":
+        shell = os.environ.get("SHELL", "/bin/sh")
+        return shell, os.path.basename(shell), [shell, "-c"]
+
+    # On Windows: walk up ancestor process tree to find parent shell
+    try:
+        import ctypes
+        from ctypes import wintypes
+        import shutil
+
+        kernel32 = ctypes.windll.kernel32
+        TH32CS_SNAPPROCESS = 0x00000002
+        hSnap = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+
+        class PROCESSENTRY32W(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD),
+                ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD),
+                ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", ctypes.c_long),
+                ("dwFlags", wintypes.DWORD),
+                ("szExeFile", ctypes.c_wchar * 260),
+            ]
+
+        pe = PROCESSENTRY32W()
+        pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+        tree: dict[int, tuple[int, str]] = {}
+        if kernel32.Process32FirstW(hSnap, ctypes.byref(pe)):
+            while True:
+                tree[pe.th32ProcessID] = (pe.th32ParentProcessID, pe.szExeFile)
+                if not kernel32.Process32NextW(hSnap, ctypes.byref(pe)):
+                    break
+        kernel32.CloseHandle(hSnap)
+
+        curr = os.getpid()
+        while curr in tree:
+            p_pid, p_exe = tree[curr]
+            name = p_exe.lower()
+            if "pwsh" in name:
+                full = shutil.which("pwsh") or p_exe
+                return full, "pwsh", [full, "-NoLogo", "-Command"]
+            if "powershell" in name:
+                full = shutil.which("powershell") or p_exe
+                return full, "powershell", [full, "-NoLogo", "-Command"]
+            if name == "cmd.exe":
+                full = shutil.which("cmd") or os.environ.get("COMSPEC", "cmd.exe")
+                return full, "cmd", [full, "/c"]
+            if any(s in name for s in ("bash", "zsh")):
+                full = shutil.which(p_exe) or p_exe
+                return full, name, [full, "-c"]
+            curr = p_pid
+    except Exception:
+        pass
+
+    import shutil
+
+    if shutil.which("pwsh"):
+        full = shutil.which("pwsh")
+        return full, "pwsh", [full, "-NoLogo", "-Command"]
+    if "PSModulePath" in os.environ and shutil.which("powershell"):
+        full = shutil.which("powershell")
+        return full, "powershell", [full, "-NoLogo", "-Command"]
+    comspec = os.environ.get("COMSPEC", "cmd.exe")
+    return comspec, "cmd", [comspec, "/c"]
+
+
 class ConsolePaneRunner:
     """Embedded interactive shell console runner for cli_tui panes."""
 
     def __init__(self, cwd: Optional[str] = None) -> None:
         self.cwd: str = os.path.abspath(cwd or os.getcwd())
+        self.shell_exe, self.shell_name, self.shell_prefix = detect_shell()
         self.history_lines: List[str] = [
-            f"Interactive Shell Console [{sys.platform}]",
+            f"Interactive Shell Console [{self.shell_name}]",
             f"Working directory: {self.cwd}",
             "Type commands and press Enter. Type 'exit' to close.",
             "",
@@ -183,11 +259,8 @@ class ConsolePaneRunner:
             self._record_history("Console session terminated.")
             return
 
-        # Run via shell
-        if sys.platform == "win32":
-            argv = ["cmd.exe", "/c", cmd_str]
-        else:
-            argv = ["/bin/sh", "-c", cmd_str]
+        # Run via detected shell
+        argv = list(self.shell_prefix) + [cmd_str]
 
         self.active_runner = ProcessRunner(argv, cwd=self.cwd)
         with self._output_lock:
