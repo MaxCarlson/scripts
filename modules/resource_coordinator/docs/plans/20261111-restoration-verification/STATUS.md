@@ -83,3 +83,9 @@ The three skips are opt-in real Windows Scheduled Task, read-only helper, and UA
 ## Integration disposition
 
 H2A and H2C source work is complete on the isolated feature branch. This is not approval to merge or deploy. After the H2B client adds scope and process registration, run cross-repository protocol tests. Before enabling automatic release, independently qualify NVML setting readback and complete process attribution on the exact deployment hardware/driver. Preserve operator recovery as the fallback. The next source integration review should use the final pushed commit recorded by the completing agent.
+
+### Publication checkpoint
+
+- A normal non-force push published the integration branch to `origin/agent/resource-coordinator-v013-integration-restoration-20261111` at `8c1fbd0509f20843829092827e094632a34aa75c`.
+- A subsequent fetch confirmed the remote feature ref matched that commit, `origin/main` remained `6a57877b6304515172e75eaf4d28d2cce88514aa`, and the target remained an ancestor. No `main` ref was updated.
+- Any later status-only commit and final remote SHA are reported in the completion message.
