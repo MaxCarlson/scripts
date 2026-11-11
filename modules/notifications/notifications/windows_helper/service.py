@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import os
 import shutil
@@ -133,17 +134,33 @@ def install_scheduled_task(
         return preview
 
     # Execute registration via PowerShell to set interactive logon trigger and non-elevated principal
-    ps_cmd = f"""
+    # Input is passed via structured JSON over stdin to eliminate PowerShell source interpolation hazards
+    ps_cmd = """
 $ErrorActionPreference = 'Stop'
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument '{ps_args}'
+$in = [Console]::In.ReadToEnd() | ConvertFrom-Json
+$taskName = $in.TaskName
+$scriptPath = $in.ScriptPath
+$port = [string]$in.Port
+$tokenPath = $in.TokenPath
+
+$actionArgs = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$scriptPath`" -Port $port -TokenPath `"$tokenPath`""
+$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument $actionArgs
 $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive -RunLevel Limited
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -ExecutionTimeLimit 0
-Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Scripts Notifications User Toast Helper' -Force | Out-Null
+Register-ScheduledTask -TaskName $taskName -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description 'Scripts Notifications User Toast Helper' -Force | Out-Null
 """
+    input_payload = json.dumps({
+        "TaskName": TASK_NAME,
+        "ScriptPath": str(script_path),
+        "Port": port,
+        "TokenPath": str(effective_token_path),
+    })
+
     try:
         proc = subprocess.run(
             ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            input=input_payload,
             capture_output=True,
             text=True,
             check=False,

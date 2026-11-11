@@ -132,12 +132,21 @@ class WindowsDeliveryProvider(DeliveryProvider):
                     error_message="Windows interactive helper rejected bearer token (401 Unauthorized)",
                 )
 
-            elif status_code == 400:
+            elif status_code in (400, 413):
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="terminal_error",
                     error_category="bad_payload",
-                    error_message=f"Windows interactive helper rejected payload (400): {data.get('error', 'Bad Request')}",
+                    error_message=f"Windows interactive helper rejected payload ({status_code}): {data.get('error', 'Bad Request')}",
+                )
+
+            elif status_code == 408:
+                return DeliveryReceipt(
+                    provider_id=self.provider_id,
+                    status="retryable_error",
+                    error_category="session_unavailable",
+                    error_message="Windows interactive helper request timed out (408)",
+                    retry_after_seconds=10.0,
                 )
 
             else:

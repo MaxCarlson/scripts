@@ -394,3 +394,69 @@ def test_cli_providers_test_windows_dry_run(capsys: pytest.CaptureFixture[str]):
     out = json.loads(capsys.readouterr().out)
     assert out["dry_run"] is True
     assert out["provider"] == "windows"
+
+
+# ── 7. Phase 03 Hardening Tests (Request Limits, Safe Interpolation, Token Security) ──
+
+
+@pytest.mark.asyncio
+async def test_windows_provider_payload_too_large_413(tmp_path: Path):
+    token_file = tmp_path / "token"
+    token_file.write_text("valid_token", encoding="utf-8")
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(413, json={"ok": False, "error": "payload_too_large", "max_bytes": 32768})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+    provider = WindowsDeliveryProvider(token_path=token_file, client=client)
+
+    receipt = await provider.send(_make_notification())
+    assert receipt.status == "terminal_error"
+    assert receipt.error_category == "bad_payload"
+    assert "payload_too_large" in receipt.error_message
+
+
+@pytest.mark.asyncio
+async def test_windows_provider_request_timeout_408(tmp_path: Path):
+    token_file = tmp_path / "token"
+    token_file.write_text("valid_token", encoding="utf-8")
+
+    def mock_handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(408, json={"ok": False, "error": "request_timeout"})
+
+    client = httpx.AsyncClient(transport=httpx.MockTransport(mock_handler))
+    provider = WindowsDeliveryProvider(token_path=token_file, client=client)
+
+    receipt = await provider.send(_make_notification())
+    assert receipt.status == "retryable_error"
+    assert receipt.error_category == "session_unavailable"
+
+
+def test_install_scheduled_task_safe_path_handling(tmp_path: Path):
+    """Verify paths with spaces, apostrophes, parentheses, Unicode and metacharacters preview safely."""
+    complex_token_path = tmp_path / "John's Dir (x86)" / "Über_Token$1;foo"
+    preview = install_scheduled_task(port=1238, token_path=complex_token_path, apply=False)
+
+    assert preview["ok"] is True
+    assert preview["dry_run"] is True
+    assert str(complex_token_path) in preview["arguments"]
+    assert "John's Dir (x86)" in preview["arguments"]
+
+
+def test_helper_forwarding_shim():
+    """Verify that the top-level windows_helper/helper.ps1 exists as a forwarding runner."""
+    top_helper = Path(__file__).resolve().parent.parent / "windows_helper" / "helper.ps1"
+    assert top_helper.is_file()
+    content = top_helper.read_text(encoding="utf-8")
+    assert "Forwarding launcher" in content
+    assert "target" in content
+
+
+def test_helper_script_elevation_guard():
+    """Verify helper.ps1 contains an explicit non-elevation guard."""
+    authoritative_helper = Path(__file__).resolve().parent.parent / "notifications" / "windows_helper" / "helper.ps1"
+    assert authoritative_helper.is_file()
+    content = authoritative_helper.read_text(encoding="utf-8")
+    assert "Administrator" in content
+    assert "Security Refusal" in content or "must NOT run as Administrator" in content
+

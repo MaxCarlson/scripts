@@ -1,13 +1,14 @@
 <#
 .SYNOPSIS
-    Interactive User-Session Toast Notification Helper for Scripts Notifications.
+    Hardened Interactive User-Session Toast Notification Helper for Scripts Notifications.
 
 .DESCRIPTION
     Runs as a non-elevated user-session process (started at user logon via Task Scheduler).
     Listens on an authenticated loopback HTTP interface (127.0.0.1:1238) for notification requests.
     Renders and displays native Windows Toast Notifications via WinRT.
-    Requires Bearer token authentication matching the shared token file.
+    Requires Bearer token authentication matching the shared broker token file.
     Does NOT accept arbitrary executable commands or elevated operations.
+    Enforces strict cumulative byte limits, read timeouts, and robust stream safety.
 #>
 
 [CmdletBinding()]
@@ -19,6 +20,9 @@ param (
     [string]$TokenPath = "",
 
     [Parameter()]
+    [string]$ShutdownToken = "",
+
+    [Parameter()]
     [string]$AppId = "{1AC14E77-02E7-4E5D-B744-2EB1AE5198B7}\WindowsPowerShell\v1.0\powershell.exe",
 
     [Parameter()]
@@ -27,7 +31,14 @@ param (
 
 $ErrorActionPreference = "Stop"
 
-# Ensure WinRT types
+# 1. Elevation Guard: Helper must NEVER run as Administrator
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) {
+    Write-Error "Security Refusal: Windows Toast Helper must NOT run as Administrator/elevated. Microsoft guidelines advise against elevated notification hosts."
+    exit 3
+}
+
+# 2. Ensure WinRT types
 [Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType = WindowsRuntime] | Out-Null
 [Windows.Data.Xml.Dom.XmlDocument, Windows.Data.Xml.Dom.XmlDocument, ContentType = WindowsRuntime] | Out-Null
 
@@ -38,17 +49,17 @@ if ($CurrentSession -eq 0) {
     Write-Warning "Running in Session 0 (non-interactive). Windows Toast Notifications cannot be displayed to users from Session 0."
 }
 
-# Resolve token path
+# 3. Resolve Authoritative Token Path (aligns with notifications.config.default_token_path)
 if (-not $TokenPath) {
     if ($env:NOTIFICATIONS_TOKEN_FILE) {
         $TokenPath = $env:NOTIFICATIONS_TOKEN_FILE
     } else {
-        $localShare = [System.IO.Path]::Combine($env:USERPROFILE, ".local", "share", "scripts_notifications")
-        $TokenPath = [System.IO.Path]::Combine($localShare, "token")
+        $scriptsHome = [System.IO.Path]::Combine($env:USERPROFILE, ".scripts", "notifications", "secrets")
+        $TokenPath = [System.IO.Path]::Combine($scriptsHome, "broker-token")
     }
 }
 
-# Read or generate bearer token
+# Read or generate bearer token with strict ACLs
 $token = ""
 if (Test-Path -LiteralPath $TokenPath) {
     $token = (Get-Content -LiteralPath $TokenPath -Raw).Trim()
@@ -63,12 +74,37 @@ if (Test-Path -LiteralPath $TokenPath) {
     $rng.GetBytes($bytes)
     $token = [System.BitConverter]::ToString($bytes).Replace("-", "").ToLowerInvariant()
     Set-Content -LiteralPath $TokenPath -Value $token -NoNewline -Encoding utf8
-    Write-Host "Generated new authentication token at: $TokenPath"
+
+    # Enforce strict ACL: owner and LocalSystem only
+    try {
+        $sid = ([System.Security.Principal.WindowsIdentity]::GetCurrent()).User.Value
+        & icacls.exe $TokenPath /reset | Out-Null
+        & icacls.exe $TokenPath /inheritance:r /grant:r "*${sid}:(F)" "*S-1-5-18:(F)" | Out-Null
+        Write-Host "Generated new secure authentication token at: $TokenPath"
+    } catch {
+        Remove-Item -LiteralPath $TokenPath -Force -ErrorAction SilentlyContinue
+        Write-Error "Failed to secure permissions on token file: $_"
+        exit 1
+    }
 }
 
-if (-not $token) {
-    Write-Error "Failed to acquire authentication token from: $TokenPath"
+if (-not $token -or $token.Length -lt 32) {
+    Write-Error "Failed to acquire valid authentication token from: $TokenPath"
     exit 1
+}
+
+# Resolve Shutdown Token (dedicated control token if available, else standard token)
+if (-not $ShutdownToken) {
+    if ($env:NOTIFICATIONS_SHUTDOWN_TOKEN) {
+        $ShutdownToken = $env:NOTIFICATIONS_SHUTDOWN_TOKEN
+    } else {
+        $controlPath = [System.IO.Path]::Combine([System.IO.Path]::GetDirectoryName($TokenPath), "broker-control-token")
+        if (Test-Path -LiteralPath $controlPath) {
+            $ShutdownToken = (Get-Content -LiteralPath $controlPath -Raw).Trim()
+        } else {
+            $ShutdownToken = $token
+        }
+    }
 }
 
 # Setup HttpListener
@@ -96,13 +132,17 @@ function Escape-XmlText([string]$text) {
 }
 
 function Send-JsonResponse($response, [int]$statusCode, $obj) {
-    $json = $obj | ConvertTo-Json -Compress
-    $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
-    $response.StatusCode = $statusCode
-    $response.ContentType = "application/json; charset=utf-8"
-    $response.ContentLength64 = $bytes.Length
-    $response.OutputStream.Write($bytes, 0, $bytes.Length)
-    $response.OutputStream.Close()
+    try {
+        $json = $obj | ConvertTo-Json -Compress
+        $bytes = [System.Text.Encoding]::UTF8.GetBytes($json)
+        $response.StatusCode = $statusCode
+        $response.ContentType = "application/json; charset=utf-8"
+        $response.ContentLength64 = $bytes.Length
+        $response.OutputStream.Write($bytes, 0, $bytes.Length)
+        $response.OutputStream.Close()
+    } catch {
+        # Catch client disconnects or write failures cleanly
+    }
 }
 
 try {
@@ -111,16 +151,26 @@ try {
         $request = $context.Request
         $response = $context.Response
 
+        $urlPath = $request.Url.AbsolutePath.ToLowerInvariant()
+        $method = $request.HttpMethod.ToUpperInvariant()
+
         # 1. Bearer Token Authentication
         $authHeader = $request.Headers["Authorization"]
         $expectedAuth = "Bearer $token"
-        if (-not $authHeader -or $authHeader -ne $expectedAuth) {
-            Send-JsonResponse $response 401 @{ ok = $false; error = "unauthorized" }
-            continue
-        }
+        $expectedShutdownAuth = "Bearer $ShutdownToken"
 
-        $urlPath = $request.Url.AbsolutePath.ToLowerInvariant()
-        $method = $request.HttpMethod.ToUpperInvariant()
+        # Special authorization check for shutdown endpoint
+        if ($urlPath -eq "/shutdown") {
+            if (-not $authHeader -or ($authHeader -ne $expectedShutdownAuth -and $authHeader -ne $expectedAuth)) {
+                Send-JsonResponse $response 401 @{ ok = $false; error = "unauthorized" }
+                continue
+            }
+        } else {
+            if (-not $authHeader -or $authHeader -ne $expectedAuth) {
+                Send-JsonResponse $response 401 @{ ok = $false; error = "unauthorized" }
+                continue
+            }
+        }
 
         # 2. Health check route
         if ($urlPath -in @("/health", "/status") -and $method -eq "GET") {
@@ -132,7 +182,7 @@ try {
                 user = $env:USERNAME
                 pid = $PID
                 uptime_seconds = [Math]::Round($uptime, 1)
-                version = "1.0.0"
+                version = "1.1.0"
             }
             if ($SingleRequest) { break }
             continue
@@ -147,15 +197,64 @@ try {
 
         # 4. Notify route
         if ($urlPath -in @("/notify", "/toast") -and $method -eq "POST") {
-            # Read and limit payload size (max 32KB)
-            if ($request.ContentLength64 -gt 32768) {
-                Send-JsonResponse $response 400 @{ ok = $false; error = "payload_too_large" }
+            $maxBytes = 32768
+            # Pre-check declared Content-Length
+            if ($request.ContentLength64 -gt $maxBytes) {
+                Send-JsonResponse $response 413 @{ ok = $false; error = "payload_too_large"; max_bytes = $maxBytes }
                 continue
             }
 
-            $reader = New-Object System.IO.StreamReader($request.InputStream, [System.Text.Encoding]::UTF8)
-            $rawBody = $reader.ReadToEnd()
+            # Bounded streaming read (handles unknown-length/chunked requests and prevents slowloris)
+            $stream = $request.InputStream
+            $buffer = New-Object byte[] 4096
+            $memStream = New-Object System.IO.MemoryStream
+            $totalBytes = 0
+            $timeoutMs = 5000
+            $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+            $streamError = $false
 
+            while ($true) {
+                if ($stopwatch.ElapsedMilliseconds -gt $timeoutMs) {
+                    Send-JsonResponse $response 408 @{ ok = $false; error = "request_timeout" }
+                    $streamError = $true
+                    break
+                }
+
+                $bytesRead = 0
+                try {
+                    $asyncResult = $stream.BeginRead($buffer, 0, $buffer.Length, $null, $null)
+                    $remainingMs = [Math]::Max(100, $timeoutMs - $stopwatch.ElapsedMilliseconds)
+                    if (-not $asyncResult.AsyncWaitHandle.WaitOne($remainingMs)) {
+                        Send-JsonResponse $response 408 @{ ok = $false; error = "request_timeout" }
+                        $streamError = $true
+                        break
+                    }
+                    $bytesRead = $stream.EndRead($asyncResult)
+                } catch {
+                    Send-JsonResponse $response 400 @{ ok = $false; error = "stream_read_error" }
+                    $streamError = $true
+                    break
+                }
+
+                if ($bytesRead -le 0) {
+                    break # Reached end of stream
+                }
+
+                $totalBytes += $bytesRead
+                if ($totalBytes -gt $maxBytes) {
+                    Send-JsonResponse $response 413 @{ ok = $false; error = "payload_too_large"; max_bytes = $maxBytes }
+                    $streamError = $true
+                    break
+                }
+
+                $memStream.Write($buffer, 0, $bytesRead)
+            }
+
+            if ($streamError) {
+                continue
+            }
+
+            $rawBody = [System.Text.Encoding]::UTF8.GetString($memStream.ToArray())
             try {
                 $payload = $rawBody | ConvertFrom-Json
             } catch {
