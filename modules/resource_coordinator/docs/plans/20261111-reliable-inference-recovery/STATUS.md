@@ -8,6 +8,7 @@
 - Implementation commit: `927fa3e3051f81ae9c19123974376527c236914f`.
 - Follow-up regression commit: `da504cf54341052a0a1ee74fedded90628a7b40b`.
 - CLI-to-ASGI integration regression commit: `c310177da304f727603d7b923f5a5f6b50da4f30`.
+- Final review implementation commit: `5401e4a4b4ca06a6a39a3a81e86ad7f248e17aea`.
 - Final-review source version: `0.12.0` (backward-compatible dedicated explicit model-load deadline and terminal payload validation).
 - Primary checkout and prior integration worktree were not modified.
 - No live coordinator, miner, LM Studio, production credential, journal, Scheduled Task, GPU, or WSL setting was accessed or changed.
