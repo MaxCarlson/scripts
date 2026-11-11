@@ -1,0 +1,200 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#1e293b">
+  <meta name="description" content="Authenticated read-only mobile dashboard for notifications and incidents.">
+  <title>Remote Control</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" type="image/svg+xml" href="/static/icon.svg">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+
+  <div id="offline-banner">Connection lost. Displaying last-known status (stale).</div>
+
+  <!-- ── 1. LOGIN VIEW ────────────────────────────────────────────────────────── -->
+  <div id="view-login" style="display: none; padding: 24px; max-width: 400px; margin: 40px auto; width: 100%;">
+    <div style="text-align: center; margin-bottom: 24px;">
+      <img src="/static/icon.svg" alt="Logo" style="width: 64px; height: 64px; margin-bottom: 12px;">
+      <h1 style="font-size: 1.5rem; font-weight: 700;">Remote Control</h1>
+      <p style="color: var(--text-muted); font-size: 0.875rem;">Operator Authentication</p>
+    </div>
+
+    <div class="card">
+      <form id="login-form">
+        <div class="form-group">
+          <label for="login-username">Operator Username</label>
+          <input type="text" id="login-username" required autocomplete="username" autocapitalize="none" autocorrect="off">
+        </div>
+
+        <div class="form-group">
+          <label for="login-password">Password</label>
+          <input type="password" id="login-password" required autocomplete="current-password">
+        </div>
+
+        <div class="form-group">
+          <label for="login-totp">TOTP 2FA Code</label>
+          <input type="text" id="login-totp" required pattern="[0-9]{6}" maxlength="6" inputmode="numeric" placeholder="123456" autocomplete="one-time-code">
+        </div>
+
+        <div id="login-error" class="error-message" style="display: none;"></div>
+
+        <button type="submit" class="btn-primary" style="margin-top: 12px;">Sign In</button>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── 2. AUTHENTICATED DASHBOARD ───────────────────────────────────────────── -->
+  <div id="app-container" style="display: none; flex-direction: column; min-height: 100vh;">
+    <header>
+      <div class="brand">
+        <img src="/static/icon.svg" alt="Logo" class="brand-icon">
+        <span>Remote Control</span>
+      </div>
+      <div>
+        <button id="btn-logout" class="btn-secondary">Log Out</button>
+      </div>
+    </header>
+
+    <nav>
+      <button class="nav-btn active" data-tab="summary">Summary</button>
+      <button class="nav-btn" data-tab="incidents">Incidents</button>
+      <button class="nav-btn" data-tab="notifications">Outbox</button>
+      <button class="nav-btn" data-tab="providers">Providers</button>
+      <button class="nav-btn" data-tab="heartbeat">Heartbeat</button>
+      <button class="nav-btn" data-tab="settings">Settings</button>
+    </nav>
+
+    <main>
+      <!-- Tab 1: Summary -->
+      <section id="tab-summary" class="tab-content">
+        <div class="card">
+          <div class="card-title">System Status</div>
+          <div class="grid-2">
+            <div class="stat-box">
+              <div id="stat-active" class="stat-value" style="color: var(--status-critical);">0</div>
+              <div class="stat-label">Active Incidents</div>
+            </div>
+            <div class="stat-box">
+              <div id="stat-ack" class="stat-value" style="color: var(--status-warning);">0</div>
+              <div class="stat-label">Acknowledged</div>
+            </div>
+            <div class="stat-box">
+              <div id="stat-resolved" class="stat-value" style="color: var(--status-success);">0</div>
+              <div class="stat-label">Resolved</div>
+            </div>
+            <div class="stat-box">
+              <div id="stat-outbox" class="stat-value">0</div>
+              <div class="stat-label">Pending Outbox</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Components</div>
+          <div id="summary-components" style="display: flex; flex-direction: column; gap: 8px;">
+            <!-- Rendered dynamically -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 2: Incidents -->
+      <section id="tab-incidents" class="tab-content" style="display: none;">
+        <div class="card" style="padding: 12px;">
+          <div style="display: flex; gap: 8px;">
+            <select id="filter-incident-status">
+              <option value="">All Statuses</option>
+              <option value="active" selected>Active Only</option>
+              <option value="open">Open</option>
+              <option value="reopened">Reopened</option>
+              <option value="acknowledged">Acknowledged</option>
+              <option value="resolved">Resolved</option>
+            </select>
+            <select id="filter-incident-severity">
+              <option value="">All Severities</option>
+              <option value="critical">Critical</option>
+              <option value="high">High</option>
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Incidents</span>
+            <span id="incidents-count" class="badge badge-info">0</span>
+          </div>
+          <div id="incidents-list">
+            <!-- Incidents rendered here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 3: Notifications -->
+      <section id="tab-notifications" class="tab-content" style="display: none;">
+        <div class="card">
+          <div class="card-title">Recent Rendered Notifications</div>
+          <div id="notifications-list">
+            <!-- Notifications rendered here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 4: Providers -->
+      <section id="tab-providers" class="tab-content" style="display: none;">
+        <div class="card">
+          <div class="card-title">Delivery Providers</div>
+          <div id="providers-list">
+            <!-- Providers rendered here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 5: Heartbeat -->
+      <section id="tab-heartbeat" class="tab-content" style="display: none;">
+        <div class="card">
+          <div class="card-title">Independent Host Heartbeat (Healthchecks.io)</div>
+          <div id="heartbeat-info">
+            <!-- Heartbeat rendered here -->
+          </div>
+        </div>
+      </section>
+
+      <!-- Tab 6: Settings -->
+      <section id="tab-settings" class="tab-content" style="display: none;">
+        <div class="card">
+          <div class="card-title">Current Session</div>
+          <div id="session-info" style="font-size: 0.875rem; color: var(--text-muted);">
+            <!-- Current session rendered here -->
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">Enrolled Personal Devices</div>
+          <div id="devices-list">
+            <!-- Enrolled devices rendered here -->
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Incident Detail Modal -->
+  <div id="incident-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 id="modal-title" style="font-size: 1.125rem; font-weight: 700;">Incident Detail</h2>
+        <button id="btn-modal-close" class="btn-secondary">Close</button>
+      </div>
+      <div id="modal-body" style="font-size: 0.875rem;">
+        <!-- Incident detail rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>

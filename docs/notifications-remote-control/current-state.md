@@ -152,3 +152,46 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - Total automated notifications suite: 124 passing tests (38 dedicated to Phase 04 monitoring).
   - Broader repository test suite: 55 `scripts_help` tests passing.
 
+---
+
+## 7. Phase 04 Operational Stabilization & Phase 06 Read-Only Mobile Dashboard Status
+
+- **Phase 04 Operational Stabilization**:
+  - **Atomic Configuration Writes**: Replaced direct secret file writes in `save_healthchecks_config` with unpredictable temporary files (`tempfile.mkstemp`), pre-securing Windows owner-only ACLs before atomic destination replacement (`os.replace`).
+  - **Headless Task Scheduler Differentiation**: Added `--headless` / `--system` flag and execution mode detection to `modules/notifications/notifications/monitoring/service.py` (`ServiceAccount` / `NT AUTHORITY\SYSTEM` running 24/7 without active user logon vs `InteractiveToken` user mode requiring active logon).
+  - **Runner Exception Redaction**: Protected top-level uncaught exceptions in `runner.py` with secret redaction.
+  - **Outage Documentation**: Added comprehensive execution mode matrix and local logged-off reboot validation procedures in `docs/notifications-remote-control/outage-monitoring.md`.
+  - Checkpoint committed to `agent/notifications-p04-stabilization-p06-dashboard-20261111` as commit `6e22ca92`.
+
+- **Phase 06 Authenticated Read-Only Remote Dashboard & Mobile PWA**:
+  - **Module Directory**: `modules/remote_control/` with CLI entrypoint `scripts-remote-control`.
+  - **Zero Spending**: Operates with $0 mandatory cost; zero paid hosting, cloud subscriptions, or external accounts required.
+  - **Strict Read-Only Boundary**: Non-mutating queries only. All queries against the durable notifications database open SQLite connections in strict read-only URI mode (`file:... ?mode=ro`). Zero arbitrary process execution, shell commands, or Resource Coordinator mutations.
+  - **Authentication Architecture**:
+    - Single human operator policy bootstrapped strictly via host console (`scripts-remote-control bootstrap`).
+    - Argon2id password hashing + RFC 6238 TOTP two-factor authentication.
+    - TOTP replay prevention tracking consumed timesteps in SQLite.
+    - Rate limiting and brute force lockout (5 failed attempts within 15m triggers HTTP 429 lockout).
+    - Session management with sliding window idle timeout (4h) and absolute lifetime (7d).
+    - Personal device tracking with permanent device revocation.
+    - Append-only security audit ledger in `auth.db`.
+  - **HTTP Security & Network Isolation**:
+    - Hardened cookies: `HttpOnly`, `SameSite=Strict`, `Path=/`, and conditional `Secure` (`__Host-` prefix).
+    - Mandatory `X-CSRF-Token` validation on all state-changing endpoints.
+    - Security headers: strict Content-Security-Policy (CSP), `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`.
+    - Disallowed Host header rejection (400) and cross-origin Origin rejection (403).
+    - `Cache-Control: no-store, no-cache, must-revalidate` on all `/api/*` endpoints.
+    - Initially bound strictly to `127.0.0.1:8443` (loopback only).
+  - **Mobile PWA Capabilities**:
+    - Mobile-first responsive UI (48px touch targets, dark/light themes, offline status banner).
+    - Standalone home screen launch support via `manifest.json`.
+    - Service Worker (`sw.js`) caching static shell assets only, with strict network passthrough for `/api/*` requests.
+    - DOM-safe XSS-free UI logic (`h()` element creator, no `innerHTML`).
+  - **Forward Compatibility**:
+    - Phase 05 Resource Coordinator placeholder contract (`/api/coordinator`).
+  - **Validation Evidence**:
+    - Remote control test suite: 34 passing tests (`modules/remote_control/tests/`).
+    - Notifications test suite: 128 passing tests, 1 skipped (`modules/notifications/tests/`).
+    - Scripts help test suite: 55 passing tests (`modules/scripts_help/tests/`).
+
+
