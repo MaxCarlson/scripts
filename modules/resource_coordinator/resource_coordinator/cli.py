@@ -12,7 +12,7 @@ import os
 import sys
 import time
 import re
-from typing import List, Optional
+from typing import Any, List, Optional
 
 import httpx
 import uvicorn
@@ -32,6 +32,7 @@ from resource_coordinator.core.operator_credentials import (
     CredentialError,
     doctor as credential_doctor,
     load_or_create_token,
+    load_token,
     reinitialize_token,
     repair_permissions,
 )
@@ -440,10 +441,32 @@ def cmd_logs(args: argparse.Namespace) -> int:
     return asyncio.run(_async_logs(args))
 
 
+def _redact_recovery_credential(value: Any, token: str) -> Any:
+    """Remove the selected bearer secret from server-controlled recovery output."""
+    if isinstance(value, str):
+        return value.replace("Bearer " + token, "Bearer [REDACTED]").replace(token, "[REDACTED]")
+    if isinstance(value, list):
+        return [_redact_recovery_credential(item, token) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_recovery_credential(item, token) for key, item in value.items()}
+    return value
+
+
 def cmd_recover(args: argparse.Namespace) -> int:
-    token = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+    recovery_override = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+    operator_override = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
+    try:
+        token = recovery_override or operator_override or load_token(require_secure=True)
+    except CredentialError as exc:
+        token = None
+        credential_error = str(exc)
+    else:
+        credential_error = None
     if not args.force or not token:
-        message = "Recovery requires --force and RESOURCE_COORDINATOR_RECOVERY_TOKEN; verify upstream has stopped first."
+        if credential_error:
+            message = f"Recovery credential unavailable: {credential_error}. Run 'resource-coordinator system auth doctor'."
+        else:
+            message = "Recovery requires --force and a valid operator credential; verify upstream has stopped first."
         if getattr(args, "json", False):
             emit_json({"status": "error", "operation": "recover", "message": message})
         else:
@@ -463,7 +486,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 },
             )
             if resp.status_code == 200:
-                data = resp.json()
+                data = _redact_recovery_credential(resp.json(), token)
                 if getattr(args, "json", False):
                     emit_json(data)
                 else:
@@ -471,19 +494,32 @@ def cmd_recover(args: argparse.Namespace) -> int:
                 return 0
             else:
                 detail = resp.text
+                body = {"message": detail}
+                if resp.status_code == 403:
+                    detail = "Recovery credential was rejected; check the configured operator and recovery credentials."
+                    body = {"message": detail}
                 try:
-                    body = resp.json()
-                    detail = body.get("message") or body.get("error") or body.get("reason") or detail if isinstance(body, dict) else body
+                    if resp.status_code != 403:
+                        body = resp.json()
+                        detail = body.get("message") or body.get("error") or body.get("reason") or detail if isinstance(body, dict) else body
                 except ValueError:
                     body = {"message": detail}
                 if getattr(args, "json", False):
-                    emit_json({"status": "error", "operation": "recover", "http_status": resp.status_code,
-                               "detail": body})
+                    emit_json(
+                        {
+                            "status": "error",
+                            "operation": "recover",
+                            "http_status": resp.status_code,
+                            "detail": _redact_recovery_credential(body, token),
+                        }
+                    )
                 else:
-                    emit_error(f"Error recovering coordinator ({resp.status_code}): {detail}")
+                    safe_detail = _redact_recovery_credential(str(detail), token)
+                    emit_error(f"Error recovering coordinator ({resp.status_code}): {safe_detail}")
                 return 1
     except Exception as exc:
-        message = f"Failed to connect to coordinator at {args.url}: {exc}"
+        logger.debug("Recovery request failed (%s)", type(exc).__name__)
+        message = f"Failed to connect to coordinator at {args.url}"
         if getattr(args, "json", False):
             emit_json({"status": "error", "operation": "recover", "message": message})
         else:

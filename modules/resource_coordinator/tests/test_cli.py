@@ -1,5 +1,7 @@
 import json
 
+import pytest
+
 from resource_coordinator.cli import cmd_config, parse_args
 
 
@@ -283,3 +285,164 @@ def test_cli_status_displays_managed_process_state(monkeypatch, capsys):
     assert "Unmanaged" in output
     assert "Stopped by coordinator" in output
     assert "Active (17.2s remaining)" in output
+
+
+def test_recover_uses_existing_protected_credential_without_environment_override(tmp_path, monkeypatch, capsys):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator import cli
+    from resource_coordinator.core import operator_credentials
+
+    token = "A" * 64
+    token_path = tmp_path / "operator-token"
+    token_path.write_text(token, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
+
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"status": "cleared", "resource": "gpu.inference"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
+
+    args = cli.parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+
+    assert cli.cmd_recover(args) == 0
+    request = client.post.call_args
+    assert request.args[0] == "http://127.0.0.1:1235/_coordinator/recover"
+    assert request.kwargs["headers"]["Authorization"] == f"Bearer {token}"
+    assert request.kwargs["json"]["override"] is True
+    assert request.kwargs["json"]["reason"] == "Verified upstream idle"
+    assert token not in capsys.readouterr().out
+
+
+def test_recover_rejects_insecure_file_credential_without_sending_request(tmp_path, monkeypatch, capsys):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator.cli import cmd_recover, parse_args
+    from resource_coordinator.core import operator_credentials
+
+    token_path = tmp_path / "operator-token"
+    token_path.write_text("B" * 64, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: False)
+    client_factory = MagicMock()
+    monkeypatch.setattr(httpx, "Client", client_factory)
+
+    args = parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+
+    assert cmd_recover(args) == 1
+    assert client_factory.call_count == 0
+    output = capsys.readouterr().out
+    assert "restricted permissions" in output
+    assert "B" * 64 not in output
+
+
+@pytest.mark.parametrize("credential_contents", [None, "not-a-valid-token"])
+def test_recover_rejects_missing_or_invalid_credential_without_provisioning(
+    tmp_path, monkeypatch, capsys, credential_contents
+):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator.cli import cmd_recover, parse_args
+
+    token_path = tmp_path / "operator-token"
+    if credential_contents is not None:
+        token_path.write_text(credential_contents, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    client_factory = MagicMock()
+    monkeypatch.setattr(httpx, "Client", client_factory)
+
+    args = parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+    assert cmd_recover(args) == 1
+    assert not token_path.exists() if credential_contents is None else token_path.read_text(encoding="ascii") == credential_contents
+    assert client_factory.call_count == 0
+    output = capsys.readouterr().out
+    assert "Recovery credential unavailable" in output
+    assert credential_contents is None or credential_contents not in output
+
+
+def test_recover_prefers_explicit_recovery_token_override(tmp_path, monkeypatch):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator.cli import cmd_recover, parse_args
+
+    token = "RECOVERY-OVERRIDE"
+    token_path = tmp_path / "operator-token"
+    token_path.write_text("C" * 64, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.setenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", token)
+    monkeypatch.setenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", "OPERATOR-OVERRIDE")
+    response = MagicMock(status_code=200)
+    response.json.return_value = {"status": "cleared"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
+
+    args = parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+
+    assert cmd_recover(args) == 0
+    assert client.post.call_args.kwargs["headers"]["Authorization"] == f"Bearer {token}"
+
+
+def test_recover_redacts_server_credential_mismatch(tmp_path, monkeypatch, capsys):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator.cli import cmd_recover, parse_args
+
+    token = "D" * 64
+    token_path = tmp_path / "operator-token"
+    token_path.write_text(token, encoding="ascii")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    from resource_coordinator.core import operator_credentials
+
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
+    response = MagicMock(status_code=403, text=f"Unauthorized {token}")
+    response.json.return_value = {"error": f"Unauthorized {token}"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
+
+    args = parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+
+    assert cmd_recover(args) == 1
+    output = capsys.readouterr().out
+    assert "Recovery credential was rejected" in output
+    assert token not in output
+
+
+@pytest.mark.parametrize("status", [200, 500])
+def test_recover_never_prints_credential_echoed_by_server(tmp_path, monkeypatch, capsys, status):
+    from unittest.mock import MagicMock
+
+    import httpx
+    from resource_coordinator.cli import cmd_recover, parse_args
+
+    token = "RECOVERY-SECRET-VALUE"
+    monkeypatch.setenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", token)
+    response = MagicMock(status_code=status, text=f"server echoed {token}")
+    response.json.return_value = {"status": "cleared", "diagnostic": f"server echoed {token}"}
+    client = MagicMock()
+    client.__enter__.return_value = client
+    client.post.return_value = response
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: client)
+    args = parse_args(["service", "recover", "-f", "-r", "Verified upstream idle", "-j"])
+
+    assert cmd_recover(args) == (0 if status == 200 else 1)
+    assert token not in capsys.readouterr().out

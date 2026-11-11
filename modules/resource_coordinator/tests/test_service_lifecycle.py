@@ -229,7 +229,7 @@ async def test_gaming_mode_unloads_models_then_restores_model_and_owned_miner(tm
             loaded[0]["loaded_instances"] = []
             return httpx.Response(200, json={"instance_id": body["instance_id"]})
         loaded[0]["loaded_instances"] = [{"id": "instance-restored", "config": body}]
-        return httpx.Response(200, json={"status": "loaded"})
+        return httpx.Response(200, json={"status": "loaded", "instance_id": "instance-restored"})
 
     def client_factory(**kwargs):
         return httpx.AsyncClient(transport=httpx.MockTransport(handler), **kwargs)

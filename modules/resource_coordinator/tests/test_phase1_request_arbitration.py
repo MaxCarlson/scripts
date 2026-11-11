@@ -136,7 +136,7 @@ def create_test_upstream():
         st = (await sup.status()).state if sup else None
         miner_state_at_forward.append(st)
         requests_received.append({"path": request.url.path, "body": body})
-        return JSONResponse({"status": "loaded", "model": body.get("model", "test-model")})
+        return JSONResponse({"status": "loaded", "instance_id": "loaded-instance", "model": body.get("model", "test-model")})
 
     routes = [
         Route("/v1/chat/completions", handle_chat, methods=["POST"]),

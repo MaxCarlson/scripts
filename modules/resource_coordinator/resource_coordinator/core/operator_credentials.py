@@ -120,8 +120,13 @@ def load_or_create_token() -> str:
         raise CredentialError(f"Cannot read or provision operator credential at {path}") from exc
 
 
-def load_token() -> str:
-    """Read an existing credential without creating or replacing anything."""
+def load_token(*, require_secure: bool = False) -> str:
+    """Read an existing credential without creating or replacing anything.
+
+    ``require_secure`` rejects an on-disk token whose file permissions/ACLs are
+    not restricted to the expected local principals. Explicit environment
+    overrides remain an operator-selected compatibility mechanism.
+    """
     override = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
     if override:
         return override
@@ -132,6 +137,8 @@ def load_token() -> str:
         raise CredentialError(f"Cannot load operator credential at {path}") from exc
     if not _TOKEN_RE.fullmatch(token):
         raise CredentialError(f"Operator credential at {path} is invalid; use explicit auth reinitialize")
+    if require_secure and not _acl_is_restricted(path):
+        raise CredentialError(f"Operator credential at {path} does not have restricted permissions; run auth doctor")
     return token
 
 

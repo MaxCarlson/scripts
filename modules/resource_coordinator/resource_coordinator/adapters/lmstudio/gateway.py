@@ -9,6 +9,7 @@ import logging
 import math
 import os
 import secrets
+import time
 import uuid
 from pathlib import Path
 from typing import Any, AsyncIterator, Awaitable, Callable, Dict, Optional, Set
@@ -35,6 +36,7 @@ from resource_coordinator.core.operator_credentials import CredentialError, load
 from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
+UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
 
 # Hop-by-hop headers that should not be forwarded
 HOP_BY_HOP_HEADERS: Set[str] = {
@@ -66,8 +68,9 @@ class StreamCompletionDetector:
     interrupted, indeterminate, or error states.
     """
 
-    def __init__(self, is_sse: bool = True) -> None:
+    def __init__(self, is_sse: bool = True, operation_type: str = "inference") -> None:
         self.is_sse = is_sse
+        self.operation_type = operation_type
         self.confirmed = False
         self.finish_reason: Optional[str] = None
         self.termination_state = "active"
@@ -81,8 +84,9 @@ class StreamCompletionDetector:
             frame, self._buffer = self._buffer.split(b"\n\n", 1)
             payload = b"\n".join(line[5:].lstrip() for line in frame.split(b"\n") if line.startswith(b"data:"))
             if payload == b"[DONE]":
-                self.confirmed = True
-                self.termination_state = "confirmed_done_marker"
+                if self.operation_type != "model_load":
+                    self.confirmed = True
+                    self.termination_state = "confirmed_done_marker"
                 continue
             try:
                 data = json.loads(payload)
@@ -92,12 +96,21 @@ class StreamCompletionDetector:
                 continue
             if "error" in data or data.get("type") in {"error", "response.failed", "response.incomplete"}:
                 self._failed = True
-            if data.get("type") == "chat.end":
+            if self.operation_type == "model_load" and data.get("type") == "model_load.end":
+                # model_load.end is terminal evidence even when the operation failed;
+                # failure affects the outcome, not whether the upstream is still running.
+                self.confirmed = True
+                status = str(data.get("status", "")).casefold()
+                failed_terminal = self._failed or "error" in data or status in {"error", "failed"}
+                self.termination_state = (
+                    "verified_model_load_failure" if failed_terminal else "verified_model_load_success"
+                )
+            elif self.operation_type != "model_load" and data.get("type") == "chat.end":
                 result = data.get("result", {})
                 if isinstance(result, dict) and isinstance(result.get("output"), list):
                     self.confirmed = True
                     self.termination_state = "confirmed_chat_end"
-            elif data.get("type") == "response.completed":
+            elif self.operation_type != "model_load" and data.get("type") == "response.completed":
                 response = data.get("response", {})
                 if isinstance(response, dict) and response.get("status") == "completed":
                     self.confirmed = True
@@ -105,12 +118,13 @@ class StreamCompletionDetector:
         if len(self._buffer) > 1024 * 1024:
             self._buffer = b""
             self._failed = True
-        if self._failed:
+        if self._failed and self.termination_state != "verified_model_load_failure":
             self.confirmed = False
             self.termination_state = "uncertain_error_or_oversized_frame"
 
     def finalize(self) -> bool:
-        return self.confirmed and not self._failed and not self._buffer.strip()
+        terminal_failure = self.termination_state == "verified_model_load_failure"
+        return self.confirmed and (not self._failed or terminal_failure) and not self._buffer.strip()
 
     @staticmethod
     def check_non_streaming(status_code: int, body: bytes, path: str = "") -> bool:
@@ -136,7 +150,8 @@ class StreamCompletionDetector:
         return (
             path.rstrip("/") in MODEL_LOAD_PATHS
             and data.get("status") == "loaded"
-            and (isinstance(data.get("instance_id"), str) or isinstance(data.get("model"), str))
+            and isinstance(data.get("instance_id"), str)
+            and bool(data["instance_id"])
         )
 
 
@@ -201,7 +216,7 @@ class LMStudioGateway:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
                 base_url=self.upstream_url,
-                timeout=httpx.Timeout(self.timeout_seconds, connect=10.0),
+                timeout=httpx.Timeout(self.timeout_seconds, connect=UPSTREAM_CONNECT_TIMEOUT_SECONDS),
                 follow_redirects=False,
             )
         return self._http_client
@@ -265,6 +280,28 @@ class LMStudioGateway:
         token = self._current_operator_token()
         supplied = request.headers.get("authorization", "")
         return bool(token and secrets.compare_digest(supplied.encode(), ("Bearer " + token).encode()))
+
+    def _recovery_tokens(self) -> Set[str]:
+        accepted = {
+            token
+            for token in (
+                self.recovery_token,
+                os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN"),
+                os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN"),
+            )
+            if token
+        }
+        if not os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN"):
+            try:
+                accepted.add(load_token(require_secure=True))
+            except CredentialError:
+                pass
+        return accepted
+
+    def _recovery_authorized(self, request: Request) -> bool:
+        supplied = request.headers.get("authorization", "").encode()
+        accepted = self._recovery_tokens()
+        return any(secrets.compare_digest(supplied, ("Bearer " + token).encode()) for token in accepted)
 
     async def handle_coordinator_logs(self, request: Request) -> Response:
         if not self._operator_authorized(request):
@@ -452,6 +489,73 @@ class LMStudioGateway:
                     **info.to_dict(),
                     "was_stopped_by_coordinator": supervisor.was_stopped_by_coordinator,
                 }
+        safe_request_detail_fields = {
+            "request_id",
+            "operation_type",
+            "model",
+            "resource",
+            "lease_type",
+            "lifecycle_state",
+            "started_at",
+            "elapsed_seconds",
+            "configured_timeout_seconds",
+            "connect_timeout_seconds",
+            "timeout_phase",
+            "failure_kind",
+            "exception_class",
+            "safe_exception_detail",
+            "http_status",
+            "terminal_evidence",
+            "inhibition_holder",
+            "inhibition_reason",
+            "recovery_recommendation",
+        }
+        safe_inhibition = inhibition.to_dict() if inhibition else None
+        if safe_inhibition is not None:
+            safe_inhibition["details"] = {
+                key: value
+                for key, value in inhibition.details.items()
+                if key in safe_request_detail_fields
+            }
+        recovery: Dict[str, Any] = {
+            "required": bool(inhibition),
+            "inhibition": safe_inhibition,
+            "requests": [],
+            "journal_status": "not_configured" if not self.state_persistence_path else "available",
+            "recommendation": (
+                "Verify the upstream operation has terminated, then use authenticated service recover with an explicit reason."
+                if inhibition
+                else None
+            ),
+        }
+        if inhibition and self.state_persistence_path:
+            try:
+                durable = StateCodec.load(self.state_persistence_path)
+                unresolved = {
+                    RequestPhase.RESERVED.value,
+                    RequestPhase.POSSIBLY_FORWARDED.value,
+                    RequestPhase.UNCERTAIN.value,
+                }
+                recovery["requests"] = [
+                    {
+                        "request_id": item.request_id,
+                        "resource": item.resource,
+                        "phase": item.phase,
+                        "model": item.model,
+                        "path": item.path,
+                        "created_at": item.created_at,
+                        "updated_at": item.updated_at,
+                        "details": {
+                            key: value
+                            for key, value in item.details.items()
+                            if key in safe_request_detail_fields
+                        },
+                    }
+                    for item in durable.requests.values()
+                    if item.resource == "gpu.inference" and item.phase in unresolved
+                ]
+            except (OSError, ValueError):
+                recovery["journal_status"] = "unavailable"
         return JSONResponse(
             {
                 "status": "online",
@@ -471,6 +575,7 @@ class LMStudioGateway:
                     "cooldown_remaining": round(self.lease_mgr.cooldown_remaining("gpu.inference"), 1),
                     "is_restart_inhibited": self.lease_mgr.is_restart_inhibited("gpu.inference"),
                     "inhibition": inhibition.to_dict() if inhibition else None,
+                    "recovery": recovery,
                 },
             }
         )
@@ -507,10 +612,9 @@ class LMStudioGateway:
 
     async def handle_coordinator_recover(self, request: Request) -> JSONResponse:
         """Explicit authenticated operator override; no upstream idle verifier exists yet."""
-        if not self.recovery_token:
+        if not self._recovery_tokens():
             return JSONResponse({"error": "Recovery is disabled: configure an operator token"}, status_code=503)
-        supplied = request.headers.get("authorization", "")
-        if not secrets.compare_digest(supplied, "Bearer " + self.recovery_token):
+        if not self._recovery_authorized(request):
             return JSONResponse({"error": "Unauthorized"}, status_code=403)
         try:
             payload = await request.json()
@@ -654,6 +758,9 @@ class LMStudioGateway:
             "model": model_name,
             "resource": resource,
         }
+        started_monotonic = time.monotonic()
+        started_at = time.time()
+        operation_type = "model_load" if path.rstrip("/") in MODEL_LOAD_PATHS else "inference"
 
         reservation_cm = self.lease_mgr.reserve(resource, lease_type, request_id, {"model": model_name, "path": path})
         reservation = None
@@ -663,6 +770,54 @@ class LMStudioGateway:
         response_owns_cleanup = False
         cleaned = False
         reserved_in_journal = False
+        failure_kind: Optional[str] = None
+        failure_class: Optional[str] = None
+        failure_detail: Optional[str] = None
+        http_status: Optional[int] = None
+        terminal_evidence = "not_forwarded"
+        completion_detector: Optional[StreamCompletionDetector] = None
+
+        def request_details() -> Dict[str, Any]:
+            if completed:
+                evidence = (
+                    completion_detector.termination_state
+                    if completion_detector is not None
+                    else "verified_non_streaming_response"
+                )
+                recommendation = None
+            elif forwarded:
+                evidence = terminal_evidence
+                recommendation = (
+                    "Keep restart inhibited until upstream termination is verified or an operator explicitly recovers."
+                )
+            else:
+                evidence = "not_forwarded"
+                recommendation = None
+            return {
+                "request_id": request_id,
+                "operation_type": operation_type,
+                "model": model_name or None,
+                "resource": resource,
+                "lease_type": lease_type.value,
+                "lifecycle_state": (
+                    "terminal_verified" if completed else "possibly_forwarded" if forwarded else "reserved"
+                ),
+                "started_at": started_at,
+                "elapsed_seconds": round(max(0.0, time.monotonic() - started_monotonic), 3),
+                "configured_timeout_seconds": self.timeout_seconds,
+                "connect_timeout_seconds": UPSTREAM_CONNECT_TIMEOUT_SECONDS,
+                "timeout_phase": failure_kind if failure_kind and "timeout" in failure_kind else None,
+                "failure_kind": failure_kind,
+                "exception_class": failure_class,
+                "safe_exception_detail": failure_detail,
+                "http_status": http_status,
+                "terminal_evidence": evidence,
+                "inhibition_holder": request_id if forwarded and not completed else None,
+                "inhibition_reason": (
+                    failure_kind or "upstream_terminal_evidence_missing" if forwarded and not completed else None
+                ),
+                "recovery_recommendation": recommendation,
+            }
 
         async def cleanup() -> None:
             nonlocal cleaned
@@ -674,9 +829,9 @@ class LMStudioGateway:
                     if forwarded and not completed:
                         await self.lease_mgr.inhibit_restart(
                             resource,
-                            "Stream ended without completion signal or execution termination uncertain",
+                            failure_kind or "Stream ended without completion signal or execution termination uncertain",
                             request_id,
-                            {"model": model_name, "path": path},
+                            {"model": model_name, "path": path, **request_details()},
                         )
                     if self.state_persistence_path and (reserved_in_journal or forwarded):
                         try:
@@ -688,6 +843,7 @@ class LMStudioGateway:
                                     RequestPhase.TERMINAL_VERIFIED,
                                     model=model_name,
                                     path=path,
+                                    details=request_details(),
                                 )
                             elif forwarded:
                                 StateCodec.record_request_phase(
@@ -697,6 +853,7 @@ class LMStudioGateway:
                                     RequestPhase.UNCERTAIN,
                                     model=model_name,
                                     path=path,
+                                    details=request_details(),
                                 )
                             else:
                                 StateCodec.record_request_phase(
@@ -741,6 +898,7 @@ class LMStudioGateway:
                     RequestPhase.RESERVED,
                     model=model_name,
                     path=path,
+                    details=request_details(),
                 )
                 reserved_in_journal = True
             if not self.admission_controller.evaluate(request.method, path).allowed:
@@ -764,23 +922,44 @@ class LMStudioGateway:
                     RequestPhase.POSSIBLY_FORWARDED,
                     model=model_name,
                     path=path,
+                    details={
+                        **request_details(),
+                        "lifecycle_state": "possibly_forwarded",
+                        "terminal_evidence": "dispatch_started_execution_not_yet_verified",
+                    },
                 )
             forwarded = True  # send may have reached upstream even if it raises/cancels
             await self.dispatcher.emit("lmstudio.inference_forwarded", event_data)
             upstream_resp = await client.send(upstream_req, stream=True)
+            http_status = upstream_resp.status_code
             content_type = upstream_resp.headers.get("content-type", "")
             clean_headers = self._clean_headers(upstream_resp.headers, request_id)
             if "text/event-stream" in content_type:
-                detector = StreamCompletionDetector()
+                detector = StreamCompletionDetector(operation_type=operation_type)
+                completion_detector = detector
                 response = upstream_resp
 
                 async def stream_body() -> AsyncIterator[bytes]:
-                    nonlocal completed
-                    async for chunk in response.aiter_bytes():
-                        detector.feed(chunk)
-                        yield chunk
-                    # Require both protocol completion and normal EOF, never a choice-level marker alone.
-                    completed = response.status_code == 200 and detector.finalize()
+                    nonlocal completed, terminal_evidence, failure_kind, failure_class, failure_detail
+                    try:
+                        async for chunk in response.aiter_bytes():
+                            detector.feed(chunk)
+                            yield chunk
+                        # Require both protocol completion and normal EOF, never a choice-level marker alone.
+                        completed = response.status_code == 200 and detector.finalize()
+                        terminal_evidence = detector.termination_state
+                        if terminal_evidence == "verified_model_load_failure":
+                            failure_kind = "upstream_operation_failed"
+                            failure_detail = "The upstream reported a terminal model-load failure."
+                        if response.status_code >= 400:
+                            failure_kind = "upstream_returned_error"
+                            failure_detail = "The upstream returned an HTTP error response."
+                    except BaseException as exc:
+                        failure_kind = "client_disconnect_or_stream_interruption"
+                        failure_class = type(exc).__name__
+                        failure_detail = "The downstream stream ended unexpectedly; upstream execution is unverified."
+                        terminal_evidence = "stream_interrupted_without_verified_terminal"
+                        raise
 
                 result = _CoordinatedStreamingResponse(
                     stream_body(),
@@ -793,15 +972,47 @@ class LMStudioGateway:
                 return result
             content = await upstream_resp.aread()
             completed = StreamCompletionDetector.check_non_streaming(upstream_resp.status_code, content, path)
+            terminal_evidence = "verified_non_streaming_response" if completed else "non_streaming_response_not_terminal"
+            if upstream_resp.status_code >= 400:
+                failure_kind = "upstream_returned_error"
+                failure_detail = "The upstream returned an HTTP error response; termination is not assumed."
             return Response(content=content, status_code=upstream_resp.status_code, headers=clean_headers)
         except VetoOperation as exc:
             return JSONResponse(
                 {"error": {"message": str(exc), "type": "coordinator_veto", "request_id": request_id}}, status_code=503
             )
         except Exception as exc:
-            logger.error("Coordinated request %s failed: %s", request_id, exc)
+            failure_class = type(exc).__name__
+            if isinstance(exc, httpx.ConnectTimeout):
+                failure_kind = "upstream_connect_timeout"
+                failure_detail = "Timed out while establishing the upstream connection."
+            elif isinstance(exc, httpx.ReadTimeout):
+                failure_kind = "upstream_read_timeout"
+                failure_detail = "No upstream response bytes arrived before the read timeout; execution may continue."
+            elif isinstance(exc, httpx.TimeoutException):
+                failure_kind = "upstream_timeout"
+                failure_detail = "An upstream timeout occurred; remote execution termination is unverified."
+            elif isinstance(exc, httpx.RequestError):
+                failure_kind = "upstream_transport_error"
+                failure_detail = "The upstream transport failed; remote execution termination is unverified."
+            else:
+                failure_kind = "coordinated_operation_error"
+                failure_detail = "The coordinated request failed; remote execution termination is unverified."
+            terminal_evidence = "upstream_execution_uncertain" if forwarded else "not_forwarded"
+            logger.error("Coordinated request %s failed (%s)", request_id, failure_class)
             return JSONResponse(
-                {"error": {"message": "Coordinated request failed", "type": "upstream_error"}},
+                {
+                    "error": {
+                        "message": "Upstream operation failed; execution may still be active"
+                        if forwarded
+                        else "Coordinated request failed before forwarding",
+                        "type": failure_kind,
+                        "request_id": request_id,
+                        "operation_type": operation_type,
+                        "timeout_seconds": self.timeout_seconds,
+                        "detail": failure_detail,
+                    }
+                },
                 status_code=502 if forwarded else 500,
             )
         finally:

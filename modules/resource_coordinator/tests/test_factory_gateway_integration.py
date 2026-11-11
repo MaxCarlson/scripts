@@ -187,7 +187,7 @@ async def make_factory_app(
         assert len(leases) == 1
         assert leases[0].lease_type == LeaseType.EXCLUSIVE
         assert (await supervisor.status()).state == ProcessState.STOPPED
-        return JSONResponse({"status": "loaded", "model": "fake-model"})
+        return JSONResponse({"status": "loaded", "instance_id": "fake-instance", "model": "fake-model"})
 
     upstream = Starlette(
         routes=[
