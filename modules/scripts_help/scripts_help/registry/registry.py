@@ -558,6 +558,13 @@ REGISTRY: dict = {
                 "help_cmd": ["python", "-m", "scheduler.cli", "--help"],
                 "version": "0.8.0",
             },
+            {
+                "name": "notifications (module)",
+                "path": "modules/notifications",
+                "desc": "Durable notification broker, incident lifecycle manager, and outbox CLI",
+                "help_cmd": ["python", "-m", "notifications.cli", "--help"],
+                "version": "0.1.0",
+            },
         ],
     },
     "Code Analysis": {

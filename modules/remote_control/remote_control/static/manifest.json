@@ -1,0 +1,18 @@
+{
+  "name": "Scripts Remote Control",
+  "short_name": "RemoteControl",
+  "description": "Authenticated read-only mobile dashboard for workstation notifications and incidents.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait-primary",
+  "background_color": "#0f172a",
+  "theme_color": "#1e293b",
+  "icons": [
+    {
+      "src": "/static/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
