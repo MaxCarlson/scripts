@@ -39,34 +39,34 @@
 
 ### Task 1 — H2A integrated-source checkpoint
 
-- [ ] Run focused maintenance, arbitration, state, gateway, supervision, recovery, and Windows installation suites with isolated temp roots.
-- [ ] Classify prior exploratory failures without invoking live-mode/production-listener cases.
-- [ ] Record exact merged SHA, source coverage, limitations, and baseline comparisons in `STATUS.md`.
-- [ ] Commit this status checkpoint before H2C source edits.
+- [x] Run focused maintenance, arbitration, state, gateway, supervision, recovery, and Windows installation suites with isolated temp roots.
+- [x] Classify prior exploratory failures without invoking live-mode/production-listener cases.
+- [x] Record exact merged SHA, source coverage, limitations, and baseline comparisons in `STATUS.md`.
+- [x] Commit this status checkpoint before H2C source edits (`b794d0e0c13b5aeab49adaf57aada63e4ac97f0e`).
 
 ### Task 2 — Observation and scope contracts
 
-- [ ] Add failing tests for `GpuObservation`, capability classifications, per-dimension exact comparisons, UUID/driver mismatch, timeout, and fail-closed unsupported fields.
-- [ ] Implement injectable observer/process protocols and optional native NVML read-only adapter.
-- [ ] Add strict disabled-by-default config with UUID, allowed dimensions, known miner executable names, and bounded observation timeout.
-- [ ] Verify old config loads with verification disabled and reject invalid enabled policy.
+- [x] Add focused tests for capability classifications, per-dimension exact comparisons, UUID/driver mismatch, and fail-closed unsupported fields.
+- [x] Implement injectable observer/process protocols and optional native NVML read-only adapter.
+- [x] Add strict disabled-by-default config with UUID, allowed dimensions, known miner executable names, and bounded observation timeout.
+- [x] Verify old config loads with verification disabled and reject invalid enabled policy.
 
 ### Task 3 — Durable baseline and process identity
 
-- [ ] Add tests proving baseline capture follows verified RC miner stop and precedes token grant.
-- [ ] Persist baseline and explicit tuning scope atomically; baseline errors retain acquisition hold and issue no grant.
-- [ ] Add authenticated, token-bound process-registration endpoint that independently re-reads PID, creation time, and executable identity.
-- [ ] Validate durable baseline/scope/registration shapes and reject stale or reused PIDs at release.
+- [x] Add tests proving baseline capture follows verified RC miner stop and precedes token grant.
+- [x] Persist baseline and explicit tuning scope atomically; baseline errors retain acquisition hold and issue no grant.
+- [x] Add authenticated, token-bound process-registration endpoint that independently re-reads PID, creation time, and executable identity.
+- [x] Validate durable baseline/scope/registration shapes and reject stale or reused PIDs at release.
 
 ### Task 4 — Race-safe trusted release
 
-- [ ] Add tests for valid release, surviving process, access denied, unsupported scope, timeouts, cancellation, expiration race, duplicate release, and unrelated holds.
-- [ ] Refactor release into short locked transitions, off-loop bounded observation, then locked exact-session/state revalidation before commit.
-- [ ] Preserve the GPU admission fence and restart hold on any failure; only normal existing cooldown/supervision may restart the managed miner.
+- [x] Add tests for valid release, surviving process, unsupported scope, timeouts, and expiration race; existing maintenance regressions cover cancellation, duplicate release, and unrelated holds.
+- [x] Refactor release into short locked transitions, off-loop bounded observation, then locked exact-session/state revalidation before commit.
+- [x] Preserve the GPU admission fence and restart hold on any failure; only normal existing cooldown/supervision may restart the managed miner.
 
 ### Task 5 — Contract, compatibility, and final validation
 
-- [ ] Document configuration, evidence semantics, process registration request, fixed-clock limitation, and required Mining follow-up.
-- [ ] Review H2B release/request shape read-only and record exact client changes still needed.
-- [ ] Run focused and broad relevant suites, Ruff, compilation, and `git diff --check`.
-- [ ] Commit H2C separately, review full branch diff, push the isolated branch, and record final evidence.
+- [x] Document configuration, evidence semantics, process registration request, fixed-clock limitation, and required Mining follow-up.
+- [x] Review H2B release/request shape read-only and record exact client changes still needed.
+- [x] Run focused and broad relevant suites, Ruff, compilation, and `git diff --check`.
+- [x] Commit H2C separately (`873a49382a5e03da47f793608d3519f7e69da646`), review full branch diff, push the isolated branch, and record final evidence.
