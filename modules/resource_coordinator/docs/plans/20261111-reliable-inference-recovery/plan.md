@@ -73,4 +73,14 @@
 - Base: `9102815920eff843c724f4f98a7957d94d46fbb2`.
 - Branch: `agent/resource-coordinator-inference-recovery-20261111`.
 - Worktree: `.worktrees/resource-coordinator-inference-recovery-20261111`.
-- No source files changed yet.
+- Implementation checkpoint: `927fa3e3051f81ae9c19123974376527c236914f`.
+- Shared-token end-to-end regression checkpoint: `da504cf54341052a0a1ee74fedded90628a7b40b`.
+
+## Stage Outcome
+
+- **Task 1 — completed.** Recovery CLI uses a non-creating secure shared-credential read, preserves explicit overrides, and redacts credential echoes. The server authenticates shared and legacy recovery credentials, with file ACL validation for the on-disk shared token.
+- **Task 2 — completed for implemented transport paths.** The gateway distinguishes connect/read/transport failures, records additive request diagnostics in the existing journal `details`, and classifies terminal model-load success/failure separately from uncertainty. Existing phase values and JSON fields remain intact.
+- **Task 3 — safe fallback completed; automatic post-timeout reconciliation remains unsupported.** No authoritative per-operation status/cancel API was established, so uncertain timeouts/disconnects remain inhibited and visible. No speculative inventory/GPU probes or timer-based release were added. Explicit override continues to resolve all unresolved journal requests for the selected resource atomically with clearing its in-memory inhibition, subject to existing active/pending/readiness/global restart guards.
+- **Task 4 — focused coverage and contract completed; live acceptance not performed.** Mocked timeout, streaming terminal, fake-miner cooldown/restart, status, authentication, and journal audit paths are covered. Broader arbitration/restart/cancellation suites passed as recorded in `STATUS.md`. Real production credentials, Scheduled Tasks, UAC, miner, LM Studio, GPU, and WSL were not used.
+
+See `STATUS.md` for exact commands, results, the baseline-reproduced GPU-idle lifecycle failure, and remaining acceptance limits. No merge or deployment is authorized by this task.
