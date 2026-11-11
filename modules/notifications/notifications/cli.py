@@ -7,6 +7,8 @@ import asyncio
 import json
 import logging
 import sys
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -114,6 +116,33 @@ def build_parser() -> argparse.ArgumentParser:
     health_parser = subparsers.add_parser("health", help="Check storage and broker health.")
     health_parser.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
     health_parser.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+
+    # 6. telegram
+    tg_parser = subparsers.add_parser("telegram", help="Manage Telegram bot provider enrollment and status.")
+    tg_sub = tg_parser.add_subparsers(dest="telegram_command", required=True)
+
+    # telegram enroll
+    tg_enroll = tg_sub.add_parser("enroll", help="Securely enroll Telegram bot token and authorized chat ID.")
+    tg_enroll.add_argument("-t", "--token", required=True, help="Telegram Bot API token from @BotFather.")
+    tg_enroll.add_argument("-c", "--chat-id", required=True, help="Authorized recipient chat ID.")
+    tg_enroll.add_argument("-u", "--dashboard-url", default=None, help="Optional read-only HTTPS dashboard URL.")
+    tg_enroll.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to save credentials).")
+    tg_enroll.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # telegram status
+    tg_status = tg_sub.add_parser("status", help="Show Telegram provider configuration and enrollment status.")
+    tg_status.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # telegram revoke
+    tg_revoke = tg_sub.add_parser("revoke", help="Revoke and delete enrolled Telegram credentials.")
+    tg_revoke.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to delete credentials).")
+    tg_revoke.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # telegram test
+    tg_test = tg_sub.add_parser("test", help="Send a single live test notification to the enrolled Telegram chat.")
+    tg_test.add_argument("-a", "--apply", action="store_true", help="Apply modification (REQUIRED: sends real external message).")
+    tg_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+    tg_test.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     return parser
 
@@ -307,21 +336,17 @@ def handle_providers(args: argparse.Namespace) -> int:
                 return 1
 
             try:
-                storage = _get_storage(args.db)
-                provider = TelegramProvider(storage=storage, credentials=creds)
-                test_item = OutboxItem(
-                    outbox_id=0,
-                    event_id="00000000-0000-4000-8000-000000000001",
+                provider = TelegramProvider(credentials=creds)
+                notification = RenderedNotification(
+                    notification_id="tg-diag-001",
+                    event_id=str(uuid.uuid4()),
                     incident_id="inc-telegram-001",
-                    provider_id="telegram",
-                    status="pending",
-                    retry_count=0,
-                    max_retries=5,
-                    next_retry_at="2026-11-11T00:00:00Z",
-                    created_at="2026-11-11T00:00:00Z",
-                    updated_at="2026-11-11T00:00:00Z",
+                    severity="info",
+                    title="[TEST] Telegram Diagnostic",
+                    body="Testing Telegram provider delivery via 'scripts-notify providers test'",
+                    created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 )
-                receipt = asyncio.run(provider.deliver(test_item))
+                receipt = asyncio.run(provider.send(notification))
                 if receipt.status == "provider_accepted":
                     res = {"ok": True, "provider": "telegram", "status": "accepted", "receipt": receipt.to_dict()}
                     print(json.dumps(res, indent=2) if args.json else "Test notification accepted by Telegram API.")
@@ -334,6 +359,122 @@ def handle_providers(args: argparse.Namespace) -> int:
                 err = {"ok": False, "provider": "telegram", "error": f"Telegram provider test failed: {exc}"}
                 print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
                 return 1
+
+    return 2
+
+
+def handle_telegram(args: argparse.Namespace) -> int:
+    from notifications.delivery.telegram_credentials import (
+        TelegramCredentials,
+        load_telegram_credentials,
+        save_telegram_credentials,
+        revoke_telegram_credentials,
+    )
+    from notifications.delivery.telegram import TelegramProvider
+
+    if args.telegram_command == "enroll":
+        if not args.apply:
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "warning": "Dry-run: pass -a/--apply to save Telegram credentials.",
+                "chat_id": args.chat_id,
+            }
+            print(json.dumps(res, indent=2) if args.json else res["warning"])
+            return 0
+
+        try:
+            creds = TelegramCredentials(
+                bot_token=args.token,
+                chat_id=args.chat_id,
+                dashboard_url=args.dashboard_url,
+            )
+            saved_path = save_telegram_credentials(creds)
+            res = {
+                "ok": True,
+                "status": "enrolled",
+                "chat_id": creds.chat_id,
+                "secrets_file": str(saved_path),
+            }
+            print(json.dumps(res, indent=2) if args.json else f"Telegram credentials enrolled for chat {creds.chat_id}.")
+            return 0
+        except Exception as exc:
+            err = {"ok": False, "error": str(exc)}
+            print(json.dumps(err) if args.json else f"Enrollment error: {exc}", file=sys.stderr)
+            return 1
+
+    elif args.telegram_command == "status":
+        creds = load_telegram_credentials()
+        if not creds:
+            res = {"ok": True, "enrolled": False, "status": "unconfigured"}
+            print(json.dumps(res, indent=2) if args.json else "Telegram provider: Not configured (run 'scripts-notify telegram enroll')")
+            return 0
+
+        redacted_token = creds.bot_token[:6] + "..." + creds.bot_token[-4:]
+        res = {
+            "ok": True,
+            "enrolled": True,
+            "status": "configured",
+            "chat_id": creds.chat_id,
+            "bot_token": redacted_token,
+            "dashboard_url": creds.dashboard_url,
+        }
+        print(json.dumps(res, indent=2) if args.json else f"Telegram provider: Enrolled (Chat ID: {creds.chat_id}, Token: {redacted_token})")
+        return 0
+
+    elif args.telegram_command == "revoke":
+        if not args.apply:
+            res = {"ok": True, "dry_run": True, "warning": "Dry-run: pass -a/--apply to revoke credentials."}
+            print(json.dumps(res) if args.json else res["warning"])
+            return 0
+
+        revoked = revoke_telegram_credentials()
+        res = {"ok": True, "revoked": revoked}
+        print(json.dumps(res, indent=2) if args.json else ("Telegram credentials revoked." if revoked else "No credentials found to revoke."))
+        return 0
+
+    elif args.telegram_command == "test":
+        if not args.apply:
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "warning": "Dry-run: specify -a/--apply to send an actual test notification to your Telegram device.",
+            }
+            print(json.dumps(res, indent=2) if args.json else res["warning"])
+            return 0
+
+        creds = load_telegram_credentials()
+        if not creds:
+            err = {"ok": False, "error": "Telegram provider is not configured. Run 'scripts-notify telegram enroll' first."}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
+        provider = TelegramProvider(credentials=creds)
+        notification = RenderedNotification(
+            notification_id="tg-test-cli",
+            event_id=str(uuid.uuid4()),
+            incident_id="inc-test-tg",
+            severity="info",
+            title="[SCRIPTS-NOTIFY] Test Notification",
+            body="This is a test notification verifying Telegram Bot delivery.",
+            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        receipt = asyncio.run(provider.send(notification))
+        if receipt.status == "provider_accepted":
+            res = {
+                "ok": True,
+                "status": "provider_accepted",
+                "message_id": receipt.provider_message_id,
+                "chat_id": creds.chat_id,
+            }
+            print(json.dumps(res, indent=2) if args.json else f"Test notification delivered to chat {creds.chat_id} (Message ID: {receipt.provider_message_id}).")
+            return 0
+        else:
+            err = {"ok": False, "status": receipt.status, "error": receipt.error_message}
+            print(json.dumps(err) if args.json else f"Delivery failed: {receipt.error_message}", file=sys.stderr)
+            return 1
+
+    return 2
 
     return 2
 
@@ -377,6 +518,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return handle_providers(args)
     elif args.command == "health":
         return handle_health(args)
+    elif args.command == "telegram":
+        return handle_telegram(args)
 
     return 0
 
