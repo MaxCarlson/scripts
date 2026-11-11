@@ -247,3 +247,103 @@ def test_dashboard_clamps_selection_after_retired_worker_disappears(tmp_path: Pa
     dashboard.render({}, {1: WorkerSnapshot(1), 2: WorkerSnapshot(2)})
 
     assert dashboard.selected == 2
+
+
+def test_v_hotkey_and_navigation(tmp_path: Path) -> None:
+    dashboard = ConsoleDashboard(True, "run", tmp_path)
+    assert dashboard.inline_log is False
+
+    # 'v' toggles inline log
+    dashboard.handle_key("v", 4)
+    assert dashboard.inline_log is True
+
+    # 'v' toggles back
+    dashboard.handle_key("v", 4)
+    assert dashboard.inline_log is False
+
+    # 'r' opens inline log directly in raw view if closed
+    dashboard.handle_key("r", 4)
+    assert dashboard.inline_log is True
+    assert dashboard.raw_view is True
+
+    # Up/Down and j/k select workers
+    assert dashboard.selected == 1
+    dashboard.handle_key("DOWN", 4)
+    assert dashboard.selected == 2
+    dashboard.handle_key("j", 4)
+    assert dashboard.selected == 3
+    dashboard.handle_key("UP", 4)
+    assert dashboard.selected == 2
+    dashboard.handle_key("k", 4)
+    assert dashboard.selected == 1
+
+
+def test_manager_keyboard_reads_from_stdin_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from mangadl.manager import DownloadManager, RunOptions
+    from mangadl.state import StateStore
+
+    options = RunOptions(
+        run_id="test_run",
+        destination=tmp_path / "dest",
+        archive=tmp_path / "archive.sqlite3",
+        state_db=tmp_path / "state.sqlite3",
+        log_dir=tmp_path / "logs",
+        workers=2,
+        retries=0,
+        retry_wait=0.01,
+        ui=True,
+    )
+    store = StateStore(options.state_db)
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    manager = DownloadManager(options, store)
+
+    # Queue keys: workers_up ('+'), navigate down ('j'), toggle log ('v')
+    manager._stdin_queue.put("+")
+    manager._stdin_queue.put("j")
+    manager._stdin_queue.put("v")
+
+    assert manager.target_workers == 2
+    assert manager.dashboard.selected == 1
+    assert manager.dashboard.inline_log is False
+
+    manager._keyboard()
+
+    assert manager.target_workers == 3
+    assert manager.dashboard.selected == 2
+    assert manager.dashboard.inline_log is True
+    store.close()
+
+
+def test_dashboard_renders_completed_bytes_and_images() -> None:
+    worker = WorkerSnapshot(
+        1,
+        state="run",
+        url="https://nhentai.net/g/123/",
+        backend="gallery-dl",
+        site="nhentai",
+        images_done=5,
+        images_total=10,
+        bytes_done=5000,
+        current_bps=1000,
+        average_bps=500,
+        current_ips=1.0,
+        average_ips=0.5,
+    )
+    runtime = DashboardRuntime(
+        active_workers=1,
+        target_workers=1,
+        image_workers=1,
+        aggregate=1,
+        budget=4,
+        logical_cpus=8,
+        completed_bytes=15000,
+        completed_images=25,
+    )
+    output = render_dashboard("run", {"running": 1}, {1: worker}, width=120, runtime=runtime)
+    assert "Transferred 19.5 KiB (active 4.9 KiB)" in output
+    assert "Processed 30 img (active 5 img)" in output
+
+    idle_worker = WorkerSnapshot(1, state="idle")
+    output_idle = render_dashboard("run", {"succeeded": 1}, {1: idle_worker}, width=120, runtime=runtime)
+    assert "Transferred 14.6 KiB" in output_idle
+    assert "Processed 25 img" in output_idle

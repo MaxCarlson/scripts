@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum, auto
+import os
 import shlex
 import time
 from typing import Any, Dict, List, Optional, Sequence, Tuple
@@ -13,11 +14,25 @@ from .schema import CliArgument, CliCommand
 
 def _split_arg_tokens(val: str) -> List[str]:
     """Split a space or comma separated string into individual command-line tokens."""
+    val = val.strip()
+    if not val:
+        return []
+    is_windows = os.name == "nt" or "\\" in val
     try:
-        tokens = shlex.split(val.strip())
+        tokens = shlex.split(val, posix=not is_windows)
     except ValueError:
-        tokens = val.strip().split()
-    return [t.rstrip(",").strip() for t in tokens if t.rstrip(",").strip()]
+        tokens = val.split()
+    results: List[str] = []
+    for t in tokens:
+        clean = t.rstrip(",").strip()
+        if is_windows and len(clean) >= 2:
+            if (clean.startswith('"') and clean.endswith('"')) or (
+                clean.startswith("'") and clean.endswith("'")
+            ):
+                clean = clean[1:-1]
+        if clean:
+            results.append(clean)
+    return results
 
 
 class TuiScreenMode(Enum):
@@ -31,6 +46,11 @@ class TuiScreenMode(Enum):
 class PaneType(Enum):
     COMMAND = "command"
     CONSOLE = "console"
+
+
+class RunningFocusMode(str, Enum):
+    PROGRAM = "program"
+    TUI = "tui"
 
 
 class NavigationStack:
@@ -257,6 +277,7 @@ class PaneSession:
     current_form: Optional[FormState] = None
     runner: Optional[Any] = None
     viewport: OutputViewport = field(default_factory=OutputViewport)
+    running_focus: RunningFocusMode = RunningFocusMode.PROGRAM
     created_at: float = field(default_factory=time.time)
     extra_data: Dict[str, Any] = field(default_factory=dict)
 

@@ -105,6 +105,19 @@ class TextWidget(BaseWidget):
             display_val = str(value)
         super().__init__(arg, display_val)
         self.cursor_pos: int = len(self.value)
+        self._scroll_start: int = 0
+
+    def set_cursor_from_click(self, char_offset: int) -> None:
+        """Position cursor based on a mouse click within the text brackets."""
+        start = getattr(self, "_scroll_start", 0)
+        target = start + max(0, char_offset)
+        self.cursor_pos = max(0, min(len(str(self.value or "")), target))
+        self.is_editing = True
+
+    def text_start_offset(self) -> int:
+        """Column offset where the text begins on this line (after focus marker, label, and ': [ ')."""
+        # "▶ " or "  " (2) + label + ": [ " (4)
+        return 2 + len(self.label) + 4
 
     def handle_key(self, key: int) -> bool:
         if not self.is_editing:
@@ -126,19 +139,39 @@ class TextWidget(BaseWidget):
                 )
                 self.cursor_pos -= 1
             return True
-        elif key in (curses.KEY_DC,):  # Delete
+        elif key in (curses.KEY_DC, 330):  # Delete
             if self.cursor_pos < len(self.value):
                 self.value = (
                     self.value[: self.cursor_pos] + self.value[self.cursor_pos + 1 :]
                 )
             return True
-        elif key in (curses.KEY_LEFT,):
+        elif key in (curses.KEY_LEFT, 260):
             if self.cursor_pos > 0:
                 self.cursor_pos -= 1
             return True
-        elif key in (curses.KEY_RIGHT,):
+        elif key in (curses.KEY_RIGHT, 261):
             if self.cursor_pos < len(self.value):
                 self.cursor_pos += 1
+            return True
+        elif key in (curses.KEY_HOME, 1, 262, 360, 544):  # Home or Ctrl+A
+            self.cursor_pos = 0
+            return True
+        elif key in (curses.KEY_END, 5, 358, 545, 550):  # End or Ctrl+E
+            self.cursor_pos = len(self.value)
+            return True
+        elif key == 21:  # Ctrl+U (clear line / delete to start)
+            self.value = self.value[self.cursor_pos :]
+            self.cursor_pos = 0
+            return True
+        elif key == 11:  # Ctrl+K (kill to end)
+            self.value = self.value[: self.cursor_pos]
+            return True
+        elif key == 23:  # Ctrl+W (delete word backward)
+            before = self.value[: self.cursor_pos].rstrip()
+            space_idx = before.rfind(" ")
+            new_pos = space_idx + 1 if space_idx >= 0 else 0
+            self.value = self.value[:new_pos] + self.value[self.cursor_pos :]
+            self.cursor_pos = new_pos
             return True
         elif 32 <= key <= 126:  # Printable character
             ch = chr(key)
@@ -152,15 +185,31 @@ class TextWidget(BaseWidget):
     def render_line(self, width: int, is_focused: bool) -> str:
         focus_mark = "▶ " if is_focused else "  "
         prefix = f"{focus_mark}{self.label}: "
-        avail = max(10, width - len(prefix) - 4)
+        avail = max(10, width - len(prefix) - 6)
         val = str(self.value or "")
+        self.cursor_pos = max(0, min(len(val), self.cursor_pos))
+
         if self.is_editing:
-            if len(val) > avail:
-                start = max(0, self.cursor_pos - avail + 2)
-                sub_val = val[start : start + avail]
-                val_display = f"[{sub_val}▏]"
+            if len(val) >= avail:
+                start = max(0, min(self.cursor_pos - avail + 4, len(val) - avail + 1))
+                if self.cursor_pos < start:
+                    start = self.cursor_pos
+                end = min(len(val), start + avail)
+                sub_val = val[start:end]
+                rel_cursor = self.cursor_pos - start
             else:
-                val_display = f"[{val}▏]"
+                start = 0
+                sub_val = val
+                rel_cursor = self.cursor_pos
+            self._scroll_start = start
+
+            if rel_cursor < len(sub_val):
+                ch = sub_val[rel_cursor]
+                cursor_part = f"\x1b[7m{ch}\x1b[0m"
+                content = sub_val[:rel_cursor] + cursor_part + sub_val[rel_cursor + 1 :]
+            else:
+                content = sub_val + "\x1b[7m \x1b[0m"
+            val_display = f"[ {content} ]"
         else:
             if len(val) > avail:
                 val_display = f"[ ...{val[-(avail - 3) :]} ]"

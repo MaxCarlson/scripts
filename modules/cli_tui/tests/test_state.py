@@ -327,3 +327,46 @@ def test_copy_matching_form_values_filters_choices():
     assert tgt_form.get_value("mode") is None
     assert copied == 1
 
+
+def test_split_arg_tokens_preserves_windows_paths():
+    from cli_tui.state import _split_arg_tokens
+
+    # Standard Windows path with backslashes
+    tokens = _split_arg_tokens(r"B:\hent1imageperpage\urls37.txt")
+    assert tokens == [r"B:\hent1imageperpage\urls37.txt"]
+
+    # Quoted Windows path with spaces
+    tokens = _split_arg_tokens(r'"B:\Hent 1\urls 37.txt"')
+    assert tokens == [r"B:\Hent 1\urls 37.txt"]
+
+    # Multiple space-separated Windows paths
+    tokens = _split_arg_tokens(r'B:\a\1.txt "B:\b\2.txt"')
+    assert tokens == [r"B:\a\1.txt", r"B:\b\2.txt"]
+
+    # Comma-separated Windows paths
+    tokens = _split_arg_tokens(r"B:\a\1.txt, B:\b\2.txt")
+    assert tokens == [r"B:\a\1.txt", r"B:\b\2.txt"]
+
+
+def test_build_argv_preserves_windows_paths_in_append_action():
+    parser = argparse.ArgumentParser(prog="mangadl")
+    parser.add_argument("-i", "--input-file", action="append", default=[])
+    parser.add_argument("-d", "--destination", required=True)
+
+    form = FormState(introspect_parser(parser), subcommands_path=["run"])
+    form.set_value("input_file", r"B:\hent1imageperpage\urls37.txt")
+    form.set_value("destination", "B:\\hent1imageperpage\\")
+
+    argv = form.build_argv(executable=["python", "-m", "mangadl"])
+    assert argv == [
+        "python",
+        "-m",
+        "mangadl",
+        "run",
+        "-i",
+        r"B:\hent1imageperpage\urls37.txt",
+        "-d",
+        "B:\\hent1imageperpage\\",
+    ]
+
+
