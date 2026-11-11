@@ -8,6 +8,7 @@ import httpx
 
 from resource_coordinator.config import (
     CoordinatorConfig,
+    MaintenanceVerificationConfig,
     PolicyConfig,
     ProcessConfig,
     ServiceConfig,
@@ -16,6 +17,7 @@ from resource_coordinator.config import (
 from resource_coordinator.core.durable_state import CoordinatorState, StateCodec
 from resource_coordinator.core.leases import LeaseManager, LeaseType, MaintenanceAdmissionBlocked
 from resource_coordinator.core.processes import ProcessLifecycleOwner, ProcessState
+from resource_coordinator.core.restoration import TrustedRestorationVerifier
 from resource_coordinator.core.service import CoordinatorService
 
 
@@ -237,6 +239,49 @@ def acquire_payload(request_id="test-operation"):
         "inhibit_restarts": True,
         "request_id": request_id,
     }
+
+
+class FakeGpuObserver:
+    def __init__(self, *, power_limit=300000):
+        self.power_limit = power_limit
+        self.lock_observations = []
+        self.manager = None
+
+    def observe(self, gpu_uuid, dimensions):
+        if self.manager is not None:
+            self.lock_observations.append(self.manager._lock.locked())
+        values = {}
+        for dimension in dimensions:
+            values[dimension] = {"status": "available", "value": self.power_limit}
+        return {"schema_version": 1, "observed_at": time.time(), "gpu_uuid": gpu_uuid,
+                "pci_bus_id": "00000000:01:00.0", "driver_version": "555.1", "values": values,
+                "gpu_processes": {"status": "available", "pids": []}}
+
+
+class FakeProcessObserver:
+    def __init__(self, processes=None, *, complete=True):
+        self.processes = processes or []
+        self.complete = complete
+
+    def inspect(self, pid, known_executables):
+        return {"pid": pid, "create_time": 10.0, "executable_path": r"C:\\Mining\\krig.exe",
+                "executable_name": "krig.exe"}
+
+    def inspect_any(self, pid):
+        return {"pid": pid, "create_time": 10.0, "executable_path": r"C:\\Windows\\dwm.exe",
+                "executable_name": "dwm.exe"}
+
+    def inventory(self, known_executables):
+        return {"complete": self.complete, "processes": list(self.processes)}
+
+
+def make_trusted_verifier(gpu_observer=None, process_observer=None):
+    return TrustedRestorationVerifier(
+        gpu_uuid="GPU-test", known_miner_executables=["krig.exe"], max_age_seconds=30,
+        gpu_process_attribution_confirmed=True,
+        gpu_observer=gpu_observer or FakeGpuObserver(),
+        process_observer=process_observer or FakeProcessObserver(),
+    )
 
 
 @pytest.mark.asyncio
@@ -528,6 +573,259 @@ async def test_independent_verifier_can_accept_evidence_and_startup_revokes_old_
         restarted.maintenance_manager._expiry_task.cancel()
     if manager._expiry_task:
         manager._expiry_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_trusted_verifier_captures_bound_baseline_registers_process_and_releases_off_lock(tmp_path: Path):
+    gpu = FakeGpuObserver()
+    verifier = make_trusted_verifier(gpu)
+    service, backend, state_path = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    manager = service.maintenance_manager
+    gpu.manager = manager
+    request = {
+        **acquire_payload("trusted-release"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    }
+    acquired = await manager.acquire(request)
+    assert acquired["status"] == "granted"
+    assert backend.running is False
+    durable = StateCodec.load(state_path).maintenance
+    assert durable["gpu_baseline"]["operation_id"] == "trusted-release"
+    assert durable["tuning_scope"] == request["tuning_scope"]
+
+    registered = await manager.register_process({
+        "token": acquired["token"], "session_id": acquired["session_id"], "pid": 900,
+    })
+    assert registered["status"] == "registered"
+    assert StateCodec.load(state_path).maintenance["registered_processes"][0]["pid"] == 900
+
+    released = await manager.release({
+        "token": acquired["token"], "session_id": acquired["session_id"],
+        "operation_id": "trusted-release", "operator": "mining_optimizer",
+        "restoration_verified": True, "restoration_evidence": {"client_snapshot": "untrusted"},
+        "resume_miner": False,
+    })
+    assert released["status"] == "released"
+    assert released["disposition"]["restoration"]["independently_verified"] is True
+    assert gpu.lock_observations == [False, True, False]
+    assert backend.running is False
+    assert "executable_path" not in json.dumps(manager.status())
+    assert "token" not in json.dumps(StateCodec.load(state_path).to_dict())
+
+
+@pytest.mark.asyncio
+async def test_unavailable_observation_preflight_does_not_stop_managed_miner(tmp_path: Path):
+    gpu = FakeGpuObserver()
+    gpu.power_limit = None
+    original_observe = gpu.observe
+
+    def unsupported(gpu_uuid, dimensions):
+        sample = original_observe(gpu_uuid, dimensions)
+        for dimension in dimensions:
+            sample["values"][dimension] = {"status": "unsupported", "reason": "not_supported"}
+        return sample
+
+    gpu.observe = unsupported
+    verifier = make_trusted_verifier(gpu)
+    service, backend, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    result = await service.maintenance_manager.acquire({
+        **acquire_payload("preflight-no-stop"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert result["status"] == "unavailable"
+    assert backend.running is True
+    assert service.system.lease_mgr.gpu_maintenance_owner is None
+
+
+@pytest.mark.asyncio
+async def test_unaccepted_gpu_process_attribution_disables_automatic_acquisition(tmp_path: Path):
+    verifier = TrustedRestorationVerifier(
+        gpu_uuid="GPU-test", known_miner_executables=["krig.exe"],
+        gpu_observer=FakeGpuObserver(), process_observer=FakeProcessObserver(),
+    )
+    service, backend, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    result = await service.maintenance_manager.acquire({
+        **acquire_payload("attribution-not-accepted"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert result["status"] == "unavailable"
+    assert backend.running is True
+    assert service.system.lease_mgr.gpu_maintenance_owner is None
+
+
+@pytest.mark.asyncio
+async def test_partial_scope_for_broad_mode_is_rejected_before_miner_stop(tmp_path: Path):
+    verifier = make_trusted_verifier()
+    service, backend, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    result = await service.maintenance_manager.acquire({
+        **acquire_payload("partial-scope"),
+        "tuning_scope": {"mode": "power_offsets", "dimensions": ["power_limit_mw"]},
+    })
+    assert result["status"] == "invalid"
+    assert backend.running is True
+    assert service.system.lease_mgr.gpu_maintenance_owner is None
+
+
+@pytest.mark.asyncio
+async def test_configured_trusted_verifier_is_wired_by_coordinator_service(tmp_path: Path):
+    initial, _, _ = make_maintenance_service(tmp_path)
+    initial.system.config.maintenance_verification = MaintenanceVerificationConfig(
+        enabled=True,
+        gpu_uuid="GPU-test",
+        allowed_dimensions=["power_limit_mw"],
+        known_miner_executables=["krig.exe"],
+        gpu_process_attribution_confirmed=True,
+    )
+    # Rebind the same test system to exercise CoordinatorService's config wiring.
+    initial.system.gateway.admission_controller.service = None
+    service = CoordinatorService(
+        initial.system,
+        maintenance_gpu_observer=FakeGpuObserver(),
+        maintenance_process_observer=FakeProcessObserver(),
+    )
+    assert isinstance(service.maintenance_manager.restoration_verifier, TrustedRestorationVerifier)
+    result = await service.maintenance_manager.acquire({
+        **acquire_payload("configured-verifier"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert result["status"] == "granted"
+    assert StateCodec.load(service.maintenance_manager.state_path).maintenance["gpu_baseline"]["gpu_uuid"] == "GPU-test"
+
+
+@pytest.mark.asyncio
+async def test_trusted_release_fails_closed_on_running_trial_and_keeps_gpu_fence(tmp_path: Path):
+    survivor = [{"pid": 900, "create_time": 10.0, "executable_path": r"C:\\Mining\\krig.exe",
+                 "executable_name": "krig.exe"}]
+    verifier = make_trusted_verifier(process_observer=FakeProcessObserver(survivor))
+    service, backend, state_path = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    manager = service.maintenance_manager
+    request = {
+        **acquire_payload("surviving-trial"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    }
+    acquired = await manager.acquire(request)
+    assert acquired["status"] == "granted"
+    assert (await manager.register_process({
+        "token": acquired["token"], "session_id": acquired["session_id"], "pid": 900,
+    }))["status"] == "registered"
+    result = await manager.release({
+        "token": acquired["token"], "session_id": acquired["session_id"],
+        "operator": "mining_optimizer", "restoration_verified": True,
+        "restoration_evidence": {}, "resume_miner": True,
+    })
+    assert result["status"] == "recovery_required"
+    assert manager.state == "recovery_required"
+    assert service.system.lease_mgr.gpu_maintenance_owner == "maintenance:surviving-trial"
+    assert service.system.lease_mgr.is_restart_inhibited("gpu.inference")
+    assert backend.running is False
+    assert StateCodec.load(state_path).maintenance["restoration"]["verification"]["reason_code"] == "registered_process_running"
+
+
+@pytest.mark.asyncio
+async def test_trusted_release_timeout_retains_hold_and_is_bounded(tmp_path: Path):
+    import time as time_module
+
+    gpu = FakeGpuObserver()
+    original_observe = gpu.observe
+    calls = 0
+
+    def delayed_observe(gpu_uuid, dimensions):
+        nonlocal calls
+        calls += 1
+        if calls >= 3:
+            time_module.sleep(0.15)
+        return original_observe(gpu_uuid, dimensions)
+
+    gpu.observe = delayed_observe
+    verifier = make_trusted_verifier(gpu)
+    service, backend, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    manager = service.maintenance_manager
+    manager.observation_timeout_seconds = 0.02
+    acquired = await manager.acquire({
+        **acquire_payload("verification-timeout"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert acquired["status"] == "granted"
+    result = await manager.release({
+        "token": acquired["token"], "session_id": acquired["session_id"],
+        "operator": "mining_optimizer", "restoration_verified": True, "restoration_evidence": {},
+    })
+    assert result["status"] == "recovery_required"
+    assert manager.state == "recovery_required"
+    assert manager._record["restoration"]["verification"]["reason_code"] == "verification_timeout"
+    assert service.system.lease_mgr.gpu_maintenance_owner == "maintenance:verification-timeout"
+    assert backend.running is False
+    retry = await manager.acquire({
+        **acquire_payload("verification-timeout-retry"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert retry["status"] == "unavailable"
+    assert calls == 3
+    # A worker thread cannot be force-cancelled by asyncio's timeout wrapper; let the
+    # bounded, read-only observer return before this isolated test exits.
+    await asyncio.sleep(0.16)
+
+
+@pytest.mark.asyncio
+async def test_expiry_during_verification_cannot_commit_release(tmp_path: Path):
+    now = [time.time()]
+    gpu = FakeGpuObserver()
+    verifier = make_trusted_verifier(gpu)
+    service, backend, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    manager = service.maintenance_manager
+    manager.clock = lambda: now[0]
+    original_verify = verifier.verify
+
+    def expire_after_observation(record, evidence):
+        result = original_verify(record, evidence)
+        now[0] = float(record["expires_at"]) + 1.0
+        return result
+
+    verifier.verify = expire_after_observation
+    acquired = await manager.acquire({
+        **acquire_payload("expiry-race"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    assert acquired["status"] == "granted"
+    assert await manager.register_process({
+        "token": acquired["token"], "session_id": acquired["session_id"], "pid": 902,
+    }) == {
+        "status": "registered", "session_id": acquired["session_id"], "process_count": 1,
+    }
+    result = await manager.release({
+        "token": acquired["token"], "session_id": acquired["session_id"],
+        "operator": "mining_optimizer", "restoration_verified": True, "restoration_evidence": {},
+    })
+    assert result["status"] == "expired"
+    assert manager.state == "recovery_required"
+    assert service.system.lease_mgr.gpu_maintenance_owner == "maintenance:expiry-race"
+    assert backend.running is False
+    if manager._expiry_task is not None:
+        manager._expiry_task.cancel()
+
+
+@pytest.mark.asyncio
+async def test_authenticated_process_registration_route_checks_os_identity(tmp_path: Path):
+    verifier = make_trusted_verifier()
+    service, _, _ = make_maintenance_service(tmp_path, restoration_verifier=verifier)
+    acquired = await service.maintenance_manager.acquire({
+        **acquire_payload("registered-route"),
+        "tuning_scope": {"mode": "power", "dimensions": ["power_limit_mw"]},
+    })
+    app = service.system.gateway.create_app(service)
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://coordinator.test") as client:
+        body = {"token": acquired["token"], "session_id": acquired["session_id"], "pid": 901}
+        denied = await client.post("/_coordinator/maintenance/processes/register", json=body,
+                                   headers={"Authorization": "Bearer wrong"})
+        assert denied.status_code == 403
+        accepted = await client.post("/_coordinator/maintenance/processes/register", json=body,
+                                     headers={"Authorization": "Bearer test-operator-secret"})
+        assert accepted.status_code == 200
+        assert accepted.json()["status"] == "registered"
+        status = await client.get("/_coordinator/maintenance/status")
+        assert status.json()["registered_process_count"] == 1
+        assert r"C:\\Mining\\krig.exe" not in status.text
 
 
 @pytest.mark.asyncio

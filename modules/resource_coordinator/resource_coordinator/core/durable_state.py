@@ -267,6 +267,7 @@ class CoordinatorState:
                 "miner_stopped_by_coordinator", "manual_override_before", "restoration", "recovery_reason",
                 "last_disposition", "restart_not_before",
                 "completed_operations",
+                "tuning_scope", "gpu_baseline", "registered_processes",
             }
             if set(maintenance) - allowed_maintenance:
                 raise ValueError("Unknown maintenance record fields")
@@ -299,6 +300,81 @@ class CoordinatorState:
             for key in ("restoration", "last_disposition"):
                 if key in maintenance:
                     _mapping(maintenance[key], f"maintenance {key}")
+            scope = maintenance.get("tuning_scope")
+            if scope is not None:
+                if (
+                    not isinstance(scope, dict)
+                    or set(scope) != {"mode", "dimensions"}
+                    or scope.get("mode") not in {"power", "offsets", "power_offsets", "fixed_clocks"}
+                    or not isinstance(scope.get("dimensions"), list)
+                    or len(scope["dimensions"]) > 3
+                    or any(not isinstance(item, str) for item in scope["dimensions"])
+                ):
+                    raise ValueError("Invalid maintenance tuning scope")
+            baseline = maintenance.get("gpu_baseline")
+            if baseline is not None:
+                if (
+                    not isinstance(baseline, dict)
+                    or set(baseline) != {
+                        "schema_version", "operation_id", "observed_at", "gpu_uuid", "pci_bus_id",
+                        "driver_version", "values", "gpu_processes",
+                    }
+                    or baseline.get("schema_version") != 1
+                    or not _valid_time(baseline.get("observed_at"))
+                    or not isinstance(baseline.get("operation_id"), str)
+                    or not baseline.get("operation_id")
+                    or not isinstance(baseline.get("gpu_uuid"), str)
+                    or not baseline.get("gpu_uuid")
+                    or not isinstance(baseline.get("pci_bus_id"), str)
+                    or not isinstance(baseline.get("driver_version"), str)
+                    or not isinstance(baseline.get("values"), dict)
+                    or len(baseline["values"]) > 3
+                ):
+                    raise ValueError("Invalid maintenance GPU baseline")
+                for dimension, observation in baseline["values"].items():
+                    if dimension not in {
+                        "power_limit_mw", "graphics_clock_offset_mhz", "memory_clock_offset_mhz"
+                    } or not isinstance(observation, dict) or set(observation) - {"status", "value", "reason"}:
+                        raise ValueError("Invalid maintenance GPU baseline setting")
+                    if observation.get("status") == "available":
+                        if type(observation.get("value")) not in (int, float) or not math.isfinite(
+                            float(observation["value"])
+                        ):
+                            raise ValueError("Invalid maintenance GPU baseline value")
+                    elif observation.get("status") != "unsupported":
+                        raise ValueError("Invalid maintenance GPU baseline capability")
+                attribution = baseline.get("gpu_processes")
+                if not isinstance(attribution, dict) or attribution.get("status") != "available" \
+                        or not isinstance(attribution.get("identities"), list) \
+                        or len(attribution["identities"]) > 256:
+                    raise ValueError("Invalid maintenance GPU-process baseline")
+                for process in attribution["identities"]:
+                    if (
+                        not isinstance(process, dict)
+                        or set(process) != {"pid", "create_time", "executable_path", "executable_name"}
+                        or type(process.get("pid")) is not int or process["pid"] <= 0
+                        or not _valid_time(process.get("create_time"))
+                        or not isinstance(process.get("executable_path"), str)
+                        or not process["executable_path"] or len(process["executable_path"]) > 2048
+                        or not isinstance(process.get("executable_name"), str)
+                        or not process["executable_name"] or len(process["executable_name"]) > 256
+                    ):
+                        raise ValueError("Invalid maintenance GPU-process baseline identity")
+            registered = maintenance.get("registered_processes", [])
+            if not isinstance(registered, list) or len(registered) > 64:
+                raise ValueError("Invalid maintenance process registration list")
+            for process in registered:
+                if (
+                    not isinstance(process, dict)
+                    or set(process) != {"pid", "create_time", "executable_path", "executable_name"}
+                    or type(process.get("pid")) is not int or process["pid"] <= 0
+                    or not _valid_time(process.get("create_time"))
+                    or not isinstance(process.get("executable_path"), str)
+                    or not process["executable_path"] or len(process["executable_path"]) > 2048
+                    or not isinstance(process.get("executable_name"), str)
+                    or not process["executable_name"] or len(process["executable_name"]) > 256
+                ):
+                    raise ValueError("Invalid maintenance process identity")
             completed_operations = maintenance.get("completed_operations", [])
             if not isinstance(completed_operations, list) or len(completed_operations) > 64:
                 raise ValueError("Invalid maintenance completed-operation history")

@@ -13,6 +13,7 @@ def test_load_default_config():
     assert cfg.service.model_load_timeout_seconds == 1800.0
     assert "krig" in cfg.processes
     assert len(cfg.policies) >= 1
+    assert cfg.maintenance_verification.enabled is False
 
 
 def test_load_custom_yaml(tmp_path: Path):
@@ -45,6 +46,43 @@ policies:
     assert "test_proc" in cfg.processes
     assert cfg.policies[0].name == "test_policy"
     assert cfg.policies[0].cooldown_seconds == 15.0
+
+
+def test_maintenance_verification_config_is_disabled_by_default_and_validated():
+    default = CoordinatorConfig.from_dict({})
+    assert default.maintenance_verification.enabled is False
+
+    configured = CoordinatorConfig.from_dict({
+        "maintenance_verification": {
+            "enabled": True,
+            "gpu_uuid": "GPU-test",
+            "allowed_dimensions": ["power_limit_mw", "graphics_clock_offset_mhz"],
+            "known_miner_executables": ["krig.exe", "SRBMiner.exe"],
+            "gpu_process_attribution_confirmed": True,
+            "observation_timeout_seconds": 4.0,
+            "max_observation_age_seconds": 20.0,
+        }
+    })
+    assert configured.maintenance_verification.enabled is True
+    assert configured.maintenance_verification.allowed_dimensions == [
+        "power_limit_mw", "graphics_clock_offset_mhz"
+    ]
+
+    for invalid in (
+        {"enabled": True},
+        {"enabled": True, "gpu_uuid": 123, "allowed_dimensions": ["power_limit_mw"],
+         "known_miner_executables": ["krig.exe"]},
+        {"enabled": True, "gpu_uuid": "GPU-test", "allowed_dimensions": ["locked_clocks"],
+         "known_miner_executables": ["krig.exe"]},
+        {"enabled": True, "gpu_uuid": "GPU-test", "allowed_dimensions": ["power_limit_mw"],
+         "known_miner_executables": ["C:\\miners\\krig.exe"]},
+        {"enabled": True, "gpu_uuid": "GPU-test", "allowed_dimensions": ["power_limit_mw"],
+         "known_miner_executables": ["krig.exe"], "observation_timeout_seconds": 31},
+        {"enabled": True, "gpu_uuid": "GPU-test", "allowed_dimensions": ["power_limit_mw"],
+         "known_miner_executables": ["krig.exe"], "gpu_process_attribution_confirmed": 1},
+    ):
+        with pytest.raises((TypeError, ValueError)):
+            CoordinatorConfig.from_dict({"maintenance_verification": invalid})
 
 
 def test_load_config_uses_managed_paths_only_when_config_omits_them(tmp_path: Path, monkeypatch):

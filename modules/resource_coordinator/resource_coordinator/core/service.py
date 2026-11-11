@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 from resource_coordinator.core.durable_state import StateCodec, reconcile_startup_state
 from resource_coordinator.core.lock import SingleInstanceLock
 from resource_coordinator.core.maintenance import MaintenanceSessionManager
+from resource_coordinator.core.restoration import TrustedRestorationVerifier
 from resource_coordinator.core.processes import ProcessState, ProcessLifecycleOwner, WindowsProcessBackend
 from resource_coordinator.core.runtime_identity import build_runtime_identity
 
@@ -102,12 +103,27 @@ class CoordinatorService:
             if lock_path:
                 self._instance_lock = SingleInstanceLock(lock_path)
         self.system.gateway.set_service(self)
+        verification_config = getattr(self.system.config, "maintenance_verification", None)
+        restoration_verifier = kwargs.get("maintenance_restoration_verifier")
+        observation_timeout = float(getattr(verification_config, "observation_timeout_seconds", 5.0))
+        if restoration_verifier is None and verification_config is not None and verification_config.enabled:
+            restoration_verifier = TrustedRestorationVerifier(
+                gpu_uuid=verification_config.gpu_uuid,
+                known_miner_executables=verification_config.known_miner_executables,
+                max_age_seconds=verification_config.max_observation_age_seconds,
+                allowed_gpu_processes=verification_config.allowed_gpu_processes,
+                allowed_dimensions=verification_config.allowed_dimensions,
+                gpu_process_attribution_confirmed=verification_config.gpu_process_attribution_confirmed,
+                gpu_observer=kwargs.get("maintenance_gpu_observer"),
+                process_observer=kwargs.get("maintenance_process_observer"),
+            )
         self.maintenance_manager = MaintenanceSessionManager(
             self,
             response_wait_seconds=float(kwargs.get("maintenance_response_wait_seconds", 2.0)),
             clock=kwargs.get("maintenance_clock", time.time),
             sleep=kwargs.get("maintenance_sleep", asyncio.sleep),
-            restoration_verifier=kwargs.get("maintenance_restoration_verifier"),
+            restoration_verifier=restoration_verifier,
+            observation_timeout_seconds=observation_timeout,
         )
 
     def has_model_load_policy(self) -> bool:

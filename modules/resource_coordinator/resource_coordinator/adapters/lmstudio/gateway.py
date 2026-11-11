@@ -303,6 +303,8 @@ class LMStudioGateway:
                   methods=["GET"]),
             Route("/_coordinator/maintenance/acquire", self.handle_maintenance_acquire, methods=["POST"]),
             Route("/_coordinator/maintenance/heartbeat", self.handle_maintenance_heartbeat, methods=["POST"]),
+            Route("/_coordinator/maintenance/processes/register", self.handle_maintenance_process_register,
+                  methods=["POST"]),
             Route("/_coordinator/maintenance/release", self.handle_maintenance_release, methods=["POST"]),
             Route("/_coordinator/miner/status", self.handle_coordinator_miner_status, methods=["GET"]),
             Route("/_coordinator/miner/{action:str}", self.handle_coordinator_miner_control, methods=["POST"]),
@@ -386,6 +388,19 @@ class LMStudioGateway:
         except (ValueError, TypeError):
             return JSONResponse({"error": "A JSON release request is required"}, status_code=400)
         result = await service.maintenance_manager.release(payload)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
+
+    async def handle_maintenance_process_register(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A JSON process-registration request is required"}, status_code=400)
+        result = await service.maintenance_manager.register_process(payload)
         return JSONResponse(result, status_code=self._maintenance_http_status(result))
 
     def _current_operator_token(self) -> Optional[str]:

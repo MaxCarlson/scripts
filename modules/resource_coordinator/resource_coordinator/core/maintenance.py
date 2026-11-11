@@ -38,6 +38,7 @@ class MaintenanceSessionManager:
         clock: Callable[[], float] = time.time,
         sleep: Callable[[float], Any] = asyncio.sleep,
         restoration_verifier: Optional[Callable[[Dict[str, Any], Dict[str, Any]], bool]] = None,
+        observation_timeout_seconds: float = 5.0,
     ) -> None:
         self.service = service
         self.lease_manager: LeaseManager = service.system.lease_mgr
@@ -48,7 +49,10 @@ class MaintenanceSessionManager:
         self.clock = clock
         self.sleep = sleep
         self.restoration_verifier = restoration_verifier
+        self.observation_timeout_seconds = float(observation_timeout_seconds)
         self._lock = asyncio.Lock()
+        self._observer_admission = asyncio.Lock()
+        self._observer_worker_active = False
         self._record: Dict[str, Any] = {"state": "idle"}
         self._operation_task: Optional[asyncio.Task] = None
         self._expiry_task: Optional[asyncio.Task] = None
@@ -56,6 +60,26 @@ class MaintenanceSessionManager:
         self._token_for_idempotent_retry: Optional[str] = None
         self._last_released_session_id: Optional[str] = None
         self._last_released_token_digest: Optional[bytes] = None
+
+    async def _run_observer(self, callback: Callable[..., Any], *args: Any) -> Any:
+        """Bound observer waiting and reject retries while a timed-out worker is still active."""
+        async with self._observer_admission:
+            if self._observer_worker_active:
+                raise RuntimeError("A previous read-only hardware/process observation is still running")
+            self._observer_worker_active = True
+            try:
+                task = asyncio.create_task(asyncio.to_thread(callback, *args))
+            except Exception:
+                self._observer_worker_active = False
+                raise
+            task.add_done_callback(self._observer_finished)
+        return await asyncio.wait_for(asyncio.shield(task), timeout=self.observation_timeout_seconds)
+
+    def _observer_finished(self, task: asyncio.Task) -> None:
+        self._observer_worker_active = False
+        if not task.cancelled():
+            # Retrieve late worker failures after the caller timed out, avoiding unhandled-task warnings.
+            task.exception()
 
     @property
     def enabled(self) -> bool:
@@ -94,12 +118,25 @@ class MaintenanceSessionManager:
             or any(ch not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-" for ch in operation_id)
         ):
             return {"status": "invalid", "error": "request_id must be a bounded URL-safe identifier"}
+        tuning_scope = payload.get("tuning_scope")
+        if tuning_scope is not None:
+            if (
+                not isinstance(tuning_scope, dict)
+                or set(tuning_scope) != {"mode", "dimensions"}
+                or not isinstance(tuning_scope.get("mode"), str)
+                or not isinstance(tuning_scope.get("dimensions"), list)
+                or len(tuning_scope["dimensions"]) > 3
+                or any(not isinstance(item, str) for item in tuning_scope["dimensions"])
+            ):
+                return {"status": "invalid", "error": "tuning_scope must declare a bounded mode and dimensions"}
+            tuning_scope = {"mode": tuning_scope["mode"], "dimensions": list(tuning_scope["dimensions"])}
         return {
             "operator": payload["operator"].strip(),
             "reason": payload["reason"].strip(),
             "lease_seconds": lease_seconds,
             "operation_id": operation_id or uuid.uuid4().hex,
             "client_supplied_operation_id": operation_id is not None,
+            "tuning_scope": tuning_scope,
         }
 
     def _load_record(self) -> Dict[str, Any]:
@@ -201,6 +238,18 @@ class MaintenanceSessionManager:
         if request and request.get("status") == "invalid":
             return request
         assert request is not None
+        if getattr(self.restoration_verifier, "validate_scope", None):
+            if not request.get("tuning_scope") or not self.restoration_verifier.validate_scope(request["tuning_scope"]):
+                return {"status": "invalid", "error": "A verifier-supported tuning_scope is required"}
+        preflight = getattr(self.restoration_verifier, "preflight", None)
+        if callable(preflight):
+            try:
+                await self._run_observer(preflight, request["tuning_scope"])
+            except asyncio.TimeoutError:
+                return {"status": "unavailable", "error": "Restoration-verifier preflight timed out; miner was not stopped"}
+            except Exception as exc:
+                logger.info("Maintenance observer preflight rejected acquisition (%s)", type(exc).__name__)
+                return {"status": "unavailable", "error": "Restoration-verifier preflight failed; miner was not stopped"}
         operation_id = request["operation_id"]
         task: Optional[asyncio.Task] = None
         async with self._lock:
@@ -218,7 +267,7 @@ class MaintenanceSessionManager:
                 if current.get("operation_id") == operation_id:
                     if any(
                         current.get(key) != request[key]
-                        for key in ("operator", "reason", "lease_seconds")
+                        for key in ("operator", "reason", "lease_seconds", "tuning_scope")
                     ):
                         return {
                             "status": "conflict",
@@ -332,6 +381,8 @@ class MaintenanceSessionManager:
             "miner_stopped_by_coordinator": False,
             "manual_override_before": False,
             "restoration": {},
+            **({"tuning_scope": dict(request["tuning_scope"])} if request.get("tuning_scope") else {}),
+            "registered_processes": [],
         }
 
     async def _complete_acquisition(self, record: Dict[str, Any]) -> Dict[str, Any]:
@@ -359,6 +410,21 @@ class MaintenanceSessionManager:
                     await self.service._persist_supervisor_state(supervisor, was_stopped_by_coordinator=True)
                 elif info.state != ProcessState.STOPPED:
                     raise RuntimeError("Miner state became unverifiable during acquisition")
+
+                capture_baseline = getattr(self.restoration_verifier, "capture_baseline", None)
+                if callable(capture_baseline):
+                    if not record.get("tuning_scope"):
+                        raise RuntimeError("Maintenance tuning scope is unavailable")
+                    baseline = await self._run_observer(capture_baseline, record["tuning_scope"])
+                    from resource_coordinator.core.restoration import evaluate_gpu_restoration
+                    baseline_check = evaluate_gpu_restoration(
+                        record["tuning_scope"], baseline, baseline,
+                        expected_gpu_uuid=self.restoration_verifier.gpu_uuid,
+                        max_age_seconds=self.restoration_verifier.max_age_seconds,
+                    )
+                    if not baseline_check.verified:
+                        raise RuntimeError(f"Maintenance baseline rejected: {baseline_check.reason_code}")
+                    record["gpu_baseline"] = {**baseline, "operation_id": operation_id}
 
                 token = secrets.token_urlsafe(32)
                 session_id = uuid.uuid4().hex
@@ -428,6 +494,58 @@ class MaintenanceSessionManager:
             return {"status": "renewed", "session_id": record["session_id"], "expires_at": record["expires_at"],
                     "lease_seconds": duration}
 
+    async def register_process(self, payload: Any) -> Dict[str, Any]:
+        """Register a trial process after independently verifying its current OS identity."""
+        unavailable = self._require_state_path()
+        if unavailable:
+            return unavailable
+        if not isinstance(payload, dict):
+            return {"status": "invalid", "error": "A JSON object is required"}
+        token, session_id, pid = payload.get("token"), payload.get("session_id"), payload.get("pid")
+        if not isinstance(token, str) or not token or not isinstance(session_id, str) or not session_id \
+                or type(pid) is not int or pid <= 0:
+            return {"status": "invalid", "error": "token, session_id, and positive integer pid are required"}
+        inspector = getattr(self.restoration_verifier, "inspect_process", None)
+        if not callable(inspector):
+            return {"status": "unavailable", "error": "Trusted process observation is not configured"}
+        async with self._lock:
+            if self.state != "active" or self._record.get("session_id") != session_id \
+                    or not self._token_matches(token):
+                return {"status": "stale", "error": "Maintenance ownership is invalid or revoked"}
+            if self.clock() >= float(self._record.get("expires_at", 0)):
+                await self._mark_recovery_locked(self._record, "Maintenance lease expired during process registration")
+                return {"status": "expired", "error": "Expired maintenance ownership cannot register a process"}
+            operation_id = self._record.get("operation_id")
+        try:
+            identity = await self._run_observer(inspector, pid)
+        except asyncio.TimeoutError:
+            return {"status": "unavailable", "error": "Process identity observation timed out"}
+        except Exception as exc:
+            return {"status": "invalid", "error": f"Process identity could not be verified ({type(exc).__name__})"}
+        async with self._lock:
+            if self.state != "active" or self._record.get("operation_id") != operation_id \
+                    or self._record.get("session_id") != session_id or not self._token_matches(token):
+                return {"status": "stale", "error": "Maintenance ownership changed during process inspection"}
+            if self.clock() >= float(self._record.get("expires_at", 0)):
+                await self._mark_recovery_locked(self._record, "Maintenance lease expired during process registration")
+                return {"status": "expired", "error": "Expired maintenance ownership cannot register a process"}
+            processes = list(self._record.get("registered_processes", []))
+            if any(item.get("pid") == identity["pid"] and item.get("create_time") == identity["create_time"]
+                   for item in processes):
+                return {"status": "registered", "session_id": session_id, "process_count": len(processes),
+                        "idempotent": True}
+            if len(processes) >= 64:
+                return {"status": "invalid", "error": "Maintenance process registration limit reached"}
+            record = dict(self._record)
+            record["registered_processes"] = processes + [identity]
+            record["updated_at"] = self.clock()
+            try:
+                self._persist(record)
+            except Exception:
+                await self._mark_recovery_locked(self._record, "Process registration could not be durably recorded")
+                return {"status": "persistence_failed", "error": "Process registration persistence failed"}
+            return {"status": "registered", "session_id": session_id, "process_count": len(record["registered_processes"])}
+
     async def release(self, payload: Any) -> Dict[str, Any]:
         unavailable = self._require_state_path()
         if unavailable:
@@ -449,6 +567,97 @@ class MaintenanceSessionManager:
         if override and (not isinstance(override_reason, str) or not override_reason.strip() or len(override_reason) > 512):
             return {"status": "invalid", "error": "Explicit operator override requires a bounded reason"}
 
+        evidence = payload.get("restoration_evidence", {})
+        if not isinstance(evidence, dict) or len(evidence) > 32:
+            return {"status": "invalid", "error": "restoration_evidence must be a bounded object"}
+        preverified = False
+        verification_summary: Optional[Dict[str, Any]] = None
+        verifier = self.restoration_verifier
+        verify_method = getattr(verifier, "verify", None)
+        if not callable(verify_method) and callable(verifier):
+            verify_method = verifier
+        verify_snapshot: Optional[Dict[str, Any]] = None
+
+        if payload["restoration_verified"] and not override and callable(verify_method):
+            async with self._lock:
+                if self.state == "releasing" and self._record.get("session_id") == session_id \
+                        and isinstance(token, str) and self._token_matches(token):
+                    return {"status": "pending", "session_id": session_id,
+                            "operation_id": self._record.get("operation_id"),
+                            "error": "Restoration verification is already in progress"}
+                if self.state != "active" or self._record.get("session_id") != session_id \
+                        or not isinstance(token, str) or not self._token_matches(token):
+                    # Operator recovery continues through the existing audited override path.
+                    if not (self.state == "recovery_required" and override):
+                        return {"status": "stale", "error": "Maintenance session or fencing token is invalid"}
+                elif self._record.get("operator") != operator and not override:
+                    return {"status": "stale", "error": "Maintenance session belongs to another operator"}
+                elif self.clock() >= float(self._record.get("expires_at", 0)):
+                    await self._mark_recovery_locked(self._record,
+                        "Maintenance lease expired before restoration verification")
+                    return {"status": "expired", "error": "Expired ownership requires operator reconciliation"}
+                else:
+                    verify_snapshot = dict(self._record)
+                    verify_snapshot.update(state="releasing", updated_at=self.clock())
+                    self._persist(verify_snapshot)
+            if verify_snapshot is not None:
+                try:
+                    result = await self._run_observer(verify_method, verify_snapshot, dict(evidence))
+                    if isinstance(result, bool):
+                        preverified = result
+                        verification_summary = {"verified": result,
+                                                "reason_code": "legacy_verifier" if result else "verification_failed"}
+                    elif callable(getattr(result, "to_dict", None)):
+                        verification_summary = result.to_dict()
+                        preverified = result.verified is True
+                    else:
+                        verification_summary = {"verified": False, "reason_code": "invalid_verifier_result"}
+                except asyncio.TimeoutError:
+                    verification_summary = {"verified": False, "reason_code": "verification_timeout"}
+                except asyncio.CancelledError:
+                    async with self._lock:
+                        if self.state == "releasing" and self._record.get("session_id") == session_id:
+                            await asyncio.shield(self._mark_recovery_locked(
+                                self._record, "Restoration verification was cancelled"))
+                    raise
+                except Exception as exc:
+                    verification_summary = {"verified": False,
+                                             "reason_code": f"verification_error:{type(exc).__name__}"}
+                async with self._lock:
+                    if self.state != "releasing" or self._record.get("session_id") != session_id \
+                            or self._record.get("operation_id") != verify_snapshot.get("operation_id"):
+                        return {"status": "stale", "error": "Maintenance ownership changed during verification"}
+                    if self.clock() >= float(self._record.get("expires_at", 0)):
+                        await self._mark_recovery_locked(self._record,
+                            "Maintenance lease expired while restoration was being verified")
+                        return {"status": "expired", "error": "Expired ownership requires operator reconciliation"}
+                    if not preverified:
+                        failed = dict(self._record)
+                        failed["restoration"] = {
+                            "client_asserted_verified": True,
+                            "independently_verified": False,
+                            "operator_override": False,
+                            "evidence_received": bool(evidence),
+                            "attempted_at": self.clock(),
+                            "verification": verification_summary,
+                        }
+                        await self._mark_recovery_locked(
+                            failed, "Independent restoration verification did not establish safe release")
+                        return {"status": "recovery_required", "session_id": session_id,
+                                "error": "Independent restoration verification failed; GPU admission remains inhibited",
+                                "maintenance": self.status()}
+                    record = dict(self._record)
+                    record["restoration"] = {
+                        "client_asserted_verified": True,
+                        "independently_verified": True,
+                        "operator_override": False,
+                        "evidence_received": bool(evidence),
+                        "verified_at": self.clock(),
+                        "verification": verification_summary,
+                    }
+                    record["updated_at"] = self.clock()
+                    self._persist(record)
+
         async with self._lock:
             completed = self._completed_dispositions(self._record)
             replay = next((item for item in reversed(completed) if (
@@ -469,7 +678,7 @@ class MaintenanceSessionManager:
                 )
             )
             token_owner = (
-                self.state == "active"
+                self.state in {"active", "releasing"}
                 and self._record.get("session_id") == session_id
                 and isinstance(token, str)
                 and self._token_matches(token)
@@ -483,14 +692,7 @@ class MaintenanceSessionManager:
                 await self._mark_recovery_locked(self._record, "Maintenance lease expired before release reconciliation")
                 return {"status": "expired", "error": "Expired ownership requires operator reconciliation"}
 
-            evidence = payload.get("restoration_evidence", {})
-            if not isinstance(evidence, dict) or len(evidence) > 32:
-                return {"status": "invalid", "error": "restoration_evidence must be a bounded object"}
-            independent = False
-            try:
-                independent = bool(self.restoration_verifier and self.restoration_verifier(dict(self._record), evidence))
-            except Exception:
-                logger.warning("Maintenance restoration verifier failed for session %s", session_id)
+            independent = preverified
             if not operator_recovery and not override and not (payload["restoration_verified"] and independent):
                 record = dict(self._record)
                 record["restoration"] = {
@@ -499,6 +701,7 @@ class MaintenanceSessionManager:
                     "operator_override": override,
                     "evidence_received": bool(evidence),
                     "attempted_at": self.clock(),
+                    **({"verification": verification_summary} if verification_summary else {}),
                 }
                 record["updated_at"] = self.clock()
                 self._persist(record)
@@ -514,6 +717,7 @@ class MaintenanceSessionManager:
                 "override_reason": override_reason.strip() if override else None,
                 "evidence_received": bool(evidence),
                 "verified_at": self.clock(),
+                **({"verification": verification_summary} if verification_summary else {}),
             }
             try:
                 release_committed = False
@@ -678,11 +882,24 @@ class MaintenanceSessionManager:
                 )
                 if key in safe_restoration
             }
+            if isinstance(safe_restoration.get("verification"), dict):
+                safe_disposition["restoration"]["verification"] = self._safe_verification(
+                    safe_restoration["verification"]
+                )
         another_hold = any(
             self.lease_manager.is_restart_inhibited(resource)
             for resource in self.lease_manager.tracked_resources()
             if resource.startswith("gpu.")
         )
+        current_restoration = {
+            key: value for key, value in record.get("restoration", {}).items()
+            if key in {"client_asserted_verified", "independently_verified", "operator_override",
+                       "evidence_received", "verified_at", "attempted_at"}
+        }
+        if isinstance(record.get("restoration", {}).get("verification"), dict):
+            current_restoration["verification"] = self._safe_verification(
+                record["restoration"]["verification"]
+            )
         return {
             "state": state,
             "owner": record.get("operator"),
@@ -702,13 +919,31 @@ class MaintenanceSessionManager:
                 and not self.lease_manager.restarts_blocked
             ),
             "recovery_required_reason": record.get("recovery_reason"),
-            "restoration": {
-                key: value for key, value in record.get("restoration", {}).items()
-                if key in {"client_asserted_verified", "independently_verified", "operator_override",
-                           "evidence_received", "verified_at", "attempted_at"}
-            },
+            "restoration": current_restoration,
             "last_disposition": safe_disposition,
+            "registered_process_count": len(record.get("registered_processes", [])),
         }
+
+    @staticmethod
+    def _safe_verification(summary: Dict[str, Any]) -> Dict[str, Any]:
+        comparisons = summary.get("comparisons", {})
+        safe_comparisons = {}
+        if isinstance(comparisons, dict):
+            for key, comparison in comparisons.items():
+                if key in {"power_limit_mw", "graphics_clock_offset_mhz", "memory_clock_offset_mhz"} \
+                        and isinstance(comparison, dict):
+                    safe_comparisons[key] = {
+                        field: comparison[field] for field in ("match", "baseline", "current", "unit", "status")
+                        if field in comparison
+                    }
+        process_result = summary.get("process_termination", {})
+        safe_process_result = {
+            "registered_processes": process_result.get("registered_processes")
+        } if isinstance(process_result, dict) else {}
+        return {
+            key: summary[key] for key in ("verified", "reason_code", "gpu_uuid", "observed_at")
+            if key in summary
+        } | {"comparisons": safe_comparisons, "process_termination": safe_process_result}
 
     def operation_status(self, operation_id: str) -> Dict[str, Any]:
         if operation_id != self._record.get("operation_id"):
@@ -726,6 +961,9 @@ class MaintenanceSessionManager:
         }
 
     async def _emit(self, event_name: str, record: Dict[str, Any]) -> None:
+        restoration = record.get("restoration", {})
+        verification = restoration.get("verification") if isinstance(restoration, dict) else None
+        safe_verification = self._safe_verification(verification) if isinstance(verification, dict) else None
         await self.service.system.dispatcher.emit(
             event_name,
             {
@@ -738,5 +976,6 @@ class MaintenanceSessionManager:
                 "state": record.get("state"),
                 "recovery_reason": record.get("recovery_reason"),
                 "miner_stopped_by_coordinator": record.get("miner_stopped_by_coordinator", False),
+                "restoration_verification": safe_verification,
             },
         )
