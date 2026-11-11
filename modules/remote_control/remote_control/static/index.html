@@ -61,6 +61,7 @@
     <nav>
       <button class="nav-btn active" data-tab="summary">Summary</button>
       <button class="nav-btn" data-tab="incidents">Incidents</button>
+      <button class="nav-btn" data-tab="actions">Actions</button>
       <button class="nav-btn" data-tab="notifications">Outbox</button>
       <button class="nav-btn" data-tab="providers">Providers</button>
       <button class="nav-btn" data-tab="heartbeat">Heartbeat</button>
@@ -133,6 +134,44 @@
         </div>
       </section>
 
+      <!-- Tab: Actions & Capabilities -->
+      <section id="tab-actions" class="tab-content" style="display: none;">
+        <div class="card" style="padding: 12px;">
+          <div style="display: flex; gap: 8px;">
+            <select id="filter-action-effect">
+              <option value="">All Effects</option>
+              <option value="mutation">Mutations Only</option>
+              <option value="read">Read Only</option>
+            </select>
+            <select id="filter-action-module">
+              <option value="">All Modules</option>
+              <option value="notifications">Notifications</option>
+              <option value="resource_coordinator">Resource Coordinator</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Registered Capabilities</span>
+            <span id="capabilities-count" class="badge badge-info">0</span>
+          </div>
+          <div id="capabilities-list">
+            <!-- Capabilities rendered here -->
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-title">
+            <span>Execution Journal</span>
+            <span id="executions-count" class="badge badge-info">0</span>
+          </div>
+          <div id="executions-list">
+            <!-- Execution records rendered here -->
+          </div>
+        </div>
+      </section>
+
       <!-- Tab 3: Notifications -->
       <section id="tab-notifications" class="tab-content" style="display: none;">
         <div class="card">
@@ -191,6 +230,19 @@
       </div>
       <div id="modal-body" style="font-size: 0.875rem;">
         <!-- Incident detail rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Action Confirmation Modal -->
+  <div id="action-modal" class="modal" style="display: none;">
+    <div class="modal-content">
+      <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px;">
+        <h2 id="action-modal-title" style="font-size: 1.125rem; font-weight: 700;">Confirm Action Execution</h2>
+        <button id="btn-action-modal-close" class="btn-secondary">Close</button>
+      </div>
+      <div id="action-modal-body" style="font-size: 0.875rem;">
+        <!-- Action confirmation workflow rendered here -->
       </div>
     </div>
   </div>

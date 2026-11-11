@@ -143,6 +143,7 @@
     }
     if (activeTab === "summary") loadSummary();
     else if (activeTab === "incidents") loadIncidents();
+    else if (activeTab === "actions") loadActions();
     else if (activeTab === "notifications") loadNotifications();
     else if (activeTab === "providers") loadProviders();
     else if (activeTab === "heartbeat") loadHeartbeat();
@@ -294,9 +295,417 @@
       });
       body.appendChild(attList);
 
+      // Acknowledge action button for open incidents
+      if (inc.status !== "resolved" && inc.status !== "acknowledged") {
+        const ackBtn = h(
+          "button",
+          {
+            className: "btn-primary",
+            style: { marginTop: "16px", width: "100%" },
+            onClick: () => {
+              document.getElementById("incident-modal").style.display = "none";
+              promptAcknowledgeIncident(inc.incident_id, inc.summary);
+            },
+          },
+          "Acknowledge Incident (2FA)"
+        );
+        body.appendChild(ackBtn);
+      }
+
     } catch (err) {
       body.textContent = `Error loading incident: ${err.message}`;
     }
+  }
+
+  // ── Tab: Actions & Capabilities ──────────────────────────────────────────────
+
+  let challengeTimerInterval = null;
+
+  async function loadActions() {
+    const effectFilter = document.getElementById("filter-action-effect").value;
+    const moduleFilter = document.getElementById("filter-action-module").value;
+    const capsList = document.getElementById("capabilities-list");
+    const execList = document.getElementById("executions-list");
+    capsList.textContent = "Loading capabilities...";
+    execList.textContent = "Loading journal...";
+
+    try {
+      const data = await apiFetch("/api/v1/capabilities");
+      capsList.textContent = "";
+
+      let items = data.capabilities || [];
+      if (effectFilter) items = items.filter((c) => c.effect === effectFilter);
+      if (moduleFilter) items = items.filter((c) => c.module === moduleFilter);
+
+      document.getElementById("capabilities-count").textContent = items.length;
+
+      if (items.length === 0) {
+        capsList.appendChild(h("div", { className: "empty-state" }, "No capabilities match filters."));
+      } else {
+        items.forEach((cap) => {
+          const isMutation = cap.effect === "mutation";
+          const effectBadgeClass = isMutation ? "badge-warning" : "badge-info";
+          const enabledBadgeClass = cap.enabled ? "badge-success" : "badge-stale";
+
+          const card = h("div", { className: "stat-box", style: { textAlign: "left", marginBottom: "12px" } }, [
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: "6px" } }, [
+              h("strong", { style: { fontSize: "1rem" } }, cap.label),
+              h("div", { style: { display: "flex", gap: "6px" } }, [
+                h("span", { className: `badge ${effectBadgeClass}` }, cap.effect),
+                h("span", { className: `badge ${enabledBadgeClass}` }, cap.enabled ? "Enabled" : "Disabled"),
+              ]),
+            ]),
+            h("div", { style: { fontSize: "0.875rem", marginBottom: "8px" } }, cap.description),
+            h("div", { style: { fontSize: "0.75rem", color: "var(--text-muted)", marginBottom: "10px" } }, [
+              h("span", {}, `ID: ${cap.action_id} | Permission: ${cap.required_permission}`),
+              cap.confirmation_required ? h("span", { style: { marginLeft: "8px", color: "var(--status-warning)" } }, "• Challenge Required") : null,
+              cap.step_up_required ? h("span", { style: { marginLeft: "8px", color: "var(--status-critical)" } }, "• 2FA Required") : null,
+            ]),
+            cap.disabled_reason ? h("div", { style: { fontSize: "0.75rem", color: "var(--status-critical)", marginBottom: "8px" } }, `Disabled: ${cap.disabled_reason}`) : null,
+            cap.enabled
+              ? h(
+                  "button",
+                  {
+                    className: isMutation ? "btn-primary" : "btn-secondary",
+                    style: { fontSize: "0.8125rem", padding: "6px 14px", minHeight: "36px" },
+                    onClick: () => promptActionExecution(cap),
+                  },
+                  isMutation ? "Prepare Action" : "Execute Query"
+                )
+              : h(
+                  "button",
+                  {
+                    className: "btn-secondary",
+                    style: { fontSize: "0.8125rem", padding: "6px 14px", opacity: "0.5", cursor: "not-allowed" },
+                    disabled: "disabled",
+                  },
+                  "Capability Disabled"
+                ),
+          ]);
+          capsList.appendChild(card);
+        });
+      }
+
+      // Load executions journal
+      const execData = await apiFetch("/api/v1/executions");
+      execList.textContent = "";
+      const execs = execData.executions || [];
+      document.getElementById("executions-count").textContent = execs.length;
+
+      if (execs.length === 0) {
+        execList.appendChild(h("div", { className: "empty-state" }, "No journal records recorded."));
+      } else {
+        execs.forEach((ex) => {
+          const statusClass = ex.status === "succeeded" ? "badge-success" : ex.status === "denied" ? "badge-warning" : "badge-critical";
+          const item = h("div", { className: "stat-box", style: { textAlign: "left", marginBottom: "8px" } }, [
+            h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "baseline" } }, [
+              h("strong", { style: { fontSize: "0.875rem" } }, ex.action_id),
+              h("span", { className: `badge ${statusClass}` }, ex.status),
+            ]),
+            h("div", { style: { fontSize: "0.8125rem", marginTop: "4px" } }, ex.summary || "No summary"),
+            h("div", { style: { fontSize: "0.75rem", color: "var(--text-muted)", marginTop: "4px" } }, [
+              h("span", {}, `Exec: ${ex.execution_id.slice(0, 16)}... | `),
+              h("span", {}, `Started: ${new Date(ex.started_at).toLocaleTimeString()}`),
+              ex.postcondition_verified ? h("span", { style: { color: "var(--status-success)", marginLeft: "6px" } }, "✓ Verified") : null,
+            ]),
+          ]);
+          execList.appendChild(item);
+        });
+      }
+    } catch (err) {
+      capsList.textContent = `Error: ${err.message}`;
+      execList.textContent = `Error: ${err.message}`;
+    }
+  }
+
+  async function promptActionExecution(cap) {
+    const modal = document.getElementById("action-modal");
+    const title = document.getElementById("action-modal-title");
+    const body = document.getElementById("action-modal-body");
+    title.textContent = `Prepare: ${cap.label}`;
+    body.textContent = "";
+    modal.style.display = "flex";
+
+    const schema = cap.parameters_schema || {};
+    const props = schema.properties || {};
+    const requiredProps = schema.required || [];
+
+    const paramInputs = {};
+
+    if (Object.keys(props).length === 0) {
+      body.appendChild(h("p", { style: { marginBottom: "16px", color: "var(--text-muted)" } }, "This action takes no parameters."));
+    } else {
+      const form = h("div", { style: { marginBottom: "16px" } });
+      for (const [key, propDef] of Object.entries(props)) {
+        const isReq = requiredProps.includes(key);
+        const input = h("input", {
+          type: "text",
+          placeholder: propDef.description || key,
+          style: { width: "100%", padding: "8px", marginBottom: "8px", background: "var(--bg-input)", border: "1px solid var(--border-color)", borderRadius: "6px", color: "var(--text-primary)" },
+        });
+        paramInputs[key] = input;
+        form.appendChild(h("div", { className: "form-group" }, [
+          h("label", { style: { fontSize: "0.8125rem", fontWeight: "600" } }, `${key}${isReq ? " *" : ""}`),
+          input,
+        ]));
+      }
+      body.appendChild(form);
+    }
+
+    const errBox = h("div", { className: "error-message", style: { display: "none", marginBottom: "12px" } });
+    body.appendChild(errBox);
+
+    const btnPrepare = h(
+      "button",
+      {
+        className: "btn-primary",
+        style: { width: "100%" },
+        onClick: async () => {
+          errBox.style.display = "none";
+          const params = {};
+          for (const [k, inp] of Object.entries(paramInputs)) {
+            const val = inp.value.trim();
+            if (val) params[k] = val;
+          }
+
+          btnPrepare.textContent = "Inspecting Source State...";
+          btnPrepare.setAttribute("disabled", "disabled");
+
+          try {
+            const prepResp = await apiFetch(`/api/v1/actions/${encodeURIComponent(cap.action_id)}/prepare`, {
+              method: "POST",
+              body: JSON.stringify({ parameters: params }),
+            });
+            renderChallengeModal(prepResp, cap, params);
+          } catch (err) {
+            btnPrepare.textContent = "Prepare Action";
+            btnPrepare.removeAttribute("disabled");
+            errBox.textContent = `Preparation failed: ${err.message}`;
+            errBox.style.display = "block";
+          }
+        },
+      },
+      "Inspect State & Prepare Challenge"
+    );
+    body.appendChild(btnPrepare);
+  }
+
+  function renderChallengeModal(challenge, cap, params) {
+    const title = document.getElementById("action-modal-title");
+    const body = document.getElementById("action-modal-body");
+    title.textContent = `Confirm Execution: ${cap.label}`;
+    body.textContent = "";
+
+    if (challengeTimerInterval) clearInterval(challengeTimerInterval);
+
+    // 1. Timer box
+    let secondsRemaining = challenge.ttl_seconds || 120;
+    const timerElem = h("div", {
+      className: "stat-box",
+      style: { background: "rgba(245, 158, 11, 0.1)", border: "1px solid var(--status-warning)", color: "var(--status-warning)", fontWeight: "700", marginBottom: "12px" },
+    }, `Expiring Challenge: ${secondsRemaining}s remaining`);
+    body.appendChild(timerElem);
+
+    challengeTimerInterval = setInterval(() => {
+      secondsRemaining -= 1;
+      if (secondsRemaining <= 0) {
+        clearInterval(challengeTimerInterval);
+        timerElem.textContent = "Challenge EXPIRED. Please close and re-prepare.";
+        timerElem.style.color = "var(--status-critical)";
+        timerElem.style.borderColor = "var(--status-critical)";
+        if (btnExecute) btnExecute.setAttribute("disabled", "disabled");
+      } else {
+        timerElem.textContent = `Expiring Challenge: ${secondsRemaining}s remaining`;
+      }
+    }, 1000);
+
+    // 2. State & Parameter Evidence
+    body.appendChild(h("div", { className: "stat-box", style: { textAlign: "left", fontSize: "0.8125rem", marginBottom: "12px" } }, [
+      h("strong", {}, "Bound Source Evidence:"),
+      h("div", { style: { color: "var(--text-muted)", marginTop: "4px" } }, `Challenge ID: ${challenge.challenge_id}`),
+      h("div", { style: { color: "var(--text-muted)" } }, `State Fingerprint: ${challenge.state_fingerprint.slice(0, 16)}...`),
+      h("div", { style: { marginTop: "6px" } }, `Parameters: ${JSON.stringify(params)}`),
+    ]));
+
+    // 3. TOTP Step-Up Form (if required)
+    let totpInput = null;
+    if (challenge.requires_totp) {
+      totpInput = h("input", {
+        type: "text",
+        pattern: "[0-9]{6}",
+        maxLength: "6",
+        inputmode: "numeric",
+        placeholder: "123456",
+        style: { width: "100%", padding: "10px", fontSize: "1.125rem", textAlign: "center", letterSpacing: "4px", background: "var(--bg-input)", border: "1px solid var(--border-color)", borderRadius: "6px", color: "var(--text-primary)", marginBottom: "12px" },
+      });
+      body.appendChild(h("div", { className: "form-group" }, [
+        h("label", { style: { fontSize: "0.8125rem", fontWeight: "700", color: "var(--status-warning)" } }, "Step-Up 2FA Code Required:"),
+        totpInput,
+      ]));
+    }
+
+    const errBox = h("div", { className: "error-message", style: { display: "none", marginBottom: "12px" } });
+    body.appendChild(errBox);
+
+    // 4. Confirm Button
+    let btnExecute = null;
+    btnExecute = h(
+      "button",
+      {
+        className: "btn-primary",
+        style: { width: "100%", minHeight: "44px" },
+        onClick: async () => {
+          errBox.style.display = "none";
+          const totpCode = totpInput ? totpInput.value.trim() : null;
+          if (challenge.requires_totp && (!totpCode || totpCode.length !== 6)) {
+            errBox.textContent = "Please enter a valid 6-digit TOTP code.";
+            errBox.style.display = "block";
+            return;
+          }
+
+          btnExecute.textContent = "Executing Transaction...";
+          btnExecute.setAttribute("disabled", "disabled");
+
+          try {
+            const execResp = await apiFetch(`/api/v1/actions/${encodeURIComponent(cap.action_id)}/execute`, {
+              method: "POST",
+              body: JSON.stringify({
+                challenge_id: challenge.challenge_id,
+                parameters: params,
+                totp_code: totpCode,
+              }),
+            });
+            clearInterval(challengeTimerInterval);
+            renderExecutionOutcome(execResp);
+          } catch (err) {
+            btnExecute.textContent = "Confirm & Execute Action";
+            btnExecute.removeAttribute("disabled");
+            errBox.textContent = `Execution failed: ${err.message}`;
+            errBox.style.display = "block";
+          }
+        },
+      },
+      "Confirm & Execute Action"
+    );
+    body.appendChild(btnExecute);
+  }
+
+  function renderExecutionOutcome(execResp) {
+    const title = document.getElementById("action-modal-title");
+    const body = document.getElementById("action-modal-body");
+    const ex = execResp.execution || {};
+
+    title.textContent = "Execution Journal Outcome";
+    body.textContent = "";
+
+    const isSuccess = ex.status === "succeeded";
+    const statusClass = isSuccess ? "badge-success" : ex.status === "denied" ? "badge-warning" : "badge-critical";
+
+    body.appendChild(h("div", { className: "stat-box", style: { textAlign: "left", marginBottom: "16px" } }, [
+      h("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "8px" } }, [
+        h("strong", { style: { fontSize: "1rem" } }, ex.action_id),
+        h("span", { className: `badge ${statusClass}` }, ex.status),
+      ]),
+      h("div", { style: { fontSize: "0.875rem", marginBottom: "6px" } }, ex.summary || "Action completed"),
+      h("div", { style: { fontSize: "0.75rem", color: "var(--text-muted)" } }, `Execution ID: ${ex.execution_id}`),
+      h("div", { style: { fontSize: "0.75rem", color: "var(--text-muted)" } }, `Finished: ${new Date(ex.finished_at || Date.now()).toLocaleTimeString()}`),
+      h("div", { style: { fontSize: "0.75rem", marginTop: "4px" } }, [
+        h("span", {}, "Postcondition: "),
+        h("strong", { style: { color: ex.postcondition_verified ? "var(--status-success)" : "var(--status-critical)" } }, ex.postcondition_verified ? "VERIFIED" : "UNVERIFIED"),
+      ]),
+    ]));
+
+    const btnDone = h(
+      "button",
+      {
+        className: "btn-secondary",
+        style: { width: "100%" },
+        onClick: () => {
+          document.getElementById("action-modal").style.display = "none";
+          loadActions();
+        },
+      },
+      "Done"
+    );
+    body.appendChild(btnDone);
+  }
+
+  async function promptAcknowledgeIncident(incidentId, summary) {
+    const modal = document.getElementById("action-modal");
+    const title = document.getElementById("action-modal-title");
+    const body = document.getElementById("action-modal-body");
+    title.textContent = "Acknowledge Incident";
+    body.textContent = "";
+    modal.style.display = "flex";
+
+    body.appendChild(h("p", { style: { fontSize: "0.875rem", marginBottom: "12px", color: "var(--text-muted)" } }, `Incident: ${summary || incidentId}`));
+
+    const reasonInput = h("input", {
+      type: "text",
+      placeholder: "Operator acknowledgement reason (optional)",
+      style: { width: "100%", padding: "8px", marginBottom: "12px", background: "var(--bg-input)", border: "1px solid var(--border-color)", borderRadius: "6px", color: "var(--text-primary)" },
+    });
+
+    const totpInput = h("input", {
+      type: "text",
+      pattern: "[0-9]{6}",
+      maxLength: "6",
+      inputmode: "numeric",
+      placeholder: "123456",
+      style: { width: "100%", padding: "10px", fontSize: "1.125rem", textAlign: "center", letterSpacing: "4px", background: "var(--bg-input)", border: "1px solid var(--border-color)", borderRadius: "6px", color: "var(--text-primary)", marginBottom: "12px" },
+    });
+
+    body.appendChild(h("div", { className: "form-group" }, [
+      h("label", { style: { fontSize: "0.8125rem", fontWeight: "600" } }, "Reason:"),
+      reasonInput,
+    ]));
+
+    body.appendChild(h("div", { className: "form-group" }, [
+      h("label", { style: { fontSize: "0.8125rem", fontWeight: "700", color: "var(--status-warning)" } }, "Step-Up 2FA Code Required:"),
+      totpInput,
+    ]));
+
+    const errBox = h("div", { className: "error-message", style: { display: "none", marginBottom: "12px" } });
+    body.appendChild(errBox);
+
+    const btnAck = h(
+      "button",
+      {
+        className: "btn-primary",
+        style: { width: "100%" },
+        onClick: async () => {
+          errBox.style.display = "none";
+          const totpCode = totpInput.value.trim();
+          if (!totpCode || totpCode.length !== 6) {
+            errBox.textContent = "Please enter a valid 6-digit TOTP code.";
+            errBox.style.display = "block";
+            return;
+          }
+
+          btnAck.textContent = "Acknowledging...";
+          btnAck.setAttribute("disabled", "disabled");
+
+          try {
+            await apiFetch(`/api/v1/incidents/${encodeURIComponent(incidentId)}/acknowledge`, {
+              method: "POST",
+              body: JSON.stringify({
+                reason: reasonInput.value.trim() || undefined,
+                totp_code: totpCode,
+              }),
+            });
+            modal.style.display = "none";
+            loadIncidents();
+          } catch (err) {
+            btnAck.textContent = "Acknowledge Incident";
+            btnAck.removeAttribute("disabled");
+            errBox.textContent = `Acknowledgement failed: ${err.message}`;
+            errBox.style.display = "block";
+          }
+        },
+      },
+      "Acknowledge Incident"
+    );
+    body.appendChild(btnAck);
   }
 
   // ── Tab 3: Notifications Outbox ──────────────────────────────────────────────
@@ -493,6 +902,12 @@
     document.getElementById("btn-modal-close").addEventListener("click", () => {
       document.getElementById("incident-modal").style.display = "none";
     });
+    document.getElementById("btn-action-modal-close").addEventListener("click", () => {
+      if (challengeTimerInterval) clearInterval(challengeTimerInterval);
+      document.getElementById("action-modal").style.display = "none";
+    });
+    document.getElementById("filter-action-effect").addEventListener("change", loadActions);
+    document.getElementById("filter-action-module").addEventListener("change", loadActions);
 
     // Check existing session
     try {
