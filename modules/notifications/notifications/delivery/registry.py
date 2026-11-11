@@ -57,7 +57,7 @@ def get_registered_providers(
     else:
         providers["telegram"] = UnconfiguredProvider(
             provider_id="telegram",
-            reason="Telegram credentials not enrolled (run 'scripts-notify telegram enroll')",
+            reason="Telegram provider is not configured. Missing bot token or chat ID (run 'scripts-notify telegram enroll')",
         )
 
     # 2. Windows provider

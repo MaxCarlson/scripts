@@ -144,6 +144,37 @@ def build_parser() -> argparse.ArgumentParser:
     tg_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
     tg_test.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
+    # 7. windows
+    win_parser = subparsers.add_parser("windows", help="Manage Windows interactive desktop notification helper and scheduled task.")
+    win_sub = win_parser.add_subparsers(dest="windows_command", required=True)
+
+    # windows status
+    win_status = win_sub.add_parser("status", help="Check Windows scheduled task and helper IPC status.")
+    win_status.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
+    win_status.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # windows install
+    win_install = win_sub.add_parser("install", help="Register Windows user-level Scheduled Task at logon.")
+    win_install.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
+    win_install.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to register Scheduled Task).")
+    win_install.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # windows uninstall
+    win_uninstall = win_sub.add_parser("uninstall", help="Unregister Windows Scheduled Task and stop helper.")
+    win_uninstall.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
+    win_uninstall.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to remove Scheduled Task).")
+    win_uninstall.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # windows test
+    win_test = win_sub.add_parser("test", help="Send a test toast notification via the Windows helper.")
+    win_test.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
+    win_test.add_argument("-a", "--apply", action="store_true", help="Apply modification (REQUIRED: sends live desktop toast).")
+    win_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # windows run-helper
+    win_run = win_sub.add_parser("run-helper", help="Run the Windows interactive helper directly.")
+    win_run.add_argument("-p", "--port", type=int, default=1238, help="Helper loopback port (default: 1238).")
+
     return parser
 
 
@@ -269,21 +300,32 @@ def handle_outbox(args: argparse.Namespace) -> int:
 
 
 def handle_providers(args: argparse.Namespace) -> int:
+    from notifications.delivery.registry import UnconfiguredProvider, get_registered_providers
+
+    storage = _get_storage(getattr(args, "db", None))
+    providers = get_registered_providers(storage)
+
     if args.providers_command == "list":
+        prov_list = []
+        for pid, prov in providers.items():
+            is_unconfigured = isinstance(prov, UnconfiguredProvider)
+            status = "unconfigured" if is_unconfigured else "available"
+            prov_type = "testing" if pid == "fake_provider" else "desktop" if pid == "windows" else "external"
+            prov_list.append({"id": pid, "type": prov_type, "status": status})
         data = {
             "ok": True,
-            "providers": [
-                {"id": "fake_provider", "type": "testing", "status": "available"},
-                {"id": "telegram", "type": "external", "status": "available"},
-            ],
+            "providers": prov_list,
         }
-        print(json.dumps(data, indent=2) if args.json else "Registered Providers: fake_provider, telegram")
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            names = ", ".join(f"{p['id']} ({p['status']})" for p in prov_list)
+            print(f"Registered Providers: {names}")
         return 0
 
     elif args.providers_command == "test":
-        known = ["fake_provider", "telegram"]
-        if args.provider not in known:
-            err = {"ok": False, "error": f"Unknown provider '{args.provider}'. Available: {', '.join(known)}"}
+        if args.provider not in providers:
+            err = {"ok": False, "error": f"Unknown provider '{args.provider}'. Available: {', '.join(providers.keys())}"}
             print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
             return 1
 
@@ -297,70 +339,37 @@ def handle_providers(args: argparse.Namespace) -> int:
             print(json.dumps(res) if args.json else res["warning"])
             return 0
 
-        if args.provider == "fake_provider":
-            provider = FakeProvider(mode="success")
-            notification = RenderedNotification(
-                notification_id="notif-test-001",
-                event_id="00000000-0000-4000-8000-000000000001",
-                incident_id="inc-test-001",
-                severity="info",
-                title="[TEST] Provider Diagnostic",
-                body="Simulated test message via fake_provider",
-                created_at="2026-11-11T00:00:00Z",
-            )
+        provider = providers[args.provider]
+        if isinstance(provider, UnconfiguredProvider):
+            err = {"ok": False, "provider": args.provider, "error": provider.reason}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
+        notification = RenderedNotification(
+            notification_id=f"diag-{args.provider}-001",
+            event_id=str(uuid.uuid4()),
+            incident_id=f"inc-{args.provider}-diag",
+            severity="info",
+            title=f"[TEST] {args.provider.capitalize()} Diagnostic",
+            body=f"Diagnostic notification dispatched via 'scripts-notify providers test -p {args.provider}'",
+            created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        )
+        try:
             receipt = asyncio.run(provider.send(notification))
-            res = {
-                "ok": True,
-                "provider": "fake_provider",
-                "simulated": True,
-                "status": receipt.status,
-                "receipt": receipt.to_dict(),
-            }
-            print(json.dumps(res, indent=2) if args.json else "Simulated notification delivered via fake_provider.")
-            return 0
-
-        elif args.provider == "telegram":
-            try:
-                from notifications.delivery.telegram_credentials import load_telegram_credentials
-                from notifications.delivery.telegram import TelegramProvider
-
-                creds = load_telegram_credentials()
-            except (ImportError, ModuleNotFoundError):
-                creds = None
-
-            if not creds:
-                err = {
-                    "ok": False,
-                    "provider": "telegram",
-                    "error": "Telegram provider is not configured. Missing bot token or chat ID.",
-                }
+            if receipt.status == "provider_accepted":
+                res = {"ok": True, "provider": args.provider, "status": "accepted", "receipt": receipt.to_dict()}
+                if args.provider == "fake_provider":
+                    res["simulated"] = True
+                print(json.dumps(res, indent=2) if args.json else f"Test notification accepted by {args.provider}.")
+                return 0
+            else:
+                err = {"ok": False, "provider": args.provider, "status": receipt.status, "error": receipt.error_message}
                 print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
                 return 1
-
-            try:
-                provider = TelegramProvider(credentials=creds)
-                notification = RenderedNotification(
-                    notification_id="tg-diag-001",
-                    event_id=str(uuid.uuid4()),
-                    incident_id="inc-telegram-001",
-                    severity="info",
-                    title="[TEST] Telegram Diagnostic",
-                    body="Testing Telegram provider delivery via 'scripts-notify providers test'",
-                    created_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
-                )
-                receipt = asyncio.run(provider.send(notification))
-                if receipt.status == "provider_accepted":
-                    res = {"ok": True, "provider": "telegram", "status": "accepted", "receipt": receipt.to_dict()}
-                    print(json.dumps(res, indent=2) if args.json else "Test notification accepted by Telegram API.")
-                    return 0
-                else:
-                    err = {"ok": False, "provider": "telegram", "status": receipt.status, "error": receipt.error_message}
-                    print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
-                    return 1
-            except Exception as exc:
-                err = {"ok": False, "provider": "telegram", "error": f"Telegram provider test failed: {exc}"}
-                print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
-                return 1
+        except Exception as exc:
+            err = {"ok": False, "provider": args.provider, "error": f"Provider test failed: {exc}"}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
 
     return 2
 
@@ -496,6 +505,85 @@ def handle_telegram(args: argparse.Namespace) -> int:
 
     return 2
 
+
+def handle_windows(args: argparse.Namespace) -> int:
+    from notifications.windows_helper.service import (
+        get_helper_script_path,
+        get_helper_status,
+        install_scheduled_task,
+        send_test_toast,
+        uninstall_scheduled_task,
+    )
+    import subprocess
+
+    if args.windows_command == "status":
+        status = get_helper_status(port=args.port)
+        if args.json:
+            print(json.dumps(status, indent=2))
+        else:
+            task_str = "Installed" if status["task_installed"] else "Not installed"
+            proc_str = "Running" if status["helper_running"] else "Not running"
+            print("Windows Desktop Helper Status:")
+            print(f" - Scheduled Task ({status['task_name']}): {task_str} (State: {status['task_state']})")
+            print(f" - IPC Loopback (127.0.0.1:{status['helper_port']}): {proc_str}")
+            print(f" - Helper Script: {status['helper_script']}")
+        return 0
+
+    elif args.windows_command == "install":
+        res = install_scheduled_task(port=args.port, apply=args.apply)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if not args.apply:
+                print(res.get("warning", "Dry-run"))
+                print(f"Target task: {res['task_name']} (executing {res['executable']} at logon)")
+            elif res.get("ok"):
+                print(f"Scheduled task '{res['task_name']}' registered successfully at user logon.")
+            else:
+                print(f"Installation failed: {res.get('error')}", file=sys.stderr)
+        return 0 if res.get("ok") else 1
+
+    elif args.windows_command == "uninstall":
+        res = uninstall_scheduled_task(port=args.port, apply=args.apply)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if not args.apply:
+                print(res.get("warning", "Dry-run"))
+            else:
+                print(res.get("message", "Uninstallation complete."))
+        return 0 if res.get("ok") else 1
+
+    elif args.windows_command == "test":
+        res = send_test_toast(port=args.port, apply=args.apply)
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            if not args.apply:
+                print(res.get("warning", "Dry-run"))
+            elif res.get("ok"):
+                print(f"Test toast delivered to Windows desktop (Toast ID: {res.get('toast_id')}).")
+            else:
+                print(f"Test toast failed: {res.get('error_message') or res.get('status')}", file=sys.stderr)
+        return 0 if res.get("ok") else 1
+
+    elif args.windows_command == "run-helper":
+        script_path = get_helper_script_path()
+        if not script_path.is_file():
+            print(json.dumps({"ok": False, "error": f"Helper script not found: {script_path}"}), file=sys.stderr)
+            return 1
+        cmd = [
+            "powershell.exe",
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(script_path),
+            "-Port",
+            str(args.port),
+        ]
+        return subprocess.call(cmd)
+
     return 2
 
 
@@ -540,6 +628,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return handle_health(args)
     elif args.command == "telegram":
         return handle_telegram(args)
+    elif args.command == "windows":
+        return handle_windows(args)
 
     return 0
 

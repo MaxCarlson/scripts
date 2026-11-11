@@ -107,3 +107,21 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - Use `pytest` with test files named `*_test.py` or `test_*.py`.
   - Isolated test directory: `addopts = "-q --basetemp=modules/notifications/.pytest_tmp_root"`.
   - Coverage for models, persistence, lifecycle transitions, idempotency, and error handling using temporary databases and fake providers.
+
+---
+
+## 5. Phase 02 Operational Integration & Phase 03 Windows Notifications Status
+
+- **Phase 02 Operational Integration**:
+  - Dynamic provider registry (`notifications.delivery.registry.get_registered_providers`) resolves `fake_provider`, `telegram`, and `windows`.
+  - Outbox runner (`scripts-notify outbox run`) automatically dispatches to all registered providers with status tracking in `delivery_attempts`.
+  - Secret-safe Telegram enrollment (`scripts-notify telegram enroll`) supports interactive masking and `NOTIFY_TELEGRAM_BOT_TOKEN` environment variable without mandatory CLI argument exposure.
+- **Phase 03 Windows Desktop Notifications**:
+  - Interactive Session 1+ helper (`helper.ps1`) runs non-elevated (`asInvoker`) at user logon via Task Scheduler (`ScriptsNotificationsToastHelper`).
+  - Loopback IPC (`http://127.0.0.1:1238`) protected by Bearer token authentication matching the shared broker secret file.
+  - Delivery provider (`WindowsDeliveryProvider`) maps `provider_accepted`, `session_unavailable`, `unauthorized`, and `bad_payload` statuses with short deadlines (2.0s).
+  - Multi-provider isolation (N09) verified: Windows offline status never blocks or aborts Telegram delivery, and Telegram rate limiting never suppresses Windows desktop toasts.
+  - Injection resistance (N10) and session availability semantics (N11) verified.
+  - Full CLI management (`scripts-notify windows status/install/uninstall/test`) with dry-run default.
+  - Total automated notifications suite passing: 81 tests. Broader `scripts_help` test suite passing: 55 tests.
+
