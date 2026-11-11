@@ -76,7 +76,7 @@ Opt-in UAC and actual Windows Task Scheduler integration tests were not run; the
 ## v0.12.0 source integration validation (2026-11-11)
 
 - `origin/main` was fetched and verified at `9102815920eff843f1a9ec3abe60060a4ffbdd8f`. Feature branch `agent/resource-coordinator-upgrade-reliability-20261111` and its remote both pointed to `7a5fb2a50a31953f49f1da064f6971ff0ab8d6fb`; merge base is `origin/main`, feature is 11 commits ahead and zero behind. The isolated integration branch was fast-forwarded from `origin/main` to the feature commit. No textual or ancestry conflict occurred.
-- The complete comparison contains 24 paths, all under `modules/resource_coordinator/`, with 2,544 insertions and 74 deletions. Changed implementation is confined to inference/model-load gateway and admission, configuration, operator credentials, CLI recovery, and Windows installation/recovery. Tests and plan/status/interface documentation are included. No Mining or production configuration source was changed.
+- The complete integration-branch comparison contains 24 paths, all under `modules/resource_coordinator/`, with 2,577 insertions and 74 deletions. Changed implementation is confined to inference/model-load gateway and admission, configuration, operator credentials, CLI recovery, and Windows installation/recovery. Tests and plan/status/interface documentation are included. No Mining or production configuration source was changed.
 - Test environment: Windows 10.0.26300, Python 3.12.10 from `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`, pytest 9.0.3, pytest-asyncio 1.3.0. Import resolved to this integration worktree's `resource_coordinator` package. Each test run used a distinct absolute directory under `modules/resource_coordinator/.pytest_tmp_root/integration-*`.
 
 | Command / test scope | Result |
@@ -95,6 +95,8 @@ Opt-in UAC and actual Windows Task Scheduler integration tests were not run; the
 | PowerShell `$env:RC_WINDOWS_INTEGRATION='1'; python -m pytest -v -ra tests/test_windows_task_transport_integration.py -k windows_helper_processes_large_request` | Exit 0; 1 passed, 2 deselected. The protected file-backed helper processed a 100 KB request. |
 
 The test results total 423 passed, with the one documented lifecycle case deselected in-suite and verified alone. No actual UAC prompt or Scheduled Task registration test was run, as required. The source files tested are byte-identical to feature commit `7a5fb2a`; the integration branch's follow-up commit records validation only.
+
+The distinct pytest temp roots, relative to `modules/resource_coordinator/.pytest_tmp_root/`, were `integration-gateway-final`, `integration-cli-normal`, `integration-credentials-normal`, `integration-durable-normal`, `integration-config`, `integration-arbitration`, `integration-factory-phase4-normal`, `integration-leases-policy-normal`, `integration-service-lifecycle`, `integration-service-lifecycle-single`, `integration-installation`, `integration-windows-helper`, and `integration-windows-http-process`. Test stdout/results are recorded in this status table; no raw logs or sensitive production data were copied into the repository.
 
 Ruff passed for the changed Python files except `tests/test_phase1_request_arbitration.py`. Ruff reports nine existing unused-import/redefinition findings in that file; the same nine were reproduced from `origin/main`, and this branch's change there is limited to two test lines. No unrelated lint cleanup was made. `python -m compileall -q resource_coordinator` and `git diff --check origin/main...HEAD` passed.
 
