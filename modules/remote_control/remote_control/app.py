@@ -87,9 +87,33 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
 
     @app.middleware("http")
     async def security_middleware(request: Request, call_next):
-        # 1. Host header validation
+        # 1. Host and Forwarded Header validation
         immediate_ip = request.client.host if request.client else "127.0.0.1"
         trusted_peers = getattr(cfg, "trusted_proxy_peers", ["127.0.0.1", "::1"])
+
+        if immediate_ip in trusted_peers:
+            # Check for malformed or conflicting forwarding headers
+            xfp = request.headers.get("x-forwarded-proto")
+            if xfp:
+                proto_clean = xfp.strip().lower()
+                if proto_clean not in ("http", "https"):
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content={"ok": False, "error": "invalid_forwarded_proto", "message": f"Malformed X-Forwarded-Proto '{xfp}'."},
+                    )
+                if cfg.external_exposure_enabled and proto_clean == "http":
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content={"ok": False, "error": "conflicting_forwarded_protocol", "message": "Insecure HTTP forwarded protocol is forbidden under public exposure."},
+                    )
+
+            xf_port = request.headers.get("x-forwarded-port")
+            if xf_port:
+                if not xf_port.isdigit() or not (1 <= int(xf_port) <= 65535):
+                    return JSONResponse(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        content={"ok": False, "error": "invalid_forwarded_port", "message": f"Malformed X-Forwarded-Port '{xf_port}'."},
+                    )
 
         raw_host = request.headers.get("host", "").split(":")[0].strip().lower()
         if immediate_ip in trusted_peers and request.headers.get("x-forwarded-host"):
@@ -130,22 +154,30 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
                 origin_host = (parsed_origin.hostname or "").lower()
                 origin_port = parsed_origin.port or (443 if origin_scheme == "https" else 80)
 
-                # Check explicit allowed_origins whitelist first
-                allowed = False
-                for ao in cfg.allowed_origins:
-                    ao_clean = ao.strip().lower()
-                    if ao_clean in (origin.strip().lower(), f"{origin_scheme}://{origin_host}:{origin_port}", f"{origin_scheme}://{origin_host}"):
-                        allowed = True
-                        break
+                # In external exposure mode with pinned public_origin, strictly enforce exact match
+                if cfg.external_exposure_enabled and cfg.public_origin:
+                    parsed_pub = urlparse(cfg.public_origin)
+                    pub_scheme = (parsed_pub.scheme or "").lower()
+                    pub_host = (parsed_pub.hostname or "").lower()
+                    pub_port = parsed_pub.port or (443 if pub_scheme == "https" else 80)
+                    allowed = (origin_scheme == pub_scheme and origin_host == pub_host and origin_port == pub_port)
+                else:
+                    # Check explicit allowed_origins whitelist first
+                    allowed = False
+                    for ao in cfg.allowed_origins:
+                        ao_clean = ao.strip().lower()
+                        if ao_clean in (origin.strip().lower(), f"{origin_scheme}://{origin_host}:{origin_port}", f"{origin_scheme}://{origin_host}"):
+                            allowed = True
+                            break
 
-                if not allowed:
-                    # Enforce exact match: scheme + hostname + effective port
-                    scheme_match = (origin_scheme == eff_scheme)
-                    host_match = (origin_host in [h.lower() for h in cfg.allowed_hosts]) and (
-                        origin_host == eff_host or eff_host in ("127.0.0.1", "localhost", "testserver")
-                    )
-                    port_match = (origin_port == eff_port)
-                    allowed = scheme_match and host_match and port_match
+                    if not allowed:
+                        # Enforce exact match: scheme + hostname + effective port
+                        scheme_match = (origin_scheme == eff_scheme)
+                        host_match = (origin_host in [h.lower() for h in cfg.allowed_hosts]) and (
+                            origin_host == eff_host or eff_host in ("127.0.0.1", "localhost", "testserver")
+                        )
+                        port_match = (origin_port == eff_port)
+                        allowed = scheme_match and host_match and port_match
 
                 if not allowed:
                     return JSONResponse(

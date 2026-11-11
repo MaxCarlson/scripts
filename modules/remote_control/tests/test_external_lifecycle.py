@@ -9,6 +9,7 @@ import pytest
 
 from remote_control.actions.storage import ActionStorage
 from remote_control.cli import build_parser, main
+from remote_control.auth.storage import AuthStorage
 from remote_control.config import RemoteControlConfig
 from remote_control.external.client import SimulatedTailscaleClient
 from remote_control.external.doctor import ExternalDoctor
@@ -79,18 +80,24 @@ def test_plan_dry_run(tmp_path: Path) -> None:
 def test_enable_and_disable_lifecycle(tmp_path: Path) -> None:
     """Enable requires apply=True to activate; disable removes funnel reachability."""
     auth_db = tmp_path / "auth.db"
+    auth_store = AuthStorage(auth_db)
+    auth_store.create_operator("admin_op", "admin", "$argon2id$dummy", "JBSWY3DPEHPK3PXP")
     store = ActionStorage(auth_db)
-    cfg = RemoteControlConfig(auth_db_path=auth_db)
+    cfg = RemoteControlConfig(
+        auth_db_path=auth_db,
+        public_origin="https://workstation.tailnet-dev.ts.net:8443",
+        allowed_public_hosts=["workstation.tailnet-dev.ts.net"],
+    )
     client = SimulatedTailscaleClient(state_file=tmp_path / ".simulated_tailscale.json")
     service = ExternalExposureService(config=cfg, storage=store, client=client)
 
     # Dry-run enable
-    dry = service.enable(apply=False, port=8443, public_port=8443)
+    dry = service.enable(apply=False, port=8443, public_port=8443, verify_listener=False)
     assert dry["applied"] is False
     assert client.get_status().funnel_active is False
 
     # Apply enable
-    en = service.enable(apply=True, port=8443, public_port=8443)
+    en = service.enable(apply=True, port=8443, public_port=8443, verify_listener=False)
     assert en["applied"] is True
     assert en["public_url"].startswith("https://")
     assert client.get_status().funnel_active is True
@@ -107,7 +114,7 @@ def test_enable_and_disable_lifecycle(tmp_path: Path) -> None:
 
 
 def test_reconcile_barrier_requires_apply_and_evidence(tmp_path: Path) -> None:
-    """Dedicated reconciliation requires -a/--apply and authoritative evidence."""
+    """Dedicated reconciliation requires -a/--apply and authoritative source evidence (Stage E)."""
     auth_db = tmp_path / "auth.db"
     store = ActionStorage(auth_db)
     cfg = RemoteControlConfig(auth_db_path=auth_db)
@@ -121,21 +128,52 @@ def test_reconcile_barrier_requires_apply_and_evidence(tmp_path: Path) -> None:
         reason="Network disconnect during dispatch",
     )
 
-    # Dry-run reconciliation
+    # Free-text evidence without source verification in notifications DB MUST fail closed
+    unverified = service.reconcile_barrier(
+        resource_key=resource_key,
+        evidence="Broker log proves event was not processed",
+        apply=True,
+    )
+    assert unverified["ok"] is False
+    assert unverified["error"] == "incident_not_found"
+
+    # Now create the incident as acknowledged in notifications DB
+    from notifications.models import Incident
+    from notifications.storage import StorageEngine
+    notif_db = tmp_path / "events.db"
+    notif_engine = StorageEngine(notif_db)
+    notif_engine.migrate()
+    notif_engine.save_incident(Incident(
+        incident_id="202",
+        source="system",
+        incident_key="test_202",
+        active_occurrence_id="occ_202",
+        status="acknowledged",
+        severity="high",
+        summary="Test incident",
+        first_seen="2026-11-11T00:00:00Z",
+        last_seen="2026-11-11T00:00:00Z",
+        occurrence_count=1,
+    ))
+
+    # Dry-run reconciliation with valid source state
     preview = service.reconcile_barrier(
         resource_key=resource_key,
         evidence="Broker log proves event was not processed",
         apply=False,
+        notifications_db_path=notif_db,
     )
     assert preview["applied"] is False
+    assert preview["verified"] is True
     assert store.get_active_barrier(resource_key) is not None
 
-    # Apply reconciliation
+    # Apply reconciliation with authoritative source verification
     reconciled = service.reconcile_barrier(
         resource_key=resource_key,
         evidence="Broker log proves event was not processed",
         apply=True,
         operator_id="operator:admin",
+        notifications_db_path=notif_db,
     )
     assert reconciled["ok"] is True
     assert reconciled["applied"] is True
@@ -172,9 +210,32 @@ def test_reconcile_barrier_prohibits_coordinator_recovery_override(tmp_path: Pat
 def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture) -> None:
     """Test CLI external commands (status, doctor, plan, enable, disable, reconcile-barrier)."""
     auth_db = tmp_path / "cli_auth.db"
+    auth_store = AuthStorage(auth_db)
+    auth_store.create_operator("admin_op", "admin", "$argon2id$dummy", "JBSWY3DPEHPK3PXP")
     monkeypatch.setenv("REMOTE_CONTROL_AUTH_DB_PATH", str(auth_db))
     monkeypatch.setenv("REMOTE_CONTROL_SIMULATE_TAILSCALE", "1")
     monkeypatch.setenv("REMOTE_CONTROL_SIMULATED_STATE_PATH", str(tmp_path / ".cli_tailscale.json"))
+    monkeypatch.setenv("REMOTE_CONTROL_PUBLIC_ORIGIN", "https://workstation.tailnet-dev.ts.net:8443")
+
+    # Seed notifications DB for CLI reconcile-barrier
+    from notifications.models import Incident
+    from notifications.storage import StorageEngine
+    notif_db = tmp_path / "events.db"
+    notif_engine = StorageEngine(notif_db)
+    notif_engine.migrate()
+    notif_engine.save_incident(Incident(
+        incident_id="303",
+        source="system",
+        incident_key="test_303",
+        active_occurrence_id="occ_303",
+        status="acknowledged",
+        severity="medium",
+        summary="Fault injection test incident",
+        first_seen="2026-11-11T00:00:00Z",
+        last_seen="2026-11-11T00:00:00Z",
+        occurrence_count=1,
+    ))
+    monkeypatch.setenv("NOTIFICATIONS_DB_PATH", str(notif_db))
 
     # 1. doctor
     code = main(["external", "doctor", "--json"])
@@ -195,7 +256,7 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert out["applied"] is False
 
     # 4. enable with apply
-    code = main(["external", "enable", "-a", "--json"])
+    code = main(["external", "enable", "-a", "--skip-listener-check", "--json"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is True
@@ -213,7 +274,7 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     assert out["applied"] is True
 
     # 7. repair with apply
-    code = main(["external", "repair", "-a", "--json"])
+    code = main(["external", "repair", "-a", "--skip-listener-check", "--json"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is True

@@ -89,11 +89,25 @@ CREATE INDEX IF NOT EXISTS idx_login_ip_time ON login_attempts(ip_address, attem
 class AuthStorage:
     """Manages the isolated authentication and session SQLite database."""
 
-    def __init__(self, db_path: Path) -> None:
+    def __init__(self, db_path: Path, read_only: bool = False) -> None:
         self.db_path = db_path.resolve()
-        self._init_db()
+        self.read_only = read_only
+        self.exists = self.db_path.is_file()
+        if not self.read_only:
+            self._init_db()
 
     def _get_connection(self) -> sqlite3.Connection:
+        if self.read_only:
+            if not self.db_path.is_file():
+                raise FileNotFoundError(f"Auth database does not exist: {self.db_path}")
+            conn = sqlite3.connect(
+                f"file:{self.db_path.as_posix()}?mode=ro",
+                uri=True,
+                timeout=5.0,
+            )
+            conn.row_factory = sqlite3.Row
+            return conn
+
         conn = sqlite3.connect(
             str(self.db_path),
             timeout=5.0,
@@ -121,9 +135,14 @@ class AuthStorage:
     # ── Operator Methods ─────────────────────────────────────────────────────────
 
     def get_operator(self) -> Optional[Dict[str, Any]]:
-        with self._get_connection() as conn:
-            row = conn.execute("SELECT * FROM operators LIMIT 1").fetchone()
-            return dict(row) if row else None
+        if self.read_only and not self.db_path.is_file():
+            return None
+        try:
+            with self._get_connection() as conn:
+                row = conn.execute("SELECT * FROM operators LIMIT 1").fetchone()
+                return dict(row) if row else None
+        except (sqlite3.OperationalError, FileNotFoundError):
+            return None
 
     def create_operator(
         self,
@@ -229,20 +248,25 @@ class AuthStorage:
             )
 
     def list_devices(self) -> List[DeviceModel]:
-        with self._get_connection() as conn:
-            rows = conn.execute("SELECT * FROM devices ORDER BY last_seen_at DESC").fetchall()
-            return [
-                DeviceModel(
-                    device_id=r["device_id"],
-                    operator_id=r["operator_id"],
-                    device_name=r["device_name"],
-                    first_seen_at=r["first_seen_at"],
-                    last_seen_at=r["last_seen_at"],
-                    is_revoked=bool(r["is_revoked"]),
-                    revoked_at=r["revoked_at"],
-                )
-                for r in rows
-            ]
+        if self.read_only and not self.db_path.is_file():
+            return []
+        try:
+            with self._get_connection() as conn:
+                rows = conn.execute("SELECT * FROM devices ORDER BY last_seen_at DESC").fetchall()
+                return [
+                    DeviceModel(
+                        device_id=r["device_id"],
+                        operator_id=r["operator_id"],
+                        device_name=r["device_name"],
+                        first_seen_at=r["first_seen_at"],
+                        last_seen_at=r["last_seen_at"],
+                        is_revoked=bool(r["is_revoked"]),
+                        revoked_at=r["revoked_at"],
+                    )
+                    for r in rows
+                ]
+        except (sqlite3.OperationalError, FileNotFoundError):
+            return []
 
     def revoke_device(self, device_id: str) -> bool:
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -373,27 +397,32 @@ class AuthStorage:
             return cur.rowcount
 
     def list_active_sessions(self) -> List[SessionModel]:
-        now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        with self._get_connection() as conn:
-            rows = conn.execute(
-                "SELECT * FROM sessions WHERE revoked_at IS NULL AND expires_at > ? ORDER BY last_seen_at DESC",
-                (now_iso,),
-            ).fetchall()
-            return [
-                SessionModel(
-                    session_id=r["session_id"],
-                    operator_id=r["operator_id"],
-                    device_id=r["device_id"],
-                    csrf_token=r["csrf_token"],
-                    created_at=r["created_at"],
-                    expires_at=r["expires_at"],
-                    last_seen_at=r["last_seen_at"],
-                    revoked_at=r["revoked_at"],
-                    user_agent=r["user_agent"],
-                    ip_address=r["ip_address"],
-                )
-                for r in rows
-            ]
+        if self.read_only and not self.db_path.is_file():
+            return []
+        try:
+            now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            with self._get_connection() as conn:
+                rows = conn.execute(
+                    "SELECT * FROM sessions WHERE revoked_at IS NULL AND expires_at > ? ORDER BY last_seen_at DESC",
+                    (now_iso,),
+                ).fetchall()
+                return [
+                    SessionModel(
+                        session_id=r["session_id"],
+                        operator_id=r["operator_id"],
+                        device_id=r["device_id"],
+                        csrf_token=r["csrf_token"],
+                        created_at=r["created_at"],
+                        expires_at=r["expires_at"],
+                        last_seen_at=r["last_seen_at"],
+                        revoked_at=r["revoked_at"],
+                        user_agent=r["user_agent"],
+                        ip_address=r["ip_address"],
+                    )
+                    for r in rows
+                ]
+        except (sqlite3.OperationalError, FileNotFoundError):
+            return []
 
     # ── Rate Limiting & Replay Defense ───────────────────────────────────────────
 

@@ -377,6 +377,59 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - No public Funnel was actually activated during testing; simulated client was utilized for all CLI workflows.
   - Zero cloud spending ($0 spend).
 
+---
+
+## 13. Phase 08 Final Safety and Exposure Stabilization Checkpoint
+
+- **Implementation Details**:
+  - **Branch**: `agent/remote-control-p08-https-readiness-20261111`
+  - **Worktree**: `C:\Users\mcarls\src\scripts-remote-control-p08`
+  - **Base Commit**: `6a57877b6304515172e75eaf4d28d2cce88514aa` (`main` / `origin/main`)
+- **Key Deliverables & Safety Stabilizations**:
+  - **Stage A — Fail-Closed Public Exposure Preflight (`ExternalDoctor`)**:
+    - Evaluates all 17 security and operational prerequisites: Tailscale binary presence, daemon service status, backend login state, Funnel node capability attribute, HTTPS cert availability, local listener port availability, loopback binding security, public origin URL configuration and scheme, public host whitelist binding, trusted proxy peers binding, session cookie security configuration, production Resource Coordinator recovery disability, operator bootstrap enrollment status, TOTP 2FA enrollment status, registered action catalog safety, active resource barrier state, and host route conflict checks.
+    - Explicit item severity classification: `pass`, `warning`, `blocker`, `unknown`.
+    - Fail-closed enablement gate: `ready_for_public_enable = (len(blockers) == 0 and len(security_unknowns) == 0)`.
+    - Rejects Funnel activation if any blocker or security unknown is present; added `--skip-listener-check` for initial offline provisioning.
+  - **Stage B — Tailscale CLI Modernization (`external/client.py`)**:
+    - Replaced obsolete serve-then-funnel chaining with modern direct Funnel loopback targeting: `tailscale funnel --bg --https=<public_port> http://127.0.0.1:<port>`.
+    - Validates public port against standard Funnel ports (`443`, `8443`, `10000`).
+    - Detects and reports route conflicts (`port_conflict`) before activation.
+    - Implemented post-activation status verification and automatic rollback on verification failure.
+    - Captured exit codes and bounded stderr on disablement; emergency disable functions independently of preflight checks.
+  - **Stage C — Truly Read-Only Diagnostics (`status` & `doctor`)**:
+    - Enhanced `AuthStorage`, `ActionStorage`, and Tailscale clients with `read_only=True` mode.
+    - Guaranteed zero database file creation, schema migration execution, file touch, or ACL mutation on diagnostics.
+    - SQLite opened in `mode=ro` (read-only URI); verified by calculating constant SHA-256 database checksum before and after running doctor and status checks.
+  - **Stage D — Durable Action Crash Recovery & Dispatch Phase Tracking**:
+    - Introduced `DispatchPhase` enum (`RESERVED`, `PREPARED`, `DISPATCH_STARTED`, `DISPATCH_COMPLETED`).
+    - Migrated schema (`SCHEMA_V3`) with `dispatch_phase` column in `action_executions`.
+    - Implemented `reconcile_dangling_executions()`: reconciles orphaned/expired executions at startup and acquisition boundaries without terminating currently active reserving executions.
+    - Executions interrupted after `DISPATCH_STARTED` are permanently sealed with `outcome_unknown` and an active `locked_unresolved` barrier.
+    - Validated through 8 multiprocess crash and fault-injection scenarios.
+  - **Stage E — Authoritative Typed Barrier Verification (`actions/verifiers.py`)**:
+    - Created typed `BarrierVerifierProtocol` and `BarrierVerificationResult`.
+    - Implemented `IncidentAcknowledgementVerifier` verifying genuine state proof directly against notifications SQLite database (`events.db`).
+    - Implemented `CoordinatorRecoveryVerifier` strictly enforcing `coordinator_recovery_prohibited` for Resource Coordinator recovery keys.
+    - Free-text barrier overrides without authoritative verifiers are rejected.
+    - Atomic barrier clearance binding to specific `execution_id` to eliminate TOCTOU races.
+  - **Stage F — Public Application Security & Proxy Hardening**:
+    - Pinned public origin strictly enforced when `external_exposure_enabled` is active (cannot be bypassed by broad origins).
+    - Loopback proxy peer validation enforced; malformed or conflicting `X-Forwarded-*` headers rejected with HTTP 400.
+    - Enforced `Cache-Control: no-store, no-cache, must-revalidate, private` on all `/api/*` endpoints.
+- **Verification Evidence**:
+  - `modules/remote_control/tests/`: 139 passed, 0 failed.
+  - `modules/notifications/tests/`: 160 passed, 1 skipped.
+  - `modules/scripts_help/tests/`: 55 passed.
+  - `modules/resource_coordinator/tests/`: 29 passed (read-only contract tests).
+  - Total repository tests: 383 passed, 1 skipped, 0 failed.
+- **Protected Boundaries**:
+  - `modules/resource_coordinator/` is 100% clean and unmodified (`git diff origin/main -- modules/resource_coordinator/` is empty).
+  - Production `resource_coordinator.request_guarded_recovery` strictly disabled (`capability_disabled`).
+  - No public Funnel was actually activated during testing; simulated client was utilized for all CLI workflows.
+  - Zero cloud spending ($0 spend).
+
+
 
 
 

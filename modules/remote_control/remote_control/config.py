@@ -55,6 +55,12 @@ class RemoteControlConfig:
     public_action_policy: str = "conservative"
 
     def __post_init__(self) -> None:
+        if self.public_origin and not self.allowed_public_hosts:
+            from urllib.parse import urlparse
+            p_host = urlparse(self.public_origin).hostname
+            if p_host:
+                object.__setattr__(self, "allowed_public_hosts", [p_host])
+
         combined_hosts = list(self.allowed_hosts)
         for h in self.allowed_public_hosts:
             if h and h not in combined_hosts:

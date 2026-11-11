@@ -39,6 +39,15 @@ class ExecutionState(str, Enum):
     POSTCONDITION_UNVERIFIED = "postcondition_unverified"
 
 
+class DispatchPhase(str, Enum):
+    RESERVED_NOT_DISPATCHED = "reserved_not_dispatched"
+    DISPATCH_POSSIBLE = "dispatch_possible"
+    DISPATCH_STARTED = "dispatch_started"
+    OUTCOME_UNKNOWN = "outcome_unknown"
+    POSTCONDITION_VERIFIED = "postcondition_verified"
+    TERMINAL_WITHOUT_DISPATCH = "terminal_without_dispatch"
+
+
 class ActionParameterSchema(BaseModel):
     """Base class for all action parameter schemas. Rejects arbitrary/extra fields."""
 
@@ -151,3 +160,4 @@ class ActionExecutionRecord(BaseModel):
     postcondition_verified: bool = False
     summary: str = ""
     details_json: Optional[str] = None
+    dispatch_phase: str = DispatchPhase.RESERVED_NOT_DISPATCHED.value

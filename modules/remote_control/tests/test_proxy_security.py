@@ -239,3 +239,78 @@ def test_conservative_public_action_policy(tmp_path: Path) -> None:
     )
     # Disabled or policy violation
     assert recov_prep.status_code in (403, 400)
+
+
+def test_malformed_forwarded_proto_rejected(tmp_path: Path) -> None:
+    """Malformed X-Forwarded-Proto from trusted peer must be rejected with 400."""
+    client, cfg, _, _ = _setup_app(
+        tmp_path,
+        trusted_proxy_peers=["127.0.0.1", "testclient"],
+    )
+
+    resp = client.get(
+        "/api/summary",
+        headers={"X-Forwarded-Proto": "ftp"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_forwarded_proto"
+
+
+def test_conflicting_forwarded_http_in_public_exposure_rejected(tmp_path: Path) -> None:
+    """Insecure X-Forwarded-Proto: http under public exposure must be rejected with 400."""
+    client, cfg, _, _ = _setup_app(
+        tmp_path,
+        external_exposure_enabled=True,
+        public_origin="https://dashboard.tailnet.ts.net",
+        allowed_public_hosts=["dashboard.tailnet.ts.net"],
+        trusted_proxy_peers=["127.0.0.1", "testclient"],
+    )
+
+    resp = client.get(
+        "/api/summary",
+        headers={
+            "Host": "dashboard.tailnet.ts.net",
+            "X-Forwarded-Proto": "http",
+        },
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "conflicting_forwarded_protocol"
+
+
+def test_malformed_forwarded_port_rejected(tmp_path: Path) -> None:
+    """Non-numeric X-Forwarded-Port must be rejected with 400."""
+    client, cfg, _, _ = _setup_app(
+        tmp_path,
+        trusted_proxy_peers=["127.0.0.1", "testclient"],
+    )
+
+    resp = client.get(
+        "/api/summary",
+        headers={"X-Forwarded-Port": "invalid_port_999999"},
+    )
+    assert resp.status_code == 400
+    assert resp.json()["error"] == "invalid_forwarded_port"
+
+
+def test_broad_origin_cannot_bypass_pinned_public_origin(tmp_path: Path) -> None:
+    """Under external exposure, a broad allowed_origins entry cannot bypass the pinned public_origin."""
+    client, cfg, incident_id, csrf_token = _setup_app(
+        tmp_path,
+        external_exposure_enabled=True,
+        public_origin="https://dashboard.tailnet.ts.net",
+        allowed_public_hosts=["dashboard.tailnet.ts.net"],
+        allowed_origins=["https://dashboard.tailnet.ts.net", "https://other-broad-domain.com"],
+    )
+
+    # State-changing POST from https://other-broad-domain.com MUST be rejected
+    resp = client.post(
+        "/api/v1/actions/notifications.acknowledge_incident/prepare",
+        headers={
+            "Host": "dashboard.tailnet.ts.net",
+            "Origin": "https://other-broad-domain.com",
+            "X-CSRF-Token": csrf_token,
+        },
+        json={"parameters": {"incident_id": incident_id, "reason": "Bypass attempt"}},
+    )
+    assert resp.status_code == 403
+    assert resp.json()["error"] == "forbidden_origin"

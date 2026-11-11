@@ -85,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     ext_en.add_argument("-a", "--apply", action="store_true", help="Execute the enable operation.")
     ext_en.add_argument("-p", "--port", type=int, default=8443, help="Local loopback port (default: 8443).")
     ext_en.add_argument("--public-port", type=int, default=8443, help="Public external port (default: 8443).")
+    ext_en.add_argument("--skip-listener-check", action="store_true", help="Skip local loopback listener probe.")
     ext_en.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     # 8e. external disable
@@ -98,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     ext_rep.add_argument("-a", "--apply", action="store_true", help="Execute the repair operation.")
     ext_rep.add_argument("-p", "--port", type=int, default=8443, help="Local loopback port (default: 8443).")
     ext_rep.add_argument("--public-port", type=int, default=8443, help="Public external port (default: 8443).")
+    ext_rep.add_argument("--skip-listener-check", action="store_true", help="Skip local loopback listener probe.")
     ext_rep.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     # 8g. external reconcile-barrier
@@ -117,21 +119,23 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def get_services(args: argparse.Namespace) -> tuple[RemoteControlConfig, AuthStorage, AuthService]:
+def get_services(args: argparse.Namespace, read_only: bool = False) -> tuple[RemoteControlConfig, AuthStorage, AuthService]:
     cfg = RemoteControlConfig.from_env()
     if getattr(args, "auth_db", None):
         cfg = dataclasses.replace(cfg, auth_db_path=Path(args.auth_db))
-    storage = AuthStorage(cfg.auth_db_path)
+    storage = AuthStorage(cfg.auth_db_path, read_only=read_only)
     auth_service = AuthService(storage, cfg)
     return cfg, storage, auth_service
 
 
-def get_external_service(args: argparse.Namespace) -> tuple[RemoteControlConfig, ExternalExposureService]:
+def get_external_service(args: argparse.Namespace, read_only: bool = False) -> tuple[RemoteControlConfig, ExternalExposureService]:
     cfg = RemoteControlConfig.from_env()
     if getattr(args, "auth_db", None):
         cfg = dataclasses.replace(cfg, auth_db_path=Path(args.auth_db))
-    storage = ActionStorage(cfg.auth_db_path)
-    service = ExternalExposureService(config=cfg, storage=storage)
+    storage = ActionStorage(cfg.auth_db_path, read_only=read_only)
+    from remote_control.external.client import get_tailscale_client
+    client = get_tailscale_client(read_only=read_only)
+    service = ExternalExposureService(config=cfg, storage=storage, client=client)
     return cfg, service
 
 
@@ -192,7 +196,7 @@ def handle_bootstrap(args: argparse.Namespace) -> int:
 
 
 def handle_status(args: argparse.Namespace) -> int:
-    cfg, storage, auth = get_services(args)
+    cfg, storage, auth = get_services(args, read_only=True)
     bootstrapped = auth.is_bootstrapped()
     op = storage.get_operator()
     active_sessions = len(storage.list_active_sessions())
@@ -320,8 +324,9 @@ def handle_reconcile_barrier(args: argparse.Namespace) -> int:
 
 
 def handle_external(args: argparse.Namespace) -> int:
-    cfg, service = get_external_service(args)
     sub = args.external_command
+    is_read_only = sub in ("status", "doctor")
+    cfg, service = get_external_service(args, read_only=is_read_only)
 
     if sub == "status":
         res = service.status()
@@ -378,7 +383,13 @@ def handle_external(args: argparse.Namespace) -> int:
         return 0
 
     elif sub == "enable":
-        res = service.enable(apply=args.apply, port=args.port, public_port=args.public_port)
+        verify_listener = args.apply and not getattr(args, "skip_listener_check", False)
+        res = service.enable(
+            apply=args.apply,
+            port=args.port,
+            public_port=args.public_port,
+            verify_listener=verify_listener,
+        )
         if args.json:
             print(json.dumps(res, indent=2))
         else:
@@ -409,7 +420,13 @@ def handle_external(args: argparse.Namespace) -> int:
         return 0 if res.get("ok", True) else 1
 
     elif sub == "repair":
-        res = service.repair(apply=args.apply, port=args.port, public_port=args.public_port)
+        verify_listener = args.apply and not getattr(args, "skip_listener_check", False)
+        res = service.repair(
+            apply=args.apply,
+            port=args.port,
+            public_port=args.public_port,
+            verify_listener=verify_listener,
+        )
         if args.json:
             print(json.dumps(res, indent=2))
         else:

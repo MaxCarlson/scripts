@@ -20,6 +20,10 @@ scripts-remote-control external disable -a
 ### Direct Tailscale Command Fallback
 If the Python CLI is unresponsive, invoke the native Tailscale binary directly from PowerShell:
 ```powershell
+# Modern Tailscale direct Funnel disable
+tailscale funnel --https=8443 off
+
+# Legacy syntax fallback (if running older Tailscale daemon)
 tailscale funnel 8443 off
 tailscale serve --https=8443 off
 ```
@@ -87,8 +91,8 @@ scripts-remote-control external doctor
 
 #### Authoritative Reconciliation Procedure
 To reconcile an active barrier:
-1. Conduct an independent, manual inspection of the target subsystem (e.g. check broker database, inspect system event logs, or verify physical device state) to determine whether the mutation actually took effect.
-2. Reconcile the barrier using the dedicated CLI command, providing authoritative source evidence:
+1. Conduct an independent inspection of the target subsystem (e.g. check broker database, inspect system event logs, or verify physical device state) to determine whether the mutation actually took effect.
+2. Reconcile the barrier using the dedicated CLI command, providing authoritative source evidence verified by typed verifiers (`IncidentAcknowledgementVerifier`, etc.):
    ```powershell
    # Preview reconciliation (dry-run)
    scripts-remote-control reconcile-barrier --resource-key "notifications:incident:101" --evidence "Inspected broker DB: incident acknowledged at 14:32"
@@ -96,9 +100,10 @@ To reconcile an active barrier:
    # Authoritatively apply barrier clearance
    scripts-remote-control reconcile-barrier --resource-key "notifications:incident:101" --evidence "Inspected broker DB: incident acknowledged at 14:32" -a
    ```
+   *Note:* Free-text overrides without verifiable typed evidence are rejected (`unsupported_verifier`). Barrier clearance is executed with atomic `execution_id` binding to prevent TOCTOU race conditions against concurrently posted barriers.
 
 #### Strictly Prohibited Action: Resource Coordinator Recovery Override
-Any attempt to manually override or clear an unresolved Resource Coordinator recovery barrier via generic CLI reconciliation is strictly rejected:
+Any attempt to manually override or clear an unresolved Resource Coordinator recovery barrier via generic CLI reconciliation is strictly rejected by `CoordinatorRecoveryVerifier`:
 ```powershell
 scripts-remote-control reconcile-barrier --resource-key "resource:gpu.inference" --evidence "Manual check" -a
 # Returns: Error: coordinator_recovery_prohibited

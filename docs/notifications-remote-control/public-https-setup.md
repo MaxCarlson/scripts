@@ -87,16 +87,22 @@ scripts-remote-control bootstrap
 Scan the generated TOTP provisioning URI or enter the Base32 secret into your authenticator app (Google Authenticator, Aegis, Bitwarden, or 1Password).
 
 ### Step 2: Run Read-Only Preflight Health Checks
-Run the diagnostic doctor to verify Tailscale installation, login status, Funnel availability, and port readiness:
+Run the diagnostic doctor to verify all 17 security and operational prerequisites:
 ```powershell
 scripts-remote-control external doctor
 ```
-> **Invariant (Mandatory Amendment 2):** `external doctor` is strictly 100% read-only. It inspects configuration and active barriers without mutating state or clearing barriers.
+> **Invariant (Mandatory Amendment 2):** `external doctor` and `external status` are strictly 100% read-only (SQLite opened `mode=ro`, zero DDL, zero file touch). They inspect configuration and active barriers without mutating state or clearing barriers.
+>
+> **Fail-Closed Gate:** Public exposure enablement requires `ready_for_public_enable=True` (zero blockers, zero security unknowns).
 
 ### Step 3: Inspect Configuration Plan (Dry-Run)
-Inspect the proposed Funnel and Serve commands and network topology:
+Inspect the proposed Funnel command and network topology:
 ```powershell
 scripts-remote-control external plan --port 8443 --public-port 8443
+```
+Modern Tailscale Funnel targets the loopback service directly:
+```bash
+tailscale funnel --bg --https=8443 http://127.0.0.1:8443
 ```
 
 ### Step 4: Operator-Approved Funnel Activation
@@ -104,6 +110,8 @@ Activate the Funnel reverse proxy with explicit approval (`-a / --apply`):
 ```powershell
 scripts-remote-control external enable -a --port 8443 --public-port 8443
 ```
+*(If configuring Funnel before starting the application listener, pass `--skip-listener-check` to defer listener readiness validation).*
+
 Upon successful execution, the CLI prints the assigned public HTTPS URL (e.g., `https://workstation.tailnet-dev.ts.net:8443`).
 
 ### Step 5: Verify Active Status

@@ -17,6 +17,7 @@ from remote_control.actions.models import (
     ActionExecutionRecord,
     ConfirmationChallenge,
     ConfirmationPolicy,
+    DispatchPhase,
     ExecutionState,
     PostconditionPolicy,
     StepUpPolicy,
@@ -136,6 +137,8 @@ class ActionService:
         self.auth_storage = auth_storage
         self.config = config
         self._locks: Dict[str, asyncio.Lock] = {}
+        # Reconcile any dangling executions from previous crashed processes
+        self.storage.reconcile_dangling_executions()
 
     def _get_lock(self, concurrency_key: str) -> asyncio.Lock:
         """Get or create an asyncio lock for a concurrency serialization key."""
@@ -584,6 +587,10 @@ class ActionService:
                     if not handler or not hasattr(handler, "execute"):
                         raise RuntimeError(f"No execution handler bound for action '{action_id}'.")
 
+                    # Stage D: Transition to dispatch_started atomically BEFORE external dispatch
+                    if action_def.effect == ActionEffect.MUTATION:
+                        self.storage.update_execution_dispatch_phase(execution_id, DispatchPhase.DISPATCH_STARTED.value)
+
                     res = await asyncio.wait_for(
                         handler.execute(validated_args, actor_id=actor_id),
                         timeout=action_def.timeout_seconds,
@@ -606,6 +613,7 @@ class ActionService:
                         error_code="timeout",
                         postcondition_verified=False,
                         summary=f"Action '{action_id}' timed out after {action_def.timeout_seconds}s waiting for subsystem response.",
+                        dispatch_phase=DispatchPhase.OUTCOME_UNKNOWN.value,
                     )
                     self.storage.record_action_audit(
                         actor_id=actor_id,
@@ -636,6 +644,7 @@ class ActionService:
                         error_code="adapter_exception",
                         postcondition_verified=False,
                         summary=bounded_summary,
+                        dispatch_phase=DispatchPhase.OUTCOME_UNKNOWN.value if action_def.effect == ActionEffect.MUTATION else DispatchPhase.TERMINAL_WITHOUT_DISPATCH.value,
                     )
                     self.storage.record_action_audit(
                         actor_id=actor_id,
@@ -672,6 +681,7 @@ class ActionService:
                         postcondition_verified=False,
                         summary=summary,
                         details=res,
+                        dispatch_phase=DispatchPhase.TERMINAL_WITHOUT_DISPATCH.value,
                     )
                     self.storage.record_action_audit(
                         actor_id=actor_id,
@@ -714,6 +724,7 @@ class ActionService:
                     postcondition_verified=postcondition_ok,
                     summary=summary,
                     details=res,
+                    dispatch_phase=DispatchPhase.POSTCONDITION_VERIFIED.value if postcondition_ok else DispatchPhase.OUTCOME_UNKNOWN.value,
                 )
                 self.storage.record_action_audit(
                     actor_id=actor_id,
