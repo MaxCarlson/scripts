@@ -446,3 +446,53 @@ def test_recover_never_prints_credential_echoed_by_server(tmp_path, monkeypatch,
 
     assert cmd_recover(args) == (0 if status == 200 else 1)
     assert token not in capsys.readouterr().out
+
+
+def test_recover_cli_uses_protected_token_against_real_asgi_recovery_route(tmp_path, monkeypatch, capsys):
+    import httpx
+    from starlette.testclient import TestClient
+
+    from resource_coordinator import cli
+    from resource_coordinator.adapters.lmstudio.gateway import LMStudioGateway
+    from resource_coordinator.core import operator_credentials
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+    from resource_coordinator.core.leases import RestartInhibition
+
+    token = "R" * 64
+    token_path = tmp_path / "operator-token"
+    token_path.write_text(token, encoding="ascii")
+    journal = tmp_path / "coordinator-state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(
+        journal,
+        "coord-cli-e2e",
+        "gpu.inference",
+        RequestPhase.UNCERTAIN,
+        details={"operation_type": "model_load", "terminal_evidence": "upstream_execution_uncertain"},
+    )
+    StateCodec.record_inhibition(journal, "gpu.inference", "upstream_read_timeout", "coord-cli-e2e")
+    monkeypatch.setenv("RESOURCE_COORDINATOR_TOKEN_FILE", str(token_path))
+    monkeypatch.delenv("RESOURCE_COORDINATOR_OPERATOR_TOKEN", raising=False)
+    monkeypatch.delenv("RESOURCE_COORDINATOR_RECOVERY_TOKEN", raising=False)
+    monkeypatch.setattr(operator_credentials, "_acl_is_restricted", lambda _path: True)
+
+    gateway = LMStudioGateway(standalone=True, state_persistence_path=str(journal))
+    gateway.lease_mgr._inhibitions["gpu.inference"] = RestartInhibition(
+        resource="gpu.inference",
+        reason="upstream_read_timeout",
+        holder_id="coord-cli-e2e",
+    )
+    app_client = TestClient(gateway.create_app())
+    monkeypatch.setattr(httpx, "Client", lambda **_kwargs: app_client)
+    args = cli.parse_args(
+        ["service", "recover", "-f", "-r", "Verified upstream idle", "--url", "http://testserver", "-j"]
+    )
+
+    assert cli.cmd_recover(args) == 0
+    output = capsys.readouterr().out
+    assert token not in output
+    assert not gateway.lease_mgr.is_restart_inhibited("gpu.inference")
+    resolved = StateCodec.load(journal).requests["coord-cli-e2e"]
+    assert resolved.phase == RequestPhase.OPERATOR_RESOLVED.value
+    assert resolved.details["resolved_by"].startswith("operator_override:")
+    assert resolved.details["resolved_by"].endswith(":Verified upstream idle")
