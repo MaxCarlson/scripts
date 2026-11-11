@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Tuple
+import sqlite3
+from typing import Any, Tuple
 
 import pytest
 from fastapi.testclient import TestClient
 
 from remote_control.adapters.notifications_adapter import ReadOnlyNotificationsAdapter
+from remote_control.adapters.coordinator_adapter import ReadOnlyCoordinatorAdapter
+from remote_control.config import RemoteControlConfig
 
 
 def test_unauthenticated_api_access_rejected(
@@ -53,7 +56,7 @@ def test_dashboard_summary_endpoint(authenticated_client: Tuple[TestClient, str]
     assert "execution_mode" in hb
 
     coord = data["coordinator"]
-    assert coord["status"] == "unconnected"
+    assert coord["status"] in ("unconnected", "unmonitored")
     assert coord["available"] is False
 
 
@@ -148,15 +151,83 @@ def test_heartbeat_status_endpoint(authenticated_client: Tuple[TestClient, str])
 
 
 def test_coordinator_placeholder_contract(authenticated_client: Tuple[TestClient, str]) -> None:
-    """Coordinator placeholder adheres to future Phase 05 contract."""
+    """Coordinator adapter adheres to Phase 05 contract."""
     client, _ = authenticated_client
     resp = client.get("/api/coordinator")
     assert resp.status_code == 200
     coord = resp.json()
     assert coord["ok"] is True
-    assert coord["status"] == "unconnected"
+    assert coord["status"] in ("unconnected", "unmonitored")
     assert coord["available"] is False
-    assert "inhibition_active" in coord
+    assert coord["recovery_required"] == "unknown"
+    assert coord["inhibition_active"] == "unknown"
+    assert "contract_capabilities" in coord
+
+
+def test_coordinator_endpoint_with_active_recovery(
+    authenticated_client: Tuple[TestClient, str],
+    test_config: RemoteControlConfig,
+) -> None:
+    """Coordinator reports active recovery and inhibition from observation."""
+    import json
+    with sqlite3.connect(test_config.notifications_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO rc_observations (
+                observed_at, status, contract_version, has_recovery_contract,
+                recovery_required, inhibition_active, inhibition_reason,
+                journal_status, miner_state, error_message, details_json
+            ) VALUES (
+                '2026-11-11T12:00:00Z', 'available', 'v1', 1,
+                1, 1, 'model load timeout on miner-1',
+                'available', 'inhibited', NULL, ?
+            )
+            """,
+            (json.dumps({"test": True}),),
+        )
+
+    client, _ = authenticated_client
+    resp = client.get("/api/coordinator")
+    assert resp.status_code == 200
+    coord = resp.json()
+    assert coord["ok"] is True
+    assert coord["status"] == "available"
+    assert coord["available"] is True
+    assert coord["recovery_required"] is True
+    assert coord["inhibition_active"] is True
+    assert coord["inhibition_reason"] == "model load timeout on miner-1"
+    assert coord["contract_capabilities"]["has_recovery_contract"] is True
+
+
+def test_coordinator_endpoint_preserves_uncertainty_when_unavailable(
+    authenticated_client: Tuple[TestClient, str],
+    test_config: RemoteControlConfig,
+) -> None:
+    """When coordinator is unavailable, recovery and inhibition must remain 'unknown'."""
+    with sqlite3.connect(test_config.notifications_db_path) as conn:
+        conn.execute(
+            """
+            INSERT INTO rc_observations (
+                observed_at, status, contract_version, has_recovery_contract,
+                recovery_required, inhibition_active, inhibition_reason,
+                journal_status, miner_state, error_message, details_json
+            ) VALUES (
+                '2026-11-11T12:05:00Z', 'unavailable', 'v1', 1,
+                NULL, NULL, NULL,
+                'unknown', 'unknown', 'Connection refused', '{}'
+            )
+            """
+        )
+
+    client, _ = authenticated_client
+    resp = client.get("/api/coordinator")
+    assert resp.status_code == 200
+    coord = resp.json()
+    assert coord["ok"] is True
+    assert coord["status"] == "unavailable"
+    assert coord["available"] is False
+    assert coord["recovery_required"] == "unknown"
+    assert coord["inhibition_active"] == "unknown"
 
 
 def test_graceful_degradation_when_notifications_db_missing(tmp_path: Path) -> None:

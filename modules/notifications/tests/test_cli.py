@@ -134,3 +134,29 @@ def test_cli_acknowledge_dry_run_vs_apply(tmp_path: Path, capsys):
     data_apply = json.loads(captured_apply.out)
     assert data_apply["ok"] is True
     assert storage.get_incident(inc_id).status == "acknowledged"  # Status updated!
+
+
+def test_cli_coordinator_status_and_test(tmp_path: Path, capsys):
+    """Coordinator CLI commands validate loopback target and report unmonitored status."""
+    db_file = tmp_path / "cli.db"
+
+    # Status without observations
+    ret_stat = main(["coordinator", "status", "-d", str(db_file), "-j"])
+    assert ret_stat == 0
+    captured = capsys.readouterr()
+    data = json.loads(captured.out)
+    assert data["ok"] is True
+    assert data["monitored"] is False
+    assert data["observation"] is None
+
+    # Test loopback validation
+    ret_test = main(["coordinator", "test", "-u", "http://127.0.0.1:1235/status", "-j"])
+    assert ret_test == 0
+    captured_test = capsys.readouterr()
+    data_test = json.loads(captured_test.out)
+    assert data_test["ok"] is True
+    assert data_test["loopback_validated"] is True
+
+    # Test non-loopback rejection
+    ret_bad = main(["coordinator", "test", "-u", "http://example.com/status", "-j"])
+    assert ret_bad == 1

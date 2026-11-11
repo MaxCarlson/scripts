@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from remote_control.adapters.coordinator_adapter import ReadOnlyCoordinatorAdapter
 from remote_control.adapters.heartbeat_adapter import ReadOnlyMonitoringAdapter
 from remote_control.adapters.notifications_adapter import ReadOnlyNotificationsAdapter
 from remote_control.api.auth_routes import router as auth_router
@@ -43,12 +44,14 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
     auth_service = AuthService(auth_storage, cfg)
     notif_adapter = ReadOnlyNotificationsAdapter(cfg.notifications_db_path)
     mon_adapter = ReadOnlyMonitoringAdapter(cfg.healthchecks_config_path)
+    coord_adapter = ReadOnlyCoordinatorAdapter(cfg.notifications_db_path)
 
     app.state.config = cfg
     app.state.auth_storage = auth_storage
     app.state.auth_service = auth_service
     app.state.notifications_adapter = notif_adapter
     app.state.monitoring_adapter = mon_adapter
+    app.state.coordinator_adapter = coord_adapter
 
     # ── Security Middleware ──────────────────────────────────────────────────────
 

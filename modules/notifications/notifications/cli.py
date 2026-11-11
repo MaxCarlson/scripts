@@ -21,7 +21,12 @@ from notifications.exceptions import (
 )
 from notifications.lifecycle import IncidentLifecycleEngine
 from notifications.models import EventEnvelopeV1, Incident, OutboxItem, RenderedNotification
+from notifications.integrations.resource_coordinator import (
+    DEFAULT_COORDINATOR_STATUS_URL,
+    ResourceCoordinatorObserver,
+)
 from notifications.outbox import OutboxWorker
+from notifications.publisher import Publisher
 from notifications.storage import StorageEngine
 
 
@@ -222,6 +227,27 @@ def build_parser() -> argparse.ArgumentParser:
     # heartbeat doctor
     hb_doc = hb_sub.add_parser("doctor", help="Run comprehensive diagnostic checks on host monitoring prerequisites.")
     hb_doc.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    # 9. coordinator
+    coord_parser = subparsers.add_parser("coordinator", help="Inspect and poll Resource Coordinator monitoring status.")
+    coord_sub = coord_parser.add_subparsers(dest="coordinator_command", required=True)
+
+    # coordinator status
+    coord_stat = coord_sub.add_parser("status", help="Inspect latest Resource Coordinator observation status.")
+    coord_stat.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+    coord_stat.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+
+    # coordinator poll
+    coord_poll = coord_sub.add_parser("poll", help="Execute one-shot read-only poll against Resource Coordinator loopback endpoint.")
+    coord_poll.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help=f"Target loopback URL (default: {DEFAULT_COORDINATOR_STATUS_URL}).")
+    coord_poll.add_argument("-t", "--timeout", type=float, default=5.0, help="HTTP read timeout in seconds (default: 5.0).")
+    coord_poll.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+    coord_poll.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+
+    # coordinator test
+    coord_test = coord_sub.add_parser("test", help="Test observer loopback configuration and contract capabilities in safe dry-run mode.")
+    coord_test.add_argument("-u", "--url", default=DEFAULT_COORDINATOR_STATUS_URL, help="Target loopback URL to validate.")
+    coord_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     return parser
 
@@ -864,6 +890,99 @@ def handle_health(args: argparse.Namespace) -> int:
         return 1
 
 
+def handle_coordinator(args: argparse.Namespace) -> int:
+    db_path = getattr(args, "db", None)
+    storage = _get_storage(db_path)
+    publisher = Publisher(storage)
+
+    if args.coordinator_command == "status":
+        latest = storage.get_latest_rc_observation()
+        incidents = storage.list_incidents(limit=20)
+        rc_incidents = [
+            i.to_dict()
+            for i in incidents
+            if i.source == "resource_coordinator" and i.status in ("open", "reopened", "acknowledged")
+        ]
+
+        data = {
+            "ok": True,
+            "monitored": latest is not None,
+            "observation": latest,
+            "active_incidents": rc_incidents,
+        }
+        if args.json:
+            print(json.dumps(data, indent=2))
+        else:
+            if not latest:
+                print("Resource Coordinator Monitoring: No observations recorded yet.")
+            else:
+                status_str = latest["status"].upper()
+                contract = latest["contract_version"]
+                print(f"Resource Coordinator Status: {status_str} [contract: {contract}]")
+                print(f" - Observed at: {latest['observed_at']}")
+                print(f" - Recovery required: {latest.get('recovery_required')}")
+                print(f" - Restart inhibition: {latest.get('inhibition_active')} ({latest.get('inhibition_reason') or 'none'})")
+                print(f" - Journal status: {latest.get('journal_status')}")
+                print(f" - Miner state: {latest.get('miner_state')}")
+                if latest.get("error_message"):
+                    print(f" - Observation error: {latest['error_message']}")
+                print(f" - Active Safety Incidents: {len(rc_incidents)}")
+        return 0
+
+    elif args.coordinator_command == "poll":
+        try:
+            observer = ResourceCoordinatorObserver(
+                status_url=args.url,
+                timeout_seconds=args.timeout,
+                storage=storage,
+                publisher=publisher,
+            )
+        except ValueError as exc:
+            err = {"ok": False, "error": str(exc)}
+            print(json.dumps(err, indent=2) if args.json else f"Configuration error: {exc}", file=sys.stderr)
+            return 1
+
+        obs = observer.poll_once()
+        res = {
+            "ok": obs.status == "available",
+            "observation": obs.to_dict(),
+        }
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(f"Poll completed: {obs.status.upper()}")
+            print(f" - Contract: {obs.contract_version} (recovery contract: {'yes' if obs.has_recovery_contract else 'no'})")
+            print(f" - Recovery required: {obs.recovery_required}")
+            print(f" - Restart inhibition: {obs.inhibition_active} ({obs.inhibition_reason or 'none'})")
+            print(f" - Journal: {obs.journal_status}")
+            if obs.error_message:
+                print(f" - Error: {obs.error_message}")
+        return 0 if obs.status == "available" else 1
+
+    elif args.coordinator_command == "test":
+        try:
+            ResourceCoordinatorObserver._validate_url(args.url)
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "target_url": args.url,
+                "loopback_validated": True,
+                "message": "Resource Coordinator observer loopback target validated. Zero control code imported.",
+            }
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Dry-run test: target URL '{args.url}' is valid loopback address.")
+                print("Safe read-only isolation boundaries verified.")
+            return 0
+        except ValueError as exc:
+            err = {"ok": False, "error": str(exc)}
+            print(json.dumps(err, indent=2) if args.json else f"Validation failed: {exc}", file=sys.stderr)
+            return 1
+
+    return 2
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -885,6 +1004,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return handle_windows(args)
     elif args.command == "heartbeat":
         return handle_heartbeat(args)
+    elif args.command == "coordinator":
+        return handle_coordinator(args)
 
     return 0
 

@@ -114,7 +114,7 @@ def test_health_endpoint(test_setup):
     assert resp.status_code == 200
     data = resp.json()
     assert data["status"] == "healthy"
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == 2
 
 
 def test_acknowledge_endpoint(test_setup):

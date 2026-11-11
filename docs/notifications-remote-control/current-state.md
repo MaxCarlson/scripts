@@ -194,4 +194,49 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
     - Notifications test suite: 128 passing tests, 1 skipped (`modules/notifications/tests/`).
     - Scripts help test suite: 55 passing tests (`modules/scripts_help/tests/`).
 
+---
+
+## 8. Phase 06 Security Stabilization & Phase 05 Resource Coordinator Monitoring Status
+
+- **Stage A — Phase 06 Security Stabilization (Committed `49a7a6d6`)**:
+  - **Atomic Exact-Timestep TOTP Replay Protection**:
+    - Implemented `find_matching_totp_timesteps()` to find matching timesteps within verification window `[-valid_window, +valid_window]`, ordered by proximity to current timestep.
+    - Implemented `consume_totp_timestep()` using `BEGIN IMMEDIATE` transaction and `PRIMARY KEY (operator_id, timestep)` in `used_totp_timesteps` to prevent concurrent race condition replay.
+    - Added adjacent window check (`valid_window=2`) against consumed timesteps in `AuthService.authenticate_login()` to prevent replay across clock tick rollover.
+  - **Exact-Origin Verification**:
+    - Enhanced `security_middleware` in `modules/remote_control/remote_control/app.py` to enforce strict `scheme + hostname + effective port` exact matching against request target or configured `allowed_origins`.
+    - Rejects differing schemes (HTTP to HTTPS) and differing ports (`:3000` to `:8443`). Rejects `Origin: null` and `Sec-Fetch-Site: cross-site`.
+    - Validates `Referer` fallback for same-origin browser requests where `Origin` is omitted.
+  - **Hardened Cookies & Proxy Boundaries**:
+    - Added `trusted_proxies` (default `["127.0.0.1", "::1"]`) to `RemoteControlConfig`.
+    - Trust `X-Forwarded-For`, `X-Forwarded-Proto`, and `X-Forwarded-Port` ONLY if immediate socket peer (`client.host`) is in `trusted_proxies`.
+    - Enforced cookie name and `Secure` flag invariant: `__Host-rc_session` strictly used when HTTPS or `cookie_secure=True`, with `secure=True`, `path=/`, and `SameSite=Strict`. Prohibits insecure fallback in production/HTTPS.
+
+- **Stage B — Phase 05 Resource Coordinator Monitoring Integration**:
+  - **Database Schema v2 Migration**:
+    - Upgraded `modules/notifications/notifications/storage.py` to schema version 2.
+    - Created `rc_observations` table to store an append-only ledger of status polls.
+  - **Independent Polling Observer**:
+    - Created `modules/notifications/notifications/integrations/resource_coordinator.py` (`ResourceCoordinatorObserver`).
+    - Enforces loopback-only binding (`127.0.0.1`, `localhost`, `::1`), rejecting external hostnames.
+    - Contract discovery: distinguishes modern contract v1 (`gpu_inference.recovery`) from legacy contract.
+    - Mandatory uncertainty preservation (Rule B4): coordinator downtime NEVER resolves active safety holds (`gpu_inference_recovery`). Missing recovery fields are NEVER assumed to mean `required=False`.
+    - Notification storm suppression (Rule B3): tracks internal incident states and emits events only on true transitions.
+  - **Read-Only Dashboard Adapter**:
+    - Created `modules/remote_control/remote_control/adapters/coordinator_adapter.py` (`ReadOnlyCoordinatorAdapter`).
+    - Connects to `notifications.db` via read-only URI mode (`file:... ?mode=ro`).
+    - Powers `/api/coordinator` and `/api/summary` endpoints without modifying Resource Coordinator state.
+  - **CLI Namespace**:
+    - Added `scripts-notify coordinator status|poll|test` subcommands in `modules/notifications/notifications/cli.py`.
+  - **Automated Validation Evidence**:
+    - Notifications test suite: 141 passed, 1 skipped (12 new tests in `test_rc_observer.py`, 7 in `test_cli.py`).
+    - Remote control test suite: 44 passed (covering exact-origin, atomic TOTP replay, cookies, proxy boundaries, and coordinator endpoints).
+    - Scripts help test suite: 55 passed.
+    - Total workspace tests: 240 passed, 1 skipped.
+  - **Strict Architectural Invariants**:
+    - `modules/resource_coordinator/` remained 100% untouched and unmodified.
+    - Zero imports from `resource_coordinator`.
+    - Zero spending ($0 spend; no external accounts, domains, or paid hosting).
+
+
 

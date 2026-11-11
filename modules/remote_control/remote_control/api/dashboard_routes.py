@@ -7,6 +7,7 @@ from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 
+from remote_control.adapters.coordinator_adapter import ReadOnlyCoordinatorAdapter
 from remote_control.adapters.heartbeat_adapter import ReadOnlyMonitoringAdapter
 from remote_control.adapters.notifications_adapter import ReadOnlyNotificationsAdapter
 from remote_control.api.dependencies import get_current_session
@@ -25,25 +26,22 @@ def get_monitoring_adapter(request: Request) -> ReadOnlyMonitoringAdapter:
     return request.app.state.monitoring_adapter
 
 
+def get_coordinator_adapter(request: Request) -> ReadOnlyCoordinatorAdapter:
+    return request.app.state.coordinator_adapter
+
+
 @router.get("/summary")
 async def get_dashboard_summary(
     session: SessionModel = Depends(get_current_session),
     notif_adapter: ReadOnlyNotificationsAdapter = Depends(get_notifications_adapter),
     mon_adapter: ReadOnlyMonitoringAdapter = Depends(get_monitoring_adapter),
+    coord_adapter: ReadOnlyCoordinatorAdapter = Depends(get_coordinator_adapter),
 ) -> Dict[str, Any]:
-    """Aggregate top-level dashboard summary across incidents, heartbeat, and providers."""
+    """Aggregate top-level dashboard summary across incidents, heartbeat, providers, and coordinator."""
     notif_summary = notif_adapter.get_summary()
     hb_status = mon_adapter.get_heartbeat_status()
     providers = mon_adapter.get_providers_status()
-
-    # Coordinator placeholder contract (Phase 05 forward compatibility)
-    coordinator_status = {
-        "status": "unconnected",
-        "available": False,
-        "message": "Resource Coordinator adapter available in Phase 05.",
-        "inhibition_active": False,
-        "miner_state": "unknown",
-    }
+    coordinator_status = coord_adapter.get_coordinator_status()
 
     return {
         "ok": True,
@@ -151,13 +149,8 @@ async def get_heartbeat_status(
 @router.get("/coordinator")
 async def get_coordinator_status(
     session: SessionModel = Depends(get_current_session),
+    adapter: ReadOnlyCoordinatorAdapter = Depends(get_coordinator_adapter),
 ) -> Dict[str, Any]:
-    """Read-only placeholder contract for future Phase 05 Resource Coordinator integration."""
-    return {
-        "ok": True,
-        "status": "unconnected",
-        "available": False,
-        "message": "Resource Coordinator adapter available in Phase 05.",
-        "inhibition_active": False,
-        "miner_state": "unknown",
-    }
+    """Read-only sanitized operational status for Resource Coordinator."""
+    status_data = adapter.get_coordinator_status()
+    return status_data

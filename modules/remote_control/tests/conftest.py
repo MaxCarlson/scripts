@@ -12,7 +12,7 @@ import pyotp
 import pytest
 from fastapi.testclient import TestClient
 
-from notifications.storage import SCHEMA_VERSION_1_SQL
+from notifications.storage import SCHEMA_VERSION_1_SQL, SCHEMA_VERSION_2_SQL
 from remote_control.app import create_app
 from remote_control.auth.service import AuthService
 from remote_control.auth.storage import AuthStorage
@@ -68,10 +68,15 @@ def seeded_notifications_db(test_config: RemoteControlConfig) -> Path:
 
     with sqlite3.connect(db_path) as conn:
         conn.executescript(SCHEMA_VERSION_1_SQL)
+        conn.executescript(SCHEMA_VERSION_2_SQL)
         now_iso = "2026-11-11T12:00:00Z"
 
         conn.execute(
             "INSERT INTO schema_migrations (version, applied_at) VALUES (1, ?)",
+            (now_iso,),
+        )
+        conn.execute(
+            "INSERT INTO schema_migrations (version, applied_at) VALUES (2, ?)",
             (now_iso,),
         )
 

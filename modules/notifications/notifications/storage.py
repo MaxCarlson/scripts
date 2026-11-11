@@ -132,6 +132,27 @@ CREATE INDEX IF NOT EXISTS idx_outbox_queue ON outbox(status, next_retry_at);
 CREATE INDEX IF NOT EXISTS idx_transitions_incident ON transitions(incident_id, timestamp);
 """
 
+SCHEMA_VERSION_2_SQL = """
+-- Version 2 Schema Migration: Resource Coordinator Monitoring Observations
+
+CREATE TABLE IF NOT EXISTS rc_observations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    observed_at TEXT NOT NULL,
+    status TEXT NOT NULL,
+    contract_version TEXT NOT NULL,
+    has_recovery_contract INTEGER NOT NULL DEFAULT 0,
+    recovery_required INTEGER,
+    inhibition_active INTEGER,
+    inhibition_reason TEXT,
+    journal_status TEXT,
+    miner_state TEXT,
+    error_message TEXT,
+    details_json TEXT NOT NULL DEFAULT '{}'
+);
+
+CREATE INDEX IF NOT EXISTS idx_rc_observations_time ON rc_observations(observed_at);
+"""
+
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -221,6 +242,14 @@ class StorageEngine:
                         (1, _now_iso()),
                     )
                     current_version = 1
+
+                if current_version < 2:
+                    conn.executescript(SCHEMA_VERSION_2_SQL)
+                    conn.execute(
+                        "INSERT OR REPLACE INTO schema_migrations (version, applied_at) VALUES (?, ?);",
+                        (2, _now_iso()),
+                    )
+                    current_version = 2
 
                 return current_version
         except sqlite3.Error as exc:
@@ -895,5 +924,82 @@ class StorageEngine:
                 except Exception:
                     c.execute("ROLLBACK;")
                     raise
+        except sqlite3.Error as exc:
+            raise _map_sqlite_error(exc) from exc
+
+    def save_rc_observation(
+        self, observation: dict[str, Any], conn: Optional[sqlite3.Connection] = None
+    ) -> int:
+        """Persist a normalized Resource Coordinator monitoring observation."""
+        now = _now_iso()
+
+        def _exec(c: sqlite3.Connection) -> int:
+            cur = c.execute(
+                """
+                INSERT INTO rc_observations (
+                    observed_at, status, contract_version, has_recovery_contract,
+                    recovery_required, inhibition_active, inhibition_reason,
+                    journal_status, miner_state, error_message, details_json
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    observation.get("observed_at", now),
+                    observation.get("status", "unknown"),
+                    observation.get("contract_version", "unknown"),
+                    1 if observation.get("has_recovery_contract") else 0,
+                    1 if observation.get("recovery_required") is True else (0 if observation.get("recovery_required") is False else None),
+                    1 if observation.get("inhibition_active") is True else (0 if observation.get("inhibition_active") is False else None),
+                    observation.get("inhibition_reason"),
+                    observation.get("journal_status"),
+                    observation.get("miner_state"),
+                    observation.get("error_message"),
+                    json.dumps(observation.get("details", {})),
+                ),
+            )
+            return cur.lastrowid or 0
+
+        try:
+            if conn is not None:
+                return _exec(conn)
+            with self.connect() as c:
+                c.execute("BEGIN IMMEDIATE;")
+                try:
+                    row_id = _exec(c)
+                    c.execute("COMMIT;")
+                    return row_id
+                except Exception:
+                    c.execute("ROLLBACK;")
+                    raise
+        except sqlite3.Error as exc:
+            raise _map_sqlite_error(exc) from exc
+
+    def get_latest_rc_observation(
+        self, conn: Optional[sqlite3.Connection] = None
+    ) -> Optional[dict[str, Any]]:
+        """Fetch the most recent Resource Coordinator monitoring observation."""
+        def _exec(c: sqlite3.Connection) -> Optional[dict[str, Any]]:
+            row = c.execute(
+                "SELECT * FROM rc_observations ORDER BY id DESC LIMIT 1"
+            ).fetchone()
+            if not row:
+                return None
+            data = dict(row)
+            if data.get("details_json"):
+                try:
+                    data["details"] = json.loads(data["details_json"])
+                except Exception:
+                    data["details"] = {}
+            data["has_recovery_contract"] = bool(data.get("has_recovery_contract"))
+            if data.get("recovery_required") is not None:
+                data["recovery_required"] = bool(data["recovery_required"])
+            if data.get("inhibition_active") is not None:
+                data["inhibition_active"] = bool(data["inhibition_active"])
+            return data
+
+        try:
+            if conn is not None:
+                return _exec(conn)
+            with self.connect() as c:
+                return _exec(c)
         except sqlite3.Error as exc:
             raise _map_sqlite_error(exc) from exc
