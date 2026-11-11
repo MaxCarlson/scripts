@@ -58,7 +58,7 @@ def redact_sensitive_data(val: Any) -> Any:
         cleaned = {}
         for k, v in val.items():
             k_lower = k.lower()
-            if any(s in k_lower for s in ("token", "secret", "password", "totp", "auth_header", "cookie")):
+            if any(s in k_lower for s in ("token", "secret", "password", "totp", "auth_header", "cookie", "key")):
                 cleaned[k] = "[REDACTED]"
             else:
                 cleaned[k] = redact_sensitive_data(v)
@@ -73,7 +73,7 @@ def redact_sensitive_data(val: Any) -> Any:
         # Redact TOTP codes (6 digits standalone)
         s = re.sub(r"\b\d{6}\b", "[REDACTED_OTP]", s)
         # Redact Windows local user paths
-        s = re.sub(r"(?i)c:\\users\\[^\\]+\\", "C:\\Users\\[REDACTED_USER]\\", s)
+        s = re.sub(r"(?i)c:\\users\\[^\\]+\\", lambda m: "C:\\Users\\[REDACTED_USER]\\", s)
         return s
 
     return val
