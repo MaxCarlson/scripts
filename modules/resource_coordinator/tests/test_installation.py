@@ -1136,14 +1136,14 @@ def test_task_transport_elevation_cancellation_is_reported_and_artifacts_are_ret
     calls = []
     monkeypatch.setattr(mod.os, "name", "nt")
     monkeypatch.setattr(backend, "_admin", lambda: False)
-    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path: None)
+    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path, **kwargs: None)
 
     def run(args, **kwargs):
         calls.append((args, kwargs))
         return subprocess.CompletedProcess(args, 1223, "", "")
 
     monkeypatch.setattr(mod.subprocess, "run", run)
-    with pytest.raises(mod.ElevationRequired, match="approval was cancelled"):
+    with pytest.raises(mod.ElevationRequired, match="approval was cancelled") as caught:
         backend._run({"operation": "validate", "task_name": TASK_NAMES["logon"]}, elevated=True)
 
     assert len(calls) == 1
@@ -1151,10 +1151,70 @@ def test_task_transport_elevation_cancellation_is_reported_and_artifacts_are_ret
     assert "-RedirectStandardOutput" not in args[-1]
     assert "-RedirectStandardError" not in args[-1]
     assert "-Verb RunAs" in args[-1]
+    assert "operation=validate stage=launch_helper" in str(caught.value)
+    assert "command_line_chars=" in str(caught.value)
     operation_dirs = list(backend.managed_root.glob("operation-*"))
     assert len(operation_dirs) == 1
     assert (operation_dirs[0] / "request.json").is_file()
     assert (operation_dirs[0] / "helper.ps1").is_file()
+
+
+def test_task_transport_acl_launch_failure_reports_safe_dimensions(tmp_path, monkeypatch):
+    import ctypes
+    import resource_coordinator.installation as mod
+
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / "managed", interactive_user="test-user")
+    operation_dir = backend.managed_root / "operation-test"
+    operation_dir.mkdir(parents=True)
+    monkeypatch.setattr(mod.os, "name", "nt")
+
+    def fail_launch(*args, **kwargs):
+        raise ctypes.WinError(206)
+
+    monkeypatch.setattr(mod.subprocess, "run", fail_launch)
+
+    with pytest.raises(InstallationError) as caught:
+        backend._secure_operation_directory(operation_dir, operation_id="op-test", operation="install")
+
+    message = str(caught.value)
+    assert "operation=install" in message
+    assert "operation_id=op-test" in message
+    assert "stage=secure_operation_directory" in message
+    assert "winerror=206" in message
+    assert "executable=pwsh.exe" in message or "executable=powershell.exe" in message
+    assert "command_line_chars=" in message
+    assert "operation_dir_chars=" in message
+
+
+def test_task_transport_launch_failure_reports_safe_operation_dimensions(tmp_path, monkeypatch):
+    import ctypes
+    import resource_coordinator.installation as mod
+
+    backend = WindowsStartupTaskBackend(managed_root=tmp_path / "managed", interactive_user="test-user")
+    calls = []
+    monkeypatch.setattr(mod.os, "name", "nt")
+    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path, **kwargs: None)
+
+    def run(args, **kwargs):
+        calls.append((args, kwargs))
+        raise ctypes.WinError(206)
+
+    monkeypatch.setattr(mod.subprocess, "run", run)
+    with pytest.raises(InstallationError) as caught:
+        backend._run({"operation": "install", "mode": "logon", "secret": "must-not-appear"})
+
+    message = str(caught.value)
+    assert "operation=install" in message
+    assert "stage=launch_helper" in message
+    assert "winerror=206" in message
+    assert "executable=pwsh.exe" in message or "executable=powershell.exe" in message
+    assert "command_line_chars=" in message
+    assert "helper_path_chars=" in message
+    assert "request_path_chars=" in message
+    assert "must-not-appear" not in message
+    assert "-EncodedCommand" not in message
+    assert "operation-" in message
+    assert len(calls) == 1
 
 
 def test_elevated_upgrade_cli_runs_once_and_preserves_quoted_arguments(monkeypatch):
@@ -1198,7 +1258,7 @@ def test_task_transport_timeout_retains_operation_artifacts(tmp_path, monkeypatc
 
     backend = WindowsStartupTaskBackend(managed_root=tmp_path / "managed", interactive_user="test-user")
     monkeypatch.setattr(mod.os, "name", "nt")
-    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path: None)
+    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path, **kwargs: None)
 
     def timeout(args, **kwargs):
         raise subprocess.TimeoutExpired(args, timeout=120)
@@ -1310,7 +1370,7 @@ def test_elevated_helper_verifies_and_parses_the_same_request_bytes(tmp_path, mo
         return subprocess.CompletedProcess(args, 0, "", "")
 
     monkeypatch.setattr(mod.os, "name", "nt")
-    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path: None)
+    monkeypatch.setattr(backend, "_secure_operation_directory", lambda path, **kwargs: None)
     monkeypatch.setattr(mod.subprocess, "run", run)
     assert backend._run({"operation": "status"}).stdout == "[]"
     source = helper_sources[0]

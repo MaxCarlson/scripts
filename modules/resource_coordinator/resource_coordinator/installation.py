@@ -668,7 +668,8 @@ class WindowsStartupTaskBackend:
                                     f"{message or 'see the elevated console for command output'}")
         return 0
 
-    def _secure_operation_directory(self, operation_dir: Path) -> None:
+    def _secure_operation_directory(self, operation_dir: Path, *, operation_id: Optional[str] = None,
+                                    operation: str = "task_helper") -> None:
         """Set and verify an exact DACL on one unique temporary operation directory."""
         if _is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve():
             raise InstallationError("Task operation directory changed identity; refusing helper execution")
@@ -697,15 +698,26 @@ class WindowsStartupTaskBackend:
             "{ throw 'Operation directory ACL contains an unexpected ACL entry.' } }; "
             "ConvertTo-Json -InputObject @{user_sid=$userSid;allowed_sids=@($allowed);entries=$entries} -Depth 4 -Compress"
         )
+        command = [self.powershell, "-NoProfile", "-NonInteractive", "-Command", script]
+        launch_diagnostics = (
+            f"operation={operation} operation_id={operation_id or 'unassigned'} "
+            f"stage=secure_operation_directory executable={Path(self.powershell).name} "
+            f"executable_path_chars={len(self.powershell)} command_line_chars={len(subprocess.list2cmdline(command))} "
+            f"managed_root_chars={len(str(self.managed_root))} operation_dir_chars={len(str(operation_dir))}"
+        )
         try:
-            result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", script],
-                                    capture_output=True, text=True, timeout=20)
+            result = subprocess.run(command, capture_output=True, text=True, timeout=20)
         except subprocess.TimeoutExpired as exc:
-            raise InstallationError(f"Operation directory ACL verification timed out: {operation_dir}") from exc
+            raise InstallationError(f"Operation directory ACL verification timed out ({launch_diagnostics})") from exc
+        except OSError as exc:
+            error_code = f"winerror={exc.winerror}" if getattr(exc, "winerror", None) is not None else f"errno={exc.errno}"
+            raise InstallationError(f"Operation directory ACL verification could not launch "
+                                    f"({launch_diagnostics} {error_code})") from exc
         if result.returncode:
             message = _clean_powershell_error(result.stderr or result.stdout)
             raise InstallationError("Could not establish a restricted operation directory ACL: " +
-                                    (message or f"PowerShell exited {result.returncode}"))
+                                    (message or f"PowerShell exited {result.returncode}") +
+                                    f" ({launch_diagnostics} exit_code={result.returncode})")
         try:
             entries = json.loads(result.stdout)
         except (TypeError, ValueError) as exc:
@@ -745,8 +757,11 @@ class WindowsStartupTaskBackend:
         helper_path = operation_dir / "helper.ps1"
         result: Optional[subprocess.CompletedProcess[str]] = None
         operation_verified = False
+        stage = "prepare_operation"
+        launch_diagnostics = ""
         try:
-            self._secure_operation_directory(operation_dir)
+            self._secure_operation_directory(operation_dir, operation_id=operation_id,
+                                             operation=str(payload.get("operation", "unknown")))
             body = _TASKS_POWERSHELL.replace(
                 "$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json",
                 "$payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json",
@@ -790,6 +805,7 @@ class WindowsStartupTaskBackend:
                 raise InstallationError(f"Task operation {operation_id} artifact path was substituted")
             if hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash:
                 raise InstallationError(f"Task helper {operation_id} changed before execution")
+            stage = "launch_helper"
             if elevated and not self._admin():
                 elevated_script = (
                     f"$scriptPath={_ps_single_quote(helper_path)}; $expected='{helper_hash}'; "
@@ -807,19 +823,33 @@ class WindowsStartupTaskBackend:
                            "exit $p.ExitCode } catch { "
                            "if ($_.Exception.HResult -eq -2147023673) { exit 1223 }; "
                            "[Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
-                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
-                                        capture_output=True, text=True, timeout=120)
+                command = [self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper]
+                launch_kind = "elevated_powershell_wrapper"
             else:
-                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-File",
-                                         str(helper_path), "-RequestPath", str(request_path)],
-                                        capture_output=True, text=True, timeout=120)
+                command = [self.powershell, "-NoProfile", "-NonInteractive", "-File",
+                           str(helper_path), "-RequestPath", str(request_path)]
+                launch_kind = "file_backed_powershell_helper"
+            launch_diagnostics = (
+                f"operation={payload.get('operation', 'unknown')} stage={stage} launch={launch_kind} "
+                f"executable={Path(self.powershell).name} executable_path_chars={len(self.powershell)} "
+                f"command_line_chars={len(subprocess.list2cmdline(command))} "
+                f"managed_root_chars={len(str(self.managed_root))} operation_dir_chars={len(str(operation_dir))} "
+                f"helper_path_chars={len(str(helper_path))} request_path_chars={len(str(request_path))} "
+                f"result_path_chars={len(str(output_path))}"
+            )
+            result = subprocess.run(command, capture_output=True, text=True, timeout=120)
             if result.returncode:
                 message = _clean_powershell_error(result.stderr or result.stdout)
                 if result.returncode == 1223 or "cancelled" in message.casefold() or "canceled" in message.casefold() or "0x800704c7" in message.casefold():
-                    raise ElevationRequired("Administrator approval was cancelled; the existing service was not changed.")
+                    raise ElevationRequired("Administrator approval was cancelled; the existing service was not changed "
+                                            f"({launch_diagnostics}).")
                 if result.returncode == 124:
-                    raise InstallationError(f"Task helper {operation_id} timed out; diagnostic artifacts retained at {operation_dir}")
-                raise InstallationError(f"Task helper {operation_id} failed: {message or result.returncode}")
+                    raise InstallationError(f"Task helper {operation_id} timed out "
+                                            f"({launch_diagnostics.replace('stage=launch_helper', 'stage=helper_execution')}); "
+                                            f"diagnostic artifacts retained at {operation_dir}")
+                raise InstallationError(f"Task helper {operation_id} failed "
+                                        f"({launch_diagnostics.replace('stage=launch_helper', 'stage=helper_execution')}): "
+                                        f"{message or result.returncode}")
             if (_is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve() or
                     output_path.resolve().parent != operation_dir.resolve()):
                 raise InstallationError(f"Task operation {operation_id} artifact directory changed during execution; artifacts retained at {operation_dir}")
@@ -851,9 +881,14 @@ class WindowsStartupTaskBackend:
         except InstallationError as exc:
             raise InstallationError(f"Task operation {operation_id} failed before verification; artifacts retained at {operation_dir}: {exc}") from exc
         except subprocess.TimeoutExpired as exc:
-            raise InstallationError(f"Task operation {operation_id} timed out; diagnostic artifacts retained at {operation_dir}") from exc
+            diagnostics = launch_diagnostics or f"operation={payload.get('operation', 'unknown')} stage={stage}"
+            raise InstallationError(f"Task operation {operation_id} timed out; diagnostic artifacts retained "
+                                    f"at {operation_dir} ({diagnostics})") from exc
         except OSError as exc:
-            raise InstallationError(f"Task operation {operation_id} could not launch: {exc}; artifacts retained at {operation_dir}") from exc
+            error_code = f"winerror={exc.winerror}" if getattr(exc, "winerror", None) is not None else f"errno={exc.errno}"
+            diagnostics = launch_diagnostics or f"operation={payload.get('operation', 'unknown')} stage={stage}"
+            raise InstallationError(f"Task operation {operation_id} could not launch ({diagnostics} {error_code}); "
+                                    f"artifacts retained at {operation_dir}") from exc
         finally:
             if (operation_verified and operation_dir.exists() and not _is_reparse_point(operation_dir) and
                     operation_dir.resolve().parent == self.managed_root.resolve()):
