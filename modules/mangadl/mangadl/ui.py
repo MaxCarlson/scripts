@@ -417,7 +417,7 @@ def render_dashboard(
             "-" * width,
             clip(
                 "Up/Down j/k Select | +/- Add/retire worker | [/] Image threads | "
-                "l Log | f Fullscreen | r Raw | p/P Pause | q Drain+quit | Ctrl+Q Stop now",
+                "v/l Log | f Fullscreen | r Raw | p/P Pause | q Drain+quit | Ctrl+Q Stop now",
                 width,
             ),
         ]
@@ -451,13 +451,17 @@ class ConsoleDashboard:
             return "images_up"
         elif key == "[":
             return "images_down"
-        elif key == "l":
+        elif key in {"l", "v"}:
             self.inline_log = not self.inline_log
             self.fullscreen_log = False
         elif key == "f":
             self.fullscreen_log = not self.fullscreen_log
-        elif key == "r" and (self.inline_log or self.fullscreen_log):
-            self.raw_view = not self.raw_view
+        elif key == "r":
+            if not self.inline_log and not self.fullscreen_log:
+                self.inline_log = True
+                self.raw_view = True
+            else:
+                self.raw_view = not self.raw_view
         elif key == "p":
             self.paused_workers.symmetric_difference_update({self.selected})
         elif key == "P":

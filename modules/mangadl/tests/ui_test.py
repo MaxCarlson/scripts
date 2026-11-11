@@ -247,3 +247,77 @@ def test_dashboard_clamps_selection_after_retired_worker_disappears(tmp_path: Pa
     dashboard.render({}, {1: WorkerSnapshot(1), 2: WorkerSnapshot(2)})
 
     assert dashboard.selected == 2
+
+
+def test_v_hotkey_and_navigation(tmp_path: Path) -> None:
+    dashboard = ConsoleDashboard(True, "run", tmp_path)
+    assert dashboard.inline_log is False
+
+    # 'v' toggles inline log
+    dashboard.handle_key("v", 4)
+    assert dashboard.inline_log is True
+
+    # 'v' toggles back
+    dashboard.handle_key("v", 4)
+    assert dashboard.inline_log is False
+
+    # 'r' opens inline log directly in raw view if closed
+    dashboard.handle_key("r", 4)
+    assert dashboard.inline_log is True
+    assert dashboard.raw_view is True
+
+    # Up/Down and j/k select workers
+    assert dashboard.selected == 1
+    dashboard.handle_key("DOWN", 4)
+    assert dashboard.selected == 2
+    dashboard.handle_key("j", 4)
+    assert dashboard.selected == 3
+    dashboard.handle_key("UP", 4)
+    assert dashboard.selected == 2
+    dashboard.handle_key("k", 4)
+    assert dashboard.selected == 1
+
+
+def test_manager_keyboard_reads_from_stdin_queue(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from mangadl.manager import Manager, Manga18FXConcurrencyPlan
+    from mangadl.options import RunOptions
+
+    (tmp_path / "urls.txt").write_text("https://nhentai.net/g/123/\n", encoding="utf-8")
+    options = RunOptions(
+        input_file=tmp_path / "urls.txt",
+        destination=tmp_path / "dest",
+        ui=True,
+        run_id="test_run",
+        log_dir=tmp_path / "logs",
+        auth_dir=tmp_path / "auth",
+        state_dir=tmp_path / "state",
+    )
+    plan = Manga18FXConcurrencyPlan(
+        requested_workers=4,
+        requested_image_workers=4,
+        requested_total=16,
+        effective_workers=4,
+        effective_image_workers=4,
+        effective_total=16,
+        maximum_workers=16,
+        logical_cpus=16,
+        budget=16,
+        adjusted=False,
+    )
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    manager = Manager(options, plan)
+
+    # Queue keys: workers_up ('+'), navigate down ('j'), toggle log ('v')
+    manager._stdin_queue.put("+")
+    manager._stdin_queue.put("j")
+    manager._stdin_queue.put("v")
+
+    assert manager.target_workers == 4
+    assert manager.dashboard.selected == 1
+    assert manager.dashboard.inline_log is False
+
+    manager._keyboard()
+
+    assert manager.target_workers == 5
+    assert manager.dashboard.selected == 2
+    assert manager.dashboard.inline_log is True

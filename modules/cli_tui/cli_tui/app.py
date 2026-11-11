@@ -20,6 +20,7 @@ from .state import (
     PaneSession,
     PaneType,
     PaneWorkspace,
+    RunningFocusMode,
     TuiScreenMode,
     copy_matching_form_values,
 )
@@ -125,6 +126,10 @@ def addstr_ansi(stdscr: Any, y: int, x: int, line: str, max_x: int) -> None:
                     curr_attr |= curses.A_BOLD
                 elif code == "2":
                     curr_attr |= curses.A_DIM
+                elif code == "7":
+                    curr_attr |= curses.A_REVERSE
+                elif code == "27":
+                    curr_attr &= ~curses.A_REVERSE
                 elif code in color_map and has_colors:
                     try:
                         curr_color_pair = curses.color_pair(color_map[code])
@@ -727,8 +732,87 @@ class CliTuiApp:
             " ".join(self.navigation.path) or cmd.prog or cmd.name
         )
 
+    def handle_mouse_click(self, mx: int, my: int, bstate: int = 4) -> bool:
+        """Handle mouse clicks on form fields, buttons, and navigation."""
+        if self.screen_mode == TuiScreenMode.FORM:
+            # Check button boxes
+            for (by, bx_start, bx_end, action) in getattr(self, "_button_boxes", []):
+                if my == by and bx_start <= mx <= bx_end:
+                    if action == "run":
+                        self.form_cursor = len(self.form_widgets)
+                        self._start_execution()
+                        return True
+                    elif action == "prev":
+                        self.form_cursor = len(self.form_widgets) + 1
+                        self.is_showing_preview = True
+                        return True
+                    elif action == "back":
+                        self.navigation.pop()
+                        self.current_form = None
+                        self.form_widgets = []
+                        return True
+
+            # Check widgets
+            widget_row_map = getattr(self, "_widget_row_map", {})
+            if my in widget_row_map:
+                target_idx, widget = widget_row_map[my]
+                if self.form_cursor != target_idx:
+                    if self.form_cursor < len(self.form_widgets):
+                        self.form_widgets[self.form_cursor].is_editing = False
+                    self.form_cursor = target_idx
+
+                if hasattr(widget, "set_cursor_from_click") and hasattr(
+                    widget, "text_start_offset"
+                ):
+                    start_col = 2 + widget.text_start_offset()
+                    char_offset = max(0, mx - start_col)
+                    widget.set_cursor_from_click(char_offset)
+                    return True
+                elif hasattr(widget, "handle_key"):
+                    if getattr(widget, "arg", None) and widget.arg.action_type in (
+                        "store_true",
+                        "store_false",
+                        "boolean_optional",
+                    ):
+                        widget.handle_key(ord(" "))
+                    else:
+                        widget.handle_key(getattr(curses, "KEY_RIGHT", 261))
+                    return True
+
+        elif self.screen_mode == TuiScreenMode.RUNNING:
+            wheel_up = getattr(curses, "BUTTON4_PRESSED", 65536)
+            wheel_down = getattr(curses, "BUTTON5_PRESSED", 2097152)
+            if bstate & wheel_up:
+                self.viewport.scroll_up(3)
+                return True
+            elif bstate & wheel_down:
+                self.viewport.scroll_down(3)
+                return True
+
+            btn1_clicked = getattr(curses, "BUTTON1_CLICKED", 4)
+            btn1_pressed = getattr(curses, "BUTTON1_PRESSED", 2)
+            if bstate & (btn1_clicked | btn1_pressed):
+                status_row = getattr(self, "_running_status_row", 0)
+                footer_row = getattr(self, "_running_footer_row", 9999)
+                if my <= status_row or my >= footer_row:
+                    self.workspace.active_pane.running_focus = RunningFocusMode.TUI
+                    self.last_message = "Focus: CLI-TUI"
+                else:
+                    self.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+                    self.last_message = "Focus: PROGRAM"
+                return True
+
+        return False
+
     def process_key(self, key: int) -> bool:
         """Universal key processor returning True if handled."""
+        if key == getattr(curses, "KEY_MOUSE", 409):
+            try:
+                _, mx, my, _, bstate = curses.getmouse()
+                return self.handle_mouse_click(mx, my, bstate)
+            except Exception:
+                return False
+
         if self.is_showing_output_capture:
             return self._handle_output_capture_key(key)
         if key == 19:  # Ctrl+S saves the current pane workspace.
@@ -772,6 +856,26 @@ class CliTuiApp:
                     return True
                 return handled
             return False
+
+        # 0e. Focus toggle & program-focus routing in RUNNING mode
+        if self.screen_mode == TuiScreenMode.RUNNING:
+            if key in (6, getattr(curses, "KEY_F6", 270), 540):
+                active_pane = self.workspace.active_pane
+                current_focus = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+                if current_focus == RunningFocusMode.PROGRAM:
+                    active_pane.running_focus = RunningFocusMode.TUI
+                    self.last_message = "Focus: CLI-TUI"
+                else:
+                    active_pane.running_focus = RunningFocusMode.PROGRAM
+                    self.last_message = "Focus: PROGRAM"
+                return True
+
+            runner = self.runner
+            if runner and getattr(runner, "is_running", False):
+                active_pane = self.workspace.active_pane
+                focus_mode = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+                if focus_mode == RunningFocusMode.PROGRAM:
+                    return self._handle_running_key(key)
 
         # 1. Immediate unconditional quit on 'Q'
         if key == ord("Q"):
@@ -851,11 +955,11 @@ class CliTuiApp:
 
         # Global pane cycling
         if key in (ord("["), getattr(curses, "KEY_SLEFT", -999)):
-            if not self._is_widget_editing():
+            if not self._is_widget_editing() and len(self.workspace.panes) > 1:
                 self.cycle_pane_prev()
                 return True
         elif key in (ord("]"), getattr(curses, "KEY_SRIGHT", -999)):
-            if not self._is_widget_editing():
+            if not self._is_widget_editing() and len(self.workspace.panes) > 1:
                 self.cycle_pane_next()
                 return True
 
@@ -1066,6 +1170,7 @@ class CliTuiApp:
         self.runner = ProcessRunner(argv)
         self.viewport.scroll_to_end()
         self.runner.start()
+        self.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
         self.navigation.current_screen = TuiScreenMode.RUNNING
         self._sync_target_pid()
 
@@ -1082,6 +1187,35 @@ class CliTuiApp:
         return argv
 
     def _handle_running_key(self, key: int) -> bool:
+        runner = self.runner
+        is_running = runner is not None and getattr(runner, "is_running", False)
+        focus = getattr(self.workspace.active_pane, "running_focus", RunningFocusMode.PROGRAM)
+
+        if is_running and focus == RunningFocusMode.PROGRAM:
+            # In PROGRAM focus mode, forward interactive keys to the runner standard input pipe
+            if key in (curses.KEY_UP,):
+                runner.write_input("k")
+                return True
+            elif key in (curses.KEY_DOWN,):
+                runner.write_input("j")
+                return True
+            elif key in (curses.KEY_LEFT,):
+                runner.write_input("[")
+                return True
+            elif key in (curses.KEY_RIGHT,):
+                runner.write_input("]")
+                return True
+            elif key in (curses.KEY_PPAGE,):
+                self.viewport.scroll_page_up(15)
+                return True
+            elif key in (curses.KEY_NPAGE,):
+                self.viewport.scroll_page_down(15)
+                return True
+            elif 0 <= key <= 127:
+                runner.write_input(chr(key))
+                return True
+            return False
+
         if key in (curses.KEY_UP, ord("k")):
             self.viewport.scroll_up(1)
             return True
@@ -1158,32 +1292,52 @@ class CliTuiApp:
         telemetry_badge = badge_map.get(self.telemetry_mode, "[t] Telemetry: Full")
 
         if self.screen_mode == TuiScreenMode.RUNNING:
+            active_pane = self.workspace.active_pane
+            focus = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
             if self.runner and self.runner.is_running:
-                badges = ["[c] Cancel", "[s] Branch", "[p] Panes", telemetry_badge]
-                if has_multiple_panes:
-                    badges.append("[[]/[]] Prev/Next")
-                badges.append("[Shift+Esc] New Pane")
-                if is_scrollable:
-                    badges.append("[↑/↓] Scroll")
-                badges.extend(["[q] Quit", "[Q] Force Quit"])
+                if focus == RunningFocusMode.PROGRAM:
+                    badges = [
+                        "[Ctrl+F] Focus: TUI",
+                        "[p] Pause",
+                        "[v/l] Log",
+                        "[+/-] Workers",
+                        "[[/]] Img Threads",
+                        "[q] Drain",
+                    ]
+                    if is_scrollable:
+                        badges.append("[PgUp/PgDn] Scroll")
+                else:
+                    badges = [
+                        "[Ctrl+F] Focus: Prog",
+                        "[c] Cancel",
+                        "[s] Branch",
+                        "[p] Panes",
+                        telemetry_badge,
+                    ]
+                    if has_multiple_panes:
+                        badges.append("[[]/[]] Prev/Next")
+                    badges.append("[Shift+Esc] New Pane")
+                    if is_scrollable:
+                        badges.append("[↑/↓] Scroll")
+                    badges.extend(["[q] Quit", "[Q] Force Quit"])
                 return badges
             else:
                 badges = [
-                    "[q] Quit",
-                    "[Q] Force Quit",
+                    "[Enter] Return to Form",
+                    "[r] Re-run",
                     "[Esc] Back",
                     "[p] Panes",
                     telemetry_badge,
                 ]
                 if has_multiple_panes:
                     badges.append("[[]/[]] Prev/Next")
-                badges.extend(["[s] Branch", "[r] Re-run"])
+                badges.append("[s] Branch")
                 for action in self.post_run_actions:
                     if action.predicate is None or action.predicate(self):
                         badges.append(action.label)
                 if is_scrollable:
                     badges.append("[↑/↓] Scroll")
-                badges.append("[Enter] Return")
+                badges.extend(["[q] Quit", "[Q] Force Quit"])
                 return badges
 
         elif self.screen_mode == TuiScreenMode.FORM:
@@ -1774,19 +1928,35 @@ class CliTuiApp:
             btn_back = "▶ [ Back ]" if back_focused else "  [ Back ]"
             button_row = f"  {btn_run}   {btn_prev}   {btn_back}"
 
+            base_y = len(lines)
             content_lines = [
                 "",
                 f"  Configure arguments for: {cmd.prog or cmd.name}",
                 f"  {button_row.strip()}",
                 f"  {'─' * max(20, width - 6)}",
             ]
+
+            self._button_boxes = []
+            top_y = base_y + 2
+            top_run_len = len(btn_run.strip())
+            self._button_boxes.append((top_y, 2, 2 + top_run_len, "run"))
+            self._button_boxes.append((top_y, 2 + top_run_len + 1, 2 + top_run_len + 3 + len(btn_prev), "prev"))
+            self._button_boxes.append((top_y, 2 + top_run_len + 3 + len(btn_prev) + 1, 2 + top_run_len + 3 + len(btn_prev) + 3 + len(btn_back), "back"))
+
+            self._widget_row_map = {}
             for idx, widget in enumerate(self.form_widgets):
                 is_focused = idx == self.form_cursor
                 for w_line in widget.render_lines(width - 4, is_focused):
+                    screen_row = base_y + len(content_lines)
+                    self._widget_row_map[screen_row] = (idx, widget)
                     content_lines.append("  " + w_line)
 
             content_lines.append("")
+            bot_y = base_y + len(content_lines)
             content_lines.append(button_row)
+            self._button_boxes.append((bot_y, 2, 2 + len(btn_run), "run"))
+            self._button_boxes.append((bot_y, 2 + len(btn_run) + 1, 2 + len(btn_run) + 3 + len(btn_prev), "prev"))
+            self._button_boxes.append((bot_y, 2 + len(btn_run) + 3 + len(btn_prev) + 1, 2 + len(btn_run) + 3 + len(btn_prev) + 3 + len(btn_back), "back"))
 
             if self.current_form:
                 argv = self._build_current_argv()
@@ -1950,35 +2120,76 @@ class CliTuiApp:
         elif self.screen_mode == TuiScreenMode.RUNNING:
             runner = self.runner
             if runner and getattr(runner, "restored", False):
-                status_text = "RESTORED OUTPUT  |  Process was not restarted"
+                status_str = "\x1b[36;1mRESTORED OUTPUT\x1b[0m"
             elif runner and runner.is_running:
-                status_text = f"RUNNING  |  Elapsed: {runner.elapsed_seconds:.1f}s"
+                status_str = "\x1b[33;1mRUNNING\x1b[0m"
             elif runner and runner.exit_code == 0:
-                status_text = (
-                    f"FINISHED (Success)  |  Elapsed: {runner.elapsed_seconds:.1f}s"
-                )
+                status_str = "\x1b[32;1mFINISHED (Success)\x1b[0m"
             else:
                 code = runner.exit_code if runner else -1
-                status_text = f"FAILED (exit code {code})  |  Elapsed: {runner.elapsed_seconds if runner else 0:.1f}s"
+                status_str = f"\x1b[31;1mFAILED (exit code {code})\x1b[0m"
+
+            elapsed_str = (
+                f"Elapsed: {runner.elapsed_seconds:.1f}s"
+                if runner
+                else "Elapsed: 0.0s"
+            )
+
+            cmd = self.current_command
+            cmd_name = (cmd.prog or cmd.name or "PROGRAM").split()[-1].upper()
+
+            active_pane = self.workspace.active_pane
+            focus_mode = getattr(active_pane, "running_focus", RunningFocusMode.PROGRAM)
+            if focus_mode == RunningFocusMode.PROGRAM:
+                focus_badge = f"\x1b[34;1mFocus: {cmd_name}\x1b[0m"
+            else:
+                focus_badge = "\x1b[31;1mFocus: CLI-TUI\x1b[0m"
+
+            self._running_status_row = len(telemetry_lines) + 1
+            self._running_footer_row = height - len(footer_lines)
 
             raw_lines = runner.lines if runner else []
-            visible_height = max(1, inner_height - 3)
+            is_finished = runner is not None and not runner.is_running
+            box_lines: List[str] = []
+            if is_finished:
+                box_width = max(30, min(width - 6, 76))
+                is_success = runner.exit_code == 0
+                title_line = (
+                    "✔ PROCESS FINISHED SUCCESSFULLY (exit code 0)"
+                    if is_success
+                    else f"✖ PROCESS FAILED (exit code {runner.exit_code})"
+                )
+                box_lines = [
+                    "  ┌" + "─" * (box_width - 2) + "┐",
+                    f"  │  {title_line}".ljust(box_width + 1) + "│",
+                    "  │" + " " * (box_width - 2) + "│",
+                    "  │  ▶ Press [Enter] to conclude and return to form".ljust(box_width + 1) + "│",
+                    f"  │  ▶ Press [r] to {'re-run with same arguments' if is_success else 'retry execution'}".ljust(box_width + 1) + "│",
+                    "  │  ▶ Press [Esc] to return to menu".ljust(box_width + 1) + "│",
+                    "  └" + "─" * (box_width - 2) + "┘",
+                ]
+
+            reserved_extra = len(box_lines) + (1 if box_lines else 0)
+            visible_height = max(1, inner_height - 3 - reserved_extra)
             visible_width = max(10, width - 4)
             start_l, end_l, total_l = self.viewport.get_scroll_bounds(
                 raw_lines, height=visible_height, width=visible_width
             )
             scroll_info = ""
             if total_l > visible_height:
-                scroll_info = f"  |  Lines {start_l}-{end_l} of {total_l} (↑/↓/PgUp/PgDn to scroll)"
+                scroll_info = f"  |  Lines {start_l}-{end_l} of {total_l} (↑/↓ to scroll)"
 
             content_lines = [
-                f"  Status: {status_text}{scroll_info}",
+                f"  Status: {status_str}  |  {elapsed_str}  |  {focus_badge}  |  [Ctrl+F] Toggle Focus{scroll_info}",
                 "",
             ]
             visible = self.viewport.get_visible_lines(
                 raw_lines, height=visible_height, width=visible_width
             )
             content_lines.extend(f"  {line}" for line in visible)
+            if box_lines:
+                content_lines.append("")
+                content_lines.extend(box_lines)
             while len(content_lines) < inner_height:
                 content_lines.append("")
             lines.extend(content_lines[:inner_height])
@@ -2030,6 +2241,10 @@ class CliTuiApp:
     def _curses_loop(self, stdscr: Any) -> int:
         curses.curs_set(0)
         stdscr.timeout(50)  # 50ms tick for smooth live runner updates
+        try:
+            curses.mousemask(curses.ALL_MOUSE_EVENTS | curses.REPORT_MOUSE_POSITION)
+        except Exception:
+            pass
         if curses.has_colors():
             curses.start_color()
             curses.use_default_colors()
@@ -2047,6 +2262,30 @@ class CliTuiApp:
             stdscr.erase()
             for y, line in enumerate(lines[:max_y]):
                 addstr_ansi(stdscr, y, 0, line, max_x)
+
+            if self._is_widget_editing():
+                try:
+                    active_w = self.form_widgets[self.form_cursor]
+                    if hasattr(active_w, "text_start_offset"):
+                        w_y = None
+                        for r_y, (w_idx, _) in getattr(self, "_widget_row_map", {}).items():
+                            if w_idx == self.form_cursor:
+                                w_y = r_y
+                                break
+                        if w_y is not None and w_y < max_y:
+                            start = getattr(active_w, "_scroll_start", 0)
+                            rel_pos = active_w.cursor_pos - start
+                            w_x = min(max_x - 1, 2 + active_w.text_start_offset() + rel_pos)
+                            stdscr.move(w_y, w_x)
+                            curses.curs_set(1)
+                except Exception:
+                    pass
+            else:
+                try:
+                    curses.curs_set(0)
+                except Exception:
+                    pass
+
             stdscr.refresh()
 
             try:

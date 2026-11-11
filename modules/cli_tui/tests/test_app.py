@@ -259,3 +259,226 @@ def test_form_argument_inspector_displays_help_and_details():
     assert "Action: Run Command" in screen_btn
     assert "Execute this command in the background" in screen_btn
 
+
+def test_mouse_click_form_widget_focus_and_cursor():
+    from cli_tui.widgets import TextWidget
+
+    parser = argparse.ArgumentParser(prog="mytool")
+    parser.add_argument("-t", "--target", default="initial_value")
+    parser.add_argument("-v", "--verbose", action="store_true")
+
+    app = CliTuiApp(parser=parser)
+    app._open_form_for_command(app.root_command)
+    assert app.screen_mode == TuiScreenMode.FORM
+
+    # Render screen to populate row maps
+    app.render_virtual_screen(height=24, width=80)
+
+    # Find the row of the first widget (--target)
+    target_row = None
+    for r_y, (idx, widget) in app._widget_row_map.items():
+        if idx == 0:
+            target_row = r_y
+            break
+    assert target_row is not None
+
+    # Initially not editing
+    target_w = app.form_widgets[0]
+    assert isinstance(target_w, TextWidget)
+    assert target_w.is_editing is False
+
+    # Click on the text field of widget 0 at character offset 3
+    text_start = 2 + target_w.text_start_offset()
+    consumed = app.handle_mouse_click(mx=text_start + 3, my=target_row)
+    assert consumed is True
+    assert app.form_cursor == 0
+    assert target_w.is_editing is True
+    assert target_w.cursor_pos == 3
+
+    # Click on second widget (--verbose, boolean)
+    verbose_row = None
+    for r_y, (idx, widget) in app._widget_row_map.items():
+        if idx == 1:
+            verbose_row = r_y
+            break
+    assert verbose_row is not None
+    assert app.form_widgets[1].value is False
+
+    consumed = app.handle_mouse_click(mx=10, my=verbose_row)
+    assert consumed is True
+    assert app.form_cursor == 1
+    assert app.form_widgets[1].value is True  # Toggled by click!
+
+
+def test_mouse_click_preview_button():
+    parser = argparse.ArgumentParser(prog="mytool")
+    parser.add_argument("-t", "--target", default="test")
+
+    app = CliTuiApp(parser=parser)
+    app._open_form_for_command(app.root_command)
+    app.render_virtual_screen(height=24, width=80)
+
+    # Find top preview button hitbox
+    prev_box = next((b for b in app._button_boxes if b[3] == "prev"), None)
+    assert prev_box is not None
+    by, bx_start, _, _ = prev_box
+
+    assert app.is_showing_preview is False
+    consumed = app.handle_mouse_click(mx=bx_start + 2, my=by)
+    assert consumed is True
+    assert app.is_showing_preview is True
+
+
+def test_running_dual_focus_toggle_and_key_forwarding():
+    import curses
+    from cli_tui.state import RunningFocusMode
+
+    class DummyRunner:
+        def __init__(self):
+            self.is_running = True
+            self.written: list[str] = []
+            self.lines = ["Worker 01 running...", "Worker 02 running..."]
+            self.elapsed_seconds = 12.5
+            self.exit_code = None
+
+        def write_input(self, data: str) -> bool:
+            self.written.append(data)
+            return True
+
+        def terminate(self):
+            self.is_running = False
+
+    cmd = CliCommand(name="mangadl", prog="mangadl run")
+    app = CliTuiApp(cmd, executable=[sys.executable])
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+    dummy_runner = DummyRunner()
+    app.runner = dummy_runner
+    app.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+
+    # Initial focus is PROGRAM
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+    # 1. Ctrl+F (key 6) toggles focus to TUI
+    handled = app.process_key(6)
+    assert handled is True
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+    assert "CLI-TUI" in app.last_message
+
+    # 2. Ctrl+F toggles back to PROGRAM
+    handled = app.process_key(6)
+    assert handled is True
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+    # 3. F6 (key 270) toggles focus to TUI
+    handled = app.process_key(270)
+    assert handled is True
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+
+    # Toggle back to PROGRAM
+    app.process_key(6)
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+    # 4. Render virtual screen to establish layout hitbox coordinates
+    app.render_virtual_screen(24, 80)
+    assert hasattr(app, "_running_status_row")
+    assert hasattr(app, "_running_footer_row")
+
+    # Click on status line sets focus to TUI
+    app.handle_mouse_click(mx=10, my=app._running_status_row)
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+
+    # Click inside GUI program area sets focus to PROGRAM
+    app.handle_mouse_click(mx=10, my=app._running_status_row + 2)
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.PROGRAM
+
+    # Click on footer row sets focus to TUI
+    app.handle_mouse_click(mx=10, my=app._running_footer_row)
+    assert app.workspace.active_pane.running_focus == RunningFocusMode.TUI
+
+    # Set back to PROGRAM focus for key forwarding verification
+    app.workspace.active_pane.running_focus = RunningFocusMode.PROGRAM
+
+    # In PROGRAM focus, 'p' should forward to child stdin, NOT open pane manager
+    handled = app.process_key(ord("p"))
+    assert handled is True
+    assert "p" in dummy_runner.written
+    assert getattr(app, "is_pane_manager_open", False) is False
+
+    # 'q' should forward to child stdin, NOT prompt for TUI quit
+    handled = app.process_key(ord("q"))
+    assert handled is True
+    assert "q" in dummy_runner.written
+    assert app.is_confirming_quit is False
+
+    # 'v' and 'l' should forward to child stdin
+    app.process_key(ord("v"))
+    assert "v" in dummy_runner.written
+    app.process_key(ord("l"))
+    assert "l" in dummy_runner.written
+
+    # Up and Down arrows should forward as 'k' and 'j'
+    app.process_key(curses.KEY_UP)
+    assert "k" in dummy_runner.written
+    app.process_key(curses.KEY_DOWN)
+    assert "j" in dummy_runner.written
+
+    # Left and Right arrows should forward as '[' and ']'
+    app.process_key(curses.KEY_LEFT)
+    assert "[" in dummy_runner.written
+    app.process_key(curses.KEY_RIGHT)
+    assert "]" in dummy_runner.written
+
+    # Switch to TUI focus: 'p' should open Pane Manager
+    app.workspace.active_pane.running_focus = RunningFocusMode.TUI
+    handled = app.process_key(ord("p"))
+    assert handled is True
+    assert app.is_pane_manager_open is True
+
+
+def test_running_screen_rendering_colors_and_completion_box():
+    from cli_tui.state import RunningFocusMode
+
+    class FinishedRunner:
+        def __init__(self, exit_code: int = 0):
+            self.is_running = False
+            self.exit_code = exit_code
+            self.lines = ["Job 1 complete", "Job 2 complete"]
+            self.elapsed_seconds = 45.2
+
+        def write_input(self, data: str) -> bool:
+            return False
+
+    cmd = CliCommand(name="mangadl", prog="mangadl run")
+    app = CliTuiApp(cmd, executable=[sys.executable])
+    app.current_form = FormState(cmd)
+    app.navigation.current_screen = TuiScreenMode.RUNNING
+    app.runner = FinishedRunner(exit_code=0)
+    app.workspace.active_pane.running_focus = RunningFocusMode.TUI
+
+    # Render running screen when finished
+    lines = app.render_virtual_screen(24, 80)
+    rendered_text = "\n".join(lines)
+
+    # 1. Status line contains green FINISHED (Success)
+    assert "FINISHED (Success)" in rendered_text
+    assert "\x1b[32;1m" in rendered_text
+
+    # 2. Status line contains Focus badge
+    assert "Focus:" in rendered_text
+
+    # 3. Prominent completion box is rendered
+    assert "✔ PROCESS FINISHED SUCCESSFULLY (exit code 0)" in rendered_text
+    assert "▶ Press [Enter] to conclude and return to form" in rendered_text
+    assert "▶ Press [r] to re-run with same arguments" in rendered_text
+    assert "▶ Press [Esc] to return to menu" in rendered_text
+
+    # 4. Badges contain [Enter] Return to Form as the first badge
+    badges = app._get_active_hotkey_badges()
+    assert badges[0] == "[Enter] Return to Form"
+
+    # 5. Pressing Enter returns to form screen
+    handled = app.process_key(10)
+    assert handled is True
+    assert app.screen_mode == TuiScreenMode.FORM
+
+
