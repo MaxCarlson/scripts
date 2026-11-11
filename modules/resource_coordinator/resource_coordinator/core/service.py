@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from resource_coordinator.core.durable_state import StateCodec, reconcile_startup_state
 from resource_coordinator.core.lock import SingleInstanceLock
+from resource_coordinator.core.maintenance import MaintenanceSessionManager
 from resource_coordinator.core.processes import ProcessState, ProcessLifecycleOwner, WindowsProcessBackend
 from resource_coordinator.core.runtime_identity import build_runtime_identity
 
@@ -101,6 +102,13 @@ class CoordinatorService:
             if lock_path:
                 self._instance_lock = SingleInstanceLock(lock_path)
         self.system.gateway.set_service(self)
+        self.maintenance_manager = MaintenanceSessionManager(
+            self,
+            response_wait_seconds=float(kwargs.get("maintenance_response_wait_seconds", 2.0)),
+            clock=kwargs.get("maintenance_clock", time.time),
+            sleep=kwargs.get("maintenance_sleep", asyncio.sleep),
+            restoration_verifier=kwargs.get("maintenance_restoration_verifier"),
+        )
 
     def has_model_load_policy(self) -> bool:
         """Whether a configured blocking policy stops the process under inference arbitration."""
@@ -243,6 +251,7 @@ class CoordinatorService:
                     loaded_state = StateCodec.load(state_path)
                 except Exception as exc:
                     raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
+                await self.maintenance_manager.restore_before_startup()
                 await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
                 if loaded_state.gaming_mode.get("state") != "inactive" and self.system.miner_adapter is not None:
                     self.system.miner_adapter.supervisor.set_manual_override(True, persist=False)
@@ -262,6 +271,8 @@ class CoordinatorService:
                         "Miner launch on ready skipped: restart on gpu.inference is currently inhibited (hold=%s)",
                         self.system.lease_mgr.get_inhibition("gpu.inference"),
                     )
+                elif self.system.lease_mgr.is_cooling_down("gpu.inference"):
+                    logger.info("Miner launch on ready skipped during restored GPU cooldown")
                 elif self.system.miner_adapter.is_manual_override:
                     logger.warning("Miner launch on ready skipped: manual override is active")
                 else:
@@ -277,6 +288,9 @@ class CoordinatorService:
                         "Process '%s' launch on ready skipped: restart on gpu.inference is inhibited",
                         self.start_process_on_ready,
                     )
+                elif self.system.lease_mgr.is_cooling_down("gpu.inference"):
+                    logger.info("Process '%s' launch on ready skipped during restored GPU cooldown",
+                                self.start_process_on_ready)
                 elif supervisor.is_manual_override:
                     logger.warning(
                         "Process '%s' launch on ready skipped: manual override is active",
@@ -334,6 +348,7 @@ class CoordinatorService:
             self._state = ServiceState.DRAINING
         tasks = self._freeze(f"shutdown:{reason}")
         try:
+            await self.maintenance_manager.prepare_shutdown()
             async with self._stop_lock:
                 other_tasks = [t for t in tasks if t is not asyncio.current_task()]
                 if other_tasks:
@@ -442,6 +457,7 @@ class CoordinatorService:
             "failure_reason": self.failure_reason,
             "resources": resources,
             "managed_processes": list(self.system.supervisors),
+            "maintenance": self.maintenance_manager.status(),
         }
 
     async def _persist_supervisor_state(self, supervisor: Any, *, was_stopped_by_coordinator: Optional[bool] = None) -> None:
