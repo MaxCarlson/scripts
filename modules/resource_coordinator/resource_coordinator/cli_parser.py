@@ -88,6 +88,14 @@ def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     teardown.set_defaults(operation_id="system.teardown", command="teardown")
     _add_apply_arguments(teardown, non_interactive=True)
 
+    recovery = system_sub.add_parser("recovery", help="Inspect or recover an interrupted host upgrade.")
+    recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
+    for action in ("status", "diagnose", "restore", "resume", "reconcile"):
+        command = recovery_sub.add_parser(action, help=f"Upgrade recovery {action}.")
+        command.set_defaults(operation_id=f"system.recovery.{action}", command="recovery")
+        if action in {"restore", "resume", "reconcile"}:
+            _add_apply_arguments(command, non_interactive=True)
+
     startup = system_sub.add_parser("startup", help="Inspect or manage owned startup tasks.")
     startup_sub = startup.add_subparsers(dest="startup_command", required=True)
     for action in ("status", "enable", "disable", "repair", "uninstall"):

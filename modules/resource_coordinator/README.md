@@ -90,6 +90,126 @@ if those details are inaccessible. The configured miner's shutdown argument is
 checked in the actual service process arguments.
 Preflight does not change the service or startup task.
 
+### Interrupted upgrade recovery
+
+The host recovery CLI works when the coordinator HTTP service is unavailable:
+
+```powershell
+resource-coordinator system recovery status
+resource-coordinator system recovery diagnose -j
+resource-coordinator system recovery restore
+resource-coordinator system recovery reconcile
+```
+
+`restore` and `reconcile` preview by default. Add `--apply` only after reviewing
+the evidence. Restore starts the snapshotted owned task only after port 1235 and
+the exact prior coordinator and miner PID/creation-time pairs are proven absent.
+It also verifies the coordinator lock, current durable inference/gaming state,
+configured miner process absence, and that no replacement Task Scheduler
+instance is still running. A durable, unexpired manual miner hold may be restored
+only if the journal still matches the receipt and the restarted service reports
+the miner stopped with the hold active. An intentional stopped state without a
+verifiable hold remains blocked, because a legacy launcher may start the miner.
+Reconcile archives a failed receipt only when
+the running listener is attributed to the enabled owned task, the service is
+ready, inference is idle, and the durable receipt has no active gaming transition.
+If task or process evidence is unavailable, the command blocks without changing
+the receipt or task. Elevated task access may require launching the CLI from an
+approved elevated PowerShell session.
+
+After an interrupted upgrade, use these read-only commands first:
+
+```powershell
+resource-coordinator system recovery status
+resource-coordinator system recovery diagnose -j
+resource-coordinator system recovery restore
+```
+
+`restore -a` is available only when the receipt proves the original owner and
+miner are gone, the configured startup task is safe to reuse, and the current
+durable journal contains no uncertain inference or restart inhibition. If a
+replacement task instance is still running, recovery leaves the task and
+launcher untouched and reports that condition. `resume` retries only a
+receipt-backed transition after ownership checks; it does not replay a shutdown
+when the previous owner is uncertain. When an operator has already restored the
+legacy service, `reconcile` previews archiving the stale receipt without
+restarting the service. Apply it only after its listener, task attribution,
+inference and miner evidence are verified.
+
+Upgrade failures after the old service stops are recorded in
+`upgrade-receipt.json`. A replacement runtime is shut down automatically only
+when its startup-task ancestry, exact process identity, source revision,
+shutdown behavior, idle inference state, and lock release can all be verified.
+If any evidence is missing, RC leaves the live service/task untouched and keeps
+the receipt for `system recovery diagnose`; it does not force-terminate a process.
+Task operation request/result files are unique per invocation, kept outside
+command-line payloads, and retained when helper completion cannot be verified.
+The agent sandbox could not read Task Scheduler objects. The user subsequently
+reported passing the UAC helper transport test and the disposable Scheduled Task
+registration/snapshot/restoration test on Windows with Resource Coordinator
+0.11.6. These are separate checks; they do not constitute a full production
+upgrade or prove task restoration through the entire elevated RC helper path.
+
+Upgrade recovery outcomes are intentionally conservative:
+
+| Situation | Resource Coordinator behavior |
+| --- | --- |
+| Failure before the old service stops | Keep the current task; restore only prepared launcher/policy files when safe. |
+| Failure after shutdown, prior owners proven absent | Attempt task/launcher restoration and verify the legacy service before reporting rollback success. |
+| Replacement runtime is reachable and fully attributed | Request its authenticated graceful shutdown; wait for its process, miner, task instance, listener, and lock to exit before rollback. |
+| Replacement runtime identity or shutdown guarantee is uncertain | Leave the live process and task untouched; retain the receipt and show a blocked recovery diagnosis. |
+| Coordinator is offline | `system recovery status`, `diagnose`, `restore`, and receipt checks use local state and OS evidence. |
+| Legacy service was already restored | Preview `system recovery reconcile`; applying archives the receipt without restarting the service. |
+| Task identity, miner identity, or journal is ambiguous | Refuse mutation and preserve the receipt, launcher, task, and miner. |
+
+### Windows helper acceptance (read-only)
+
+From the feature checkout, first verify the normal helper path from a regular
+PowerShell session. This runs only the read-only `transport_probe` operation
+with a 100 KB payload in the protected request file. It does not access
+Scheduled Tasks:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\modules\resource_coordinator).Path
+$env:RC_WINDOWS_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -k large_request
+```
+
+To validate the actual `Start-Process -Verb RunAs` transport, start from a
+non-elevated interactive PowerShell session and explicitly enable the UAC test:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\modules\resource_coordinator).Path
+$env:RC_WINDOWS_UAC_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -k uac_helper
+```
+
+Approve the UAC prompt only if the elevated test process is the expected run.
+The helper reports only the test payload length; it does not register, start,
+stop, or inspect any Scheduled Task. The test skips if launched from an already
+elevated shell because that would not exercise UAC.
+
+To validate real Scheduled Task registration, snapshot, restoration, and
+read-back in a disposable task, run this opt-in test from a Windows user
+session with Task Scheduler access:
+
+```powershell
+$env:PYTHONPATH = (Resolve-Path .\modules\resource_coordinator).Path
+$env:RC_WINDOWS_TASK_INTEGRATION = '1'
+python -m pytest .\modules\resource_coordinator\tests\test_windows_task_transport_integration.py -q -k disposable_task
+```
+
+It creates a uniquely named `RC-Disposable-*` task with a future trigger,
+disables it immediately, snapshots and changes its action, restores the saved
+definition, verifies the restored action/principal/disabled state, and removes
+only that disposable task in `finally`. A name collision is rejected without
+overwriting the existing task. If Task Scheduler access is denied, pytest
+reports the integration as skipped; run it in a normal user session with
+working Task Scheduler access. This test does not exercise the elevated helper
+for task registration because the helper intentionally limits writes to the
+three owned production task names. The UAC transport probe above separately
+tests elevation without touching any task.
+
 ## Configure one process
 
 Create `config.local.yaml` in this directory. Git ignores that machine-local

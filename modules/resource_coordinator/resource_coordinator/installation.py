@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import csv
 import ctypes
+import hashlib
 import getpass
 import json
 import math
@@ -13,11 +14,14 @@ import psutil
 import re
 import shutil
 import socket
+import stat
 import subprocess
 import sys
+import tempfile
 import time
+import xml.etree.ElementTree as ET
 from dataclasses import asdict, dataclass
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any, Dict, List, Optional, Protocol
 
 import httpx
@@ -124,6 +128,14 @@ def _ps_single_quote(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+def _is_reparse_point(path: Path) -> bool:
+    try:
+        attributes = getattr(path.lstat(), "st_file_attributes", 0)
+    except FileNotFoundError:
+        return False
+    return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
 def _clean_powershell_error(value: str) -> str:
     """Convert PowerShell's encoded CLIXML stderr into a short actionable message."""
     text = value.replace("_x000D__x000A_", "\n").replace("_x000A_", "\n").strip()
@@ -201,6 +213,25 @@ def _write_json_atomic(path: Path, value: Dict[str, Any]) -> None:
     temporary = path.with_name(path.name + ".new")
     temporary.write_text(json.dumps(value, indent=2, sort_keys=True), encoding="utf-8")
     os.replace(temporary, path)
+
+
+def _receipt_has_active_manual_hold(receipt: Dict[str, Any], miner_name: Optional[str]) -> bool:
+    """Whether the captured durable state proves an unexpired manual miner hold."""
+    if not miner_name:
+        return False
+    durable = receipt.get("durable_state") or {}
+    processes = durable.get("processes") or {}
+    process = processes.get(miner_name) or {}
+    if process.get("is_manual_override") is not True:
+        return False
+    deadline = process.get("manual_override_until")
+    if deadline is None:
+        return True
+    try:
+        deadline_value = float(deadline)
+        return math.isfinite(deadline_value) and deadline_value > time.time()
+    except (TypeError, ValueError, OverflowError):
+        return False
 
 
 def _listener_identity_details(port: int = 1235, host: str = "127.0.0.1") -> Dict[str, Any]:
@@ -391,6 +422,67 @@ def _task_identity_valid(task: Dict[str, Any]) -> bool:
     return identity == username or identity.endswith("\\" + username)
 
 
+def _validate_restore_task_definition(task: StartupTask, definition: str, managed_root: Path) -> None:
+    """Reject task snapshots that do not point to a managed RC PowerShell launcher."""
+    try:
+        root = ET.fromstring(definition)
+    except (ET.ParseError, TypeError) as exc:
+        raise InstallationError("Task recovery snapshot is not valid Scheduled Task XML") from exc
+    if root.tag.rsplit("}", 1)[-1] != "Task":
+        raise InstallationError("Task recovery snapshot has an unexpected XML root")
+
+    def named(parent: ET.Element, name: str) -> List[ET.Element]:
+        return [node for node in parent.iter() if node.tag.rsplit("}", 1)[-1] == name]
+
+    principals = named(root, "Principal")
+    actions = named(root, "Actions")
+    if len(principals) != 1 or len(actions) != 1:
+        raise InstallationError("Task recovery snapshot must contain one principal and one actions block")
+    principal = principals[0]
+    principal_values = {node.tag.rsplit("}", 1)[-1]: (node.text or "").strip()
+                        for node in list(principal)}
+    if (task.name != TASK_NAMES.get(task.mode) or principal_values.get("RunLevel") != "HighestAvailable" or
+            (task.mode == "boot" and principal_values.get("LogonType") != "ServiceAccount") or
+            (task.mode == "logon" and principal_values.get("LogonType") not in {"InteractiveToken", "Interactive"} ) or
+            task.mode not in {"boot", "logon"}):
+        raise InstallationError("Task recovery snapshot has an unexpected principal, logon type, or privilege level")
+
+    action_nodes = [node for node in list(actions[0]) if node.tag.rsplit("}", 1)[-1] == "Exec"]
+    if len(action_nodes) != 1 or len(list(actions[0])) != 1:
+        raise InstallationError("Task recovery snapshot must contain exactly one executable action")
+    action_values = {node.tag.rsplit("}", 1)[-1]: (node.text or "").strip()
+                     for node in list(action_nodes[0])}
+    command = action_values.get("Command", "")
+    if (not PureWindowsPath(command).is_absolute() or
+            PureWindowsPath(command).name.casefold() not in {"powershell.exe", "pwsh.exe"}):
+        raise InstallationError("Task recovery snapshot does not invoke an approved PowerShell executable")
+
+    arguments = action_values.get("Arguments", "")
+    match = re.fullmatch(
+        r"(?i)\s*(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-WindowStyle\s+Hidden\s+|"
+        r"-ExecutionPolicy\s+(?:Bypass|RemoteSigned|AllSigned|Restricted)\s+)*"
+        r"-File\s+(?:\"([^\"]+\.ps1)\"|([^\s\"]+\.ps1))\s*",
+        arguments,
+    )
+    launcher_value = next((item for item in match.groups() if item), None) if match else None
+    if not launcher_value:
+        raise InstallationError("Task recovery snapshot contains unsupported PowerShell arguments")
+    launcher = Path(launcher_value)
+    if (launcher.name.casefold() not in {"start-coordinator.ps1", "start-coordinator-managed.ps1"} or
+            not launcher.is_absolute() or _is_reparse_point(launcher)):
+        raise InstallationError("Task recovery snapshot does not reference a regular managed coordinator launcher")
+    root_path = os.path.normcase(str(managed_root.resolve()))
+    launcher_path = os.path.normcase(str(launcher.resolve()))
+    try:
+        if os.path.commonpath((root_path, launcher_path)) != root_path:
+            raise InstallationError("Task recovery snapshot launcher is outside the managed installation")
+        launcher_text = launcher.read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError) as exc:
+        raise InstallationError(f"Managed task recovery launcher cannot be verified: {exc}") from exc
+    if TASK_MARKER not in launcher_text:
+        raise InstallationError("Task recovery launcher is missing its Resource Coordinator ownership marker")
+
+
 def render_launcher(paths: InstallationPaths) -> str:
     """Render the managed launcher while keeping all values as quoted literals."""
     modules = paths.repository / "modules"
@@ -537,7 +629,8 @@ class WindowsStartupTaskBackend:
     def __init__(self, *, powershell: Optional[str] = None, managed_root: Optional[Path] = None,
                  interactive_user: Optional[str] = None):
         self.powershell = powershell or shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
-        self.managed_root = (managed_root or (Path.home() / ".resource_coordinator")).resolve()
+        self.managed_root_source = Path(managed_root or (Path.home() / ".resource_coordinator")).absolute()
+        self.managed_root = self.managed_root_source.resolve()
         default_user = os.environ.get("USERDOMAIN", "")
         username = os.environ.get("USERNAME") or getpass.getuser()
         self.interactive_user = interactive_user or (f"{default_user}\\{username}" if default_user else username)
@@ -551,45 +644,225 @@ class WindowsStartupTaskBackend:
         except (AttributeError, OSError):
             return False
 
-    def _script(self, payload: Dict[str, Any]) -> str:
-        payload = {
-            **payload,
-            "managed_root": str(self.managed_root),
-            "interactive_user": self.interactive_user,
-        }
-        payload_b64 = base64.b64encode(json.dumps(payload).encode("utf-8")).decode("ascii")
-        return _TASKS_POWERSHELL.replace("__PAYLOAD__", payload_b64)
+    def run_elevated_cli(self, arguments: Optional[List[str]] = None) -> int:
+        """Restart the same CLI command elevated so upgrade needs one UAC consent."""
+        if self._admin():
+            return 0
+        argv = list(sys.argv[1:] if arguments is None else arguments)
+        command_line = subprocess.list2cmdline(["-m", "resource_coordinator.cli", *argv])
+        wrapper = (f"try {{ $p=Start-Process -FilePath {_ps_single_quote(sys.executable)} -Verb RunAs "
+                   f"-ArgumentList {_ps_single_quote(command_line)} -PassThru -ErrorAction Stop; "
+                   "$p.WaitForExit(); exit $p.ExitCode } catch { "
+                   "if ($_.Exception.HResult -eq -2147023673) { exit 1223 }; "
+                   "[Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
+        try:
+            result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                                    capture_output=True, text=True)
+        except OSError as exc:
+            raise InstallationError(f"Could not launch elevated Resource Coordinator CLI: {exc}") from exc
+        message = _clean_powershell_error(result.stderr or result.stdout)
+        if result.returncode == 1223 or "cancelled" in message.casefold() or "canceled" in message.casefold():
+            raise ElevationRequired("Administrator approval was cancelled before upgrade preparation; no service was stopped.")
+        if result.returncode:
+            raise InstallationError(f"Elevated Resource Coordinator CLI failed with exit code {result.returncode}: "
+                                    f"{message or 'see the elevated console for command output'}")
+        return 0
+
+    def _secure_operation_directory(self, operation_dir: Path) -> None:
+        """Set and verify an exact DACL on one unique temporary operation directory."""
+        if _is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve():
+            raise InstallationError("Task operation directory changed identity; refusing helper execution")
+        path = _ps_single_quote(str(operation_dir))
+        user = _ps_single_quote(self.interactive_user)
+        script = (
+            "$ErrorActionPreference='Stop'; "
+            f"$path={path}; $user={user}; "
+            "if ((Get-Item -LiteralPath $path -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) "
+            "{ throw 'Operation directory is a reparse point.' }; "
+            "$userSid=([Security.Principal.NTAccount]::new($user)).Translate([Security.Principal.SecurityIdentifier]).Value; "
+            "$allowed=@($userSid,'S-1-5-18','S-1-5-32-544') | Select-Object -Unique; "
+            "& icacls.exe $path /reset /C | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Could not reset only the operation directory DACL.' }; "
+            "& icacls.exe $path /inheritance:r /C | Out-Null; if ($LASTEXITCODE -ne 0) { throw 'Could not disable operation directory inheritance.' }; "
+            "foreach ($sid in $allowed) { & icacls.exe $path /grant:r (\"*${sid}:(OI)(CI)F\") /C | Out-Null; "
+            "if ($LASTEXITCODE -ne 0) { throw 'Could not grant the operation directory to an approved identity.' } }; "
+            "$verified=Get-Acl -LiteralPath $path; $full=[int][Security.AccessControl.FileSystemRights]::FullControl; "
+            "$entries=@($verified.Access | ForEach-Object { [pscustomobject]@{"
+            "sid=$_.IdentityReference.Translate([Security.Principal.SecurityIdentifier]).Value; "
+            "type=[string]$_.AccessControlType; rights=[int]$_.FileSystemRights; "
+            "inherited=[bool]$_.IsInherited; inheritance=[string]$_.InheritanceFlags } }); "
+            "if ($entries.Count -ne $allowed.Count) { throw 'Operation directory ACL contains unexpected entries.' }; "
+            "foreach ($entry in $entries) { if ($entry.sid -notin $allowed -or $entry.type -ne 'Allow' -or "
+            "$entry.rights -ne $full -or $entry.inherited -or "
+            "$entry.inheritance -notmatch 'ContainerInherit' -or $entry.inheritance -notmatch 'ObjectInherit') "
+            "{ throw 'Operation directory ACL contains an unexpected ACL entry.' } }; "
+            "ConvertTo-Json -InputObject @{user_sid=$userSid;allowed_sids=@($allowed);entries=$entries} -Depth 4 -Compress"
+        )
+        try:
+            result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", script],
+                                    capture_output=True, text=True, timeout=20)
+        except subprocess.TimeoutExpired as exc:
+            raise InstallationError(f"Operation directory ACL verification timed out: {operation_dir}") from exc
+        if result.returncode:
+            message = _clean_powershell_error(result.stderr or result.stdout)
+            raise InstallationError("Could not establish a restricted operation directory ACL: " +
+                                    (message or f"PowerShell exited {result.returncode}"))
+        try:
+            entries = json.loads(result.stdout)
+        except (TypeError, ValueError) as exc:
+            raise InstallationError("Operation directory ACL verification returned invalid evidence") from exc
+        if not isinstance(entries, dict) or not isinstance(entries.get("entries"), list) or not entries["entries"]:
+            raise InstallationError("Operation directory ACL verification returned no access entries")
+        allowed_sids = entries.get("allowed_sids")
+        access_entries = entries["entries"]
+        user_sid = entries.get("user_sid")
+        if (not isinstance(user_sid, str) or user_sid in {"S-1-1-0", "S-1-5-7"} or
+                not isinstance(allowed_sids, list) or len(set(allowed_sids)) != len(allowed_sids) or
+                set(allowed_sids) != {user_sid, "S-1-5-18", "S-1-5-32-544"}):
+            raise InstallationError("Operation directory ACL verification returned invalid allowed identities")
+        if len(access_entries) != len(allowed_sids) or any(
+               entry.get("sid") not in allowed_sids or entry.get("type") != "Allow" or entry.get("inherited") or
+               int(entry.get("rights", 0)) != 2032127 or
+               "ContainerInherit" not in entry.get("inheritance", "") or
+               "ObjectInherit" not in entry.get("inheritance", "") for entry in access_entries):
+            raise InstallationError("Operation directory ACL contains an unexpected ACL entry")
+        if _is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve():
+            raise InstallationError("Task operation directory changed during ACL verification")
 
     def _run(self, payload: Dict[str, Any], *, elevated: bool = False,
              non_interactive: bool = False) -> subprocess.CompletedProcess[str]:
         if os.name != "nt":
             raise InstallationError("Windows Scheduled Tasks are available only on Windows")
-        script = self._script(payload)
-        encoded = base64.b64encode(script.encode("utf-16le")).decode("ascii")
-        if elevated and not self._admin():
-            if non_interactive:
-                raise ElevationRequired("Administrator approval is required; rerun interactively or elevate PowerShell.")
-            wrapper = (
-                f"$encoded='{encoded}'; $exe={_ps_single_quote(self.powershell)}; "
-                "$p=Start-Process -FilePath $exe -Verb RunAs -WindowStyle Hidden "
-                "-ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',$encoded) -Wait -PassThru; "
-                "exit $p.ExitCode"
+        if elevated and not self._admin() and non_interactive:
+            raise ElevationRequired("Administrator approval is required; rerun interactively or elevate PowerShell.")
+        if _is_reparse_point(self.managed_root_source):
+            raise InstallationError("Managed helper directory is a reparse point; refusing privileged execution")
+        self.managed_root.mkdir(parents=True, exist_ok=True)
+        if _is_reparse_point(self.managed_root):
+            raise InstallationError("Managed helper directory is a reparse point; refusing privileged execution")
+        operation_id = os.urandom(16).hex()
+        operation_dir = Path(tempfile.mkdtemp(prefix=f"operation-{operation_id}-", dir=self.managed_root))
+        request_path, output_path, error_path = (operation_dir / name for name in ("request.json", "stdout.txt", "stderr.txt"))
+        helper_path = operation_dir / "helper.ps1"
+        result: Optional[subprocess.CompletedProcess[str]] = None
+        operation_verified = False
+        try:
+            self._secure_operation_directory(operation_dir)
+            body = _TASKS_POWERSHELL.replace(
+                "$payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json",
+                "$payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json",
             )
-            wrapper_encoded = base64.b64encode(wrapper.encode("utf-16le")).decode("ascii")
-            result = subprocess.run(
-                [self.powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", wrapper_encoded],
-                capture_output=True, text=True, timeout=120,
-            )
-        else:
-            result = subprocess.run(
-                [self.powershell, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
-                capture_output=True, text=True, timeout=120,
-            )
+            request = {**payload, "managed_root": str(self.managed_root), "interactive_user": self.interactive_user,
+                       "operation_id": operation_id, "result_path": str(output_path)}
+            request_bytes = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+            request_hash = hashlib.sha256(request_bytes).hexdigest()
+            request_tmp = request_path.with_suffix(".new")
+            request_tmp.write_bytes(request_bytes)
+            os.replace(request_tmp, request_path)
+            helper = ("param([Parameter(Mandatory)][string]$RequestPath)\n$ErrorActionPreference='Stop'\n"
+                      f"$expectedOperation='{operation_id}'; $expectedHash='{request_hash}'; "
+                      f"$expectedDirectory={_ps_single_quote(operation_dir)}\n"
+                      "$requestFull=[IO.Path]::GetFullPath($RequestPath); "
+                      "$requestParent=[IO.Path]::GetFullPath([IO.Path]::GetDirectoryName($requestFull)); "
+                      "if (-not [string]::Equals($requestParent,$expectedDirectory,[StringComparison]::OrdinalIgnoreCase)) { throw 'Request path is outside its operation directory.' }; "
+                      "if (([IO.File]::GetAttributes($requestFull) -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'Request path is a reparse point.' }; "
+                      "$requestBytes = [IO.File]::ReadAllBytes($requestFull); "
+                      "$requestSha = [Security.Cryptography.SHA256]::Create(); "
+                      "$actualHash=[BitConverter]::ToString($requestSha.ComputeHash($requestBytes)).Replace('-','').ToLowerInvariant(); $requestSha.Dispose()\n"
+                      "if ($actualHash -ne $expectedHash) { throw 'Request integrity check failed.' }\n"
+                      "$payload=[Text.Encoding]::UTF8.GetString($requestBytes) | ConvertFrom-Json\n"
+                      "if ([string]$payload.operation_id -ne $expectedOperation) { throw 'Operation ID mismatch.' }\n"
+                      "$captured = & {\n" + body.split("\n", 1)[1] + "\n} 2>&1 | Out-String\n"
+                      "$record=@{operation_id=[string]$payload.operation_id;request_sha256='" + request_hash +
+                      "';state='completed';exit_code=0;output=$captured}; "
+                      "$serialized=$record | ConvertTo-Json -Depth 8 -Compress; "
+                      "$sha=[Security.Cryptography.SHA256]::Create(); $digest=[BitConverter]::ToString($sha.ComputeHash([Text.Encoding]::UTF8.GetBytes($serialized))).Replace('-','').ToLowerInvariant(); $sha.Dispose(); "
+                      "$envelope=@{signed_payload=$serialized;result_sha256=$digest}; "
+                      "$resultPath=[string]$payload.result_path; "
+                      "$tmp=$resultPath+'." + operation_id + ".new'; "
+                      "$utf8=New-Object Text.UTF8Encoding($false); $bytes=$utf8.GetBytes(($envelope | ConvertTo-Json -Depth 4 -Compress)); "
+                      "$stream=[IO.File]::Open($tmp,[IO.FileMode]::CreateNew,[IO.FileAccess]::Write,[IO.FileShare]::None); "
+                      "try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) } finally { $stream.Dispose() }; "
+                      "[IO.File]::Move($tmp,$resultPath,$false)\n")
+            helper_path.write_text(helper, encoding="utf-8")
+            helper_hash = hashlib.sha256(helper_path.read_bytes()).hexdigest()
+            if (_is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve() or
+                    any(_is_reparse_point(path) for path in (helper_path, request_path, output_path))):
+                raise InstallationError(f"Task operation {operation_id} artifact path was substituted")
+            if hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash:
+                raise InstallationError(f"Task helper {operation_id} changed before execution")
+            if elevated and not self._admin():
+                elevated_script = (
+                    f"$scriptPath={_ps_single_quote(helper_path)}; $expected='{helper_hash}'; "
+                    "$bytes=[IO.File]::ReadAllBytes($scriptPath); "
+                    "$sha=[Security.Cryptography.SHA256]::Create(); "
+                    "$actual=[BitConverter]::ToString($sha.ComputeHash($bytes)).Replace('-','').ToLowerInvariant(); "
+                    "$sha.Dispose(); if ($actual -ne $expected) { exit 125 }; "
+                    f"& ([scriptblock]::Create([Text.Encoding]::UTF8.GetString($bytes))) -RequestPath {_ps_single_quote(request_path)}"
+                )
+                elevated_encoded = base64.b64encode(elevated_script.encode("utf-16le")).decode("ascii")
+                wrapper = (f"try {{ $p=Start-Process -FilePath {_ps_single_quote(self.powershell)} -Verb RunAs "
+                           f"-WindowStyle Hidden -ArgumentList @('-NoProfile','-NonInteractive','-EncodedCommand',"
+                           f"'{elevated_encoded}') -PassThru -ErrorAction Stop; "
+                           "if (-not $p.WaitForExit(120000)) { $p.Kill(); $p.WaitForExit(); exit 124 }; "
+                           "exit $p.ExitCode } catch { "
+                           "if ($_.Exception.HResult -eq -2147023673) { exit 1223 }; "
+                           "[Console]::Error.WriteLine($_.Exception.Message); exit 1 }")
+                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-Command", wrapper],
+                                        capture_output=True, text=True, timeout=120)
+            else:
+                result = subprocess.run([self.powershell, "-NoProfile", "-NonInteractive", "-File",
+                                         str(helper_path), "-RequestPath", str(request_path)],
+                                        capture_output=True, text=True, timeout=120)
+            if result.returncode:
+                message = _clean_powershell_error(result.stderr or result.stdout)
+                if result.returncode == 1223 or "cancelled" in message.casefold() or "canceled" in message.casefold() or "0x800704c7" in message.casefold():
+                    raise ElevationRequired("Administrator approval was cancelled; the existing service was not changed.")
+                if result.returncode == 124:
+                    raise InstallationError(f"Task helper {operation_id} timed out; diagnostic artifacts retained at {operation_dir}")
+                raise InstallationError(f"Task helper {operation_id} failed: {message or result.returncode}")
+            if (_is_reparse_point(operation_dir) or operation_dir.resolve().parent != self.managed_root.resolve() or
+                    output_path.resolve().parent != operation_dir.resolve()):
+                raise InstallationError(f"Task operation {operation_id} artifact directory changed during execution; artifacts retained at {operation_dir}")
+            if not output_path.is_file() or _is_reparse_point(output_path):
+                raise InstallationError(f"Task helper {operation_id} exited without a result record; artifacts retained at {operation_dir}")
+            try:
+                envelope = json.loads(output_path.read_text(encoding="utf-8-sig"))
+            except (OSError, UnicodeError, ValueError) as exc:
+                raise InstallationError(f"Task helper {operation_id} result is unreadable; artifacts retained at {operation_dir}") from exc
+            if not isinstance(envelope, dict):
+                raise InstallationError(f"Task helper {operation_id} returned an invalid result envelope; artifacts retained at {operation_dir}")
+            serialized = envelope.get("signed_payload", "")
+            if (not isinstance(serialized, str) or not isinstance(envelope.get("result_sha256"), str) or
+                    hashlib.sha256(serialized.encode("utf-8")).hexdigest() != envelope.get("result_sha256")):
+                raise InstallationError(f"Task helper {operation_id} result integrity check failed; artifacts retained at {operation_dir}")
+            try:
+                record = json.loads(serialized)
+            except ValueError as exc:
+                raise InstallationError(f"Task helper {operation_id} result payload is invalid; artifacts retained at {operation_dir}") from exc
+            if (not isinstance(record, dict) or record.get("operation_id") != operation_id or record.get("request_sha256") != request_hash
+                    or record.get("state") != "completed" or record.get("exit_code") != 0):
+                raise InstallationError(f"Task helper {operation_id} returned mismatched or incomplete evidence; artifacts retained at {operation_dir}")
+            if _is_reparse_point(helper_path) or hashlib.sha256(helper_path.read_bytes()).hexdigest() != helper_hash:
+                raise InstallationError(f"Task helper {operation_id} changed during execution")
+            result.stdout = record.get("output", "")
+            operation_verified = True
+        except ElevationRequired as exc:
+            raise ElevationRequired(f"{exc} Operation {operation_id}; diagnostics retained at {operation_dir}") from exc
+        except InstallationError as exc:
+            raise InstallationError(f"Task operation {operation_id} failed before verification; artifacts retained at {operation_dir}: {exc}") from exc
+        except subprocess.TimeoutExpired as exc:
+            raise InstallationError(f"Task operation {operation_id} timed out; diagnostic artifacts retained at {operation_dir}") from exc
+        except OSError as exc:
+            raise InstallationError(f"Task operation {operation_id} could not launch: {exc}; artifacts retained at {operation_dir}") from exc
+        finally:
+            if (operation_verified and operation_dir.exists() and not _is_reparse_point(operation_dir) and
+                    operation_dir.resolve().parent == self.managed_root.resolve()):
+                shutil.rmtree(operation_dir, ignore_errors=True)
         if result.returncode:
             message = _clean_powershell_error(result.stderr or result.stdout) or f"PowerShell exited {result.returncode}"
             if "access is denied" in message.casefold() or "requires elevation" in message.casefold():
-                raise ElevationRequired(message)
-            raise InstallationError(message)
+                raise ElevationRequired(f"Task operation {operation_id} requires elevation: {message}")
+            raise InstallationError(f"Task operation {operation_id} failed; evidence retained at {operation_dir}: {message}")
         return result
 
     def status(self) -> List[StartupTask]:
@@ -622,6 +895,7 @@ class WindowsStartupTaskBackend:
         enabled = snapshot.get("enabled")
         if not isinstance(definition, str) or type(enabled) is not bool:
             raise InstallationError("Scheduled Task recovery snapshot is invalid")
+        _validate_restore_task_definition(task, definition, self.managed_root)
         self._run({"operation": "restore", "task_name": task.name,
                    "definition": definition, "enabled": enabled}, elevated=True,
                   non_interactive=non_interactive)
@@ -988,8 +1262,10 @@ class ManagedInstallation:
             else:
                 try:
                     snapshot = snapshotter(task)
+                    if isinstance(self.task_backend, WindowsStartupTaskBackend):
+                        _validate_restore_task_definition(task, snapshot.get("definition", ""), self.paths.root)
                 except Exception as exc:
-                    blockers.append(f"startup task recovery snapshot failed: {exc}")
+                    blockers.append(f"startup task recovery snapshot is missing or unsafe to restore: {exc}")
 
         configured_gpu = _configured_gpu_settings(config) if config else {}
         persisted_miner = journal.processes.get(miner_name) if journal and miner_name else None
@@ -1255,10 +1531,142 @@ class ManagedInstallation:
                 "recovered": True, "effective_gpu_settings": effective,
                 "receipt": str(self.paths.upgrade_receipt)}
 
+    def _stop_verified_failed_runtime(self, receipt: Dict[str, Any],
+                                      observed_service: Dict[str, Any], *,
+                                      timeout: float = 30.0) -> Dict[str, Any]:
+        """Gracefully stop only a fully identified replacement runtime from this receipt."""
+        blockers: List[str] = []
+        source = receipt.get("source") or {}
+        service = self._service_status()
+        if not service or service.get("service_state") != "ready":
+            blockers.append("replacement coordinator is not currently ready")
+        elif service != observed_service:
+            blockers.append("coordinator status changed since the failed runtime was observed")
+        runtime = (service or {}).get("runtime") or {}
+        expected_source = source.get("source_path")
+        expected_revision = source.get("revision")
+        if (not expected_revision or runtime.get("revision") != expected_revision or
+                not expected_source or
+                not _runtime_source_matches(runtime.get("source_path"), Path(expected_source))):
+            blockers.append("running process does not match the replacement source revision and path")
+        pid, created = runtime.get("pid"), runtime.get("process_create_time")
+        if type(pid) is not int or pid <= 0 or type(created) not in (int, float):
+            blockers.append("replacement runtime has no exact PID and process creation time")
+        elif _exact_process_is_alive(pid, float(created)) is not True:
+            blockers.append("replacement process identity is absent or unverifiable")
+
+        listener_result = _listener_identity_details()
+        listener = listener_result.get("identity") if listener_result.get("verified") else None
+        if (listener is None or listener.get("pid") != pid or
+                not _same_process_creation_time(listener.get("create_time"), created)):
+            blockers.append("port 1235 listener does not match the exact replacement process identity")
+
+        try:
+            config = load_config(self.paths.config)
+            miner_name = _configured_miner(self.paths.config)
+            durable = StateCodec.load(Path(config.service.state_persistence_path).expanduser())
+            if durable.gaming_mode.get("state", "inactive") != "inactive":
+                blockers.append("durable state records an active or incomplete gaming transition")
+            if any(request.phase in {RequestPhase.POSSIBLY_FORWARDED, RequestPhase.UNCERTAIN}
+                   for request in durable.requests.values()):
+                blockers.append("durable state contains an uncertain in-flight inference")
+        except Exception as exc:
+            config, miner_name, durable = None, None, None
+            blockers.append(f"configuration or durable state cannot be verified: {exc}")
+
+        gpu = (service or {}).get("gpu_inference") or {}
+        if gpu.get("active_count") != 0 or gpu.get("pending_count") != 0:
+            blockers.append("active or pending inference count is nonzero or unavailable")
+        if gpu.get("is_restart_inhibited"):
+            blockers.append("coordinator restart is safety-inhibited")
+
+        tasks: List[StartupTask] = []
+        try:
+            tasks = self.task_backend.status()
+        except Exception as exc:
+            blockers.append(f"startup task identity cannot be inspected: {exc}")
+        enabled = [item for item in tasks if item.owned and item.enabled and item.mode in {"boot", "logon"}]
+        task = enabled[0] if len(enabled) == 1 else None
+        if len(enabled) != 1:
+            blockers.append(f"expected exactly one enabled owned coordinator task, found {len(enabled)}")
+        elif (task.run_level != "Highest" or not _task_identity_valid(asdict(task)) or
+              task.state.casefold() != "running" or
+              os.path.normcase(str(self.paths.launcher)) not in os.path.normcase(task.action)):
+            blockers.append("running startup task identity, privileges, or managed launcher is not verified")
+
+        attribution: Dict[str, Any] = {"verified": False, "shutdown_verified": False}
+        if task is not None and listener is not None:
+            attribution = _legacy_attribution(task, listener, self.paths, miner_name)
+            if not attribution.get("verified"):
+                blockers.append("replacement process is not attributed to the unique running startup task: " +
+                                str(attribution.get("reason", "attribution unavailable")))
+
+        miner = ((service or {}).get("processes") or {}).get(miner_name, {}) if miner_name else {}
+        miner_identity: Optional[Dict[str, Any]] = None
+        if miner_name:
+            if miner.get("state") == "running":
+                if (miner.get("is_coordinator_owned") is not True or type(miner.get("pid")) is not int or
+                        type(miner.get("create_time")) not in (int, float) or
+                        _exact_process_is_alive(miner["pid"], float(miner["create_time"])) is not True):
+                    blockers.append("configured miner is running without verified coordinator ownership")
+                else:
+                    miner_identity = {"pid": miner["pid"], "create_time": float(miner["create_time"])}
+            elif miner.get("state") != "stopped":
+                blockers.append("configured miner state is unavailable or transitional")
+            if not (runtime.get("stop_miner_on_shutdown") is True or
+                    attribution.get("shutdown_verified") is True):
+                blockers.append("replacement runtime and verified launcher do not guarantee owned miner shutdown")
+
+        if blockers:
+            return {"status": "blocked", "blockers": blockers}
+        try:
+            token = load_token()
+        except Exception as exc:
+            return {"status": "blocked", "blockers": [f"operator credential is unavailable: {exc}"]}
+        try:
+            response = self._request_graceful_shutdown(token)
+        except Exception as exc:
+            return {"status": "blocked", "blockers": [f"graceful shutdown request failed: {exc}"]}
+        if response.status_code != 202:
+            return {"status": "blocked", "blockers": [
+                f"replacement coordinator refused graceful shutdown ({response.status_code})"]}
+
+        lock_path = Path(config.service.state_persistence_path).expanduser().with_suffix(".lock")
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            listener_now = _listener_identity_details()
+            process_gone = _exact_process_is_alive(pid, float(created)) is False
+            miner_gone = (miner_identity is None or _exact_process_is_alive(
+                miner_identity["pid"], miner_identity["create_time"]) is False)
+            try:
+                task_rows = self.task_backend.status()
+                task_active = any(item.name == task.name and item.state.casefold() == "running"
+                                  for item in task_rows)
+            except Exception:
+                task_active = True
+            lock_probe = SingleInstanceLock(lock_path)
+            lock_released = lock_probe.acquire()
+            if lock_released:
+                lock_probe.release()
+            if (self._service_status() is None and not self._coordinator_port_open() and
+                    listener_now.get("category") == "not-found" and process_gone and miner_gone and
+                    not task_active and lock_released):
+                return {"status": "stopped", "runtime": runtime, "miner": miner_identity,
+                        "attribution": attribution}
+            time.sleep(0.2)
+        return {"status": "recovery-required", "blockers": [
+            "graceful shutdown was accepted but replacement process, miner, listener, startup task, or lock "
+            "did not fully exit"]}
+
     def upgrade(self, *, apply: bool = False, non_interactive: bool = False,
                 timeout: float = 45.0) -> Dict[str, Any]:
         if not apply:
             return self._upgrade_impl(apply=False, non_interactive=non_interactive, timeout=timeout)
+        if isinstance(self.task_backend, WindowsStartupTaskBackend) and not self.task_backend._admin():
+            if non_interactive:
+                raise ElevationRequired("Administrator approval is required; non-interactive mode will not prompt.")
+            self.task_backend.run_elevated_cli()
+            return {"status": "elevated-completed", "message": "Elevated upgrade command completed."}
         preflight = self._upgrade_preflight(non_interactive=non_interactive)
         if preflight["runtime_current"]:
             if self.paths.upgrade_receipt.is_file():
@@ -1286,6 +1694,468 @@ class ManagedInstallation:
         try:
             return self._upgrade_impl(apply=True, non_interactive=non_interactive, timeout=timeout,
                                       preflight=preflight)
+        finally:
+            lock.release()
+
+    def recovery(self, action: str, *, apply: bool = False,
+                 non_interactive: bool = False,
+                 _transaction_lock_held: bool = False) -> Dict[str, Any]:
+        """Inspect and reconcile a failed upgrade without requiring service availability."""
+        if (apply and action in {"restore", "resume"} and not _transaction_lock_held and
+                isinstance(self.task_backend, WindowsStartupTaskBackend) and not self.task_backend._admin()):
+            if non_interactive:
+                raise ElevationRequired("Administrator approval is required; non-interactive recovery will not prompt.")
+            self.task_backend.run_elevated_cli()
+            return {"status": "elevated-completed", "message": f"Elevated recovery {action} command completed."}
+        receipt = None
+        receipt_error = None
+        if self.paths.upgrade_receipt.is_file():
+            try:
+                receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+                if not isinstance(receipt, dict):
+                    raise ValueError("receipt root is not an object")
+            except (OSError, ValueError) as exc:
+                receipt_error = f"Upgrade receipt cannot be read: {exc}"
+        try:
+            tasks = self.task_backend.status()
+            task_error = None
+        except Exception as exc:
+            tasks, task_error = [], f"Scheduled Task inspection failed: {exc}"
+        service = self._service_status()
+        listener_result = _listener_identity_details()
+        listener = listener_result.get("identity") if listener_result.get("verified") else None
+        miner_name = None
+        try:
+            miner_name = _configured_miner(self.paths.config)
+        except Exception:
+            pass
+        enabled_tasks = [item for item in tasks if item.owned and item.name in {
+            TASK_NAMES["boot"], TASK_NAMES["logon"]} and item.enabled]
+        task = enabled_tasks[0] if len(enabled_tasks) == 1 else None
+        attribution = (_legacy_attribution(task, listener, self.paths, miner_name)
+                       if task and listener else {"verified": False, "reason": "task or listener identity unavailable"})
+        processes = (service or {}).get("processes", {})
+        miner = processes.get(miner_name, {}) if miner_name else {}
+        active = (service or {}).get("gpu_inference", {})
+        blockers = []
+        if receipt_error:
+            blockers.append(receipt_error)
+        if not receipt and action not in {"status", "diagnose"}:
+            blockers.append("No pending upgrade receipt exists")
+        if task_error:
+            blockers.append(task_error)
+        report = {
+            "status": "blocked" if blockers else ("ready" if service and service.get("service_state") == "ready" else "degraded"),
+            "action": action, "receipt_present": receipt is not None,
+            "receipt_phase": (receipt or {}).get("phase"),
+            "failed_at": (receipt or {}).get("failed_at"), "error": (receipt or {}).get("error"),
+            "service_state": (service or {}).get("service_state", "offline"),
+            "listener": listener, "listener_discovery": listener_result.get("category"),
+            "task": asdict(task) if task else None, "task_attribution": attribution,
+            "miner_state": miner.get("state", "unavailable"), "miner_pid": miner.get("pid"),
+            "miner_owned": miner.get("is_coordinator_owned"),
+            "active_inferences": active.get("active_count"), "pending_inferences": active.get("pending_count"),
+            "gaming_state": ((receipt or {}).get("durable_state") or {}).get("gaming_mode", {}).get("state"),
+            "blockers": blockers,
+        }
+        if action in {"status", "diagnose"}:
+            return report
+        if not receipt or receipt_error:
+            return {**report, "status": "blocked"}
+        if action == "resume":
+            if not apply:
+                preflight = self._upgrade_preflight(non_interactive=non_interactive)
+                resume_blockers = list(preflight.get("blockers", []))
+                resume_blockers = [item for item in resume_blockers if not (
+                    item == "coordinator status is unavailable; upgrade will not start a replacement owner" or
+                    (preflight.get("listener_discovery", {}).get("category") == "not-found" and
+                     item.startswith("No listening endpoint matching 127.0.0.1:1235")))]
+                if receipt.get("source", {}).get("revision") != preflight.get("source", {}).get("revision"):
+                    resume_blockers.append("Source revision differs from the interrupted upgrade receipt")
+                old_pid, old_created = receipt.get("old_service_pid"), receipt.get("old_service_create_time")
+                if (type(old_pid) is not int or type(old_created) not in (int, float) or
+                        _exact_process_is_alive(old_pid, float(old_created)) is not False):
+                    resume_blockers.append("Prior coordinator PID and creation time are not proven exited")
+                old_miner = receipt.get("old_miner") or {}
+                if receipt.get("miner_was_running"):
+                    pid, created = old_miner.get("pid"), old_miner.get("create_time")
+                    if (type(pid) is not int or type(created) not in (int, float) or
+                            _exact_process_is_alive(pid, float(created)) is not False):
+                        resume_blockers.append("Prior miner PID and creation time are not proven exited")
+                if self._coordinator_port_open() or _listener_identity() is not None:
+                    resume_blockers.append("Port 1235 is not proven free; resume will not start another owner")
+                return {**report, "status": "blocked" if resume_blockers else "planned",
+                        "blockers": resume_blockers, "preflight": preflight,
+                        "changes": ["reconcile the owned task if needed", "start one coordinator",
+                                    "verify runtime identity, inference controls, and GPU policy"]}
+            preflight = self._upgrade_preflight(non_interactive=non_interactive)
+            lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+            if not lock.acquire():
+                return {**report, "status": "blocked", "blockers": ["Another upgrade or recovery operation holds the transaction lock"]}
+            try:
+                result = self._resume_interrupted_upgrade(preflight, non_interactive=non_interactive, timeout=45.0)
+                return result or {**report, "status": "blocked", "blockers": [
+                    "Receipt phase is not resumable or required ownership evidence is unavailable"]}
+            finally:
+                lock.release()
+        if action == "restore":
+            restore_manual_hold = _receipt_has_active_manual_hold(receipt, miner_name)
+            if not apply:
+                restore_blockers = list(report["blockers"])
+                if receipt.get("phase") != "RECOVERY_REQUIRED" or not receipt.get("task_snapshot"):
+                    restore_blockers.append("Receipt has no verified prior task snapshot")
+                if miner_name and not receipt.get("miner_resume_allowed") and not restore_manual_hold:
+                    restore_blockers.append("Prior miner was stopped without a verifiable durable manual hold; "
+                                            "the legacy launcher could start it unexpectedly")
+                if service is not None:
+                    restore_blockers.append("Coordinator is reachable; offline restoration will not start a second owner")
+                if listener_result.get("category") != "not-found":
+                    restore_blockers.append("Port 1235 is not proven free")
+                old_pid = receipt.get("old_service_pid")
+                old_created = receipt.get("old_service_create_time")
+                if (type(old_pid) is not int or old_pid <= 0 or type(old_created) not in (int, float) or
+                        _exact_process_is_alive(old_pid, float(old_created)) is not False):
+                    restore_blockers.append("Prior coordinator PID and creation time are not proven exited")
+                old_miner = receipt.get("old_miner") or {}
+                if receipt.get("miner_was_running") and miner_name and (type(old_miner.get("pid")) is not int or
+                                   type(old_miner.get("create_time")) not in (int, float) or
+                                   _exact_process_is_alive(old_miner["pid"], float(old_miner["create_time"])) is not False):
+                    restore_blockers.append("Prior miner PID and creation time are not proven exited")
+                try:
+                    current_config = load_config(self.paths.config)
+                    current_journal = StateCodec.load(Path(current_config.service.state_persistence_path).expanduser())
+                    if current_journal.gaming_mode.get("state", "inactive") != "inactive":
+                        restore_blockers.append("Current durable state records an active or incomplete gaming transition")
+                    if any(request.phase in {RequestPhase.POSSIBLY_FORWARDED, RequestPhase.UNCERTAIN}
+                           for request in current_journal.requests.values()):
+                        restore_blockers.append("Current durable state contains an uncertain inference")
+                    if current_journal.inhibitions:
+                        restore_blockers.append("Current durable state contains a restart safety inhibition")
+                    if restore_manual_hold:
+                        current_process = current_journal.processes.get(miner_name)
+                        captured_process = ((receipt.get("durable_state") or {}).get("processes") or {}).get(miner_name, {})
+                        if (not current_process or not current_process.is_manual_override or
+                                current_process.manual_override_until != captured_process.get("manual_override_until")):
+                            restore_blockers.append("Current durable manual hold differs from the upgrade receipt")
+                    if miner_name:
+                        miner_config = current_config.processes.get(miner_name)
+                        if miner_config and miner_config.executable:
+                            executable_running = _configured_executable_running(miner_config.executable)
+                            if executable_running is not False:
+                                restore_blockers.append(
+                                    "A configured miner process may still be running outside the coordinator")
+                except Exception as exc:
+                    restore_blockers.append(f"Current durable recovery state cannot be verified: {exc}")
+                status = "blocked" if restore_blockers else "planned"
+                return {**report, "status": status, "blockers": restore_blockers,
+                        "changes": ["restore the exact snapshotted owned task", "start and verify the prior coordinator",
+                                    "verify the previous mining state under coordinator ownership"]}
+            if not receipt or receipt_error:
+                return {**report, "status": "blocked"}
+            if receipt.get("phase") != "RECOVERY_REQUIRED" or not receipt.get("task_snapshot"):
+                return {**report, "status": "blocked", "blockers": ["Receipt has no verified prior task snapshot"]}
+            if task_error:
+                return {**report, "status": "blocked", "blockers": [task_error]}
+            restore_manual_hold = _receipt_has_active_manual_hold(receipt, miner_name)
+            if miner_name and not receipt.get("miner_resume_allowed") and not restore_manual_hold:
+                return {**report, "status": "blocked", "blockers": [
+                    "Prior miner was stopped without a verifiable durable manual hold; automatic restore cannot prove it will remain stopped"]}
+            lock = None
+            if not _transaction_lock_held:
+                lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+                if not lock.acquire():
+                    return {**report, "status": "blocked", "blockers": [
+                        "Another upgrade or recovery operation holds the transaction lock"]}
+            try:
+                current_receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+                if current_receipt != receipt:
+                    return {**report, "status": "blocked", "blockers": [
+                        "Upgrade receipt changed since recovery diagnosis"]}
+                task_value = receipt.get("task") or {}
+                try:
+                    prior_task = StartupTask(**task_value)
+                except (TypeError, ValueError) as exc:
+                    return {**report, "status": "blocked", "blockers": [
+                        f"Prior startup task identity in the receipt is invalid: {exc}"]}
+                if self._service_status() is not None:
+                    return {**report, "status": "blocked", "blockers": [
+                        "Coordinator became reachable; refusing to start a second owner"]}
+                current_listener_result = _listener_identity_details()
+                if current_listener_result.get("category") != "not-found":
+                    return {**report, "status": "blocked", "blockers": [
+                        "Port 1235 is not proven free; no owner will be started"]}
+                try:
+                    current_tasks = self.task_backend.status()
+                except Exception as exc:
+                    return {**report, "status": "blocked", "blockers": [
+                        f"Startup tasks cannot be rechecked before restoration: {exc}"]}
+                current_enabled = [item for item in current_tasks if item.owned and item.enabled and
+                                   item.mode in {"boot", "logon"}]
+                if any(item.name != prior_task.name for item in current_enabled):
+                    return {**report, "status": "blocked", "blockers": [
+                        "A different enabled coordinator task appeared before restoration"]}
+                current_task = next((item for item in current_tasks if item.name == prior_task.name), None)
+                if current_task and current_task.state.casefold() == "running":
+                    return {**report, "status": "blocked", "blockers": [
+                        "The replacement startup task still has an active Task Scheduler instance"]}
+                try:
+                    current_config = load_config(self.paths.config)
+                    current_journal = StateCodec.load(Path(current_config.service.state_persistence_path).expanduser())
+                except Exception as exc:
+                    return {**report, "status": "blocked", "blockers": [
+                        f"Current durable recovery state cannot be verified: {exc}"]}
+                if current_journal.gaming_mode.get("state", "inactive") != "inactive":
+                    return {**report, "status": "blocked", "blockers": [
+                        "Current durable state records an active or incomplete gaming transition"]}
+                if any(request.phase in {RequestPhase.POSSIBLY_FORWARDED, RequestPhase.UNCERTAIN}
+                       for request in current_journal.requests.values()):
+                    return {**report, "status": "blocked", "blockers": [
+                        "Current durable state contains an uncertain inference"]}
+                if current_journal.inhibitions:
+                    return {**report, "status": "blocked", "blockers": [
+                        "Current durable state contains a restart safety inhibition"]}
+                if restore_manual_hold:
+                    current_process = current_journal.processes.get(miner_name)
+                    captured_process = ((receipt.get("durable_state") or {}).get("processes") or {}).get(miner_name, {})
+                    if (not current_process or not current_process.is_manual_override or
+                            current_process.manual_override_until != captured_process.get("manual_override_until")):
+                        return {**report, "status": "blocked", "blockers": [
+                            "Current durable manual hold differs from the upgrade receipt"]}
+                if miner_name:
+                    miner_config = current_config.processes.get(miner_name)
+                    if miner_config and miner_config.executable:
+                        executable_running = _configured_executable_running(miner_config.executable)
+                        if executable_running is not False:
+                            return {**report, "status": "blocked", "blockers": [
+                                "A configured miner process may still be running outside the coordinator"]}
+                coordinator_lock_path = Path(current_config.service.state_persistence_path).expanduser().with_suffix(".lock")
+                coordinator_lock = SingleInstanceLock(coordinator_lock_path)
+                if not coordinator_lock.acquire():
+                    return {**report, "status": "blocked", "blockers": [
+                        "Coordinator instance lock is still held or cannot be inspected"]}
+                coordinator_lock.release()
+                old_pid = receipt.get("old_service_pid")
+                old_created = receipt.get("old_service_create_time")
+                if type(old_pid) is not int or old_pid <= 0 or type(old_created) not in (int, float):
+                    return {**report, "status": "blocked", "blockers": [
+                        "Receipt lacks the prior coordinator's exact PID and creation time"]}
+                if _exact_process_is_alive(old_pid, float(old_created)) is not False:
+                    return {**report, "status": "blocked", "blockers": [
+                        "Prior coordinator identity is still alive or unverifiable"]}
+                old_miner = receipt.get("old_miner") or {}
+                if miner_name and receipt.get("miner_was_running"):
+                    miner_pid, miner_created = old_miner.get("pid"), old_miner.get("create_time")
+                    if type(miner_pid) is not int or miner_pid <= 0 or type(miner_created) not in (int, float):
+                        return {**report, "status": "blocked", "blockers": [
+                            "Receipt lacks the prior miner's exact PID and creation time"]}
+                    if _exact_process_is_alive(miner_pid, float(miner_created)) is not False:
+                        return {**report, "status": "blocked", "blockers": [
+                            "Prior miner identity is still alive or unverifiable"]}
+                expected_task_names = {TASK_NAMES["boot"], TASK_NAMES["logon"]}
+                snapshot = receipt.get("task_snapshot")
+                if (not prior_task.owned or prior_task.name not in expected_task_names or
+                        prior_task.mode not in {"boot", "logon"} or prior_task.run_level != "Highest" or
+                        not _task_identity_valid(asdict(prior_task)) or not isinstance(snapshot, dict) or
+                        not isinstance(snapshot.get("definition"), str) or
+                        type(snapshot.get("enabled")) is not bool):
+                    return {**report, "status": "blocked", "blockers": [
+                        "Receipt does not contain a complete, verified owned startup task snapshot"]}
+                enabled_tasks = [item for item in tasks if item.owned and item.enabled and
+                                 item.mode in {"boot", "logon"}]
+                if any(item.name != prior_task.name for item in enabled_tasks):
+                    return {**report, "status": "blocked", "blockers": [
+                        "A different enabled coordinator startup task may own the service"]}
+                current_task = next((item for item in tasks if item.name == prior_task.name), None)
+                if current_task and current_task.state.casefold() == "running":
+                    return {**report, "status": "blocked", "blockers": [
+                        "The prior startup task already has a running instance; verify it before retrying"]}
+                if (not receipt.get("launcher_existed") and
+                        os.path.normcase(str(self.paths.launcher)) in os.path.normcase(prior_task.action)):
+                    return {**report, "status": "blocked", "blockers": [
+                        "Known-good launcher referenced by the task was not preserved in the receipt"]}
+                if receipt.get("launcher_existed"):
+                    launcher_backup = receipt.get("launcher_backup")
+                    if not isinstance(launcher_backup, str):
+                        return {**report, "status": "blocked", "blockers": [
+                            "Receipt does not contain the previous managed launcher contents"]}
+                    self._write_managed(self.paths.launcher, launcher_backup)
+                if self.paths.upgrade_policy.is_file():
+                    try:
+                        policy = json.loads(self.paths.upgrade_policy.read_text(encoding="utf-8"))
+                    except (OSError, ValueError) as exc:
+                        return {**report, "status": "blocked", "blockers": [
+                            f"Upgrade start policy is unreadable; no prior task was started: {exc}"]}
+                    if policy != {"start_miner": False}:
+                        return {**report, "status": "blocked", "blockers": [
+                            "Upgrade start policy contains unexpected values; no prior task was started"]}
+                    self.paths.upgrade_policy.unlink()
+                self.task_backend.restore_snapshot(prior_task, snapshot,
+                                                   non_interactive=non_interactive)
+                restored_task = next((item for item in self.task_backend.status()
+                                      if item.name == prior_task.name and item.owned and item.enabled), None)
+                if not restored_task:
+                    raise InstallationError("Prior owned task was not restored as enabled")
+                self.task_backend.start(restored_task, non_interactive=non_interactive)
+                service = self._wait_for_service(timeout=45.0)
+                listener = _listener_identity()
+                runtime = (service or {}).get("runtime") or {}
+                if (not service or service.get("service_state") != "ready" or not listener or
+                        listener.get("pid") != runtime.get("pid") or
+                        runtime.get("process_create_time") is None or
+                        not _same_process_creation_time(runtime["process_create_time"], listener.get("create_time")) or
+                        service.get("upstream_url") != receipt.get("configured_upstream_url") or
+                        runtime.get("pid") == old_pid):
+                    raise InstallationError("Restored coordinator did not become ready with verified listener ownership")
+                miner_after = (service.get("processes") or {}).get(miner_name, {}) if miner_name else {}
+                if miner_name and receipt.get("miner_resume_allowed"):
+                    if (miner_after.get("state") != "running" or
+                            miner_after.get("is_coordinator_owned") is not True or
+                            type(miner_after.get("pid")) is not int or
+                            type(miner_after.get("create_time")) not in (int, float)):
+                        raise InstallationError("Restored service is ready, but prior mining state is not verified under coordinator ownership")
+                    if miner_after.get("pid") == old_miner.get("pid") and _same_process_creation_time(
+                            miner_after.get("create_time"), old_miner.get("create_time")):
+                        raise InstallationError("Restored miner identity matches the exited prior generation")
+                elif miner_name and restore_manual_hold and (
+                        miner_after.get("state") != "stopped" or miner_after.get("manual_override") is not True):
+                    raise InstallationError("Restored service did not preserve the durable manual miner hold")
+                receipt.update(phase="RESTORED_LEGACY", rollback_verified_at=time.time(),
+                               restored_runtime=runtime, restored_task=asdict(restored_task),
+                               restored_miner=miner_after)
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
+                return {**report, "status": "restored", "phase": "RESTORED_LEGACY", "runtime": runtime,
+                        "miner": miner_after}
+            except Exception as exc:
+                receipt.update(phase="RECOVERY_REQUIRED", rollback_error=str(exc), updated_at=time.time())
+                _write_json_atomic(self.paths.upgrade_receipt, receipt)
+                return {**report, "status": "recovery-required", "blockers": [str(exc)]}
+            finally:
+                if lock is not None:
+                    lock.release()
+        if action != "reconcile":
+            raise InstallationError(f"Unsupported recovery action: {action}")
+        if not receipt or receipt_error:
+            return {**report, "status": "blocked"}
+        if receipt.get("phase") != "RECOVERY_REQUIRED" or receipt.get("failed_at") not in {
+                "OLD_STOPPED", "TASK_UPDATED", "NEW_READY"}:
+            blockers.append("Receipt phase is not eligible for legacy reconciliation")
+
+        def current_reconciliation_safety_blockers(status: Optional[Dict[str, Any]]) -> List[str]:
+            failures: List[str] = []
+            if not status or status.get("service_state") != "ready":
+                failures.append("Coordinator is not ready")
+                return failures
+            gpu = status.get("gpu_inference") or {}
+            if gpu.get("active_count") != 0 or gpu.get("pending_count") != 0:
+                failures.append("Inference activity is unavailable or nonzero")
+            if gpu.get("is_restart_inhibited") is not False:
+                failures.append("Coordinator restart inhibition is active or unavailable")
+            if miner_name:
+                current_miner = ((status.get("processes") or {}).get(miner_name) or {})
+                if current_miner.get("state") not in {"running", "stopped"}:
+                    failures.append("Miner state is unavailable or transitional")
+                elif current_miner.get("state") == "running" and (
+                        current_miner.get("is_coordinator_owned") is not True or
+                        type(current_miner.get("pid")) is not int or
+                        type(current_miner.get("create_time")) not in (int, float) or
+                        _exact_process_is_alive(current_miner["pid"],
+                                                float(current_miner["create_time"])) is not True):
+                    failures.append("Miner ownership or process identity is not verified")
+            try:
+                config = load_config(self.paths.config)
+                state_path = Path(config.service.state_persistence_path).expanduser()
+                if not config.service.state_persistence_path or not state_path.is_file():
+                    raise ValueError("durable state journal is missing")
+                journal = StateCodec.load(state_path)
+            except Exception as exc:
+                failures.append(f"Current durable state cannot be verified: {exc}")
+            else:
+                if journal.gaming_mode.get("state", "inactive") != "inactive":
+                    failures.append("Current durable state records an active or incomplete gaming transition")
+                if any(request.phase in {RequestPhase.POSSIBLY_FORWARDED, RequestPhase.UNCERTAIN}
+                       for request in journal.requests.values()):
+                    failures.append("Current durable state contains an uncertain inference")
+                if journal.inhibitions:
+                    failures.append("Current durable state contains a restart safety inhibition")
+            return failures
+
+        if not service or service.get("service_state") != "ready":
+            blockers.append("A ready coordinator must be running before receipt reconciliation")
+        if listener is None or not attribution.get("verified"):
+            blockers.append("Running listener cannot be attributed to the enabled owned startup task")
+        if len(enabled_tasks) != 1:
+            blockers.append(f"Expected exactly one enabled owned coordinator startup task, found {len(enabled_tasks)}")
+        elif task and task.state.casefold() != "running":
+            blockers.append("The attributed startup task does not report a running instance")
+        blockers.extend(current_reconciliation_safety_blockers(service))
+        if ((receipt.get("durable_state") or {}).get("gaming_mode") or {}).get("state", "inactive") != "inactive":
+            blockers.append("Receipt records an active or incomplete gaming transition")
+        policy = None
+        if self.paths.upgrade_policy.is_file():
+            try:
+                policy = json.loads(self.paths.upgrade_policy.read_text(encoding="utf-8"))
+            except (OSError, ValueError) as exc:
+                blockers.append(f"One-shot upgrade start policy cannot be inspected: {exc}")
+            else:
+                if policy != {"start_miner": False}:
+                    blockers.append("One-shot upgrade start policy has unexpected values; reconciliation will preserve it")
+        report.update(status="blocked" if blockers else "planned", blockers=blockers,
+                      changes=["archive completed failed-upgrade receipt", "remove verified one-shot start policy"])
+        if blockers or not apply:
+            return report
+        lock = SingleInstanceLock(self.paths.upgrade_receipt.with_suffix(".lock"))
+        if not lock.acquire():
+            return {**report, "status": "blocked", "blockers": ["Another upgrade or recovery operation holds the transaction lock"]}
+        try:
+            current = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+            current_service = self._service_status()
+            if current != receipt or current_service != service:
+                return {**report, "status": "blocked", "blockers": ["Receipt or live service changed since diagnosis"]}
+            current_safety_blockers = current_reconciliation_safety_blockers(current_service)
+            if current_safety_blockers:
+                return {**report, "status": "blocked", "blockers": current_safety_blockers}
+            try:
+                current_tasks = self.task_backend.status()
+            except Exception as exc:
+                return {**report, "status": "blocked", "blockers": [
+                    f"Startup task identity cannot be rechecked before reconciliation: {exc}"]}
+            current_enabled = [item for item in current_tasks if item.owned and item.name in {
+                TASK_NAMES["boot"], TASK_NAMES["logon"]} and item.enabled]
+            if len(current_enabled) != 1 or task is None or asdict(current_enabled[0]) != asdict(task):
+                return {**report, "status": "blocked", "blockers": [
+                    "Enabled coordinator startup task identity changed since diagnosis"]}
+            if current_enabled[0].state.casefold() != "running":
+                return {**report, "status": "blocked", "blockers": [
+                    "Attributed coordinator startup task is no longer running"]}
+            current_listener_result = _listener_identity_details()
+            current_listener = current_listener_result.get("identity") if current_listener_result.get("verified") else None
+            if (not current_listener or current_listener.get("pid") != listener.get("pid") or
+                    not _same_process_creation_time(current_listener.get("create_time"), listener.get("create_time"))):
+                return {**report, "status": "blocked", "blockers": [
+                    "Listener identity changed or became unverifiable since diagnosis"]}
+            current_attribution = _legacy_attribution(current_enabled[0], current_listener, self.paths, miner_name)
+            if not current_attribution.get("verified"):
+                return {**report, "status": "blocked", "blockers": [
+                    "Startup task attribution no longer verifies before reconciliation"]}
+            current_policy = None
+            if self.paths.upgrade_policy.is_file():
+                try:
+                    current_policy = json.loads(self.paths.upgrade_policy.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as exc:
+                    return {**report, "status": "recovery-required", "blockers": [
+                        f"One-shot upgrade start policy became unreadable; receipt preserved: {exc}"]}
+            if current_policy != policy:
+                return {**report, "status": "blocked", "blockers": [
+                    "One-shot upgrade start policy changed since diagnosis"]}
+            operation_id = os.urandom(8).hex()
+            audit = self.paths.root / f"upgrade-receipt-reconciled-{operation_id}.json"
+            receipt["reconciled_at"] = time.time()
+            receipt["reconciled_by"] = getpass.getuser()
+            _write_json_atomic(audit, receipt)
+            if current_policy == {"start_miner": False}:
+                self.paths.upgrade_policy.unlink()
+            self.paths.upgrade_receipt.unlink()
+            return {**report, "status": "reconciled", "audit_record": str(audit), "receipt_phase": "RESTORED_LEGACY"}
         finally:
             lock.release()
 
@@ -1328,6 +2198,11 @@ class ManagedInstallation:
 
         assert preflight["task"] is not None
         task = StartupTask(**preflight["task"])
+        if isinstance(self.task_backend, WindowsStartupTaskBackend):
+            # Obtain UAC consent and exercise the exact helper path before stopping
+            # the current coordinator or miner.
+            self.task_backend._run({"operation": "validate", "task_name": task.name},
+                                   elevated=True, non_interactive=non_interactive)
         original_launcher_text = self.paths.launcher.read_text(encoding="utf-8") if self.paths.launcher.exists() else None
         receipt = {
             "schema": 1,
@@ -1356,8 +2231,8 @@ class ManagedInstallation:
             receipt.update(phase=phase, updated_at=time.time(), **extra)
             _write_json_atomic(self.paths.upgrade_receipt, receipt)
 
-        task_updated = False
         task_update_started = False
+        candidate_service: Optional[Dict[str, Any]] = None
         try:
             self._write_managed(self.paths.launcher, render_launcher(self.paths))
             # The task launch is held from auto-starting mining until this external
@@ -1400,13 +2275,14 @@ class ManagedInstallation:
             self._write_managed(self.paths.launcher, render_launcher(self.paths))
             task_update_started = True
             task = self.task_backend.install(task.mode, self.paths.launcher, non_interactive=non_interactive)
-            task_updated = True
             update_phase("TASK_UPDATED", task_after=asdict(task))
             self.task_backend.start(task, non_interactive=non_interactive)
 
             service = self._wait_for_service(timeout=timeout)
             if not service:
                 raise InstallationError("Updated startup task did not produce a ready coordinator")
+            candidate_service = service
+            update_phase("NEW_READY", new_runtime=service.get("runtime"))
             runtime = service.get("runtime") or {}
             if runtime.get("revision") != preflight["source"]["revision"]:
                 raise InstallationError("New coordinator is ready but its startup-captured source revision does not match")
@@ -1436,11 +2312,10 @@ class ManagedInstallation:
                 effective is None or effective.get("power_limit_w") is None or
                 abs(float(effective["power_limit_w"]) - expected_power) > 0.5
             ):
-                update_phase("RECOVERY_REQUIRED", new_runtime=runtime, effective_gpu_settings_after=effective,
-                             blocker="effective GPU power limit does not match configured policy")
-                return {"status": "recovery-required", "phase": "NEW_READY", "preflight": preflight,
-                        "runtime": runtime, "effective_gpu_settings": effective,
-                        "blocker": "Coordinator is ready, but mining was left stopped because GPU policy verification failed."}
+                raise InstallationError(
+                    "Coordinator is ready, but the effective GPU power limit does not match policy; "
+                    "mining remains stopped while the verified rollback path is attempted."
+                )
 
             if preflight["miner_resume_allowed"]:
                 response = httpx.post(
@@ -1469,19 +2344,25 @@ class ManagedInstallation:
                     "receipt": str(self.paths.upgrade_receipt)}
         except Exception as exc:
             failed_at = receipt.get("phase", "UNKNOWN")
-            if task_update_started and self._service_status() is None:
+            current_service = self._service_status()
+            failed_runtime_shutdown: Optional[Dict[str, Any]] = None
+            if task_update_started and current_service is not None:
                 try:
-                    restorer = getattr(self.task_backend, "restore_snapshot")
-                    restorer(task, preflight["task_snapshot"], non_interactive=non_interactive)
-                    if original_launcher_text is None:
-                        self.paths.launcher.unlink(missing_ok=True)
-                    else:
-                        self._write_managed(self.paths.launcher, original_launcher_text)
-                    self.paths.upgrade_policy.unlink(missing_ok=True)
-                    receipt["task_restored"] = True
-                except Exception as restore_error:
-                    receipt["task_restore_error"] = str(restore_error)
-            elif not task_updated:
+                    failed_runtime_shutdown = self._stop_verified_failed_runtime(
+                        receipt, candidate_service or current_service, timeout=min(timeout, 30.0))
+                except Exception as shutdown_error:
+                    failed_runtime_shutdown = {"status": "blocked", "blockers": [
+                        f"failed runtime shutdown verification raised an error: {shutdown_error}"]}
+                receipt["failed_runtime_shutdown"] = failed_runtime_shutdown
+                if failed_runtime_shutdown.get("status") != "stopped":
+                    update_phase("RECOVERY_REQUIRED", failed_at=failed_at, error=str(exc),
+                                 rollback_blockers=failed_runtime_shutdown.get("blockers", []))
+                    raise InstallationError(
+                        f"Upgrade stopped during {failed_at}; a live coordinator could not be safely attributed "
+                        f"and will remain untouched. Use system recovery diagnose. Details: {exc}"
+                    ) from exc
+                current_service = None
+            if not task_update_started:
                 try:
                     if original_launcher_text is None:
                         self.paths.launcher.unlink(missing_ok=True)
@@ -1491,6 +2372,17 @@ class ManagedInstallation:
                 except Exception as restore_error:
                     receipt["launcher_restore_error"] = str(restore_error)
             update_phase("RECOVERY_REQUIRED", failed_at=failed_at, error=str(exc))
+            if failed_at in {"OLD_STOPPED", "TASK_UPDATED", "NEW_READY"} and self._service_status() is None:
+                rollback = self.recovery("restore", apply=True, non_interactive=non_interactive,
+                                         _transaction_lock_held=True)
+                try:
+                    latest_receipt = json.loads(self.paths.upgrade_receipt.read_text(encoding="utf-8"))
+                except (OSError, ValueError):
+                    latest_receipt = receipt
+                latest_receipt["automatic_rollback"] = {"status": rollback.get("status"),
+                                                          "phase": rollback.get("phase"),
+                                                          "blockers": rollback.get("blockers", [])}
+                _write_json_atomic(self.paths.upgrade_receipt, latest_receipt)
             raise InstallationError(
                 f"Upgrade stopped during {failed_at}; no process was force-terminated. "
                 f"Inspect {self.paths.upgrade_receipt} before retrying. Details: {exc}"
@@ -1909,6 +2801,38 @@ function Get-RcSid([string]$identity) {
   return ([Security.Principal.NTAccount]$identity).Translate([Security.Principal.SecurityIdentifier]).Value
 }
 $interactiveSid = Get-RcSid ([string]$payload.interactive_user)
+function Test-RcRestoreDefinition([string]$definition, [string]$taskName) {
+  if ($taskName -notin @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon')) { return $false }
+  try {
+    $xml = [xml]$definition
+    $principal = $xml.SelectSingleNode("//*[local-name()='Principal']")
+    $actions = $xml.SelectNodes("/*[local-name()='Task']/*[local-name()='Actions']/*")
+    if (-not $principal -or $actions.Count -ne 1 -or $actions[0].LocalName -ne 'Exec') { return $false }
+    if ([string]$principal.RunLevel -ne 'HighestAvailable') { return $false }
+    $principalSid = Get-RcSid ([string]$principal.UserId)
+    if ($taskName -eq 'ResourceCoordinator-KRig-Boot') {
+      if ($principalSid -ne 'S-1-5-18' -or [string]$principal.LogonType -ne 'ServiceAccount') { return $false }
+    } elseif ($principalSid -ne $interactiveSid -or [string]$principal.LogonType -notin @('InteractiveToken','Interactive')) { return $false }
+    $action = $actions[0]
+    $commandName = [IO.Path]::GetFileName([string]$action.Command)
+    if ($commandName -notin @('powershell.exe','pwsh.exe')) { return $false }
+    $commandFull = [IO.Path]::GetFullPath([string]$action.Command)
+    $resolvedCommand = (Get-Command $commandName -ErrorAction Stop).Source
+    if (-not [string]::Equals($commandFull,[IO.Path]::GetFullPath($resolvedCommand),[StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $commandItem = Get-Item -LiteralPath $commandFull -Force -ErrorAction Stop
+    if (($commandItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    $args = [string]$action.Arguments
+    $pattern = '(?i)^(?:(?:-NoLogo|-NoProfile|-NonInteractive)\s+|-WindowStyle\s+Hidden\s+|-ExecutionPolicy\s+(?:Bypass|RemoteSigned|AllSigned|Restricted)\s+)*-File\s+(?:"([^"]+\.ps1)"|([^\s"]+\.ps1))\s*$'
+    $match = [regex]::Match($args, $pattern)
+    if (-not $match.Success) { return $false }
+    $launcher = [IO.Path]::GetFullPath($(if ($match.Groups[1].Success) {$match.Groups[1].Value} else {$match.Groups[2].Value}))
+    if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or
+        (Split-Path $launcher -Leaf) -notin @('start-coordinator.ps1','start-coordinator-managed.ps1')) { return $false }
+    $item = Get-Item -LiteralPath $launcher -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { return $false }
+    return $true
+  } catch { return $false }
+}
 function Test-RcOwned($task) {
     if (-not $task) { return $false }
     try {
@@ -1931,6 +2855,10 @@ function Test-RcOwned($task) {
     return $false
 }
 switch ($payload.operation) {
+  'transport_probe' {
+    $length = if ($payload.definition -is [string]) { ([string]$payload.definition).Length } else { 0 }
+    ConvertTo-Json -Compress -InputObject @{status='validated'; operation_id=[string]$payload.operation_id; definition_length=$length}
+  }
   'status' {
     $items = @()
     # Probe first without suppressing access errors. An inaccessible task store
@@ -1944,7 +2872,14 @@ switch ($payload.operation) {
     }
     ConvertTo-Json -InputObject @($items) -Depth 5 -Compress
   }
-  {$_ -in 'install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
+  {$_ -in 'validate','install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
+    if ($payload.operation -eq 'validate') {
+      if ($payload.task_name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
+      $null = Get-ScheduledTask -TaskName ([string]$payload.task_name) -ErrorAction Stop
+      $null = Get-Command Register-ScheduledTask -ErrorAction Stop
+      ConvertTo-Json -Compress -InputObject @{status='validated'; task_name=[string]$payload.task_name}
+      break
+    }
     if ($payload.operation -eq 'install') {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
       $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
@@ -1996,6 +2931,7 @@ switch ($payload.operation) {
       }
       'restore' {
         if (-not $payload.definition -or $null -eq $payload.enabled) { throw 'Task recovery snapshot is incomplete.' }
+        if (-not (Test-RcRestoreDefinition ([string]$payload.definition) $name)) { throw 'Task recovery snapshot failed privileged ownership validation.' }
         Register-ScheduledTask -TaskName $name -Xml ([string]$payload.definition) -Force | Out-Null
         if ([bool]$payload.enabled) { Enable-ScheduledTask -TaskName $name | Out-Null }
         else { Disable-ScheduledTask -TaskName $name | Out-Null }
@@ -2018,7 +2954,8 @@ def _powershell_backend(paths: InstallationPaths) -> WindowsStartupTaskBackend:
 def handle_installation_command(args: Any) -> int:
     """CLI entry point; command execution remains separate from core logic for testing."""
     from resource_coordinator.presentation import (
-        emit_json, render_health_result, render_result, render_startup_status, render_upgrade_result,
+        emit_json, render_health_result, render_recovery_result, render_result, render_startup_status,
+        render_upgrade_result,
     )
 
     paths = InstallationPaths.discover()
@@ -2031,6 +2968,16 @@ def handle_installation_command(args: Any) -> int:
         else:
             render_upgrade_result(result)
         return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
+    if args.command == "recovery":
+        result = manager.recovery(args.recovery_command, apply=getattr(args, "apply", False),
+                                  non_interactive=getattr(args, "non_interactive", False))
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            render_recovery_result(result)
+        if result.get("status") in {"blocked", "recovery-required"}:
+            return 2
+        return 1 if result.get("status") == "degraded" else 0
     if args.command == "setup":
         result = manager.setup(
             apply=args.apply, mode=args.startup_mode, non_interactive=args.non_interactive,

@@ -33,6 +33,8 @@ def normalize_dispatch_args(args: argparse.Namespace) -> argparse.Namespace:
             normalized.startup_command = parts[2]
         elif parts[1] == "auth":
             normalized.auth_command = parts[2]
+        elif parts[1] == "recovery":
+            normalized.recovery_command = parts[2]
     elif parts[0] == "check":
         normalized.command = {
             "health": "doctor",
