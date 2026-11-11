@@ -47,5 +47,17 @@ class AuthenticationError(NotificationError):
     """Raised when client authentication fails."""
 
 
+class SecurityError(NotificationError):
+    """Raised when file permissions or credential security restrictions fail."""
+
+
+class InvalidTransitionError(NotificationError):
+    """Raised when an illegal incident state transition is attempted."""
+
+
 class ProviderError(NotificationError):
     """Base exception for delivery provider errors."""
+
+
+class ProviderNotConfiguredError(ProviderError):
+    """Raised when an operation requires an unconfigured provider."""

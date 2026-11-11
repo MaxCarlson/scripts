@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
 
-from notifications.exceptions import AuthenticationError
+from notifications.exceptions import AuthenticationError, SecurityError
 
 _TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{32,}$")
 
@@ -48,47 +48,83 @@ def _secure_path(path: Path) -> None:
     """Restrict path ACL to owner and LocalSystem on Windows; 0700/0600 on POSIX."""
     if os.name == "nt":
         sid = _windows_user_sid()
+        if not sid:
+            raise SecurityError(
+                f"Cannot determine Windows user SID to secure '{path}'. "
+                "Ensure whoami.exe is accessible or set NOTIFICATIONS_INGEST_TOKEN explicitly."
+            )
         is_dir = path.is_dir()
         flags = ("(OI)(CI)" if is_dir else "") + "(F)"
-        if sid:
-            try:
-                subprocess.run(
-                    ["icacls.exe", str(path), "/reset"],
-                    check=True,
-                    capture_output=True,
-                    timeout=5,
+        try:
+            res_reset = subprocess.run(
+                ["icacls.exe", str(path), "/reset"],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res_reset.returncode != 0:
+                err_detail = res_reset.stderr.strip() or res_reset.stdout.strip()
+                raise SecurityError(
+                    f"icacls /reset failed on '{path}': {err_detail}. "
+                    "Repair filesystem permissions or run with appropriate Windows privileges."
                 )
-                subprocess.run(
-                    [
-                        "icacls.exe",
-                        str(path),
-                        "/inheritance:r",
-                        "/grant:r",
-                        f"*{sid}:{flags}",
-                        f"*S-1-5-18:{flags}",
-                    ],
-                    check=True,
-                    capture_output=True,
-                    timeout=5,
+
+            res_grant = subprocess.run(
+                [
+                    "icacls.exe",
+                    str(path),
+                    "/inheritance:r",
+                    "/grant:r",
+                    f"*{sid}:{flags}",
+                    f"*S-1-5-18:{flags}",
+                ],
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if res_grant.returncode != 0:
+                err_detail = res_grant.stderr.strip() or res_grant.stdout.strip()
+                raise SecurityError(
+                    f"icacls permission restriction failed on '{path}': {err_detail}. "
+                    f"Run: icacls \"{path}\" /inheritance:r /grant:r \"*{sid}:{flags}\""
                 )
-            except Exception:
-                pass
+        except subprocess.TimeoutExpired as exc:
+            raise SecurityError(f"icacls timed out while securing '{path}'.") from exc
+        except FileNotFoundError as exc:
+            raise SecurityError(f"icacls.exe not found on PATH to secure '{path}'.") from exc
+        except SecurityError:
+            raise
+        except Exception as exc:
+            raise SecurityError(f"Unexpected error securing '{path}': {exc}") from exc
     else:
-        path.chmod(0o700 if path.is_dir() else 0o600)
+        try:
+            path.chmod(0o700 if path.is_dir() else 0o600)
+        except OSError as exc:
+            raise SecurityError(f"Failed to set POSIX permissions on '{path}': {exc}") from exc
 
 
 def load_or_create_token(token_file: Optional[Path] = None) -> str:
     """Load the configured ingest token or provision one securely."""
     env_token = os.environ.get("NOTIFICATIONS_INGEST_TOKEN")
     if env_token:
-        return env_token.strip()
+        token = env_token.strip()
+        if not _TOKEN_RE.fullmatch(token):
+            raise AuthenticationError("NOTIFICATIONS_INGEST_TOKEN environment variable contains invalid characters or length")
+        return token
 
     path = token_file or default_token_path()
     if path.is_file():
+        # Ensure existing token file and directory are securely permissioned
+        _secure_path(path)
         try:
             token = path.read_text("ascii").strip()
             if _TOKEN_RE.fullmatch(token):
                 return token
+            raise AuthenticationError(f"Broker token in {path} has invalid format")
+        except AuthenticationError:
+            raise
         except Exception as exc:
             raise AuthenticationError(f"Cannot read broker token from {path}: {exc}") from exc
 
@@ -101,7 +137,10 @@ def load_or_create_token(token_file: Optional[Path] = None) -> str:
         temp_file.write_text(token, "ascii")
         _secure_path(temp_file)
         temp_file.replace(path)
+        _secure_path(path)
         return token
+    except SecurityError:
+        raise
     except Exception as exc:
         raise AuthenticationError(f"Cannot provision broker token file at {path}: {exc}") from exc
 

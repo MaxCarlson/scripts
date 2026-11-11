@@ -10,6 +10,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request, Response, status
 from pydantic import BaseModel, Field
 
 from notifications.exceptions import (
+    IncidentNotFoundError,
+    InvalidTransitionError,
     PayloadConflictError,
     StorageError,
     ValidationError,
@@ -31,12 +33,13 @@ def create_ingest_app(
     lifecycle: Optional[IncidentLifecycleEngine] = None,
     auth_token: Optional[str] = None,
     default_providers: Optional[list[str]] = None,
+    engine: Optional[IncidentLifecycleEngine] = None,
 ) -> FastAPI:
     """Create an authenticated FastAPI ASGI application for local notification ingestion."""
     if not auth_token:
         raise ValueError("auth_token must be provided for ingestion security")
 
-    engine = lifecycle or IncidentLifecycleEngine(storage)
+    engine = engine or lifecycle or IncidentLifecycleEngine(storage)
     providers = default_providers or ["fake_provider"]
 
     app = FastAPI(title="Notifications Ingestion", docs_url=None, redoc_url=None, openapi_url=None)
@@ -123,17 +126,22 @@ def create_ingest_app(
         _auth: None = Depends(verify_auth),
     ) -> dict[str, Any]:
         """Acknowledge an active incident without resolving it."""
-        incident = storage.get_incident(incident_id)
-        if not incident:
+        actor_name = f"api:{body.actor}" if body.actor else "api_client"
+        try:
+            updated = engine.acknowledge_incident(
+                incident_id=incident_id,
+                actor=actor_name,
+                reason=body.reason,
+            )
+            return {
+                "ok": True,
+                "status": "acknowledged",
+                "incident_id": incident_id,
+                "incident": updated.to_dict(),
+            }
+        except IncidentNotFoundError:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Incident not found")
-
-        occ_id = incident.active_occurrence_id or ""
-        storage.record_acknowledgement(
-            incident_id=incident_id,
-            occurrence_id=occ_id,
-            actor=body.actor or "api_client",
-            reason=body.reason,
-        )
-        return {"ok": True, "status": "acknowledged", "incident_id": incident_id}
+        except InvalidTransitionError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
 
     return app

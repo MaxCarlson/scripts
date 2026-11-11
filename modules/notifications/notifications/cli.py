@@ -12,9 +12,13 @@ from typing import Optional, Sequence
 
 from notifications.config import BrokerConfig, default_db_path
 from notifications.delivery.fake import FakeProvider
-from notifications.exceptions import NotificationError
+from notifications.exceptions import (
+    IncidentNotFoundError,
+    InvalidTransitionError,
+    NotificationError,
+)
 from notifications.lifecycle import IncidentLifecycleEngine
-from notifications.models import EventEnvelopeV1, Incident
+from notifications.models import EventEnvelopeV1, Incident, OutboxItem, RenderedNotification
 from notifications.outbox import OutboxWorker
 from notifications.storage import StorageEngine
 
@@ -47,7 +51,7 @@ def build_parser() -> argparse.ArgumentParser:
     pub_group.add_argument("-j", "--json", dest="json_payload", help="JSON string representing the event envelope.")
     pub_group.add_argument("-f", "--file", dest="file_payload", help="Path to JSON file containing the event envelope.")
     pub_parser.add_argument("-p", "--providers", default="fake_provider", help="Comma-separated delivery provider IDs.")
-    pub_parser.add_argument("-d", "--db", default=None, help="Database path override.")
+    pub_parser.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # 2. incidents
     inc_parser = subparsers.add_parser("incidents", help="Inspect and manage tracked incidents.")
@@ -58,13 +62,13 @@ def build_parser() -> argparse.ArgumentParser:
     inc_list.add_argument("-s", "--status", choices=("open", "acknowledged", "resolved", "stale"), default=None)
     inc_list.add_argument("-l", "--limit", type=int, default=50, help="Maximum incidents to return.")
     inc_list.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    inc_list.add_argument("-d", "--db", default=None, help="Database path override.")
+    inc_list.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # incidents show
     inc_show = inc_sub.add_parser("show", help="Show incident details.")
     inc_show.add_argument("-i", "--incident-id", required=True, help="Incident identifier.")
     inc_show.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    inc_show.add_argument("-d", "--db", default=None, help="Database path override.")
+    inc_show.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # incidents acknowledge
     inc_ack = inc_sub.add_parser("acknowledge", help="Acknowledge an incident.")
@@ -72,7 +76,7 @@ def build_parser() -> argparse.ArgumentParser:
     inc_ack.add_argument("-n", "--reason", default=None, help="Operator acknowledgement reason.")
     inc_ack.add_argument("-a", "--apply", action="store_true", help="Apply modification (required for mutation).")
     inc_ack.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    inc_ack.add_argument("-d", "--db", default=None, help="Database path override.")
+    inc_ack.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # 3. outbox
     out_parser = subparsers.add_parser("outbox", help="Inspect and process outbox delivery queue.")
@@ -83,13 +87,13 @@ def build_parser() -> argparse.ArgumentParser:
     out_list.add_argument("-s", "--status", choices=("pending", "attempting", "provider_accepted", "retryable_error", "terminal_error"))
     out_list.add_argument("-l", "--limit", type=int, default=50, help="Maximum items to return.")
     out_list.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    out_list.add_argument("-d", "--db", default=None, help="Database path override.")
+    out_list.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # outbox run
     out_run = out_sub.add_parser("run", help="Dispatch pending outbox notifications to providers.")
     out_run.add_argument("-l", "--limit", type=int, default=50, help="Maximum items to dispatch.")
     out_run.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    out_run.add_argument("-d", "--db", default=None, help="Database path override.")
+    out_run.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # 4. providers
     prov_parser = subparsers.add_parser("providers", help="Inspect and test delivery providers.")
@@ -104,11 +108,12 @@ def build_parser() -> argparse.ArgumentParser:
     prov_test.add_argument("-p", "--provider", default="fake_provider", help="Provider ID to test.")
     prov_test.add_argument("-a", "--apply", action="store_true", help="Apply modification (required to send test message).")
     prov_test.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+    prov_test.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     # 5. health
     health_parser = subparsers.add_parser("health", help="Check storage and broker health.")
     health_parser.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
-    health_parser.add_argument("-d", "--db", default=None, help="Database path override.")
+    health_parser.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
 
     return parser
 
@@ -179,43 +184,30 @@ def handle_incidents(args: argparse.Namespace) -> int:
         return 0
 
     elif args.incidents_command == "acknowledge":
-        incident = storage.get_incident(args.incident_id)
-        if not incident:
-            err = {"ok": False, "error": f"Incident '{args.incident_id}' not found"}
-            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
-            return 1
-
         if not args.apply:
             msg = {"ok": True, "dry_run": True, "warning": "Dry-run: pass -a/--apply to acknowledge incident."}
             print(json.dumps(msg) if args.json else msg["warning"])
             return 0
 
-        occ_id = incident.active_occurrence_id or ""
-        storage.record_acknowledgement(
-            incident_id=args.incident_id,
-            occurrence_id=occ_id,
-            actor="cli_operator",
-            reason=args.reason,
-        )
-        updated = Incident(
-            incident_id=incident.incident_id,
-            source=incident.source,
-            incident_key=incident.incident_key,
-            active_occurrence_id=incident.active_occurrence_id,
-            status="acknowledged",
-            severity=incident.severity,
-            summary=incident.summary,
-            first_seen=incident.first_seen,
-            last_seen=incident.last_seen,
-            acknowledged_at=incident.acknowledged_at or incident.last_seen,
-            resolved_at=None,
-            last_notified_at=incident.last_notified_at,
-            occurrence_count=incident.occurrence_count,
-        )
-        storage.save_incident(updated)
-        res = {"ok": True, "status": "acknowledged", "incident_id": args.incident_id}
-        print(json.dumps(res, indent=2) if args.json else f"Incident {args.incident_id} acknowledged.")
-        return 0
+        engine = IncidentLifecycleEngine(storage)
+        try:
+            updated = engine.acknowledge_incident(
+                incident_id=args.incident_id,
+                actor="cli_operator",
+                reason=args.reason,
+            )
+            res = {
+                "ok": True,
+                "status": "acknowledged",
+                "incident_id": args.incident_id,
+                "incident": updated.to_dict(),
+            }
+            print(json.dumps(res, indent=2) if args.json else f"Incident {args.incident_id} acknowledged.")
+            return 0
+        except (IncidentNotFoundError, InvalidTransitionError) as exc:
+            err = {"ok": False, "error": str(exc)}
+            print(json.dumps(err) if args.json else str(exc), file=sys.stderr)
+            return 1
 
     return 2
 
@@ -251,21 +243,97 @@ def handle_providers(args: argparse.Namespace) -> int:
             "ok": True,
             "providers": [
                 {"id": "fake_provider", "type": "testing", "status": "available"},
-                {"id": "telegram", "type": "external", "status": "phase_02_ready"},
+                {"id": "telegram", "type": "external", "status": "available"},
             ],
         }
-        print(json.dumps(data, indent=2) if args.json else "Registered Providers: fake_provider, telegram (Phase 02)")
+        print(json.dumps(data, indent=2) if args.json else "Registered Providers: fake_provider, telegram")
         return 0
 
     elif args.providers_command == "test":
+        known = ["fake_provider", "telegram"]
+        if args.provider not in known:
+            err = {"ok": False, "error": f"Unknown provider '{args.provider}'. Available: {', '.join(known)}"}
+            print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+            return 1
+
         if not args.apply:
-            res = {"ok": True, "dry_run": True, "warning": "Dry-run: specify -a/--apply to send test message."}
+            res = {
+                "ok": True,
+                "dry_run": True,
+                "provider": args.provider,
+                "warning": "Dry-run: pass -a/--apply to execute provider test.",
+            }
             print(json.dumps(res) if args.json else res["warning"])
             return 0
 
-        res = {"ok": True, "provider": args.provider, "result": "accepted", "message_id": "test-msg-123"}
-        print(json.dumps(res, indent=2) if args.json else f"Test notification sent to {args.provider}.")
-        return 0
+        if args.provider == "fake_provider":
+            provider = FakeProvider(mode="success")
+            notification = RenderedNotification(
+                notification_id="notif-test-001",
+                event_id="00000000-0000-4000-8000-000000000001",
+                incident_id="inc-test-001",
+                severity="info",
+                title="[TEST] Provider Diagnostic",
+                body="Simulated test message via fake_provider",
+                created_at="2026-11-11T00:00:00Z",
+            )
+            receipt = asyncio.run(provider.send(notification))
+            res = {
+                "ok": True,
+                "provider": "fake_provider",
+                "simulated": True,
+                "status": receipt.status,
+                "receipt": receipt.to_dict(),
+            }
+            print(json.dumps(res, indent=2) if args.json else "Simulated notification delivered via fake_provider.")
+            return 0
+
+        elif args.provider == "telegram":
+            try:
+                from notifications.delivery.telegram_credentials import load_telegram_credentials
+                from notifications.delivery.telegram import TelegramProvider
+
+                creds = load_telegram_credentials()
+            except (ImportError, ModuleNotFoundError):
+                creds = None
+
+            if not creds:
+                err = {
+                    "ok": False,
+                    "provider": "telegram",
+                    "error": "Telegram provider is not configured. Missing bot token or chat ID.",
+                }
+                print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+                return 1
+
+            try:
+                storage = _get_storage(args.db)
+                provider = TelegramProvider(storage=storage, credentials=creds)
+                test_item = OutboxItem(
+                    outbox_id=0,
+                    event_id="00000000-0000-4000-8000-000000000001",
+                    incident_id="inc-telegram-001",
+                    provider_id="telegram",
+                    status="pending",
+                    retry_count=0,
+                    max_retries=5,
+                    next_retry_at="2026-11-11T00:00:00Z",
+                    created_at="2026-11-11T00:00:00Z",
+                    updated_at="2026-11-11T00:00:00Z",
+                )
+                receipt = asyncio.run(provider.deliver(test_item))
+                if receipt.status == "provider_accepted":
+                    res = {"ok": True, "provider": "telegram", "status": "accepted", "receipt": receipt.to_dict()}
+                    print(json.dumps(res, indent=2) if args.json else "Test notification accepted by Telegram API.")
+                    return 0
+                else:
+                    err = {"ok": False, "provider": "telegram", "status": receipt.status, "error": receipt.error_message}
+                    print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+                    return 1
+            except Exception as exc:
+                err = {"ok": False, "provider": "telegram", "error": f"Telegram provider test failed: {exc}"}
+                print(json.dumps(err) if args.json else err["error"], file=sys.stderr)
+                return 1
 
     return 2
 
