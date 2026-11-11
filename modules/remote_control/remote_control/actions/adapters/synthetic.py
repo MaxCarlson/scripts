@@ -133,3 +133,11 @@ class SyntheticCoordinatorRecoveryAdapter:
             "simulated": True,
             "new_state": self.get_source_state(),
         }
+
+    def verify_postcondition(self, params: Dict[str, Any], result: Dict[str, Any]) -> bool:
+        """Verify postcondition for synthetic recovery."""
+        if not result.get("ok"):
+            return False
+        if self.simulate_postcondition_failure:
+            return False
+        return (not self.recovery_required) and (not self.inhibition_active)

@@ -60,6 +60,29 @@ class NotificationsAcknowledgeAdapter:
     def __init__(self, db_path: Any) -> None:
         self.db_path = db_path
 
+    def get_source_state(self, params: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+        """Fetch current incident state for canonical fingerprinting."""
+        incident_id = params.get("incident_id")
+        if not incident_id:
+            return None
+        storage = StorageEngine(self.db_path)
+        incident = storage.get_incident(incident_id)
+        if not incident:
+            return None
+        return {
+            "incident_id": incident.incident_id,
+            "status": incident.status,
+            "occurrence_count": incident.occurrence_count,
+            "last_occurred_at": getattr(incident, "last_seen", None),
+        }
+
+    def verify_postcondition(self, params: Dict[str, Any], result: Dict[str, Any]) -> bool:
+        """Verify incident transitioned to acknowledged or resolved."""
+        if not result.get("ok"):
+            return False
+        state = self.get_source_state(params)
+        return state is not None and state.get("status") in ("acknowledged", "resolved")
+
     async def execute(self, params: Dict[str, Any], actor_id: str = "operator") -> Dict[str, Any]:
         incident_id = params["incident_id"]
         reason = params.get("reason")
@@ -78,8 +101,8 @@ class NotificationsAcknowledgeAdapter:
                 "incident_id": updated.incident_id,
                 "status": updated.status,
                 "acknowledged_at": updated.acknowledged_at,
-                "acknowledged_by": updated.acknowledged_by,
-                "acknowledgement_reason": updated.acknowledgement_reason,
+                "acknowledged_by": actor_id,
+                "acknowledgement_reason": reason,
             }
         except IncidentNotFoundError:
             return {

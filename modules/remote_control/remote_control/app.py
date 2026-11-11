@@ -11,9 +11,23 @@ from fastapi import FastAPI, HTTPException, Request, Response, status
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from remote_control.actions.adapters.coordinator import (
+    DisabledRecoveryAdapter,
+    RCInspectRecoveryAdapter,
+    RCStatusAdapter,
+)
+from remote_control.actions.adapters.notifications import (
+    NotificationsAcknowledgeAdapter,
+    NotificationsHealthAdapter,
+    NotificationsIncidentDetailAdapter,
+)
+from remote_control.actions.registry import ActionRegistry
+from remote_control.actions.service import ActionService
+from remote_control.actions.storage import ActionStorage
 from remote_control.adapters.coordinator_adapter import ReadOnlyCoordinatorAdapter
 from remote_control.adapters.heartbeat_adapter import ReadOnlyMonitoringAdapter
 from remote_control.adapters.notifications_adapter import ReadOnlyNotificationsAdapter
+from remote_control.api.actions_routes import router as actions_router
 from remote_control.api.auth_routes import router as auth_router
 from remote_control.api.dashboard_routes import router as dashboard_router
 from remote_control.api.dependencies import get_effective_port, get_effective_scheme
@@ -46,12 +60,28 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
     mon_adapter = ReadOnlyMonitoringAdapter(cfg.healthchecks_config_path)
     coord_adapter = ReadOnlyCoordinatorAdapter(cfg.notifications_db_path)
 
+    # Initialize action registry, storage & service
+    action_storage = ActionStorage(cfg.auth_db_path)
+    action_registry = ActionRegistry()
+    action_registry.bind_handler("resource_coordinator.status", RCStatusAdapter(coord_adapter))
+    action_registry.bind_handler("resource_coordinator.inspect_recovery", RCInspectRecoveryAdapter(coord_adapter))
+    action_registry.bind_handler("notifications.health", NotificationsHealthAdapter(notif_adapter))
+    action_registry.bind_handler("notifications.incident_detail", NotificationsIncidentDetailAdapter(notif_adapter))
+    action_registry.bind_handler("notifications.acknowledge_incident", NotificationsAcknowledgeAdapter(cfg.notifications_db_path))
+    action_registry.bind_handler("resource_coordinator.request_guarded_recovery", DisabledRecoveryAdapter())
+    action_registry.freeze()
+
+    action_service = ActionService(action_storage, action_registry, auth_storage)
+
     app.state.config = cfg
     app.state.auth_storage = auth_storage
     app.state.auth_service = auth_service
     app.state.notifications_adapter = notif_adapter
     app.state.monitoring_adapter = mon_adapter
     app.state.coordinator_adapter = coord_adapter
+    app.state.action_storage = action_storage
+    app.state.action_registry = action_registry
+    app.state.action_service = action_service
 
     # ── Security Middleware ──────────────────────────────────────────────────────
 
@@ -200,6 +230,7 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
 
     app.include_router(auth_router)
     app.include_router(dashboard_router)
+    app.include_router(actions_router)
 
     # ── Static Asset Serving & PWA Shell ─────────────────────────────────────────
 

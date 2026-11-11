@@ -375,6 +375,37 @@ class ActionStorage:
                 details_json=row["details_json"],
             )
 
+    def get_execution_by_idempotency_key(
+        self, action_id: str, idempotency_key_hash: str
+    ) -> Optional[ActionExecutionRecord]:
+        """Retrieve an execution record by action ID and idempotency key hash."""
+        with self._get_connection() as conn:
+            row = conn.execute(
+                "SELECT * FROM action_executions WHERE action_id = ? AND idempotency_key_hash = ?",
+                (action_id, idempotency_key_hash),
+            ).fetchone()
+            if not row:
+                return None
+            return ActionExecutionRecord(
+                execution_id=row["execution_id"],
+                action_id=row["action_id"],
+                action_version=row["action_version"],
+                actor_id=row["actor_id"],
+                session_id_hash=row["session_id_hash"],
+                device_id=row["device_id"],
+                idempotency_key_hash=row["idempotency_key_hash"],
+                arguments_digest=row["arguments_digest"],
+                state_fingerprint=row["state_fingerprint"],
+                started_at=row["started_at"],
+                finished_at=row["finished_at"],
+                status=ExecutionState(row["status"]),
+                result_category=row["result_category"],
+                error_code=row["error_code"],
+                postcondition_verified=bool(row["postcondition_verified"]),
+                summary=row["summary"],
+                details_json=row["details_json"],
+            )
+
     def list_executions(self, action_id: Optional[str] = None, limit: int = 50) -> List[ActionExecutionRecord]:
         """List recent execution journal records."""
         eff_limit = min(max(1, limit), 100)
@@ -415,11 +446,13 @@ class ActionStorage:
 
     # ── Action Audit Ledger ───────────────────────────────────────────────────
 
-    def record_action_audit(self, audit: Dict[str, Any]) -> None:
+    def record_action_audit(self, audit: Optional[Dict[str, Any]] = None, **kwargs) -> None:
         """Record an immutable action execution audit event in the database."""
+        event = dict(audit or {})
+        event.update(kwargs)
         now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
-        cleaned_details = redact_sensitive_data(audit.get("details", {}))
-        details_str = json.dumps(cleaned_details) if cleaned_details else ""
+        cleaned_details = redact_sensitive_data(event.get("details", {}))
+        details_str = json.dumps(cleaned_details) if isinstance(cleaned_details, (dict, list)) else str(cleaned_details or "")
 
         with self._get_connection() as conn:
             conn.execute("BEGIN IMMEDIATE;")
@@ -431,12 +464,12 @@ class ActionStorage:
                     ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
-                        audit.get("timestamp", now_iso),
-                        audit.get("actor_id", "unauthenticated"),
-                        audit.get("device_id"),
-                        f"action:{audit.get('action_id', 'unknown')}",
-                        audit.get("decision", "unknown"),
-                        audit.get("ip_address", ""),
+                        event.get("timestamp", now_iso),
+                        event.get("actor_id", "unauthenticated"),
+                        event.get("device_id"),
+                        f"action:{event.get('action_id', 'unknown')}",
+                        event.get("decision", "unknown"),
+                        event.get("ip_address", ""),
                         details_str[:8192],
                     ),
                 )

@@ -46,7 +46,7 @@ def compute_incident_fingerprint(incident: Optional[Dict[str, Any]]) -> str:
         "incident_id": incident.get("incident_id"),
         "status": incident.get("status"),
         "occurrence_count": incident.get("occurrence_count", 1),
-        "last_occurred_at": incident.get("last_occurred_at"),
+        "last_occurred_at": incident.get("last_occurred_at") or incident.get("last_seen"),
     }
     raw = json.dumps(canon, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()

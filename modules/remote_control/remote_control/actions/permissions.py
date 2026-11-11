@@ -20,5 +20,7 @@ ROLE_PERMISSIONS: dict[str, Set[str]] = {
 
 def has_permission(user_role: str, required_permission: str) -> bool:
     """Check if user role has the required permission."""
+    if user_role == required_permission:
+        return True
     perms = ROLE_PERMISSIONS.get(user_role, set())
     return required_permission in perms
