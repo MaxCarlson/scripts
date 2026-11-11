@@ -10,6 +10,7 @@ def test_load_default_config():
     assert cfg.version == "1.0"
     assert cfg.service.listen_host == "127.0.0.1"
     assert cfg.service.listen_port == 1235
+    assert cfg.service.model_load_timeout_seconds == 600.0
     assert "krig" in cfg.processes
     assert len(cfg.policies) >= 1
 
@@ -21,6 +22,7 @@ service:
   listen_host: "0.0.0.0"
   listen_port: 8080
   upstream_url: "http://127.0.0.1:1234"
+  model_load_timeout_seconds: 900
 processes:
   test_proc:
     backend: "fake"
@@ -39,6 +41,7 @@ policies:
     cfg = load_config(cfg_file)
     assert cfg.service.listen_host == "0.0.0.0"
     assert cfg.service.listen_port == 8080
+    assert cfg.service.model_load_timeout_seconds == 900.0
     assert "test_proc" in cfg.processes
     assert cfg.policies[0].name == "test_policy"
     assert cfg.policies[0].cooldown_seconds == 15.0
@@ -80,6 +83,15 @@ def test_build_system_from_config():
     assert "krig" in system.supervisors
     assert system.miner_adapter is not None
     assert system.gateway.upstream_url == "http://127.0.0.1:1234"
+    assert system.gateway.model_load_timeout_seconds == 600.0
+
+
+def test_build_system_passes_configured_model_load_timeout_to_gateway():
+    cfg = CoordinatorConfig.from_dict(
+        {"version": "1.0", "service": {"model_load_timeout_seconds": 900}}
+    )
+    system = build_system(cfg, use_fake_processes=True)
+    assert system.gateway.model_load_timeout_seconds == 900.0
 
 
 def test_config_rejects_zero_idle_timeout_when_restart_is_enabled():
@@ -116,3 +128,14 @@ def test_config_rejects_restart_without_coordinator_stop_ownership():
     }
     with pytest.raises(ValueError, match="coordinator-owned stop"):
         CoordinatorConfig.from_dict(data)
+
+
+@pytest.mark.parametrize("timeout", [0, -1, 3600.1, float("inf"), float("nan")])
+def test_config_rejects_invalid_model_load_timeout(timeout):
+    with pytest.raises(ValueError, match="model_load_timeout_seconds"):
+        CoordinatorConfig.from_dict({"version": "1.0", "service": {"model_load_timeout_seconds": timeout}})
+
+
+def test_config_rejects_boolean_model_load_timeout():
+    with pytest.raises(TypeError, match="model_load_timeout_seconds"):
+        CoordinatorConfig.from_dict({"version": "1.0", "service": {"model_load_timeout_seconds": True}})

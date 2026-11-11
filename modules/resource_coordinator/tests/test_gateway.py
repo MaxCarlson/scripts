@@ -1,4 +1,6 @@
 import asyncio
+import json
+import time
 from types import SimpleNamespace
 import pytest
 import httpx
@@ -46,7 +48,9 @@ def test_model_load_stream_requires_documented_terminal_event():
     detector.feed(b'data: {"type":"model_load.progress","progress":0.75}\n\n')
     assert detector.finalize() is False
 
-    detector.feed(b'data: {"type":"model_load.end","status":"loaded","instance_id":"inst-1"}\n\n')
+    detector.feed(
+        b'data: {"type":"model_load.end","model_instance_id":"inst-1","load_time_seconds":12.3}\n\n'
+    )
     assert detector.finalize() is True
 
 
@@ -77,12 +81,69 @@ def test_model_load_stream_rejects_partial_error_or_inference_terminal_frames(fr
     assert detector.finalize() is False
 
 
-def test_model_load_failure_end_is_terminal_but_not_successful():
+def test_model_load_end_with_failure_shape_is_not_documented_terminal_evidence():
     detector = StreamCompletionDetector(operation_type="model_load")
     detector.feed(b'data: {"type":"model_load.end","status":"failed","error":"load failed"}\n\n')
 
+    assert detector.finalize() is False
+    assert detector.termination_state != "verified_model_load_failure"
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"type": "model_load.end"},
+        {"type": "model_load.end", "model_instance_id": "i-1"},
+        {"type": "model_load.end", "model_instance_id": "", "load_time_seconds": 1.0},
+        {"type": "model_load.end", "model_instance_id": "i-1", "load_time_seconds": -1.0},
+        {"type": "model_load.end", "model_instance_id": "i-1", "load_time_seconds": float("nan")},
+    ],
+)
+def test_model_load_end_requires_documented_success_fields(payload):
+    detector = StreamCompletionDetector(operation_type="model_load")
+    detector.feed(f"data: {json.dumps(payload)}\n\n".encode())
+    assert detector.finalize() is False
+
+
+@pytest.mark.parametrize(
+    "trailing_data",
+    [
+        b'data: {"type":"error","error":{"message":"later failure"}}\n\n',
+        b'data: {"type":"prompt_processing.start"',
+    ],
+)
+def test_model_load_end_followed_by_error_or_truncation_is_not_clean_completion(trailing_data):
+    detector = StreamCompletionDetector(operation_type="model_load")
+    detector.feed(b'data: {"type":"model_load.end","model_instance_id":"i-1","load_time_seconds":3.1}\n\n')
+    detector.feed(trailing_data)
+    assert detector.finalize() is False
+
+
+def test_model_load_end_is_not_terminal_for_inference_and_chat_end_requires_clean_frame():
+    detector = StreamCompletionDetector(operation_type="inference")
+    detector.feed(b'data: {"type":"model_load.end","status":"loaded","instance_id":"i-1"}\n\n')
+    assert detector.finalize() is False
+    assert detector.termination_state == "active"
+
+    detector.feed(b'data: {"type":"prompt_processing.start"}\n\n')
+    detector.feed(b'data: {"type":"chat.end","result":{"output":[{"type":"text","content":"ok"}]}}\n\n')
     assert detector.finalize() is True
-    assert detector.termination_state == "verified_model_load_failure"
+    assert detector.termination_state == "confirmed_chat_end"
+
+
+@pytest.mark.parametrize(
+    "frames",
+    [
+        [b'data: {"type":"model_load.end","status":"loaded"}\n\n', b'data: {"type":"error"}\n\n'],
+        [b'data: {"type":"chat.end","result":{"output":[]}'],
+        [b'data: {"type":"prompt_processing.start"}\n\n'],
+    ],
+)
+def test_inference_rejects_load_end_error_and_incomplete_chat_terminal(frames):
+    detector = StreamCompletionDetector(operation_type="inference")
+    for frame in frames:
+        detector.feed(frame)
+    assert detector.finalize() is False
 
 
 @pytest.mark.asyncio
@@ -172,13 +233,59 @@ async def test_read_timeout_records_uncertain_operation_and_keeps_restart_inhibi
 
 
 @pytest.mark.asyncio
+async def test_stream_read_timeout_is_classified_as_inactivity_and_persisted(tmp_path):
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+
+    class ReadTimeoutStream(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield b'data: {"choices":[{"delta":{"content":"partial"}}]}\n\n'
+            raise httpx.ReadTimeout("private read-timeout detail")
+
+        async def aclose(self):
+            return None
+
+    journal = tmp_path / "coordinator-state.json"
+    StateCodec.initialize(journal)
+
+    async def upstream(_request):
+        return httpx.Response(
+            200,
+            headers={"content-type": "text/event-stream"},
+            stream=ReadTimeoutStream(),
+        )
+
+    gateway = LMStudioGateway(standalone=True, state_persistence_path=str(journal))
+    gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gateway.create_app(), raise_app_exceptions=False),
+        base_url="http://gateway",
+    ) as client:
+        response = await client.post(
+            "/v1/chat/completions",
+            json={"model": "test-model", "stream": True, "messages": [{"role": "user", "content": "hi"}]},
+        )
+
+    assert response.status_code == 200
+    request_id = response.headers["x-coordinator-request-id"]
+    record = StateCodec.load(journal).requests[request_id]
+    assert record.phase == RequestPhase.UNCERTAIN.value
+    assert record.details["failure_kind"] == "upstream_read_timeout"
+    assert record.details["timeout_phase"] == "upstream_read_timeout"
+    assert gateway.lease_mgr.is_restart_inhibited("gpu.inference")
+    assert "private read-timeout detail" not in response.text
+    await gateway.close()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "frames,expect_restart",
     [
         (
             [
                 b'data: {"type":"model_load.progress","progress":0.5}\n\n',
-                b'data: {"type":"model_load.end","status":"loaded","instance_id":"i-1"}\n\n',
+                b'data: {"type":"model_load.end","model_instance_id":"i-1","load_time_seconds":12.3}\n\n',
             ],
             True,
         ),
@@ -248,6 +355,243 @@ async def test_streaming_model_load_terminal_controls_fake_miner_restart(tmp_pat
 
 
 @pytest.mark.asyncio
+async def test_chat_model_load_end_does_not_release_inference_lease_before_chat_end():
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.processes import ProcessState
+    from resource_coordinator.core.service import CoordinatorService
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"krig": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 0.02,
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True)
+    assert await service.start()
+    backend = system.supervisors["krig"].backend
+    observed = []
+
+    async def chat(_request):
+        async def events():
+            yield b'data: {"type":"model_load.end","model_instance_id":"i-1","load_time_seconds":3.1}\n\n'
+            observed.append(
+                (
+                    system.lease_mgr.active_count("gpu.inference"),
+                    (await system.supervisors["krig"].status()).state,
+                    system.lease_mgr.is_restart_inhibited("gpu.inference"),
+                )
+            )
+            yield b'data: {"type":"prompt_processing.start"}\n\n'
+            yield b'data: {"type":"message.delta","content":"answer"}\n\n'
+            observed.append(
+                (
+                    system.lease_mgr.active_count("gpu.inference"),
+                    (await system.supervisors["krig"].status()).state,
+                    system.lease_mgr.is_restart_inhibited("gpu.inference"),
+                )
+            )
+            yield b'data: {"type":"chat.end","result":{"output":[{"type":"text","content":"answer"}]}}\n\n'
+
+        return StreamingResponse(events(), media_type="text/event-stream")
+
+    upstream = Starlette(routes=[Route("/api/v1/chat", chat, methods=["POST"])])
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.post("/api/v1/chat", json={"model": "test-model", "stream": True})
+
+    assert response.status_code == 200
+    assert len(observed) == 2
+    assert all(active == 1 for active, _, _ in observed)
+    assert all(state == ProcessState.STOPPED for _, state, _ in observed)
+    assert all(not inhibited for _, _, inhibited in observed)
+    await asyncio.sleep(0.05)
+    assert (await system.supervisors["krig"].status()).state == ProcessState.RUNNING
+    assert backend.generation == 2
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_slow_model_load_uses_separate_bounded_deadline():
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.service import CoordinatorService
+
+    async def upstream(_request):
+        await asyncio.sleep(0.08)
+        return httpx.Response(200, json={"status": "loaded", "instance_id": "slow-load-1"})
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "processes": {"krig": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                    "cooldown_seconds": 0.02,
+                },
+                {
+                    "name": "stop-for-model-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 0.02,
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True)
+    assert await service.start()
+    system.gateway.timeout_seconds = 0.02
+    system.gateway.model_load_timeout_seconds = 0.3
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.post("/api/v1/models/load", json={"model": "test-model"})
+
+    assert response.status_code == 200
+    assert not system.lease_mgr.is_restart_inhibited("gpu.inference")
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_model_load_deadline_timeout_is_classified_and_keeps_restart_inhibited(tmp_path):
+    from resource_coordinator.config import CoordinatorConfig, build_system
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+    from resource_coordinator.core.processes import ProcessState
+    from resource_coordinator.core.service import CoordinatorService
+
+    journal = tmp_path / "coordinator-state.json"
+    StateCodec.initialize(journal)
+
+    async def upstream(_request):
+        await asyncio.sleep(0.2)
+        return httpx.Response(200, json={"status": "loaded", "instance_id": "late-load"})
+
+    config = CoordinatorConfig.from_dict(
+        {
+            "version": "1.0",
+            "service": {
+                "model_load_timeout_seconds": 0.04,
+                "state_persistence_path": str(journal),
+            },
+            "processes": {"krig": {"backend": "fake"}},
+            "policies": [
+                {
+                    "name": "stop-for-inference",
+                    "trigger_event": "lmstudio.inference_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "shared",
+                    "cooldown_seconds": 0.02,
+                },
+                {
+                    "name": "stop-for-model-load",
+                    "trigger_event": "lmstudio.model_load_requested",
+                    "target_process": "krig",
+                    "resource": "gpu.inference",
+                    "lease_type": "exclusive",
+                    "cooldown_seconds": 0.02,
+                }
+            ],
+        }
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system, start_miner_on_ready=True)
+    assert await service.start()
+    system.gateway.timeout_seconds = 0.2
+    system.gateway._http_client = httpx.AsyncClient(
+        transport=httpx.MockTransport(upstream), base_url="http://mock-lmstudio"
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.post("/api/v1/models/load", json={"model": "test-model"})
+
+    assert response.status_code == 502
+    assert response.json()["error"]["type"] == "upstream_operation_deadline"
+    assert response.json()["error"]["timeout_seconds"] == 0.04
+    assert system.lease_mgr.is_restart_inhibited("gpu.inference")
+    assert (await system.supervisors["krig"].status()).state == ProcessState.STOPPED
+    request = next(iter(StateCodec.load(journal).requests.values()))
+    assert request.phase == RequestPhase.UNCERTAIN.value
+    assert request.details["failure_kind"] == "upstream_operation_deadline"
+    assert request.details["timeout_phase"] == "overall_operation_deadline"
+    await asyncio.sleep(0.05)
+    assert system.lease_mgr.is_restart_inhibited("gpu.inference")
+    assert (await system.supervisors["krig"].status()).state == ProcessState.STOPPED
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_stream_response_deadline_covers_downstream_backpressure():
+    from resource_coordinator.adapters.lmstudio.gateway import _CoordinatedStreamingResponse
+
+    cleaned = []
+    deadline_expired = []
+
+    async def body():
+        yield b"event"
+
+    async def cleanup():
+        cleaned.append(True)
+
+    async def receive():
+        await asyncio.Event().wait()
+
+    async def send(_message):
+        await asyncio.Event().wait()
+
+    response = _CoordinatedStreamingResponse(
+        body(),
+        cleanup=cleanup,
+        deadline=time.monotonic() + 0.03,
+        deadline_callback=lambda: deadline_expired.append(True),
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/api/v1/models/load",
+        "raw_path": b"/api/v1/models/load",
+        "query_string": b"",
+        "headers": [],
+        "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 2),
+    }
+
+    with pytest.raises(asyncio.TimeoutError):
+        await response(scope, receive, send)
+
+    assert deadline_expired == [True]
+    assert cleaned == [True]
+
+
+@pytest.mark.asyncio
 async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_miner_once(tmp_path, monkeypatch):
     from resource_coordinator.core import operator_credentials
     from resource_coordinator.config import CoordinatorConfig, build_system
@@ -267,7 +611,10 @@ async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_
     config = CoordinatorConfig.from_dict(
         {
             "version": "1.0",
-            "service": {"state_persistence_path": str(journal)},
+            "service": {
+                "state_persistence_path": str(journal),
+                "model_load_timeout_seconds": 0.05,
+            },
             "processes": {"krig": {"backend": "fake"}},
             "policies": [
                 {
@@ -307,12 +654,14 @@ async def test_model_load_timeout_requires_operator_recovery_then_restarts_fake_
         response = await client.post("/api/v1/models/load", json={"model": "test-model"})
         assert response.status_code == 502
         assert response.json()["error"]["operation_type"] == "model_load"
+        assert response.json()["error"]["timeout_seconds"] == 0.05
         assert "private upstream diagnostic" not in response.text
 
         state = StateCodec.load(journal)
         request_id, request_record = next(iter(state.requests.items()))
         assert request_record.phase == RequestPhase.UNCERTAIN.value
         assert request_record.details["timeout_phase"] == "upstream_read_timeout"
+        assert request_record.details["configured_timeout_seconds"] == 0.05
         assert system.lease_mgr.is_restart_inhibited("gpu.inference")
         assert (await system.supervisors["krig"].status()).state == ProcessState.STOPPED
         await asyncio.sleep(0.06)

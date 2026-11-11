@@ -36,6 +36,7 @@ class ServiceConfig:
     upstream_url: str = "http://127.0.0.1:1234"
     state_persistence_path: str = ""
     bounded_drain_seconds: Optional[float] = None
+    model_load_timeout_seconds: float = 600.0
 
 
 @dataclass
@@ -84,6 +85,8 @@ class CoordinatorConfig:
         if str(data.get("version", "1.0")) != "1.0":
             raise ValueError("Unsupported configuration version")
         svc_raw = data.get("service", {})
+        if isinstance(svc_raw.get("model_load_timeout_seconds", 600.0), bool):
+            raise TypeError("service.model_load_timeout_seconds must be numeric, not boolean")
         for section in [*data.get("processes", {}).values(), *data.get("policies", [])]:
             for key, value in section.items():
                 if key in {
@@ -106,6 +109,7 @@ class CoordinatorConfig:
             bounded_drain_seconds=(
                 float(svc_raw["bounded_drain_seconds"]) if svc_raw.get("bounded_drain_seconds") is not None else None
             ),
+            model_load_timeout_seconds=float(svc_raw.get("model_load_timeout_seconds", 600.0)),
         )
 
         processes = {}
@@ -197,6 +201,13 @@ class CoordinatorConfig:
                 raise ValueError("Invalid state_persistence_path: must be a non-empty string path")
         if svc.bounded_drain_seconds:
             raise ValueError("Bounded drain is disabled pending cancellation-safe implementation")
+        if (
+            isinstance(svc.model_load_timeout_seconds, bool)
+            or not math.isfinite(svc.model_load_timeout_seconds)
+            or svc.model_load_timeout_seconds <= 0
+            or svc.model_load_timeout_seconds > 3600
+        ):
+            raise ValueError("service.model_load_timeout_seconds must be finite, positive, and no more than 3600")
         return cls(
             version=str(data.get("version", "1.0")),
             service=svc,
@@ -361,6 +372,7 @@ def build_system(config: CoordinatorConfig, use_fake_processes: bool = False) ->
 
     gateway = LMStudioGateway(
         upstream_url=config.service.upstream_url,
+        model_load_timeout_seconds=config.service.model_load_timeout_seconds,
         event_dispatcher=dispatcher,
         lease_manager=lease_mgr,
         bounded_drain_seconds=config.service.bounded_drain_seconds,

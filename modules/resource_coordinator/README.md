@@ -226,6 +226,7 @@ service:
   listen_host: "127.0.0.1"
   listen_port: 1235
   upstream_url: "http://127.0.0.1:1234"
+  model_load_timeout_seconds: 600.0
 
 processes:
   background_worker:
@@ -263,6 +264,16 @@ policies:
     stop_timeout_seconds: 10
     cooldown_seconds: 300
 ```
+
+Explicit protected model loads use `service.model_load_timeout_seconds` as a
+bounded overall upstream-operation deadline, beginning after the exclusive GPU
+lease has been acquired and covering the response stream. It defaults to 600
+seconds and accepts values up to 3600 seconds. Lease acquisition keeps its
+existing 120-second wait. Ordinary inference keeps the gateway's existing
+120-second HTTPX phase timeouts. HTTPX read timeouts measure inactivity between
+received bytes; they are not a total-operation deadline. A model-load timeout
+leaves execution uncertain and keeps mining inhibited until verified terminal
+evidence or authenticated operator recovery.
 
 The two policies must target the same process and use the same positive
 `cooldown_seconds`; that value is the authoritative idle timeout. The process

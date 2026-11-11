@@ -4,6 +4,7 @@ Transparent asynchronous reverse proxy gateway for LM Studio with inference acti
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import math
@@ -37,6 +38,7 @@ from resource_coordinator.core.service import ServiceState
 
 logger = logging.getLogger(__name__)
 UPSTREAM_CONNECT_TIMEOUT_SECONDS = 10.0
+MAX_MODEL_LOAD_TIMEOUT_SECONDS = 3600.0
 
 # Hop-by-hop headers that should not be forwarded
 HOP_BY_HOP_HEADERS: Set[str] = {
@@ -97,14 +99,20 @@ class StreamCompletionDetector:
             if "error" in data or data.get("type") in {"error", "response.failed", "response.incomplete"}:
                 self._failed = True
             if self.operation_type == "model_load" and data.get("type") == "model_load.end":
-                # model_load.end is terminal evidence even when the operation failed;
-                # failure affects the outcome, not whether the upstream is still running.
-                self.confirmed = True
-                status = str(data.get("status", "")).casefold()
-                failed_terminal = self._failed or "error" in data or status in {"error", "failed"}
-                self.termination_state = (
-                    "verified_model_load_failure" if failed_terminal else "verified_model_load_success"
+                model_instance_id = data.get("model_instance_id")
+                load_time = data.get("load_time_seconds")
+                valid_load_time = (
+                    isinstance(load_time, (int, float))
+                    and not isinstance(load_time, bool)
+                    and math.isfinite(load_time)
+                    and load_time >= 0
                 )
+                if isinstance(model_instance_id, str) and model_instance_id.strip() and valid_load_time:
+                    self.confirmed = True
+                    self.termination_state = "verified_model_load_success"
+                else:
+                    self._failed = True
+                    self.termination_state = "invalid_model_load_terminal"
             elif self.operation_type != "model_load" and data.get("type") == "chat.end":
                 result = data.get("result", {})
                 if isinstance(result, dict) and isinstance(result.get("output"), list):
@@ -118,13 +126,12 @@ class StreamCompletionDetector:
         if len(self._buffer) > 1024 * 1024:
             self._buffer = b""
             self._failed = True
-        if self._failed and self.termination_state != "verified_model_load_failure":
+        if self._failed:
             self.confirmed = False
             self.termination_state = "uncertain_error_or_oversized_frame"
 
     def finalize(self) -> bool:
-        terminal_failure = self.termination_state == "verified_model_load_failure"
-        return self.confirmed and (not self._failed or terminal_failure) and not self._buffer.strip()
+        return self.confirmed and not self._failed and not self._buffer.strip()
 
     @staticmethod
     def check_non_streaming(status_code: int, body: bytes, path: str = "") -> bool:
@@ -156,13 +163,33 @@ class StreamCompletionDetector:
 
 
 class _CoordinatedStreamingResponse(StreamingResponse):
-    def __init__(self, *args, cleanup: Callable[[], Awaitable[None]], **kwargs):
+    def __init__(
+        self,
+        *args,
+        cleanup: Callable[[], Awaitable[None]],
+        deadline: Optional[float] = None,
+        deadline_callback: Optional[Callable[[], None]] = None,
+        **kwargs,
+    ):
         super().__init__(*args, **kwargs)
         self._cleanup = cleanup
+        self._deadline = deadline
+        self._deadline_callback = deadline_callback
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         try:
-            await super().__call__(scope, receive, send)
+            if self._deadline is None:
+                await super().__call__(scope, receive, send)
+            else:
+                try:
+                    remaining = self._deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError
+                    await asyncio.wait_for(super().__call__(scope, receive, send), timeout=remaining)
+                except asyncio.TimeoutError:
+                    if time.monotonic() >= self._deadline and self._deadline_callback is not None:
+                        self._deadline_callback()
+                    raise
         finally:
             with anyio.CancelScope(shield=True):
                 await self._cleanup()
@@ -184,11 +211,20 @@ class LMStudioGateway:
         admission_controller: Optional[AdmissionController] = None,
         standalone: bool = False,
         state_persistence_path: Optional[str] = None,
+        model_load_timeout_seconds: float = 600.0,
     ) -> None:
         self.upstream_url = upstream_url.rstrip("/")
         self.dispatcher = event_dispatcher or EventDispatcher()
         self.lease_mgr = lease_manager or LeaseManager(event_dispatcher=self.dispatcher)
         self.timeout_seconds = timeout_seconds
+        if (
+            isinstance(model_load_timeout_seconds, bool)
+            or not math.isfinite(model_load_timeout_seconds)
+            or model_load_timeout_seconds <= 0
+            or model_load_timeout_seconds > MAX_MODEL_LOAD_TIMEOUT_SECONDS
+        ):
+            raise ValueError("model_load_timeout_seconds must be finite, positive, and no more than 3600 seconds")
+        self.model_load_timeout_seconds = float(model_load_timeout_seconds)
         self.bounded_drain_seconds = bounded_drain_seconds
         self.state_persistence_path = state_persistence_path or ""
         self._http_client: Optional[httpx.AsyncClient] = None
@@ -776,6 +812,10 @@ class LMStudioGateway:
         http_status: Optional[int] = None
         terminal_evidence = "not_forwarded"
         completion_detector: Optional[StreamCompletionDetector] = None
+        operation_deadline: Optional[float] = None
+        upstream_timeout_seconds = (
+            self.model_load_timeout_seconds if operation_type == "model_load" else self.timeout_seconds
+        )
 
         def request_details() -> Dict[str, Any]:
             if completed:
@@ -804,9 +844,22 @@ class LMStudioGateway:
                 ),
                 "started_at": started_at,
                 "elapsed_seconds": round(max(0.0, time.monotonic() - started_monotonic), 3),
-                "configured_timeout_seconds": self.timeout_seconds,
+                "configured_timeout_seconds": upstream_timeout_seconds,
+                "upstream_timeout_seconds": upstream_timeout_seconds,
+                "timeout_semantics": (
+                    "bounded_overall_operation_deadline"
+                    if operation_type == "model_load"
+                    else "httpx_phase_timeouts"
+                ),
+                "lease_acquisition_timeout_seconds": self.timeout_seconds,
                 "connect_timeout_seconds": UPSTREAM_CONNECT_TIMEOUT_SECONDS,
-                "timeout_phase": failure_kind if failure_kind and "timeout" in failure_kind else None,
+                "timeout_phase": (
+                    "overall_operation_deadline"
+                    if failure_kind == "upstream_operation_deadline"
+                    else failure_kind
+                    if failure_kind and "timeout" in failure_kind
+                    else None
+                ),
                 "failure_kind": failure_kind,
                 "exception_class": failure_class,
                 "safe_exception_detail": failure_detail,
@@ -888,6 +941,13 @@ class LMStudioGateway:
                         if reservation is not None:
                             await reservation_cm.__aexit__(None, None, None)
 
+        def mark_operation_deadline() -> None:
+            nonlocal failure_kind, failure_class, failure_detail, terminal_evidence
+            failure_kind = "upstream_operation_deadline"
+            failure_class = "TimeoutError"
+            failure_detail = "The model-load operation exceeded its configured overall deadline."
+            terminal_evidence = "operation_deadline_expired_execution_unverified"
+
         try:
             reservation = await reservation_cm.__aenter__()
             if self.state_persistence_path:
@@ -913,7 +973,14 @@ class LMStudioGateway:
             if not self.admission_controller.evaluate(request.method, path).allowed:
                 raise VetoOperation("Admission closed before forwarding")
             client = self.get_http_client()
-            upstream_req = self._build_upstream_request(client, request, path, body, request_id)
+            upstream_req = self._build_upstream_request(
+                client,
+                request,
+                path,
+                body,
+                request_id,
+                timeout=httpx.Timeout(upstream_timeout_seconds, connect=UPSTREAM_CONNECT_TIMEOUT_SECONDS),
+            )
             if self.state_persistence_path:
                 StateCodec.record_request_phase(
                     self.state_persistence_path,
@@ -930,7 +997,13 @@ class LMStudioGateway:
                 )
             forwarded = True  # send may have reached upstream even if it raises/cancels
             await self.dispatcher.emit("lmstudio.inference_forwarded", event_data)
-            upstream_resp = await client.send(upstream_req, stream=True)
+            if operation_type == "model_load":
+                operation_deadline = time.monotonic() + self.model_load_timeout_seconds
+                upstream_resp = await asyncio.wait_for(
+                    client.send(upstream_req, stream=True), timeout=self.model_load_timeout_seconds
+                )
+            else:
+                upstream_resp = await client.send(upstream_req, stream=True)
             http_status = upstream_resp.status_code
             content_type = upstream_resp.headers.get("content-type", "")
             clean_headers = self._clean_headers(upstream_resp.headers, request_id)
@@ -942,23 +1015,61 @@ class LMStudioGateway:
                 async def stream_body() -> AsyncIterator[bytes]:
                     nonlocal completed, terminal_evidence, failure_kind, failure_class, failure_detail
                     try:
-                        async for chunk in response.aiter_bytes():
-                            detector.feed(chunk)
-                            yield chunk
+                        if operation_deadline is None:
+                            async for chunk in response.aiter_bytes():
+                                detector.feed(chunk)
+                                yield chunk
+                        else:
+                            chunks = response.aiter_bytes().__aiter__()
+                            while True:
+                                remaining = operation_deadline - time.monotonic()
+                                if remaining <= 0:
+                                    raise asyncio.TimeoutError
+                                try:
+                                    chunk = await asyncio.wait_for(chunks.__anext__(), timeout=remaining)
+                                except StopAsyncIteration:
+                                    break
+                                detector.feed(chunk)
+                                yield chunk
                         # Require both protocol completion and normal EOF, never a choice-level marker alone.
                         completed = response.status_code == 200 and detector.finalize()
                         terminal_evidence = detector.termination_state
-                        if terminal_evidence == "verified_model_load_failure":
-                            failure_kind = "upstream_operation_failed"
-                            failure_detail = "The upstream reported a terminal model-load failure."
                         if response.status_code >= 400:
                             failure_kind = "upstream_returned_error"
                             failure_detail = "The upstream returned an HTTP error response."
                     except BaseException as exc:
-                        failure_kind = "client_disconnect_or_stream_interruption"
+                        deadline_expired = (
+                            isinstance(exc, asyncio.TimeoutError)
+                            and operation_deadline is not None
+                            and time.monotonic() >= operation_deadline
+                        )
                         failure_class = type(exc).__name__
-                        failure_detail = "The downstream stream ended unexpectedly; upstream execution is unverified."
-                        terminal_evidence = "stream_interrupted_without_verified_terminal"
+                        if deadline_expired:
+                            failure_kind = "upstream_operation_deadline"
+                            failure_detail = (
+                                "The model-load operation exceeded its configured overall deadline; "
+                                "upstream execution is unverified."
+                            )
+                            terminal_evidence = "operation_deadline_expired_execution_unverified"
+                        elif isinstance(exc, httpx.ReadTimeout):
+                            failure_kind = "upstream_read_timeout"
+                            failure_detail = (
+                                "No upstream response bytes arrived before the read-inactivity timeout; "
+                                "execution may continue."
+                            )
+                            terminal_evidence = "upstream_execution_uncertain"
+                        elif isinstance(exc, httpx.ConnectTimeout):
+                            failure_kind = "upstream_connect_timeout"
+                            failure_detail = "Timed out while establishing the upstream connection."
+                            terminal_evidence = "upstream_execution_uncertain"
+                        elif isinstance(exc, httpx.TimeoutException):
+                            failure_kind = "upstream_timeout"
+                            failure_detail = "An upstream timeout occurred; remote execution termination is unverified."
+                            terminal_evidence = "upstream_execution_uncertain"
+                        else:
+                            failure_kind = "client_disconnect_or_stream_interruption"
+                            failure_detail = "The downstream stream ended unexpectedly; upstream execution is unverified."
+                            terminal_evidence = "stream_interrupted_without_verified_terminal"
                         raise
 
                 result = _CoordinatedStreamingResponse(
@@ -967,10 +1078,18 @@ class LMStudioGateway:
                     headers=clean_headers,
                     media_type=content_type,
                     cleanup=cleanup,
+                    deadline=operation_deadline,
+                    deadline_callback=mark_operation_deadline if operation_deadline is not None else None,
                 )
                 response_owns_cleanup = True
                 return result
-            content = await upstream_resp.aread()
+            if operation_deadline is not None:
+                remaining = operation_deadline - time.monotonic()
+                if remaining <= 0:
+                    raise asyncio.TimeoutError
+                content = await asyncio.wait_for(upstream_resp.aread(), timeout=remaining)
+            else:
+                content = await upstream_resp.aread()
             completed = StreamCompletionDetector.check_non_streaming(upstream_resp.status_code, content, path)
             terminal_evidence = "verified_non_streaming_response" if completed else "non_streaming_response_not_terminal"
             if upstream_resp.status_code >= 400:
@@ -983,7 +1102,10 @@ class LMStudioGateway:
             )
         except Exception as exc:
             failure_class = type(exc).__name__
-            if isinstance(exc, httpx.ConnectTimeout):
+            if isinstance(exc, asyncio.TimeoutError) and operation_type == "model_load":
+                failure_kind = "upstream_operation_deadline"
+                failure_detail = "The model-load operation exceeded its configured overall deadline."
+            elif isinstance(exc, httpx.ConnectTimeout):
                 failure_kind = "upstream_connect_timeout"
                 failure_detail = "Timed out while establishing the upstream connection."
             elif isinstance(exc, httpx.ReadTimeout):
@@ -1009,7 +1131,13 @@ class LMStudioGateway:
                         "type": failure_kind,
                         "request_id": request_id,
                         "operation_type": operation_type,
-                        "timeout_seconds": self.timeout_seconds,
+                        "timeout_seconds": upstream_timeout_seconds,
+                        "timeout_semantics": (
+                            "bounded_overall_operation_deadline"
+                            if operation_type == "model_load"
+                            else "httpx_phase_timeouts"
+                        ),
+                        "lease_acquisition_timeout_seconds": self.timeout_seconds,
                         "detail": failure_detail,
                     }
                 },
@@ -1050,6 +1178,7 @@ class LMStudioGateway:
         path: str,
         body: bytes,
         request_id: str,
+        timeout: Optional[httpx.Timeout] = None,
     ) -> httpx.Request:
         headers = dict(request.headers)
         # Strip hop-by-hop headers
@@ -1057,12 +1186,14 @@ class LMStudioGateway:
             headers.pop(h, None)
         headers["x-request-id"] = request_id
 
+        request_options = {"timeout": timeout} if timeout is not None else {}
         return client.build_request(
             method=request.method,
             url=path,
             params=request.query_params,
             headers=headers,
             content=body,
+            **request_options,
         )
 
     def _clean_headers(self, headers: httpx.Headers, request_id: str) -> Dict[str, str]:
