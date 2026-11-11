@@ -267,8 +267,49 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
 - **Strict Boundaries Preserved**:
   - `modules/resource_coordinator/` remained 100% clean and unmodified.
   - Zero spending ($0 spend).
-  - Fast-forward eligible (15 ahead of `origin/main`, 0 behind).
-  - Status: **Ready for authorized merge**.
+  - Merged into `main` at `bdd8429e252a2264357dc94fa603e7e9e6398f63`.
+
+---
+
+## 10. Phase 07 Guarded Remote Control & Action Registry Status
+
+- **Implementation Details**:
+  - **Branch**: `agent/remote-control-p07-guarded-actions-20261111`
+  - **Worktree**: `C:\Users\mcarls\src\scripts-remote-control-p07` (isolated sibling)
+  - **Base Commit**: `bdd8429e252a2264357dc94fa603e7e9e6398f63` (`main` / `origin/main`)
+- **Key Deliverables Completed**:
+  - **Typed Capability Registry (`remote_control.actions.registry`)**:
+    - Immutable, code-owned registry frozen after bootstrap.
+    - Strict Pydantic parameter schemas (`extra="forbid"`).
+    - 6 registered capabilities covering Coordinator status/inspection, Notifications health/incident detail/acknowledgement, and production-disabled guarded recovery.
+  - **Durable Two-Phase Confirmation & Idempotency Journal (`remote_control.actions.storage`)**:
+    - Schema version 2 for `auth.db` adding `action_challenges` and `action_executions` tables.
+    - 120s expiring confirmation challenges bound to actor, session, device, arguments digest, and source state fingerprint.
+    - Single-use atomic consumption preventing challenge replay.
+    - Atomic `BEGIN IMMEDIATE` execution reservation before external dispatch, providing robust crash-safe idempotency.
+  - **Action-Specific TOTP Step-Up Authentication**:
+    - Re-verification of 6-digit TOTP against server-held secret for mutations.
+    - Replay protection via atomic single-use timestep recording in `used_totp_timesteps`.
+  - **Guarded Action Service & API Routes (`remote_control.api.actions_routes`)**:
+    - `GET /api/v1/capabilities`: public capability discovery.
+    - `POST /api/v1/actions/{id}/prepare`: fresh source state inspection and challenge generation.
+    - `POST /api/v1/actions/{id}/execute`: transactional execution with TOTP step-up, state drift detection, and postcondition verification.
+    - `GET /api/v1/executions/{id}` & `GET /api/v1/executions`: durable execution journal access.
+    - `POST /api/v1/incidents/{id}/acknowledge`: dedicated guarded incident acknowledgement endpoint.
+  - **Incident Acknowledgement Independence**:
+    - Acknowledging an incident updates the Notifications broker state but NEVER mutates Resource Coordinator or clears safety holds.
+  - **Synthetic Recovery Test Harness (`SyntheticCoordinatorRecoveryAdapter`)**:
+    - Comprehensive negative and safety validation suite covering R05–R10 acceptance criteria (happy path, expired challenges, state drift, active claims refusal, degraded service, timeouts to `outcome_unknown`, and concurrency serialization).
+  - **Mobile PWA Dashboard UI Enhancement**:
+    - Added Actions tab for browsing capabilities and inspecting execution journal.
+    - Added Action Confirmation modal with live countdown timer and TOTP step-up form.
+    - Added direct incident acknowledgement button to incident details.
+    - Maintained 100% DOM-safe rendering (zero `innerHTML` usage).
+- **Protected Boundaries**:
+  - `modules/resource_coordinator/` remained 100% untouched and unmodified.
+  - Production `resource_coordinator.request_guarded_recovery` strictly disabled (`capability_disabled`).
+  - Zero cloud spending ($0 spend).
+
 
 
 
