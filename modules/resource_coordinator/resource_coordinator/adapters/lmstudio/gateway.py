@@ -61,6 +61,41 @@ HOP_BY_HOP_HEADERS: Set[str] = {
     "host",
 }
 
+_SAFE_INHIBITION_DETAIL_KEYS = {
+    "maintenance_operation_id", "restored_inhibited_at", "snapshot_updated_at", "persisted_at", "phase", "path",
+}
+
+
+def _sanitize_detail_mapping(details: Any, allowed_detail_keys: Set[str]) -> Dict[str, Any]:
+    if not isinstance(details, dict):
+        return {}
+    safe: Dict[str, Any] = {}
+    for key, value in details.items():
+        if key not in allowed_detail_keys | _SAFE_INHIBITION_DETAIL_KEYS or key == "additional_uncertain_holders":
+            continue
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            safe[key] = value[:2048] if isinstance(value, str) else value
+        elif isinstance(value, list) and len(value) <= 32 and all(isinstance(item, (str, int, float, bool)) for item in value):
+            safe[key] = [item[:512] if isinstance(item, str) else item for item in value]
+    children = details.get("additional_uncertain_holders")
+    if isinstance(children, list):
+        safe["additional_uncertain_holders"] = [
+            _sanitize_inhibition_dict(item, allowed_detail_keys) for item in children[:64]
+            if isinstance(item, dict)
+        ]
+    return safe
+
+
+def _sanitize_inhibition_dict(raw_inhibition: Dict[str, Any], allowed_detail_keys: Set[str]) -> Dict[str, Any]:
+    """Allowlist every inhibition holder recursively; discard arbitrary nested diagnostics."""
+    safe = {
+        key: raw_inhibition[key]
+        for key in ("resource", "reason", "holder_id", "inhibited_at")
+        if key in raw_inhibition and (isinstance(raw_inhibition[key], (str, int, float, bool)) or raw_inhibition[key] is None)
+    }
+    safe["details"] = _sanitize_detail_mapping(raw_inhibition.get("details"), allowed_detail_keys)
+    return safe
+
 
 def is_inference_request(method: str, path: str) -> bool:
     """Determine whether an incoming request represents active inference."""
@@ -298,6 +333,8 @@ class LMStudioGateway:
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
+            Route("/_coordinator/inference/status", self.handle_inference_status, methods=["GET"]),
+            Route("/_coordinator/recovery/assessment", self.handle_recovery_assessment, methods=["GET"]),
             Route("/_coordinator/maintenance/status", self.handle_maintenance_status, methods=["GET"]),
             Route("/_coordinator/maintenance/operations/{operation_id:str}", self.handle_maintenance_operation,
                   methods=["GET"]),
@@ -646,21 +683,18 @@ class LMStudioGateway:
             "inhibition_holder",
             "inhibition_reason",
             "recovery_recommendation",
+            "outcome", "upstream_elapsed_seconds", "upstream_timeout_seconds", "timeout_semantics",
+            "lease_acquisition_timeout_seconds", "model_load_reported_seconds", "reconciliation_disposition",
+            "resolved_by", "resolved_at",
         }
-        safe_inhibition = inhibition.to_dict() if inhibition else None
-        if safe_inhibition is not None:
-            safe_inhibition["details"] = {
-                key: value
-                for key, value in inhibition.details.items()
-                if key in safe_request_detail_fields
-            }
+        safe_inhibition = _sanitize_inhibition_dict(inhibition.to_dict(), safe_request_detail_fields) if inhibition else None
         recovery: Dict[str, Any] = {
             "required": bool(inhibition),
             "inhibition": safe_inhibition,
             "requests": [],
             "journal_status": "not_configured" if not self.state_persistence_path else "available",
             "recommendation": (
-                "Verify the upstream operation has terminated, then use authenticated service recover with an explicit reason."
+                "Verify the upstream operation has terminated, then use 'rc recover -f -n <reason>' with an explicit reason."
                 if inhibition
                 else None
             ),
@@ -682,17 +716,30 @@ class LMStudioGateway:
                         "path": item.path,
                         "created_at": item.created_at,
                         "updated_at": item.updated_at,
-                        "details": {
-                            key: value
-                            for key, value in item.details.items()
-                            if key in safe_request_detail_fields
-                        },
+                        "details": _sanitize_detail_mapping(item.details, safe_request_detail_fields),
                     }
                     for item in durable.requests.values()
                     if item.resource == "gpu.inference" and item.phase in unresolved
                 ]
             except (OSError, ValueError):
                 recovery["journal_status"] = "unavailable"
+        gaming = {"state": "unavailable", "status": "unavailable",
+                  "error": "Durable gaming state is unreadable"}
+        if svc is not None:
+            state_path = getattr(svc.system.config.service, "state_persistence_path", "")
+            if state_path:
+                try:
+                    gaming_state = StateCodec.load(state_path).gaming_mode
+                    gaming = {"state": gaming_state.get("state", "inactive"),
+                              **({"models_restored": gaming_state.get("models_restored")}
+                                 if isinstance(gaming_state.get("models_restored"), list) else {})}
+                except (OSError, ValueError, RuntimeError):
+                    pass
+            else:
+                gaming = {"state": "unavailable", "status": "unavailable",
+                          "error": "Durable gaming state is not configured"}
+        from resource_coordinator.core.inference_status import build_inference_status
+        inference_summary = build_inference_status(svc, lmstudio_observation=await self._lmstudio_activity_observation(svc))
         return JSONResponse(
             {
                 "status": "online",
@@ -711,12 +758,67 @@ class LMStudioGateway:
                     "is_cooling_down": self.lease_mgr.is_cooling_down("gpu.inference"),
                     "cooldown_remaining": round(self.lease_mgr.cooldown_remaining("gpu.inference"), 1),
                     "is_restart_inhibited": self.lease_mgr.is_restart_inhibited("gpu.inference"),
-                    "inhibition": inhibition.to_dict() if inhibition else None,
+                    "inhibition": safe_inhibition,
                     "recovery": recovery,
                 },
                 "maintenance": svc.maintenance_manager.status() if svc else {"state": "disabled"},
+                "gaming": gaming,
+                "inference": inference_summary,
             }
         )
+
+    async def handle_inference_status(self, request: Request) -> JSONResponse:
+        from resource_coordinator.core.inference_status import build_inference_status
+
+        service = self.admission_controller.service
+        observation = await self._lmstudio_activity_observation(service)
+        return JSONResponse(build_inference_status(service, lmstudio_observation=observation))
+
+    @staticmethod
+    async def _lmstudio_activity_observation(service: Any) -> Optional[Dict[str, Any]]:
+        if service is None:
+            return None
+        expected_identity = getattr(service, "runtime_identity", None)
+        if not isinstance(expected_identity, dict) or not expected_identity:
+            return {"status": "unavailable", "reason_code": "runtime_identity_unavailable"}
+        observer = getattr(service, "lmstudio_activity_observer", None)
+        observe = getattr(observer, "observe", None)
+        if not callable(observe):
+            return {"status": "unavailable", "reason_code": "observer_not_configured"}
+        try:
+            result = await asyncio.wait_for(observe(runtime_identity=dict(expected_identity)), timeout=2.0)
+        except asyncio.TimeoutError:
+            return {"status": "unavailable", "reason_code": "observer_timeout"}
+        except Exception as exc:
+            return {"status": "unavailable", "reason_code": f"observer_error:{type(exc).__name__}"}
+        if not isinstance(result, dict) or result.get("status") != "available":
+            reason = result.get("reason_code") if isinstance(result, dict) else None
+            return {"status": "unavailable", "reason_code": reason or "observer_result_unavailable"}
+        if result.get("runtime_identity") != expected_identity:
+            return {"status": "unavailable", "reason_code": "observer_runtime_identity_mismatch"}
+        coverage = result.get("coverage")
+        observed_at = result.get("observed_at")
+        if coverage not in {"complete", "partial", "unknown"} or not isinstance(observed_at, (int, float)) \
+                or isinstance(observed_at, bool) or not math.isfinite(float(observed_at)):
+            return {"status": "unavailable", "reason_code": "observer_observation_metadata_missing"}
+        max_age = 30.0
+        try:
+            max_age = float(service.system.config.maintenance_verification.max_observation_age_seconds)
+        except (AttributeError, TypeError, ValueError):
+            pass
+        age = time.time() - float(observed_at)
+        if age < -5.0 or age > max_age:
+            return {"status": "unavailable", "reason_code": "observer_observation_stale"}
+        # Observations are descriptive only and intentionally bounded to a small allowlist.
+        safe = {key: result[key] for key in ("status", "coverage", "observed_at", "runtime_identity")
+                if key in result and isinstance(result[key], (str, int, float, bool, dict))}
+        return safe
+
+    async def handle_recovery_assessment(self, request: Request) -> JSONResponse:
+        from resource_coordinator.core.recovery_assessment import assess_recovery
+
+        service = self.admission_controller.service
+        return JSONResponse(assess_recovery(service))
 
     async def handle_coordinator_abort(self, request: Request) -> JSONResponse:
         """Trigger emergency abort to stop admission and prevent miner restarts."""

@@ -10,7 +10,7 @@ from resource_coordinator import __version__
 
 def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     control = subparsers.add_parser(
-        "control", help="Manage coordinated mining and gaming modes.",
+        "control", help=argparse.SUPPRESS,
         description="Control managed workloads. Mutating operations retain their established immediate behavior.",
         epilog="Examples: resource-coordinator control miner pause -d 2h; "
                "resource-coordinator control gaming on",
@@ -59,10 +59,7 @@ def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     abort.add_argument("-r", "--reason", default="Manual operator emergency abort")
     recover = service_sub.add_parser("recover", help="Clear a restart inhibition with operator evidence.")
     recover.set_defaults(operation_id="service.recover", command="recover")
-    recover.add_argument("-u", "--url", default="http://127.0.0.1:1235")
-    recover.add_argument("--resource", default="gpu.inference")
-    recover.add_argument("-r", "--reason", required=True)
-    recover.add_argument("-f", "--force", action="store_true")
+    _configure_recover_parser(recover, legacy_root_flags=False)
     run = service_sub.add_parser("run", help="Run the coordination gateway in the foreground.")
     run.set_defaults(operation_id="service.run", command="serve")
     _add_serve_arguments(run)
@@ -87,6 +84,13 @@ def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     teardown = system_sub.add_parser("teardown", help="Safely remove Resource Coordinator ownership.")
     teardown.set_defaults(operation_id="system.teardown", command="teardown")
     _add_apply_arguments(teardown, non_interactive=True)
+
+    preflight = system_sub.add_parser("preflight", help="Check readiness for coordinator operation.")
+    preflight.set_defaults(operation_id="check.preflight", command="preflight")
+    _add_preflight_arguments(preflight)
+    accept = system_sub.add_parser("accept", help="Run supervised coordination acceptance trials.")
+    accept.set_defaults(operation_id="check.accept", command="accept")
+    _add_accept_arguments(accept)
 
     recovery = system_sub.add_parser("recovery", help="Inspect or recover an interrupted host upgrade.")
     recovery_sub = recovery.add_subparsers(dest="recovery_command", required=True)
@@ -118,7 +122,7 @@ def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     subparsers.choices["logs"].set_defaults(operation_id="logs")
 
     check = subparsers.add_parser(
-        "check", help="Check health, telemetry, readiness, or acceptance.",
+        "check", help=argparse.SUPPRESS,
         description="health diagnoses installation/runtime; telemetry reads service/hardware metrics; "
                     "preflight checks readiness; accept runs supervised trials that may be live only "
                     "when explicitly authorized.",
@@ -132,12 +136,12 @@ def _add_canonical_commands(subparsers: argparse._SubParsersAction) -> None:
     telemetry.set_defaults(operation_id="check.telemetry", command="diagnose")
     telemetry.add_argument("-c", "--config", default=None)
     telemetry.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    inference = check_sub.add_parser("inference", help=argparse.SUPPRESS)
+    inference.set_defaults(operation_id="status", command="status", status_target="inference")
+    inference.add_argument("-u", "--url", default="http://127.0.0.1:1235")
     preflight = check_sub.add_parser("preflight", help="Check readiness for coordinator operation.")
     preflight.set_defaults(operation_id="check.preflight", command="preflight")
-    preflight.add_argument("-c", "--config", default=None)
-    preflight.add_argument("-f", "--fake-miner", "--fake-process", action="store_true")
-    preflight.add_argument("--check-live", action="store_true")
-    preflight.add_argument("--min-free-vram-mb", type=float, default=1024.0)
+    _add_preflight_arguments(preflight)
     accept = check_sub.add_parser("accept", help="Run supervised coordination acceptance trials.")
     accept.set_defaults(operation_id="check.accept", command="accept")
     _add_accept_arguments(accept)
@@ -154,6 +158,20 @@ def _add_apply_arguments(parser: argparse.ArgumentParser, *, non_interactive: bo
     parser.add_argument("-a", "--apply", action="store_true", help="Apply the requested administrative change.")
     if non_interactive:
         parser.add_argument("-n", "--non-interactive", action="store_true", help="Do not prompt for UAC.")
+
+
+def _configure_recover_parser(parser: argparse.ArgumentParser, *, legacy_root_flags: bool) -> None:
+    parser.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+    if legacy_root_flags:
+        parser.add_argument("-r", "--resource", default="gpu.inference")
+        parser.add_argument("-n", "--reason", default=None)
+    else:
+        parser.add_argument("--resource", default="gpu.inference")
+        parser.add_argument("-r", "--reason", default=None)
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument("-a", "--apply", action="store_true")
+    mode.add_argument("-f", "--force", action="store_true")
+    parser.add_argument("--maintenance", action="store_true", help=argparse.SUPPRESS)
 
 
 def _add_installation_arguments(parser: argparse.ArgumentParser, *, setup: bool = False) -> None:
@@ -174,6 +192,16 @@ def _add_serve_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--stop-process-on-shutdown", metavar="NAME")
     parser.add_argument("-t", "--drain-timeout", type=float, default=30.0)
     parser.add_argument("--first-boot", action="store_true")
+
+
+def _add_preflight_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
+    parser.add_argument("-f", "--fake-miner", "--fake-process", action="store_true",
+                        help="Use in-memory fake process backends.")
+    parser.add_argument("--check-live", action="store_true",
+                        help="Run read-only live acceptance preflight.")
+    parser.add_argument("--min-free-vram-mb", type=float, default=1024.0,
+                        help="Minimum free GPU VRAM (MiB) required for live preflight.")
 
 
 def _add_accept_arguments(parser: argparse.ArgumentParser) -> None:
@@ -236,7 +264,7 @@ def _add_global_leaf_options(root: argparse.ArgumentParser) -> None:
         for option, kwargs in (
             ("-v", {"long": "--verbose", "action": "store_true", "dest": "verbose"}),
             ("-j", {"long": "--json", "action": "store_true", "dest": "json"}),
-            (None, {"long": "--color", "choices": ("auto", "always", "never"), "dest": "color"}),
+            ("-C", {"long": "--color", "choices": ("auto", "always", "never"), "dest": "color"}),
         ):
             option_strings = [option] if option else []
             option_strings.append(kwargs.pop("long"))
@@ -273,11 +301,12 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable verbose debug logging.")
     parser.add_argument("-j", "--json", action="store_true", help="Output structured results as JSON.")
-    parser.add_argument("--color", choices=("auto", "always", "never"), default="auto",
+    parser.add_argument("-C", "--color", choices=("auto", "always", "never"), default="auto",
                         help="Colorized human output (auto honors NO_COLOR and terminal detection).")
 
     subparsers = parser.add_subparsers(
-        dest="command", required=True, metavar="{status,control,service,system,config,check,logs}"
+        dest="command", required=True,
+        metavar="{status,doctor,telemetry,miner,gaming,maintenance,recover,logs,service,system,config,help}"
     )
 
     auth_parser = subparsers.add_parser("auth", help=argparse.SUPPRESS)
@@ -305,7 +334,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "-n", "--non-interactive", action="store_true", help="Do not display UAC or other interactive prompts."
     )
 
-    doctor_parser = subparsers.add_parser("doctor", help=argparse.SUPPRESS)
+    doctor_parser = subparsers.add_parser("doctor", help="Diagnose installation and runtime health.")
     doctor_parser.add_argument("-j", "--json", action="store_true", help="Output a machine-readable report.")
 
     repair_parser = subparsers.add_parser("repair", help=argparse.SUPPRESS)
@@ -345,83 +374,14 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
 
     # serve
     serve_parser = subparsers.add_parser("serve", help=argparse.SUPPRESS)
-    serve_parser.add_argument(
-        "-l",
-        "--listen",
-        default=None,
-        help="Host:port to bind the gateway (default: 127.0.0.1:1235).",
-    )
-    serve_parser.add_argument(
-        "-u",
-        "--upstream",
-        default=None,
-        help="Upstream LM Studio URL (default: http://127.0.0.1:1234).",
-    )
-    serve_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    serve_parser.add_argument(
-        "-f",
-        "--fake-miner",
-        "--fake-process",
-        action="store_true",
-        help="Use in-memory fake process backends instead of real processes.",
-    )
-    serve_parser.add_argument(
-        "-m",
-        "--start-miner",
-        action="store_true",
-        dest="start_miner",
-        help="Start the legacy miner target during service startup if configured.",
-    )
-    serve_parser.add_argument(
-        "--start-process", metavar="NAME", help="Explicitly start a configured process at startup."
-    )
-    serve_parser.add_argument(
-        "-s",
-        "--stop-miner-on-shutdown",
-        action="store_true",
-        help="Stop miner during service shutdown if configured.",
-    )
-    serve_parser.add_argument(
-        "--stop-process-on-shutdown", metavar="NAME", help="Stop a coordinator-owned configured process at shutdown."
-    )
-    serve_parser.add_argument(
-        "-t",
-        "--drain-timeout",
-        type=float,
-        default=30.0,
-        help="Timeout in seconds for draining active requests during shutdown (default: 30.0).",
-    )
-    serve_parser.add_argument(
-        "--first-boot",
-        action="store_true",
-        help="Initialize a fresh durable state journal if it does not already exist.",
-    )
+    _add_serve_arguments(serve_parser)
 
     # preflight
     preflight_parser = subparsers.add_parser(
         "preflight",
         help=argparse.SUPPRESS,
     )
-    preflight_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    preflight_parser.add_argument(
-        "-f",
-        "--fake-miner",
-        "--fake-process",
-        action="store_true",
-        help="Use in-memory fake process backends.",
-    )
-    preflight_parser.add_argument("-j", "--json", action="store_true", help="Output preflight result in JSON format.")
-    preflight_parser.add_argument(
-        "--check-live",
-        action="store_true",
-        help="Run read-only live acceptance preflight (checks external miners, locks, LM Studio model, and GPU VRAM).",
-    )
-    preflight_parser.add_argument(
-        "--min-free-vram-mb",
-        type=float,
-        default=1024.0,
-        help="Minimum free GPU VRAM (MiB) required for live preflight (default: 1024.0).",
-    )
+    _add_preflight_arguments(preflight_parser)
 
     # abort
     abort_parser = subparsers.add_parser(
@@ -453,27 +413,8 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     status_parser.add_argument("-j", "--json", action="store_true", help="Output status in JSON format.")
 
     # recover
-    recover_parser = subparsers.add_parser("recover", help=argparse.SUPPRESS)
-    recover_parser.add_argument(
-        "-u",
-        "--url",
-        default="http://127.0.0.1:1235",
-        help="Coordinator gateway URL (default: http://127.0.0.1:1235).",
-    )
-    recover_parser.add_argument(
-        "-r",
-        "--resource",
-        default="gpu.inference",
-        help="Resource name to clear inhibition for (default: gpu.inference).",
-    )
-
-    recover_parser.add_argument(
-        "-f",
-        "--force",
-        action="store_true",
-        help="Explicitly override unverifiable upstream state.",
-    )
-    recover_parser.add_argument("-n", "--reason", required=True, help="Operator evidence/reason for recovery.")
+    recover_parser = subparsers.add_parser("recover", help="Assess or reconcile recovery state.")
+    _configure_recover_parser(recover_parser, legacy_root_flags=True)
 
     # config
     config_parser = subparsers.add_parser("config", help="Inspect or validate configuration.")
@@ -486,7 +427,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     validate_parser.add_argument("-c", "--config", required=True, help="Path to configuration YAML.")
 
     # miner
-    miner_parser = subparsers.add_parser("miner", help=argparse.SUPPRESS)
+    miner_parser = subparsers.add_parser("miner", help="Control the Coordinator-managed miner.")
     miner_sub = miner_parser.add_subparsers(dest="miner_command", required=True)
     m_status = miner_sub.add_parser("status", help="Get current miner process status.")
     m_status.add_argument("-u", "--url", default="http://127.0.0.1:1235", help="Coordinator URL.")
@@ -505,7 +446,7 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
             miner_action.add_argument("--window", default="60s", help="GPU sampling window, e.g. 60s or 2m.")
     m_status.add_argument("-c", "--config", default=None, help=argparse.SUPPRESS)
 
-    gaming_parser = subparsers.add_parser("gaming", help=argparse.SUPPRESS)
+    gaming_parser = subparsers.add_parser("gaming", help="Coordinate gaming mode.")
     gaming_sub = gaming_parser.add_subparsers(dest="gaming_command", required=True)
     gaming_status = gaming_sub.add_parser("status", help="Show gaming mode state.")
     gaming_status.add_argument("-u", "--url", default="http://127.0.0.1:1235")
@@ -515,11 +456,19 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         gaming_action.add_argument("-u", "--url", default="http://127.0.0.1:1235")
         gaming_action.add_argument("-r", "--reason", default=f"Operator requested gaming {action}.")
         gaming_action.add_argument("-j", "--json", action="store_true")
+    for spelling, action in (("on", "start"), ("off", "stop")):
+        gaming_action = gaming_sub.add_parser(spelling, help=f"Gaming mode {spelling}.")
+        gaming_action.set_defaults(gaming_command=action, operation_id=f"control.gaming.{spelling}")
+        gaming_action.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+        gaming_action.add_argument("-r", "--reason", default=f"Operator requested gaming {action}.")
+        gaming_action.add_argument("-j", "--json", action="store_true")
 
     logs_parser = subparsers.add_parser("logs", help="Read or follow captured raw process output.")
-    logs_parser.add_argument("process_name", help="Configured process name, e.g. krig.")
+    logs_parser.add_argument("process_name", nargs="?", default="miner",
+                             help="Configured process name (default: miner).")
     logs_parser.add_argument("-u", "--url", default="http://127.0.0.1:1235")
-    logs_parser.add_argument("--tail-bytes", type=int, default=65536, help="Initial history bytes (max 256 KiB).")
+    logs_parser.add_argument("-b", "--tail-bytes", type=int, default=65536,
+                             help="Initial history bytes (max 256 KiB).")
     logs_parser.add_argument("-f", "--follow", action="store_true", help="Continue polling for appended output.")
 
     # diagnose
@@ -541,57 +490,36 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
         "accept",
         help=argparse.SUPPRESS,
     )
-    accept_parser.add_argument("-c", "--config", default=None, help="Path to policy configuration YAML.")
-    accept_parser.add_argument(
-        "-m",
-        "--mode",
-        choices=["simulated", "disposable_helper", "live"],
-        default="simulated",
-        help="Execution mode (default: simulated).",
-    )
-    accept_parser.add_argument(
-        "--allow-live-lmstudio",
-        action="store_true",
-        help="Explicitly authorize connection to live LM Studio upstream.",
-    )
-    accept_parser.add_argument(
-        "--allow-real-miner",
-        action="store_true",
-        help="Explicitly authorize launching the configured real miner process.",
-    )
-    accept_parser.add_argument(
-        "-u",
-        "--upstream",
-        default=None,
-        help="Upstream LM Studio URL override.",
-    )
-    accept_parser.add_argument(
-        "-w",
-        "--work-dir",
-        default=None,
-        help="Work directory for isolated run evidence (default: creates temp dir or uses .live_acceptance_work).",
-    )
-    accept_parser.add_argument(
-        "-o",
-        "--output",
-        default=None,
-        help="Optional destination path to write acceptance_report.json.",
-    )
-    accept_parser.add_argument(
-        "--trials",
-        nargs="+",
-        default=None,
-        help="Specific trials to run (e.g. --trials T01 or --trials T02 T03 T04).",
-    )
-    accept_parser.add_argument(
-        "--cooldown",
-        type=float,
-        default=None,
-        help="Override cooldown seconds (live mode enforces >= 10.0s).",
-    )
-    accept_parser.add_argument("-j", "--json", action="store_true", help="Output acceptance report in JSON format.")
+    _add_accept_arguments(accept_parser)
 
     _add_canonical_commands(subparsers)
+    telemetry = subparsers.add_parser("telemetry", help="Read CPU/GPU and Coordinator telemetry.")
+    telemetry.set_defaults(operation_id="check.telemetry", command="diagnose")
+    telemetry.add_argument("-c", "--config", default=None)
+    telemetry.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+
+    status_parser = subparsers.choices["status"]
+    status_parser.add_argument("status_target", nargs="?", choices=("miner", "inference", "gaming", "maintenance"))
+    status_parser.add_argument("-a", "--all", action="store_true")
+
+    maintenance = subparsers.add_parser("maintenance", help="Inspect or reconcile a GPU maintenance session.")
+    maintenance_sub = maintenance.add_subparsers(dest="maintenance_command", required=True)
+    for action in ("status", "reconcile"):
+        leaf = maintenance_sub.add_parser(action, help=f"Maintenance {action}.")
+        leaf.set_defaults(operation_id=f"maintenance.{action}")
+        leaf.add_argument("-u", "--url", default="http://127.0.0.1:1235")
+        if action == "reconcile":
+            leaf.add_argument("-f", "--force", action="store_true")
+            leaf.add_argument("-r", "--reason", default=None)
+            leaf.add_argument("-o", "--operation-id", default=None)
+            leaf.add_argument("-s", "--session-id", default=None)
+            leaf.add_argument("--no-resume-miner", action="store_true")
+
+    help_parser = subparsers.add_parser("help", help="Show command help and examples.")
+    help_parser.set_defaults(operation_id="help")
+    help_parser.add_argument("topic", nargs="?", choices=("status", "doctor", "telemetry", "miner", "gaming",
+                             "maintenance", "recover", "logs", "service", "system", "config"))
+
     legacy_operation_ids = {
         "setup": "system.setup", "upgrade": "system.upgrade", "repair": "system.repair",
         "teardown": "system.teardown", "restart": "service.restart", "shutdown": "service.shutdown",
@@ -604,7 +532,8 @@ def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     for group in ("auth", "startup", "miner", "gaming", "config"):
         for child, child_parser in _child_parsers(subparsers.choices[group]).items():
             child_parser.set_defaults(operation_id=_legacy_operation_id(group, child))
-    visible_commands = ("status", "control", "service", "system", "config", "check", "logs")
+    visible_commands = ("status", "doctor", "telemetry", "miner", "gaming", "maintenance", "recover",
+                        "logs", "service", "system", "config", "help")
     choices_by_name = {action.dest: action for action in subparsers._choices_actions}
     subparsers._choices_actions = [choices_by_name[name] for name in visible_commands]
     _add_global_leaf_options(parser)

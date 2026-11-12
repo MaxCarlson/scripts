@@ -87,6 +87,8 @@ class CoordinatorService:
         self.first_boot = bool(kwargs.get("first_boot", False))
         self._lmstudio_client_factory = kwargs.get("lmstudio_client_factory")
         self._gpu_monitor = kwargs.get("gpu_monitor")
+        from resource_coordinator.monitors.lmstudio_activity import UnavailableLMStudioActivityObserver
+        self.lmstudio_activity_observer = kwargs.get("lmstudio_activity_observer") or UnavailableLMStudioActivityObserver()
         self.supervision_poll_interval = float(kwargs.get("supervision_poll_interval", 1.0))
         self._supervision_task: Optional[asyncio.Task] = None
         self._state = ServiceState.CREATED

@@ -110,17 +110,42 @@ def test_canonical_and_legacy_commands_normalize_to_stable_operations(argv, oper
     assert parsed.operation_id == operation_id
 
 
-def test_primary_help_exposes_only_the_seven_canonical_groups(capsys):
+def test_primary_help_exposes_only_the_twelve_canonical_commands(capsys):
     with pytest.raises(SystemExit) as raised:
         parse_args(["--help"])
 
     assert raised.value.code == 0
     output = capsys.readouterr().out
-    assert "{status,control,service,system,config,check,logs}" in output
+    assert "{status,doctor,telemetry,miner,gaming,maintenance,recover,logs,service,system,config,help}" in output
     assert "==SUPPRESS==" not in output
     positions = [output.index(f"    {command} ") for command in
-                 ("status", "control", "service", "system", "config", "check", "logs")]
+                 ("status", "doctor", "telemetry", "miner", "gaming", "maintenance", "recover",
+                  "logs", "service", "system", "config", "help")]
     assert positions == sorted(positions)
+
+
+@pytest.mark.parametrize("argv", [["status"], ["-j", "status"], ["status", "-j"],
+                                   ["status", "miner", "-j"], ["status", "--all"],
+                                   ["logs"], ["logs", "-f"], ["gaming", "on"], ["gaming", "start"]])
+def test_part2_canonical_leaf_commands_parse(argv):
+    parsed = parse_args(argv)
+    assert parsed.operation_id in {"status", "logs", "control.gaming.on", "control.gaming.start"}
+
+
+def test_recovery_root_and_service_flags_remain_distinct():
+    root = parse_args(["recover", "-r", "gpu.inference", "-n", "reviewed"])
+    service = parse_args(["service", "recover", "--resource", "gpu.inference", "-r", "reviewed"])
+    assert (root.resource, root.reason) == ("gpu.inference", "reviewed")
+    assert (service.resource, service.reason) == ("gpu.inference", "reviewed")
+
+
+def test_hidden_check_inference_alias_routes_to_read_only_inference_status():
+    from resource_coordinator.cli_dispatch import normalize_dispatch_args
+
+    args = normalize_dispatch_args(parse_args(["check", "inference", "-j"]))
+    assert args.command == "status"
+    assert args.status_target == "inference"
+    assert args.json is True
 
 
 @pytest.mark.parametrize(
@@ -157,7 +182,27 @@ def test_cli_dependency_and_package_versions_are_synchronized():
     project = Path(__file__).parents[1] / "pyproject.toml"
     metadata = project.read_text(encoding="utf-8")
     assert f'version = "{__version__}"' in metadata
+    assert __version__ == "1.0.0"
     assert '"rich>=13.7,<15"' in metadata
+    assert '[project.scripts]' in metadata and 'rc = "resource_coordinator.cli:main"' in metadata
+
+
+def test_resource_coordinator_is_registered_in_scripts_help_registry():
+    import ast
+    from pathlib import Path
+
+    registry_path = Path(__file__).parents[3] / "modules" / "scripts_help" / "scripts_help" / "registry" / "registry.py"
+    tree = ast.parse(registry_path.read_text(encoding="utf-8"))
+    assignment = next(node for node in tree.body if (
+        isinstance(node, ast.Assign) and any(isinstance(target, ast.Name) and target.id == "REGISTRY"
+                                             for target in node.targets)
+    ) or (isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name)
+          and node.target.id == "REGISTRY"))
+    registry = ast.literal_eval(assignment.value)
+    item = next(item for item in registry["System & Monitoring"]["items"]
+                if item["name"] == "resource_coordinator (module)")
+    assert item["version"] == "1.0.0"
+    assert item["path"] == "modules/resource_coordinator"
 
 
 @pytest.mark.parametrize(

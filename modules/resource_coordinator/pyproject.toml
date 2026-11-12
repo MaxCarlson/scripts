@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "resource-coordinator"
-version = "0.14.0"
+version = "1.0.0"
 description = "General-purpose event-driven resource coordination framework, process supervisor, and LM Studio proxy gateway."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -26,6 +26,7 @@ dev = ["pytest>=7.0", "pytest-asyncio>=0.23.0"]
 maintenance-verification = ["nvidia-ml-py>=12.535.133"]
 
 [project.scripts]
+rc = "resource_coordinator.cli:main"
 resource-coordinator = "resource_coordinator.cli:main"
 gpu-coordinator = "resource_coordinator.cli:main"
 

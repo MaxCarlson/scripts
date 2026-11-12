@@ -189,7 +189,12 @@ def cmd_lifecycle(args: argparse.Namespace) -> int:
 
 
 def cmd_status(args: argparse.Namespace) -> int:
-    url = f"{args.url.rstrip('/')}/_coordinator/status"
+    target = getattr(args, "status_target", None)
+    endpoint = {
+        "miner": "miner/status", "inference": "inference/status", "gaming": "gaming/status",
+        "maintenance": "maintenance/status",
+    }.get(target, "status")
+    url = f"{args.url.rstrip('/')}/_coordinator/{endpoint}"
     try:
         with httpx.Client(timeout=5.0) as client:
             resp = client.get(url)
@@ -197,6 +202,18 @@ def cmd_status(args: argparse.Namespace) -> int:
                 data = resp.json()
                 if args.json:
                     emit_json(data)
+                elif target == "inference":
+                    from resource_coordinator.presentation import render_inference_status
+                    render_inference_status(data)
+                elif target == "maintenance":
+                    from resource_coordinator.presentation import render_maintenance_status
+                    render_maintenance_status(data)
+                elif target == "miner":
+                    from resource_coordinator.presentation import render_miner_status
+                    render_miner_status(data)
+                elif target == "gaming":
+                    from resource_coordinator.presentation import render_gaming_status
+                    render_gaming_status(data)
                 else:
                     render_coordinator_status(data, gateway_url=args.url)
                 return 0
@@ -453,6 +470,50 @@ def _redact_recovery_credential(value: Any, token: str) -> Any:
 
 
 def cmd_recover(args: argparse.Namespace) -> int:
+    if getattr(args, "maintenance", False):
+        maintenance_args = argparse.Namespace(
+            maintenance_command="reconcile", url=args.url, force=args.force, reason=args.reason,
+            operation_id=getattr(args, "operation_id", None), session_id=getattr(args, "session_id", None),
+            no_resume_miner=getattr(args, "no_resume_miner", False), json=getattr(args, "json", False),
+        )
+        return cmd_maintenance(maintenance_args)
+    if getattr(args, "apply", False):
+        result = {"schema_version": 1, "status": "unavailable", "classification": "blocked",
+                  "exit_code": 2,
+                  "reason_codes": ["automatic_recovery_not_implemented"],
+                  "message": "Verified automatic recovery is not available in this release; no state was changed."}
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            from resource_coordinator.presentation import render_recovery_assessment
+            render_recovery_assessment(result)
+        return 2
+    if not getattr(args, "force", False):
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{args.url.rstrip('/')}/_coordinator/recovery/assessment")
+            if response.status_code == 200:
+                result = response.json()
+                code = int(result.get("exit_code", 2))
+            else:
+                result = {"schema_version": 1, "assessment_mode": "online_read_only",
+                          "service_reachable": True, "classification": "blocked", "exit_code": 2,
+                          "reason_codes": ["assessment_endpoint_rejected"], "http_status": response.status_code}
+                code = 2
+        except Exception as exc:
+            result = _offline_recovery_assessment(args.url, type(exc).__name__)
+            code = 2
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            from resource_coordinator.presentation import render_recovery_assessment
+            render_recovery_assessment(result)
+        return code
+
+    reason = getattr(args, "reason", None)
+    if not isinstance(reason, str) or not reason.strip() or len(reason) > 512:
+        emit_error("--reason is required with --force and must contain 1 to 512 characters.")
+        return 2
     recovery_override = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
     operator_override = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
     try:
@@ -462,7 +523,7 @@ def cmd_recover(args: argparse.Namespace) -> int:
         credential_error = str(exc)
     else:
         credential_error = None
-    if not args.force or not token:
+    if not token:
         if credential_error:
             message = f"Recovery credential unavailable: {credential_error}. Run 'resource-coordinator system auth doctor'."
         else:
@@ -472,6 +533,199 @@ def cmd_recover(args: argparse.Namespace) -> int:
         else:
             emit_error(message)
         return 1
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            response = client.post(
+                f"{args.url.rstrip('/')}/_coordinator/recover",
+                params={"resource": args.resource},
+                headers={"Authorization": f"Bearer {token}"},
+                json={"override": True, "operator": getpass.getuser(), "reason": reason.strip()},
+            )
+        if response.status_code == 200:
+            result = _redact_recovery_credential(response.json(), token)
+            if getattr(args, "json", False):
+                emit_json(result)
+            else:
+                from resource_coordinator.presentation import render_recovery_assessment
+                render_recovery_assessment({"classification": "operator_required", "status": "recovery_submitted",
+                                            "disposition": result})
+            return 0
+        if response.status_code == 403:
+            body = {"message": "Recovery credential was rejected; check configured operator and recovery credentials."}
+        else:
+            try:
+                body = response.json() if response.content else {"message": "Recovery rejected"}
+            except ValueError:
+                body = {"message": response.text or "Recovery rejected"}
+        safe_body = _redact_recovery_credential(body, token)
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "recover", "http_status": response.status_code,
+                       "detail": safe_body})
+        else:
+            message = body.get("message", "Recovery rejected") if isinstance(body, dict) else str(body)
+            emit_error(f"Recovery rejected ({response.status_code}): {_redact_recovery_credential(message, token)}")
+        return 1
+    except Exception as exc:
+        logger.debug("Recovery request failed (%s)", type(exc).__name__)
+        message = f"Failed to connect to coordinator at {args.url}"
+        if getattr(args, "json", False):
+            emit_json({"status": "error", "operation": "recover", "message": message})
+        else:
+            emit_error(message)
+        return 1
+
+
+def _offline_recovery_assessment(url: str, error_kind: str) -> dict[str, Any]:
+    """Provide local diagnostics only; an offline journal cannot authorize recovery."""
+    from resource_coordinator.core.recovery_assessment import read_upgrade_receipt_summary
+
+    journal_status = "unavailable"
+    inhibitions: list[str] = []
+    unresolved: list[str] = []
+    try:
+        config = load_config(None)
+        state_path = getattr(config.service, "state_persistence_path", "")
+        if state_path:
+            from resource_coordinator.core.durable_state import StateCodec
+            state = StateCodec.load(state_path)
+            journal_status = "available"
+            inhibitions = sorted(state.inhibitions)
+            unresolved = [request.request_id for request in state.requests.values()
+                          if request.phase in {"reserved", "possibly_forwarded", "uncertain"}]
+    except Exception:
+        journal_status = "unavailable"
+    upgrade_receipt = read_upgrade_receipt_summary()
+    recommended_actions = ["Restore Coordinator connectivity; offline records cannot authorize recovery."]
+    if upgrade_receipt.get("status") in {"pending", "recovery_required", "unavailable"}:
+        recommended_actions.append("Inspect the interrupted upgrade with 'rc system recovery status'.")
+    return {
+        "schema_version": 1, "assessment_mode": "offline_diagnostic_only", "service_reachable": False,
+        "classification": "blocked", "exit_code": 2, "reason_codes": ["coordinator_service_unreachable"],
+        "connection_error": error_kind, "coordinator_url": url, "local_journal_status": journal_status,
+        "local_inhibition_resources": inhibitions, "local_unresolved_request_ids": unresolved,
+        "upgrade_receipt": upgrade_receipt,
+        "upgrade_recovery_command": ("rc system recovery status" if upgrade_receipt.get("status") in
+                                     {"pending", "recovery_required", "unavailable"} else None),
+        "automatic_recovery_available": False,
+        "recommended_actions": recommended_actions,
+    }
+
+
+def cmd_maintenance(args: argparse.Namespace) -> int:
+    if getattr(args, "maintenance_command", None) == "status":
+        try:
+            with httpx.Client(timeout=5.0) as client:
+                response = client.get(f"{args.url.rstrip('/')}/_coordinator/maintenance/status")
+            result = response.json()
+            code = 0 if result.get("state") == "idle" else 2 if result.get("state") == "recovery_required" else 1
+        except Exception as exc:
+            result = {"state": "unavailable", "error": type(exc).__name__}
+            code = 2
+        if getattr(args, "json", False):
+            emit_json(result)
+        else:
+            from resource_coordinator.presentation import render_maintenance_status
+            render_maintenance_status(result)
+        return code
+
+    reason = getattr(args, "reason", None)
+    force = bool(getattr(args, "force", False))
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            status_response = client.get(f"{args.url.rstrip('/')}/_coordinator/maintenance/status")
+            if status_response.status_code != 200:
+                status = None
+            else:
+                status = status_response.json()
+            if status is None:
+                result = {"status": "blocked", "classification": "blocked",
+                          "reason": "Coordinator maintenance status could not be authoritatively read",
+                          "http_status": status_response.status_code}
+                code = 2
+            elif not force:
+                # The general status endpoint provides readiness and miner state for a useful read-only view.
+                general = client.get(f"{args.url.rstrip('/')}/_coordinator/status")
+                state = status.get("state")
+                classification = ("no_action_required" if state == "idle" else
+                                  "operator_required" if state == "recovery_required" else "wait")
+                result = {"schema_version": 1, "status": state, "classification": classification,
+                          "maintenance": status, "coordinator": general.json() if general.status_code == 200 else None,
+                          "recommended_command": ('rc maintenance reconcile -f -r "<reason>"'
+                                                  if state == "recovery_required" else None)}
+                code = {"idle": 0, "recovery_required": 2}.get(state, 1)
+            elif status.get("state") == "idle":
+                result = {"status": "no_action_required", "maintenance": status}
+                code = 0
+            elif status.get("state") != "recovery_required":
+                result = {"status": "blocked", "reason": "Maintenance owner must reach recovery_required before override",
+                          "maintenance": status}
+                code = 1
+            elif not isinstance(reason, str) or not reason.strip() or len(reason) > 512:
+                result = {"status": "invalid", "reason": "A 1..512 character reason is required with --force"}
+                code = 2
+            else:
+                operation_id = status.get("operation_id")
+                session_id = status.get("session_id")
+                requested_operation = getattr(args, "operation_id", None)
+                requested_session = getattr(args, "session_id", None)
+                if requested_operation and requested_operation != operation_id:
+                    result = {"status": "stale", "reason": "operation_id does not match current recovery record"}
+                    code = 2
+                elif requested_session and requested_session != session_id:
+                    result = {"status": "stale", "reason": "session_id does not match current recovery record"}
+                    code = 2
+                elif not operation_id and not session_id:
+                    result = {"status": "invalid", "reason": "Recovery record has no resolvable operation or session identity"}
+                    code = 2
+                else:
+                    token = _operator_token()
+                    if not token:
+                        result = {"status": "unauthorized", "reason": "A protected operator credential is required"}
+                        code = 2
+                    else:
+                        payload = {
+                            "operator": getpass.getuser(), "operation_id": operation_id,
+                            "session_id": session_id, "restoration_verified": False,
+                            "resume_miner": not getattr(args, "no_resume_miner", False),
+                            "operator_override": True, "override_reason": reason.strip(),
+                            "restoration_evidence": {},
+                        }
+                        response = client.post(
+                            f"{args.url.rstrip('/')}/_coordinator/maintenance/release",
+                            headers={"Authorization": f"Bearer {token}"}, json=payload,
+                        )
+                        result = response.json()
+                        disposition = result.get("disposition") if isinstance(result, dict) else None
+                        restoration = disposition.get("restoration") if isinstance(disposition, dict) else None
+                        valid_ack = (
+                            response.status_code == 200
+                            and isinstance(result, dict)
+                            and result.get("status") == "released"
+                            and result.get("session_id") == session_id
+                            and isinstance(disposition, dict)
+                            and disposition.get("operation_id") == operation_id
+                            and disposition.get("session_id") == session_id
+                            and disposition.get("operator") == getpass.getuser()
+                            and isinstance(disposition.get("miner_restart_eligible"), bool)
+                            and isinstance(restoration, dict)
+                            and restoration.get("operator_override") is True
+                            and restoration.get("independently_verified") is False
+                        )
+                        if valid_ack:
+                            code = 0
+                        else:
+                            result = {"status": "error", "reason": "Release response did not contain the matching audited disposition",
+                                      "http_status": response.status_code}
+                            code = 2
+    except Exception as exc:
+        result = {"status": "unavailable", "reason": f"Maintenance reconciliation failed ({type(exc).__name__})"}
+        code = 2
+    if getattr(args, "json", False):
+        emit_json(result)
+    else:
+        from resource_coordinator.presentation import render_maintenance_reconcile_result
+        render_maintenance_reconcile_result(result)
+    return code
     url = f"{args.url.rstrip('/')}/_coordinator/recover"
     try:
         with httpx.Client(timeout=5.0) as client:
@@ -549,13 +803,28 @@ async def _async_diagnose(config_path: Optional[str], url: str, as_json: bool) -
     except Exception:
         pass
 
-    miner_configured = bool(config.processes)
+    miner_names = [name for name in config.processes if "miner" in name.casefold() or "krig" in name.casefold()]
     miner_status_info = None
-    if miner_configured:
+    if gateway_online:
+        processes = gateway_data.get("processes") if isinstance(gateway_data.get("processes"), dict) else {}
+        selected = next((name for name in miner_names if name in processes), None)
+        if selected is None and len(processes) == 1:
+            selected = next(iter(processes))
+        if selected is not None:
+            process = dict(processes[selected]) if isinstance(processes[selected], dict) else {}
+            owner_verified = process.get("is_coordinator_owned") is True
+            miner_status_info = {"name": selected, **process, "ownership_verified": owner_verified,
+                                 "ownership_provenance": "running_coordinator_status"}
+    elif miner_names:
         system = build_system(config)
-        if system.miner_adapter:
-            st = await system.miner_adapter.status()
-            miner_status_info = st.to_dict()
+        try:
+            if system.miner_adapter:
+                status = await system.miner_adapter.status()
+                miner_status_info = {**status.to_dict(), "ownership_verified": False,
+                                     "ownership_note": "ownership_unverifiable_offline (Coordinator service unreachable)",
+                                     "ownership_provenance": "local_read_only_process_observation"}
+        finally:
+            await system.gateway.close()
 
     diag = {
         "timestamp": time.time(),
@@ -583,7 +852,8 @@ async def _async_diagnose(config_path: Optional[str], url: str, as_json: bool) -
     if as_json:
         emit_json(diag)
     else:
-        render_result("Read-only Diagnostics", diag)
+        from resource_coordinator.presentation import render_telemetry_result
+        render_telemetry_result(diag)
     return 0
 
 
@@ -607,7 +877,8 @@ async def _async_preflight(
         if as_json:
             emit_json(live_result)
         else:
-            render_result("Live Acceptance Preflight", {"status": "ready" if ready else "blocked", **live_result})
+            from resource_coordinator.presentation import render_preflight_result
+            render_preflight_result({"status": "ready" if ready else "blocked", **live_result})
         return 0 if ready else 1
 
     system = build_system(config, use_fake_processes=fake_miner)
@@ -625,9 +896,10 @@ async def _async_preflight(
         }
         emit_json(data)
     else:
-        render_result("Preflight", {"status": "passed" if passed else "failed", "messages": messages,
-                                     "errors": [m for m in messages if m.startswith("ERROR")],
-                                     "warnings": [m for m in messages if m.startswith("WARNING")]})
+        from resource_coordinator.presentation import render_preflight_result
+        render_preflight_result({"status": "passed" if passed else "failed", "messages": messages,
+                                 "errors": [m for m in messages if m.startswith("ERROR")],
+                                 "warnings": [m for m in messages if m.startswith("WARNING")]})
     return 0 if passed else 1
 
 
@@ -685,7 +957,8 @@ async def _async_accept(args: argparse.Namespace) -> int:
         if getattr(args, "json", False):
             emit_json(report_data)
         else:
-            render_result("Acceptance Run", report_data)
+            from resource_coordinator.presentation import render_acceptance_result
+            render_acceptance_result(report_data)
         return 0 if report.summary.get("all_passed") else 1
     except Exception as exc:
         if getattr(args, "json", False):
@@ -697,6 +970,15 @@ async def _async_accept(args: argparse.Namespace) -> int:
 
 def cmd_accept(args: argparse.Namespace) -> int:
     return asyncio.run(_async_accept(args))
+
+
+def cmd_help(args: argparse.Namespace) -> int:
+    topic = getattr(args, "topic", None)
+    try:
+        parse_args(["--help"] if topic is None else [topic, "--help"])
+    except SystemExit as exc:
+        return 0 if exc.code == 0 else int(exc.code)
+    return 0
 
 
 def cmd_abort(args: argparse.Namespace) -> int:
@@ -776,8 +1058,9 @@ def main(argv: Optional[List[str]] = None) -> None:
         "system.auth.reinitialize": cmd_auth,
         "check.health": _cmd_installation, "check.telemetry": cmd_diagnose,
         "check.preflight": cmd_preflight, "check.accept": cmd_accept,
+        "maintenance.status": cmd_maintenance, "maintenance.reconcile": cmd_maintenance,
         "config.show": cmd_config, "config.validate": cmd_config,
-        "logs": cmd_logs,
+        "logs": cmd_logs, "help": cmd_help,
     }
     handler = handlers.get(operation_id)
     if handler is None:
