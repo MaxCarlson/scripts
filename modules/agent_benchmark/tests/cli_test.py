@@ -116,7 +116,7 @@ def test_models_list_json(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "list_downloaded_models", lambda **kw: mock_downloaded)
     monkeypatch.setattr(cli_mod, "get_loaded_models", lambda **kw: mock_loaded)
 
-    assert main(["models", "list", "--format", "json"]) == 0
+    assert main(["models", "list", "--provider", "lmstudio", "--format", "json"]) == 0
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert len(data["downloaded_models"]) == 1

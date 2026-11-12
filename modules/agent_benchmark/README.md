@@ -205,6 +205,29 @@ comparison contract.
 
 ## External Benchmark Evaluation — Harbor Integration
 
+### Benchmark setup and CLI navigation
+
+Use `agent-benchmark` as the primary executable name. `agent-bench` remains a compatible alias. The root `plan`, `run`, `status`, `cleanup`, and `smoke` commands are legacy task aliases; prefer the explicit `task` group.
+
+- `setup` discovers benchmark definitions, installs dependencies, and verifies local resources. `setup list` inventories benchmark readiness; `setup status` shows per-resource state; `setup plan` previews requirements; `setup install` is dry-run unless `-x` is supplied; `setup verify` returns 0 only when selected required resources verify, 1 when a requirement is missing/unavailable/invalid, and 2 for invalid arguments; `setup upgrade` is the explicit version transition path.
+- A Harbor registry receipt means that benchmark metadata is registered. It does not mean Harbor task files are downloaded or provisioned locally.
+- `suite` selects cohorts, runs evaluations, and inspects saved runs. `suite plan` concerns the selected cohort; `suite list` lists cohorts/datasets; `suite status` lists recent runs and `suite status -r RUN_ID` inspects one checkpoint.
+- Inventory, status, plan, and report commands use readable output by default where supported. Request structured output explicitly with `-f json` or `--format json`. `-F/--llm-friendly` remains the compact automation output switch; `-j` remains the suite jobs count.
+
+```powershell
+agent-benchmark setup list
+agent-benchmark setup install -d ifeval -x
+agent-benchmark setup install -A -x
+agent-benchmark suite list
+agent-benchmark suite plan -c ifeval-smoke
+agent-benchmark suite status
+agent-benchmark suite status -r RUN_ID
+agent-benchmark task plan -h
+agent-benchmark experiment plan -h
+```
+
+`-A/--all` selects all benchmarks for setup operations; read-only inventory defaults to all benchmarks. For authorized installation, use `-d BENCHMARK` or explicit `-A`, and include `-x`. Existing `setup -A` remains a compatibility alias for the all-benchmark plan.
+
 Agent Benchmark provides integration with external coding benchmarks using the Harbor evaluation framework (`harbor==0.25.0`):
 1. **Aider Polyglot** (`aider/aider-polyglot`): 225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust.
 2. **Terminal-Bench 2.0** (`terminal-bench/terminal-bench-2`, 89 tasks) and **Terminal-Bench 4.0.0** (`terminal-bench/terminal-bench@4.0.0`, 66 tasks) are separate datasets with distinct task sets and source revisions. The short `terminal-bench` and `terminal-bench-cpu-only` aliases refer to the 2.0 catalog; the default selection is the pinned five-task CPU subset. The subset is `build-cython-ext`, `regex-log`, `sqlite-db-truncate`, `nginx-request-logging`, and `log-summary-date-ranges`.

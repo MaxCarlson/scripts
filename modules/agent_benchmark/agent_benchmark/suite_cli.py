@@ -27,7 +27,13 @@ DEFAULT_RUNS = Path("reports/agent-bench-suite")
 
 
 def add_suite_parser(actions: Any) -> None:
-    suite = actions.add_parser("suite", help="Plan, execute, resume and report persistent Harbor cohorts")
+    suite = actions.add_parser(
+        "suite",
+        help="Select benchmark cohorts, execute evaluations, and inspect runs",
+        description="Select cohorts, plan or execute evaluations, and inspect saved suite runs. plan applies to the selected cohort.",
+        epilog="Examples:\n  agent-benchmark suite list\n  agent-benchmark suite plan -c ifeval-smoke\n  agent-benchmark suite status\n  agent-benchmark suite status -r RUN_ID",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = suite.add_subparsers(dest="suite_command")
     list_parser = commands.add_parser("list", help="List verified cohorts and datasets")
     list_parser.add_argument(

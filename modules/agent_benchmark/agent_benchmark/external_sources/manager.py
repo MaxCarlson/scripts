@@ -431,6 +431,14 @@ class SourceManager:
                 "details": f"Target path {target} has no recorded receipt in installed-sources.json",
             }
 
+        if receipt.spec_digest and receipt.spec_digest != spec.digest():
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "status": "stale",
+                "details": "Installed resource specification digest differs from the current declaration",
+            }
+
         if spec.revision and receipt.revision and receipt.revision != spec.revision:
             return {
                 "benchmark_id": spec.benchmark_id,

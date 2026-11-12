@@ -61,6 +61,24 @@ def test_all_suite_read_commands_accept_friendly_flag():
         assert args.llm_friendly is True
 
 
+def test_suite_status_without_id_lists_empty_run_store(tmp_path, monkeypatch, capsys):
+    import agent_benchmark.suite_cli as suite_cli
+    from agent_benchmark.cli import main
+
+    monkeypatch.setattr(suite_cli, "DEFAULT_RUNS", tmp_path / "absent-runs")
+    assert main(["suite", "status"]) == 0
+    assert capsys.readouterr().out.strip() == "No saved suite runs."
+
+
+def test_suite_list_defaults_to_table(capsys):
+    from agent_benchmark.cli import main
+
+    assert main(["suite", "list"]) == 0
+    output = capsys.readouterr().out
+    assert "Registered Datasets" in output
+    assert not output.lstrip().startswith("{")
+
+
 def test_llm_friendly_plan_preserves_harbor_execution_spec(monkeypatch, capsys):
     import agent_benchmark.suite_cli as suite_cli
 

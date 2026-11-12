@@ -48,7 +48,13 @@ def parser() -> argparse.ArgumentParser:
     """Build the root agent-bench CLI parser with modular command groups."""
     root = argparse.ArgumentParser(
         prog="agent-bench",
-        description="Independently verify first-attempt local coding work and multi-model benchmark experiments",
+        description=("Benchmark tools. setup discovers and verifies dependencies; suite selects cohorts and inspects evaluations; "
+                     "task executes one task; experiment compares agents or models; models inspects model configurations; "
+                     "external is the compatibility interface for legacy Harbor workflows."),
+        epilog=("Examples:\n  agent-benchmark setup list\n  agent-benchmark suite list\n"
+                "  agent-benchmark task plan -h\n  agent-benchmark experiment plan -h\n"
+                "Legacy root aliases: plan, run, status, cleanup, smoke."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     root.add_argument("-V", "--version", action="version", version=__version__)
     actions = root.add_subparsers(dest="command")

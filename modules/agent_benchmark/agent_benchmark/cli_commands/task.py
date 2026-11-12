@@ -196,6 +196,11 @@ def handle_task(args: argparse.Namespace, cmd: str | None = None) -> int:
         _, trials = load_run(directory)
         return 0 if trials and all(t.status == "passed" for t in trials) else 1
     elif command == "cleanup":
+        if not getattr(args, "execute", False) and not getattr(args, "run_dir", None):
+            pending = read_pending(args.state_dir)
+            if pending is None:
+                print(json.dumps({"removed": False, "diagnostic": "No pending worker; specify --run-dir for completed workspace cleanup"}, indent=2))
+                return 0
         result = asyncio.run(
             cleanup_trial(
                 state=args.state_dir,

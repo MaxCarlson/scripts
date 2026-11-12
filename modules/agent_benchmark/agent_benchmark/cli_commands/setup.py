@@ -19,6 +19,9 @@ def add_setup_parser(actions: Any) -> None:
     setup_p = actions.add_parser(
         "setup",
         help="Plan, install, verify, and inspect external benchmark suites and dependencies",
+        description="Discover benchmark definitions, install dependencies, and verify local resource integrity. -A is a compatibility alias for all-benchmark selection; install remains a dry run without -x.",
+        epilog="Examples:\n  agent-benchmark setup list\n  agent-benchmark setup install -d ifeval -x\n  agent-benchmark setup install -A -x\n  agent-benchmark setup verify -d ifeval",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Support setup -A / --all directly on the root setup command
     setup_p.add_argument(
@@ -90,6 +93,7 @@ def _add_setup_common(parser: argparse.ArgumentParser) -> None:
         "-A",
         "--all",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Apply action to all registered default benchmark resources",
     )
     group.add_argument(
@@ -97,18 +101,20 @@ def _add_setup_common(parser: argparse.ArgumentParser) -> None:
         "--dataset",
         "--benchmark",
         dest="target",
+        default=argparse.SUPPRESS,
         help="Specific benchmark or dataset identifier",
     )
     parser.add_argument(
         "-f",
         "--format",
         choices=("table", "json"),
-        default="table",
+        default=argparse.SUPPRESS,
         help="Output format (default: table)",
     )
     parser.add_argument(
         "--resource-root",
         help="Override default external resource store directory",
+        default=argparse.SUPPRESS,
     )
 
 
@@ -159,9 +165,11 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             states = [source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl)) for decl in benchmark.resources if not decl.optional]
             ready = bool(states) and all(state["status"] == "verified" for state in states)
             installed = sum(state["status"] == "verified" for state in states)
-            external = any(decl.type == "harbor_registry" for decl in benchmark.resources)
-            state = "READY" if ready else ("REGISTERED" if external and installed else "MISSING")
-            next_step = "suite plan -c " + str(benchmark.default_dataset) if ready else "setup install -d " + benchmark.id
+            harbor_marker = any(decl.type == "harbor_registry" for decl in benchmark.resources)
+            harbor_only = harbor_marker and all(decl.type == "harbor_registry" for decl in benchmark.resources)
+            state = "REGISTERED" if ready and harbor_only else ("READY" if ready else ("REGISTERED" if harbor_marker and installed else "MISSING"))
+            next_step = ("Provision Harbor tasks with the Harbor workflow" if state == "REGISTERED" and harbor_only
+                         else ("suite plan -c " + str(benchmark.default_dataset) if ready else "setup install -d " + benchmark.id))
             rows.append({"benchmark_id": benchmark.id, "name": benchmark.name, "type": benchmark.implementation_type, "resources": f"{installed}/{len(states)}", "state": state, "next": next_step})
         if fmt == "json":
             print(json.dumps({"mode": "list", "benchmarks": rows}, indent=2))

@@ -114,6 +114,6 @@ def test_setup_status_and_verify(capsys):
     assert len(data1["benchmarks"]) >= 4
 
     rc2 = main(["setup", "verify", "-A", "-f", "json"])
-    assert rc2 == 0
+    assert rc2 == 1
     data2 = json.loads(capsys.readouterr().out)
     assert data2["mode"] == "verify"

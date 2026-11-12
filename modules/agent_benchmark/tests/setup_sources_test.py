@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import subprocess
 
 import pytest
 
@@ -207,3 +208,89 @@ def test_cli_setup_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
     assert rc == 2
     err = capsys.readouterr().err
     assert "cannot specify both --all (-A) and a specific target (-d)" in err
+
+
+def test_pinned_sparse_checkout_uses_non_tip_revision(tmp_path: Path) -> None:
+    upstream = tmp_path / "upstream"
+    upstream.mkdir()
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=upstream, check=True, capture_output=True, text=True).stdout.strip()
+
+    git("init")
+    git("config", "user.email", "fixture@example.invalid")
+    git("config", "user.name", "Fixture")
+    wanted = upstream / "instruction_following_eval"
+    wanted.mkdir()
+    (wanted / "data.jsonl").write_text('{"ok":true}\n', encoding="utf-8")
+    (upstream / "unrelated").mkdir()
+    (upstream / "unrelated" / "large.txt").write_text("unused", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "pinned")
+    pinned = git("rev-parse", "HEAD")
+    (wanted / "later.txt").write_text("tip", encoding="utf-8")
+    git("add", ".")
+    git("commit", "-m", "tip")
+
+    spec = ResourceSpec("ifeval", "git_sparse", "fixture", url=str(upstream), revision=pinned, paths=("instruction_following_eval",))
+    manager = SourceManager(tmp_path / "store")
+    receipt = manager.install_resource(spec, execute=True)
+    target = Path(receipt.install_path)
+    head = subprocess.run(["git", "-C", str(target), "rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+    assert head == pinned
+    assert (target / "instruction_following_eval" / "data.jsonl").is_file()
+    assert not (target / "unrelated").exists()
+    assert not (target / "instruction_following_eval" / "later.txt").exists()
+
+
+def test_receipt_database_corruption_is_reported(tmp_path: Path) -> None:
+    manager = SourceManager(tmp_path / "store")
+    manager.layout["locks"].mkdir(parents=True)
+    manager.lock_file.write_text("not-json", encoding="utf-8")
+    with pytest.raises(ValueError, match="receipt database is corrupt"):
+        manager.plan_resource(ResourceSpec("ifeval", "git", "source"))
+
+
+def test_receipt_write_failure_is_not_suppressed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_benchmark.external_sources import receipts
+
+    lock_file = tmp_path / "store" / "locks" / "installed-sources.json"
+    monkeypatch.setattr(receipts.os, "replace", lambda *_args: (_ for _ in ()).throw(PermissionError("locked")))
+    monkeypatch.setattr(receipts.time, "sleep", lambda _delay: None)
+    resource = InstallReceipt("ifeval", "src", "git", str(tmp_path), None, "digest", "now", "test", "installed")
+    with pytest.raises(OSError, match="Unable to atomically write"):
+        record_receipt(lock_file, resource)
+
+
+def test_failed_publication_restores_previous_target(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from agent_benchmark.external_sources import stores
+
+    target = tmp_path / "resource"
+    target.mkdir()
+    (target / "data").write_text("old", encoding="utf-8")
+    staging = tmp_path / "staging"
+    staging.mkdir()
+    (staging / "data").write_text("new", encoding="utf-8")
+    original_replace = stores.os.replace
+
+    def fail_staging(src: Path, dst: Path) -> None:
+        if Path(src) == staging:
+            raise PermissionError("publication denied")
+        original_replace(src, dst)
+
+    monkeypatch.setattr(stores.os, "replace", fail_staging)
+    monkeypatch.setattr(stores.time, "sleep", lambda _delay: None)
+    with pytest.raises(OSError, match="previous target restored"):
+        stores.commit_staging_dir(staging, target)
+    assert (target / "data").read_text(encoding="utf-8") == "old"
+
+
+def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    root = str(tmp_path / "store")
+    assert main(["setup", "-f", "json", "list", "-A", "--resource-root", root]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["mode"] == "list"
+    assert {"ifeval", "livecodebench"}.issubset({row["benchmark_id"] for row in payload["benchmarks"]})
+    assert main(["setup", "list", "-d", "ifeval", "-f", "json", "--resource-root", root]) == 0
+    filtered = json.loads(capsys.readouterr().out)
+    assert [row["benchmark_id"] for row in filtered["benchmarks"]] == ["ifeval"]
