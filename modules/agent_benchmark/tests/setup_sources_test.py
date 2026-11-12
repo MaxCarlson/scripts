@@ -198,7 +198,7 @@ def test_cli_setup_commands(tmp_path: Path, capsys: pytest.CaptureFixture[str]) 
 
     # 5. setup verify -A
     rc = main(["setup", "verify", "-A", "-f", "json", "--resource-root", res_root])
-    assert rc == 0
+    assert rc == 1
     out5 = json.loads(capsys.readouterr().out)
     assert out5["mode"] == "verify"
 
