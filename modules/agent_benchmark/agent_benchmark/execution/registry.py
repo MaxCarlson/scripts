@@ -45,6 +45,10 @@ def get_scorer(scorer_id: str) -> ScoringAdapter:
             from ..benchmarks.adapters.ifeval import IFEvalScoringAdapter
 
             return IFEvalScoringAdapter()
+        elif scorer_id == "lcb_official":
+            from ..benchmarks.adapters.livecodebench import LCBScoringAdapter
+
+            return LCBScoringAdapter()
     factory = _SCORERS.get(scorer_id)
     if factory is None:
         raise KeyError(f"Unknown scoring adapter: {scorer_id!r}. Registered: {sorted(_SCORERS)}")

@@ -60,14 +60,14 @@
 - [x] Offline E2E test with mock direct-chat backend
 
 ## Phase 06 — Official LiveCodeBench Direct Code Generation & Sandboxed Scoring
-- [ ] Implement `benchmarks/adapters/livecodebench.py`
-- [ ] Pinned resource declarations for LiveCodeBench `release_v6` code-generation-lite
-- [ ] Define frozen cohorts: `lcb-v6-smoke`, `lcb-v6-direct-100`, `lcb-v6-direct-full`
-- [ ] Implement code extraction and direct generation formatting
-- [ ] Implement container verifier (`execution/container_verify.py`) with strict security constraints
-- [ ] Fail-closed logic when container sandbox is unavailable
-- [ ] Bridge to official LiveCodeBench evaluation
-- [ ] Fixture tests for problem execution, timeout, syntax error, and memory bounds
+- [x] Implement `benchmarks/adapters/livecodebench.py`
+- [x] Pinned resource declarations for LiveCodeBench `release_v6` code-generation-lite
+- [x] Define frozen cohorts: `lcb-v6-smoke`, `lcb-v6-direct-100`, `lcb-v6-direct-full`
+- [x] Implement code extraction and direct generation formatting
+- [x] Implement container verifier (`execution/container_verify.py`) with strict security constraints
+- [x] Fail-closed logic when container sandbox is unavailable
+- [x] Bridge to official LiveCodeBench evaluation
+- [x] Fixture tests for problem execution, timeout, syntax error, and memory bounds
 
 ## Phase 07 — Multi-Model Comparison, Score Granularity, and Reports
 - [ ] Extend comparison conditions in `benchmark_core` or `agent_benchmark` (`declared-model-intervention-v1`)

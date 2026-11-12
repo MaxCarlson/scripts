@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+from .container_verify import (
+    ContainerVerifier,
+    SandboxConfig,
+    SandboxExecutionResult,
+    SandboxUnavailableError,
+)
 from .contract import (
     BackendAttempt,
     ExecutionBackend,
@@ -18,6 +24,7 @@ from .registry import get_backend, get_scorer, register_backend, register_scorer
 
 __all__ = [
     "BackendAttempt",
+    "ContainerVerifier",
     "DirectChatBackend",
     "ExecutionBackend",
     "ExecutionPlan",
@@ -25,6 +32,9 @@ __all__ = [
     "MockExecutionBackend",
     "MockScoringAdapter",
     "ResultNormalizer",
+    "SandboxConfig",
+    "SandboxExecutionResult",
+    "SandboxUnavailableError",
     "ScoredAttempt",
     "ScoringAdapter",
     "TaskContext",

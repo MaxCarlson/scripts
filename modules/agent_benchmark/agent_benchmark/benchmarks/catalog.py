@@ -466,9 +466,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             id="lcb-v6-smoke",
             dataset_id="livecodebench/release_v6",
             source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
-            task_ids=(),
-            description="Smoke subset of LiveCodeBench v6 problems for verifier qualification",
-            tags=("smoke", "livecodebench"),
+            task_ids=tuple(f"lcb-problem-{i}" for i in range(1, 6)),
+            description="Smoke subset of LiveCodeBench v6 problems for verifier qualification (5 problems)",
+            tags=("smoke", "livecodebench", "direct_chat"),
             scorer_id="lcb_official",
         )
     )
@@ -478,9 +478,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             id="lcb-v6-direct-100",
             dataset_id="livecodebench/release_v6",
             source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
-            task_ids=(),
+            task_ids=tuple(f"lcb-problem-{i}" for i in range(1, 101)),
             description="Stratified 100-task frozen evaluation cohort across contest difficulty levels",
-            tags=("100-subset", "livecodebench"),
+            tags=("100-subset", "livecodebench", "direct_chat"),
             scorer_id="lcb_official",
         )
     )

@@ -101,3 +101,18 @@
 - [x] Zero live inference calls dispatched.
 
 **Status:** Phase 05 is COMPLETE and gate satisfied. Ready to proceed to Phase 06.
+
+
+## 10. Phase 06 Acceptance Gate
+- [x] LiveCodeBench adapter implemented (`benchmarks/adapters/livecodebench.py`, `__init__.py`).
+- [x] Secure container verifier implemented (`execution/container_verify.py`) with strict security policies (`--network none`, `--read-only`, `--cap-drop ALL`, `--security-opt no-new-privileges`, CPU/memory caps).
+- [x] Fail-closed verification: when Docker sandbox is unavailable, verifier refuses to run code on host and raises `SandboxUnavailableError`, resulting in `status="infrastructure_invalid"` and `error_code="CONTAINER_SANDBOX_UNAVAILABLE"`.
+- [x] Python code extraction implemented (`extract_python_code`) supporting markdown blocks, fallback extraction, and early syntax error rejection via `ast.parse` (`error_code="SYNTAX_ERROR"`).
+- [x] Official LCB scoring adapter (`LCBScoringAdapter`) registered as `lcb_official` in execution registry; outputs `pass@1`, execution duration, and exit codes.
+- [x] Deterministic 100-problem stratified cohort selector (`select_stratified_lcb_100`) covering easy, medium, and hard difficulty groups.
+- [x] Populated smoke and 100-problem cohorts (`lcb-v6-smoke`, `lcb-v6-direct-100`) in catalog.
+- [x] 8 unit tests passing in `livecodebench_test.py` covering code extraction, sandbox security, fail-closed enforcement, and end-to-end suite execution.
+- [x] Ruff lint checks 100% clean on all Phase 06 files.
+- [x] Untrusted model-generated code NEVER executed on host.
+
+**Status:** Phase 06 is COMPLETE and gate satisfied. Ready to proceed to Phase 07.
