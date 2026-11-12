@@ -145,12 +145,12 @@ class SourceManager:
                 "image_id": image_id,
             }
 
-        is_stale = False
-        if receipt is not None and spec.revision and receipt.revision and receipt.revision != spec.revision:
-            is_stale = True
-
-        is_installed = receipt is not None and target.exists() and receipt.status == "installed" and not is_stale
-        action = "skip" if is_installed else ("upgrade" if is_stale else "install")
+        is_stale = receipt is not None and (
+            receipt.spec_digest != spec.digest() or receipt.revision != spec.revision
+        )
+        verification = self.verify_resource(spec) if receipt is not None else {"status": "not_installed"}
+        is_installed = verification.get("status") == "verified" and not is_stale
+        action = "skip" if is_installed else ("upgrade" if is_stale else ("repair" if receipt is not None and verification.get("status") != "not_installed" else "install"))
 
         return {
             "benchmark_id": spec.benchmark_id,
@@ -161,6 +161,7 @@ class SourceManager:
             "target_location": str(target),
             "installed": is_installed,
             "action": action,
+            "verification_status": verification.get("status"),
             "optional": spec.optional,
             "description": spec.description,
         }
@@ -184,6 +185,15 @@ class SourceManager:
 
         # Ensure root directory layout exists only when authorized to execute
         self.layout = ensure_store_layout(self.root)
+        plan = self.plan_resource(spec)
+        if plan["action"] == "skip":
+            receipt = load_sources_lock(self.lock_file).get_receipt(spec.benchmark_id, spec.name)
+            if receipt is not None:
+                return receipt
+        if plan["action"] == "upgrade":
+            raise RuntimeError(f"Resource {spec.name!r} has a stale revision/specification; use setup upgrade.")
+        if Path(plan["target_location"]).exists():
+            raise RuntimeError(f"Resource target already exists without a current valid receipt; repair required: {plan['target_location']}")
         now_iso = datetime.now(timezone.utc).isoformat()
         current_platform = f"{platform.system().lower()}-{platform.machine().lower()}"
         tx_id = f"tx_{uuid4().hex[:12]}"
@@ -236,19 +246,29 @@ class SourceManager:
                 staging.mkdir(parents=True, exist_ok=True)
                 # Clone or fetch pinned revision using safe argv (no shell=True)
                 if spec.resource_type == "git_sparse" and spec.paths:
-                    subprocess.run(
-                        ["git", "clone", "--filter=blob:none", "--no-checkout", spec.url, str(staging)],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                    )
+                    def git(stage: str, argv: list[str]) -> subprocess.CompletedProcess[str]:
+                        try:
+                            result = subprocess.run(argv, capture_output=True, text=True)
+                        except OSError as exc:
+                            raise RuntimeError(f"Git {stage} could not execute {argv[0]!r}; target={target}; staging={staging}: {exc}") from exc
+                        if result.returncode:
+                            raise RuntimeError(
+                                f"Git {stage} failed ({argv[0]} {' '.join(argv[1:])}); exit={result.returncode}; "
+                                f"target={target}; staging={staging}; stderr={(result.stderr or '')[-2000:]}; "
+                                f"stdout={(result.stdout or '')[-1000:]}"
+                            )
+                        return result
+                    git("clone", ["git", "clone", "--filter=blob:none", "--no-checkout", spec.url, str(staging)])
+                    git("sparse-checkout", ["git", "-C", str(staging), "sparse-checkout", "init", "--cone"])
+                    git("sparse-checkout", ["git", "-C", str(staging), "sparse-checkout", "set", *spec.paths])
                     rev = spec.revision or "HEAD"
-                    subprocess.run(
-                        ["git", "-C", str(staging), "checkout", rev, "--", *spec.paths],
-                        check=True,
-                        capture_output=True,
-                        text=True,
-                    )
+                    git("checkout", ["git", "-C", str(staging), "checkout", "--detach", rev])
+                    actual = git("validation", ["git", "-C", str(staging), "rev-parse", "HEAD"]).stdout.strip()
+                    if spec.revision and actual != spec.revision:
+                        raise RuntimeError(f"Pinned Git revision mismatch: expected {spec.revision}, got {actual}; target={target}; staging={staging}")
+                    for required in spec.paths:
+                        if not (staging / required).exists():
+                            raise RuntimeError(f"Git validation failed: required path {required!r} missing; target={target}; staging={staging}")
                 else:
                     subprocess.run(
                         ["git", "clone", spec.url, str(staging)],

@@ -48,6 +48,9 @@ def add_setup_parser(actions: Any) -> None:
 
     sub = setup_p.add_subparsers(dest="setup_command")
 
+    inventory = sub.add_parser("list", help="List registered benchmarks and current setup readiness")
+    _add_setup_common(inventory)
+
     # setup plan
     plan_p = sub.add_parser("plan", help="Inspect setup requirements and download plans without execution")
     _add_setup_common(plan_p)
@@ -150,6 +153,25 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
 
     source_manager = SourceManager(resource_root)
 
+    if subcmd == "list":
+        rows = []
+        for benchmark in selected_benchmarks:
+            states = [source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl)) for decl in benchmark.resources if not decl.optional]
+            ready = bool(states) and all(state["status"] == "verified" for state in states)
+            installed = sum(state["status"] == "verified" for state in states)
+            external = any(decl.type == "harbor_registry" for decl in benchmark.resources)
+            state = "READY" if ready else ("REGISTERED" if external and installed else "MISSING")
+            next_step = "suite plan -c " + str(benchmark.default_dataset) if ready else "setup install -d " + benchmark.id
+            rows.append({"benchmark_id": benchmark.id, "name": benchmark.name, "type": benchmark.implementation_type, "resources": f"{installed}/{len(states)}", "state": state, "next": next_step})
+        if fmt == "json":
+            print(json.dumps({"mode": "list", "benchmarks": rows}, indent=2))
+        else:
+            table = Table(headers=["Benchmark", "Name", "Type", "Resources", "State", "Next"], style="dash")
+            for row in rows:
+                table.add_row(row["benchmark_id"], row["name"], row["type"], row["resources"], row["state"], row["next"])
+            print(table.render())
+        return 0
+
     if subcmd == "plan":
         plan_rows = []
         benchmark_rows = []
@@ -237,19 +259,25 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         else:
             # Authorized execution
             installed_receipts = []
+            failures = []
             for spec in specs_to_install:
                 try:
+                    plan = source_manager.plan_resource(spec)
+                    if plan["action"] == "skip":
+                        installed_receipts.append({"benchmark_id": spec.benchmark_id, "resource_name": spec.name, "resource_type": spec.resource_type, "status": "skipped"})
+                        continue
                     receipt = source_manager.install_resource(spec, execute=True)
                     installed_receipts.append(receipt.to_dict())
                 except Exception as err:
                     print(f"agent-bench setup install: failed to install {spec.name}: {err}", file=sys.stderr)
-                    return 1
+                    failures.append({"benchmark_id": spec.benchmark_id, "resource_name": spec.name, "error": str(err)})
 
             payload = {
                 "mode": "install_executed",
                 "scope": "all" if is_all or not target else target,
                 "resource_root": str(source_manager.root),
                 "installed": installed_receipts,
+                "failures": failures,
             }
             if fmt == "json":
                 print(json.dumps(payload, indent=2))
@@ -259,7 +287,7 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 for rc in installed_receipts:
                     tbl.add_row(rc["benchmark_id"], rc["resource_name"], rc["resource_type"], rc["status"])
                 print(tbl.render())
-            return 0
+            return 1 if failures else 0
 
     elif subcmd == "status":
         status_rows = []
@@ -319,7 +347,7 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 spec = ResourceSpec.from_declaration(b.id, decl)
                 res_verify = source_manager.verify_resource(spec)
                 verify_rows.append(res_verify)
-                if res_verify.get("status") in ("corrupted", "failed"):
+                if res_verify.get("status") != "verified":
                     has_failure = True
 
         payload = {

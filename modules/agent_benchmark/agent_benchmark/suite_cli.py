@@ -31,7 +31,7 @@ def add_suite_parser(actions: Any) -> None:
     commands = suite.add_subparsers(dest="suite_command")
     list_parser = commands.add_parser("list", help="List verified cohorts and datasets")
     list_parser.add_argument(
-        "-f", "--format", choices=("table", "json"), default="json", help="Output format (default: json)"
+        "-f", "--format", choices=("table", "json"), default="table", help="Output format (default: table)"
     )
     list_parser.add_argument("-F", "--llm-friendly", action="store_true")
 
@@ -97,7 +97,7 @@ def add_suite_parser(actions: Any) -> None:
     run.add_argument("-B", "--background", action="store_true")
     run.add_argument("-o", "--output-root", type=Path, default=DEFAULT_RUNS)
     lookup = commands.add_parser("status", help="Show one run checkpoint")
-    lookup.add_argument("-r", "--run-id", required=True)
+    lookup.add_argument("-r", "--run-id")
     lookup.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     lookup.add_argument("-F", "--llm-friendly", action="store_true")
     resume = commands.add_parser("resume", help="Resume pending or explicitly retried infrastructure attempts")
@@ -242,7 +242,7 @@ def handle_suite(args: argparse.Namespace) -> int:
         if command == "list":
             from .benchmarks.catalog import get_unified_discovery
 
-            fmt = getattr(args, "format", "json")
+            fmt = getattr(args, "format", "table")
             discovery = get_unified_discovery(include_readiness=True)
             if fmt == "table":
                 from termdash import Table
@@ -414,6 +414,26 @@ def handle_suite(args: argparse.Namespace) -> int:
             _emit_event("finished", friendly=friendly, **_finished_payload(summary, run_dir))
             return 0 if summary["infrastructure_invalid"] == 0 else 1
         if command in {"status", "report"}:
+            if command == "status" and not args.run_id:
+                root = args.runs_dir.expanduser().resolve()
+                rows = []
+                if root.is_dir():
+                    for manifest_path in sorted(root.glob("*/manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                        try:
+                            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                            state = status_run(manifest_path.parent)
+                            rows.append({"run_id": manifest.get("run_id", manifest_path.parent.name), "state": state.get("state", "unknown"), "cohort": manifest.get("cohort", "-"), "run_dir": str(manifest_path.parent)})
+                        except (OSError, ValueError):
+                            continue
+                if friendly:
+                    emit({"runs": rows}, llm_friendly=True)
+                else:
+                    from termdash import Table
+                    table = Table(headers=["Run ID", "State", "Cohort", "Directory"], style="dash")
+                    for row in rows:
+                        table.add_row(row["run_id"], row["state"], row["cohort"], row["run_dir"])
+                    print(table.render() if rows else "No saved suite runs.")
+                return 0
             run_dir = _run_dir(args.runs_dir, args.run_id)
             result = status_run(run_dir) if command == "status" else summarize_run(RunStore(run_dir).read())
             emit(result, llm_friendly=friendly)
