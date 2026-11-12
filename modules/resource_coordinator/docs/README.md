@@ -22,5 +22,6 @@
 ## Documentation Index
 
 - [HANDOFF.md](HANDOFF.md): Immediate state, branch info, active plans, risks, and next steps.
+- [MAINTENANCE_SESSIONS.md](MAINTENANCE_SESSIONS.md): Authenticated, durable external GPU maintenance protocol and Mining compatibility.
 - [plans/HANDOFF.md](plans/HANDOFF.md): Plan index and history.
 - [plans/20261019-0915_resource-coordinator-core/00_implementation-plan.md](plans/20261019-0915_resource-coordinator-core/00_implementation-plan.md): Master implementation plan for Phase 1 & 2.

@@ -675,6 +675,7 @@ async def test_scenario_16_emergency_abort_stops_admission_preserves_holds():
     await system.lease_mgr.inhibit_restart("gpu.inference", reason="Manual hold", holder_id="admin")
 
     # Operator abort requires a credential and attributable reason.
+    gateway.operator_token = "test-token"
     gateway.recovery_token = "test-token"
     resp_abort = await client.post(
         "/_coordinator/abort",

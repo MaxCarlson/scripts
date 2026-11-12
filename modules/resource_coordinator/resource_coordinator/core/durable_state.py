@@ -53,6 +53,40 @@ def _mapping(value: Any, label: str) -> Dict[str, Any]:
     return value
 
 
+def _remove_inhibition_holder(state: CoordinatorState, resource: str, holder_id: str) -> bool:
+    """Remove one exact inhibition owner, promoting another unresolved owner if present."""
+    current = state.inhibitions.get(resource)
+    if current is None:
+        return False
+    current = dict(current)
+    details = dict(current.get("details", {}))
+    additional = list(details.get("additional_uncertain_holders", []))
+    if current.get("holder_id") == holder_id:
+        if not additional:
+            state.inhibitions.pop(resource, None)
+            return True
+        promoted = dict(additional.pop(0))
+        promoted_details = dict(promoted.get("details", {}))
+        remaining = list(promoted_details.get("additional_uncertain_holders", [])) + additional
+        if remaining:
+            promoted_details["additional_uncertain_holders"] = remaining
+        else:
+            promoted_details.pop("additional_uncertain_holders", None)
+        promoted["details"] = promoted_details
+        state.inhibitions[resource] = promoted
+        return True
+    retained = [item for item in additional if item.get("holder_id") != holder_id]
+    if len(retained) == len(additional):
+        return False
+    if retained:
+        details["additional_uncertain_holders"] = retained
+    else:
+        details.pop("additional_uncertain_holders", None)
+    current["details"] = details
+    state.inhibitions[resource] = current
+    return True
+
+
 @dataclass
 class PersistedRequest:
     """Persistent snapshot of an inference request across coordinator restarts."""
@@ -139,6 +173,7 @@ class CoordinatorState:
     requests: Dict[str, PersistedRequest] = field(default_factory=dict)
     gaming_mode: Dict[str, Any] = field(default_factory=lambda: {"state": "inactive"})
     gpu_idle_condition: Dict[str, Any] = field(default_factory=dict)
+    maintenance: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         res: Dict[str, Any] = {
@@ -153,13 +188,15 @@ class CoordinatorState:
             res["gaming_mode"] = dict(self.gaming_mode)
         if self.gpu_idle_condition:
             res["gpu_idle_condition"] = dict(self.gpu_idle_condition)
+        if self.maintenance:
+            res["maintenance"] = dict(self.maintenance)
         return res
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> CoordinatorState:
         data = _mapping(data, "state")
         required = {"version", "updated_at", "inhibitions", "processes"}
-        allowed = required | {"requests", "gaming_mode", "gpu_idle_condition"}
+        allowed = required | {"requests", "gaming_mode", "gpu_idle_condition", "maintenance"}
         if not (required.issubset(set(data)) and set(data).issubset(allowed)):
             raise ValueError("Incomplete or unsupported durable state schema")
         if data["version"] != "1.0" or not _valid_time(data["updated_at"]):
@@ -220,6 +257,147 @@ class CoordinatorState:
                 if (not isinstance(sample, dict) or not _valid_time(sample.get("at"))
                         or not _valid_time(sample.get("utilization_pct")) or sample["utilization_pct"] > 100):
                     raise ValueError("Invalid persisted GPU-idle sample")
+        maintenance = data.get("maintenance", {})
+        if not isinstance(maintenance, dict):
+            raise ValueError("Invalid maintenance record")
+        if maintenance:
+            allowed_maintenance = {
+                "state", "operation_id", "session_id", "operator", "reason", "requested_at", "updated_at",
+                "lease_seconds", "expires_at", "last_renewed_at", "miner_was_running",
+                "miner_stopped_by_coordinator", "manual_override_before", "restoration", "recovery_reason",
+                "last_disposition", "restart_not_before",
+                "completed_operations",
+                "tuning_scope", "gpu_baseline", "registered_processes",
+            }
+            if set(maintenance) - allowed_maintenance:
+                raise ValueError("Unknown maintenance record fields")
+            if maintenance.get("state") not in {
+                "idle", "acquiring", "active", "releasing", "recovery_required"
+            }:
+                raise ValueError("Invalid maintenance state")
+            if maintenance["state"] != "idle":
+                for key in ("operation_id", "operator", "reason"):
+                    if not isinstance(maintenance.get(key), str) or not maintenance[key]:
+                        raise ValueError(f"Maintenance record requires {key}")
+                for key in ("requested_at", "updated_at"):
+                    if not _valid_time(maintenance.get(key)):
+                        raise ValueError(f"Invalid maintenance timestamp {key}")
+                for key in ("miner_was_running", "miner_stopped_by_coordinator", "manual_override_before"):
+                    if type(maintenance.get(key, False)) is not bool:
+                        raise ValueError(f"Invalid maintenance flag {key}")
+            if maintenance.get("state") == "active":
+                if not isinstance(maintenance.get("session_id"), str) or not maintenance["session_id"]:
+                    raise ValueError("Active maintenance requires session_id")
+                if not _valid_time(maintenance.get("expires_at")):
+                    raise ValueError("Active maintenance requires a valid expiration")
+            if "lease_seconds" in maintenance and (
+                type(maintenance["lease_seconds"]) is not int or not 30 <= maintenance["lease_seconds"] <= 3600
+            ):
+                raise ValueError("Invalid maintenance lease duration")
+            for key in ("expires_at", "last_renewed_at", "restart_not_before"):
+                if maintenance.get(key) is not None and not _valid_time(maintenance[key]):
+                    raise ValueError(f"Invalid maintenance timestamp {key}")
+            for key in ("restoration", "last_disposition"):
+                if key in maintenance:
+                    _mapping(maintenance[key], f"maintenance {key}")
+            scope = maintenance.get("tuning_scope")
+            if scope is not None:
+                if (
+                    not isinstance(scope, dict)
+                    or set(scope) != {"mode", "dimensions"}
+                    or scope.get("mode") not in {"power", "offsets", "power_offsets", "fixed_clocks"}
+                    or not isinstance(scope.get("dimensions"), list)
+                    or len(scope["dimensions"]) > 3
+                    or any(not isinstance(item, str) for item in scope["dimensions"])
+                ):
+                    raise ValueError("Invalid maintenance tuning scope")
+            baseline = maintenance.get("gpu_baseline")
+            if baseline is not None:
+                if (
+                    not isinstance(baseline, dict)
+                    or set(baseline) != {
+                        "schema_version", "operation_id", "observed_at", "gpu_uuid", "pci_bus_id",
+                        "driver_version", "values", "gpu_processes",
+                    }
+                    or baseline.get("schema_version") != 1
+                    or not _valid_time(baseline.get("observed_at"))
+                    or not isinstance(baseline.get("operation_id"), str)
+                    or not baseline.get("operation_id")
+                    or not isinstance(baseline.get("gpu_uuid"), str)
+                    or not baseline.get("gpu_uuid")
+                    or not isinstance(baseline.get("pci_bus_id"), str)
+                    or not isinstance(baseline.get("driver_version"), str)
+                    or not isinstance(baseline.get("values"), dict)
+                    or len(baseline["values"]) > 3
+                ):
+                    raise ValueError("Invalid maintenance GPU baseline")
+                for dimension, observation in baseline["values"].items():
+                    if dimension not in {
+                        "power_limit_mw", "graphics_clock_offset_mhz", "memory_clock_offset_mhz"
+                    } or not isinstance(observation, dict) or set(observation) - {"status", "value", "reason"}:
+                        raise ValueError("Invalid maintenance GPU baseline setting")
+                    if observation.get("status") == "available":
+                        if type(observation.get("value")) not in (int, float) or not math.isfinite(
+                            float(observation["value"])
+                        ):
+                            raise ValueError("Invalid maintenance GPU baseline value")
+                    elif observation.get("status") != "unsupported":
+                        raise ValueError("Invalid maintenance GPU baseline capability")
+                attribution = baseline.get("gpu_processes")
+                if not isinstance(attribution, dict) or attribution.get("status") != "available" \
+                        or not isinstance(attribution.get("identities"), list) \
+                        or len(attribution["identities"]) > 256:
+                    raise ValueError("Invalid maintenance GPU-process baseline")
+                for process in attribution["identities"]:
+                    if (
+                        not isinstance(process, dict)
+                        or set(process) != {"pid", "create_time", "executable_path", "executable_name"}
+                        or type(process.get("pid")) is not int or process["pid"] <= 0
+                        or not _valid_time(process.get("create_time"))
+                        or not isinstance(process.get("executable_path"), str)
+                        or not process["executable_path"] or len(process["executable_path"]) > 2048
+                        or not isinstance(process.get("executable_name"), str)
+                        or not process["executable_name"] or len(process["executable_name"]) > 256
+                    ):
+                        raise ValueError("Invalid maintenance GPU-process baseline identity")
+            registered = maintenance.get("registered_processes", [])
+            if not isinstance(registered, list) or len(registered) > 64:
+                raise ValueError("Invalid maintenance process registration list")
+            for process in registered:
+                if (
+                    not isinstance(process, dict)
+                    or set(process) != {"pid", "create_time", "executable_path", "executable_name"}
+                    or type(process.get("pid")) is not int or process["pid"] <= 0
+                    or not _valid_time(process.get("create_time"))
+                    or not isinstance(process.get("executable_path"), str)
+                    or not process["executable_path"] or len(process["executable_path"]) > 2048
+                    or not isinstance(process.get("executable_name"), str)
+                    or not process["executable_name"] or len(process["executable_name"]) > 256
+                ):
+                    raise ValueError("Invalid maintenance process identity")
+            completed_operations = maintenance.get("completed_operations", [])
+            if not isinstance(completed_operations, list) or len(completed_operations) > 64:
+                raise ValueError("Invalid maintenance completed-operation history")
+            for disposition in completed_operations:
+                if not isinstance(disposition, dict) or any(
+                    not isinstance(disposition.get(key), str) or not disposition[key]
+                    for key in ("operation_id", "operator")
+                ):
+                    raise ValueError("Completed maintenance disposition requires operation and operator")
+                if disposition.get("session_id") is not None and (
+                    not isinstance(disposition["session_id"], str) or not disposition["session_id"]
+                ):
+                    raise ValueError("Completed maintenance session_id must be a nonempty string when present")
+                if not _valid_time(disposition.get("released_at")):
+                    raise ValueError("Completed maintenance disposition requires released_at")
+                if any(type(disposition.get(key)) is not bool for key in (
+                    "resume_miner_requested", "miner_restart_eligible"
+                )):
+                    raise ValueError("Completed maintenance disposition requires boolean release flags")
+                if not isinstance(disposition.get("restoration", {}), dict):
+                    raise ValueError("Completed maintenance restoration disposition must be a mapping")
+            if maintenance.get("recovery_reason") is not None and not isinstance(maintenance["recovery_reason"], str):
+                raise ValueError("Invalid maintenance recovery reason")
         return cls(
             version=data["version"],
             updated_at=data["updated_at"],
@@ -228,6 +406,7 @@ class CoordinatorState:
             requests=reqs,
             gaming_mode=dict(gaming),
             gpu_idle_condition=dict(gpu_condition),
+            maintenance=dict(maintenance),
         )
 
 
@@ -353,6 +532,88 @@ class StateCodec:
         a missing file cannot distinguish first boot from loss of prior holds.
         """
         return cls.deserialize(Path(target_path).read_text(encoding="utf-8"))
+
+    @classmethod
+    def record_maintenance(
+        cls,
+        target_path: Path | str,
+        maintenance: Dict[str, Any],
+        *,
+        set_inhibition: Optional[Dict[str, Any]] = None,
+        clear_inhibition_holder: Optional[str] = None,
+    ) -> CoordinatorState:
+        """Atomically update maintenance metadata and its matching GPU hold."""
+        target = Path(target_path)
+        state = cls.load(target)
+        state.maintenance = dict(maintenance)
+        if set_inhibition is not None:
+            resource = set_inhibition.get("resource")
+            holder_id = set_inhibition.get("holder_id")
+            if not isinstance(resource, str) or not resource or not isinstance(holder_id, str) or not holder_id:
+                raise ValueError("Maintenance inhibition requires resource and holder identity")
+            current = state.inhibitions.get(resource)
+            if current and current.get("holder_id") != holder_id:
+                current = dict(current)
+                current_details = dict(current.get("details", {}))
+                additional = list(current_details.get("additional_uncertain_holders", []))
+                if not any(item.get("holder_id") == holder_id for item in additional):
+                    additional.append(dict(set_inhibition))
+                current_details["additional_uncertain_holders"] = additional
+                current["details"] = current_details
+                state.inhibitions[resource] = current
+                set_inhibition = None
+            if set_inhibition is not None and current:
+                current_details = dict(current.get("details", {}))
+                new_details = dict(set_inhibition.get("details", {}))
+                additional = list(current_details.get("additional_uncertain_holders", []))
+                if additional:
+                    new_details["additional_uncertain_holders"] = additional
+                set_inhibition = {**set_inhibition, "details": new_details}
+            if set_inhibition is not None:
+                state.inhibitions[resource] = dict(set_inhibition)
+        if clear_inhibition_holder is not None:
+            if not _remove_inhibition_holder(state, "gpu.inference", clear_inhibition_holder):
+                raise ValueError("Maintenance inhibition identity changed before release")
+        state.updated_at = time.time()
+        cls.save_atomic(state, target)
+        return state
+
+    @classmethod
+    def mark_maintenance_recovery_required(cls, target_path: Path | str) -> Optional[CoordinatorState]:
+        """Revoke process-local ownership on restart and durably preserve the hold."""
+        target = Path(target_path)
+        state = cls.load(target)
+        record = dict(state.maintenance)
+        if not record or record.get("state", "idle") == "idle":
+            return state
+        now = time.time()
+        record["state"] = "recovery_required"
+        record["updated_at"] = now
+        record["recovery_reason"] = "Coordinator restarted; the prior fencing token was revoked"
+        state.maintenance = record
+        holder_id = f"maintenance:{record['operation_id']}"
+        existing = state.inhibitions.get("gpu.inference")
+        maintenance_hold = {
+                "resource": "gpu.inference",
+                "reason": "maintenance session interrupted by Coordinator restart",
+                "holder_id": holder_id,
+                "inhibited_at": now,
+                "details": {"maintenance_operation_id": record["operation_id"]},
+        }
+        if existing is None:
+            state.inhibitions["gpu.inference"] = maintenance_hold
+        elif existing.get("holder_id") != holder_id:
+            existing = dict(existing)
+            details = dict(existing.get("details", {}))
+            additional = list(details.get("additional_uncertain_holders", []))
+            if not any(item.get("holder_id") == holder_id for item in additional):
+                additional.append(maintenance_hold)
+            details["additional_uncertain_holders"] = additional
+            existing["details"] = details
+            state.inhibitions["gpu.inference"] = existing
+        state.updated_at = now
+        cls.save_atomic(state, target)
+        return state
 
     @classmethod
     async def restore_into_leases(cls, state: CoordinatorState, lease_manager: LeaseManager) -> int:
@@ -529,13 +790,24 @@ class StateCodec:
         target = Path(target_path)
         now = time.time()
         state = cls.load(target)
-        state.inhibitions[resource] = {
+        updated = {
             "resource": resource,
             "reason": reason,
             "holder_id": holder_id,
             "inhibited_at": now,
             "details": details or {},
         }
+        existing = state.inhibitions.get(resource)
+        if existing and existing.get("holder_id") != holder_id:
+            existing = dict(existing)
+            existing_details = dict(existing.get("details", {}))
+            additional = list(existing_details.get("additional_uncertain_holders", []))
+            additional.append(updated)
+            existing_details["additional_uncertain_holders"] = additional
+            existing["details"] = existing_details
+            state.inhibitions[resource] = existing
+        else:
+            state.inhibitions[resource] = updated
         state.updated_at = now
         cls.save_atomic(state, target)
         return state

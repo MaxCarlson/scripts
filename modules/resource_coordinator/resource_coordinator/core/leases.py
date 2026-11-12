@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import time
 import uuid
 from contextlib import asynccontextmanager
@@ -18,6 +19,15 @@ import anyio
 from .events import EventDispatcher
 
 logger = logging.getLogger(__name__)
+
+
+class MaintenanceAdmissionBlocked(RuntimeError):
+    """Raised when a protected GPU operation arrives behind a maintenance fence."""
+
+
+def _is_gpu_resource(resource: str) -> bool:
+    """Treat named GPU resources as one physical conflict domain."""
+    return resource.startswith("gpu.")
 
 
 class LeaseType(str, Enum):
@@ -162,6 +172,7 @@ class LeaseManager:
         self._lock = asyncio.Lock()
         self._condition = asyncio.Condition(self._lock)
         self.restarts_blocked = False
+        self._gpu_maintenance_owner: Optional[str] = None
         self._monotonic_clock = monotonic_clock
         self._sleep = sleep
 
@@ -191,7 +202,77 @@ class LeaseManager:
 
     def tracked_resources(self) -> set[str]:
         """Snapshot of resource names with claims, cooldowns or unresolved holds."""
-        return set(self._active) | set(self._pending) | set(self._inhibitions) | set(self._cooldown_tasks)
+        resources = set(self._active) | set(self._pending) | set(self._inhibitions) | set(self._cooldown_tasks)
+        if self._gpu_maintenance_owner is not None:
+            resources.add("gpu.maintenance")
+        return resources
+
+    @property
+    def gpu_maintenance_owner(self) -> Optional[str]:
+        """Current in-process maintenance fence owner, if admission is closed."""
+        return self._gpu_maintenance_owner
+
+    async def begin_gpu_maintenance(
+        self,
+        holder_id: str,
+        *,
+        precondition: Optional[Callable[[], bool]] = None,
+    ) -> bool:
+        """Atomically close GPU admission when no protected claim or safety hold exists.
+
+        The optional precondition executes synchronously under the arbitration lock and
+        must not perform process control or await. It is intended for small durable-state
+        checks such as ensuring gaming mode is inactive.
+        """
+        if not holder_id:
+            raise ValueError("Maintenance holder identity is required")
+        async with self._condition:
+            if self._gpu_maintenance_owner is not None or self.restarts_blocked:
+                return False
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            gpu_resources = {resource for resource in resources if _is_gpu_resource(resource)}
+            if any(
+                self.active_count(resource)
+                or self.pending_count(resource)
+                or self.is_restart_inhibited(resource)
+                or self.is_cooling_down(resource)
+                for resource in gpu_resources
+            ):
+                return False
+            if precondition is not None and not precondition():
+                return False
+            self._gpu_maintenance_owner = holder_id
+            for resource in gpu_resources:
+                self._cancel_cooldown_locked(resource)
+            self._condition.notify_all()
+            return True
+
+    async def end_gpu_maintenance(self, holder_id: str, *, cooldown_resource: Optional[str] = None) -> None:
+        """Open GPU admission only for the current fence owner, then start cooldown atomically."""
+        async with self._condition:
+            if self._gpu_maintenance_owner != holder_id:
+                raise RuntimeError("Maintenance fence owner does not match")
+            if cooldown_resource is not None:
+                if self.active_count(cooldown_resource) or self.pending_count(cooldown_resource):
+                    raise RuntimeError("Cannot finish GPU maintenance while protected claims remain")
+            self._gpu_maintenance_owner = None
+            if cooldown_resource is not None:
+                self._start_cooldown_locked(cooldown_resource)
+            self._condition.notify_all()
+
+    async def restore_gpu_maintenance_fence(self, holder_id: str) -> None:
+        """Restore a durable maintenance fence before service startup admits work."""
+        if not holder_id:
+            raise ValueError("Maintenance holder identity is required")
+        async with self._condition:
+            if self._gpu_maintenance_owner not in {None, holder_id}:
+                raise RuntimeError("A different maintenance owner already holds the GPU fence")
+            self._gpu_maintenance_owner = holder_id
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            for resource in resources:
+                if _is_gpu_resource(resource):
+                    self._cancel_cooldown_locked(resource)
+            self._condition.notify_all()
 
     def active_count(self, resource: str) -> int:
         """Return the number of active leases on a resource."""
@@ -234,6 +315,8 @@ class LeaseManager:
     ) -> bool:
         """Run one idle action while reservations cannot cross the final safety check."""
         async with self._condition:
+            if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
+                return False
             resources = (
                 self.tracked_resources()
                 | {"gpu.inference", "gpu.model_loading", resource}
@@ -273,7 +356,11 @@ class LeaseManager:
             # Later activity cannot resolve an earlier request's unknown execution state.
             if resource in self._inhibitions:
                 previous = self._inhibitions[resource]
-                previous.details.setdefault("additional_uncertain_holders", []).append(inhibition.to_dict())
+                if previous.holder_id == holder_id:
+                    return previous
+                additional = previous.details.setdefault("additional_uncertain_holders", [])
+                if not any(item.get("holder_id") == holder_id for item in additional):
+                    additional.append(inhibition.to_dict())
                 return previous
             self._inhibitions[resource] = inhibition
 
@@ -293,6 +380,7 @@ class LeaseManager:
         *,
         require_all_idle: bool = False,
         before_clear: Optional[Callable[[], None]] = None,
+        start_cooldown: bool = True,
     ) -> Optional[RestartInhibition]:
         """
         Clear a protective restart inhibition and start idle cooldown if eligible.
@@ -315,7 +403,7 @@ class LeaseManager:
                     origin,
                     removed.reason,
                 )
-                if not self._active.get(resource) and not self._pending.get(resource):
+                if start_cooldown and not self._active.get(resource) and not self._pending.get(resource):
                     self._start_cooldown_locked(resource)
                 self._condition.notify_all()
 
@@ -326,6 +414,79 @@ class LeaseManager:
             )
         return removed
 
+    async def clear_inhibition_holder(
+        self,
+        resource: str,
+        holder_id: str,
+        *,
+        before_change: Optional[Callable[[], None]] = None,
+        start_cooldown: bool = True,
+    ) -> Optional[RestartInhibition]:
+        """Remove one inhibition owner without discarding other uncertain holders."""
+        changed: Optional[RestartInhibition] = None
+        async with self._condition:
+            current = self._inhibitions.get(resource)
+            if current is None or self.active_count(resource) or self.pending_count(resource):
+                return None
+            details = dict(current.details)
+            additional = list(details.get("additional_uncertain_holders", []))
+            matched_extra = next((item for item in additional if item.get("holder_id") == holder_id), None)
+            if current.holder_id != holder_id and matched_extra is None:
+                return None
+            if before_change is not None:
+                before_change()
+            changed = current
+            if current.holder_id == holder_id:
+                if additional:
+                    promoted = dict(additional.pop(0))
+                    promoted_details = dict(promoted.get("details", {}))
+                    remaining = list(promoted_details.get("additional_uncertain_holders", [])) + additional
+                    if remaining:
+                        promoted_details["additional_uncertain_holders"] = remaining
+                    else:
+                        promoted_details.pop("additional_uncertain_holders", None)
+                    self._inhibitions[resource] = RestartInhibition(
+                        resource=resource,
+                        reason=promoted["reason"],
+                        holder_id=promoted["holder_id"],
+                        inhibited_at=promoted.get("inhibited_at", time.time()),
+                        details=promoted_details,
+                    )
+                else:
+                    self._inhibitions.pop(resource, None)
+            else:
+                retained = [item for item in additional if item.get("holder_id") != holder_id]
+                if retained:
+                    details["additional_uncertain_holders"] = retained
+                else:
+                    details.pop("additional_uncertain_holders", None)
+                self._inhibitions[resource] = RestartInhibition(
+                    resource=resource,
+                    reason=current.reason,
+                    holder_id=current.holder_id,
+                    inhibited_at=current.inhibited_at,
+                    details=details,
+                )
+            if (
+                start_cooldown
+                and resource not in self._inhibitions
+                and not self._active.get(resource)
+                and not self._pending.get(resource)
+            ):
+                self._start_cooldown_locked(resource)
+            self._condition.notify_all()
+        await self.dispatcher.emit(
+            "resource.restart_inhibition_cleared",
+            {
+                "resource": resource,
+                "origin": "holder_reconciled",
+                "previous": changed.to_dict(),
+                "holder_id": holder_id,
+                "another_hold_remains": resource in self._inhibitions,
+            },
+        )
+        return changed
+
     def _cancel_cooldown_locked(self, resource: str) -> None:
         """Cancel an in-progress cooldown timer (must hold self._lock)."""
         task = self._cooldown_tasks.pop(resource, None)
@@ -334,7 +495,7 @@ class LeaseManager:
             task.cancel()
             logger.debug("Cancelled cooldown timer for resource '%s'", resource)
 
-    def _start_cooldown_locked(self, resource: str) -> None:
+    def _start_cooldown_locked(self, resource: str, duration_seconds: Optional[float] = None) -> None:
         """Start the idle cooldown timer if eligible (must hold self._lock)."""
         self._cancel_cooldown_locked(resource)
 
@@ -349,7 +510,7 @@ class LeaseManager:
             )
             return
 
-        cooldown = self.get_resource_cooldown(resource)
+        cooldown = self.get_resource_cooldown(resource) if duration_seconds is None else max(0.0, duration_seconds)
         end_time = self._monotonic_clock() + cooldown
         self._cooldown_ends[resource] = end_time
 
@@ -385,6 +546,16 @@ class LeaseManager:
                 {"resource": resource, "cooldown_seconds": cooldown},
             )
         )
+
+    async def restore_cooldown(self, resource: str, remaining_seconds: float) -> None:
+        """Re-arm a persisted cooldown after restart using its remaining wall-clock duration."""
+        if not math.isfinite(remaining_seconds) or remaining_seconds < 0:
+            raise ValueError("Cooldown duration must be finite and non-negative")
+        async with self._condition:
+            if self.active_count(resource) or self.pending_count(resource):
+                raise RuntimeError("Cannot restore cooldown while a resource has active claims")
+            self._start_cooldown_locked(resource, remaining_seconds)
+            self._condition.notify_all()
 
     def _remove_pending_reservation_locked(self, reservation: LeaseReservation) -> None:
         pending = self._pending_reservations.get(reservation.resource, [])
@@ -433,6 +604,8 @@ class LeaseManager:
             metadata=metadata,
         )
         async with self._lock:
+            if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
+                raise MaintenanceAdmissionBlocked("GPU admission is closed by an active maintenance session")
             self._cancel_cooldown_locked(resource)
             self._pending[resource] = self._pending.get(resource, 0) + 1
             self._pending_reservations.setdefault(resource, []).append(reservation)
@@ -456,6 +629,8 @@ class LeaseManager:
         deadline = time.monotonic() + timeout if timeout is not None else None
 
         async with self._condition:
+            if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
+                raise MaintenanceAdmissionBlocked("GPU admission closed before lease activation")
             while not self._can_grant_locked(resource, lease_type, reservation):
                 if reservation._is_closed:
                     raise RuntimeError("Reservation closed while waiting")

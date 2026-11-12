@@ -172,6 +172,16 @@ class AdmissionController:
                 )
             if kind in {OperationKind.INFERENCE, OperationKind.MODEL_LOAD}:
                 lease_manager = self.service.system.lease_mgr
+                if lease_manager.gpu_maintenance_owner is not None:
+                    return AdmissionDecision(
+                        allowed=False,
+                        status_code=503,
+                        error_type="maintenance_ownership_active",
+                        error_message=(
+                            "GPU admission is closed by an exclusive maintenance session or recovery hold"
+                        ),
+                        operation_kind=kind,
+                    )
                 if lease_manager.restarts_blocked or lease_manager.is_restart_inhibited("gpu.inference"):
                     return AdmissionDecision(
                         allowed=False,
