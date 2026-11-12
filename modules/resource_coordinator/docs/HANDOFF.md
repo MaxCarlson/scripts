@@ -4,27 +4,29 @@
 
 ### Integration and credential update
 
-The automatic credential implementation is committed and pushed at `05c6d71e`,
-with atomic repair hardening at `0e3db84f`. `resource-coordinator auth doctor`
-was run from the switched main checkout and verified the existing credential
-file at `C:\Users\mcarls\.resource_coordinator\secrets\operator-token`:
-readable, valid format, restricted ACL; the token was not printed. The
-reinitialization command correctly refused while port 1235 was listening. The
-coordinator and CLI run as `mcarls`; a future SYSTEM task still needs the
-explicit `RESOURCE_COORDINATOR_TOKEN_FILE` override and a real identity test.
+The Resource Coordinator feature branch was merged locally into the latest
+`main` at `84c5cc2f` (merge-tree preview `cfd7027d`; shared base `bf6d3be3`).
+The branch was 14 commits ahead and 30 behind before merge. The merge introduced
+no path overlaps with main's 98 changed paths. No push was performed. The
+post-merge focused auth, CLI, lifecycle, safety/arbitration, and bridge-routing
+suite passed 148 tests with 2 unrelated shell tests deselected; Ruff and diff
+checks passed.
 
-Integration review: local main `f6aac8b9`, feature `0e3db84f` at review start, merge base
-`bf6d3be3`, main 29 ahead / feature 12 ahead. A merge-tree simulation produced
-no textual conflicts. No merge occurred. Read-only live status still showed
-one ready coordinator and owned KRig PID 49928, no active/pending requests,
-and no requested GPU flags in its command line. The old running service returns
-404 for the new miner route and cannot use the new authenticated restart route.
-The existing hidden-task legacy stop path remains unverified, so no deployment,
-restart, mining operation, or inference was attempted. Latest validation: 86
-auth/CLI/lifecycle tests passed, 1 known shell-alias case deselected; 20
-adjacent arbitration tests and 51 bridge route tests passed, 1 shell alias case
-deselected. Ruff and diff checks passed. The detailed migration sequence and
-TUI gate are in the active [runbook](plans/20261102-miner-inference/RUNBOOK.md).
+Automatic credentials now use a secured per-user token file and atomic initial
+publication. `resource-coordinator auth doctor` from merged main found the file
+at `C:\Users\mcarls\.resource_coordinator\secrets\operator-token` readable,
+valid, and ACL-restricted with both credential environment overrides absent; the
+token was not printed. User and SYSTEM ACL entries exist. The actual logon task
+and coordinator run as `mcarls`; no SYSTEM boot task exists, so SYSTEM runtime
+access has not been exercised.
+
+Post-merge read-only status: coordinator online/ready, zero active and pending
+requests, and coordinator-owned KRig PID 49928 still running. The live service
+was not restarted, and no inference, miner control, model operation, or config
+change was performed. The running process remains on its pre-merge code; live
+activation still needs separate authorization and a verified graceful stop for
+the legacy hidden-task instance. The detailed migration sequence and TUI gate
+are in the active [runbook](plans/20261102-miner-inference/RUNBOOK.md).
 
 ### Automatic operator credential checkpoint
 
@@ -38,11 +40,11 @@ Committed checkpoints in this continuation: `bdac870c` graceful authenticated li
 
 Focused validation: 70 passed, 1 deselected across lifecycle/control/gaming/GPU/log/CLI tests; 20 passed across adjacent inference arbitration and lease tests; 51 passed, 1 deselected across local-agent-bridge route/model-switch regressions. Ruff lint and `git diff --check` passed on changed Python files. Ruff format check under installed Ruff 0.14.8 reports formatting drift (including pre-existing lines); no unrelated formatter rewrite was applied.
 
-Read-only deployment evidence from 2026-11-06: coordinator reports `ready`, upstream `127.0.0.1:1234`, zero active/pending requests, no cooldown/inhibition; `krig_miner` PID 49928 is running and coordinator-owned. Persistent YAML contains all four requested flags/values (`550`, `2400`, `225`, `7001`), while the current miner command line contains none. The configured raw output path does not exist yet, and the separate output-viewer task is Ready, not running. The user-logon task is Running with RestartCount 3 / RestartInterval 1 minute, but its launcher at `C:\Users\mcarls\.resource_coordinator\start-coordinator.ps1` invokes `C:\Users\mcarls\src\scripts` (shared `main` HEAD `f6aac8b98c29`) and has no clean-exit relaunch loop. OpenCode's saved provider points to `http://127.0.0.1:1235/v1`. Codex and both AGY `opencode_worker` entries invoke `npx.cmd opencode-mcp@3.0.0` and contain no explicit endpoint; OpenCode's saved provider configuration is protected, but the OpenCode runtime endpoint on port 4096 refused the read-only query. Therefore Codex/AGY effective runtime routing is not verified. No restart, inference, model, miner, or config mutation was performed.
+Read-only deployment evidence from 2026-11-06: the coordinator reports ready with upstream `127.0.0.1:1234`, zero active/pending requests, and coordinator-owned KRig PID 49928. Persistent YAML contains requested flags `550`, `2400`, `225`, and `7001`, while the observed miner command line does not. The current logon launcher points to the root `scripts` checkout, now at merged `main` `84c5cc2f`; the already-running service process was not restarted and remains on its pre-merge imports. The launcher has no verified clean-exit relaunch loop. OpenCode's saved provider points to `http://127.0.0.1:1235/v1`; Codex/AGY effective runtime routing remains unverified.
 
-Live activation is blocked because the running launcher still uses shared `main` and no merge/deployment was authorized; the existing task's behavior on clean exit is not a verified relaunch path. Do not activate the 550 W flags against PID 49928 through an unreviewed source/config swap. Next: obtain the deployment boundary/merge authorization or install the reviewed source through the approved deployment path, then use the new authenticated graceful restart and verify the exact miner args/log capture before claiming activation. Do not start TUI work until this operational priority is completed.
+The source merge is complete, but live activation is still a separate gate. Do not activate the 550 W flags against PID 49928 through a source/config swap until a safe graceful stop path for the legacy task instance is verified and live deployment is explicitly authorized. Continue to defer TUI work until live operational acceptance is complete.
 
-Current workstream: **minimal LM Studio activity automation**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, based on preflight commit `44ce5d6ec9b56ecb75c2cfb4ff848b85964c2764`.
+Historical workstream: **minimal LM Studio activity automation**, branch `resource-coordinator-phase-d` at `C:/Users/mcarls/src/scripts/.worktrees/resource-coordinator-phase-d`, based on preflight commit `44ce5d6ec9b56ecb75c2cfb4ff848b85964c2764`.
 
 Offline implementation adds explicit known model-load handling on the existing `gpu.inference` resource with an exclusive lease, matching process-stop policy and the same cooldown as inference. Pending exclusive reservations now prevent later shared admission, and final idle restart actions share an arbitration lock with request registration. Generic opt-in service/CLI process lifecycle controls were added while retaining legacy miner flags. `LeaseManager` accepts a monotonic clock and async sleeper for deterministic cooldown tests. See [minimal automation configuration and route limits](../README.md) and [implementation plan/status](plans/20261019-1600_minimal-lmstudio-activity/STATUS.md).
 
