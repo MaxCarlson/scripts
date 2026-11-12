@@ -10,11 +10,17 @@ import math
 import os
 import psutil
 import time
+import uuid
 from enum import Enum
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
-from resource_coordinator.core.durable_state import StateCodec, reconcile_startup_state
+from resource_coordinator.core.durable_state import (
+    ConcurrentJournalUpdateError,
+    RequestPhase,
+    StateCodec,
+    reconcile_startup_state,
+)
 from resource_coordinator.core.lock import SingleInstanceLock
 from resource_coordinator.core.maintenance import MaintenanceSessionManager
 from resource_coordinator.core.restoration import TrustedRestorationVerifier
@@ -41,6 +47,24 @@ def _manual_action_clears_gpu_idle_condition(action: str, *, gpu_idle_pause: boo
 def _manual_miner_mutations_allowed(gaming_mode: Dict[str, Any]) -> bool:
     """Gaming owns all miner mutations until its restore/reconciliation completes."""
     return gaming_mode.get("state", "inactive") == "inactive"
+
+
+def _gpu_idle_window_complete(
+    samples: List[Dict[str, float]], *, window_seconds: float, poll_interval: float, now: float
+) -> bool:
+    """Require a covered low-utilization window while tolerating bounded journal-write jitter."""
+    poll = max(0.01, poll_interval)
+    cutoff = now - window_seconds
+    max_gap = max(5.0 * poll, min(5.0, window_seconds / 2.0))
+    in_window = [sample for sample in samples if sample["at"] >= cutoff]
+    return bool(
+        len(in_window) >= 2
+        and samples
+        and samples[0]["at"] <= cutoff
+        and samples[-1]["at"] >= now - max_gap
+        and samples[-1]["at"] - samples[0]["at"] >= window_seconds
+        and all(right["at"] - left["at"] <= max_gap for left, right in zip(samples, samples[1:]))
+    )
 
 
 class ServiceState(str, Enum):
@@ -270,7 +294,19 @@ class CoordinatorService:
                 except Exception as exc:
                     raise RuntimeError(f"Corrupted or invalid durable state journal at {state_path}: {exc}")
                 await self.maintenance_manager.restore_before_startup()
-                await reconcile_startup_state(loaded_state, self.system.lease_mgr, self.system.supervisors)
+                audit = await reconcile_startup_state(
+                    loaded_state, self.system.lease_mgr, self.system.supervisors, state_path=state_path
+                )
+                for name, process_audit in audit["reconciled_processes"].items():
+                    persisted = loaded_state.processes.get(name)
+                    if persisted is not None and persisted.pid is not None and process_audit["outcome"] in {
+                        "access_denied", "unverifiable"
+                    }:
+                        raise RuntimeError(
+                            f"Persisted process identity for '{name}' could not be verified; "
+                            "refusing normal startup"
+                        )
+                loaded_state = StateCodec.load(state_path)
                 if loaded_state.gaming_mode.get("state") != "inactive" and self.system.miner_adapter is not None:
                     self.system.miner_adapter.supervisor.set_manual_override(True, persist=False)
                 for supervisor in self.system.supervisors.values():
@@ -353,6 +389,206 @@ class CoordinatorService:
                 raise VetoOperation("Required managed-process stop is not verified")
         if not self.is_ready:
             raise VetoOperation("Service admission closed before forwarding")
+
+    async def auto_recover(self, *, observation_timeout_seconds: float = 3.0) -> Dict[str, Any]:
+        """Reconcile only requests durably proven to have remained before upstream dispatch."""
+        from resource_coordinator.core.durable_state import _all_inhibition_holders
+
+        state_path = getattr(self.system.config.service, "state_persistence_path", "")
+        if not state_path:
+            return {"status": "blocked", "classification": "blocked", "reason_code": "durable_state_unavailable"}
+        if not self.is_ready:
+            return {"status": "blocked", "classification": "blocked", "reason_code": "coordinator_not_ready"}
+        manager = self.system.lease_mgr
+        maintenance = self.maintenance_manager.status()
+        if maintenance.get("state") != "idle" or manager.gpu_maintenance_owner is not None:
+            return {"status": "wait", "classification": "wait", "reason_code": "maintenance_active"}
+        try:
+            initial = await asyncio.wait_for(asyncio.to_thread(StateCodec.load, state_path), observation_timeout_seconds)
+        except (OSError, ValueError, asyncio.TimeoutError):
+            return {"status": "blocked", "classification": "blocked", "reason_code": "durable_state_unavailable"}
+
+        unresolved = [request for request in initial.requests.values()
+                      if request.resource == "gpu.inference" and request.phase in {
+                          RequestPhase.RESERVED.value, RequestPhase.POSSIBLY_FORWARDED.value,
+                          RequestPhase.UNCERTAIN.value,
+                      }]
+        hold = initial.inhibitions.get("gpu.inference")
+        holders = _all_inhibition_holders(hold)
+
+        def matching_holder(request_id: str) -> Optional[str]:
+            aliases = {request_id, f"coord-{request_id}", f"crash_recovery:{request_id}"}
+            return next((item.get("holder_id") for item in holders if item.get("holder_id") in aliases), None)
+
+        if not unresolved:
+            if hold is None:
+                return {"status": "no_action_required", "classification": "no_action_required",
+                        "reason_code": "no_recovery_hold", "restart_eligible": False}
+            terminal_requests = [
+                request for request in initial.requests.values()
+                if request.resource == "gpu.inference"
+                and request.phase == RequestPhase.TERMINAL_VERIFIED.value
+                and matching_holder(request.request_id) is not None
+            ]
+            if not terminal_requests:
+                return {"status": "operator_required", "classification": "operator_required",
+                        "reason_code": "hold_has_no_verified_request_disposition", "restart_eligible": False}
+        else:
+            terminal_requests = []
+
+        uncertain = [request for request in unresolved if request.phase != RequestPhase.RESERVED.value]
+        safe_requests = [request for request in unresolved if request.phase == RequestPhase.RESERVED.value
+                         and request.details.get("forwarded") is not True]
+        if uncertain:
+            return {"status": "operator_required", "classification": "operator_required",
+                    "reason_code": "upstream_execution_termination_unverified",
+                    "request_ids": [request.request_id for request in uncertain], "restart_eligible": False}
+        if not safe_requests and not terminal_requests:
+            return {"status": "operator_required", "classification": "operator_required",
+                    "reason_code": "dispatch_boundary_not_proven", "restart_eligible": False}
+        holder_for_request: Dict[str, str] = {}
+        for request in safe_requests:
+            match = matching_holder(request.request_id)
+            if not isinstance(match, str):
+                return {"status": "blocked", "classification": "blocked",
+                        "reason_code": "request_inhibition_holder_missing",
+                        "request_ids": [request.request_id], "restart_eligible": False}
+            holder_for_request[request.request_id] = match
+        for request in terminal_requests:
+            match = matching_holder(request.request_id)
+            if not isinstance(match, str):
+                return {"status": "blocked", "classification": "blocked",
+                        "reason_code": "terminal_request_holder_missing",
+                        "request_ids": [request.request_id], "restart_eligible": False}
+            holder_for_request[request.request_id] = match
+        target_holders = list(holder_for_request.values())
+        live_inhibition = manager.get_inhibition("gpu.inference")
+        live_holder_ids = {item.get("holder_id") for item in _all_inhibition_holders(
+            live_inhibition.to_dict() if live_inhibition else None
+        )}
+        if not manager.is_restart_inhibited("gpu.inference") or any(
+            holder_id not in live_holder_ids for holder_id in target_holders
+        ):
+            return {"status": "blocked", "classification": "blocked",
+                    "reason_code": "live_inhibition_identity_mismatch", "restart_eligible": False}
+
+        fence = await manager.acquire_gpu_recovery_fence(
+            uuid.uuid4().hex, target_holders=target_holders, ttl_seconds=min(15.0, observation_timeout_seconds * 3)
+        )
+        if fence is None:
+            return {"status": "wait", "classification": "wait", "reason_code": "gpu_claim_or_recovery_conflict"}
+        committed = False
+        sync_holder = f"recovery_sync:{fence['fence_id']}"
+        try:
+            # RESERVED is authoritative only because the gateway persists POSSIBLY_FORWARDED
+            # before its first upstream send. Forwarded or uncertain phases never enter this path.
+            try:
+                observed = await asyncio.wait_for(
+                    asyncio.to_thread(StateCodec.load, state_path), observation_timeout_seconds
+                )
+            except (OSError, ValueError, asyncio.TimeoutError):
+                return {"status": "blocked", "classification": "blocked",
+                        "reason_code": "journal_observation_failed"}
+            if observed.revision != initial.revision:
+                return {"status": "conflict", "classification": "blocked",
+                        "reason_code": "journal_changed_during_recovery"}
+            observed_by_id = {request.request_id: request for request in observed.requests.values()}
+            reconciliations = []
+            for request in safe_requests:
+                current = observed_by_id.get(request.request_id)
+                if (current is None or current.phase != RequestPhase.RESERVED.value
+                        or current.details.get("forwarded") is True):
+                    return {"status": "conflict", "classification": "blocked",
+                            "reason_code": "request_phase_changed_during_recovery"}
+                reconciliations.append({
+                    "request_id": current.request_id,
+                    "expected_phase": RequestPhase.RESERVED.value,
+                    "disposition": "not_forwarded_verified",
+                    "evidence": {
+                        "source": "durable_gateway_dispatch_boundary",
+                        "source_phase": RequestPhase.RESERVED.value,
+                        "possibly_forwarded_persisted_before_upstream_send": True,
+                    },
+                })
+            for request in terminal_requests:
+                current = observed_by_id.get(request.request_id)
+                if current is None or current.phase != RequestPhase.TERMINAL_VERIFIED.value:
+                    return {"status": "conflict", "classification": "blocked",
+                            "reason_code": "terminal_phase_changed_during_recovery"}
+                reconciliations.append({
+                    "request_id": current.request_id,
+                    "expected_phase": RequestPhase.TERMINAL_VERIFIED.value,
+                    "disposition": "protocol_terminal_verified",
+                    "evidence": {
+                        "source": "durable_gateway_terminal_protocol",
+                        "source_phase": RequestPhase.TERMINAL_VERIFIED.value,
+                        "terminal_evidence": current.details.get("terminal_evidence"),
+                    },
+                })
+            if not self.is_ready or self.maintenance_manager.status().get("state") != "idle":
+                return {"status": "wait", "classification": "wait", "reason_code": "service_state_changed"}
+
+            sync_hold = {
+                "resource": "gpu.inference", "reason": "recovery_state_synchronization_pending",
+                "holder_id": sync_holder, "inhibited_at": time.time(),
+                "details": {"recovery_operation_id": fence["operation_id"]},
+            }
+            await manager.commit_under_gpu_recovery_fence(
+                fence["fence_id"], fence["post_fence_generation"],
+                lambda: StateCodec.reconcile_requests_and_clear_holders(
+                    state_path,
+                    expected_revision=initial.revision,
+                    reconciliations=reconciliations,
+                    holder_ids=target_holders,
+                    sync_hold=sync_hold,
+                ),
+            )
+            committed = True
+            await manager.inhibit_restart(
+                "gpu.inference", "recovery_state_synchronization_pending", sync_holder,
+                {"recovery_operation_id": fence["operation_id"]},
+            )
+            for holder_id in target_holders:
+                changed = await manager.clear_inhibition_holder(
+                    "gpu.inference", holder_id, start_cooldown=False
+                )
+                if changed is None:
+                    raise RuntimeError("Live recovery holder synchronization did not match durable state")
+            StateCodec.clear_inhibition_holder(state_path, "gpu.inference", sync_holder)
+            changed = await manager.clear_inhibition_holder(
+                "gpu.inference", sync_holder, start_cooldown=False
+            )
+            if changed is None:
+                raise RuntimeError("Live recovery synchronization marker could not be cleared")
+            await manager.release_gpu_recovery_fence(fence["fence_id"], cooldown_resource="gpu.inference")
+            remaining = manager.get_inhibition("gpu.inference")
+            return {
+                "status": "reconciled", "classification": "auto_recovered",
+                "dispositions": {item["request_id"]: item["disposition"] for item in reconciliations},
+                "journal_revision": StateCodec.load(state_path).revision,
+                "remaining_inhibition": remaining.to_dict() if remaining else None,
+                "restart_eligible": remaining is None and not manager.restarts_blocked,
+                "miner_restart_status": "supervisor_policy_pending",
+            }
+        except asyncio.CancelledError:
+            if committed:
+                self._state = ServiceState.RECONCILIATION_REQUIRED
+                self._failure_reason = "Automatic recovery was interrupted during in-memory synchronization"
+                manager.block_restarts(self._failure_reason, holder_id=sync_holder)
+            raise
+        except (ConcurrentJournalUpdateError, OSError, ValueError, RuntimeError) as exc:
+            logger.error("Automatic recovery retained protection after transaction failure: %s", exc)
+            if committed:
+                self._state = ServiceState.RECONCILIATION_REQUIRED
+                self._failure_reason = "Automatic recovery durable and in-memory state require reconciliation"
+                manager.block_restarts(self._failure_reason, holder_id=sync_holder)
+            return {"status": "reconciliation_required" if committed else "blocked",
+                    "classification": "blocked", "reason_code": "recovery_transaction_failed",
+                    "restart_eligible": False}
+        finally:
+            if manager._gpu_recovery_fence is not None \
+                    and manager._gpu_recovery_fence.get("fence_id") == fence["fence_id"]:
+                await asyncio.shield(manager.release_gpu_recovery_fence(fence["fence_id"]))
 
     async def stop(self, reason: str = "normal_shutdown") -> None:
         if self._state == ServiceState.STOPPED:
@@ -757,13 +993,8 @@ class CoordinatorService:
         )
         condition["samples"] = samples
 
-        poll = max(0.01, self.supervision_poll_interval)
-        max_gap = max(2.5 * poll, min(5.0, window / 4.0))
-        complete = (
-            len(samples) >= 2
-            and samples[0]["at"] <= cutoff
-            and samples[-1]["at"] >= now - 2.0 * poll
-            and all(right["at"] - left["at"] <= max_gap for left, right in zip(samples, samples[1:]))
+        complete = _gpu_idle_window_complete(
+            samples, window_seconds=window, poll_interval=self.supervision_poll_interval, now=now
         )
         window_samples = [item for item in samples if item["at"] >= cutoff]
         if not complete or not window_samples or (

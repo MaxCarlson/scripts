@@ -435,15 +435,31 @@ async def test_recovery_rejects_activity_on_other_gpu_resource():
 @pytest.mark.parametrize("operation", ["pause", "resume"])
 async def test_standalone_miner_mutation_refused_without_daemon_state(operation, monkeypatch):
     from resource_coordinator import cli
+    import argparse
+    import httpx
 
     def forbidden(*args, **kwargs):
         pytest.fail("must not construct independent process controls")
 
+    class OfflineClient:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return None
+
+        async def request(self, *args, **kwargs):
+            raise httpx.ConnectError("test daemon is unavailable")
+
     monkeypatch.setattr(cli, "build_system", forbidden)
-    if operation == "pause":
-        assert await cli._async_miner_pause(None, 1) == 1
-    else:
-        assert await cli._async_miner_resume(None) == 1
+    monkeypatch.setattr(cli.httpx, "AsyncClient", lambda **_kwargs: OfflineClient())
+    monkeypatch.setattr(cli, "_operator_token", lambda: "test-token")
+    args = argparse.Namespace(
+        miner_command=operation, reason="offline safety test", url="http://127.0.0.1:1",
+        json=True, duration="1h", until_gpu_below=None, window="1h",
+    )
+
+    assert await cli._async_miner_command(args) == 1
 
 
 @pytest.mark.asyncio

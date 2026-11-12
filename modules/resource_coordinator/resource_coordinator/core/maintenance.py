@@ -195,8 +195,13 @@ class MaintenanceSessionManager:
                 disposition = self._record.get("last_disposition", {})
                 supervisor = self._miner_supervisor()
                 if disposition.get("miner_restart_eligible") and supervisor is not None:
+                    # The durable process record owns the coordinator-stop bit. Startup
+                    # has not reconciled that record into the supervisor yet, so writing
+                    # a snapshot here would replace the correct bit with the supervisor's
+                    # default False value and strand the miner after cooldown. The absolute
+                    # maintenance deadline is already durable and recreates this temporary
+                    # in-memory hold after any further restart.
                     supervisor.set_manual_override(True, persist=False, until=float(restart_not_before))
-                    await self.service._persist_supervisor_state(supervisor)
             return
         holder = f"maintenance:{self._record['operation_id']}"
         await self.lease_manager.restore_gpu_maintenance_fence(holder)

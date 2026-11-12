@@ -914,12 +914,14 @@ async def test_restart_during_post_release_cooldown_does_not_start_miner_early(t
     assert backend.running is False
     durable = StateCodec.load(state_path)
     assert durable.maintenance["restart_not_before"] > time.time()
+    assert durable.processes["fake_miner"].was_stopped_by_coordinator is True
 
     restarted_system = build_system(service.system.config, use_fake_processes=True)
     restarted = CoordinatorService(
         restarted_system, start_miner_on_ready=True, supervision_poll_interval=0.01
     )
     assert await restarted.start() is True
+    assert StateCodec.load(state_path).processes["fake_miner"].was_stopped_by_coordinator is True
     assert restarted_system.lease_mgr.is_cooling_down("gpu.inference")
     assert restarted_system.supervisors["fake_miner"].backend.running is False
     assert restarted.maintenance_manager.state == "idle"

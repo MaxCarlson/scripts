@@ -478,16 +478,53 @@ def cmd_recover(args: argparse.Namespace) -> int:
         )
         return cmd_maintenance(maintenance_args)
     if getattr(args, "apply", False):
-        result = {"schema_version": 1, "status": "unavailable", "classification": "blocked",
-                  "exit_code": 2,
-                  "reason_codes": ["automatic_recovery_not_implemented"],
-                  "message": "Verified automatic recovery is not available in this release; no state was changed."}
+        recovery_override = os.environ.get("RESOURCE_COORDINATOR_RECOVERY_TOKEN")
+        operator_override = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN")
+        try:
+            token = recovery_override or operator_override or load_token(require_secure=True)
+        except CredentialError as exc:
+            token = None
+            credential_error = str(exc)
+        else:
+            credential_error = None
+        if not token:
+            result = {"schema_version": 1, "status": "error", "classification": "blocked", "exit_code": 2,
+                      "reason_codes": ["operator_credential_unavailable"],
+                      "message": credential_error or "Verified automatic recovery requires an operator credential."}
+            code = 2
+        else:
+            try:
+                with httpx.Client(timeout=20.0) as client:
+                    response = client.post(
+                        f"{args.url.rstrip('/')}/_coordinator/recovery/auto",
+                        headers={"Authorization": f"Bearer {token}"}, json={},
+                    )
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = {"status": "error", "reason_code": "invalid_server_response"}
+                result = _redact_recovery_credential(body, token)
+                if not isinstance(result, dict):
+                    result = {"status": "error", "reason_code": "invalid_server_response"}
+                if response.status_code == 200 and result.get("status") in {"reconciled", "no_action_required"}:
+                    code = 0
+                else:
+                    result.setdefault("status", "blocked")
+                    result.setdefault("classification", "blocked")
+                    result.setdefault("exit_code", 2)
+                    result["http_status"] = response.status_code
+                    code = 2
+            except Exception as exc:
+                logger.debug("Automatic recovery request failed (%s)", type(exc).__name__)
+                result = {"schema_version": 1, "status": "blocked", "classification": "blocked", "exit_code": 2,
+                          "reason_codes": ["coordinator_service_unreachable"]}
+                code = 2
         if getattr(args, "json", False):
             emit_json(result)
         else:
             from resource_coordinator.presentation import render_recovery_assessment
             render_recovery_assessment(result)
-        return 2
+        return code
     if not getattr(args, "force", False):
         try:
             with httpx.Client(timeout=5.0) as client:

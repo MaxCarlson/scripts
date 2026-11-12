@@ -335,6 +335,7 @@ class LMStudioGateway:
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
             Route("/_coordinator/inference/status", self.handle_inference_status, methods=["GET"]),
             Route("/_coordinator/recovery/assessment", self.handle_recovery_assessment, methods=["GET"]),
+            Route("/_coordinator/recovery/auto", self.handle_automatic_recovery, methods=["POST"]),
             Route("/_coordinator/maintenance/status", self.handle_maintenance_status, methods=["GET"]),
             Route("/_coordinator/maintenance/operations/{operation_id:str}", self.handle_maintenance_operation,
                   methods=["GET"]),
@@ -820,6 +821,30 @@ class LMStudioGateway:
         service = self.admission_controller.service
         return JSONResponse(assess_recovery(service))
 
+    async def handle_automatic_recovery(self, request: Request) -> JSONResponse:
+        """Run only the verified, bounded automatic recovery transaction."""
+        if not self._recovery_tokens():
+            return JSONResponse({"status": "blocked", "reason_code": "operator_credential_unavailable"},
+                                status_code=503)
+        if not self._recovery_authorized(request):
+            return JSONResponse({"status": "blocked", "reason_code": "unauthorized"}, status_code=403)
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"status": "blocked", "reason_code": "coordinator_service_unavailable"},
+                                status_code=503)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"status": "invalid", "reason_code": "json_object_required"}, status_code=400)
+        if not isinstance(payload, dict) or payload:
+            return JSONResponse({"status": "invalid", "reason_code": "unexpected_recovery_fields"}, status_code=400)
+        result = await service.auto_recover()
+        status = result.get("status")
+        http_status = 200 if status in {"reconciled", "no_action_required"} else (
+            503 if status == "blocked" else 500 if status == "reconciliation_required" else 409
+        )
+        return JSONResponse(result, status_code=http_status)
+
     async def handle_coordinator_abort(self, request: Request) -> JSONResponse:
         """Trigger emergency abort to stop admission and prevent miner restarts."""
         svc = self.admission_controller.service
@@ -1234,10 +1259,18 @@ class LMStudioGateway:
                                     self.state_persistence_path,
                                     request_id,
                                     resource,
-                                    RequestPhase.TERMINAL_VERIFIED,
+                                    RequestPhase.RECONCILED,
                                     model=model_name,
                                     path=path,
-                                    details={"cancelled": True},
+                                    details={
+                                        "cancelled": True,
+                                        "source_phase": RequestPhase.RESERVED.value,
+                                        "reconciliation_disposition": "not_forwarded_verified",
+                                        "reconciliation_evidence": {
+                                            "source": "gateway_dispatch_ordering",
+                                            "possibly_forwarded_persisted_before_upstream_send": True,
+                                        },
+                                    },
                                 )
                         except Exception as log_exc:
                             logger.error("Failed recording terminal phase in state journal: %s", log_exc)

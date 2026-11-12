@@ -76,6 +76,65 @@ def test_healthy_state_is_no_action_not_auto_recoverable(tmp_path):
     assert result["automatic_recovery_available"] is False
 
 
+def test_reserved_not_forwarded_request_is_auto_recoverable_only_with_exact_holder(tmp_path):
+    import asyncio
+
+    journal = tmp_path / "state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(journal, "reserved-a", "gpu.inference", RequestPhase.RESERVED,
+                                    details={"forwarded": False})
+    StateCodec.record_inhibition(journal, "gpu.inference", "crash_recovery", "reserved-a")
+    service = _Service(journal)
+    asyncio.run(service.system.lease_mgr.inhibit_restart(
+        "gpu.inference", "crash_recovery", "reserved-a"
+    ))
+
+    result = assess_recovery(service)
+
+    assert result["classification"] == "auto_recoverable"
+    assert result["automatic_recovery_available"] is True
+
+
+def test_terminal_request_with_only_its_stale_holder_is_auto_recoverable(tmp_path):
+    import asyncio
+
+    journal = tmp_path / "state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(
+        journal, "terminal-a", "gpu.inference", RequestPhase.TERMINAL_VERIFIED,
+        details={"terminal_evidence": "verified_non_streaming_response", "outcome": "succeeded"},
+    )
+    StateCodec.record_inhibition(journal, "gpu.inference", "stale_terminal", "coord-terminal-a")
+    service = _Service(journal)
+    asyncio.run(service.system.lease_mgr.inhibit_restart(
+        "gpu.inference", "stale_terminal", "coord-terminal-a"
+    ))
+
+    result = assess_recovery(service)
+
+    assert result["classification"] == "auto_recoverable"
+    assert result["automatic_recovery_available"] is True
+    assert result["reason_codes"] == ["protocol_terminal_verified"]
+
+
+def test_reserved_record_with_independent_holder_is_not_auto_recoverable(tmp_path):
+    import asyncio
+
+    journal = tmp_path / "state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(journal, "reserved-a", "gpu.inference", RequestPhase.RESERVED)
+    StateCodec.record_inhibition(journal, "gpu.inference", "crash_recovery", "reserved-a")
+    StateCodec.record_inhibition(journal, "gpu.inference", "operator_hold", "operator")
+    service = _Service(journal)
+    asyncio.run(service.system.lease_mgr.inhibit_restart("gpu.inference", "crash_recovery", "reserved-a"))
+    asyncio.run(service.system.lease_mgr.inhibit_restart("gpu.inference", "operator_hold", "operator"))
+
+    result = assess_recovery(service)
+
+    assert result["classification"] == "operator_required"
+    assert result["automatic_recovery_available"] is False
+
+
 def test_recovery_assessment_blocks_on_interrupted_upgrade_receipt(monkeypatch, tmp_path):
     import json
 

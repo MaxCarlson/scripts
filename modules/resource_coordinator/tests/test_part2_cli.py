@@ -120,16 +120,41 @@ def test_maintenance_force_rejects_weak_release_disposition(monkeypatch, capsys)
     assert json.loads(capsys.readouterr().out)["status"] == "error"
 
 
-def test_recover_apply_is_explicitly_unavailable_without_network_mutation(monkeypatch, capsys):
-    def forbidden_client(**_kwargs):
-        raise AssertionError("Part 2 must not attempt automatic recovery")
+def test_recover_apply_calls_authenticated_automatic_recovery_endpoint(monkeypatch, capsys):
+    class Response:
+        status_code = 200
+        content = b'{"status":"reconciled"}'
+        text = content.decode()
 
-    monkeypatch.setattr(cli.httpx, "Client", forbidden_client)
+        @staticmethod
+        def json():
+            return {"status": "reconciled", "classification": "auto_recovered"}
+
+    class Client:
+        def __init__(self, **_kwargs):
+            self.posts = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def post(self, url, **kwargs):
+            self.posts.append((url, kwargs))
+            return Response()
+
+    client = Client()
+    monkeypatch.setattr(cli.httpx, "Client", lambda **kwargs: client)
+    monkeypatch.setattr(cli, "load_token", lambda **_kwargs: "safe-test-token")
     args = cli.parse_args(["recover", "-a", "-j"])
-    assert cli.cmd_recover(args) == 2
+    assert cli.cmd_recover(args) == 0
     data = json.loads(capsys.readouterr().out)
-    assert data["reason_codes"] == ["automatic_recovery_not_implemented"]
-    assert data["exit_code"] == 2
+    assert data["status"] == "reconciled"
+    url, kwargs = client.posts[0]
+    assert url.endswith("/_coordinator/recovery/auto")
+    assert kwargs["headers"]["Authorization"] == "Bearer safe-test-token"
+    assert kwargs["json"] == {}
 
 
 def test_recover_maintenance_alias_delegates_to_dedicated_handler(monkeypatch):
