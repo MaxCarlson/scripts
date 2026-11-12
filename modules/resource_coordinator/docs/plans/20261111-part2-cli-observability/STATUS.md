@@ -27,11 +27,11 @@
 - [x] Reviewed source, security sanitization, recovery boundaries, tests, and changed-file scope.
 - [x] Merged the three reviewed Notifications-only mainline commits into this feature branch without changing `main`.
 - [x] Committed the Part 2 source and test checkpoint as `43c4bd9884cce7d00324dd0d1316da376bf4a0d7`.
-- [ ] Commit final post-merge evidence, push the feature branch, and verify the remote SHA and clean worktree.
+- [x] Committed post-merge evidence and pushed the feature branch; remote ref `origin/agent/rc-part2-cli-observability-20261111` matched `44f6b40f07f0d4defdba5eb63c152e79f2724b32` after fetch. This status-only closeout will be pushed as a follow-up commit.
 
 ## Current state
 
-Implementation, focused validation, and source checkpoint commit are complete. The current mainline ancestry has been merged into the feature branch; final post-merge evidence commit, feature push, and post-push verification remain. No production operations have been performed.
+Implementation, focused validation, mainline ancestry merge, evidence commit, and feature-branch push verification are complete. The feature branch was clean at the verified `44f6b40f07f0d4defdba5eb63c152e79f2724b32` checkpoint. No production operations have been performed.
 
 ### Pre-change validation
 

@@ -13,4 +13,4 @@
 - [x] Run focused and regression suites; classify all failures, skips, and known baseline defects.
 - [x] Run Ruff, compilation, scoped `git diff --check`, and isolated entry-point validation.
 - [x] Update Part 2 status and module documentation; review safety and compatibility diff.
-- [ ] Commit and push feature branch; verify remote SHA and clean worktree.
+- [x] Commit and push feature branch; verify remote SHA and clean worktree.
