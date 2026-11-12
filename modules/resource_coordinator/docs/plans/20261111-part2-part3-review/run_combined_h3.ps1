@@ -61,9 +61,9 @@ spec = importlib.util.spec_from_file_location('h3_support', tests / 'h3_support.
 if spec is None or spec.loader is None:
     raise RuntimeError('Could not load read-only Mining H3 support module')
 h3_support = importlib.util.module_from_spec(spec)
+sys.modules['h3_support'] = h3_support
 spec.loader.exec_module(h3_support)
 h3_support.RC_COMMIT = os.environ['H3_RC_EXPECTED_COMMIT']
-sys.modules['h3_support'] = h3_support
 rc = importlib.import_module('resource_coordinator')
 mining = importlib.import_module('mining_optimizer')
 assert rc_source in pathlib.Path(rc.__file__).resolve().parents, rc.__file__
