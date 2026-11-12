@@ -125,7 +125,7 @@ def test_strict_and_loose_scoring_rules() -> None:
     assert sc_loose.metrics["ifeval.strict_prompt"] == 0.0
     assert sc_loose.metrics["ifeval.loose_prompt"] == 1.0  # loose prompt passed!
 
-    # 3. JSON format inside markdown block: fails strict, passes loose
+    # 3. JSON format with conversational prefix: fails strict, passes loose
     ctx_json = TaskContext(
         task_id="t-json",
         prompt="Output JSON",
@@ -138,7 +138,7 @@ def test_strict_and_loose_scoring_rules() -> None:
         task_id="t-json",
         model_id="m",
         endpoint="ep",
-        response_text='```json\n{"status": "ok", "value": 42}\n```',
+        response_text='Here is the requested json:\n```json\n{"status": "ok", "value": 42}\n```',
         started_at="2026-11-11T00:00:00Z",
         ended_at="2026-11-11T00:00:01Z",
         duration_ms=100.0,

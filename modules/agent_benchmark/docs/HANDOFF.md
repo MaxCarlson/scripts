@@ -1,4 +1,22 @@
-# Current checkpoint: Extensible Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench (2026-11-11)
+# Current checkpoint: Official Benchmark Evaluation Validity & Container Security Repair (2026-11-11)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/agent-benchmark-official-evaluation-20261111`, branch `fix/agent-benchmark-official-evaluation-20261111`, baseline `8bfd06a0`.
+Active plan: [`plans/20261111-official-evaluation-repair/00_implementation-plan.md`](plans/20261111-official-evaluation-repair/00_implementation-plan.md), [`STATUS.md`](plans/20261111-official-evaluation-repair/STATUS.md), and [`checklist.md`](plans/20261111-official-evaluation-repair/checklist.md).
+
+Critical benchmark-validity, installation, and container security defects corrected:
+- **Official Google IFEval Reference Scorer (Defect A):** Replaced heuristic approximations with Google's official reference evaluation engine (`instructions.py`, `instructions_registry.py`, `evaluation_lib.py`). Preserves all 25 instruction classes and kwargs. Enforces exact strict and 8-variant loose evaluation semantics. Unknown/unsupported instruction IDs return `False` and fail, never granting passes. Separates prompt and instruction accuracies. Matched upstream reference evaluation on GPT-4 reference responses.
+- **Authentic LiveCodeBench Verifier (Defect B):** Replaced dummy loop placeholder (`pass`) with upstream LiveCodeBench code-generation evaluator distinguishing `standard_input` (`stdin`) from `call_based` (`functional`) problems. Implemented line-by-line decimal and stripped comparisons. Enforced canary execution marker (`__LCB_VERIFICATION_SUCCESS__`) preventing `sys.exit(0)` bypasses. Missing or empty benchmark test data blocks execution with `MISSING_BENCHMARK_DATA` / `infrastructure_invalid`.
+- **Verified Source Revisions & Pinned Datasets (Defect C):** Pinned verified upstream commits in `catalog.py`: `google-research`: `f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81`, `LiveCodeBench`: `28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24`, and Hugging Face `code_generation_lite`: `0fe84c3912ea0c4d4a78037083943e8f0c4dd505` (`test6.jsonl`).
+- **Authentic Dataset Materialization & Cohort Prompts (Defect D):** Populated verified task IDs and bundled authentic smoke fixtures (`ifeval-smoke`, `lcb-v6-smoke`). Created `loader.py` to dynamically load and format official prompts (`### Question: ... ### Answer:`) and evaluator metadata. Added pre-dispatch rejection for placeholder (`Solve task: ...`) or empty prompts. Implemented atomic streaming Hugging Face dataset downloader and Windows-safe sparse git checkouts in `external_sources/manager.py`.
+- **Hardened Container Security (Defect E):** Hardened Docker runner in `execution/container_verify.py` enforcing `--read-only`, tmpfs (`/tmp:rw,noexec,nosuid,size=64m`), unprivileged execution (`--user 65534:65534`), and container termination on timeout.
+- **Validation Matrix:**
+  - 12/12 required assertions verified in `tests/official_evaluation_repair_test.py`.
+  - 710 passed, 10 skipped in `agent_benchmark`.
+  - 120 passed, 1 skipped in `benchmark_core`.
+  - 0 Ruff linting errors across all touched and existing benchmark files.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
+
+# Historical checkpoint: Extensible Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench (2026-11-11)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/agent-benchmark-extensible-20261111`, branch `feature/agent-benchmark-extensible-framework-20261111`, baseline `origin/main` at `6467edc6`.
 Active plan: [`plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md`](plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md) and [`STATUS.md`](plans/20261111-extensible-benchmark-framework/STATUS.md).

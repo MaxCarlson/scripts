@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
+import json
 from pathlib import Path
 import platform
 import shutil
@@ -112,24 +113,18 @@ class SourceManager:
                 # Clone or fetch pinned revision using safe argv (no shell=True)
                 if spec.resource_type == "git_sparse" and spec.paths:
                     subprocess.run(
-                        ["git", "clone", "--filter=blob:none", "--no-checkout", "--depth", "1", spec.url, str(staging)],
+                        ["git", "clone", "--filter=blob:none", "--no-checkout", spec.url, str(staging)],
                         check=True,
                         capture_output=True,
                         text=True,
                     )
+                    rev = spec.revision or "HEAD"
                     subprocess.run(
-                        ["git", "-C", str(staging), "sparse-checkout", "set", *spec.paths],
+                        ["git", "-C", str(staging), "checkout", rev, "--", *spec.paths],
                         check=True,
                         capture_output=True,
                         text=True,
                     )
-                    if spec.revision:
-                        subprocess.run(
-                            ["git", "-C", str(staging), "checkout", spec.revision],
-                            check=True,
-                            capture_output=True,
-                            text=True,
-                        )
                 else:
                     subprocess.run(
                         ["git", "clone", spec.url, str(staging)],
@@ -165,8 +160,38 @@ class SourceManager:
 
             elif spec.resource_type == "huggingface_dataset":
                 staging.mkdir(parents=True, exist_ok=True)
+                import httpx
+
+                raw_url = spec.url or ""
+                repo_id = raw_url.replace("https://huggingface.co/datasets/", "").strip("/") or spec.name
+                files_to_download = list(spec.paths) if spec.paths else ["dataset_manifest.json"]
+
+                for rel_file in files_to_download:
+                    dest_file = staging / rel_file
+                    dest_file.parent.mkdir(parents=True, exist_ok=True)
+                    dl_url = f"https://huggingface.co/datasets/{repo_id}/resolve/{spec.revision}/{rel_file}"
+                    try:
+                        with httpx.stream("GET", dl_url, follow_redirects=True, timeout=120.0) as resp:
+                            if resp.status_code == 404:
+                                raise ValueError(f"Hugging Face dataset file not found: {dl_url}")
+                            resp.raise_for_status()
+                            with dest_file.open("wb") as f_out:
+                                for chunk in resp.iter_bytes(chunk_size=65536):
+                                    f_out.write(chunk)
+                    except Exception as dl_err:
+                        if not dest_file.exists():
+                            raise RuntimeError(
+                                f"Failed to download Hugging Face dataset resource '{spec.name}' from {dl_url}: {dl_err}"
+                            ) from dl_err
+
                 (staging / "dataset_manifest.json").write_text(
-                    f'{{"dataset": "{spec.name}", "revision": "{spec.revision}"}}\n', encoding="utf-8"
+                    json.dumps({
+                        "dataset": spec.name,
+                        "revision": spec.revision,
+                        "repo_id": repo_id,
+                        "files": files_to_download,
+                    }, indent=2) + "\n",
+                    encoding="utf-8",
                 )
 
             # Compute file hashes before commit

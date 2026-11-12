@@ -8,6 +8,8 @@ from typing import Any
 import pytest
 
 from agent_benchmark.benchmarks.adapters.livecodebench import (
+    CANARY_FAILED_MARKER,
+    CANARY_SUCCESS_MARKER,
     LCBProblem,
     LCBScoringAdapter,
     extract_python_code,
@@ -98,7 +100,11 @@ def test_lcb_scoring_adapter_sandbox_unavailable_classified_as_infrastructure_in
     monkeypatch.setattr(verifier, "is_sandbox_available", lambda: False)
     adapter = LCBScoringAdapter(verifier=verifier)
 
-    ctx = TaskContext(task_id="lcb-01", prompt="Solve problem")
+    ctx = TaskContext(
+        task_id="lcb-01",
+        prompt="Solve problem",
+        metadata={"input_output": {"inputs": ["1"], "outputs": ["42"]}},
+    )
     attempt = BackendAttempt(
         task_id="lcb-01",
         model_id="m",
@@ -122,7 +128,7 @@ def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
                 success=True,
                 status="passed",
                 exit_code=0,
-                stdout="All tests passed",
+                stdout=f"{CANARY_SUCCESS_MARKER}: 1/1",
                 stderr="",
                 duration_ms=120.0,
             )
@@ -131,7 +137,7 @@ def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
                 success=False,
                 status="failed",
                 exit_code=1,
-                stdout="",
+                stdout=f"{CANARY_FAILED_MARKER}: wrong answer",
                 stderr="AssertionError",
                 duration_ms=80.0,
                 error_code="VERIFIER_TEST_FAILED",
@@ -139,7 +145,11 @@ def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
 
     verifier = ContainerVerifier(mock_runner=mock_runner)
     adapter = LCBScoringAdapter(verifier=verifier)
-    ctx = TaskContext(task_id="lcb-01", prompt="Return 42")
+    ctx = TaskContext(
+        task_id="lcb-01",
+        prompt="Return 42",
+        metadata={"input_output": {"inputs": ["1"], "outputs": ["42"]}},
+    )
 
     # 1. Passing code
     att_pass = BackendAttempt(
@@ -231,7 +241,7 @@ def test_e2e_lcb_suite_execution(tmp_path: Path) -> None:
             success=True,
             status="passed",
             exit_code=0,
-            stdout="OK",
+            stdout=f"{CANARY_SUCCESS_MARKER}: 1/1",
             stderr="",
             duration_ms=50.0,
         )
@@ -252,7 +262,12 @@ def test_e2e_lcb_suite_execution(tmp_path: Path) -> None:
             duration_ms=60.0,
             status="completed",
         )
-        scored = adapter.score_task(task, attempt, TaskContext(task_id=task, prompt="solve"))
+        ctx = TaskContext(
+            task_id=task,
+            prompt="solve",
+            metadata={"input_output": {"inputs": ["1"], "outputs": ["1"]}},
+        )
+        scored = adapter.score_task(task, attempt, ctx)
         return ResultNormalizer.to_store_task_record(scored, attempt)
 
     report = execute_pending(run_dir, execute=True, executor=lcb_executor)

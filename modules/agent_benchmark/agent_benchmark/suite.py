@@ -106,6 +106,8 @@ def load_cohort(cohort: str | None = None, manifest: Path | None = None) -> dict
             "dataset": data["dataset"],
             "revision": data["source_revision"],
             "tasks": tasks,
+            "task_prompts": data.get("task_prompts", {}),
+            "task_metadata": data.get("task_metadata", {}),
             "manifest_path": str(manifest.resolve()),
         }
     if cohort not in COHORTS:
@@ -190,12 +192,34 @@ def build_manifest(
                 effective_backend = "harbor"
 
     if effective_backend in ("direct_chat", "mock"):
+        from .benchmarks.loader import resolve_task_prompt_and_metadata
+
+        task_prompts: dict[str, str] = {}
+        task_metadata: dict[str, dict[str, Any]] = {}
+        custom_tasks_map = selected.get("custom_tasks") if isinstance(selected.get("custom_tasks"), dict) else None
+
+        for task in selected["tasks"]:
+            prompt_str = selected.get("task_prompts", {}).get(task, "")
+            meta_dict = selected.get("task_metadata", {}).get(task, {})
+            if not prompt_str:
+                prompt_str, resolved_meta = resolve_task_prompt_and_metadata(
+                    selected["dataset"],
+                    task,
+                    custom_manifest_tasks=custom_tasks_map,
+                )
+                if not meta_dict:
+                    meta_dict = resolved_meta
+            if not prompt_str and effective_backend == "mock":
+                prompt_str = f"Mock prompt for {task}"
+            task_prompts[task] = prompt_str
+            task_metadata[task] = meta_dict
+
         task_fingerprints = [
             {
                 "task_id": task,
                 "source_revision": selected.get("revision", "default"),
                 "identity_key_sha256": hashlib.sha256(f"{selected.get('revision', 'default')}:{task}".encode()).hexdigest(),
-                "content_fingerprint": None,
+                "content_fingerprint": hashlib.sha256(task_prompts.get(task, "").encode()).hexdigest() if task_prompts.get(task) else None,
             }
             for task in selected["tasks"]
         ]
@@ -208,6 +232,12 @@ def build_manifest(
             if not effective_url:
                 blockers.append("Direct model execution requires --base-url")
 
+        # Reject direct model execution if prompts cannot be resolved
+        missing_prompts = [t for t in selected["tasks"] if not task_prompts.get(t)]
+        if missing_prompts and effective_backend == "direct_chat":
+            is_runnable = False
+            blockers.append(f"Unresolved benchmark prompts for {len(missing_prompts)} tasks: {missing_prompts[:3]}")
+
         result: dict[str, Any] = {
             "schema": "agent-benchmark-suite-manifest-v1",
             "backend": effective_backend,
@@ -215,6 +245,8 @@ def build_manifest(
             "dataset": selected["dataset"],
             "source_revision": selected.get("revision", "default"),
             "tasks": list(selected["tasks"]),
+            "task_prompts": task_prompts,
+            "task_metadata": task_metadata,
             "agent": agent or "direct",
             "model": model,
             "jobs": jobs,
@@ -706,10 +738,34 @@ def _run_one_generic(store: RunStore, task: str, *, backend_id: str) -> dict[str
             api_format=manifest.get("provenance", {}).get("effective_api_format"),
         )
 
-        task_prompt = manifest.get("task_prompts", {}).get(task, f"Solve task: {task}")
+        task_prompt = manifest.get("task_prompts", {}).get(task)
+        task_meta = manifest.get("task_metadata", {}).get(task) or {}
+
+        # If prompt is still missing or placeholder, attempt dynamic resolution
+        if not task_prompt:
+            from .benchmarks.loader import resolve_task_prompt_and_metadata
+            dyn_prompt, dyn_meta = resolve_task_prompt_and_metadata(manifest.get("dataset", ""), task)
+            if dyn_prompt:
+                task_prompt = dyn_prompt
+                if not task_meta:
+                    task_meta = dyn_meta
+            elif backend_id == "mock":
+                task_prompt = f"Mock prompt for {task}"
+
+        # Reject empty or placeholder prompts before model dispatch
+        if not task_prompt or not task_prompt.strip() or task_prompt == f"Solve task: {task}":
+            return {
+                "status": "infrastructure_invalid",
+                "trial_id": None,
+                "ended_at": _now(),
+                "error_code": "MISSING_BENCHMARK_DATA",
+                "error_detail": f"Direct model dispatch blocked: benchmark prompt for task '{task}' is missing or empty",
+            }
+
         context = TaskContext(
             task_id=task,
             prompt=task_prompt,
+            metadata=task_meta,
         )
 
         attempt = backend.execute_task(task, context, plan)

@@ -217,8 +217,8 @@ def test_suite_build_manifest_direct_chat(tmp_path: Path) -> None:
         json.dumps({
             "id": "direct-cohort",
             "dataset": "ifeval/google-2023",
-            "source_revision": "c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            "tasks": ["ifeval-task-1", "ifeval-task-2"],
+            "source_revision": "f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
+            "tasks": ["ifeval-1000", "ifeval-1001"],
         }),
         encoding="utf-8",
     )

@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from .cohort_definitions import (
+    IFEVAL_100_TASKS,
+    IFEVAL_FULL_TASKS,
+    IFEVAL_SMOKE_TASKS,
+    LCB_100_TASKS,
+    LCB_FULL_TASKS,
+    LCB_SMOKE_TASKS,
+)
 from .schema import (
     BackendDescriptor,
     BenchmarkDescriptor,
@@ -331,7 +339,7 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
                     type="git_sparse",
                     name="google-research-ifeval",
                     url="https://github.com/google-research/google-research.git",
-                    revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
+                    revision="f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
                     paths=("instruction_following_eval",),
                     description="Pinned Google Research IFEval reference scorer and evaluation library",
                 ),
@@ -357,7 +365,7 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             all_tasks=(),  # Eager task enumeration deferred until installation
             default_scoring_protocol="ifeval-strict-loose-v1",
             source_repo="https://github.com/google-research/google-research.git",
-            source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
+            source_revision="f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
             tags=("instruction_following", "direct_model", "official"),
             install_state="registered",
             readiness_reason="Upstream source and input_data.jsonl not yet installed; run 'agent-benchmark setup install -d ifeval -x'",
@@ -369,9 +377,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="ifeval-smoke",
             dataset_id="ifeval/google-2023",
-            source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            task_ids=tuple(f"ifeval-{i}" for i in range(1001, 1006)),
-            description="Small smoke subset for quick validation of instruction adherence (5 tasks)",
+            source_revision="f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
+            task_ids=IFEVAL_SMOKE_TASKS,
+            description="Official smoke subset for instruction adherence verification (5 tasks)",
             tags=("smoke", "ifeval", "direct_chat"),
             scorer_id="ifeval_official",
         )
@@ -381,8 +389,8 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="ifeval-100",
             dataset_id="ifeval/google-2023",
-            source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            task_ids=tuple(f"ifeval-{i}" for i in range(1001, 1101)),
+            source_revision="f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
+            task_ids=IFEVAL_100_TASKS,
             description="Stratified 100-task frozen evaluation cohort across constraint types",
             tags=("100-subset", "ifeval", "direct_chat"),
             scorer_id="ifeval_official",
@@ -393,8 +401,8 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="ifeval-full",
             dataset_id="ifeval/google-2023",
-            source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            task_ids=(),  # Resolved from installed dataset snapshot
+            source_revision="f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81",
+            task_ids=IFEVAL_FULL_TASKS,
             description="Full 541-task official Google IFEval benchmark",
             tags=("full", "ifeval"),
             scorer_id="ifeval_official",
@@ -417,15 +425,16 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
                     type="git",
                     name="livecodebench-repo",
                     url="https://github.com/LiveCodeBench/LiveCodeBench.git",
-                    revision="642398511cb8b1fa85142106e224e756c9a35e72",
+                    revision="28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
                     description="Official LiveCodeBench evaluation runner and problem scenarios",
                 ),
                 ResourceDeclaration(
                     type="huggingface_dataset",
                     name="lcb-code-generation-lite",
                     url="https://huggingface.co/datasets/livecodebench/code_generation_lite",
-                    revision="release_v6",
-                    description="Default lightweight code generation dataset release v6",
+                    revision="0fe84c3912ea0c4d4a78037083943e8f0c4dd505",
+                    paths=("test6.jsonl",),
+                    description="Default lightweight code generation dataset release v6 (test6.jsonl)",
                 ),
                 ResourceDeclaration(
                     type="python_environment",
@@ -453,7 +462,7 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             all_tasks=(),  # Eager task enumeration deferred until installation
             default_scoring_protocol="lcb-codegeneration-v1",
             source_repo="https://github.com/LiveCodeBench/LiveCodeBench.git",
-            source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
+            source_revision="28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
             tags=("coding", "direct_model", "official", "sandbox_required"),
             install_state="registered",
             readiness_reason="Upstream source and dataset not yet installed; run 'agent-benchmark setup install -d livecodebench -x'",
@@ -465,8 +474,8 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="lcb-v6-smoke",
             dataset_id="livecodebench/release_v6",
-            source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
-            task_ids=tuple(f"lcb-problem-{i}" for i in range(1, 6)),
+            source_revision="28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+            task_ids=LCB_SMOKE_TASKS,
             description="Smoke subset of LiveCodeBench v6 problems for verifier qualification (5 problems)",
             tags=("smoke", "livecodebench", "direct_chat"),
             scorer_id="lcb_official",
@@ -477,8 +486,8 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="lcb-v6-direct-100",
             dataset_id="livecodebench/release_v6",
-            source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
-            task_ids=tuple(f"lcb-problem-{i}" for i in range(1, 101)),
+            source_revision="28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+            task_ids=LCB_100_TASKS,
             description="Stratified 100-task frozen evaluation cohort across contest difficulty levels",
             tags=("100-subset", "livecodebench", "direct_chat"),
             scorer_id="lcb_official",
@@ -489,9 +498,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
         CohortDescriptor(
             id="lcb-v6-direct-full",
             dataset_id="livecodebench/release_v6",
-            source_revision="642398511cb8b1fa85142106e224e756c9a35e72",
-            task_ids=(),
-            description="Full LiveCodeBench release v6 code generation benchmark",
+            source_revision="28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24",
+            task_ids=LCB_FULL_TASKS,
+            description="Full LiveCodeBench release v6 code generation benchmark (175 problems)",
             tags=("full", "livecodebench"),
             scorer_id="lcb_official",
         )

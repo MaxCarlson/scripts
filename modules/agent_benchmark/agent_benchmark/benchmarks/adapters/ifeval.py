@@ -1,15 +1,20 @@
-"""Official IFEval benchmark adapter, dataset loader, and strict/loose scoring."""
+"""Official Google IFEval benchmark adapter, dataset loader, and strict/loose scoring."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 import json
 from pathlib import Path
-import re
 from typing import Any
 
 from ...execution.contract import BackendAttempt, ScoredAttempt, TaskContext
 from ...execution.registry import register_scorer
+from ..ifeval import (
+    INSTRUCTION_DICT,
+    InputExample,
+    test_instruction_following_loose,
+    test_instruction_following_strict,
+)
 
 
 @dataclass(frozen=True)
@@ -95,144 +100,57 @@ def select_stratified_100_cohort(tasks: list[IFEvalTask]) -> tuple[str, ...]:
     return tuple(sorted(selected_ids))
 
 
-# --- Verification Logic for Standard IFEval Instruction Rules ---
-
-
-def _count_words(text: str) -> int:
-    return len(re.findall(r"\b\w+\b", text))
-
-
-def _count_sentences(text: str) -> int:
-    # Sentence boundary: ends with period, question mark, or exclamation point
-    sentences = re.split(r"[.!?]+(?:\s+|$)", text.strip())
-    return len([s for s in sentences if s.strip()])
-
-
-def _count_paragraphs(text: str) -> int:
-    paragraphs = re.split(r"\n\s*\n", text.strip())
-    return len([p for p in paragraphs if p.strip()])
-
-
-def _verify_single_instruction(
+def verify_single_instruction(
     instruction_id: str,
     kwargs: dict[str, Any],
     response: str,
+    prompt: str = "",
     strict: bool = True,
 ) -> bool:
-    """Verify one IFEval constraint with strict or loose evaluation."""
-    text = response if strict else _strip_loose_formatting(response)
+    """
+    Verify one IFEval constraint using the official reference instruction implementation.
 
-    if "number_words" in instruction_id:
-        num_words = _count_words(text)
-        target = kwargs.get("num_words", 0)
-        rel = kwargs.get("relation", "gte")
-        if rel == "gte":
-            return num_words >= target
-        elif rel == "lte":
-            return num_words <= target
-        elif rel == "eq":
-            return num_words == target
-        elif rel == "range":
-            lo = kwargs.get("min_words", 0)
-            hi = kwargs.get("max_words", 999999)
-            return lo <= num_words <= hi
+    Rejects unknown or unsupported instruction IDs with False (never True).
+    """
+    if instruction_id not in INSTRUCTION_DICT:
+        return False
 
-    elif "number_sentences" in instruction_id:
-        num_s = _count_sentences(text)
-        target = kwargs.get("num_sentences", 0)
-        rel = kwargs.get("relation", "gte")
-        if rel == "gte":
-            return num_s >= target
-        elif rel == "lte":
-            return num_s <= target
-        elif rel == "eq":
-            return num_s == target
+    instruction_cls = INSTRUCTION_DICT[instruction_id]
+    instruction = instruction_cls(instruction_id)
+    try:
+        instruction.build_description(**kwargs)
+        args = instruction.get_instruction_args()
+        if args and "prompt" in args and prompt:
+            instruction.build_description(prompt=prompt)
+    except Exception:
+        return False
 
-    elif "number_paragraphs" in instruction_id:
-        num_p = _count_paragraphs(text)
-        target = kwargs.get("num_paragraphs", 1)
-        return num_p >= target
+    if strict:
+        return bool(response.strip() and instruction.check_following(response))
 
-    elif "keywords" in instruction_id or "keyword" in instruction_id:
-        forbidden = kwargs.get("forbidden_words", [])
-        for word in forbidden:
-            if re.search(rf"\b{re.escape(word)}\b", text, re.IGNORECASE):
-                return False
-        required = kwargs.get("keywords", [])
-        for word in required:
-            if not re.search(rf"\b{re.escape(word)}\b", text, re.IGNORECASE):
-                return False
-        return True
-
-    elif "english_capital" in instruction_id:
-        # Response must be in all uppercase letters
-        letters = re.findall(r"[a-zA-Z]", text)
-        return bool(letters) and all(ch.isupper() for ch in letters)
-
-    elif "english_lowercase" in instruction_id:
-        letters = re.findall(r"[a-zA-Z]", text)
-        return bool(letters) and all(ch.islower() for ch in letters)
-
-    elif "no_comma" in instruction_id:
-        return "," not in text
-
-    elif "quotation" in instruction_id:
-        stripped = text.strip()
-        return (stripped.startswith('"') and stripped.endswith('"')) or (
-            stripped.startswith("“") and stripped.endswith("”")
-        )
-
-    elif "json_format" in instruction_id:
-        # Check if text is valid JSON
-        cand = text.strip()
-        if not strict and cand.startswith("```json") and cand.endswith("```"):
-            cand = cand[7:-3].strip()
-        elif not strict and cand.startswith("```") and cand.endswith("```"):
-            cand = cand[3:-3].strip()
-        try:
-            json.loads(cand)
+    # Official 8 loose variants check
+    r = response.split("\n")
+    response_remove_first = "\n".join(r[1:]).strip()
+    response_remove_last = "\n".join(r[:-1]).strip()
+    response_remove_both = "\n".join(r[1:-1]).strip()
+    revised_response = response.replace("*", "")
+    revised_response_remove_first = response_remove_first.replace("*", "")
+    revised_response_remove_last = response_remove_last.replace("*", "")
+    revised_response_remove_both = response_remove_both.replace("*", "")
+    all_responses = [
+        response,
+        revised_response,
+        response_remove_first,
+        response_remove_last,
+        response_remove_both,
+        revised_response_remove_first,
+        revised_response_remove_last,
+        revised_response_remove_both,
+    ]
+    for cand in all_responses:
+        if cand.strip() and instruction.check_following(cand):
             return True
-        except (ValueError, TypeError):
-            return False
-
-    elif "startend" in instruction_id or "start_with" in instruction_id:
-        prefix = kwargs.get("first_word") or kwargs.get("prefix", "")
-        suffix = kwargs.get("last_word") or kwargs.get("suffix", "")
-        res = True
-        if prefix:
-            res = res and text.strip().startswith(prefix)
-        if suffix:
-            res = res and text.strip().endswith(suffix)
-        return res
-
-    # Fallback default: if constraint is unknown, pass conservatively
-    return True
-
-
-def _strip_loose_formatting(text: str) -> str:
-    """
-    Loose evaluation stripping: removes common conversational intros/outros and markdown blocks.
-    """
-    lines = text.strip().splitlines()
-    if not lines:
-        return ""
-
-    # Remove typical first-line conversational openers
-    if len(lines) > 1 and re.match(r"^(Sure|Here|Certainly|Okay|Below|Of course)\b", lines[0], re.IGNORECASE):
-        lines = lines[1:]
-
-    # Remove typical last-line commentary
-    if len(lines) > 1 and re.match(r"^(Hope this helps|Let me know|Enjoy|Feel free)\b", lines[-1], re.IGNORECASE):
-        lines = lines[:-1]
-
-    cleaned = "\n".join(lines).strip()
-    # Unpack markdown code fences if wrapped
-    if cleaned.startswith("```") and cleaned.endswith("```"):
-        sub_lines = cleaned.splitlines()
-        if len(sub_lines) >= 2:
-            cleaned = "\n".join(sub_lines[1:-1]).strip()
-
-    return cleaned
+    return False
 
 
 class IFEvalScoringAdapter:
@@ -272,32 +190,52 @@ class IFEvalScoringAdapter:
         # Retrieve task instruction definitions
         task = self.task_cache.get(task_id)
         if not task:
-            # Reconstruct from context metadata if available
             raw_ids = context.metadata.get("instruction_id_list", [])
             raw_kwargs = context.metadata.get("kwargs", [])
-            task = IFEvalTask(
-                key=task_id,
-                prompt=context.prompt,
-                instruction_id_list=tuple(raw_ids),
-                kwargs=tuple(raw_kwargs),
+            if raw_ids:
+                task = IFEvalTask(
+                    key=task_id,
+                    prompt=context.prompt,
+                    instruction_id_list=tuple(raw_ids),
+                    kwargs=tuple(raw_kwargs),
+                    task_id=task_id,
+                )
+
+        if not task or not task.instruction_id_list:
+            return ScoredAttempt(
                 task_id=task_id,
+                scorer_id=self.scorer_id,
+                status="infrastructure_invalid",
+                score=0.0,
+                error_code="MISSING_BENCHMARK_DATA",
+                error_detail=f"Task {task_id} has no instruction metadata in cache or context",
             )
 
-        instructions = task.instruction_id_list or ("length_constraints:number_words",)
-        kwargs_list = list(task.kwargs) or [{}]
+        instructions = task.instruction_id_list
+        kwargs_list = list(task.kwargs) if task.kwargs else [{}] * len(instructions)
+        # Pad kwargs_list if shorter than instructions
+        while len(kwargs_list) < len(instructions):
+            kwargs_list.append({})
 
-        strict_results: list[bool] = []
-        loose_results: list[bool] = []
+        # Check for unknown instruction IDs: reject unsupported instructions
+        unsupported = [iid for iid in instructions if iid not in INSTRUCTION_DICT]
 
-        for idx, inst_id in enumerate(instructions):
-            kw = kwargs_list[idx] if idx < len(kwargs_list) else {}
-            strict_ok = _verify_single_instruction(inst_id, kw, attempt.response_text, strict=True)
-            loose_ok = _verify_single_instruction(inst_id, kw, attempt.response_text, strict=False)
-            strict_results.append(strict_ok)
-            loose_results.append(loose_ok)
+        inp = InputExample(
+            key=int(task.key) if isinstance(task.key, int) or (isinstance(task.key, str) and task.key.isdigit()) else 0,
+            instruction_id_list=list(instructions),
+            prompt=task.prompt or context.prompt,
+            kwargs=[dict(kw) for kw in kwargs_list],
+        )
+        prompt_map = {inp.prompt: attempt.response_text}
 
-        strict_prompt_pass = bool(strict_results and all(strict_results))
-        loose_prompt_pass = bool(loose_results and all(loose_results))
+        strict_out = test_instruction_following_strict(inp, prompt_map)
+        loose_out = test_instruction_following_loose(inp, prompt_map)
+
+        strict_results = strict_out.follow_instruction_list
+        loose_results = loose_out.follow_instruction_list
+
+        strict_prompt_pass = bool(strict_out.follow_all_instructions)
+        loose_prompt_pass = bool(loose_out.follow_all_instructions)
 
         strict_passed_count = sum(strict_results)
         loose_passed_count = sum(loose_results)
@@ -321,6 +259,7 @@ class IFEvalScoringAdapter:
 
         details = {
             "instruction_id_list": list(instructions),
+            "unsupported_instruction_ids": unsupported,
             "strict_follow_instruction_list": strict_results,
             "loose_follow_instruction_list": loose_results,
             "strict_prompt_pass": strict_prompt_pass,
@@ -330,8 +269,13 @@ class IFEvalScoringAdapter:
         evidence = {
             "response_preview": attempt.response_text[:200],
             "response_length_chars": len(attempt.response_text),
-            "response_length_words": _count_words(attempt.response_text),
         }
+
+        error_code = None
+        error_detail = None
+        if unsupported:
+            error_code = "UNSUPPORTED_INSTRUCTION"
+            error_detail = f"Task contains unsupported instruction IDs: {unsupported}"
 
         return ScoredAttempt(
             task_id=task_id,
@@ -341,6 +285,8 @@ class IFEvalScoringAdapter:
             metrics=metrics,
             details=details,
             evidence=evidence,
+            error_code=error_code,
+            error_detail=error_detail,
         )
 
 

@@ -1,9 +1,10 @@
 # Benchmark Plans Index & Active Pointer
 
 ## Active Plan
-- [`20261111-extensible-benchmark-framework`](20261111-extensible-benchmark-framework/STATUS.md): Extensible Agent Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench Integration.
+- [`20261111-official-evaluation-repair`](20261111-official-evaluation-repair/STATUS.md): Benchmark Validity, Official Scorer Parity, and Container Security Repair.
 
 ## Historical Plans
+- [`20261111-extensible-benchmark-framework`](20261111-extensible-benchmark-framework/STATUS.md): Extensible Agent Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench Integration.
 - [`20261029-1755_harbor-integration`](20261029-1755_harbor-integration/STATUS.md): Harbor Integration and Deterministic Coding-Agent Evaluation.
 - `20261029-runtime-resource-policy`: Runtime resource policy and host capacity checks.
 - `20261020-context-budget-safety`: Context budget safety and OpenCode profile validation.

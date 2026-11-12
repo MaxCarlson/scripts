@@ -74,6 +74,30 @@ class ContainerVerifier:
         except (subprocess.SubprocessError, FileNotFoundError, OSError):
             return False
 
+    def build_docker_command(self, script_path: Path, container_name: str | None = None) -> list[str]:
+        """Construct the hardened Docker execution command with all security constraints."""
+        cname = container_name or f"lcb-sandbox-{uuid4().hex[:12]}"
+        cmd = [
+            "docker", "run", "--rm",
+            "--name", cname,
+            "-i",
+            "--network", "none",
+            "--memory", self.config.memory_limit,
+            "--cpus", self.config.cpu_limit,
+            "--pids-limit", str(self.config.pids_limit),
+            "--cap-drop", "ALL",
+            "--security-opt", "no-new-privileges",
+        ]
+        if self.config.read_only_rootfs:
+            cmd.extend(["--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"])
+        cmd.extend([
+            "--user", "65534:65534",
+            "-v", f"{script_path.resolve().as_posix()}:/app/runner.py:ro",
+            self.config.image,
+            "python", "-u", "/app/runner.py",
+        ])
+        return cmd
+
     def execute_code(
         self,
         code_to_run: str,
@@ -101,20 +125,8 @@ class ContainerVerifier:
         script_file = temp_dir / "runner.py"
         script_file.write_text(runner_content, encoding="utf-8")
 
-        # Docker command with strict sandboxing constraints
-        docker_cmd = [
-            "docker", "run", "--rm",
-            "-i",
-            "--network", "none",
-            "--memory", self.config.memory_limit,
-            "--cpus", self.config.cpu_limit,
-            "--pids-limit", str(self.config.pids_limit),
-            "--cap-drop", "ALL",
-            "--security-opt", "no-new-privileges",
-            "-v", f"{script_file.resolve().as_posix()}:/app/runner.py:ro",
-            self.config.image,
-            "python", "-u", "/app/runner.py",
-        ]
+        container_name = f"lcb-sandbox-{uuid4().hex[:12]}"
+        docker_cmd = self.build_docker_command(script_file, container_name=container_name)
 
         t0 = time.monotonic()
         try:
@@ -138,6 +150,15 @@ class ContainerVerifier:
             )
         except subprocess.TimeoutExpired:
             duration_ms = round((time.monotonic() - t0) * 1000.0, 2)
+            # Ensure outer-process timeouts do not leave untracked containers running
+            try:
+                subprocess.run(
+                    ["docker", "rm", "-f", container_name],
+                    capture_output=True,
+                    timeout=5.0,
+                )
+            except Exception:
+                pass
             return SandboxExecutionResult(
                 success=False,
                 status="timed_out",
