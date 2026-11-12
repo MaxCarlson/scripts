@@ -74,6 +74,12 @@ def add_suite_parser(actions: Any) -> None:
             action="store_true",
             help="Authorize bounded start of absent local managed LLM Monitor",
         )
+        parser.add_argument(
+            "--backend",
+            choices=("harbor", "direct_chat", "mock"),
+            default=None,
+            help="Execution backend (auto-resolved from dataset/cohort if not specified)",
+        )
         parser.add_argument("-F", "--llm-friendly", action="store_true")
         if execution:
             parser.add_argument("-x", "--execute", action="store_true", help="Required authorization for inference")
@@ -264,6 +270,7 @@ def handle_suite(args: argparse.Namespace) -> int:
                 prompt_policy_file=args.prompt_policy_file,
                 study_repetition=args.study_repetition,
                 study_seed=args.study_seed,
+                backend=getattr(args, "backend", None),
             )
             if command == "run" and args.prepare_only and (not plan.get("study_adapter") or args.background):
                 raise ValueError("prepare-only requires a foreground specification-verification study")
@@ -335,6 +342,7 @@ def handle_suite(args: argparse.Namespace) -> int:
                 planned_manifest=plan,
                 registry_snapshot=registry_snapshot,
                 prompt_policy_file=args.prompt_policy_file,
+                backend=getattr(args, "backend", None),
             )
             store = RunStore(run_dir)
             if args.prepare_only:

@@ -42,13 +42,13 @@
 - [x] Tests for atomic install, checksum mismatches, path traversal rejection, and lock verification
 
 ## Phase 04 — Backend-Neutral Persistent Suite Runner and Direct Model Client
-- [ ] Define backend protocols in `execution/contract.py` (`ExecutionBackend`, `ScoringAdapter`, `ResultNormalizer`)
-- [ ] Refactor `suite.py` to use generic backend dispatcher while retaining `RunStore`, checkpointing, and locking
-- [ ] Implement Harbor execution backend adapter wrapping existing `execute_harbor_run`
-- [ ] Implement direct-model OpenAI-compatible chat backend in `execution/direct_chat.py` using `httpx`
-- [ ] Implement mock/stub scoring adapter for offline testing
-- [ ] Preserve persistent checkpoint schema, resume capability, and LLM Monitor evidence capture
-- [ ] Unit and characterization tests for backend-neutral execution and resume
+- [x] Define backend protocols in `execution/contract.py` (`ExecutionBackend`, `ScoringAdapter`, `ResultNormalizer`)
+- [x] Refactor `suite.py` to use generic backend dispatcher while retaining `RunStore`, checkpointing, and locking
+- [x] Implement Harbor execution backend adapter wrapping existing `execute_harbor_run`
+- [x] Implement direct-model OpenAI-compatible chat backend in `execution/direct_chat.py` using `httpx`
+- [x] Implement mock/stub scoring adapter for offline testing
+- [x] Preserve persistent checkpoint schema, resume capability, and LLM Monitor evidence capture
+- [x] Unit and characterization tests for backend-neutral execution and resume
 
 ## Phase 05 — Official IFEval Integration
 - [ ] Implement `benchmarks/adapters/ifeval.py`

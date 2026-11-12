@@ -130,6 +130,7 @@ def build_manifest(
     prompt_policy_file: Path | None = None,
     study_repetition: int | None = None,
     study_seed: int | None = None,
+    backend: str | None = None,
 ) -> dict[str, Any]:
     from .spec_verification_policy import BASELINE_ID, load_policy
 
@@ -165,6 +166,85 @@ def build_manifest(
         effective_format = "openai_chat_completions"
     elif llm_monitor and effective_format is None:
         raise ValueError("monitored routing requires explicit -A/--api-format for this agent")
+
+    catalog = get_default_catalog()
+    cohort_desc = None
+    try:
+        cohort_desc = catalog.get_cohort(selected["id"])
+    except KeyError:
+        pass
+
+    effective_backend = backend
+    if not effective_backend:
+        if cohort_desc and "direct_chat" in cohort_desc.tags:
+            effective_backend = "direct_chat"
+        else:
+            try:
+                ds_desc = catalog.resolve_dataset(selected["dataset"])
+                b_desc = catalog.get_benchmark(ds_desc.benchmark_id) if ds_desc.benchmark_id else None
+                if b_desc and "direct_chat" in b_desc.supported_backends:
+                    effective_backend = "direct_chat"
+                else:
+                    effective_backend = "harbor"
+            except (KeyError, AttributeError):
+                effective_backend = "harbor"
+
+    if effective_backend in ("direct_chat", "mock"):
+        task_fingerprints = [
+            {
+                "task_id": task,
+                "source_revision": selected.get("revision", "default"),
+                "identity_key_sha256": hashlib.sha256(f"{selected.get('revision', 'default')}:{task}".encode()).hexdigest(),
+                "content_fingerprint": None,
+            }
+            for task in selected["tasks"]
+        ]
+        scoring_proto = cohort_desc.scorer_id if cohort_desc and cohort_desc.scorer_id else "mock_scorer"
+        is_runnable = bool(model and effective_url)
+        blockers = []
+        if not is_runnable:
+            if not model:
+                blockers.append("Direct model execution requires --model")
+            if not effective_url:
+                blockers.append("Direct model execution requires --base-url")
+
+        result: dict[str, Any] = {
+            "schema": "agent-benchmark-suite-manifest-v1",
+            "backend": effective_backend,
+            "cohort": selected["id"],
+            "dataset": selected["dataset"],
+            "source_revision": selected.get("revision", "default"),
+            "tasks": list(selected["tasks"]),
+            "agent": agent or "direct",
+            "model": model,
+            "jobs": jobs,
+            "scoring_protocol": scoring_proto,
+            "repetitions": 1,
+            "retries": 0,
+            "task_fingerprints": task_fingerprints,
+            "provenance": {
+                "requested_base_url": base_url,
+                "effective_base_url": effective_url,
+                "monitor_url": (monitor_url or DEFAULT_MONITOR_URL) if llm_monitor else None,
+                "monitor_host_url": effective_host_url,
+                "llm_monitor_required": llm_monitor,
+                "recording_required": recording,
+                "requested_api_format": api_format,
+                "effective_api_format": effective_format or "openai_chat_completions",
+                "effective_agent_model": model,
+                "backend": effective_backend,
+                "scoring_protocol": scoring_proto,
+            },
+            "readiness": {
+                "is_runnable": is_runnable,
+                "blockers": blockers,
+                "backend": effective_backend,
+            },
+        }
+        digest_payload = json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+        result["manifest_sha256"] = hashlib.sha256(digest_payload).hexdigest()
+        return result
+
     plan = plan_benchmark(
         selected["dataset"],
         agent=agent,
@@ -192,6 +272,7 @@ def build_manifest(
     agent_version = "2.2.5" if agent.lower() == "opencode-v2" else ("1.19.5" if agent.lower() == "opencode" else None)
     result: dict[str, Any] = {
         "schema": "agent-benchmark-suite-manifest-v1",
+        "backend": "harbor",
         "cohort": selected["id"],
         "dataset": selected["dataset"],
         "source_revision": selected["revision"],
@@ -287,6 +368,7 @@ def create_run(
     study_adapter: bool = False,
     study_repetition: int | None = None,
     study_seed: int | None = None,
+    backend: str | None = None,
 ) -> Path:
     plan = planned_manifest or build_manifest(
         cohort=cohort,
@@ -304,6 +386,7 @@ def create_run(
         prompt_policy_file=prompt_policy_file,
         study_repetition=study_repetition,
         study_seed=study_seed,
+        backend=backend,
     )
     plan = dict(plan)
     plan["provenance"] = dict(plan.get("provenance", {}))
@@ -381,6 +464,7 @@ def create_run(
             "updated_at": _now(),
             "run_dir": str(run_dir),
             "manifest_sha256": plan["manifest_sha256"],
+            "backend": plan.get("backend", "harbor"),
             "source_revision": plan["source_revision"],
             **({"study_adapter": plan["study_adapter"]} if plan.get("study_adapter") else {}),
             "cohort": plan["cohort"],
@@ -490,6 +574,15 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
                         else:
                             output_tokens += int(token["value"])
                 break
+        if not item.get("native_artifacts"):
+            wall_ms = item.get("duration_wall_ms")
+            if isinstance(wall_ms, (int, float)):
+                durations.append(float(wall_ms))
+            tc = item.get("token_counts")
+            if isinstance(tc, dict):
+                token_counts_available = True
+                input_tokens += int(tc.get("input", 0))
+                output_tokens += int(tc.get("output", 0))
     return {
         "run_id": checkpoint["run_id"],
         "state": checkpoint["state"],
@@ -575,8 +668,84 @@ def summarize_run(checkpoint: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _run_one_generic(store: RunStore, task: str, *, backend_id: str) -> dict[str, Any]:
+    """Execute a task attempt through a generic backend and scoring adapter."""
+    from .execution import (
+        ExecutionPlan,
+        ResultNormalizer,
+        TaskContext,
+        get_backend,
+        get_scorer,
+    )
+
+    manifest = store.manifest
+    log_path = store.run_dir / "logs" / f"{task}.log"
+    started_at = _now()
+    store.update_task(
+        task,
+        status="running",
+        started_at=started_at,
+        log=str(log_path),
+    )
+
+    try:
+        backend = get_backend(backend_id)
+        scorer_id = manifest.get("scoring_protocol") or "mock_scorer"
+        scorer = get_scorer(scorer_id)
+
+        plan = ExecutionPlan(
+            backend_id=backend_id,
+            benchmark_id=manifest.get("dataset", "").split("/")[0],
+            dataset_id=manifest.get("dataset", ""),
+            task_ids=tuple(manifest.get("tasks", ())),
+            cohort_id=manifest.get("cohort"),
+            source_revision=manifest.get("source_revision"),
+            scorer_id=scorer_id,
+            model_id=manifest.get("model"),
+            base_url=manifest.get("provenance", {}).get("effective_base_url"),
+            api_format=manifest.get("provenance", {}).get("effective_api_format"),
+        )
+
+        task_prompt = manifest.get("task_prompts", {}).get(task, f"Solve task: {task}")
+        context = TaskContext(
+            task_id=task,
+            prompt=task_prompt,
+        )
+
+        attempt = backend.execute_task(task, context, plan)
+        scored = scorer.score_task(task, attempt, context)
+
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as lf:
+            lf.write(f"Task: {task}\n")
+            lf.write(f"Backend: {backend_id}\n")
+            lf.write(f"Status: {attempt.status}\n")
+            lf.write(f"Duration: {attempt.duration_ms}ms | Tokens: {attempt.input_tokens}/{attempt.output_tokens}\n")
+            if attempt.error_detail:
+                lf.write(f"Error: {attempt.error_detail}\n")
+            lf.write(f"Scorer: {scorer_id} -> {scored.status} (score={scored.score})\n")
+
+        return ResultNormalizer.to_store_task_record(scored, attempt)
+
+    except Exception as exc:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8", errors="replace") as lf:
+            lf.write(f"{type(exc).__name__}: {exc}\n")
+        return {
+            "status": "infrastructure_invalid",
+            "trial_id": None,
+            "ended_at": _now(),
+            "error_code": "EXECUTION_BACKEND_ERROR",
+            "error_detail": str(exc),
+        }
+
+
 def _run_one(store: RunStore, task: str) -> dict[str, Any]:
     manifest = store.manifest
+    backend_id = manifest.get("backend", "harbor")
+    if backend_id in ("direct_chat", "mock"):
+        return _run_one_generic(store, task, backend_id=backend_id)
+
     from .suite_output import capture_process_output
     from .suite_monitor import host_monitor_origin, request_snapshot, validate_monitor, verify_recorded_requests
 
@@ -815,7 +984,7 @@ def execute_pending(
             from .network_receipt import validate_receipt
 
             validate_receipt(run_dir, store.manifest)
-        if should_dispatch and executor is _run_one:
+        if should_dispatch and executor is _run_one and store.manifest.get("backend", "harbor") == "harbor":
             if (
                 store.manifest["provenance"].get("llm_monitor_required")
                 and store.manifest["agent"].lower() in ("opencode", "opencode-v2")

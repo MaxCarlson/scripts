@@ -73,3 +73,17 @@
 - [x] Zero live LLM calls, zero model downloads, system Python env untouched.
 
 **Status:** Phase 03 is COMPLETE and gate satisfied. Ready to proceed to Phase 04.
+
+
+## 8. Phase 04 Acceptance Gate
+- [x] Backend-neutral execution framework implemented in `execution/` (`contract.py`, `direct_chat.py`, `harbor_backend.py`, `mock_backend.py`, `registry.py`, `__init__.py`).
+- [x] Core contracts implemented: `ExecutionPlan`, `TaskContext`, `BackendAttempt`, `ScoredAttempt`, `ExecutionBackend`, `ScoringAdapter`, `ResultNormalizer`.
+- [x] Direct-model OpenAI-compatible chat completion client (`DirectChatBackend`) implemented with allowlisted endpoint validation, token accounting, per-request IDs, and failure classification (`INFERENCE_HTTP_ERROR`, `INFERENCE_TIMEOUT`, `INFERENCE_CONNECTION_ERROR`).
+- [x] Persistent `suite.py` refactored to support generic execution backends while preserving 100% of existing Harbor execution semantics, run store checkpointing, and LLM Monitor integration.
+- [x] Direct execution manifests do not require Docker or Harbor, enabling lightweight local LLM execution.
+- [x] Summarize and report metrics updated to aggregate wall times and token usage across both Harbor and direct execution runs.
+- [x] 45 unit and regression tests passing (`execution_test.py`, `suite_test.py`, `suite_cli_test.py`).
+- [x] Ruff lint checks 100% clean on all Phase 04 files.
+- [x] Zero live model inference calls dispatched; deterministic mocks and fixtures used exclusively.
+
+**Status:** Phase 04 is COMPLETE and gate satisfied. Ready to proceed to Phase 05.
