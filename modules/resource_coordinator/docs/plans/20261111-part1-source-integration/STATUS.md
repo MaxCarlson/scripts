@@ -49,11 +49,11 @@ The original RC feature worktree is clean at `607067bfe94f92e5b78469ba78571ceb40
 ## Integration decision
 
 **READY WITH DOCUMENTED LIMITATIONS** for source integration review. RC source matches the validated v0.14.0/H3-pinned source, targeted tests pass, and the one lifecycle failure reproduces on current main. Mining H3 candidate and its 190 optimizer / 13 shared-package regressions pass. Elevated Windows upgrade, target hardware qualification, and first controlled optimizer acceptance remain open. This is not production readiness.
-## Publication
+## Pre-merge publication snapshot (historical)
 
-- RC integration branch `integration/rc-v014-h3-baseline-20261111` is pushed; immediately before this final checklist-only commit, both local and remote refs were `f6b7bc2a` (full SHA is in Git history). `origin/main` is `6467edc6e82ce22b18ac3fd869188243af6085f7` and is an ancestor.
-- Pushed Mining integration branch `integration/mining-rc-h3-baseline-20261111`; remote ref and local candidate both resolve to `deea3e019b35615f4d95e6f510450f7f392fb82a`. `origin/master` remains `4b1f2a57b0bac536d250a7018df1f8a20c78e1c5` and is an ancestor.
-- This final status/checklist commit is documentation-only and is published on the same RC integration branch; the completion report records the exact final SHA. Neither `main` nor `master` was modified by this assignment.
+- Before the authorized source merges, RC integration branch `integration/rc-v014-h3-baseline-20261111` was pushed at the then-current candidate checkpoint; its previous review recorded `f6b7bc2a` before subsequent final documentation commits. At that time `origin/main` was `6467edc6e82ce22b18ac3fd869188243af6085f7` and was an ancestor.
+- Before the authorized source merges, Mining integration branch `integration/mining-rc-h3-baseline-20261111` was pushed at `deea3e019b35615f4d95e6f510450f7f392fb82a`. At that time `origin/master` was `4b1f2a57b0bac536d250a7018df1f8a20c78e1c5` and was an ancestor.
+- The prior review ended before mainline updates. The exact completed mainline state is recorded below.
 
 ## Part 1 final integration closure
 
