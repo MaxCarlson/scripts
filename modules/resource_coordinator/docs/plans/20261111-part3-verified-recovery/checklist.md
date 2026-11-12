@@ -13,4 +13,5 @@
 - [x] Integrate `rc recover --apply` without changing `--force`, maintenance reconciliation, or offline semantics.
 - [x] Run focused fault-injection, regression, Ruff, compilation, and provenance checks.
 - [x] Update final evidence and review the implementation diff.
-- [ ] Final diff check, task-only stage/commit, push, and verify the feature ref.
+- [x] Final diff check, task-only stage/commit, and publish the feature branch.
+- [x] Verify the pushed feature ref and final clean worktree after status finalization.

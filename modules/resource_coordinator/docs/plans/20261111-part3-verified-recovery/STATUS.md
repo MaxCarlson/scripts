@@ -7,7 +7,8 @@
 - Branch: `agent/rc-part3-verified-recovery-20261111`
 - Base: Part 2 candidate `19255b2e90b7a8904ddf324856687bc40c5e30d4`
 - `origin/main` at implementation start: `4f4373d2533e4e0c6bd115eda6623ed65fbadc49` (ancestor)
-- Final commit: to be recorded after commit and push.
+- Source checkpoint: `8a7fe2c3` (`feat(resource-coordinator): add verified recovery transaction`).
+- Final evidence/status commit: this document and checklist are finalized on the Part 3 branch; the exact branch tip is reported in the handoff.
 - V3 roadmap SHA-256: `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46`; Git blob: `3a1c2f7662a54469bb6dc15ad6462a4295ec93e6`.
 - Part 2 was not merged to `main`; this branch continues from the published Part 2 candidate as authorized. No mainline ref was changed.
 
@@ -56,5 +57,6 @@ Static checks (from `modules/resource_coordinator`; each exit 0): `python -m ruf
 
 ## Publication
 
-- Final source/docs commit and pushed ref: pending final verification.
+- Source checkpoint `8a7fe2c3` was pushed to `origin/agent/rc-part3-verified-recovery-20261111`; the final evidence commit is pushed separately after status completion.
+- Feature-branch publication does not update `main`.
 - Part 3 is a source candidate only. Do not merge to `main` or enable unattended recovery without separate review and H4/H5 gates.
