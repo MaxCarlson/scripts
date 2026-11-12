@@ -3,7 +3,7 @@
 **Date:** November 11, 2026  
 **Repositories:** `MaxCarlson/scripts`, `MaxCarlson/Mining`  
 **Scope:** Resource Coordinator maintenance integration, CLI modernization and compaction, local inference and maintenance observability, evidence-based recovery, worktree defect remediation, Windows deployment, and controlled live acceptance  
-**Status:** Master implementation plan v3 — incorporates v2 review corrections (preserved root `recover -r` compatibility, separated `rc maintenance reconcile`, crash-safe startup inhibition canonicalization, two-stage recovery transaction, distinct reconciliation dispositions, and `no_action_required` recovery classification); execute after verifying the current H3 agent's results and repository state
+**Status:** Master implementation plan v3 (final) — incorporates v2 and v3 review corrections (preserved root `recover -r` compatibility, separated `rc maintenance reconcile`, process-crash-safe startup inhibition canonicalization, atomic single-write two-stage recovery transaction with post-fence generation tracking, complete execution-boundary verification for runtime termination, distinct reconciliation dispositions, and `no_action_required` recovery classification); H3 is complete (`PASS`, Mining commit `deea3e019b35615f4d95e6f510450f7f392fb82a`) and Part 1 source integration is next
 
 ---
 
@@ -18,9 +18,9 @@ The desired end state is:
 - All significant commands support polished, color-coded human output (never collapsing nested telemetry, setup, or acceptance results into generic `"N structured items (see --json)"` placeholders) and stable machine-readable JSON.
 - RC determines whether requests are active, pending, completed, or uncertain using its own authoritative state and independent runtime observations.
 - RC evaluates whether recovery (both inference inhibition and maintenance session holds) is justified without requiring the operator to inspect process listings or manually interpret multiple command outputs, and distinguishes a healthy system (`no_action_required`) from an active safety hold that can be cleared (`auto_recoverable`).
-- When independently verified safe, RC reconciles a stale inhibition using a non-blocking two-stage recovery transaction, records an accurate reconciliation disposition (never conflating independent execution termination with HTTP protocol completion), and permits normal Coordinator-managed miner restoration.
+- When independently verified safe, RC reconciles a stale inhibition using a non-blocking two-stage recovery transaction with a single atomic `StateCodec` commit, records an accurate reconciliation disposition (never conflating independent execution termination with HTTP protocol completion), and permits normal Coordinator-managed miner restoration.
 - When safety cannot be established, RC preserves protections, explains the precise uncertainty, and optionally sends an actionable notification.
-- Four confirmed `v0.14.0` worktree defects (identified for pending source repair during Parts 2–3) in status recursive sanitization/allowlisting, telemetry rendering/ownership, crash-safe startup inhibition canonicalization, and `psutil.AccessDenied` PID reconciliation are resolved.
+- Four confirmed `v0.14.0` worktree defects in status recursive sanitization/allowlisting, telemetry rendering/ownership, startup inhibition canonicalization, and `psutil.AccessDenied` PID reconciliation are scheduled for repair in Parts 2–3.
 - Existing GPU maintenance integration and Mining optimizer work reach source integration, Windows hardware qualification, and authorized controlled live acceptance.
 - The design avoids introducing LLM Monitor as a mandatory dependency of RC safety decisions.
 
@@ -43,16 +43,16 @@ A code-level audit of the `v0.14.0` candidate worktree (`737bc6b2db7b68c041abffb
 2. **Dedicated `rc maintenance` command family and exact release contract (P0):**
    - Maintenance sessions place a protective inhibition on `gpu.inference` (`holder_id="maintenance:<operation_id>"`) AND maintain a separate GPU maintenance admission fence (`_gpu_maintenance_owner`) and durable session state machine (`maintenance.py`). Treating maintenance as an ordinary `--resource gpu.maintenance` inhibition in `rc recover` is misleading.
    - **v3 resolution:** Add a dedicated `rc maintenance` top-level command (`rc maintenance status`, `rc maintenance reconcile [-f -r "reason"] [--operation-id ID] [--session-id ID] [--no-resume-miner]`). Keep `rc status maintenance` as the status view and allow `rc recover --maintenance` only as a convenience alias that delegates directly to the maintenance reconciliation handler—never to `gpu.inference` inhibition clearing. Specify the exact identity-discovery (`GET /_coordinator/maintenance/status`) and `POST /_coordinator/maintenance/release` payload contract required by `MaintenanceSessionManager.release()`.
-3. **Crash-safe startup inhibition canonicalization and two-stage recovery transaction (P0):**
-   - **Startup canonicalization:** In `durable_state.py`, `reconcile_startup_state()` currently restores `state.inhibitions` (`holder_id="coord-..."`) and also adds an unpersisted in-memory inhibition (`holder_id="crash_recovery:coord-..."`) for the same unresolved request. V3 specifies an atomic, idempotent startup canonicalization sequence that migrates any legacy `crash_recovery:<req_id>` holders to `<req_id>`, persists missing request holds without discarding unrelated holders (`additional_uncertain_holders`), restores all unique holds into `LeaseManager`, fails closed on any persistence error, and is verified by deterministic failure-injection tests across every persistence boundary.
-   - **Two-stage recovery transaction:** `POST /_coordinator/recovery/auto` must not hold `LeaseManager._condition` while running external OS process checks or LM Studio probes. V3 specifies a two-stage transaction using an in-memory recovery fence (`_gpu_recovery_fence`) and state generation counter (`_state_generation`), with explicit cleanup guarantees across timeouts, cancellations, and crashes.
+3. **Process-crash-safe startup inhibition canonicalization and atomic two-stage recovery transaction (P0):**
+   - **Startup canonicalization:** In `durable_state.py`, `reconcile_startup_state()` currently restores `state.inhibitions` (`holder_id="coord-..."`) and also adds an unpersisted in-memory inhibition (`holder_id="crash_recovery:coord-..."`) for the same unresolved request. V3 specifies extending `reconcile_startup_state(..., state_path: Optional[Path | str] = None)` (and its `CoordinatorService.start()` caller) to perform an atomic, idempotent startup canonicalization sequence that migrates any legacy `crash_recovery:<req_id>` holders to `<req_id>`, persists missing request holds via `StateCodec.save_atomic` (which provides process-crash atomic file replacement, distinct from hardware power-loss directory/rename durability) without discarding unrelated holders (`additional_uncertain_holders`), restores all unique holds into `LeaseManager`, fails closed on any persistence error, and is verified by deterministic failure-injection tests across every persistence boundary.
+   - **Two-stage recovery transaction:** `POST /_coordinator/recovery/auto` must not hold `LeaseManager._condition` while running external OS process checks or LM Studio probes. V3 specifies a two-stage transaction using an in-memory recovery fence (`_gpu_recovery_fence`), post-fence state generation tracking (`snapshot_generation` captured *after* installing the fence so fence installation does not self-invalidate the check), and a single atomic `StateCodec.reconcile_requests_and_clear_holders()` transaction guarded by a monotonic journal revision counter (`revision`), with explicit fail-closed guarantees across timeouts, cancellations, and process crashes.
 4. **Corrected automatic recovery state semantics and reconciliation dispositions (P1):**
    - **Separate `no_action_required` from `auto_recoverable`:** A healthy Coordinator with no active holds does not need recovery. V3 uses five classifications: `no_action_required`, `auto_recoverable`, `wait`, `operator_required`, and `blocked`.
    - **Do not falsify `TERMINAL_VERIFIED`:** Recording `RequestPhase.TERMINAL_VERIFIED` when an upstream runtime died without completing the HTTP response would falsify protocol completion evidence. V3 keeps `RequestPhase.TERMINAL_VERIFIED` strictly for verified protocol completion (`[DONE]` or verified non-streaming HTTP response), adds `RequestPhase.RECONCILED = "reconciled"` (or backward-compatible schema migration) with explicit `details["reconciliation_disposition"]` values (`protocol_terminal_verified`, `execution_termination_verified`, `not_forwarded_verified`, `operator_resolved`).
 5. **Tightened status recursive sanitization, offline assessment guardrails, and CLI/versioning policy (P1/P2):**
    - **Recursive holder sanitization:** `gateway.py` `handle_coordinator_status()` now sanitizes both the primary `inhibition.details` and every nested entry in `details["additional_uncertain_holders"]` so multi-holder blockers remain visible without leaking unallowlisted fields.
    - **Offline recovery assessment guardrail:** When the Coordinator HTTP service is unreachable, `rc recover` may inspect the local journal for read-only diagnostics (`status="offline_diagnostic_only"`), can never report `auto_recoverable`, and refuses `-a/--apply` and `-f/--force`.
-   - **Policy-compliant `1.0.0` version bump for `rc`:** To satisfy `SCRIPTS_REPO_STANDARDS.md` (which triggers `.venv/Scripts/*.cmd` wrapper regeneration via `python setup.py` on major version bumps), bump `resource_coordinator` from `0.14.0` to `1.0.0` in `pyproject.toml` and `resource_coordinator/__init__.py`.
+   - **Policy-compliant `1.0.0` version bump for `rc`:** To satisfy `SCRIPTS_REPO_STANDARDS.md` (which triggers a full `pip uninstall` + `pip install` cycle via `python setup.py` on major version bumps so console script wrappers are regenerated), bump `resource_coordinator` from `0.14.0` to `1.0.0` in `pyproject.toml` and `resource_coordinator/__init__.py`.
    - **4 pending worktree bug repairs (`v0.14.0` baseline):**
      - **Pending Bug Fix 1 (`gateway.py` lines 629–656 & 714):** Restore the 6 stripped v0.12 diagnostic fields in `safe_request_detail_fields`, recursively sanitize `additional_uncertain_holders`, use `safe_inhibition` at line 714, and add safe non-mutating `gaming` status to `GET /_coordinator/status`.
      - **Pending Bug Fix 2 (`durable_state.py` lines 891–932):** Fix duplicate `coord-...` + `crash_recovery:coord-...` startup inhibitions via crash-safe canonicalization.
@@ -71,14 +71,14 @@ A code-level audit of the `v0.14.0` candidate worktree (`737bc6b2db7b68c041abffb
 | H2C — RC trusted restoration verification | Complete in feature source | RC v0.14.0, commit `737bc6b2db7b68c041abffb66017164f3c883228` |
 | H2B — Mining maintenance client compatibility | Complete in feature source | Commit `8f53e3d32d2bce560a2b35c802e6ac1c3fbfa7db` |
 | H2D — Mining scope and process-registration compatibility | Complete and pushed | Commit `4787f9bac06d811ca82a8a3752a61c69f181aafb`; 190 optimizer tests and 13 shared-package tests passed |
-| H3 — Cross-repository simulated acceptance | Assigned/current work | Agent was handed the task; no final H3 checkpoint was found on the inspected Mining branch |
-| Original next milestone — Source integration | Pending H3 | Review and integrate validated RC and Mining candidates |
+| H3 — Cross-repository simulated acceptance | PASS (Complete and pushed) | Final Mining commit `deea3e019b35615f4d95e6f510450f7f392fb82a` |
+| Original next milestone — Source integration | Ready / next (Part 1) | Review and integrate validated RC (`737bc6b2db7b68c041abffb66017164f3c883228`) and Mining (`deea3e019b35615f4d95e6f510450f7f392fb82a`) candidates |
 | Original H4 — Windows upgrade and hardware qualification | Pending | Scheduled Task upgrade, process attribution, NVML setting readback, deployment acceptance |
 | Original H5 — Controlled live acceptance | Pending | One bounded, separately authorized test before broader optimizer activity |
 | Original H6 — Notifications/watchdog and deferred automation | Pending | Reuse verified recovery/health events; avoid duplicate agent intervention |
 | New work — CLI compaction, inference/maintenance status, pending worktree bug fixes, and automated recovery | Planned here | Parts 2 and 3 |
 
-The current status of an agent process cannot be established from GitHub alone. Before taking ownership, inspect the agent's actual report, working tree, and published checkpoint. Do not duplicate H3 while it remains active.
+The current status of an agent process cannot be established from GitHub alone. Before taking ownership, inspect the agent's actual report, working tree, and published checkpoint.
 
 ### Preservation of roadmap artifacts across worktrees
 
@@ -101,6 +101,7 @@ The current status of an agent process cannot be established from GitHub alone. 
 - Repository: `MaxCarlson/Mining`
 - Candidate branch: `agent/mining-rc-maintenance-compat-20261111`
 - Pinned H2D: `4787f9bac06d811ca82a8a3752a61c69f181aafb`
+- Pinned H3 (PASS): `deea3e019b35615f4d95e6f510450f7f392fb82a`
 - Candidate is 2 commits ahead and 0 behind Mining `master` at the inspected checkpoint.
 
 The older RC upgrade-reliability feature branch was reported 0 ahead and 37 behind `scripts/main`. Inspect current mainline before reviving any historical upgrade fixes; an old branch name does not establish unfinished work.
@@ -223,10 +224,10 @@ Verify that `rc` does not collide with another installed command in normal Power
 
 ### Policy-compliant major version transition (`1.0.0`)
 
-Per repository standards (`docs/agent/SCRIPTS_REPO_STANDARDS.md` and `REPO_LLM_INSTRUCTIONS.md`), adding a new `[project.scripts]` entry point (`rc`) and consolidating the canonical CLI surface requires a **MAJOR version bump** so `python setup.py` automatically detects the major transition, runs `pip install -e .`, and generates `.venv/Scripts/rc.cmd` and `~/.local/bin/rc.cmd` shims:
+Per repository standards (`docs/agent/SCRIPTS_REPO_STANDARDS.md` and `REPO_LLM_INSTRUCTIONS.md`), adding a new `[project.scripts]` entry point (`rc`) and consolidating the canonical CLI surface requires a **MAJOR version bump** so `python setup.py` automatically detects `source_major > installed_major`, performs a full uninstall/reinstall (`pip_uninstall_then_install(module_dir)`), and regenerates the `.venv/Scripts/rc.cmd` and `~/.local/bin/rc.cmd` console-script wrappers:
 
 - Bump `version = "1.0.0"` in `modules/resource_coordinator/pyproject.toml` and `__version__ = "1.0.0"` in `modules/resource_coordinator/resource_coordinator/__init__.py`.
-- Register `resource_coordinator` (`rc` / `resource-coordinator`) under `"System & Monitoring"` in `modules/scripts_help/scripts_help/registry/registry.py`.
+- Register `resource_coordinator` (`rc` / `resource-coordinator`, version `"1.0.0"`) under `"System & Monitoring"` in `modules/scripts_help/scripts_help/registry/registry.py`.
 - Keep `validation-targets.json` and `Invoke-Tests.ps1` aligned with the module test suite.
 
 ### Consolidated 12-command top-level catalog
@@ -587,27 +588,33 @@ API distinction:
 
 A caller flag requesting automatic recovery (`-a`) must never count as termination evidence.
 
-## 3.2 Crash-safe startup reconciliation, reconciliation dispositions, and two-stage recovery transaction
+## 3.2 Process-crash-safe startup reconciliation, reconciliation dispositions, and two-stage recovery transaction
 
-### 3.2.1 Pending Bug Fixes in `durable_state.py`: Crash-safe startup inhibition canonicalization and `AccessDenied` propagation
+### 3.2.1 Pending Bug Fixes in `durable_state.py`: Process-crash-safe startup inhibition canonicalization, journal revision tracking, and `AccessDenied` propagation
 
-Before implementing exact-holder automatic recovery, repair two defects in `resource_coordinator/core/durable_state.py`:
+Before implementing exact-holder automatic recovery, repair two defects in `resource_coordinator/core/durable_state.py` and add a monotonic journal revision counter:
 
-1. **Crash-safe startup inhibition canonicalization (`reconcile_startup_state`, lines 891–932):**
-   - **Current defect:** Step 1 restores `state.inhibitions[resource]` with `holder_id="coord-..."` (and any `additional_uncertain_holders`), and Step 2 iterates over unresolved `state.requests` and calls `lease_manager.inhibit_restart(..., holder_id=f"crash_recovery:{req_id}")`. This creates a duplicate `"crash_recovery:<req_id>"` holder in memory that is not on disk, preventing `clear_inhibition_holder(resource, req_id)` from ever unblocking the resource. Furthermore, if a crash occurred after `record_request_phase(RESERVED)` but before `record_inhibition()`, the request hold was not persisted in `state.inhibitions`.
-   - **Required atomic canonicalization sequence (`reconcile_startup_state`):**
+1. **Add a monotonic journal `revision` counter to `CoordinatorState` (`durable_state.py`):**
+   - Relying solely on floating-point `updated_at` (`time.time()`) timestamps for optimistic concurrency control across stage boundaries is vulnerable to coarse clock granularity or wall-clock adjustments.
+   - Add an optional/defaulted integer field `revision: int = 0` to `CoordinatorState` (defaulting to `0` when deserializing existing `version="1.0"` state files so all older journals load cleanly).
+   - Increment `state.revision += 1` inside `StateCodec.save_atomic()` (or in every `StateCodec` mutation method before calling `save_atomic()`) so every durable journal write advances `revision` deterministically.
+2. **Process-crash-safe startup inhibition canonicalization (`reconcile_startup_state`, lines 872–932, and `CoordinatorService.start`, line 271):**
+   - **Current defect:** Step 1 restores `state.inhibitions[resource]` with `holder_id="coord-..."` (and any `additional_uncertain_holders`), and Step 2 iterates over unresolved `state.requests` and calls `lease_manager.inhibit_restart(..., holder_id=f"crash_recovery:{req_id}")`. This creates a duplicate `"crash_recovery:<req_id>"` holder in memory that is not on disk, preventing `clear_inhibition_holder(resource, req_id)` from ever unblocking the resource. Furthermore, if a process crash occurred after `record_request_phase(RESERVED)` but before `record_inhibition()`, the request hold was not persisted in `state.inhibitions`.
+   - **Signature update required:** Currently `reconcile_startup_state(state, lease_manager, supervisors=None, query_fn=None)` does not accept `state_path`. Extend its signature to `reconcile_startup_state(state: CoordinatorState, lease_manager: LeaseManager, supervisors: Optional[Dict[str, Any]] = None, query_fn: Optional[Callable[[int], Optional[float]]] = None, *, state_path: Optional[Path | str] = None)` and pass `state_path=state_path` from `CoordinatorService.start()` (`service.py` line 271).
+   - **Durability scope note:** `StateCodec.save_atomic()` writes to a sibling temporary file, calls `os.fsync()`, and performs an atomic `os.replace()`. As documented in `StateCodec.save_atomic()`, this guarantees **process-crash consistency** (no torn writes or half-applied state across process crashes/restarts), though it does not claim hardware power-loss directory/rename durability.
+   - **Required canonicalization sequence (`reconcile_startup_state`):**
      1. **Inspect and normalize persisted holders:** For each resource in `state.inhibitions`, inspect the primary `holder_id` and every entry in `details["additional_uncertain_holders"]`.
         - If any persisted holder has a legacy `crash_recovery:<req_id>` prefix where `<req_id>` corresponds to a known request ID (or `coord-` request prefix), normalize its `holder_id` to the canonical `<req_id>` while preserving its `reason`, `inhibited_at`, and `details` (recording `details["migrated_from_holder_id"] = "crash_recovery:<req_id>"`).
         - Preserve all non-request holders (such as `maintenance:<operation_id>`, operator abort holders, or genuine independent holds) untouched, deduplicating only exact `holder_id` matches on the same resource.
      2. **Construct complete canonical set of unique holds:** Scan `state.requests` for any request in `UNRESOLVED_PHASES` (`reserved`, `possibly_forwarded`, `uncertain`). Ensure each unresolved `req_id` is present as either the primary `holder_id` or an entry in `additional_uncertain_holders` for `req.resource` in `state.inhibitions`, using canonical `holder_id = req_id` (never `f"crash_recovery:{req_id}"`).
-     3. **Persist canonicalized holds atomically before in-memory restoration:** If Step 1 or Step 2 modified `state.inhibitions` (e.g., added a missing unresolved request hold or normalized a legacy `crash_recovery:` holder), persist the updated `CoordinatorState` via `StateCodec.save_atomic(state, state_path)` **before** restoring holds into `LeaseManager`.
+     3. **Persist canonicalized holds via `save_atomic` before in-memory restoration:** If Step 1 or Step 2 modified `state.inhibitions` (e.g., added a missing unresolved request hold or normalized a legacy `crash_recovery:` holder) and `state_path is not None`, persist the updated `CoordinatorState` in a single `StateCodec.save_atomic(state, state_path)` call **before** restoring holds into `LeaseManager`.
      4. **Restore single canonical set into `LeaseManager`:** For each resource in the canonicalized `state.inhibitions`, restore the primary holder and each entry in `additional_uncertain_holders` into `lease_manager.inhibit_restart(...)` so in-memory and on-disk holder lists are 1:1 identical.
      5. **Fail closed on incomplete persistence or restoration:** If loading, canonicalizing, saving to disk (`save_atomic`), or restoring into `LeaseManager` raises any exception, `CoordinatorService.start()` must refuse normal startup (`ServiceState.FAILED` / `RECONCILIATION_REQUIRED`) and latch `block_restarts()`.
    - **Mandatory failure-injection test requirement:** Add deterministic startup-reconciliation tests in `tests/test_durable_state.py` that:
-     - Inject `OSError` / simulated crash at each persistence boundary (after `RESERVED` before `record_inhibition`, during `save_atomic` in startup canonicalization, and during `inhibit_restart`),
-     - Repeat `reconcile_startup_state()` across multiple restarts, and
+     - Inject `OSError` / simulated process interruption at each persistence boundary (after `RESERVED` before `record_inhibition`, during `save_atomic` in startup canonicalization, and during `inhibit_restart`),
+     - Repeat `reconcile_startup_state(..., state_path=...)` across multiple restarts, and
      - Verify idempotency: zero duplicate holders, preservation of unrelated holders (`maintenance:...`, second uncertain request), migration of legacy `crash_recovery:coord-...` snapshots, and exact unblock when all holders are cleared via `clear_inhibition_holder()`.
-2. **Preserve `psutil.AccessDenied` in `_default_query` (`reconcile_startup_state`, lines 937–942):**
+3. **Preserve `psutil.AccessDenied` in `_default_query` (`reconcile_startup_state`, lines 937–942):**
    - **Current defect:** `_default_query()` catches `(psutil.NoSuchProcess, psutil.AccessDenied)` and returns `None`, causing `reconcile_pid()` to return `ReconciliationOutcome.NOT_RUNNING` instead of `ReconciliationOutcome.ACCESS_DENIED`.
    - **Fix:** Catch only `psutil.NoSuchProcess` in `_default_query()` (returning `None`) and allow `psutil.AccessDenied` to propagate into `reconcile_pid()` where it is classified as `ReconciliationOutcome.ACCESS_DENIED`. In `CoordinatorService.start()`, verify that `ReconciliationOutcome.ACCESS_DENIED` is treated as an unverifiable/ambiguous process state that blocks normal startup rather than assuming the process is stopped.
 
@@ -622,7 +629,7 @@ Automatic or operator recovery must never overwrite `RequestPhase` with `TERMINA
   - Record an explicit `details["reconciliation_disposition"]` enum on every resolved/terminal request:
     - `"protocol_terminal_verified"` — normal streaming/non-streaming completion verified by gateway (`phase == "terminal_verified"`).
     - `"not_forwarded_verified"` — request was in `RESERVED` phase (or failed prior to upstream dispatch with `forwarded == False`) and never reached the upstream runtime (`phase == "reconciled"`).
-    - `"execution_termination_verified"` — request was forwarded (`POSSIBLY_FORWARDED` or `UNCERTAIN`), protocol completion was not observed, but RC independently proved that the upstream execution terminated (e.g., verified upstream runtime process exit/restart or verified post-disconnect stream drain completion) (`phase == "reconciled"`).
+    - `"execution_termination_verified"` — request was forwarded (`POSSIBLY_FORWARDED` or `UNCERTAIN`), protocol completion was not observed, but RC independently proved that the complete upstream execution boundary terminated (`phase == "reconciled"`).
     - `"operator_resolved"` — resolved by explicit authenticated operator override without independent runtime proof (`phase == "operator_resolved"`).
   - None of `protocol_terminal_verified`, `not_forwarded_verified`, or `execution_termination_verified` may ever be inferred merely from a client timeout, empty queue, or idle GPU/model snapshot.
 
@@ -630,35 +637,41 @@ Automatic or operator recovery must never overwrite `RequestPhase` with `TERMINA
 
 Holding `LeaseManager._condition` across slow or blocking OS process inspections and LM Studio probes would stall gateway admission, delay lease releases, and risk lock-order deadlocks.
 
-Implement `POST /_coordinator/recovery/auto` as a **two-stage recovery transaction** with an in-memory recovery fence and state generation counter:
+Implement `POST /_coordinator/recovery/auto` as a **two-stage recovery transaction** with an in-memory recovery fence, post-fence state generation tracking, and a single atomic `StateCodec` commit:
 
 1. **LeaseManager state generation and recovery fence primitives (`leases.py`):**
-   - Maintain a monotonic integer `self._state_generation: int = 0` on `LeaseManager` that increments under `self._condition` whenever any lease is reserved/promoted/released, any inhibition is added/modified/cleared, or any maintenance/recovery fence changes.
-   - Maintain `self._gpu_recovery_fence: Optional[Dict[str, Any]] = None` (`{"fence_id": str, "holder_ids": list[str], "started_monotonic": float, "deadline_monotonic": float, "snapshot_generation": int}`).
-   - While `self._gpu_recovery_fence` is active (and `monotonic_clock() < deadline_monotonic`), new GPU lease reservations (`reserve()`) wait or reject with a transient 503/conflict (or block promotion in `_promote_reservation()`), and manual miner/gaming mutations (`run_if_idle`) return `False` so no new GPU work can slip in while external observations are running.
+   - Maintain a monotonic integer `self._state_generation: int = 0` on `LeaseManager` that increments under `self._condition` whenever any lease is reserved/promoted/released, any inhibition is added/modified/cleared, or any maintenance fence changes.
+   - **Prevent self-invalidation on fence installation:** Either do **not** increment `_state_generation` when installing/removing `_gpu_recovery_fence`, OR capture `post_fence_generation = self._state_generation` **after** installing `_gpu_recovery_fence` in Stage 1 so that an uncontended recovery transaction sees `self._state_generation == post_fence_generation` upon entering Stage 3.
+   - Maintain `self._gpu_recovery_fence: Optional[Dict[str, Any]] = None` (`{"fence_id": str, "holder_ids": list[str], "started_monotonic": float, "deadline_monotonic": float, "post_fence_generation": int, "journal_revision": int}`).
+   - While `self._gpu_recovery_fence` is active (and `self._monotonic_clock() < deadline_monotonic`), new GPU lease reservations (`reserve()`) wait or reject with a transient 503/conflict (or block promotion in `_promote_reservation()`), and manual miner/gaming mutations (`run_if_idle`) return `False` so no new GPU work can slip in while external observations are running.
 2. **Stage 1 — Fence acquisition and snapshot (under `LeaseManager._condition`, non-blocking):**
    - Verify that the service is `READY` (or `RECONCILIATION_REQUIRED` due solely to the targeted inhibition), `maintenance_manager.state == "idle"`, `gpu_maintenance_owner is None`, and no active or pending GPU leases exist.
    - If another recovery fence is already active and not expired, reject with HTTP 409 (`"recovery_in_progress"`).
-   - Load the durable journal snapshot, identify the targeted inhibition holder(s) on `resource` (`gpu.inference`), and record `snapshot_generation = self._state_generation`.
+   - Load the durable journal snapshot, identify the targeted inhibition holder(s) on `resource` (`gpu.inference`), and record `snapshot_revision = durable_state.revision`.
    - If no inhibition or unresolved request exists, return `{"status": "no_action_required"}` immediately without setting a fence.
-   - Otherwise, set `self._gpu_recovery_fence` with a bounded TTL (`recovery_fence_timeout_seconds`, e.g., `10.0s`) and release `self._condition`.
+   - Otherwise, install `self._gpu_recovery_fence` with a bounded TTL (`recovery_fence_timeout_seconds`, e.g., `10.0s`), capture `post_fence_generation = self._state_generation` **after** installing the fence, store `post_fence_generation` and `snapshot_revision` in the fence record, and release `self._condition`.
 3. **Stage 2 — Bounded external observations (lock released, fence active):**
    - Inside a `try ... finally` block (shielded on cleanup), perform bounded read-only observations using `asyncio.wait_for(..., timeout=...)`:
      - Re-verify unresolved request phases and evidence in `coordinator_state.json`.
      - Query OS process table (`reconcile_pid`) for managed miner and upstream runtime PIDs/creation times.
      - Query the bounded `LMStudioActivityObserver` when required by the evidence rule.
    - Determine which specific `holder_id`s have complete, authoritative proof of non-execution (`not_forwarded_verified` or `execution_termination_verified`).
-4. **Stage 3 — Revalidation, durable commit, and holder clearing (reacquire `LeaseManager._condition`):**
+4. **Stage 3 — Revalidation, single-write durable commit, and in-memory synchronization (reacquire `LeaseManager._condition`):**
    - Reacquire `self._condition`.
-   - Verify that `self._gpu_recovery_fence` still belongs to this `fence_id`, has not expired, `self._state_generation == snapshot_generation`, no active/pending leases appeared, and the durable journal's `updated_at` / holder identities match the Stage 1 snapshot.
+   - Verify that `self._gpu_recovery_fence` still belongs to this `fence_id`, has not expired (`self._monotonic_clock() < deadline_monotonic`), `self._state_generation == post_fence_generation`, and no active/pending leases appeared.
    - Verify that all gathered observations are fresh (observed after the request's last state transition and within `max_observation_age_seconds`).
-   - Persist the exact `RequestPhase.RECONCILED` transition and `details["reconciliation_disposition"]` (`not_forwarded_verified` or `execution_termination_verified`), and clear **only** the verified `holder_id`(s) via `_remove_inhibition_holder` / `clear_inhibition_holder`.
-   - Clear `self._gpu_recovery_fence = None` and `notify_all()`.
+   - **Single atomic `StateCodec` transaction (`StateCodec.reconcile_requests_and_clear_holders`):**
+     - Do **not** perform separate journal writes for request-phase updates and inhibition removal (which would create a process-crash window between the two writes).
+     - Implement a single `StateCodec.reconcile_requests_and_clear_holders(target_path, *, resource, expected_revision, holder_dispositions)` method that loads `CoordinatorState`, verifies `state.revision == expected_revision` (and that the expected request phases and inhibition `holder_id`s have not changed), transitions each verified request to `RequestPhase.RECONCILED` with its exact `details["reconciliation_disposition"]` (`not_forwarded_verified` or `execution_termination_verified`), removes **only** those verified `holder_id`s via `_remove_inhibition_holder(state, resource, holder_id)` (preserving and promoting any remaining `additional_uncertain_holders`), increments `state.revision`, and writes the resulting state in **one** `StateCodec.save_atomic()` replacement.
+   - **In-memory synchronization under active fence:**
+     - While `self._gpu_recovery_fence` is still held under `self._condition`, synchronize `LeaseManager._inhibitions[resource]` to match the committed durable state (removing the cleared `holder_id`s and promoting any remaining holder).
+     - If the durable `StateCodec` commit succeeds but in-memory synchronization fails for any unexpected reason, latch `self.block_restarts("In-memory recovery synchronization failed after durable commit")` and transition the service to `ServiceState.RECONCILIATION_REQUIRED` (fail-closed).
+   - Clear `self._gpu_recovery_fence = None` and `self._condition.notify_all()`.
    - If all inhibitions on `gpu.inference` are now cleared (no remaining `additional_uncertain_holders`), start the normal post-activity cooldown and allow the existing RC supervisor to resume eligible Coordinator-owned miner operation.
 5. **Failure, cancellation, timeout, and crash behavior of the recovery fence:**
    - **Cancellation or timeout during Stage 2:** The `finally` block reacquires `self._condition` under `anyio.CancelScope(shield=True)` (or `asyncio.shield`) and clears `self._gpu_recovery_fence`, leaving all durable and in-memory inhibitions intact (fail-closed).
-   - **Deadline expiration safety net:** If a worker task hangs past `deadline_monotonic`, any subsequent `LeaseManager` operation checks `self._ monotonic_clock() >= fence["deadline_monotonic"]`, logs a warning, clears the expired in-memory fence, and keeps the restart inhibition latched.
-   - **Service crash during recovery:** Because `self._gpu_recovery_fence` is purely in-memory and durable state is updated atomically in Stage 3 (`save_atomic`), a crash before Stage 3 `save_atomic` leaves the prior inhibition and unresolved request intact on disk; a crash after Stage 3 `save_atomic` leaves the reconciled state on disk.
+   - **Deadline expiration safety net:** If a worker task hangs past `deadline_monotonic`, any subsequent `LeaseManager` operation checks `self._monotonic_clock() >= fence["deadline_monotonic"]`, logs a warning, clears the expired in-memory fence, and keeps the restart inhibition latched.
+   - **Process crash during recovery:** Because `self._gpu_recovery_fence` is purely in-memory and Stage 3 commits both the `RequestPhase.RECONCILED` update and the holder removal in a single `StateCodec.save_atomic()` call, a process crash before `save_atomic()` leaves both the unresolved request and inhibition intact on disk, and a process crash after `save_atomic()` leaves both reconciled on disk.
 
 ### Evidence hierarchy
 
@@ -666,8 +679,15 @@ Automatic recovery may clear a holder **only** when the system can prove:
 
 - **Case A (`not_forwarded_verified`):** The request was recorded in `RequestPhase.RESERVED` (or failed before upstream bytes were sent with `forwarded is False`), and no upstream request was ever dispatched for that `request_id`, OR
 - **Case B (`execution_termination_verified` — post-disconnect stream completion):** The request was forwarded, downstream disconnected, and RC's own bounded upstream stream drain observed the authoritative protocol completion sentinel (`[DONE]` or `model_load.end`), OR
-- **Case C (`execution_termination_verified` — runtime instance termination):** The request was forwarded to a known local LM Studio runtime process identity (`pid` + `create_time`), and RC independently verifies that the exact upstream runtime process has terminated (`NOT_RUNNING` or `PID_RECYCLED`) and no replacement runtime is executing that request, AND
-- No other protected work or ineligible inhibition owner remains (or if another holder remains in `additional_uncertain_holders`, only the proven holder is removed while the remaining holder is promoted and continues inhibiting restart).
+- **Case C (`execution_termination_verified` — complete execution-boundary termination):**
+  - LM Studio and local inference backends may involve separate frontend server, worker, and GPU model-execution processes (across Windows and/or WSL), so observing a frontend or controlling PID exit does **not** by itself prove that child GPU compute workers have terminated.
+  - Therefore, Case C may authorize automatic recovery **only** when RC can establish the **complete execution boundary** for the request:
+    1. The exact runtime/worker process group or execution instance identity (`pid` + `create_time` for all associated backend worker processes) was captured and bound to the request, AND
+    2. Every process in that execution boundary is independently verified terminated (`NOT_RUNNING` or `PID_RECYCLED`, never `ACCESS_DENIED` or `UNVERIFIABLE`), AND
+    3. Verified GPU-process attribution (when available and qualified on the host) confirms no orphaned LM Studio/llama.cpp worker process remains attached to the GPU, AND
+    4. No replacement runtime is executing that request.
+  - **Fail-closed rule for Case C:** Whenever RC cannot establish complete worker/process-group ownership and GPU execution-boundary termination (including before host GPU-process attribution is qualified in Part 4), Case C must remain **unavailable** for automatic recovery, and the request must remain classified as `operator_required`.
+- In all cases (A, B, or qualified C), no other protected work or ineligible inhibition owner may be cleared (if another holder remains in `additional_uncertain_holders`, only the proven holder is removed while the remaining holder is promoted and continues inhibiting restart).
 
 Insufficient evidence by itself (must **never** authorize automatic recovery of a `POSSIBLY_FORWARDED` or `UNCERTAIN` request):
 
@@ -726,10 +746,13 @@ A legitimate miner crash without uncertain LM Studio activity should follow the 
 Required simulated cases:
 
 - Healthy system with no holds returns `no_action_required` (and `POST /_coordinator/recovery/auto` is a safe no-op).
+- Uncontended two-stage automatic recovery succeeds end-to-end (proving `post_fence_generation` and `expected_revision` allow a clean Stage 1 → Stage 2 → Stage 3 commit when no conflicting state change occurred).
 - Verified terminal request followed by a stale inhibition.
 - Persistently verified not-forwarded (`RESERVED`) request recovered after coordinator restart (`reconciliation_disposition="not_forwarded_verified"`), verifying no phantom `crash_recovery:` holder remains.
 - Deterministic startup-reconciliation failure injection at every persistence boundary (crash before `record_inhibition`, crash during startup `save_atomic`, repeated startup with legacy `crash_recovery:coord-...` holders, and preservation of unrelated `additional_uncertain_holders`).
-- Pending inference or model load arriving during Stage 2 of the two-stage recovery transaction (verifying the recovery fence blocks conflicting admission and Stage 3 aborts if generation changed).
+- Pending inference or model load arriving during Stage 2 of the two-stage recovery transaction (verifying the recovery fence blocks conflicting admission and Stage 3 aborts if `_state_generation` or journal `revision` changed).
+- Simulated failure between Stage 3 durable commit (`StateCodec.reconcile_requests_and_clear_holders`) and in-memory synchronization (verifying `block_restarts()` is latched and the service enters `RECONCILIATION_REQUIRED`).
+- Frontend/controlling LM Studio PID exit while a child/worker GPU process remains alive or unverified (verifying Case C refuses automatic recovery unless the complete execution boundary is proven terminated).
 - Slow/hanging external observation in Stage 2 (verifying `LeaseManager._condition` is **not** held during Stage 2, timeout cleans up `_gpu_recovery_fence`, and inhibitions remain latched).
 - Timed-out forwarded operation with unknown termination (`operator_required`).
 - Active generation despite no downstream client (and bounded post-disconnect drain completion vs. drain timeout).
@@ -955,8 +978,8 @@ Success requires demonstrated behavior across three distinct boundaries:
 
 | Component | Depends on | Can proceed in parallel? |
 |---|---|---|
-| H3 simulated acceptance | Existing H2 candidates | Already assigned |
-| Part 1 source integration | H3 validated results | No; follow H3 |
+| H3 simulated acceptance | Existing H2 candidates | Complete (`PASS`, Mining commit `deea3e019b35615f4d95e6f510450f7f392fb82a`) |
+| Part 1 source integration | H3 validated results | Ready now / next milestone |
 | Part 2 CLI compaction (`1.0.0`), `rc maintenance`, inference/maintenance status, and pending worktree bug fixes | Stable RC source baseline | Yes, alongside Windows read-only readiness |
 | Part 3 two-stage recovery engine, reconciliation dispositions, and `durable_state.py` startup fixes | Part 2 evidence interfaces | `durable_state.py` bug fixes and reliability research/tests may start immediately in Part 2/3 |
 | H4 Windows upgrade qualification | Validated integrated source | Yes, after Part 1 |
@@ -1022,6 +1045,7 @@ Do not create new assignments solely to generate more handoffs. When work is com
 **Mining**
 
 - [Mining H2D status](https://github.com/MaxCarlson/Mining/blob/4787f9bac06d811ca82a8a3752a61c69f181aafb/docs/plans/20261111-h2d-rc-v014-compat/STATUS.md)
+- Mining H3 simulated cross-repository acceptance checkpoint (`PASS`): commit `deea3e019b35615f4d95e6f510450f7f392fb82a`
 
 **LM Studio and monitoring**
 
@@ -1033,9 +1057,9 @@ Do not create new assignments solely to generate more handoffs. When work is com
 
 ## Immediate next action
 
-Allow the current H3 agent to finish its assigned simulated cross-repository acceptance.
+H3 simulated cross-repository acceptance is complete (`PASS`, Mining commit `deea3e019b35615f4d95e6f510450f7f392fb82a`).
 
-Ensure this `MASTER_IMPLEMENTATION_PLAN_V3.md` is preserved (committed or copied into the active integration branch) before switching or creating worktrees, then reconcile the H3 report and repository checkpoint against this v3 document and initiate **Part 1's integration review**.
+Ensure this finalized `MASTER_IMPLEMENTATION_PLAN_V3.md` is preserved (committed or copied into the active integration branch) before switching or creating worktrees, and proceed directly with **Part 1's source-integration review and mainline reconciliation** for RC (`737bc6b2db7b68c041abffb66017164f3c883228`) and Mining (`deea3e019b35615f4d95e6f510450f7f392fb82a`).
 
 After the validated source baseline exists, initiate Part 2's CLI compaction (`1.0.0`), pending worktree bug fixes, and inference/maintenance-status implementation, and independently continue the original Windows readiness gates.
 
