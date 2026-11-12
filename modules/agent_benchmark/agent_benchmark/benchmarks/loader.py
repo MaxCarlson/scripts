@@ -6,7 +6,7 @@ import base64
 import functools
 import json
 from pathlib import Path
-import pickle
+import pickletools
 from typing import Any
 import zlib
 
@@ -15,42 +15,88 @@ from .adapters.livecodebench import LCBProblem, format_lcb_prompt
 from ..external_sources import SourceManager
 
 
+_MAX_DECOMPRESSED_BYTES = 512 * 1024 * 1024
+# Opcodes that can appear in a pickle containing nothing but a single (JSON) string.
+# Anything else (GLOBAL/REDUCE/BUILD/INST/OBJ/...) is rejected without executing the stream.
+_SAFE_STRING_PICKLE_OPS = frozenset({
+    "PROTO", "FRAME", "STOP", "MEMOIZE", "PUT", "BINPUT", "LONG_BINPUT",
+    "UNICODE", "BINUNICODE", "SHORT_BINUNICODE", "BINUNICODE8",
+})
+_STRING_OPS = frozenset({"UNICODE", "BINUNICODE", "SHORT_BINUNICODE", "BINUNICODE8"})
+
+
+def _extract_pickled_string(data: bytes) -> str | None:
+    """
+    Extract the string payload of a legacy LiveCodeBench pickle WITHOUT deserializing it.
+
+    The pickle opcode stream is only *tokenized* (``pickletools.genops`` never executes anything).
+    The stream must consist solely of allowlisted opcodes carrying exactly one string; any
+    other opcode (e.g. GLOBAL/STACK_GLOBAL/REDUCE used by malicious payloads) rejects the data.
+    """
+    strings: list[str] = []
+    try:
+        for opcode, arg, _pos in pickletools.genops(data):
+            if opcode.name not in _SAFE_STRING_PICKLE_OPS:
+                return None
+            if opcode.name in _STRING_OPS:
+                strings.append(arg)
+    except Exception:
+        return None
+    return strings[0] if len(strings) == 1 else None
+
+
+def _decompress_bounded(raw: bytes) -> bytes | None:
+    d = zlib.decompressobj()
+    try:
+        out = d.decompress(raw, _MAX_DECOMPRESSED_BYTES)
+    except zlib.error:
+        return None
+    if d.unconsumed_tail:  # exceeded the size bound (decompression bomb)
+        return None
+    return out
+
+
 def decode_test_cases(raw: Any) -> list[dict[str, Any]]:
     """
-    Decode JSON or base64/zlib/pickle obfuscated test cases from LiveCodeBench dataset.
-    Returns list of dicts with 'input' and 'output' keys.
+    Decode JSON or base64/zlib/pickle-encoded test cases from the LiveCodeBench dataset.
+
+    Never calls ``pickle.loads``: legacy pickle payloads are tokenized and must be a bare string
+    (see ``_extract_pickled_string``). Returns list of dicts with 'input' and 'output' keys, or
+    an empty list for undecodable/unsafe data (callers classify that as missing benchmark data).
     """
     if not raw:
         return []
     if isinstance(raw, list):
         return [t for t in raw if isinstance(t, dict)]
-    if isinstance(raw, str):
-        clean = raw.strip()
-        if not clean:
-            return []
-        # Try direct JSON parsing
-        try:
-            val = json.loads(clean)
-            if isinstance(val, list):
-                return [t for t in val if isinstance(t, dict)]
-        except Exception:
-            pass
-        # Try base64 -> zlib -> pickle / json
-        try:
-            raw_bytes = base64.b64decode(clean.encode("utf-8"))
-            decompressed = zlib.decompress(raw_bytes)
-            try:
-                val = pickle.loads(decompressed)
-                if isinstance(val, list):
-                    return [t for t in val if isinstance(t, dict)]
-            except Exception:
-                val = json.loads(decompressed.decode("utf-8"))
-                if isinstance(val, list):
-                    return [t for t in val if isinstance(t, dict)]
-        except Exception:
-            pass
+    if not isinstance(raw, str):
+        return []
+    clean = raw.strip()
+    if not clean:
+        return []
+    try:
+        val = json.loads(clean)
+        if isinstance(val, list):
+            return [t for t in val if isinstance(t, dict)]
+    except Exception:
+        pass
+    try:
+        decompressed = _decompress_bounded(base64.b64decode(clean.encode("utf-8"), validate=True))
+    except Exception:
+        return []
+    if decompressed is None:
+        return []
+    payload: Any = None
+    text = _extract_pickled_string(decompressed)
+    try:
+        if text is not None:
+            payload = json.loads(text)
+        else:
+            payload = json.loads(decompressed.decode("utf-8"))
+    except Exception:
+        return []
+    if isinstance(payload, list):
+        return [t for t in payload if isinstance(t, dict)]
     return []
-
 
 def get_ifeval_data_path(resource_root: Path | None = None) -> Path | None:
     """Locate official input_data.jsonl in verified installation or package data."""

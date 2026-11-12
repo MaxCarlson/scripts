@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from pathlib import Path
-import re
 from typing import Any
 
 import pytest
@@ -58,7 +57,7 @@ def test_container_verifier_fails_closed_when_docker_offline(monkeypatch: pytest
     monkeypatch.setattr(verifier, "is_sandbox_available", lambda: False)
 
     with pytest.raises(SandboxUnavailableError, match="strictly prohibited"):
-        verifier.execute_code("print('evil')", "assert True")
+        verifier.run_candidate("print('evil')", "1\n")
 
 
 def test_container_verifier_security_config() -> None:
@@ -121,29 +120,14 @@ def test_lcb_scoring_adapter_sandbox_unavailable_classified_as_infrastructure_in
 
 def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
     """Test pass and fail with a mock container verifier."""
-    def mock_runner(code: str, test_code: str) -> SandboxExecutionResult:
-        nonce_match = re.search(r"__LCB_SUPERVISOR_RECEIPT_([a-f0-9]+)__", test_code)
-        nonce = nonce_match.group(1) if nonce_match else "mocknonce"
+    def mock_runner(code: str, stdin_text: str, fn_name: str | None) -> SandboxExecutionResult:
         if "return 42" in code:
             return SandboxExecutionResult(
-                success=True,
-                status="passed",
-                exit_code=0,
-                stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED 1/1",
-                stderr="",
-                duration_ms=120.0,
+                success=True, status="passed", exit_code=0, stdout="42\n", stderr="", duration_ms=120.0,
             )
-        else:
-            return SandboxExecutionResult(
-                success=False,
-                status="failed",
-                exit_code=1,
-                stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/1: wrong answer",
-                stderr="AssertionError",
-                duration_ms=80.0,
-                error_code="VERIFIER_TEST_FAILED",
-            )
-
+        return SandboxExecutionResult(
+            success=True, status="passed", exit_code=0, stdout="0\n", stderr="", duration_ms=80.0,
+        )
     verifier = ContainerVerifier(mock_runner=mock_runner)
     adapter = LCBScoringAdapter(verifier=verifier)
     ctx = TaskContext(
@@ -237,18 +221,10 @@ def test_e2e_lcb_suite_execution(tmp_path: Path) -> None:
     assert RunStore(run_dir).read()["state"] == "planned"
 
     # Custom executor using mock verifier
-    def mock_runner(code: str, test: str) -> SandboxExecutionResult:
-        nonce_match = re.search(r"__LCB_SUPERVISOR_RECEIPT_([a-f0-9]+)__", test)
-        nonce = nonce_match.group(1) if nonce_match else "mocknonce"
+    def mock_runner(code: str, stdin_text: str, fn_name: str | None) -> SandboxExecutionResult:
         return SandboxExecutionResult(
-            success=True,
-            status="passed",
-            exit_code=0,
-            stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED 1/1",
-            stderr="",
-            duration_ms=50.0,
+            success=True, status="passed", exit_code=0, stdout="1\n", stderr="", duration_ms=50.0,
         )
-
     verifier = ContainerVerifier(mock_runner=mock_runner)
     adapter = LCBScoringAdapter(verifier=verifier)
 

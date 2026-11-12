@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 import json
 import re
-import secrets
 from typing import Any
 
 from ...execution.container_verify import ContainerVerifier, SandboxUnavailableError
@@ -147,252 +146,134 @@ def format_lcb_prompt(problem: LCBProblem) -> str:
     return prompt
 
 
-def build_test_harness(problem: LCBProblem, receipt_nonce: str | None = None) -> str:
-    """
-    Generate the authentic isolated Python test evaluation supervisor for a LiveCodeBench problem.
-
-    Executes candidate solution strictly in a child subprocess with piped stdio.
-    Contestant stdout/stderr never connects directly to container stdout, preventing
-    forgery of verification receipts.
-    Enforces ephemeral receipt_nonce verification so premature exit (e.g. sys.exit(0))
-    or marker forgery cannot register as a passing score.
-    """
-    io_data = problem.input_output
-    inputs = io_data.get("inputs", [])
-    outputs = io_data.get("outputs", [])
-    fn_name = io_data.get("fn_name")
-    nonce = receipt_nonce or secrets.token_hex(16)
-
-    # Serialize test data cleanly into harness
-    inputs_json = json.dumps(inputs)
-    outputs_json = json.dumps(outputs)
-
-    if fn_name:
-        # Call-based / functional problem harness
-        harness = f"""
-# --- LiveCodeBench Call-Based Test Supervisor ---
-import json
-import os
-import subprocess
-import sys
-
-_INPUTS = {inputs_json}
-_OUTPUTS = {outputs_json}
-_FN_NAME = {json.dumps(fn_name)}
-_RECEIPT_NONCE = {json.dumps(nonce)}
-
-_WORKER_CODE = '''
-import sys, json, os
-try:
-    import solution
-    target_fn = None
-    if hasattr(solution, "Solution"):
-        target_fn = getattr(solution.Solution(), sys.argv[1], None)
-    if target_fn is None:
-        target_fn = getattr(solution, sys.argv[1], None)
-    if target_fn is None:
-        print(json.dumps({{"error": f"Function '{{sys.argv[1]}}' not found in solution"}}))
-        sys.exit(1)
-
-    for line in sys.stdin:
-        if not line.strip():
+def _stdio_equal(actual: str, expected: str) -> bool:
+    """Line-wise comparison with whitespace stripping and Decimal-equivalence (upstream semantics)."""
+    act = [ln.strip() for ln in actual.strip().splitlines() if ln.strip()]
+    exp = [ln.strip() for ln in expected.strip().splitlines() if ln.strip()]
+    if len(act) != len(exp):
+        return False
+    for a, e in zip(act, exp):
+        if a == e:
             continue
-        args = json.loads(line)
-        res = target_fn(*args)
-        if isinstance(res, tuple):
-            res = list(res)
-        print(json.dumps({{"result": res}}))
-        sys.stdout.flush()
-except SystemExit:
-    sys.exit(2)
-except Exception as exc:
-    print(json.dumps({{"error": str(exc)}}))
-    sys.exit(1)
-'''
+        ok_a, dec_a = convert_line_to_decimals(a)
+        ok_e, dec_e = convert_line_to_decimals(e)
+        if ok_a and ok_e and dec_a == dec_e:
+            continue
+        return False
+    return True
 
-def _run_tests():
-    total_tests = len(_INPUTS)
-    if total_tests == 0:
-        print("__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/0: No test cases provided")
-        sys.exit(1)
 
-    sol_dir = os.path.dirname(os.path.abspath(__file__))
-    passed_count = 0
+@dataclass(frozen=True)
+class HostVerdict:
+    """Pass/fail verdict computed exclusively on the trusted host from raw execution evidence."""
 
-    for idx, (inp_raw, exp_raw) in enumerate(zip(_INPUTS, _OUTPUTS)):
-        try:
-            if isinstance(inp_raw, str):
-                inp_args = [json.loads(line) for line in inp_raw.splitlines() if line.strip()]
-            elif isinstance(inp_raw, list):
-                inp_args = inp_raw
-            else:
-                inp_args = [inp_raw]
-        except Exception as exc:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Failed to decode input for test {{idx}}: {{exc}}")
-            sys.exit(1)
+    status: str  # "passed" | "failed" | "timed_out" | "infrastructure_invalid"
+    passed_tests: int
+    total_tests: int
+    error_code: str | None = None
+    error_detail: str | None = None
+    duration_ms: float = 0.0
+    exit_code: int = 0
+    stdout_preview: str = ""
+    stderr_preview: str = ""
 
-        try:
-            exp_val = json.loads(exp_raw) if isinstance(exp_raw, str) else exp_raw
-        except Exception:
-            exp_val = exp_raw
 
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-u", "-c", _WORKER_CODE, _FN_NAME],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=sol_dir,
-                env={{"PYTHONPATH": sol_dir}},
-            )
-            payload = json.dumps(inp_args) + "\\n"
+def evaluate_problem(verifier: ContainerVerifier, code: str, problem: LCBProblem) -> HostVerdict:
+    """
+    Host-side orchestration: run the candidate once per test input in isolated containers and
+    compare returned results with private expected outputs held only in host memory.
+    Short-circuits on the first failing test. Raises SandboxUnavailableError if the sandbox is down.
+    """
+    io_data = problem.input_output or {}
+    inputs = list(io_data.get("inputs", []))
+    outputs = list(io_data.get("outputs", []))
+    fn_name = io_data.get("fn_name")
+    total = len(inputs)
+
+    if total == 0 or len(outputs) == 0:
+        return HostVerdict("infrastructure_invalid", 0, 0, "MISSING_BENCHMARK_DATA", "No test cases provided")
+    if len(inputs) != len(outputs):
+        return HostVerdict(
+            "infrastructure_invalid", 0, total, "CORRUPT_BENCHMARK_DATA",
+            f"inputs/outputs length mismatch ({len(inputs)} vs {len(outputs)})",
+        )
+
+    passed = 0
+    total_ms = 0.0
+    last_exit = 0
+    last_out = ""
+    last_err = ""
+
+    def fail(code: str, detail: str, status: str = "failed") -> HostVerdict:
+        return HostVerdict(status, passed, total, code, detail, total_ms, last_exit, last_out[:500], last_err[:500])
+
+    for idx, (inp_raw, exp_raw) in enumerate(zip(inputs, outputs)):
+        if fn_name:
             try:
-                stdout, stderr = proc.communicate(input=payload, timeout=5.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Test {{idx}} timed out")
-                sys.exit(1)
-        except Exception as exc:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Error executing worker for test {{idx}}: {{exc}}")
-            sys.exit(1)
-
-        if proc.returncode != 0:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit or error (code {{proc.returncode}}) on test {{idx}}")
-            sys.exit(1)
-
-        try:
-            response_obj = json.loads(stdout.strip())
-        except Exception:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Malformed worker output on test {{idx}}: {{stdout[:200]}}")
-            sys.exit(1)
-
-        if "error" in response_obj:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Runtime error on test {{idx}}: {{response_obj['error']}}")
-            sys.exit(1)
-
-        result = response_obj.get("result")
-        if result == exp_val:
-            passed_count += 1
+                if isinstance(inp_raw, str):
+                    args = [json.loads(ln) for ln in inp_raw.splitlines() if ln.strip()]
+                elif isinstance(inp_raw, list):
+                    args = inp_raw
+                else:
+                    args = [inp_raw]
+                stdin_text = json.dumps(args)
+            except Exception as exc:
+                return HostVerdict(
+                    "infrastructure_invalid", passed, total, "CORRUPT_BENCHMARK_DATA",
+                    f"Undecodable input for test {idx}: {exc}",
+                )
         else:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Wrong answer on test {{idx}}: expected {{exp_val!r}}, got {{result!r}}")
-            sys.exit(1)
+            stdin_text = inp_raw if isinstance(inp_raw, str) else str(inp_raw)
+            if not stdin_text.endswith("\n"):
+                stdin_text += "\n"
 
-    if passed_count == total_tests:
-        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED {{passed_count}}/{{total_tests}}")
-        sys.exit(0)
-    else:
-        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}")
-        sys.exit(1)
+        res = verifier.run_candidate(code, stdin_text, fn_name=fn_name)
+        total_ms += res.duration_ms
+        last_exit, last_out, last_err = res.exit_code, res.stdout, res.stderr
 
-if __name__ == '__main__':
-    _run_tests()
-"""
-    else:
-        # Standard input / output problem harness
-        harness = f"""
-# --- LiveCodeBench Standard Input/Output Test Supervisor ---
-import json
-import os
-import subprocess
-import sys
-from decimal import Decimal
-
-_INPUTS = {inputs_json}
-_OUTPUTS = {outputs_json}
-_RECEIPT_NONCE = {json.dumps(nonce)}
-
-def _convert_decimals(line):
-    try:
-        return True, [Decimal(elem) for elem in line.split()]
-    except Exception:
-        return False, []
-
-def _run_tests():
-    total_tests = len(_INPUTS)
-    if total_tests == 0:
-        print("__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/0: No test cases provided")
-        sys.exit(1)
-
-    sol_dir = os.path.dirname(os.path.abspath(__file__))
-    sol_path = os.path.join(sol_dir, "solution.py")
-    if not os.path.isfile(sol_path):
-        sol_path = "solution.py"
-
-    passed_count = 0
-    for idx, (inp_val, exp_val) in enumerate(zip(_INPUTS, _OUTPUTS)):
-        inp_str = str(inp_val) if not isinstance(inp_val, str) else inp_val
-        exp_str = str(exp_val) if not isinstance(exp_val, str) else exp_val
-        if not inp_str.endswith("\\n"):
-            inp_str += "\\n"
-
-        try:
-            proc = subprocess.Popen(
-                [sys.executable, "-u", sol_path],
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                text=True,
-                cwd=sol_dir,
-                env={{"PYTHONPATH": sol_dir}},
+        if res.status == "error":
+            return HostVerdict(
+                "infrastructure_invalid", passed, total,
+                res.error_code or "VERIFIER_SANDBOX_ERROR", res.error_detail or "Sandbox execution error",
+                total_ms, last_exit, last_out[:500], last_err[:500],
             )
+        if res.status == "timed_out":
+            return fail("TIMED_OUT", f"Test {idx} timed out in container sandbox", status="timed_out")
+
+        if fn_name:
+            lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
+            record: Any = None
+            if lines:
+                try:
+                    record = json.loads(lines[-1])
+                except Exception:
+                    record = None
+            if not isinstance(record, dict) or ("result" not in record and "error" not in record):
+                if res.exit_code == 0:
+                    return fail("PREMATURE_EXIT", f"Test {idx}: candidate ended without a verified result record")
+                return fail("RUNTIME_ERROR", f"Test {idx}: candidate crashed (exit {res.exit_code})")
+            if "error" in record:
+                err = str(record["error"])
+                if err == "premature_exit":
+                    return fail("PREMATURE_EXIT", f"Test {idx}: candidate called exit before returning")
+                return fail("RUNTIME_ERROR", f"Test {idx}: {err}")
             try:
-                stdout, stderr = proc.communicate(input=inp_str, timeout=5.0)
-            except subprocess.TimeoutExpired:
-                proc.kill()
-                proc.communicate()
-                print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Test {{idx}} timed out")
-                sys.exit(1)
-        except Exception as exc:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Runtime exception on test {{idx}}: {{exc}}")
-            sys.exit(1)
-
-        if proc.returncode != 0 and not stdout.strip():
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit or process crash with code {{proc.returncode}} on test {{idx}}")
-            sys.exit(1)
-
-        actual_lines = [l.strip() for l in stdout.strip().splitlines() if l.strip()]
-        exp_lines = [l.strip() for l in exp_str.strip().splitlines() if l.strip()]
-
-        if not actual_lines:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit without output on test {{idx}}")
-            sys.exit(1)
-
-        if len(actual_lines) != len(exp_lines):
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Line count mismatch on test {{idx}}: expected {{len(exp_lines)}}, got {{len(actual_lines)}}")
-            sys.exit(1)
-
-        match = True
-        for l_act, l_exp in zip(actual_lines, exp_lines):
-            if l_act == l_exp:
-                continue
-            ok_act, dec_act = _convert_decimals(l_act)
-            ok_exp, dec_exp = _convert_decimals(l_exp)
-            if ok_act and ok_exp and dec_act == dec_exp:
-                continue
-            match = False
-            break
-
-        if match:
-            passed_count += 1
+                exp_val = json.loads(exp_raw) if isinstance(exp_raw, str) else exp_raw
+            except Exception:
+                exp_val = exp_raw
+            if record["result"] != exp_val:
+                return fail("WRONG_ANSWER", f"Wrong answer on test {idx}")
         else:
-            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Wrong answer on test {{idx}}: expected {{exp_lines!r}}, got {{actual_lines!r}}")
-            sys.exit(1)
+            if res.exit_code != 0:
+                return fail("RUNTIME_ERROR", f"Test {idx}: candidate exited with code {res.exit_code}")
+            exp_str = exp_raw if isinstance(exp_raw, str) else str(exp_raw)
+            if not res.stdout.strip() and exp_str.strip():
+                return fail("PREMATURE_EXIT", f"Test {idx}: candidate produced no output")
+            if not _stdio_equal(res.stdout, exp_str):
+                return fail("WRONG_ANSWER", f"Wrong answer on test {idx}")
+        passed += 1
 
-    if passed_count == total_tests:
-        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED {{passed_count}}/{{total_tests}}")
-        sys.exit(0)
-    else:
-        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}")
-        sys.exit(1)
-
-if __name__ == '__main__':
-    _run_tests()
-"""
-    return harness
-    return harness
-
+    return HostVerdict("passed", passed, total, None, None, total_ms, last_exit, last_out[:500], last_err[:500])
 
 def select_stratified_lcb_100(problems: list[LCBProblem]) -> tuple[str, ...]:
     """
@@ -509,12 +390,9 @@ class LCBScoringAdapter:
                 error_detail="Problem has empty or missing test inputs/outputs in input_output specification",
             )
 
-        receipt_nonce = secrets.token_hex(16)
-        test_code = build_test_harness(problem, receipt_nonce=receipt_nonce)
-
-        # 3. Secure Containerized Verification
+        # 3. Host-side orchestration: contestant code only ever runs inside isolated containers
         try:
-            res = self.verifier.execute_code(extracted_code, test_code)
+            verdict = evaluate_problem(self.verifier, extracted_code, problem)
         except SandboxUnavailableError as exc:
             return ScoredAttempt(
                 task_id=task_id,
@@ -525,51 +403,39 @@ class LCBScoringAdapter:
                 error_detail=str(exc),
             )
 
-        # Enforce trusted supervisor receipt verification
-        expected_success_marker = f"__LCB_SUPERVISOR_RECEIPT_{receipt_nonce}__: PASSED"
-        passed = expected_success_marker in res.stdout and res.exit_code == 0
+        if verdict.status == "infrastructure_invalid":
+            return ScoredAttempt(
+                task_id=task_id,
+                scorer_id=self.scorer_id,
+                status="infrastructure_invalid",
+                score=0.0,
+                metrics={"pass@1": 0.0, "syntax_valid": 1.0},
+                error_code=verdict.error_code,
+                error_detail=verdict.error_detail,
+            )
 
-        if passed:
-            status = "passed"
-            score = 1.0
-            error_code = None
-            error_detail = None
-        else:
-            status = "failed"
-            score = 0.0
-            if "Premature" in res.stdout:
-                error_code = "PREMATURE_EXIT"
-                error_detail = "Candidate code terminated prematurely without producing verified test output"
-            elif "Wrong answer" in res.stdout or "Line count mismatch" in res.stdout:
-                error_code = "WRONG_ANSWER"
-                error_detail = "Code ran but output did not match expected problem output"
-            elif "Runtime exception" in res.stdout or "Runtime error" in res.stdout:
-                error_code = "RUNTIME_ERROR"
-                error_detail = "Candidate code raised an unhandled exception during execution"
-            elif "timed out" in res.stdout.lower() or res.status == "timed_out":
-                status = "timed_out"
-                error_code = "TIMED_OUT"
-                error_detail = "Execution timed out in container sandbox"
-            elif CANARY_SUCCESS_MARKER in res.stdout and not passed:
-                error_code = "MARKER_FORGERY_DETECTED"
-                error_detail = "Candidate attempted marker forgery without trusted supervisor receipt"
-            else:
-                error_code = res.error_code or "TEST_FAILED"
-                error_detail = res.error_detail or "Failed isolated verification"
+        passed = verdict.status == "passed"
+        status = verdict.status
+        score = 1.0 if passed else 0.0
+        error_code = verdict.error_code
+        error_detail = verdict.error_detail
 
         metrics = {
             "pass@1": score,
             "syntax_valid": 1.0,
-            "execution_duration_ms": res.duration_ms,
-            "exit_code": res.exit_code,
+            "execution_duration_ms": verdict.duration_ms,
+            "exit_code": verdict.exit_code,
         }
 
         details = {
-            "exit_code": res.exit_code,
+            "exit_code": verdict.exit_code,
             "status": status,
             "receipt_verified": passed,
-            "stdout_preview": res.stdout[:500],
-            "stderr_preview": res.stderr[:500],
+            "verification_authority": "host",
+            "tests_passed": verdict.passed_tests,
+            "tests_total": verdict.total_tests,
+            "stdout_preview": verdict.stdout_preview,
+            "stderr_preview": verdict.stderr_preview,
         }
 
         evidence = {

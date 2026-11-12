@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 import json
 from pathlib import Path
-from typing import Any
+import random
+from typing import Any, Iterator
 
 from ...execution.contract import BackendAttempt, ScoredAttempt, TaskContext
 from ...execution.registry import register_scorer
@@ -99,6 +101,24 @@ def select_stratified_100_cohort(tasks: list[IFEvalTask]) -> tuple[str, ...]:
 
     return tuple(sorted(selected_ids))
 
+
+@contextlib.contextmanager
+def deterministic_ifeval_rng(task_id: str) -> Iterator[None]:
+    """
+    Make the upstream evaluator reproducible per task.
+
+    The pinned Google reference code draws from the global ``random`` module when an instruction's
+    kwargs are invalid (e.g. ``keywords:letter_frequency`` with ``letter='#'`` in prompts 1122 and
+    1129 of the official dataset), so upstream scoring of those two prompts varies run to run. We
+    keep upstream logic untouched and only seed the RNG from the task id (restoring global state
+    afterwards), so scores are repeatable and independent of call order.
+    """
+    state = random.getstate()
+    random.seed(f"ifeval-official-v1:{task_id}")
+    try:
+        yield
+    finally:
+        random.setstate(state)
 
 def verify_single_instruction(
     instruction_id: str,
@@ -228,8 +248,10 @@ class IFEvalScoringAdapter:
         )
         prompt_map = {inp.prompt: attempt.response_text}
 
-        strict_out = test_instruction_following_strict(inp, prompt_map)
-        loose_out = test_instruction_following_loose(inp, prompt_map)
+        with deterministic_ifeval_rng(task_id):
+            strict_out = test_instruction_following_strict(inp, prompt_map)
+        with deterministic_ifeval_rng(task_id):
+            loose_out = test_instruction_following_loose(inp, prompt_map)
 
         strict_results = strict_out.follow_instruction_list
         loose_results = loose_out.follow_instruction_list

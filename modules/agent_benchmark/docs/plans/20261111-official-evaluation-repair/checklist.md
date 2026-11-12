@@ -49,3 +49,11 @@
 - [x] Verify 100% clean Ruff checks
 - [x] Reconcile with latest origin/main
 - [x] Commit and push to origin task branch
+
+## Stage 7: Final merge-blocking corrections
+- [x] Host-side LCB orchestration; no hidden data in contestant mount; adversarial tests
+- [x] Remove pickle.loads; malicious-pickle regression test
+- [x] Pinned image digest shared by catalog/manager/verifier; status/verify/install agreement tests
+- [x] Per-task IFEval parity for all 541 responses
+- [ ] Real-Docker qualification run (requires daemon + image)
+

@@ -38,3 +38,11 @@
 - **`agent_benchmark`:** 714 passed, 10 skipped in 172.35s.
 - **`benchmark_core`:** 119 passed, 1 skipped.
 - **Ruff Linting:** 100% clean across all modified files.
+
+## 5. Final merge-blocking corrections
+- [x] Verifier trust boundary (host-side orchestration; contestant sees only solution + one input)
+- [x] Safe deserialization (no pickle.loads; opcode allowlist; bounded zlib)
+- [x] Digest-pinned image identity shared by catalog/setup/verifier
+- [x] 541-task per-task IFEval parity (RNG-dependent prompts 1122, 1129 documented)
+- [ ] Real-Docker qualification: pending (daemon not running; test skipped)
+

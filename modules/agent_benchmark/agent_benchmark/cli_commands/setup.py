@@ -278,6 +278,11 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 spec = ResourceSpec.from_declaration(b.id, decl)
                 res_plan = source_manager.plan_resource(spec)
                 r_state = "installed" if res_plan["installed"] else ("optional" if decl.optional else "registered")
+                if decl.type == "container_image":
+                    # Externally managed prerequisite: report real availability, not "registered"
+                    r_state = "available" if res_plan["installed"] else (
+                        "unavailable" if res_plan.get("availability") == "unavailable" else "missing"
+                    )
                 status_rows.append({
                     "benchmark_id": b.id,
                     "resource_name": decl.name,
@@ -285,6 +290,7 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                     "state": r_state,
                     "optional": decl.optional,
                     "target_location": res_plan["target_location"],
+                    "image_reference": res_plan.get("image_reference"),
                 })
 
         payload = {

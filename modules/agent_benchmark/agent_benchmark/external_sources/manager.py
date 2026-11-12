@@ -26,6 +26,47 @@ from .stores import (
 )
 
 
+def image_reference(spec: ResourceSpec) -> str:
+    """Exact image reference (digest-pinned where declared) shared by setup and the verifier."""
+    return spec.url or spec.name
+
+
+def inspect_image(ref: str, *, timeout: float = 5.0) -> tuple[str, str | None, str]:
+    """
+    Inspect exactly ``ref`` in the local Docker daemon.
+
+    Returns ``(state, image_id, detail)`` where state is ``available`` (present, and carrying the
+    pinned digest if one is declared), ``missing`` (daemon reachable, image absent/mismatched) or
+    ``unavailable`` (Docker missing or daemon unreachable).
+    """
+    docker_cmd = shutil.which("docker")
+    if not docker_cmd:
+        return "unavailable", None, "Docker executable not found on host"
+    try:
+        res = subprocess.run(
+            [docker_cmd, "image", "inspect", ref, "--format", "{{.Id}}|{{json .RepoDigests}}"],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except Exception as exc:
+        return "unavailable", None, f"docker inspect failed: {exc}"
+    err = (res.stderr or "").lower()
+    if res.returncode != 0:
+        if "no such image" in err or "no such object" in err:
+            return "missing", None, "image not present"
+        return "unavailable", None, (res.stderr or "docker daemon unreachable").strip()[:200]
+    out = res.stdout.strip()
+    image_id, _, repo_digests = out.partition("|")
+    if not image_id:
+        return "missing", None, "empty inspect result"
+    if "@sha256:" in ref:
+        digest = ref.split("@", 1)[1]
+        if digest not in repo_digests:
+            return "missing", image_id, f"local image does not carry pinned digest {digest}"
+    return "available", image_id, "ok"
+
+
 class SourceManager:
     """Manages external source checkouts, datasets, and isolated Python environments."""
 
@@ -85,30 +126,19 @@ class SourceManager:
         receipt = lock.get_receipt(spec.benchmark_id, spec.name)
 
         if spec.resource_type == "container_image":
-            docker_cmd = shutil.which("docker")
-            is_present = False
-            image_id = None
-            if docker_cmd:
-                try:
-                    res = subprocess.run(
-                        [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
-                        capture_output=True,
-                        text=True,
-                        timeout=5.0,
-                    )
-                    if res.returncode == 0 and res.stdout.strip():
-                        is_present = True
-                        image_id = res.stdout.strip()
-                except Exception:
-                    pass
+            ref = image_reference(spec)
+            state, image_id, _detail = inspect_image(ref, timeout=5.0)
+            is_present = state == "available"
             return {
                 "benchmark_id": spec.benchmark_id,
                 "resource_name": spec.name,
                 "resource_type": spec.resource_type,
                 "url": spec.url,
                 "revision": spec.revision,
-                "target_location": f"docker://{spec.name}",
+                "image_reference": ref,
+                "target_location": f"docker://{ref}",
                 "installed": is_present,
+                "availability": state,
                 "action": "skip" if is_present else "externally_managed_prerequisite",
                 "optional": spec.optional,
                 "description": spec.description,
@@ -159,28 +189,23 @@ class SourceManager:
         tx_id = f"tx_{uuid4().hex[:12]}"
 
         if spec.resource_type == "container_image":
-            docker_cmd = shutil.which("docker")
-            if not docker_cmd:
+            ref = image_reference(spec)
+            state, image_id, detail = inspect_image(ref, timeout=10.0)
+            if state == "unavailable":
                 raise RuntimeError(
-                    f"Container image resource '{spec.name}' requires Docker installed and running on the host."
+                    f"Container image resource '{spec.name}' ({ref}) cannot be verified: {detail}. "
+                    f"Docker must be installed and its daemon running."
                 )
-            res = subprocess.run(
-                [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
-                capture_output=True,
-                text=True,
-                timeout=10.0,
-            )
-            if res.returncode != 0 or not res.stdout.strip():
+            if state != "available" or not image_id:
                 raise RuntimeError(
-                    f"Container image '{spec.name}' is not present in local Docker daemon. "
-                    f"It is an externally managed prerequisite that must be pulled or built beforehand."
+                    f"Container image '{ref}' is not present in local Docker daemon. "
+                    f"It is an externally managed prerequisite; run: docker pull {ref}"
                 )
-            image_id = res.stdout.strip()
             receipt = InstallReceipt(
                 benchmark_id=spec.benchmark_id,
                 resource_name=spec.name,
                 resource_type=spec.resource_type,
-                install_path=f"docker://{spec.name}",
+                install_path=f"docker://{ref}",
                 revision=spec.revision,
                 spec_digest=spec.digest(),
                 installed_at=now_iso,
@@ -188,7 +213,7 @@ class SourceManager:
                 status="installed",
                 content_hash=image_id,
                 file_hashes={},
-                metadata={"tx_id": tx_id, "docker_image_id": image_id},
+                metadata={"tx_id": tx_id, "docker_image_id": image_id, "image_reference": ref},
             )
             record_receipt(self.lock_file, receipt)
             return receipt
@@ -349,33 +374,30 @@ class SourceManager:
         receipt = lock.get_receipt(spec.benchmark_id, spec.name)
 
         if spec.resource_type == "container_image":
-            docker_cmd = shutil.which("docker")
-            if not docker_cmd:
+            ref = image_reference(spec)
+            state, image_id, detail = inspect_image(ref, timeout=5.0)
+            if state == "unavailable":
                 return {
                     "benchmark_id": spec.benchmark_id,
                     "resource_name": spec.name,
                     "status": "unavailable",
-                    "details": "Docker executable not found on host",
+                    "image_reference": ref,
+                    "details": f"Docker unavailable: {detail}",
                 }
-            res = subprocess.run(
-                [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
-                capture_output=True,
-                text=True,
-                timeout=5.0,
-            )
-            if res.returncode != 0:
+            if state == "missing":
                 return {
                     "benchmark_id": spec.benchmark_id,
                     "resource_name": spec.name,
                     "status": "not_installed",
-                    "details": f"Container image {spec.name} not found in local Docker daemon",
+                    "image_reference": ref,
+                    "details": f"Container image {ref} not found in local Docker daemon",
                 }
-            image_id = res.stdout.strip()
             return {
                 "benchmark_id": spec.benchmark_id,
                 "resource_name": spec.name,
                 "status": "verified",
-                "details": f"Container image {spec.name} verified ({image_id[:19]})",
+                "image_reference": ref,
+                "details": f"Container image {ref} verified ({image_id[:19]})",
                 "content_hash": image_id,
             }
 

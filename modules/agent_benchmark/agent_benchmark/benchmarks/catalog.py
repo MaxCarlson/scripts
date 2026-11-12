@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Sequence
 
+from ..sandbox_image import LCB_SANDBOX_IMAGE_REF, LCB_SANDBOX_RESOURCE_NAME
+
 from .cohort_definitions import (
     IFEVAL_100_TASKS,
     IFEVAL_FULL_TASKS,
@@ -444,8 +446,12 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
                 ),
                 ResourceDeclaration(
                     type="container_image",
-                    name="lcb-sandbox-verifier",
-                    description="Secure isolated execution sandbox for untrusted code execution",
+                    name=LCB_SANDBOX_RESOURCE_NAME,
+                    url=LCB_SANDBOX_IMAGE_REF,
+                    description=(
+                        "Digest-pinned secure isolated execution sandbox for untrusted code execution "
+                        "(exact image used by the LiveCodeBench verifier)"
+                    ),
                 ),
             ),
             limitations=("Untrusted code execution requires Docker container sandbox with --network none",),

@@ -37,12 +37,13 @@ from agent_benchmark.execution import (
     BackendAttempt,
     ContainerVerifier,
     SandboxConfig,
-    SandboxExecutionResult,
     TaskContext,
 )
 from agent_benchmark.external_sources.manager import SourceManager
 from agent_benchmark.external_sources.specs import ResourceSpec
 from agent_benchmark.suite import build_manifest
+
+from lcb_local_runner import run_candidate_locally
 
 
 # ---------------------------------------------------------------------------
@@ -122,37 +123,7 @@ def test_req2_real_ifeval_reference_results_match_adapter() -> None:
     assert 0.815 <= l_inst <= 0.830, f"Loose instruction accuracy {l_inst} out of range"
 
 
-# ---------------------------------------------------------------------------
-# Helper: local isolated supervisor execution runner for testing
-# ---------------------------------------------------------------------------
-def _run_supervisor_locally(code_to_run: str, test_code: str) -> SandboxExecutionResult:
-    import sys
-    import tempfile
-    import time
-
-    with tempfile.TemporaryDirectory() as td:
-        sol_p = Path(td) / "solution.py"
-        sol_p.write_text(code_to_run, encoding="utf-8")
-        run_p = Path(td) / "runner.py"
-        run_p.write_text(test_code, encoding="utf-8")
-
-        t0 = time.monotonic()
-        res = subprocess.run(
-            [sys.executable, "-u", str(run_p)],
-            capture_output=True,
-            text=True,
-            timeout=10.0,
-            cwd=td,
-        )
-        duration_ms = round((time.monotonic() - t0) * 1000.0, 2)
-        return SandboxExecutionResult(
-            success=(res.returncode == 0),
-            status="passed" if res.returncode == 0 else "failed",
-            exit_code=res.returncode,
-            stdout=res.stdout,
-            stderr=res.stderr,
-            duration_ms=duration_ms,
-        )
+_run_supervisor_locally = run_candidate_locally  # host-side orchestration drives per-test execution
 
 
 # ---------------------------------------------------------------------------
@@ -630,7 +601,7 @@ def test_req16_dataset_loader_decodes_public_and_private_test_cases() -> None:
     assert decode_test_cases(json_str) == cases_list
 
     # 3. Compressed base64 + zlib + pickle (LiveCodeBench private_test_cases format)
-    pickled = pickle.dumps(cases_list)
+    pickled = pickle.dumps(json.dumps(cases_list))
     compressed = zlib.compress(pickled)
     b64 = base64.b64encode(compressed).decode("utf-8")
     decoded = decode_test_cases(b64)
