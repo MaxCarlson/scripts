@@ -465,6 +465,61 @@ async def test_concurrent_automatic_recovery_calls_are_serialized_by_recovery_fe
 
 
 @pytest.mark.asyncio
+async def test_recovery_cancellation_after_durable_commit_retains_sync_hold(tmp_path, monkeypatch):
+    from resource_coordinator.core.durable_state import CoordinatorState, PersistedRequest, StateCodec
+    from resource_coordinator.core.leases import LeaseManager
+
+    journal = tmp_path / "recovery-post-commit-cancel.json"
+    StateCodec.save_atomic(CoordinatorState(
+        requests={"req-safe": PersistedRequest(
+            request_id="req-safe", resource="gpu.inference", phase="reserved", details={"forwarded": False},
+        )},
+        inhibitions={"gpu.inference": {
+            "resource": "gpu.inference", "reason": "uncertain", "holder_id": "req-safe", "inhibited_at": 1.0,
+            "details": {},
+        }},
+    ), journal)
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(journal)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="inference", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference")],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system)
+    assert await service.start()
+
+    entered = asyncio.Event()
+    release_sync = asyncio.Event()
+    original = LeaseManager.inhibit_restart
+
+    async def cancel_during_sync(self, resource, reason, holder_id, details=None):
+        inhibition = await original(self, resource, reason, holder_id, details)
+        if holder_id.startswith("recovery_sync:"):
+            entered.set()
+            await release_sync.wait()
+        return inhibition
+
+    monkeypatch.setattr(LeaseManager, "inhibit_restart", cancel_during_sync)
+    recovery = asyncio.create_task(service.auto_recover())
+    await asyncio.wait_for(entered.wait(), timeout=1.0)
+    assert StateCodec.load(journal).requests["req-safe"].phase == "reconciled"
+    recovery.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await recovery
+
+    durable = StateCodec.load(journal)
+    assert service.state == ServiceState.RECONCILIATION_REQUIRED
+    assert system.lease_mgr.restarts_blocked
+    assert system.lease_mgr._gpu_recovery_fence is None
+    assert any(item.get("holder_id", "").startswith("recovery_sync:")
+               for item in [durable.inhibitions["gpu.inference"],
+                            *durable.inhibitions["gpu.inference"]["details"].get(
+                                "additional_uncertain_holders", [])])
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_service_startup_fails_closed_when_persisted_process_is_access_denied(tmp_path, monkeypatch):
     import psutil
     from resource_coordinator.core.durable_state import CoordinatorState, PersistedProcess, StateCodec
