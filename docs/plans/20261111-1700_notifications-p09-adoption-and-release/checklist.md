@@ -47,4 +47,18 @@
   - [x] Operator acceptance runbooks and verification gates prepared
   - [x] Final plan status and checklist updated
   - [x] Feature branch pushed to `origin`
-  - [x] Completion report delivered
+
+- [x] **Stage H: Release Correctness and Final Stabilization**
+  - [x] Correct action resource barrier query to match actual schema (`resource_key, execution_id, barrier_status, reason, created_at WHERE cleared_at IS NULL`)
+  - [x] Align outbox status categories with actual state machine (`pending, attempting, provider_accepted, retryable_error, terminal_error`)
+  - [x] Use canonical path helpers without token leakage; remove always-true boolean check
+  - [x] Separate configured public exposure, observed Funnel state, and uninspected status without fabricating disabled state
+  - [x] Explicit `ok`, `ready_for_release`, `warnings`, `blockers`, and `unknowns` semantics in `release-check`
+  - [x] Scheduler non-zero exit returncode checks in `_notify_platform`
+  - [x] Single fallback path avoiding duplicate broker attempts in `notify_task_result`
+  - [x] Stable SHA-256 generic incident keys across processes/restarts
+  - [x] Task success incident resolution in broker even when `notify_on_success=False`
+  - [x] Full authenticated FastAPI guarded acknowledgement test in `test_phase09_synthetic_e2e.py`
+  - [x] Audited all documentation examples against real argparse parsers
+  - [x] All test suites pass (559 passed, 1 skipped, 0 failed)
+  - [x] Stage H commit created and pushed to `origin`

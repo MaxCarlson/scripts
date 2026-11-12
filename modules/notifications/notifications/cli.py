@@ -288,6 +288,8 @@ def build_parser() -> argparse.ArgumentParser:
     rc_parser.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
     rc_parser.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Notifications database path override.")
     rc_parser.add_argument("--auth-db", default=None, help="Remote Control auth database path override.")
+    rc_parser.add_argument("--inspect-tailscale", action="store_true", help="Perform read-only live inspection of Tailscale Funnel status.")
+    rc_parser.add_argument("--strict", action="store_true", help="Exit with code 2 if any release blockers exist or release prerequisites are incomplete.")
 
     return parser
 
@@ -1123,27 +1125,42 @@ def handle_release_check(args: argparse.Namespace) -> int:
 
     db_path = getattr(args, "db", None)
     auth_db = getattr(args, "auth_db", None)
+    inspect_ts = getattr(args, "inspect_tailscale", False)
     data = collect_release_diagnostics(
         db_path=Path(db_path) if db_path else None,
         auth_db_path=Path(auth_db) if auth_db else None,
+        inspect_tailscale=inspect_ts,
     )
 
     if getattr(args, "json", False):
         print(json.dumps(data, indent=2))
+        if not data.get("ok"):
+            return 1
+        if getattr(args, "strict", False) and (not data.get("ready_for_release") or len(data.get("blockers", [])) > 0):
+            return 2
         return 0
 
     print("=== Notifications & Remote Control Release Check ===")
+    print(f"Overall Diagnostic:     {'OK' if data.get('ok') else 'ERROR'}")
+    print(f"Ready for Release:      {'YES' if data.get('ready_for_release') else 'NO'}")
+    print(f"Summary:                {data.get('summary', '')}")
+
     storage = data.get("storage", {})
-    print(f"Storage Status:         {storage.get('status', 'unknown')} ({storage.get('path', '')})")
+    print(f"\nStorage Status:         {storage.get('status', 'unknown')} ({storage.get('path', '')})")
     if storage.get("status") == "healthy":
         print(f"  Total Incidents:      {storage.get('total_incidents', 0)}")
         print(f"  Open Incidents:       {storage.get('open_incidents', 0)}")
+        print(f"  Acknowledged:         {storage.get('acknowledged_incidents', 0)}")
+        print(f"  Resolved:             {storage.get('resolved_incidents', 0)}")
         print(f"  Pending Outbox:       {storage.get('pending_outbox', 0)}")
-        print(f"  Failed Outbox:        {storage.get('failed_outbox', 0)}")
+        print(f"  Attempting Outbox:    {storage.get('attempting_outbox', 0)}")
+        print(f"  Accepted Outbox:      {storage.get('accepted_outbox', 0)}")
+        print(f"  Retryable Outbox:     {storage.get('retryable_outbox', 0)}")
+        print(f"  Terminal Outbox:      {storage.get('terminal_outbox', 0)}")
 
     providers = data.get("providers", {})
     tg = providers.get("telegram", {})
-    print(f"Telegram Provider:      {'Configured' if tg.get('configured') else 'Not Enrolled'}")
+    print(f"\nTelegram Provider:      {tg.get('status', 'not_enrolled').capitalize()} ({'configured' if tg.get('configured') else 'inactive'})")
     win = providers.get("windows_helper", {})
     print(f"Windows Toast Helper:   {win.get('status', 'unknown')} (port {win.get('listener_port', 1238)})")
     hc = providers.get("healthchecks", {})
@@ -1152,22 +1169,38 @@ def handle_release_check(args: argparse.Namespace) -> int:
     print(f"Coordinator Observer:   {'Installed' if coord.get('task_installed') else 'Not Installed'} (State: {coord.get('task_state', 'Unknown')})")
 
     rc = data.get("remote_control", {})
-    print(f"Remote Control Auth:    {rc.get('status', 'unknown')} ({rc.get('path', '')})")
+    print(f"\nRemote Control Auth:    {rc.get('status', 'unknown')} ({rc.get('path', '')})")
     print(f"  Operator Enrolled:    {rc.get('operator_enrolled', False)}")
     print(f"  TOTP Enrolled:        {rc.get('totp_enrolled', False)}")
     print(f"  Listener (8443):      {'Active' if rc.get('listener_active') else 'Offline'}")
     barriers = rc.get("active_barriers", [])
     print(f"  Active Barriers:      {len(barriers)}")
     for b in barriers:
-        print(f"    - Barrier {b.get('barrier_id')}: {b.get('reason')}")
+        print(f"    - Barrier on '{b.get('resource_key')}': {b.get('reason')} (execution: {b.get('execution_id')})")
 
     funnel = data.get("tailscale_funnel", {})
-    print(f"Tailscale Funnel:       {funnel.get('status', 'unknown')}")
+    print(f"\nTailscale Funnel:       {funnel.get('status', 'unknown')} (inspection: {funnel.get('inspection')})")
+    if funnel.get("public_origin"):
+        print(f"  Public Origin:        {funnel.get('public_origin')}")
+
+    if data.get("blockers"):
+        print("\nRelease Blockers:")
+        for b in data.get("blockers", []):
+            print(f"  [X] {b}")
+
+    if data.get("warnings"):
+        print("\nWarnings:")
+        for w in data.get("warnings", []):
+            print(f"  [!] {w}")
 
     print("\nPending Operator Acceptance Gates:")
     for gate, desc in data.get("acceptance_gates_pending", {}).items():
         print(f"  [{gate}] {desc}")
 
+    if not data.get("ok"):
+        return 1
+    if getattr(args, "strict", False) and (not data.get("ready_for_release") or len(data.get("blockers", [])) > 0):
+        return 2
     return 0
 
 

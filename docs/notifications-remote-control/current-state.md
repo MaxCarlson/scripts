@@ -452,18 +452,25 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
     - Added `<!-- version: 0.1.0 -->` version tag to `modules/remote_control/README.md`.
     - Verified `scripts_help` test suite: 55 passed.
     - Verified Scheduled Task definition stability (executable absolute paths, home directory working directory, safe argument vector quoting) in `modules/notifications/tests/test_task_stability.py` (5 tests passing).
-  - **Stage D — Unified Read-Only Release Diagnostics**:
+  - **Stage D — Unified Read-Only Release Diagnostics & Schema Alignment**:
     - Implemented `notifications.diagnostics.collect_release_diagnostics` providing 100% read-only (`mode=ro`) health inspection across storage, providers, outbox, remote control, barriers, and funnel.
-    - Added `scripts-notify release-check [-j/--json]` CLI subcommand.
-    - Added diagnostic test suite `test_release_diagnostics.py` (3 tests passing).
+    - Corrected action resource barrier query to match actual schema (`resource_key, execution_id, barrier_status, reason, created_at WHERE cleared_at IS NULL`).
+    - Aligned outbox status counts with actual state machine (`pending, attempting, provider_accepted, retryable_error, terminal_error`).
+    - Used canonical path helpers `default_telegram_credentials_path` and `default_healthchecks_config_path` without secret token exposure.
+    - Distinguished configured public exposure mode from observed Funnel state and uninspected status without fabricating disabled states.
+    - Defined explicit `ok`, `ready_for_release`, `warnings`, `blockers`, and `unknowns` semantics.
+    - Added `scripts-notify release-check [-j/--json] [--inspect-tailscale] [--strict]` CLI subcommand.
+    - Expanded diagnostic test suite `test_release_diagnostics.py` (7 tests passing).
   - **Stage E — Documentation Audit and Accuracy Updates**:
-    - Audited and corrected `docs/notifications-remote-control/public-https-setup.md` to remove invalid `--skip-listener-check` with `--apply` instruction.
-    - Created `docs/notifications-remote-control/operator-quickstart.md`.
-    - Created `docs/notifications-remote-control/acceptance-results.md` tracking automated evidence vs pending live gates.
-    - Created `docs/notifications-remote-control/rollback-and-recovery.md` with emergency response procedures.
+    - Audited all CLI commands against actual argparse definitions (`telegram enroll -c -a`, `incidents show -i`, `incidents acknowledge -i -a -n`, `heartbeat configure -u -i -a`, `heartbeat ping`, `reconcile-barrier -a --resource-key`).
+    - Clarified loopback dashboard URL as plain HTTP (`http://127.0.0.1:8443`) unless served via TLS terminator.
+    - Created and refined `docs/notifications-remote-control/operator-quickstart.md`.
+    - Created and refined `docs/notifications-remote-control/acceptance-results.md` tracking automated evidence vs pending live gates.
+    - Created and refined `docs/notifications-remote-control/rollback-and-recovery.md` with emergency response procedures.
   - **Stage F — Full Synthetic E2E & Multi-Module Regression Verification**:
     - Verified complete synthetic lifecycle from consumer failure to incident resolution.
-    - 545+ tests passing across `remote_control`, `notifications`, `scheduler`, `scripts_help`, and `resource_coordinator`.
+    - Verified guarded incident acknowledgement over authenticated FastAPI session, challenge preparation, step-up TOTP verification, and token replay prevention.
+    - 559 tests passing across `remote_control` (172), `notifications` (173), `scheduler` (130), `scripts_help` (55), and `resource_coordinator` (29).
   - **Stage G — Controlled Operational Acceptance Preparation**:
     - Prepared operator runbooks for local workstation, Telegram, Healthchecks, and Android cellular without premature public activation.
 - **Strict Invariants Preserved**:

@@ -33,7 +33,7 @@ To prevent false confidence derived purely from mock test suites, operational ev
 - **OS Requirements:** Windows 10/11, Linux, macOS, WSL2. (Python 3.10+).
 - **Dependencies:** `sqlite3`, `httpx` (for client).
 - **Startup Mechanism:** In-process direct SQLite or standalone HTTP ingestion daemon (`scripts-notify serve`).
-- **Read-Only Status Commands:** `scripts-notify status`, `scripts-notify incidents list`, `scripts-notify release-check`.
+- **Read-Only Status Commands:** `scripts-notify health`, `scripts-notify incidents list`, `scripts-notify release-check`.
 - **Supported Dry-Run Operations:** Default dry-run on pruning/mutations; `-a/--apply` required to write changes.
 - **Cross-Component Dependencies:** None; core broker is self-contained.
 - **Log & Database Retention:** SQLite WAL mode with automatic checkpoints; prune command (`scripts-notify prune --older-than-days 30`).
@@ -48,8 +48,8 @@ To prevent false confidence derived purely from mock test suites, operational ev
 
 - **Module / Entrypoints:** `modules/notifications/notifications/delivery/telegram.py` | CLI: `scripts-notify telegram`.
 - **Config & Secret Locations:**
-  - Bot Token: Windows Credential Manager `scripts.notifications.telegram.token` or environment `TELEGRAM_BOT_TOKEN`.
-  - Chat ID: `%USERPROFILE%\.scripts\notifications\telegram.json` (`owner_chat_id`).
+  - Enrolled Credentials File: `%USERPROFILE%\.scripts\notifications\secrets\telegram.json` (restrictive ACLs: owner-only).
+  - Environment Overrides: `NOTIFY_TELEGRAM_BOT_TOKEN`, `NOTIFY_TELEGRAM_CHAT_ID`, `NOTIFY_TELEGRAM_DASHBOARD_URL`.
 - **OS Requirements:** Cross-platform (HTTPS outbound to `api.telegram.org:443`).
 - **Dependencies:** `httpx`.
 - **Startup Mechanism:** Invoked by outbox delivery worker (`scripts-notify outbox run`).
@@ -85,7 +85,9 @@ To prevent false confidence derived purely from mock test suites, operational ev
 ### 2.4 Independent Off-Host Heartbeat (Healthchecks.io)
 
 - **Module / Entrypoints:** `modules/notifications/notifications/monitoring/` | CLI: `scripts-notify heartbeat`.
-- **Config & Secret Locations:** `%USERPROFILE%\.scripts\notifications\healthchecks.json` (restrictive ACLs; ping URL redacted in logs/status).
+- **Config & Secret Locations:**
+  - Configuration File: `%USERPROFILE%\.scripts\notifications\secrets\healthchecks.json` (restrictive ACLs; ping URL redacted in logs/status).
+  - Environment Overrides: `NOTIFY_HEALTHCHECKS_PING_URL`, `NOTIFY_HEALTHCHECKS_SECRETS_FILE`.
 - **OS Requirements:** Cross-platform (HTTPS outbound to `hc-ping.com` or custom Healthchecks instance).
 - **Dependencies:** Standard library `urllib.request` (zero third-party dependencies).
 - **Startup Mechanism:** Independent Windows Scheduled Task `ScriptsNotificationsHostHeartbeat` (runs every 5 minutes).
@@ -133,7 +135,7 @@ To prevent false confidence derived purely from mock test suites, operational ev
 - **Log & Database Retention:** Session expiry (24 hours); brute-force rate-limiting (exponential lockout); audit records retained in `action_audit_journal`.
 - **Failure Behavior:** Reject unauthenticated requests with HTTP 401; fail-closed on tampered cookies or expired TOTP replay.
 - **Stop / Restart:** Terminate `uvicorn` process.
-- **Rollback Method:** Revoke sessions via CLI (`scripts-remote-control revoke-session --all`).
+- **Rollback Method:** Revoke sessions via CLI (`scripts-remote-control revoke-session --session-id <id>` or `revoke-device --device-id <id>`).
 - **Validation Status:** **Level 2 (Synthetic Integration)** — 172 tests passing covering auth, CSRF, exact origin, brute force, and sessions. Real phone display is **Level 3/4 (Workstation/Cellular)**.
 
 ---
@@ -151,7 +153,7 @@ To prevent false confidence derived purely from mock test suites, operational ev
 - **Log & Database Retention:** Full audit journal in `action_audit_journal` with sensitive parameters redacted.
 - **Failure Behavior:** If outcome is ambiguous or connection drops during execution, sets durable `action_resource_barriers` entry; future mutations fail closed with HTTP 409 until reconciled.
 - **Stop / Restart:** In-process with web service.
-- **Rollback Method:** CLI command `reconcile-barrier -a --barrier-id <id> --evidence <text>`.
+- **Rollback Method:** CLI command `reconcile-barrier -a --resource-key <key> --evidence <text>`.
 - **Validation Status:** **Level 2 (Synthetic Integration)** — Multiprocess crash recovery, barrier identity, and concurrency defect tests passing.
 
 ---

@@ -5,6 +5,7 @@ Supports integration with the durable Notifications broker and safe platform fal
 """
 from __future__ import annotations
 
+import hashlib
 import logging
 import os
 import shutil
@@ -74,35 +75,37 @@ class Notifier:
         return bool(res.accepted)
 
     def _notify_platform(self, title: str, message: str, urgency: str = "normal") -> bool:
-        """Direct desktop/terminal notification using platform tools."""
+        """Direct desktop/terminal notification using platform tools with bounded timeouts and returncode checks."""
         # 1. Termux
         if shutil.which("termux-notification"):
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["termux-notification", "--title", title, "--content", message],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
                 )
-                return True
-            except Exception:
-                pass
+                if proc.returncode == 0:
+                    return True
+            except Exception as exc:
+                logger.debug("Termux notification failed: %s", exc)
 
         # 2. Linux / BSD / X11 desktop via notify-send
         if shutil.which("notify-send") and os.environ.get("DISPLAY"):
             u_flag = "critical" if urgency == "critical" else "normal"
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     ["notify-send", "-u", u_flag, title, message],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
                 )
-                return True
-            except Exception:
-                pass
+                if proc.returncode == 0:
+                    return True
+            except Exception as exc:
+                logger.debug("notify-send failed: %s", exc)
 
         # 3. Windows PowerShell Toast / Balloon with safe parameter passing (no string interpolation)
         if os.name == "nt" or (sys.platform == "linux" and shutil.which("powershell.exe")):
@@ -119,42 +122,50 @@ class Notifier:
             $obj.ShowBalloonTip(5000)
             """
             try:
-                subprocess.run(
+                proc = subprocess.run(
                     [ps_exe, "-NoProfile", "-NonInteractive", "-Command", script, title, message],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=6,
                 )
-                return True
-            except Exception:
-                pass
+                if proc.returncode == 0:
+                    return True
+            except Exception as exc:
+                logger.debug("Windows PowerShell toast notification failed: %s", exc)
 
         # 4. macOS via AppleScript
         if sys.platform == "darwin" and shutil.which("osascript"):
-            script = 'display notification "$2" with title "$1"'
             try:
-                subprocess.run(
-                    ["osascript", "-e", f'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run', title, message],
+                proc = subprocess.run(
+                    ["osascript", "-e", 'on run argv\ndisplay notification (item 2 of argv) with title (item 1 of argv)\nend run', title, message],
                     check=False,
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     timeout=5,
                 )
-                return True
-            except Exception:
-                pass
+                if proc.returncode == 0:
+                    return True
+            except Exception as exc:
+                logger.debug("macOS notification failed: %s", exc)
 
         return False
 
-    def notify(self, title: str, message: str, urgency: str = "normal") -> bool:
-        """Send a notification via broker (preferred) or platform fallback."""
+    def notify(
+        self,
+        title: str,
+        message: str,
+        urgency: str = "normal",
+        try_broker: bool = True,
+    ) -> bool:
+        """Send a notification via broker (preferred) or platform fallback with stable incident identity."""
         if not self.config.notifications_enabled:
             return False
 
-        if getattr(self.config, "use_notifications_broker", True):
+        if try_broker and getattr(self.config, "use_notifications_broker", True):
             severity = "critical" if urgency == "critical" else ("warning" if urgency == "warning" else "info")
-            incident_key = f"scheduler:notify:{abs(hash((title, message)))}"
+            digest = hashlib.sha256(f"{title}\x00{message}".encode("utf-8")).hexdigest()[:16]
+            incident_key = f"scheduler:notify:{digest}"
             try:
                 if self._publish_to_broker(
                     source="scheduler",
@@ -194,19 +205,24 @@ class Notifier:
             except Exception as exc:
                 logger.debug("Broker publish for schedule trigger failed: %s", exc)
 
-        return self.notify(title, message, urgency="normal")
+        # Fall back to platform notification without re-attempting broker (B2)
+        return self.notify(title, message, urgency="normal", try_broker=False)
 
     def notify_task_result(self, result: ExecutionResult) -> bool:
         """Notify on task completion with automatic incident resolution on success."""
+        if not self.config.notifications_enabled:
+            return False
+
         if result.success:
-            if not self.config.notify_on_success:
-                return False
+            resolved_in_broker = False
             title = f"Task Succeeded: {result.task_name}"
             msg = f"Completed in {result.duration_sec:.2f}s with exit code 0."
 
+            # B4: When broker tracking is enabled, successful recovery should resolve
+            # existing failure incidents even when optional success alerts are disabled.
             if getattr(self.config, "use_notifications_broker", True):
                 try:
-                    if self._publish_to_broker(
+                    resolved_in_broker = self._publish_to_broker(
                         source="scheduler",
                         kind="task_result",
                         incident_key=f"scheduler:task:{result.task_name}",
@@ -219,12 +235,19 @@ class Notifier:
                             "exit_code": str(result.exit_code),
                             "duration_sec": f"{result.duration_sec:.2f}",
                         },
-                    ):
-                        return True
+                    )
                 except Exception as exc:
-                    logger.debug("Broker publish for task success failed: %s", exc)
+                    logger.debug("Broker publish for task success resolution failed: %s", exc)
 
-            return self.notify(title, msg, urgency="normal")
+            # If success notifications are disabled, suppress user alert without failing resolution
+            if not self.config.notify_on_success:
+                return resolved_in_broker
+
+            if resolved_in_broker:
+                return True
+
+            # Direct fallback without re-attempting broker (B2)
+            return self.notify(title, msg, urgency="normal", try_broker=False)
         else:
             if not self.config.notify_on_failure:
                 return False
@@ -253,4 +276,5 @@ class Notifier:
                 except Exception as exc:
                     logger.debug("Broker publish for task failure failed: %s", exc)
 
-            return self.notify(title, msg, urgency="critical")
+            # Direct fallback without re-attempting broker (B2)
+            return self.notify(title, msg, urgency="critical", try_broker=False)

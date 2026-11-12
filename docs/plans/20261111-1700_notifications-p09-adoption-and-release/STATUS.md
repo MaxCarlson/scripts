@@ -17,4 +17,5 @@
 | **Stage D** | Release Diagnostics & Supportability | Complete | f9879739 | `scripts-notify release-check` passing |
 | **Stage E** | Documentation & Command Accuracy | Complete | bb893a3 | Audited runbooks & guides |
 | **Stage F** | Full Integration Validation | Complete | 9242df90 | Synthetic E2E & regression passing |
-| **Stage G** | Controlled Operational Acceptance | Complete | checkpoint | Runbook & operator gates ready |
+| **Stage G** | Controlled Operational Acceptance | Complete | 662fd0dd | Runbook & operator gates ready |
+| **Stage H** | Release Correctness & Final Stabilization | Complete | checkpoint | Real schema queries, non-zero returncodes, authenticated FastAPI E2E |

@@ -11,8 +11,8 @@
 | Emergency Scenario | Immediate Action Required | Command / Procedure | Data Loss Impact |
 | :--- | :--- | :--- | :--- |
 | **Suspected Public Exposure / Leak** | Terminate Tailscale Funnel immediately | `scripts-remote-control external disable -a` | Zero data loss. Local notifications continue. |
-| **Lost / Compromised Operator Phone** | Revoke all operator sessions and enrolled devices | `scripts-remote-control revoke-session --all`<br>`scripts-remote-control revoke-device --device-id <id>` | Zero incident data loss; operator re-login required. |
-| **Active Action Execution Barrier** | Investigate condition and reconcile barrier with evidence | `scripts-remote-control reconcile-barrier -a --barrier-id <id> --evidence "verified safe"` | Clears barrier; restores guarded mutation ability. |
+| **Lost / Compromised Operator Phone** | Revoke operator session and device identifier | `scripts-remote-control revoke-session --session-id <id>`<br>`scripts-remote-control revoke-device --device-id <id>` | Zero incident data loss; operator re-login required. |
+| **Active Action Execution Barrier** | Investigate condition and reconcile barrier with evidence | `scripts-remote-control reconcile-barrier -a --resource-key <key> --evidence "verified safe"` | Clears barrier; restores guarded mutation ability. |
 | **Database Corruption / Disk Full** | Revert SQLite database from backup file | Copy latest `.db.bak` to `events.db` | Reverts events since last backup. |
 | **Scheduler Notification Loop / Storm** | Disable broker routing in Scheduler configuration | Set `"use_notifications_broker": false` in scheduler config | Scheduler tasks continue unaffected using local fallback. |
 | **Stuck Windows Helper Process** | Stop local helper listener | `POST http://127.0.0.1:1238/shutdown` with bearer token | Ephemeral listener terminates; notifications queue in outbox. |
@@ -48,13 +48,12 @@ tailscale funnel --https=8443 off
 
 If an operator handset is lost, stolen, or compromised:
 
-1. Invalidate all active sessions across all devices:
+1. Invalidate active operator session:
    ```powershell
-   scripts-remote-control revoke-session --all
+   scripts-remote-control revoke-session --session-id <session_id>
    ```
 2. Identify and revoke the specific device identifier:
    ```powershell
-   scripts-remote-control status
    scripts-remote-control revoke-device --device-id <device_id>
    ```
 3. Rotate the operator password and TOTP secret:
@@ -70,14 +69,14 @@ If an operator handset is lost, stolen, or compromised:
 When an action outcome is ambiguous (e.g., unexpected network disconnect or timeout during confirmation), the system sets a durable, fail-closed `action_resource_barriers` record to prevent duplicate mutation.
 
 To reconcile:
-1. Inspect the active barrier and reason:
+1. Inspect active barriers and their reasons:
    ```powershell
    scripts-remote-control external status
    ```
 2. Manually verify the underlying resource state (e.g., confirm whether the incident was actually acknowledged or task completed).
-3. Clear the barrier with authoritative operator justification:
+3. Clear the barrier with authoritative operator justification (requires `-a / --apply` and explicit evidence):
    ```powershell
-   scripts-remote-control reconcile-barrier -a --barrier-id <barrier_id> --evidence "Verified via host logs that task completed successfully with exit code 0."
+   scripts-remote-control reconcile-barrier -a --resource-key "resource_coordinator:recovery" --evidence "Verified via host logs that task completed successfully with exit code 0."
    ```
 
 ---

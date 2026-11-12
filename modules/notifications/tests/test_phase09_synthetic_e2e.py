@@ -15,20 +15,42 @@ Validates the complete lifecycle:
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
+import time
+import pyotp
 import pytest
+from fastapi.testclient import TestClient
 
 from notifications.delivery.fake import FakeProvider
 from notifications.models import EventEnvelopeV1
 from notifications.outbox import OutboxWorker
 from notifications.publisher import Publisher
 from notifications.storage import StorageEngine
+from remote_control.app import create_app
+from remote_control.auth.service import AuthService
+from remote_control.auth.storage import AuthStorage
+from remote_control.config import RemoteControlConfig
 from scheduler.config import SchedulerConfig
 from scheduler.models import ExecutionResult
 from scheduler.notifier import Notifier
 
 
-def test_phase09_synthetic_e2e_scenario(tmp_path):
+def test_phase09_synthetic_e2e_scenario(tmp_path, monkeypatch):
+    # Ensure isolated simulated tailscale state
+    sim_tailscale_path = tmp_path / ".sim_tailscale.json"
+    sim_tailscale_path.write_text(json.dumps({
+        "installed": True,
+        "version": "1.54.0-simulated",
+        "logged_in": True,
+        "node_name": "workstation",
+        "tailnet_name": "tailnet-dev.ts.net",
+        "funnel_available": True,
+        "funnel_active": False,
+        "public_url": None,
+    }), encoding="utf-8")
+    monkeypatch.setenv("REMOTE_CONTROL_SIMULATED_STATE_PATH", str(sim_tailscale_path))
+
     # ── Setup Isolated Infrastructure ────────────────────────────────────────
     db_path = tmp_path / "events.db"
     storage = StorageEngine(db_path=db_path)
@@ -93,17 +115,86 @@ def test_phase09_synthetic_e2e_scenario(tmp_path):
     assert "Volume /mnt/backup is 100% full" in delivered_msg.title
     assert "Source: scheduler" in delivered_msg.body
 
-    # ── Step 6: Remote Control Reads the Incident ────────────────────────────
-    read_incident = storage.get_incident(incident.incident_id)
-    assert read_incident is not None
-    assert read_incident.status == "open"
-    assert read_incident.severity == "critical"
-
-    # ── Step 7 & 8: Guarded Acknowledgement ──────────────────────────────────
-    acked_incident = publisher.lifecycle.acknowledge_incident(
-        incident_id=incident.incident_id,
-        actor="operator",
+    # ── Step 6, 7 & 8: Remote Control Authenticated API & Guarded Acknowledgement ──
+    # Set up isolated Remote Control instance targeting the notifications database
+    rc_config = RemoteControlConfig(
+        auth_db_path=tmp_path / "auth.db",
+        notifications_db_path=db_path,
+        cookie_security_mode="development",
     )
+    auth_storage = AuthStorage(rc_config.auth_db_path)
+    auth_service = AuthService(auth_storage, rc_config)
+    op, totp_secret, uri = auth_service.bootstrap(username="operator", password="SuperSecretPassword123!")
+    totp = pyotp.TOTP(totp_secret)
+
+    rc_app = create_app(rc_config)
+    with TestClient(rc_app, base_url="http://127.0.0.1:8443") as client:
+        # Step 6a: Authenticate operator session with TOTP
+        login_resp = client.post(
+            "/api/auth/login",
+            json={
+                "username": "operator",
+                "password": "SuperSecretPassword123!",
+                "totp_code": totp.now(),
+                "device_id": "test-device-uuid-1",
+                "device_name": "Test Pixel 9 Pro",
+            },
+        )
+        assert login_resp.status_code == 200, f"Login failed: {login_resp.text}"
+        csrf_token = login_resp.json()["csrf_token"]
+
+        # Step 6b: Read active incidents through authenticated REST API
+        inc_resp = client.get("/api/incidents")
+        assert inc_resp.status_code == 200
+        inc_data = inc_resp.json()
+        assert inc_data["available"] is True
+        assert len(inc_data["items"]) == 1
+        assert inc_data["items"][0]["incident_id"] == incident.incident_id
+        assert inc_data["items"][0]["status"] == "open"
+        assert inc_data["items"][0]["severity"] == "critical"
+
+        # Step 7a: Reject direct execution without pre-issued challenge_id (Defect B guard)
+        step_up_otp = totp.at(int(time.time()) + 30)
+        rej_resp = client.post(
+            f"/api/v1/incidents/{incident.incident_id}/acknowledge",
+            json={"reason": "Acknowledged by operator", "totp_code": step_up_otp},
+            headers={"Origin": "http://127.0.0.1:8443", "X-CSRF-Token": csrf_token},
+        )
+        assert rej_resp.status_code == 422
+        assert rej_resp.json()["error"] == "challenge_required"
+
+        # Step 7b: Prepare confirmation challenge explicitly
+        prep_resp = client.post(
+            "/api/v1/actions/notifications.acknowledge_incident/prepare",
+            json={"parameters": {"incident_id": incident.incident_id, "reason": "Acknowledged by operator"}},
+            headers={"Origin": "http://127.0.0.1:8443", "X-CSRF-Token": csrf_token},
+        )
+        assert prep_resp.status_code == 200
+        challenge_id = prep_resp.json()["challenge_id"]
+
+        # Step 7c: Execute guarded acknowledgement with challenge_id, CSRF token, and step-up TOTP
+        ack_resp = client.post(
+            f"/api/v1/incidents/{incident.incident_id}/acknowledge",
+            json={"reason": "Acknowledged by operator", "totp_code": step_up_otp, "challenge_id": challenge_id},
+            headers={"Origin": "http://127.0.0.1:8443", "X-CSRF-Token": csrf_token},
+        )
+        assert ack_resp.status_code == 200
+        ack_data = ack_resp.json()
+        assert ack_data["ok"] is True
+        assert ack_data["status"] == "succeeded"
+        assert ack_data["postcondition_verified"] is True
+
+        # Step 7d: Verify token replay prevention (challenge is now consumed)
+        replay_resp = client.post(
+            f"/api/v1/incidents/{incident.incident_id}/acknowledge",
+            json={"reason": "Replay attempt", "totp_code": step_up_otp, "challenge_id": challenge_id},
+            headers={"Origin": "http://127.0.0.1:8443", "X-CSRF-Token": csrf_token},
+        )
+        assert replay_resp.status_code in (409, 422)
+
+    # Step 8: Verify notifications storage reflects acknowledged state
+    acked_incident = storage.get_incident(incident.incident_id)
+    assert acked_incident is not None
     assert acked_incident.status == "acknowledged"
     assert acked_incident.acknowledged_at is not None
 
@@ -173,8 +264,21 @@ def test_phase09_synthetic_e2e_scenario(tmp_path):
 
     # ── Step 10: Tailscale Funnel Remains Disabled Throughout ────────────────
     from notifications.diagnostics import collect_release_diagnostics
-    diag = collect_release_diagnostics(db_path=db_path, probe_ports=False)
+    # 10a. Strict non-subprocess inspection reports uninspected / skipped without fabricating disabled status
+    diag = collect_release_diagnostics(db_path=db_path, auth_db_path=tmp_path / "auth.db", probe_ports=False)
     assert diag["ok"] is True
-    assert diag["tailscale_funnel"]["public_exposure_enabled"] is False
-    assert diag["tailscale_funnel"]["funnel_active"] is False
-    assert diag["tailscale_funnel"]["status"] == "disabled_by_policy"
+    assert diag["tailscale_funnel"]["configured_exposure_enabled"] is False
+    assert diag["tailscale_funnel"]["inspection"] == "skipped_no_subprocess"
+    assert diag["tailscale_funnel"]["status"] == "uninspected"
+
+    # 10b. Optional live/simulated inspection proves funnel was never activated
+    diag_live = collect_release_diagnostics(
+        db_path=db_path,
+        auth_db_path=tmp_path / "auth.db",
+        probe_ports=False,
+        inspect_tailscale=True,
+    )
+    assert diag_live["ok"] is True
+    assert diag_live["tailscale_funnel"]["configured_exposure_enabled"] is False
+    assert diag_live["tailscale_funnel"]["observed_funnel_active"] is False
+    assert diag_live["tailscale_funnel"]["status"] == "inactive"

@@ -38,16 +38,18 @@ scripts-remote-control bootstrap
 ### Step 2.2: Telegram Android Delivery Setup (Optional)
 To receive mobile push notifications without maintaining active VPNs:
 
-1. Create a bot with `@BotFather` on Telegram and copy the bot token.
-2. Enroll the bot and link your Telegram chat ID:
+1. Create a bot with `@BotFather` on Telegram and obtain your bot token.
+2. Enroll the bot and link your authorized Telegram chat ID:
    ```powershell
-   scripts-notify telegram enroll --bot-token "123456:ABC-DEF..." --chat-id "123456789"
+   # Secure interactive enrollment (prompts for token without saving to shell history)
+   scripts-notify telegram enroll -c "123456789" -a
    ```
+   *Alternatively, export `NOTIFY_TELEGRAM_BOT_TOKEN="<token>"` and pass `-c "123456789" -a`.*
 3. Test delivery in safe dry-run preview:
    ```powershell
    scripts-notify telegram test
    ```
-4. Verify actual transmission:
+4. Verify actual transmission (sends live test message):
    ```powershell
    scripts-notify telegram test -a
    ```
@@ -63,6 +65,7 @@ Ensure desktop notifications display for the active interactive user session:
    ```powershell
    powershell.exe -NoProfile -ExecutionPolicy Bypass -File modules/notifications/windows_helper/helper.ps1
    ```
+   *Or install as user logon Scheduled Task via `scripts-notify windows install -a`.*
 
 ### Step 2.4: Off-Host Outage Monitoring (Healthchecks.io)
 Ensure independent host-down alerts if the workstation powers down or network fails:
@@ -70,11 +73,17 @@ Ensure independent host-down alerts if the workstation powers down or network fa
 1. Create a free check on Healthchecks.io with a 5-minute interval.
 2. Configure the ping URL (stored with owner-only ACLs):
    ```powershell
-   scripts-notify heartbeat configure --ping-url "https://hc-ping.com/your-uuid-here" --interval 5
+   # Interactive prompt (avoids leaving ping URL UUID in shell history)
+   scripts-notify heartbeat configure -i 5 -a
    ```
+   *Or pass explicit URL via `scripts-notify heartbeat configure -u "https://hc-ping.com/<uuid>" -i 5 -a`.*
 3. Inspect the scheduled task registration plan (dry-run):
    ```powershell
    scripts-notify heartbeat install
+   ```
+4. Verify one-shot ping transmission (Note: `heartbeat ping` performs an actual outbound request without dry-run):
+   ```powershell
+   scripts-notify heartbeat ping
    ```
 
 ---
@@ -87,7 +96,7 @@ Launch the mobile-optimized PWA on the Windows loopback interface:
 ```powershell
 scripts-remote-control serve --port 8443
 ```
-- Open `https://127.0.0.1:8443` in your browser.
+- Open `http://127.0.0.1:8443` in your workstation browser (HTTP loopback; HTTPS is terminated when accessed via Tailscale Funnel or local reverse proxy).
 - Log in with operator password + TOTP code.
 
 ### Step 3.2: Inspect Incidents via CLI
@@ -100,7 +109,7 @@ scripts-notify incidents list
 To view details for a specific incident:
 
 ```powershell
-scripts-notify incidents get <incident_id>
+scripts-notify incidents show -i <incident_id>
 ```
 
 ### Step 3.3: Guarded Incident Acknowledgement
@@ -111,7 +120,7 @@ From the Web PWA:
 
 From the CLI:
 ```powershell
-scripts-notify incidents acknowledge <incident_id> -a --actor "operator"
+scripts-notify incidents acknowledge -i <incident_id> -a -n "Investigating root cause"
 ```
 
 ---

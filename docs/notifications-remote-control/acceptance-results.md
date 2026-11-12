@@ -14,12 +14,12 @@ Every phase of the Notifications & Remote Control infrastructure has completed e
 | Test Suite | Tests Passed | Tests Skipped | Tests Failed | Key Capabilities Proven |
 | :--- | :---: | :---: | :---: | :--- |
 | **`modules/remote_control/tests/`** | **172** | **0** | **0** | Argon2id auth, TOTP replay prevention, session revocation, exact-origin security, action barriers, proxy headers, Tailscale client adapter. |
-| **`modules/notifications/tests/`** | **163** | **1** | **0** | Event envelopes, SQLite WAL durability, incident state machine, outbox worker, Telegram transport mock, Windows helper IPC, heartbeat runner, RC observer, task stability, release-check diagnostics. |
-| **`modules/scheduler/tests/`** | **126** | **0** | **0** | Task execution, timing rules, TUI, Windows task lifecycle, Notifications broker integration, incident deduplication, safe parameter-passed fallback. |
+| **`modules/notifications/tests/`** | **173** | **1** | **0** | Event envelopes, SQLite WAL durability, incident state machine, outbox worker, Telegram transport mock, Windows helper IPC, heartbeat runner, RC observer, task stability, release-check diagnostics, synthetic E2E. |
+| **`modules/scheduler/tests/`** | **130** | **0** | **0** | Task execution, timing rules, TUI, Windows task lifecycle, Notifications broker integration, incident deduplication, non-zero returncode checks, success incident resolution. |
 | **`modules/scripts_help/tests/`** | **55** | **0** | **0** | Command catalog, registry indexing, README version synchronization for `notifications` and `remote_control`. |
 | **`modules/resource_coordinator/tests/`** | **29** | **0** | **0** | Read-only contract verification (`test_recovery_presentation.py` and `test_cli.py`). |
-| **Synthetic E2E Lifecycle** | **Passed** | **0** | **0** | Consumer failure -> broker ingest -> incident open -> outbox queue -> fake provider -> guarded ack -> task recovery -> incident resolved. |
-| **Total Automated Evidence** | **545+** | **1** | **0** | **100% Passing Across All Subsystems** |
+| **Synthetic E2E Lifecycle** | **Passed** | **0** | **0** | Consumer failure -> broker ingest -> incident open -> outbox queue -> fake provider -> Remote Control REST API -> guarded ack (challenge + TOTP) -> replay guard -> task recovery -> incident resolved. |
+| **Total Automated Evidence** | **559** | **1** | **0** | **100% Passing Across All Subsystems** |
 
 ---
 
@@ -27,33 +27,41 @@ Every phase of the Notifications & Remote Control infrastructure has completed e
 
 Passing unit and synthetic tests prove component architecture, security boundaries, and protocol correctness. **They do not constitute physical verification on cellular networks, live Windows desktop sessions, or production external accounts.**
 
+The six validation levels recognized across the subsystem ledger:
+1. **Automated unit-tested**: In-memory unit test with isolated mocks.
+2. **Synthetic integration-tested**: Multi-process/component test with isolated SQLite and loopback mock adapters.
+3. **Host-local manually verified**: Manually executed on the local workstation host.
+4. **Real external service verified**: Tested against live external API (Telegram Bot API, Healthchecks ping).
+5. **Android cellular/WAN verified**: Tested over live public internet on a physical cellular handset.
+6. **Pending**: Awaiting operator execution of live acceptance gate.
+
 The following ledger explicitly tracks which validation steps remain pending for real-world operator execution:
 
 ### Section A: Local Windows Workstation Gates
 
-| ID | Validation Description | Automated Evidence | Live Status | Operator Action Required |
+| ID | Validation Description | Automated Evidence | Current Level | Operator Action Required |
 | :---: | :--- | :--- | :---: | :--- |
-| **L01** | Python 3.12 virtual environment stability | Automated import smoke tests passed | **Verified** | Verify `pip install -e modules/notifications` and `remote_control` in primary environment. |
-| **L02** | Local loopback PWA startup on port 8443 | TestClient and loopback probe passing | **Verified** | Run `scripts-remote-control serve` and verify in local browser. |
-| **L03** | Windows Toast Helper interactive display | Helper IPC unit tests passing | **Pending Gate** | Launch `helper.ps1` in Session 1+, click notification, confirm launch. |
-| **L04** | Scheduled Task installation (non-elevated) | Task XML & argument generation tests passing | **Pending Gate** | Run `scripts-notify coordinator task install -a` under non-elevated user. |
+| **L01** | Python 3.12 virtual environment stability | Automated import smoke tests passed | **Host-local manually verified** | Verify `pip install -e modules/notifications` and `remote_control` in primary environment. |
+| **L02** | Local loopback PWA startup on port 8443 | TestClient and loopback probe passing | **Synthetic integration-tested** | Run `scripts-remote-control serve` and verify `http://127.0.0.1:8443` in browser. |
+| **L03** | Windows Toast Helper interactive display | Helper IPC unit tests passing | **Pending** | Launch `helper.ps1` in Session 1+, click notification, confirm launch. |
+| **L04** | Scheduled Task installation (non-elevated) | Task XML & argument generation tests passing | **Pending** | Run `scripts-notify coordinator task install -a` under non-elevated user. |
 
 ### Section B: External Notification Providers
 
-| ID | Validation Description | Automated Evidence | Live Status | Operator Action Required |
+| ID | Validation Description | Automated Evidence | Current Level | Operator Action Required |
 | :---: | :--- | :--- | :---: | :--- |
-| **E01** | Real Telegram Bot alert delivery | Mock HTTP transport tests passing | **Pending Gate** | Provide real Bot Token and run `scripts-notify telegram test -a`. |
-| **E02** | Off-host outage detection (Healthchecks) | Urllib runner & JSON payload tests passing | **Pending Gate** | Configure real ping URL; simulate host shutdown; confirm off-host email/SMS alert. |
+| **E01** | Real Telegram Bot alert delivery | Mock HTTP transport tests passing | **Pending** | Provide real Bot Token and run `scripts-notify telegram test -a`. |
+| **E02** | Off-host outage detection (Healthchecks) | Urllib runner & JSON payload tests passing | **Pending** | Configure real ping URL; simulate host shutdown; confirm off-host email/SMS alert. |
 
 ### Section C: Android Cellular & Tailscale Funnel Gates (Runbook W01–W05)
 
-| ID | Runbook Case | Automated Evidence | Live Status | Operator Verification Protocol |
+| ID | Runbook Case | Automated Evidence | Current Level | Operator Verification Protocol |
 | :---: | :--- | :--- | :---: | :--- |
-| **W01** | WAN Exposure & Host Sanitization | Reverse proxy middleware unit tests passing | **Pending Gate** | Verify `X-Forwarded-For` spoofing rejected with HTTP 400. |
-| **W02** | Subsystem Isolation & Port Protection | Mock route tests passing | **Verified** | Verify ports 1235 (RC) and 1238 (Toast) inaccessible from WAN. |
-| **W03** | Android Cellular PWA Access | PWA static caching tests passing | **Pending Gate** | Disable Wi-Fi and WireGuard on phone; access via cellular HTTPS; log in with TOTP. |
-| **W04** | Device & Session Revocation | Session table revocation tests passing | **Pending Gate** | Revoke phone device via CLI; verify immediate denial on next phone request. |
-| **W05** | Emergency Funnel Teardown | External disable adapter tests passing | **Pending Gate** | Run `external disable -a`; verify public reachability terminates while local service persists. |
+| **W01** | WAN Exposure & Host Sanitization | Reverse proxy middleware unit tests passing | **Pending** | Verify `X-Forwarded-For` spoofing rejected with HTTP 400. |
+| **W02** | Subsystem Isolation & Port Protection | Mock route tests passing | **Synthetic integration-tested** (Pending Live WAN) | Verify ports 1235 (RC) and 1238 (Toast) inaccessible from WAN. |
+| **W03** | Android Cellular PWA Access | PWA static caching tests passing | **Pending** | Disable Wi-Fi and WireGuard on phone; access via cellular HTTPS; log in with TOTP. |
+| **W04** | Device & Session Revocation | Session table revocation tests passing | **Synthetic integration-tested** (Pending Live WAN) | Revoke phone device via CLI; verify immediate denial on next phone request. |
+| **W05** | Emergency Funnel Teardown | External disable adapter tests passing | **Synthetic integration-tested** (Pending Live WAN) | Run `external disable -a`; verify public reachability terminates while local service persists. |
 
 ---
 
