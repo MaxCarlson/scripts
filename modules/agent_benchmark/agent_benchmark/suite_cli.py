@@ -114,6 +114,24 @@ def add_suite_parser(actions: Any) -> None:
     report.add_argument("-r", "--run-id", required=True)
     report.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     report.add_argument("-F", "--llm-friendly", action="store_true")
+    compare = commands.add_parser("compare", help="Compare two completed or interrupted suite runs on matching tasks")
+    compare.add_argument(
+        "-r",
+        "--runs",
+        nargs=2,
+        required=True,
+        metavar=("RUN_A", "RUN_B"),
+        help="Two run IDs or run directory paths to compare",
+    )
+    compare.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
+    compare.add_argument(
+        "-f",
+        "--format",
+        choices=("table", "json", "markdown"),
+        default="table",
+        help="Output format (default: table)",
+    )
+    compare.add_argument("-F", "--llm-friendly", action="store_true")
     archive = commands.add_parser("archive", help="Archive and verify LLM Monitor evidence for suite runs")
     archive.add_argument(
         "action",
@@ -455,6 +473,38 @@ def handle_suite(args: argparse.Namespace) -> int:
             )
             _emit_event("finished", friendly=friendly, **_finished_payload(summary, run_dir))
             return 0 if summary["infrastructure_invalid"] == 0 else 1
+        if command == "compare":
+            from .comparison import (
+                compare_suite_runs,
+                format_comparison_markdown,
+                format_comparison_table,
+            )
+
+            runs = getattr(args, "runs", [])
+            if len(runs) != 2:
+                raise ValueError("suite compare requires exactly two run IDs or paths via -r/--runs")
+
+            def _resolve_run_dir(val: str) -> Path:
+                p = Path(val).expanduser().resolve()
+                if p.is_dir():
+                    return p
+                cand = (args.runs_dir / val).resolve()
+                if cand.is_dir():
+                    return cand
+                raise FileNotFoundError(f"Run directory not found: {val!r}")
+
+            dir_a = _resolve_run_dir(runs[0])
+            dir_b = _resolve_run_dir(runs[1])
+
+            comp_result = compare_suite_runs(dir_a, dir_b)
+            fmt = getattr(args, "format", "table")
+            if fmt == "json":
+                emit(comp_result, llm_friendly=friendly)
+            elif fmt == "markdown":
+                print(format_comparison_markdown(comp_result))
+            else:
+                print(format_comparison_table(comp_result))
+            return 0
         if command == "archive":
             action = getattr(args, "action", "create")
             if getattr(args, "archive", None) and not getattr(args, "run", None):
@@ -472,7 +522,7 @@ def handle_suite(args: argparse.Namespace) -> int:
 
                 return verify_archive(args)
             raise ValueError(f"unknown archive action: {action}")
-        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report, archive")
+        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report, compare, archive")
     except Exception as error:
         if friendly:
             _emit_event("error", friendly=True, code=_error_code(error), detail=str(error))

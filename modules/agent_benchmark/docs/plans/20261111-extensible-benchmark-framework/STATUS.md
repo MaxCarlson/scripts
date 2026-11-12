@@ -116,3 +116,16 @@
 - [x] Untrusted model-generated code NEVER executed on host.
 
 **Status:** Phase 06 is COMPLETE and gate satisfied. Ready to proceed to Phase 07.
+
+
+## 11. Phase 07 Acceptance Gate
+- [x] Multi-model comparison module implemented (`comparison.py`).
+- [x] Paired task discordance matrix (`both_passed`, `both_failed`, `a_only`, `b_only`, `unpaired`) computed on matching tasks.
+- [x] Wilson 95% confidence intervals and coverage percentage calculations implemented.
+- [x] Strict comparability verification: flags differing cohorts, source revisions, or unshared tasks in `blockers` without silent comparison corruption.
+- [x] Output formatters implemented: formatted terminal table (`format_comparison_table`), Markdown report (`format_comparison_markdown`), and structured JSON.
+- [x] CLI command `agent-benchmark suite compare -r RUN_A RUN_B` implemented and tested with `-f table|json|markdown` and `-F/--llm-friendly`.
+- [x] `declared_model_intervention_error` contract implemented in `benchmark_core.conditions` supporting `declared-model-intervention-v1`.
+- [x] 6 unit tests passing in `comparison_test.py` with 100% clean Ruff checks.
+
+**Status:** Phase 07 is COMPLETE and gate satisfied. Ready to proceed to Phase 08.

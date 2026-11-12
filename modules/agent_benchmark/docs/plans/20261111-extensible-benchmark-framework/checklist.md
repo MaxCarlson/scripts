@@ -70,12 +70,12 @@
 - [x] Fixture tests for problem execution, timeout, syntax error, and memory bounds
 
 ## Phase 07 — Multi-Model Comparison, Score Granularity, and Reports
-- [ ] Extend comparison conditions in `benchmark_core` or `agent_benchmark` (`declared-model-intervention-v1`)
-- [ ] Implement paired task outcome matrix (both pass, both fail, A only, B only)
-- [ ] Implement denominator and coverage calculations (planned, attempted, scored, invalid)
-- [ ] Implement Wilson confidence intervals and paired difference statistics
-- [ ] Add `suite compare` CLI command supporting JSON, table, and markdown formats
-- [ ] Offline comparison tests with synthetic paired run data
+- [x] Extend comparison conditions in `benchmark_core` or `agent_benchmark` (`declared-model-intervention-v1`)
+- [x] Implement paired task outcome matrix (both pass, both fail, A only, B only)
+- [x] Implement denominator and coverage calculations (planned, attempted, scored, invalid)
+- [x] Implement Wilson confidence intervals and paired difference statistics
+- [x] Add `suite compare` CLI command supporting JSON, table, and markdown formats
+- [x] Offline comparison tests with synthetic paired run data
 
 ## Phase 08 — Qualification, Third-Adapter Proof, and Documentation
 - [ ] Run full CLI golden compatibility test suite
