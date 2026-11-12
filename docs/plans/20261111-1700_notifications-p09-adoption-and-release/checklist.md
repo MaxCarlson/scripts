@@ -15,12 +15,12 @@
   - [x] Tests pass (126 scheduler tests passing)
   - [x] Stage B commit created
 
-- [ ] **Stage C: Installation Pathways & Registry Integration**
-  - [ ] Version tag `<!-- version: 0.1.0 -->` added to `modules/remote_control/README.md`
-  - [ ] `remote-control (module)` registered in `modules/scripts_help/scripts_help/registry/registry.py`
-  - [ ] `scripts_help` test suite passes (55 tests)
-  - [ ] Scheduled task stability tests written and passing
-  - [ ] Stage C commit created
+- [x] **Stage C: Installation Pathways & Registry Integration**
+  - [x] Version tag `<!-- version: 0.1.0 -->` added to `modules/remote_control/README.md`
+  - [x] `remote-control (module)` registered in `modules/scripts_help/scripts_help/registry/registry.py`
+  - [x] `scripts_help` test suite passes (55 tests)
+  - [x] Scheduled task stability tests written and passing
+  - [x] Stage C commit created
 
 - [ ] **Stage D: Release Diagnostics and Supportability**
   - [ ] Read-only release check implementation in `modules/notifications/notifications/diagnostics.py`
