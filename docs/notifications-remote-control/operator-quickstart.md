@@ -41,8 +41,11 @@ To receive mobile push notifications without maintaining active VPNs:
 1. Create a bot with `@BotFather` on Telegram and obtain your bot token.
 2. Enroll the bot and link your authorized Telegram chat ID:
    ```powershell
-   # Secure interactive enrollment (prompts for token without saving to shell history)
+   # Secure interactive enrollment (prompts for token without saving to shell history):
    scripts-notify telegram enroll -c "123456789" -a
+
+   # Or specify -t/--token and -c/--chat-id with -a/--apply:
+   scripts-notify telegram enroll -t "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ123456789" -c "123456789" -a
    ```
    *Alternatively, export `NOTIFY_TELEGRAM_BOT_TOKEN="<token>"` and pass `-c "123456789" -a`.*
 3. Test delivery in safe dry-run preview:
@@ -70,20 +73,47 @@ Ensure desktop notifications display for the active interactive user session:
 ### Step 2.4: Off-Host Outage Monitoring (Healthchecks.io)
 Ensure independent host-down alerts if the workstation powers down or network fails:
 
-1. Create a free check on Healthchecks.io with a 5-minute interval.
+1. Create a free check on Healthchecks.io with a 5-minute interval (`-i 5`).
 2. Configure the ping URL (stored with owner-only ACLs):
    ```powershell
-   # Interactive prompt (avoids leaving ping URL UUID in shell history)
+   # Interactive prompt (avoids leaving ping URL UUID in shell history):
    scripts-notify heartbeat configure -i 5 -a
+
+   # Or pass explicit URL via -u/--url and interval via -i/--interval (5 minutes):
+   scripts-notify heartbeat configure -u "https://hc-ping.com/<uuid>" -i 5 -a
    ```
-   *Or pass explicit URL via `scripts-notify heartbeat configure -u "https://hc-ping.com/<uuid>" -i 5 -a`.*
-3. Inspect the scheduled task registration plan (dry-run):
+3. Test configuration in safe dry-run preview:
    ```powershell
-   scripts-notify heartbeat install
+   scripts-notify heartbeat test
    ```
-4. Verify one-shot ping transmission (Note: `heartbeat ping` performs an actual outbound request without dry-run):
+4. Send live external test ping (requires `-a/--apply`):
+   ```powershell
+   scripts-notify heartbeat test -a
+   ```
+5. Inspect the scheduled task registration plan (dry-run):
+   ```powershell
+   scripts-notify heartbeat install -i 5
+   ```
+   *(Note: `Register-ScheduledTask -Force` will replace any existing task of the same name; inspect first via `scripts-notify heartbeat status`. For true 24/7 monitoring across reboots and logged-off state, run `scripts-notify heartbeat install --headless -i 5 -a` from an elevated prompt.)*
+6. Direct runner ping (invoked by Scheduled Tasks without `-a`):
    ```powershell
    scripts-notify heartbeat ping
+   ```
+
+### Step 2.5: Unattended Outbox Dispatcher (Windows Scheduled Task)
+To periodically dispatch queued notifications in the background:
+
+1. Preview task installation (dry-run default):
+   ```powershell
+   scripts-notify outbox task install -i 2
+   ```
+2. Inspect current task status:
+   ```powershell
+   scripts-notify outbox task status
+   ```
+3. Register Scheduled Task (runs every 2 minutes in non-elevated user context):
+   ```powershell
+   scripts-notify outbox task install -i 2 -a
    ```
 
 ---
