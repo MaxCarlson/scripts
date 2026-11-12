@@ -30,6 +30,29 @@ SIMULATED_STATE_PATH = Path.home() / ".scripts" / "remote_control" / ".simulated
 SUPPORTED_FUNNEL_PORTS = {443, 8443, 10000}
 
 
+def parse_endpoint_port(ep: str) -> Optional[int]:
+    """Extract port integer from endpoint string like 'node.tailnet:8443', ':8443', or '8443'."""
+    ep_str = str(ep).strip().rstrip("/")
+    if ":" in ep_str:
+        try:
+            return int(ep_str.rsplit(":", 1)[-1])
+        except ValueError:
+            return None
+    elif ep_str.isdigit():
+        return int(ep_str)
+    return None
+
+
+def parse_endpoint_host(ep: str) -> str:
+    """Extract hostname from endpoint string like 'node.tailnet:8443'."""
+    ep_str = str(ep).strip()
+    if ":" in ep_str:
+        return ep_str.rsplit(":", 1)[0].strip()
+    if ep_str.isdigit():
+        return ""
+    return ep_str
+
+
 @dataclass
 class TailscaleStatus:
     """Tailscale node and Funnel reachability status."""
@@ -43,9 +66,50 @@ class TailscaleStatus:
     funnel_active: bool = False
     public_url: Optional[str] = None
     routes: Dict[str, Any] = field(default_factory=dict)
+    allow_funnel: Dict[str, bool] = field(default_factory=dict)
+    status_error: Optional[str] = None
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+    def get_exact_route(self, public_port: int) -> Optional[Tuple[str, Dict[str, Any]]]:
+        """Find the route matching the exact public port."""
+        for ep, details in self.routes.items():
+            if parse_endpoint_port(ep) == public_port:
+                if isinstance(details, dict):
+                    return ep, details
+                elif isinstance(details, str):
+                    return ep, {"Handlers": {"/": {"Proxy": details}}}
+        return None
+
+    def is_route_funnel_active(
+        self,
+        public_port: int,
+        expected_target: Optional[str] = None,
+        expected_host: Optional[str] = None,
+    ) -> bool:
+        """Verify that an exact managed route is active with Funnel enabled."""
+        found = self.get_exact_route(public_port)
+        if not found:
+            return False
+        ep, details = found
+
+        # Must be permitted in allow_funnel
+        if not self.allow_funnel.get(ep, False) and not self.allow_funnel.get(str(public_port), False):
+            return False
+
+        if expected_host:
+            ep_host = parse_endpoint_host(ep)
+            if ep_host and ep_host != expected_host and not expected_host.startswith(ep_host):
+                return False
+
+        if expected_target:
+            handlers = details.get("Handlers", {}) if isinstance(details, dict) else {}
+            proxy = handlers.get("/", {}).get("Proxy", "")
+            if proxy and proxy != expected_target:
+                return False
+
+        return True
 
 
 class TailscaleClientProtocol(Protocol):
@@ -99,11 +163,15 @@ class SimulatedTailscaleClient:
         if self.state_file.is_file():
             try:
                 with open(self.state_file, "r", encoding="utf-8") as f:
-                    return json.load(f)
+                    data = json.load(f)
+                    if "allow_funnel" not in data:
+                        data["allow_funnel"] = {ep: True for ep in data.get("routes", {})}
+                    return data
             except Exception:
                 pass
 
         routes = dict(self.existing_conflicts)
+        allow_funnel = {ep: True for ep in routes}
         initial = {
             "installed": self.default_installed,
             "version": self.default_version,
@@ -114,6 +182,7 @@ class SimulatedTailscaleClient:
             "funnel_active": len(routes) > 0,
             "public_url": None,
             "routes": routes,
+            "allow_funnel": allow_funnel,
         }
         if not self.read_only:
             self._save_state(initial)
@@ -132,7 +201,8 @@ class SimulatedTailscaleClient:
     def get_status(self) -> TailscaleStatus:
         st = self._ensure_state()
         routes = st.get("routes", {})
-        active = len(routes) > 0 or st.get("funnel_active", False)
+        allow_funnel = st.get("allow_funnel", {})
+        active = any(allow_funnel.get(ep, False) for ep in routes) or st.get("funnel_active", False)
         return TailscaleStatus(
             installed=st.get("installed", False),
             version=st.get("version", "unknown"),
@@ -143,6 +213,7 @@ class SimulatedTailscaleClient:
             funnel_active=active,
             public_url=st.get("public_url"),
             routes=routes,
+            allow_funnel=allow_funnel,
         )
 
     def plan_funnel(self, port: int = 8443, public_port: int = 8443) -> List[str]:
@@ -169,17 +240,20 @@ class SimulatedTailscaleClient:
 
         st = self._ensure_state()
         routes = st.setdefault("routes", {})
+        allow_funnel = st.setdefault("allow_funnel", {})
 
-        # Conflict detection
+        # Conflict detection using exact port extraction
         target_uri = f"http://127.0.0.1:{port}"
-        existing_owner = routes.get(str(public_port))
-        if existing_owner and existing_owner != target_uri:
-            return {
-                "ok": False,
-                "applied": False,
-                "error": "port_conflict",
-                "message": f"Port {public_port} is already configured for another service: {existing_owner}",
-            }
+        for ep, details in routes.items():
+            if parse_endpoint_port(ep) == public_port:
+                existing_proxy = details if isinstance(details, str) else details.get("Handlers", {}).get("/", {}).get("Proxy", "")
+                if existing_proxy and existing_proxy != target_uri:
+                    return {
+                        "ok": False,
+                        "applied": False,
+                        "error": "port_conflict",
+                        "message": f"Port {public_port} is already configured for another service: {existing_proxy}",
+                    }
 
         if self.fail_on_enable:
             return {
@@ -194,7 +268,9 @@ class SimulatedTailscaleClient:
             if public_port != 443
             else f"https://{st['node_name']}.{st['tailnet_name']}"
         )
-        routes[str(public_port)] = target_uri
+        ep_key = f"{st['node_name']}.{st['tailnet_name']}:{public_port}"
+        routes[ep_key] = {"Handlers": {"/": {"Proxy": target_uri}}}
+        allow_funnel[ep_key] = True
         st["funnel_active"] = True
         st["public_url"] = url
         self._save_state(st)
@@ -211,8 +287,9 @@ class SimulatedTailscaleClient:
                     "rollback_error": "rollback_command_failed",
                     "message": "Activation verification failed and rollback could not be completed.",
                 }
-            routes.pop(str(public_port), None)
-            st["funnel_active"] = len(routes) > 0
+            routes.pop(ep_key, None)
+            allow_funnel.pop(ep_key, None)
+            st["funnel_active"] = any(allow_funnel.values())
             st["public_url"] = None
             self._save_state(st)
             return {
@@ -243,11 +320,22 @@ class SimulatedTailscaleClient:
 
         st = self._ensure_state()
         routes = st.setdefault("routes", {})
-        routes.pop(str(public_port), None)
-        st["funnel_active"] = len(routes) > 0
+        allow_funnel = st.setdefault("allow_funnel", {})
+        for ep in list(routes.keys()):
+            if parse_endpoint_port(ep) == public_port:
+                routes.pop(ep, None)
+                allow_funnel.pop(ep, None)
+        st["funnel_active"] = any(allow_funnel.values())
         if not st["funnel_active"]:
             st["public_url"] = None
         self._save_state(st)
+        return {
+            "ok": True,
+            "applied": True,
+            "commands_executed": [
+                f"tailscale funnel --https={public_port} off",
+            ],
+        }
         return {
             "ok": True,
             "applied": True,
@@ -322,20 +410,39 @@ class RealTailscaleClient:
             funnel_active = False
             public_url = None
             routes: Dict[str, Any] = {}
+            allow_funnel: Dict[str, bool] = {}
+            status_error: Optional[str] = None
 
             if proc_funnel.returncode == 0 and proc_funnel.stdout:
                 try:
                     fdata = json.loads(proc_funnel.stdout)
                     web = fdata.get("Web", {})
                     tcp = fdata.get("TCP", {})
-                    funnel_active = bool(web or tcp)
+                    allow_raw = fdata.get("AllowFunnel", {})
+                    for k, v in allow_raw.items():
+                        allow_funnel[k] = bool(v)
+
                     # Extract active routes
                     for host_port, details in web.items():
                         routes[host_port] = details
+                        if allow_funnel.get(host_port, False):
+                            funnel_active = True
+
+                    for host_port, details in tcp.items():
+                        routes[host_port] = details
+                        if allow_funnel.get(host_port, False):
+                            funnel_active = True
+
                     if funnel_active and dns_name:
                         public_url = f"https://{dns_name}:8443"
-                except Exception:
-                    pass
+                except json.JSONDecodeError as exc:
+                    logger.warning("Tailscale funnel status returned malformed JSON: %s", exc)
+                    status_error = f"malformed_json: {exc}"
+                except Exception as exc:
+                    logger.warning("Error parsing Tailscale funnel status: %s", exc)
+                    status_error = f"parse_error: {exc}"
+            elif proc_funnel.returncode != 0:
+                status_error = f"status_command_failed: {proc_funnel.stderr[:256]}"
 
             return TailscaleStatus(
                 installed=True,
@@ -347,6 +454,8 @@ class RealTailscaleClient:
                 funnel_active=funnel_active,
                 public_url=public_url,
                 routes=routes,
+                allow_funnel=allow_funnel,
+                status_error=status_error,
             )
         except Exception:
             return TailscaleStatus(installed=True, version=version, logged_in=True)
@@ -378,7 +487,7 @@ class RealTailscaleClient:
         current_st = self.get_status()
         target_uri = f"http://127.0.0.1:{port}"
         for ep, details in current_st.routes.items():
-            if str(public_port) in ep:
+            if parse_endpoint_port(ep) == public_port:
                 # Check handler target
                 handlers = details.get("Handlers", {}) if isinstance(details, dict) else {}
                 root_proxy = handlers.get("/", {}).get("Proxy", "")
@@ -403,11 +512,11 @@ class RealTailscaleClient:
                 "commands_executed": [f"{self.bin} {' '.join(cmd_args)}"],
             }
 
-        # 4. Post-activation status verification
+        # 4. Post-activation status verification for exact managed Funnel route
         post_st = self.get_status()
-        if not post_st.funnel_active:
+        if not post_st.is_route_funnel_active(public_port, expected_target=target_uri):
             # Activation verification failed: trigger rollback
-            logger.error("Post-activation verification failed for port %d. Rolling back...", public_port)
+            logger.error("Post-activation verification failed for exact route on port %d. Rolling back...", public_port)
             rollback_res = self.disable_funnel(public_port)
             return {
                 "ok": False,
@@ -415,7 +524,7 @@ class RealTailscaleClient:
                 "error": "post_activation_verification_failed",
                 "rolled_back": rollback_res.get("ok", False),
                 "rollback_output": rollback_res.get("output"),
-                "message": "Funnel command exited 0 but status shows Funnel is not active. Rolled back.",
+                "message": "Funnel command exited 0 but exact managed route is not active in Funnel mode. Rolled back.",
             }
 
         return {
@@ -450,20 +559,14 @@ class RealTailscaleClient:
                     "commands_executed": executed,
                 }
 
-        # Post-disable status verification
+        # Post-disable status verification for exact managed route
         post_st = self.get_status()
-        port_still_active = False
-        for ep in post_st.routes.keys():
-            if str(public_port) in ep:
-                port_still_active = True
-                break
-
-        if port_still_active:
+        if post_st.is_route_funnel_active(public_port):
             return {
                 "ok": False,
                 "applied": False,
                 "error": "post_disable_verification_failed",
-                "message": f"Port {public_port} remains active in Tailscale status after disable command.",
+                "message": f"Port {public_port} remains active in Funnel mode after disable command.",
                 "commands_executed": executed,
             }
 

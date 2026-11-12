@@ -11,6 +11,8 @@ CRITICAL INVARIANTS:
 
 from __future__ import annotations
 
+import http.client
+import json
 import logging
 import re
 import socket
@@ -20,6 +22,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
+from remote_control.actions.adapters.coordinator import DisabledRecoveryAdapter
+from remote_control.actions.models import ActionEffect
 from remote_control.actions.registry import ActionRegistry
 from remote_control.actions.storage import ActionStorage
 from remote_control.auth.storage import AuthStorage
@@ -28,6 +32,7 @@ from remote_control.external.client import (
     SUPPORTED_FUNNEL_PORTS,
     TailscaleClientProtocol,
     get_tailscale_client,
+    parse_endpoint_port,
 )
 
 logger = logging.getLogger(__name__)
@@ -150,8 +155,30 @@ class ExternalDoctor:
                     )
                 )
 
+        # Status validity and schema check
+        if getattr(st, "status_error", None):
+            checks.append(
+                DiagnosticCheck(
+                    name="tailscale_status_valid",
+                    severity="unknown",
+                    is_security_critical=True,
+                    message=f"Tailscale status is invalid or failed: {st.status_error}",
+                    details={"error": st.status_error},
+                )
+            )
+
         # 4. Funnel capability
-        if not st.funnel_available:
+        if st.funnel_available is None:
+            checks.append(
+                DiagnosticCheck(
+                    name="funnel_capability",
+                    severity="unknown",
+                    is_security_critical=True,
+                    message="Tailscale Funnel capability readiness could not be verified.",
+                    details={"funnel_available": None},
+                )
+            )
+        elif not st.funnel_available:
             checks.append(
                 DiagnosticCheck(
                     name="funnel_capability",
@@ -194,13 +221,13 @@ class ExternalDoctor:
                 )
             )
 
-        # 6. Preexisting route conflict detection
+        # 6. Preexisting route conflict detection using exact port parsing
         routes = st.routes if isinstance(st.routes, dict) else {}
         conflict = False
         conflict_owner = ""
         target_str = f"http://127.0.0.1:{self.config.port}"
         for ep, details in routes.items():
-            if str(public_port) in ep:
+            if parse_endpoint_port(ep) == public_port:
                 if isinstance(details, str):
                     if details != target_str:
                         conflict = True
@@ -233,8 +260,8 @@ class ExternalDoctor:
 
         return checks
 
-    def check_origin_and_hosts(self) -> List[DiagnosticCheck]:
-        """Verify HTTPS public origin and matching pinned hostname."""
+    def check_origin_and_hosts(self, public_port: int = 8443) -> List[DiagnosticCheck]:
+        """Verify HTTPS public origin and matching pinned hostname and effective port."""
         checks: List[DiagnosticCheck] = []
         origin = self.config.public_origin
 
@@ -296,22 +323,68 @@ class ExternalDoctor:
                 )
             )
 
+        eff_origin_port = parsed.port or 443
+        if eff_origin_port != public_port:
+            checks.append(
+                DiagnosticCheck(
+                    name="public_origin_port_match",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message=f"public_origin port ({eff_origin_port}) does not match configured Funnel public port ({public_port}).",
+                    details={"origin_port": eff_origin_port, "public_port": public_port},
+                )
+            )
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    name="public_origin_port_match",
+                    severity="pass",
+                    is_security_critical=True,
+                    message=f"public_origin port matches Funnel public port ({public_port}).",
+                    details={"public_port": public_port},
+                )
+            )
+
         return checks
 
     def check_cookie_and_proxy_policy(self) -> List[DiagnosticCheck]:
-        """Verify cookie security, loopback backend binding, and proxy trust topology."""
+        """Verify external exposure mode, cookie security, loopback backend binding, and proxy trust topology."""
         checks: List[DiagnosticCheck] = []
+
+        # External exposure enabled requirement
+        exp_enabled = getattr(self.config, "external_exposure_enabled", False)
+        if not exp_enabled:
+            checks.append(
+                DiagnosticCheck(
+                    name="external_exposure_enabled",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message="external_exposure_enabled is False. Production public HTTPS activation requires external_exposure_enabled=True.",
+                    details={"external_exposure_enabled": False},
+                )
+            )
+        else:
+            checks.append(
+                DiagnosticCheck(
+                    name="external_exposure_enabled",
+                    severity="pass",
+                    is_security_critical=True,
+                    message="external_exposure_enabled is True.",
+                    details={"external_exposure_enabled": True},
+                )
+            )
 
         # Cookie security mode
         mode = getattr(self.config, "cookie_security_mode", "auto")
-        if mode not in ("strict", "auto") and not self.config.cookie_secure:
+        cookie_secure = getattr(self.config, "cookie_secure", False)
+        if not cookie_secure or (mode == "auto" and not exp_enabled):
             checks.append(
                 DiagnosticCheck(
                     name="cookie_security_strict",
                     severity="blocker",
                     is_security_critical=True,
-                    message=f"cookie_security_mode '{mode}' does not enforce secure cookies for public exposure.",
-                    details={"cookie_security_mode": mode, "cookie_secure": self.config.cookie_secure},
+                    message=f"cookie_secure is False or mode '{mode}' does not enforce secure cookies for public exposure.",
+                    details={"cookie_security_mode": mode, "cookie_secure": cookie_secure},
                 )
             )
         else:
@@ -471,30 +544,101 @@ class ExternalDoctor:
         """Verify Resource Coordinator recovery is disabled and public action policy is conservative."""
         checks: List[DiagnosticCheck] = []
 
-        # 1. Resource Coordinator recovery capability disabled in backend registry
-        coord_rec = self.registry.get("coordinator.recovery")
-        if coord_rec and coord_rec.enabled:
+        # 1. Resource Coordinator recovery capability strictly verified
+        coord_rec = self.registry.get("resource_coordinator.request_guarded_recovery")
+        if coord_rec is None:
+            checks.append(
+                DiagnosticCheck(
+                    name="coordinator_recovery_disabled",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message="Required capability 'resource_coordinator.request_guarded_recovery' is not registered. Cannot verify disabled state.",
+                    details={"registered": False},
+                )
+            )
+        elif coord_rec.enabled:
             checks.append(
                 DiagnosticCheck(
                     name="coordinator_recovery_disabled",
                     severity="blocker",
                     is_security_critical=True,
                     message="Production Resource Coordinator recovery is enabled in the capability registry. It must remain disabled.",
-                    details={"enabled": True},
+                    details={"registered": True, "enabled": True},
+                )
+            )
+        else:
+            handler = self.registry.get_handler("resource_coordinator.request_guarded_recovery")
+            if handler is None or not isinstance(handler, DisabledRecoveryAdapter):
+                handler_name = type(handler).__name__ if handler is not None else "None"
+                checks.append(
+                    DiagnosticCheck(
+                        name="coordinator_recovery_disabled",
+                        severity="blocker",
+                        is_security_critical=True,
+                        message=f"Resource Coordinator recovery handler is '{handler_name}', expected DisabledRecoveryAdapter.",
+                        details={"registered": True, "enabled": False, "handler": handler_name},
+                    )
+                )
+            else:
+                checks.append(
+                    DiagnosticCheck(
+                        name="coordinator_recovery_disabled",
+                        severity="pass",
+                        is_security_critical=True,
+                        message="Production Resource Coordinator recovery is registered, disabled, and bound to DisabledRecoveryAdapter.",
+                        details={"registered": True, "enabled": False, "handler": "DisabledRecoveryAdapter"},
+                    )
+                )
+
+        # 2. Capability registry allowlist and mutation checks
+        authorized_capabilities = {
+            "resource_coordinator.status",
+            "resource_coordinator.inspect_recovery",
+            "notifications.health",
+            "notifications.incident_detail",
+            "notifications.acknowledge_incident",
+            "resource_coordinator.request_guarded_recovery",
+        }
+        all_actions = self.registry.list_actions()
+        unexpected_actions = [a.action_id for a in all_actions if a.action_id not in authorized_capabilities]
+        unexpected_mutations = [
+            a.action_id
+            for a in all_actions
+            if a.effect == ActionEffect.MUTATION and a.enabled and a.action_id != "notifications.acknowledge_incident"
+        ]
+
+        if unexpected_actions:
+            checks.append(
+                DiagnosticCheck(
+                    name="capabilities_allowlist",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message=f"Unknown/unauthorized capabilities registered: {unexpected_actions}",
+                    details={"unexpected_actions": unexpected_actions},
+                )
+            )
+        elif unexpected_mutations:
+            checks.append(
+                DiagnosticCheck(
+                    name="capabilities_allowlist",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message=f"Unauthorized mutating capabilities enabled: {unexpected_mutations}",
+                    details={"unexpected_mutations": unexpected_mutations},
                 )
             )
         else:
             checks.append(
                 DiagnosticCheck(
-                    name="coordinator_recovery_disabled",
+                    name="capabilities_allowlist",
                     severity="pass",
                     is_security_critical=True,
-                    message="Production Resource Coordinator recovery is safely disabled in registry.",
-                    details={"enabled": False},
+                    message="All registered capabilities conform to the authorized allowlist.",
+                    details={"actions_count": len(all_actions)},
                 )
             )
 
-        # 2. Public action policy conservative
+        # 3. Public action policy conservative
         policy = getattr(self.config, "public_action_policy", "conservative")
         if policy != "conservative":
             checks.append(
@@ -544,36 +688,30 @@ class ExternalDoctor:
         host: str = "127.0.0.1",
         port: int = 8443,
         verify_listener: bool = True,
+        expected_origin: Optional[str] = None,
     ) -> DiagnosticCheck:
-        """Probe local listener reachability on loopback."""
+        """Probe local listener reachability and identity on loopback."""
         if not verify_listener:
             return DiagnosticCheck(
                 name="local_listener_reachable",
-                severity="pass",
+                severity="warning",
                 is_security_critical=False,
-                message=f"Listener socket verification skipped (dry-run/non-live mode). Expected: {host}:{port}",
+                message=f"Listener socket verification skipped (--skip-listener-check). Target: {host}:{port}",
                 details={"host": host, "port": port, "verified": False},
             )
 
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        s.settimeout(1.0)
+        s.settimeout(2.0)
         try:
             res = s.connect_ex((host, port))
-            if res == 0:
+            if res != 0:
                 return DiagnosticCheck(
                     name="local_listener_reachable",
-                    severity="pass",
+                    severity="blocker",
                     is_security_critical=True,
-                    message=f"Target dashboard listener is active and responding on {host}:{port}.",
-                    details={"host": host, "port": port},
+                    message=f"No active process listening on target port {host}:{port}.",
+                    details={"host": host, "port": port, "status": "offline"},
                 )
-            return DiagnosticCheck(
-                name="local_listener_reachable",
-                severity="blocker",
-                is_security_critical=True,
-                message=f"No active process listening on target port {host}:{port}.",
-                details={"host": host, "port": port, "status": "offline"},
-            )
         except Exception as exc:
             return DiagnosticCheck(
                 name="local_listener_reachable",
@@ -585,6 +723,87 @@ class ExternalDoctor:
         finally:
             s.close()
 
+        # HTTP health and identity probe
+        try:
+            conn = http.client.HTTPConnection(host, port, timeout=2.0)
+            conn.request("GET", "/api/health")
+            resp = conn.getresponse()
+            if resp.status != 200:
+                conn.close()
+                return DiagnosticCheck(
+                    name="local_listener_reachable",
+                    severity="blocker",
+                    is_security_critical=True,
+                    message=f"Local listener returned HTTP {resp.status} on /api/health (expected 200 OK).",
+                    details={"host": host, "port": port, "status_code": resp.status},
+                )
+            body = resp.read().decode("utf-8")
+            conn.close()
+            data = json.loads(body)
+        except Exception as exc:
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message=f"Local listener /api/health identity probe failed: {exc}",
+                details={"host": host, "port": port, "error": str(exc)},
+            )
+
+        # Validate health response
+        app_name = data.get("app")
+        if app_name != "remote_control":
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message=f"Target listener is not the Remote Control application (app='{app_name}').",
+                details={"host": host, "port": port, "app": app_name},
+            )
+
+        if not data.get("external_exposure_enabled"):
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message="Target listener reports external_exposure_enabled is False.",
+                details={"host": host, "port": port, "external_exposure_enabled": False},
+            )
+
+        if not data.get("cookie_secure"):
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message="Target listener reports cookie_secure is False.",
+                details={"host": host, "port": port, "cookie_secure": False},
+            )
+
+        if expected_origin and data.get("public_origin") != expected_origin:
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message=f"Target listener public_origin '{data.get('public_origin')}' does not match expected '{expected_origin}'.",
+                details={"host": host, "port": port, "public_origin": data.get("public_origin"), "expected_origin": expected_origin},
+            )
+
+        if data.get("coordinator_recovery_enabled"):
+            return DiagnosticCheck(
+                name="local_listener_reachable",
+                severity="blocker",
+                is_security_critical=True,
+                message="Target listener reports coordinator_recovery_enabled is True; production recovery must remain disabled.",
+                details={"host": host, "port": port, "coordinator_recovery_enabled": True},
+            )
+
+        return DiagnosticCheck(
+            name="local_listener_reachable",
+            severity="pass",
+            is_security_critical=True,
+            message=f"Target Remote Control listener is active and verified on {host}:{port}.",
+            details={"host": host, "port": port, "app": app_name, "verified": True},
+        )
+
     def check_all(
         self,
         target_port: int = 8443,
@@ -595,7 +814,7 @@ class ExternalDoctor:
         all_checks: List[DiagnosticCheck] = []
 
         all_checks.extend(self.check_tailscale(public_port=public_port))
-        all_checks.extend(self.check_origin_and_hosts())
+        all_checks.extend(self.check_origin_and_hosts(public_port=public_port))
         all_checks.extend(self.check_cookie_and_proxy_policy())
         all_checks.extend(self.check_operator_and_auth_database())
         all_checks.extend(self.check_capabilities_and_policy())
@@ -605,6 +824,7 @@ class ExternalDoctor:
                 host=self.config.host,
                 port=target_port,
                 verify_listener=verify_listener,
+                expected_origin=self.config.public_origin,
             )
         )
 
@@ -617,8 +837,7 @@ class ExternalDoctor:
         ready_for_public_enable = (len(blockers) == 0 and len(security_unknowns) == 0)
 
         tailscale_installed = any(c.name == "tailscale_installed" and c.severity == "pass" for c in all_checks)
-        cookie_ok = any(c.name == "cookie_security_strict" and c.severity == "pass" for c in all_checks)
-        overall_ok = tailscale_installed and cookie_ok
+        overall_ok = tailscale_installed
 
         # Backward compatibility checks map
         checks_map: Dict[str, Any] = {}

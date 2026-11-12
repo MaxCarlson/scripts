@@ -137,8 +137,8 @@ class ActionService:
         self.auth_storage = auth_storage
         self.config = config
         self._locks: Dict[str, asyncio.Lock] = {}
-        # Reconcile any dangling executions from previous crashed processes
-        self.storage.reconcile_dangling_executions()
+        # Reconcile any dangling executions from previous crashed processes (only expired/orphaned to avoid interfering with live workers)
+        self.storage.reconcile_dangling_executions(only_expired=True)
 
     def _get_lock(self, concurrency_key: str) -> asyncio.Lock:
         """Get or create an asyncio lock for a concurrency serialization key."""
@@ -444,6 +444,7 @@ class ActionService:
         execution_id = f"exec_{uuid.uuid4().hex}"
         started_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
         placeholder_fingerprint = consumed_challenge.state_fingerprint if consumed_challenge else arguments_digest
+        resource_key = action_def.resolve_concurrency_key(validated_args)
 
         record = ActionExecutionRecord(
             execution_id=execution_id,
@@ -457,6 +458,7 @@ class ActionService:
             state_fingerprint=placeholder_fingerprint,
             started_at=started_at,
             status=ExecutionState.RESERVED,
+            resource_key=resource_key,
         )
 
         created, existing_or_new = self.storage.reserve_execution(record)
@@ -475,7 +477,7 @@ class ActionService:
         handler = self.registry.get_handler(action_id)
 
         # 6. Serialized Execution under Concurrency Lock & Cross-Process Resource Lease (Defect C & Amendment 1)
-        lock = self._get_lock(action_def.concurrency_key)
+        lock = self._get_lock(resource_key)
         async with lock:
             # Acquire durable cross-process lock
             lock_acquired = False
@@ -484,7 +486,7 @@ class ActionService:
             lock_wait_timeout = min(5.0, float(action_def.timeout_seconds))
             while asyncio.get_event_loop().time() - start_lock < lock_wait_timeout:
                 lock_acquired, lock_reason = self.storage.acquire_resource_lock_detailed(
-                    action_def.concurrency_key,
+                    resource_key,
                     execution_id,
                     ttl_seconds=action_def.timeout_seconds + 5.0,
                 )
@@ -497,14 +499,14 @@ class ActionService:
 
             if not lock_acquired:
                 if lock_reason == "barrier_active":
-                    barrier = self.storage.get_active_barrier(action_def.concurrency_key) or {}
+                    barrier = self.storage.get_active_barrier(resource_key) or {}
                     self.storage.update_execution(
                         execution_id=execution_id,
                         status=ExecutionState.DENIED,
                         finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                         result_category="resource_barrier_active",
                         error_code="locked_unresolved",
-                        summary=f"Resource '{action_def.concurrency_key}' is protected by an active unresolved barrier.",
+                        summary=f"Resource '{resource_key}' is protected by an active unresolved barrier.",
                     )
                     self.storage.record_action_audit(
                         actor_id=actor_id,
@@ -512,9 +514,9 @@ class ActionService:
                         execution_id=execution_id,
                         decision="denied",
                         ip_address=ip_address,
-                        details=f"Blocked by active barrier on {action_def.concurrency_key}.",
+                        details=f"Blocked by active barrier on {resource_key}.",
                     )
-                    raise ResourceBarrierActiveError(action_def.concurrency_key, barrier)
+                    raise ResourceBarrierActiveError(resource_key, barrier)
 
                 self.storage.update_execution(
                     execution_id=execution_id,
@@ -522,11 +524,11 @@ class ActionService:
                     finished_at=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                     result_category="lock_contention",
                     error_code="lock_contention",
-                    summary=f"Could not acquire lock for concurrency key '{action_def.concurrency_key}'.",
+                    summary=f"Could not acquire lock for concurrency key '{resource_key}'.",
                 )
                 raise ActionServiceError(
                     "lock_contention",
-                    f"Resource '{action_def.concurrency_key}' is locked by another operation.",
+                    f"Resource '{resource_key}' is locked by another operation.",
                     status_code=409,
                 )
 
@@ -540,7 +542,7 @@ class ActionService:
                         await asyncio.wait_for(renew_stop.wait(), timeout=interval)
                     except asyncio.TimeoutError:
                         self.storage.renew_resource_lock(
-                            action_def.concurrency_key,
+                            resource_key,
                             execution_id,
                             ttl_seconds=action_def.timeout_seconds + 5.0,
                         )
@@ -600,7 +602,7 @@ class ActionService:
                     # Mandatory Amendment 1: set durable barrier on uncertain mutation outcome
                     if action_def.effect == ActionEffect.MUTATION:
                         self.storage.set_resource_barrier(
-                            resource_key=action_def.concurrency_key,
+                            resource_key=resource_key,
                             execution_id=execution_id,
                             reason=f"Action '{action_id}' timed out after {action_def.timeout_seconds}s waiting for subsystem response.",
                             barrier_status="locked_unresolved",
@@ -631,7 +633,7 @@ class ActionService:
                     # Mandatory Amendment 1: set durable barrier on uncertain mutation outcome if adapter failed post-dispatch
                     if action_def.effect == ActionEffect.MUTATION:
                         self.storage.set_resource_barrier(
-                            resource_key=action_def.concurrency_key,
+                            resource_key=resource_key,
                             execution_id=execution_id,
                             reason=bounded_summary,
                             barrier_status="locked_unresolved",
@@ -666,7 +668,7 @@ class ActionService:
 
                     if status == ExecutionState.OUTCOME_UNKNOWN and action_def.effect == ActionEffect.MUTATION:
                         self.storage.set_resource_barrier(
-                            resource_key=action_def.concurrency_key,
+                            resource_key=resource_key,
                             execution_id=execution_id,
                             reason=summary,
                             barrier_status="locked_unresolved",
@@ -742,7 +744,7 @@ class ActionService:
                     await renew_task
                 except (asyncio.CancelledError, Exception):
                     pass
-                self.storage.release_resource_lock(action_def.concurrency_key, execution_id)
+                self.storage.release_resource_lock(resource_key, execution_id)
 
     # ── Journal Lookup ────────────────────────────────────────────────────────
 

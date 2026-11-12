@@ -62,6 +62,7 @@ def _base_valid_config(tmp_path: Path) -> RemoteControlConfig:
         allowed_public_hosts=["node.tailnet.ts.net"],
         cookie_security_mode="strict",
         trusted_proxy_peers=["127.0.0.1"],
+        external_exposure_enabled=True,
         public_action_policy="conservative",
     )
 
@@ -373,20 +374,20 @@ def test_preflight_blocks_when_coordinator_recovery_enabled(tmp_path: Path) -> N
     store = ActionStorage(cfg.auth_db_path)
     _seed_valid_operator(cfg.auth_db_path)
 
-    # Artificially create a registry where coordinator.recovery is enabled
+    # Artificially create a registry where resource_coordinator.request_guarded_recovery is enabled
     bad_registry = ActionRegistry()
     bad_action = ActionDefinition(
-        action_id="coordinator.recovery",
+        action_id="resource_coordinator.request_guarded_recovery",
         label="Insecure Recovery",
         description="Improperly enabled recovery mutation",
         effect=ActionEffect.MUTATION,
         required_permission="operator.action",
-        concurrency_key="coordinator:recovery",
+        concurrency_key="resource:gpu.inference",
         enabled=True,  # VIOLATION
         postcondition_policy=PostconditionPolicy.NONE,
         module="resource_coordinator",
     )
-    bad_registry.register(bad_action)
+    bad_registry._actions["resource_coordinator.request_guarded_recovery"] = bad_action
 
     client = SimulatedTailscaleClient(state_file=tmp_path / ".ts.json")
     service = ExternalExposureService(config=cfg, storage=store, client=client)

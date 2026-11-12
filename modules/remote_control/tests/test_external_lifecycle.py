@@ -87,6 +87,8 @@ def test_enable_and_disable_lifecycle(tmp_path: Path) -> None:
         auth_db_path=auth_db,
         public_origin="https://workstation.tailnet-dev.ts.net:8443",
         allowed_public_hosts=["workstation.tailnet-dev.ts.net"],
+        cookie_security_mode="strict",
+        external_exposure_enabled=True,
     )
     client = SimulatedTailscaleClient(state_file=tmp_path / ".simulated_tailscale.json")
     service = ExternalExposureService(config=cfg, storage=store, client=client)
@@ -216,6 +218,8 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setenv("REMOTE_CONTROL_SIMULATE_TAILSCALE", "1")
     monkeypatch.setenv("REMOTE_CONTROL_SIMULATED_STATE_PATH", str(tmp_path / ".cli_tailscale.json"))
     monkeypatch.setenv("REMOTE_CONTROL_PUBLIC_ORIGIN", "https://workstation.tailnet-dev.ts.net:8443")
+    monkeypatch.setenv("REMOTE_CONTROL_EXTERNAL_EXPOSURE", "1")
+    monkeypatch.setenv("REMOTE_CONTROL_COOKIE_SECURITY_MODE", "strict")
 
     # Seed notifications DB for CLI reconcile-barrier
     from notifications.models import Incident
@@ -237,6 +241,13 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     ))
     monkeypatch.setenv("NOTIFICATIONS_DB_PATH", str(notif_db))
 
+    # Mock listener reachability for CLI tests without running daemon
+    from remote_control.external.doctor import DiagnosticCheck
+    monkeypatch.setattr(
+        "remote_control.external.doctor.ExternalDoctor.check_local_listener",
+        lambda *args, **kwargs: DiagnosticCheck(name="local_listener_reachable", severity="pass", is_security_critical=True, message="mocked listener"),
+    )
+
     # 1. doctor
     code = main(["external", "doctor", "--json"])
     assert code == 0
@@ -255,8 +266,13 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is False
 
-    # 4. enable with apply
+    # 4. enable with apply: disallow --skip-listener-check with -a
     code = main(["external", "enable", "-a", "--skip-listener-check", "--json"])
+    assert code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "listener_check_required"
+
+    code = main(["external", "enable", "-a", "--json"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is True
@@ -273,8 +289,13 @@ def test_cli_external_subcommands(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is True
 
-    # 7. repair with apply
+    # 7. repair with apply: disallow --skip-listener-check with -a
     code = main(["external", "repair", "-a", "--skip-listener-check", "--json"])
+    assert code == 1
+    out = json.loads(capsys.readouterr().out)
+    assert out["error"] == "listener_check_required"
+
+    code = main(["external", "repair", "-a", "--json"])
     assert code == 0
     out = json.loads(capsys.readouterr().out)
     assert out["applied"] is True

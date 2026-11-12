@@ -272,6 +272,25 @@ def create_app(config: Optional[RemoteControlConfig] = None) -> FastAPI:
 
     # ── Route Registration ───────────────────────────────────────────────────────
 
+    @app.get("/api/health", tags=["system"])
+    @app.get("/api/v1/health", tags=["system"])
+    async def get_health():
+        coord_rec = action_registry.get("resource_coordinator.request_guarded_recovery")
+        coord_rec_enabled = bool(coord_rec and coord_rec.enabled)
+        return {
+            "ok": True,
+            "app": "remote_control",
+            "service": "remote_control",
+            "status": "healthy",
+            "version": "0.1.0",
+            "external_exposure_enabled": cfg.external_exposure_enabled,
+            "cookie_security_mode": cfg.cookie_security_mode,
+            "cookie_secure": cfg.cookie_secure,
+            "public_origin": cfg.public_origin,
+            "public_action_policy": cfg.public_action_policy,
+            "coordinator_recovery_enabled": coord_rec_enabled,
+        }
+
     app.include_router(auth_router)
     app.include_router(dashboard_router)
     app.include_router(actions_router)

@@ -211,7 +211,11 @@ class ExternalExposureService:
             }
 
         # Obtain typed source verifier
-        verifier = get_barrier_verifier(resource_key, notifications_db_path=notifications_db_path)
+        verifier = get_barrier_verifier(
+            resource_key,
+            notifications_db_path=notifications_db_path,
+            action_storage=self.storage,
+        )
         verification: BarrierVerificationResult = verifier.verify(
             resource_key=resource_key,
             barrier_record=active,

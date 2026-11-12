@@ -383,7 +383,14 @@ def handle_external(args: argparse.Namespace) -> int:
         return 0
 
     elif sub == "enable":
-        verify_listener = args.apply and not getattr(args, "skip_listener_check", False)
+        if args.apply and getattr(args, "skip_listener_check", False):
+            err_msg = "--skip-listener-check cannot be used with -a / --apply during live activation."
+            if args.json:
+                print(json.dumps({"ok": False, "applied": False, "error": "listener_check_required", "message": err_msg}, indent=2))
+            else:
+                print(f"Error: {err_msg}", file=sys.stderr)
+            return 1
+        verify_listener = not getattr(args, "skip_listener_check", False)
         res = service.enable(
             apply=args.apply,
             port=args.port,
@@ -420,7 +427,14 @@ def handle_external(args: argparse.Namespace) -> int:
         return 0 if res.get("ok", True) else 1
 
     elif sub == "repair":
-        verify_listener = args.apply and not getattr(args, "skip_listener_check", False)
+        if args.apply and getattr(args, "skip_listener_check", False):
+            err_msg = "--skip-listener-check cannot be used with -a / --apply during live activation."
+            if args.json:
+                print(json.dumps({"ok": False, "applied": False, "error": "listener_check_required", "message": err_msg}, indent=2))
+            else:
+                print(f"Error: {err_msg}", file=sys.stderr)
+            return 1
+        verify_listener = not getattr(args, "skip_listener_check", False)
         res = service.repair(
             apply=args.apply,
             port=args.port,

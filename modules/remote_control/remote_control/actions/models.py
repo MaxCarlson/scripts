@@ -98,6 +98,15 @@ class ActionDefinition(BaseModel):
     enabled: bool = Field(default=True, description="Whether the capability is enabled for production execution")
     disabled_reason: Optional[str] = Field(None, description="Explanation if capability is disabled in production")
 
+    def resolve_concurrency_key(self, params: Optional[Dict[str, Any]] = None) -> str:
+        """Resolve the effective resource concurrency key, supporting parameter interpolation."""
+        if params:
+            try:
+                return self.concurrency_key.format(**params)
+            except (KeyError, IndexError, ValueError):
+                pass
+        return self.concurrency_key
+
     def to_public_dict(self) -> Dict[str, Any]:
         """Return safe, browser-visible capability representation."""
         # Intentionally exclude raw internal handler references
@@ -161,3 +170,4 @@ class ActionExecutionRecord(BaseModel):
     summary: str = ""
     details_json: Optional[str] = None
     dispatch_phase: str = DispatchPhase.RESERVED_NOT_DISPATCHED.value
+    resource_key: Optional[str] = None

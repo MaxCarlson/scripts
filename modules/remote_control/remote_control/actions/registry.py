@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
+from remote_control.actions.adapters.coordinator import DisabledRecoveryAdapter
 from remote_control.actions.models import (
     AcknowledgeIncidentParameters,
     ActionDefinition,
@@ -124,7 +125,7 @@ class ActionRegistry:
                 required_permission="operator.action",
                 parameter_model=AcknowledgeIncidentParameters,
                 timeout_seconds=10.0,
-                concurrency_key="notifications:incident",
+                concurrency_key="notifications:incident:{incident_id}",
                 idempotency_scope="incident:ack",
                 confirmation_policy=ConfirmationPolicy.EXPLICIT_CHALLENGE,
                 step_up_policy=StepUpPolicy.TOTP,
@@ -152,7 +153,8 @@ class ActionRegistry:
                 postcondition_policy=PostconditionPolicy.VERIFY_SOURCE_STATE,
                 enabled=False,  # Enforced server-side disabled state in production!
                 disabled_reason="Coordinator recovery requires a separately approved safety contract.",
-            )
+            ),
+            handler=DisabledRecoveryAdapter(),
         )
 
     def register(self, definition: ActionDefinition, handler: Optional[Any] = None) -> None:

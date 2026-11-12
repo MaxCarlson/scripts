@@ -54,7 +54,8 @@ CREATE TABLE IF NOT EXISTS action_executions (
     postcondition_verified INTEGER NOT NULL DEFAULT 0,
     summary TEXT NOT NULL DEFAULT '',
     details_json TEXT,
-    dispatch_phase TEXT NOT NULL DEFAULT 'reserved_not_dispatched'
+    dispatch_phase TEXT NOT NULL DEFAULT 'reserved_not_dispatched',
+    resource_key TEXT
 );
 
 CREATE TABLE IF NOT EXISTS action_resource_locks (
@@ -147,10 +148,12 @@ class ActionStorage:
             conn.executescript(SCHEMA_V3)
             conn.execute("BEGIN IMMEDIATE;")
             try:
-                # Add dispatch_phase column if missing from existing database
+                # Add dispatch_phase and resource_key columns if missing from existing database
                 cols = [r["name"] for r in conn.execute("PRAGMA table_info(action_executions)").fetchall()]
                 if "dispatch_phase" not in cols:
                     conn.execute("ALTER TABLE action_executions ADD COLUMN dispatch_phase TEXT NOT NULL DEFAULT 'reserved_not_dispatched';")
+                if "resource_key" not in cols:
+                    conn.execute("ALTER TABLE action_executions ADD COLUMN resource_key TEXT;")
 
                 # Ensure schema_version table exists and record v3
                 conn.execute("CREATE TABLE IF NOT EXISTS schema_version (version INTEGER PRIMARY KEY);")
@@ -327,6 +330,7 @@ class ActionStorage:
                             summary=existing["summary"],
                             details_json=existing["details_json"],
                             dispatch_phase=existing["dispatch_phase"] if "dispatch_phase" in existing.keys() else "reserved_not_dispatched",
+                            resource_key=existing["resource_key"] if "resource_key" in existing.keys() else None,
                         ),
                     )
 
@@ -336,8 +340,8 @@ class ActionStorage:
                         execution_id, action_id, action_version, actor_id,
                         session_id_hash, device_id, idempotency_key_hash,
                         arguments_digest, state_fingerprint, started_at,
-                        status, summary, dispatch_phase
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        status, summary, dispatch_phase, resource_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         execution.execution_id,
@@ -353,6 +357,7 @@ class ActionStorage:
                         execution.status.value,
                         execution.summary[:256] if execution.summary else "",
                         getattr(execution, "dispatch_phase", "reserved_not_dispatched"),
+                        getattr(execution, "resource_key", None),
                     ),
                 )
                 conn.execute("COMMIT;")
@@ -488,7 +493,9 @@ class ActionStorage:
                         (exec_id,),
                     ).fetchone()
 
-                    res_key = concurrency_key
+                    # Prefer persisted resource_key from action_executions record
+                    persisted_res_key = r["resource_key"] if ("resource_key" in r.keys() and r["resource_key"]) else None
+                    res_key = concurrency_key or persisted_res_key
                     if not res_key:
                         if lock_row:
                             res_key = lock_row["resource_key"]
@@ -499,9 +506,19 @@ class ActionStorage:
                     if concurrency_key and res_key != concurrency_key:
                         continue
 
-                    # If only_expired is True and an active lock lease exists, do not reconcile
+                    # If only_expired is True:
+                    # 1. If an active lock lease exists that has not expired, do NOT reconcile (live worker owns it)
                     if only_expired and lock_row and lock_row["expires_at"] > now_iso:
                         continue
+                    # 2. If only_expired is True and there is NO lock row, but execution was started very recently (<30s):
+                    # do not reconcile immediately to avoid racing with a newly reserving worker
+                    if only_expired and not lock_row:
+                        try:
+                            started_dt = datetime.fromisoformat(r["started_at"].replace("Z", "+00:00"))
+                            if (datetime.now(timezone.utc) - started_dt).total_seconds() < 30.0:
+                                continue
+                        except Exception:
+                            pass
 
                     if phase == "dispatch_started":
                         conn.execute(
@@ -600,6 +617,7 @@ class ActionStorage:
                     summary=row["summary"],
                     details_json=row["details_json"],
                     dispatch_phase=row["dispatch_phase"] if "dispatch_phase" in row.keys() else "reserved_not_dispatched",
+                    resource_key=row["resource_key"] if "resource_key" in row.keys() else None,
                 )
         except (sqlite3.OperationalError, FileNotFoundError):
             return None
@@ -637,6 +655,7 @@ class ActionStorage:
                     summary=row["summary"],
                     details_json=row["details_json"],
                     dispatch_phase=row["dispatch_phase"] if "dispatch_phase" in row.keys() else "reserved_not_dispatched",
+                    resource_key=row["resource_key"] if "resource_key" in row.keys() else None,
                 )
         except (sqlite3.OperationalError, FileNotFoundError):
             return None
@@ -679,6 +698,7 @@ class ActionStorage:
                         summary=r["summary"],
                         details_json=r["details_json"],
                         dispatch_phase=r["dispatch_phase"] if "dispatch_phase" in r.keys() else "reserved_not_dispatched",
+                        resource_key=r["resource_key"] if "resource_key" in r.keys() else None,
                     )
                     for r in rows
                 ]
