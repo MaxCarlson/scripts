@@ -40,6 +40,11 @@ def register_scorer(scorer_id: str, factory: Callable[[], ScoringAdapter]) -> No
 
 def get_scorer(scorer_id: str) -> ScoringAdapter:
     """Resolve a scoring adapter by its registered identifier."""
+    if scorer_id not in _SCORERS:
+        if scorer_id == "ifeval_official":
+            from ..benchmarks.adapters.ifeval import IFEvalScoringAdapter
+
+            return IFEvalScoringAdapter()
     factory = _SCORERS.get(scorer_id)
     if factory is None:
         raise KeyError(f"Unknown scoring adapter: {scorer_id!r}. Registered: {sorted(_SCORERS)}")

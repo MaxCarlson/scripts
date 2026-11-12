@@ -370,9 +370,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             id="ifeval-smoke",
             dataset_id="ifeval/google-2023",
             source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            task_ids=(),  # Resolved from installed dataset snapshot
-            description="Small smoke subset for quick validation of instruction adherence",
-            tags=("smoke", "ifeval"),
+            task_ids=tuple(f"ifeval-{i}" for i in range(1001, 1006)),
+            description="Small smoke subset for quick validation of instruction adherence (5 tasks)",
+            tags=("smoke", "ifeval", "direct_chat"),
             scorer_id="ifeval_official",
         )
     )
@@ -382,9 +382,9 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
             id="ifeval-100",
             dataset_id="ifeval/google-2023",
             source_revision="c38b4d8c6b90de2b3c2e1f4094a4c58cf3a79a8e",
-            task_ids=(),  # Resolved from installed dataset snapshot
+            task_ids=tuple(f"ifeval-{i}" for i in range(1001, 1101)),
             description="Stratified 100-task frozen evaluation cohort across constraint types",
-            tags=("100-subset", "ifeval"),
+            tags=("100-subset", "ifeval", "direct_chat"),
             scorer_id="ifeval_official",
         )
     )

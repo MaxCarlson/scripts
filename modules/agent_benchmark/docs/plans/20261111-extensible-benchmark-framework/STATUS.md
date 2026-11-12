@@ -87,3 +87,17 @@
 - [x] Zero live model inference calls dispatched; deterministic mocks and fixtures used exclusively.
 
 **Status:** Phase 04 is COMPLETE and gate satisfied. Ready to proceed to Phase 05.
+
+
+## 9. Phase 05 Acceptance Gate
+- [x] IFEval adapter implemented (`benchmarks/adapters/ifeval.py`, `__init__.py`).
+- [x] JSONL dataset loader for `input_data.jsonl` with exact prompt preservation, instruction ID lists, and kwargs.
+- [x] Deterministic 100-task stratified cohort selector across instruction categories (`select_stratified_100_cohort`).
+- [x] Official strict and loose scoring rules implemented (`IFEvalScoringAdapter`), correctly evaluating word count relations, casing, JSON format, punctuation, conversational prefixes, and markdown blocks.
+- [x] Registered `ifeval_official` scorer in execution registry; outputs `ifeval.strict_prompt`, `ifeval.loose_prompt`, `ifeval.strict_instructions_passed`, `ifeval.loose_instructions_passed`, `ifeval.instructions_total`, and instruction-level accuracy metrics.
+- [x] Offline end-to-end execution tested with mock HTTP client; reports 100% pass rate on compliant uppercase responses across 5 smoke tasks.
+- [x] 14 unit and regression tests passing (`ifeval_test.py`, `catalog_test.py`).
+- [x] Ruff lint checks 100% clean on all Phase 05 files.
+- [x] Zero live inference calls dispatched.
+
+**Status:** Phase 05 is COMPLETE and gate satisfied. Ready to proceed to Phase 06.

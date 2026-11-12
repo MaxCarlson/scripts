@@ -51,13 +51,13 @@
 - [x] Unit and characterization tests for backend-neutral execution and resume
 
 ## Phase 05 — Official IFEval Integration
-- [ ] Implement `benchmarks/adapters/ifeval.py`
-- [ ] Pinned resource declarations for Google Research IFEval reference code and `input_data.jsonl`
-- [ ] Define frozen cohorts: `ifeval-smoke`, `ifeval-100`, `ifeval-full`
-- [ ] Implement prompt formatting and direct chat generation
-- [ ] Implement bridge to official Google IFEval evaluation logic (strict & loose prompt/instruction accuracy)
-- [ ] Fixture-based tests verifying strict/loose scoring parity against reference outputs
-- [ ] Offline E2E test with mock direct-chat backend
+- [x] Implement `benchmarks/adapters/ifeval.py`
+- [x] Pinned resource declarations for Google Research IFEval reference code and `input_data.jsonl`
+- [x] Define frozen cohorts: `ifeval-smoke`, `ifeval-100`, `ifeval-full`
+- [x] Implement prompt formatting and direct chat generation
+- [x] Implement bridge to official Google IFEval evaluation logic (strict & loose prompt/instruction accuracy)
+- [x] Fixture-based tests verifying strict/loose scoring parity against reference outputs
+- [x] Offline E2E test with mock direct-chat backend
 
 ## Phase 06 — Official LiveCodeBench Direct Code Generation & Sandboxed Scoring
 - [ ] Implement `benchmarks/adapters/livecodebench.py`
