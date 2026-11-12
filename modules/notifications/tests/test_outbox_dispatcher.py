@@ -307,30 +307,192 @@ async def test_provider_401_403_and_timeout_resilience(tmp_path: Path):
     assert "Network read deadline exceeded" in (attempts2[1].error_message or "")
 
 
-def test_secret_redaction_in_outbox_errors(tmp_path: Path):
-    """Verify Telegram bot tokens and secrets are redacted from delivery_attempts and error messages."""
+def test_secret_redaction_in_outbox_errors(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """Verify Telegram bot tokens and secrets are redacted from delivery_attempts, error messages, and logs."""
     sensitive_token = "123456789:ABCdefGHIjklMNOpqrSTUvwxYZ123456789"
     raw_error = f"Failed to connect to https://api.telegram.org/bot{sensitive_token}/sendMessage: Connection reset"
 
     redacted = _sanitize_error_message(raw_error)
     assert sensitive_token not in redacted
-    assert "[REDACTED_TOKEN]" in redacted
+    assert "REDACTED" in redacted
 
     storage, outbox_id = _setup_storage_with_event(tmp_path)
     provider = MockProvider()
 
     async def mock_leak(n: RenderedNotification) -> DeliveryReceipt:
-        raise RuntimeError(f"Internal error with bot token {sensitive_token}")
+        raise RuntimeError(f"Internal error with bot token {sensitive_token} at https://api.telegram.org/bot{sensitive_token}/sendMessage")
 
     provider.send_handler = mock_leak
     worker = OutboxWorker(storage, {"mock_provider": provider})
 
-    asyncio.run(worker.process_pending_once())
+    import logging
+    with caplog.at_level(logging.DEBUG):
+        asyncio.run(worker.process_pending_once())
 
+    # 1. Verify SQLite storage persistence redaction
     attempts = storage.list_delivery_attempts(outbox_id)
     assert len(attempts) == 1
     assert sensitive_token not in (attempts[0].error_message or "")
-    assert "[REDACTED_TOKEN]" in (attempts[0].error_message or "")
+    assert "REDACTED" in (attempts[0].error_message or "")
+
+    # 2. Verify application logger traceback and message redaction
+    assert sensitive_token not in caplog.text
+    assert "REDACTED" in caplog.text
+    # Ensure useful non-sensitive diagnostics (traceback, line numbers, error name) are preserved
+    assert "RuntimeError" in caplog.text
+    assert "mock_leak" in caplog.text
+
+
+def test_logger_redaction_exception_handler_and_persistence_separate(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    """Cover the exception-handler path and SQLite persistence separately to guarantee complete token elimination."""
+    sensitive_token = "987654321:XYZ987654321_abcDEFghiJKLmnoPQRstuv"
+    storage, outbox_id = _setup_storage_with_event(tmp_path)
+
+    provider = MockProvider("leaky_provider")
+
+    async def raise_nested(n: RenderedNotification) -> DeliveryReceipt:
+        def inner_call() -> None:
+            raise ValueError(f"Nested failure on https://api.telegram.org/bot{sensitive_token}/getMe")
+        inner_call()
+        return DeliveryReceipt(provider_id="leaky_provider", status="provider_accepted")
+
+    provider.send_handler = raise_nested
+    worker = OutboxWorker(storage, {"mock_provider": provider})
+
+    import logging
+    with caplog.at_level(logging.DEBUG):
+        count = asyncio.run(worker.process_pending_once())
+    assert count == 1
+
+    # Check A: Logger records must have token scrubbed from both record.message and full record text
+    assert sensitive_token not in caplog.text
+    assert "REDACTED" in caplog.text
+    # Diagnostic frames preserved
+    assert "inner_call" in caplog.text
+    assert "ValueError" in caplog.text
+
+    # Check B: SQLite delivery_attempts table has token scrubbed
+    attempts = storage.list_delivery_attempts(outbox_id)
+    assert len(attempts) == 1
+    assert sensitive_token not in (attempts[0].error_message or "")
+    assert "REDACTED" in (attempts[0].error_message or "")
+
+    # Check C: SQLite outbox table error_message has token scrubbed
+    with storage.connect() as conn:
+        row = conn.execute("SELECT error_message FROM outbox WHERE outbox_id = ?;", (outbox_id,)).fetchone()
+        assert sensitive_token not in (row["error_message"] or "")
+        assert "REDACTED" in (row["error_message"] or "")
+
+
+# ---------------------------------------------------------------------------
+# Cross-Process Windows Locking Tests
+# ---------------------------------------------------------------------------
+
+def test_windows_cross_process_locking_lifecycle(tmp_path: Path):
+    """Verify lock acquisition, contention, normal exit, and abnormal kill across separate OS processes."""
+    import subprocess
+    py_exe = sys.executable
+    lock_file = tmp_path / "cross_proc.lock"
+    notifications_path = str(Path(__file__).resolve().parent.parent)
+
+    code_holder = f"""
+import sys, time
+from notifications.outbox import OutboxLock
+with OutboxLock(r"{lock_file}"):
+    print("HELD", flush=True)
+    time.sleep(2)
+print("EXITED", flush=True)
+"""
+
+    code_checker = f"""
+import sys
+from notifications.outbox import OutboxLock
+from notifications.exceptions import LockContentionError
+try:
+    with OutboxLock(r"{lock_file}"):
+        print("ACQUIRED", flush=True)
+except LockContentionError:
+    print("CONTENTION", flush=True)
+"""
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = notifications_path
+
+    # Step 1: Process A acquires the lock
+    p_a = subprocess.Popen([py_exe, "-c", code_holder], stdout=subprocess.PIPE, text=True, env=env)
+    line = p_a.stdout.readline().strip()
+    assert line == "HELD"
+
+    # Step 2 & 3: Process B cannot acquire it while A owns it and receives expected contention
+    res_b1 = subprocess.run([py_exe, "-c", code_checker], capture_output=True, text=True, env=env)
+    assert res_b1.stdout.strip() == "CONTENTION"
+
+    # Step 4: After A exits normally, B can acquire the lock
+    p_a.wait(timeout=5)
+    res_b2 = subprocess.run([py_exe, "-c", code_checker], capture_output=True, text=True, env=env)
+    assert res_b2.stdout.strip() == "ACQUIRED"
+
+    # Step 5: After abnormal termination of A (kill), B can acquire the lock
+    p_a2 = subprocess.Popen([py_exe, "-c", code_holder], stdout=subprocess.PIPE, text=True, env=env)
+    line2 = p_a2.stdout.readline().strip()
+    assert line2 == "HELD"
+
+    # Kill Process A abruptly
+    p_a2.kill()
+    p_a2.wait(timeout=5)
+
+    # Process B must acquire the lock immediately
+    res_b3 = subprocess.run([py_exe, "-c", code_checker], capture_output=True, text=True, env=env)
+    assert res_b3.stdout.strip() == "ACQUIRED"
+
+
+def test_windows_cross_process_cli_dispatcher_concurrency(tmp_path: Path):
+    """Verify separate dispatcher processes cannot recover or dispatch the same item simultaneously via CLI."""
+    import subprocess
+    import json
+    py_exe = sys.executable
+    storage, outbox_id = _setup_storage_with_event(tmp_path)
+    lock_file = tmp_path / ".outbox_worker.lock"
+    notifications_path = str(Path(__file__).resolve().parent.parent)
+
+    env = os.environ.copy()
+    env["PYTHONPATH"] = notifications_path
+
+    # Process A holds the dispatcher lock simulating an active in-progress dispatch
+    lock_a = OutboxLock(lock_file)
+    with lock_a:
+        # Process B attempts to run `scripts-notify outbox run -d <db> -j`
+        cli_run = subprocess.run(
+            [py_exe, "-m", "notifications.cli", "outbox", "run", "-d", str(storage.db_path), "-j"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        assert cli_run.returncode == 0
+        data = json.loads(cli_run.stdout.strip())
+        assert data["ok"] is True
+        assert data["locked"] is True
+        assert data["status"] == "skipped_locked"
+        assert data["processed"] == 0
+
+        # Verify the item in database is still pending and was NOT claimed or touched by Process B
+        pending = storage.list_pending_outbox()
+        assert len(pending) == 1
+        assert pending[0].outbox_id == outbox_id
+        assert pending[0].status == "pending"
+
+    # Now that Process A released the lock, Process B can dispatch the item successfully
+    cli_run2 = subprocess.run(
+        [py_exe, "-m", "notifications.cli", "outbox", "run", "-d", str(storage.db_path), "-j"],
+        capture_output=True,
+        text=True,
+        env=env,
+    )
+    assert cli_run2.returncode == 0
+    data2 = json.loads(cli_run2.stdout.strip())
+    assert data2["ok"] is True
+    assert data2.get("locked") is None or data2.get("locked") is False
+    assert data2["processed"] == 1
 
 
 def test_successful_queued_delivery_to_provider(tmp_path: Path):

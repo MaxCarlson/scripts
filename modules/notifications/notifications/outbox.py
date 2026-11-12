@@ -10,12 +10,14 @@ import re
 import subprocess
 import sys
 import time
+import traceback
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional, Union
 
 from notifications.config import default_db_path
 from notifications.delivery.base import DeliveryProvider
+from notifications.delivery.telegram_credentials import redact_token
 from notifications.exceptions import LockContentionError, LockError, LockSetupError
 from notifications.models import RenderedNotification
 from notifications.storage import StorageEngine
@@ -24,15 +26,17 @@ logger = logging.getLogger(__name__)
 
 OUTBOX_TASK_NAME = "ScriptsNotificationsOutboxDispatcher"
 
-_TOKEN_PATTERN = re.compile(r"\d{8,10}:[A-Za-z0-9_-]{35}")
+_TOKEN_PATTERN = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
 
 
 def _sanitize_error_message(msg: str) -> str:
     """Strip secrets, bot tokens, and bound error message length."""
     if not msg:
         return ""
-    cleaned = _TOKEN_PATTERN.sub("[REDACTED_TOKEN]", msg)
-    return cleaned[:512]
+    # Apply canonical token redaction from telegram_credentials
+    cleaned = redact_token(msg)
+    cleaned = _TOKEN_PATTERN.sub("[REDACTED_TELEGRAM_TOKEN]", cleaned)
+    return cleaned
 
 
 def default_outbox_lock_path(db_path: Optional[Union[str, Path]] = None) -> Path:
@@ -204,8 +208,15 @@ class OutboxWorker:
             try:
                 receipt = await provider.send(rendered)
             except Exception as exc:
-                sanitized_msg = _sanitize_error_message(str(exc))
-                logger.exception("Provider '%s' raised an unhandled exception: %s", item.provider_id, sanitized_msg)
+                sanitized_msg = _sanitize_error_message(str(exc))[:512]
+                raw_tb = traceback.format_exc()
+                sanitized_tb = _sanitize_error_message(raw_tb)
+                logger.error(
+                    "Provider '%s' raised an unhandled exception: %s\n%s",
+                    item.provider_id,
+                    sanitized_msg,
+                    sanitized_tb,
+                )
                 self.storage.record_delivery_attempt(
                     outbox_id=item.outbox_id,
                     status="retryable_error",
