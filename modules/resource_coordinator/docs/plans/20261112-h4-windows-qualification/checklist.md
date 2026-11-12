@@ -24,12 +24,23 @@ Date: 2026-11-12 (Pacific)
 
 ## Remaining operational gates
 
-- [ ] Identify installed and running RC source/version with a permitted read-only host view.
-- [ ] Inspect Scheduled Task definitions, identity, ACLs, triggers and relaunch ancestry in an authorized context.
+- [x] Obtain permitted read-only installed/running identity observations; mismatch found: source 1.0.0, shared dev distribution 0.6.0, live runtime 0.11.3. Do not upgrade under this assignment.
+- [x] Inspect the relevant Scheduled Task and service in current-user context; broad descendant/alternate launcher and full ACL qualification remain incomplete.
 - [ ] Reproduce and validate `WinError 206`, upgrade, rollback and interruption recovery on a disposable Windows host.
-- [ ] Qualify NVML graphics/memory offset readback and observer timeouts/access-denied handling on this RTX 5090/driver.
+- [x] Read-only NVML graphics/memory offset getters returned values on this RTX 5090/driver; controlled restoration, repeated observer checks, timeout/access-denied and actual RC-interpreter qualification remain open.
 - [ ] Establish complete WDDM GPU-process attribution and host-wide known-miner inventory.
 - [ ] Qualify actual KRig launch/ownership and cooldown behavior in the separately authorized controlled test.
 - [ ] Establish LM Studio runtime identity, no-wake observation behavior and direct-client routing coverage.
 - [ ] Conduct bounded H5 live maintenance acceptance only under explicit authorization.
 - [ ] Keep unattended recovery disabled until Windows execution-boundary evidence is qualified and rollout is separately authorized.
+
+## Follow-up disposition
+
+- [x] Read-only RC status endpoint returned HTTP 200; current runtime is v0.11.3 and reports ready. `maintenance/status` returns 404 in that older runtime.
+- [x] Current-user Task Scheduler and Scheduler-service queries succeeded; sandbox-specific failures in the initial snapshot are preserved as historical limitations.
+- [x] Token-file ACL metadata was checked without reading its contents: current user owns it, inheritance is disabled, and no broad user-group allow entry was found.
+- [x] Safe offline Windows selection: 14 passed, exit 0; task/UAC integration flags were not enabled.
+- [x] Harmless local process-creation probes reproduced WinError 206 for a long argument and executable path; the historical upgrade root cause remains unresolved.
+- [x] Native read-only NVML power/offset getters succeeded; values are not treated as a restoration baseline.
+- [x] No independently identified and separately authorized disposable VM/host was available; install/task/upgrade/rollback mutation was not attempted.
+- [x] H5 is not ready and unattended recovery remains disabled due runtime mismatch and incomplete WDDM process attribution.

@@ -78,4 +78,64 @@ Keep disabled. In particular, H4 has not qualified complete Windows/WDDM executi
 
 ## Next gate
 
-First complete disposable Windows upgrade/task/rollback acceptance and qualify the installed-versus-running RC identity. Then independently qualify read-only NVML offset getters and WDDM process attribution on the RTX 5090. Only after those evidence gates and explicit authorization should a controlled H5 optimizer/inference test be prepared. Keep H4 acceptance, H5 live work, and unattended recovery as separate approvals.
+The follow-up below established the installed-versus-running mismatch and read-only NVML getter capability. Next, use an independently identified, separately authorized disposable Windows host for task/install/upgrade/rollback acceptance; then qualify complete WDDM process attribution. Only after those evidence gates and explicit authorization should a controlled H5 optimizer/inference test be prepared. Keep H4 acceptance, H5 live work, and unattended recovery as separate approvals.
+
+## Follow-up read-only qualification
+
+Follow-up observations were collected on 2026-11-12 at approximately 01:15–01:30 Pacific time from a normal current-user PowerShell context (medium integrity; Administrators group was not elevated). This context had access to several APIs that the earlier restricted execution sandbox blocked. The earlier snapshot above remains historical evidence of the sandbox limitation; later observations below supersede its current-state unknowns only where explicitly stated. No installation, task, service, miner, GPU setting, credential, LM Studio, or WSL state was changed.
+
+### RC installed and running identity
+
+- `GET http://127.0.0.1:1235/_coordinator/status` returned HTTP 200 with `status=online` and a ready service state. The listener PID matched the running Coordinator process identity.
+- The running service reports RC **0.11.3**, source path `C:\Users\mcarls\src\scripts\modules\resource_coordinator\resource_coordinator\__init__.py`, and revision `52d59d4803fd04b9bd1fd8b0ea72cc7f7a2f128895348ba37dbe68e44fea0c0d`. Its process creation time was 2026-11-06 20:58:28 Pacific. The merged source in this worktree is **1.0.0**. The shared development `.venv` remains distribution **0.6.0** with a `direct_url.json` pointing to a prior temporary test source. These are three distinct identities; the source merge does not mean the installed/running service was upgraded.
+- The running service's maintenance-status route returned HTTP 404, consistent with the older runtime and not evidence that the service is unavailable. Its observed configuration has no `maintenance_verification` section; trusted maintenance verification is therefore not enabled there.
+- The service status reported its managed `krig_miner` as running and Coordinator-owned. The reported PID and creation-time identity matched the independently observed Windows process. Numeric process identities are intentionally omitted from this committed report. No process control was performed.
+- Three `resource-coordinator.exe` processes were observed as short-lived `status`/`status -j` queries launched under Codex PowerShell; they were not additional Coordinator service instances.
+- The configured upstream address was safely projected as `http://127.0.0.1:1234` (no userinfo or query). Which clients bypass the Coordinator remains unknown.
+
+### Task Scheduler and launch ownership
+
+- In the same current-user context, `Get-ScheduledTask` succeeded and returned 221 tasks, including `ResourceCoordinator-KRig-UserLogon` (Running) and `KRig-Live-Output-Viewer` (Ready). The Task Scheduler service was Running (`Get-Service Schedule`, `sc.exe query Schedule`, both successful).
+- The Coordinator task runs as the current interactive user at highest run level; its last-run timestamp was 2026-11-06 20:58:26 Pacific. The action is `pwsh.exe` with a sanitized 161-character command that invokes `C:\Users\mcarls\.resource_coordinator\start-coordinator.ps1`; the task XML is 1,779 characters. The script selects the repository `.venv` Python, sets repository module paths, and launches `resource_coordinator.cli serve` with the configured miner alias. Sensitive arguments and credential contents were not collected.
+- The process ancestry observed for the service reaches the Task Scheduler service process. A read-only `netstat` listener check also matched the service PID. No duplicate Coordinator service instance was found in the bounded checks, but this is not a complete host-wide launcher audit.
+- The configured operator-token file exists. Metadata-only ACL inspection found owner `XERES\\mcarls`, inheritance disabled, two ACL entries and zero broad allow entries for Everyone, Authenticated Users or Users. Token bytes were never read. This is a bounded ACL check, not a full credential-store security certification.
+- Earlier sandbox errors from CIM, `schtasks.exe`, and `sc.exe` were environment restrictions: the same current-user context later read the task and Scheduler service successfully. No service ACL or task definition was changed.
+
+### WinError 206 and offline upgrade transport
+
+- The existing installer retains its file-backed protected helper request/result transport and reports native launch errors and path/command lengths. An existing mocked regression confirms a 100,000-character task XML payload remains in a file and the child argv remains below 2,000 characters.
+- Two harmless local `subprocess` probes independently reproduced native WinError 206 before process creation: one with a 33,000-character argument and one with a 33,007-character executable path. These show that both command-line and executable-path lengths can produce 206 at the process-creation boundary; they do not identify the cause of the historical upgrade failure.
+- The observed task command and XML are short (161 and 1,779 characters). No historical failing request or exact failing upgrade artifact was available. Root cause and end-to-end remediation therefore remain **NOT_TESTED**.
+- A safe Windows-focused selection ran with `RC_WINDOWS_INTEGRATION=1`; task/UAC integration flags were unset. Result: **14 passed, exit 0**, JUnit at `modules/resource_coordinator/.pytest_tmp_root/h4-safe-3609e150433a4b79a746961698a9d0e0/junit.xml` in this worktree. It covered restoration-observer regressions, large file-backed payload handling, quoted elevated-CLI arguments, timeout/malformed completion receipts, and a harmless bounded helper process. It did not register a task, invoke UAC, upgrade RC, or test rollback against an installed service. An initial test setup attempt failed because the module-local pytest temp parent did not exist; after creating the ignored parent, the same selection passed. This was test setup, not a product failure.
+- A `Get-VM` inventory attempt did not identify a usable disposable VM (the Hyper-V query raised `VirtualizationException: Value cannot be null (Parameter 'name')`). No independently identified, separately authorized disposable Windows host is available in this run. Task installation/replacement, elevated ACLs, upgrade interruption and operational rollback were not attempted on the primary host.
+
+### RTX 5090 / NVML and WDDM
+
+- Read-only `nvidia-smi` observation reported RTX 5090 UUID `GPU-d573e046-ec53-77d8-009b-93c6e6bc60b6`, PCI `00000000:01:00.0`, driver/NVML `621.14`, and power limit 550,000 mW. A separate snapshot reported instantaneous clocks; these are not configured offsets or a restoration baseline.
+- A one-off read-only native `nvml.dll` ctypes probe used `nvmlInit_v2`, UUID handle lookup, `nvmlDeviceGetPowerManagementLimit`, `nvmlDeviceGetClockOffsets`, and `nvmlShutdown`; it made no setter calls. Every return code was success. It read 550,000 mW, graphics P0 offset +225 MHz (supported range -1000..+1000 MHz), and memory P0 offset 0 MHz (range -2000..+6000 MHz). The six-field structure was 24 bytes with version value `16777240`; clock domains were graphics 0 and memory 2. This establishes that these getters worked on this device/driver at that timestamp. It does not establish the original/restored values, repeatability, a mutation-and-restore cycle, or automatic-release readiness.
+- The RC observer source uses a six-field ctypes structure with the same documented field widths and version encoding. The shared development `.venv` lacks the optional `pynvml` binding, so the production observer class was not invoked against that interpreter; the native getter probe and fake-backed source tests are separate evidence.
+- Compute-process enumeration was inconsistent across snapshots: one query returned zero rows; a later query returned 31 WDDM rows with `[N/A]` memory and did not show the Coordinator-reported KRig PID. NVIDIA exposes distinct compute and graphics process APIs, and WDDM may make memory attribution unavailable. Process enumeration is therefore **PARTIAL**, not complete. Do not set `gpu_process_attribution_confirmed`, and do not enable execution-boundary recovery.
+- Fixed/locked-clock restoration remains unsupported. Offset getter success alone does not qualify that mode.
+
+### LM Studio, disposable host, and readiness
+
+- Prior installation metadata remains LM Studio `0.4.28+2` and `lms.exe` `1.3.3`. No `lms ps`, WSL command, model operation or inference request was made. At an earlier narrow process snapshot no LM Studio process was found, but current Windows/WSL runtime ownership, no-wake behavior and direct-client routing remain **UNKNOWN**.
+- No disposable VM was independently identified. Actual task/UAC/install/rollback acceptance remains **NOT_TESTED** and must run on an isolated authorized host before production deployment.
+- The current host is demonstrably running RC 0.11.3 while source is 1.0.0; H5 is **NOT READY**. It requires separate authorization and a controlled environment for upgrade and actual miner/GPU restoration behavior. Unattended recovery remains disabled; incomplete WDDM attribution and unqualified execution-boundary evidence are blocking gates.
+
+## Updated H4 disposition
+
+| Gate | Result | Evidence / remaining work |
+|---|---|---|
+| Parts 2–3 source merge and offline regressions | PASS | Merged source identity and historical tests remain as recorded above. |
+| Current-user RC/task read-only inventory | PARTIAL | Live RC/task identity observed; runtime is v0.11.3, not merged v1.0.0. Full duplicate-launcher/process visibility is not established. |
+| Operator-token ACL metadata | PARTIAL | Narrow ACL properties observed; no token content read; not a complete credential-store audit. |
+| WinError 206 offline boundary | PARTIAL | Two harmless native reproductions and file-backed transport tests pass; historical upgrade failure root cause and actual upgrade path remain untested. |
+| Disposable Windows install/task/rollback | UNAVAILABLE | No independently identified, separately authorized disposable host. |
+| RTX 5090 power/offset getters | PARTIAL | Native getter calls succeeded; no controlled restore cycle and RC runtime is older. |
+| WDDM process attribution | BLOCKED | Current enumeration is incomplete/inconsistent; trusted process-termination evidence is not qualified. |
+| LM Studio no-wake/runtime/client routing | NOT_TESTED | No runtime probing or client traffic analysis was performed. |
+| Controlled H5 | NOT READY | Runtime/source mismatch and hardware/process coverage gaps remain; requires separate authorization. |
+| Unattended recovery | BLOCKED | Keep disabled until complete process-boundary and deployment qualification plus separate approval. |
+
+The new evidence does not change production state. Exact command families, result codes, test command, and follow-up gates are summarized in `ACCEPTANCE_MATRIX.md`.
