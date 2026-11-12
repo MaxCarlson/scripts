@@ -862,18 +862,67 @@ class StorageEngine:
         """Recover outbox items stuck in 'attempting' state after worker crash/restart."""
         cutoff_dt = datetime.now(timezone.utc) - timedelta(seconds=stalled_seconds)
         cutoff = cutoff_dt.isoformat().replace("+00:00", "Z")
-        now = _now_iso()
+        now_dt = datetime.now(timezone.utc)
+        now = now_dt.isoformat().replace("+00:00", "Z")
 
         def _exec(c: sqlite3.Connection) -> int:
-            cursor = c.execute(
+            rows = c.execute(
                 """
-                UPDATE outbox
-                SET status = 'pending', updated_at = ?
+                SELECT outbox_id, retry_count, max_retries, provider_id, event_id
+                FROM outbox
                 WHERE status = 'attempting' AND updated_at <= ?;
                 """,
-                (now, cutoff),
-            )
-            return cursor.rowcount
+                (cutoff,),
+            ).fetchall()
+
+            recovered_count = 0
+            for r in rows:
+                oid = r["outbox_id"]
+                current_retries = r["retry_count"]
+                max_ret = r["max_retries"]
+                new_retry_count = current_retries + 1
+
+                # Record an attempt indicating the stalled claim was recovered (uncertain delivery outcome)
+                c.execute(
+                    """
+                    INSERT INTO delivery_attempts (
+                        outbox_id, attempted_at, status, provider_message_id,
+                        duration_ms, error_category, error_message
+                    ) VALUES (?, ?, 'stalled_claim_recovered', NULL, NULL, 'worker_interrupted', ?);
+                    """,
+                    (
+                        oid,
+                        now,
+                        "Dispatcher process terminated or stalled while attempting delivery; recovered for retry (potential duplicate delivery)",
+                    ),
+                )
+
+                if new_retry_count >= max_ret:
+                    new_status = "terminal_error"
+                    next_retry = now
+                else:
+                    new_status = "pending"
+                    next_retry = now
+
+                c.execute(
+                    """
+                    UPDATE outbox
+                    SET status = ?, retry_count = ?, next_retry_at = ?,
+                        updated_at = ?, error_message = ?
+                    WHERE outbox_id = ?;
+                    """,
+                    (
+                        new_status,
+                        new_retry_count,
+                        next_retry,
+                        now,
+                        "Recovered from stalled attempt (potential duplicate delivery)",
+                        oid,
+                    ),
+                )
+                recovered_count += 1
+
+            return recovered_count
 
         try:
             if conn is not None:
