@@ -271,6 +271,31 @@ def _single_series_path(partial: Path, destination: Path, url: str, backend: str
     return str(destination / candidates[0].name)
 
 
+def _find_existing_series_folder(destination: Path, url: str) -> str:
+    """Find an existing completed destination folder matching url without guessing."""
+    if not destination.is_dir():
+        return ""
+    nhentai_match = re.search(r"/g/(\d+)", url)
+    if nhentai_match:
+        gid = nhentai_match.group(1)
+        prefix = f"nhentai-{gid}"
+        for child in destination.iterdir():
+            if child.is_dir() and child.name.startswith(prefix) and _tree_stats(child)[0] > 0:
+                return str(child)
+    for child in destination.iterdir():
+        if not child.is_dir() or child.name in {".mangadl", "_partial"}:
+            continue
+        manifest = child / ".mangadl-source.json"
+        if manifest.is_file():
+            try:
+                data = json.loads(manifest.read_text(encoding="utf-8"))
+                if data.get("canonical_url") == url and _tree_stats(child)[0] > 0:
+                    return str(child)
+            except Exception:
+                pass
+    return ""
+
+
 def _merge_gallery_partial(partial: Path, destination: Path, url: str) -> None:
     source = _gallery_merge_source(partial, url)
     _merge_partial(source, destination)
@@ -334,11 +359,11 @@ def _command(args: argparse.Namespace, partial: Path) -> list[str]:
         ]
     if getattr(args, "scratch_mode", False):
         command = [
-            sys.executable, "-m", "mangadl.gallery_scratch",
+            sys.executable, "-u", "-m", "mangadl.gallery_scratch",
             str(partial), str(args.destination), _scratch_flatten_category(args.url), "--",
         ]
     else:
-        command = [sys.executable, "-m", "gallery_dl"]
+        command = [sys.executable, "-u", "-m", "gallery_dl"]
     command.extend(["--no-input", "--verbose", "--destination", str(partial)])
     command.extend(_gallery_naming_options(args.url))
     command.extend(["--download-archive", args.archive])
@@ -386,7 +411,7 @@ def run(args: argparse.Namespace) -> int:
     except (OSError, ValueError, RuntimeError, json.JSONDecodeError) as exc:
         _emit(args, "job_terminal_failure", state="failed_filesystem", category="filesystem", message=str(exc))
         return 2
-    output_root = Path(args.destination) if args.backend == "hdporncomics" else partial
+    output_root = Path(args.destination) if args.backend in {"hdporncomics", "manga18fx"} else partial
     baseline_images, baseline_size = _tree_stats(output_root)
     images, size = baseline_images, baseline_size
     site, title = _identity(output_root)
@@ -404,29 +429,39 @@ def run(args: argparse.Namespace) -> int:
     except RuntimeError as exc:
         _emit(args, "job_terminal_failure", state="failed_backend", category="backend", message=str(exc))
         return 2
+    child_env = os.environ.copy()
+    child_env["PYTHONUNBUFFERED"] = "1"
     with Path(args.raw_log).open("a", encoding="utf-8", errors="replace") as raw:
         raw.write(
             f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] worker={args.worker} attempt={args.attempt_id} url={args.url}\n"
         )
         raw.write("command=" + " ".join(command[:-1]) + " <url>\n")
+        raw.flush()
         process = subprocess.Popen(
             command,
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
             encoding="utf-8",
             errors="replace",
             bufsize=1,
+            env=child_env,
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
 
+        seen_archive_match = False
+
         def capture() -> None:
+            nonlocal seen_archive_match
             last_downloaded_path: Path | None = None
             assert process.stdout is not None
             for line in process.stdout:
                 raw.write(line)
                 raw.flush()
                 text = line.rstrip()
+                if "archive" in text.lower() or text.startswith("# ") or text.startswith(ARCHIVE_KEY_MARKER):
+                    seen_archive_match = True
                 if args.backend == "gallery-dl" and text.startswith(ARCHIVE_KEY_MARKER):
                     archive_key = text.removeprefix(ARCHIVE_KEY_MARKER).strip()
                     if archive_key and last_downloaded_path is not None:
@@ -618,8 +653,20 @@ def run(args: argparse.Namespace) -> int:
             args.backend != "manga18fx"
             and images == baseline_images
             and size == baseline_size
-            and any("archive" in line.lower() for line in tail)
+            and (seen_archive_match or any("archive" in line.lower() for line in tail))
         )
+        args.gallery_skipped = gallery_skipped
+
+        if not series_path:
+            series_path = _find_existing_series_folder(Path(args.destination), args.url)
+        args.series_path = series_path
+
+        if gallery_skipped and series_path:
+            existing_images, existing_size = _tree_stats(Path(series_path))
+            if existing_images > 0:
+                images = existing_images
+                size = existing_size
+
         incomplete = args.backend == "hdporncomics" and images == 0
 
         final_images = manga18fx_total if args.backend == "manga18fx" else images

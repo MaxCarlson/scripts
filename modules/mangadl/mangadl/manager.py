@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import queue
+import re
 import subprocess
 import sys
 import threading
@@ -13,11 +14,13 @@ from pathlib import Path
 from typing import Any
 
 from .concurrency import Manga18FXConcurrencyPlan, plan_manga18fx_concurrency
+from .covers import tree_stats_without_metadata
 from .gallery_auth import ProfileStore, domain_for, refresh_profile
 from .models import JobState, WorkerSnapshot
 from .state import StateStore
 from .scratch import partial_root_for
 from .ui import ConsoleDashboard, DashboardRuntime, human_bytes, plain_identity
+from .worker_core import write_source_manifest
 
 MANGA18FX_IMAGE_WORKERS_ENV = "MANGADL_MANGA18FX_IMAGE_WORKERS"
 MAX_IMAGE_WORKERS = 8
@@ -425,8 +428,10 @@ class DownloadManager:
     def _start_worker(self, slot: int, job: dict[str, Any]) -> None:
         child_env = os.environ.copy()
         child_env[MANGA18FX_IMAGE_WORKERS_ENV] = str(self.image_workers)
+        child_env["PYTHONUNBUFFERED"] = "1"
         process = subprocess.Popen(
             self._worker_command(slot, job),
+            stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             text=True,
@@ -530,7 +535,13 @@ class DownloadManager:
             state = JobState._value2member_map_.get(data.get("state"), JobState.SUCCEEDED)
             self.completed_bytes += int(data.get("bytes_done") or snapshot.bytes_done or 0)
             self.completed_images += int(data.get("images_done") or snapshot.images_done or 0)
-            self.store.complete(event["job_id"], event["attempt_id"], state)
+            self.store.complete(
+                event["job_id"],
+                event["attempt_id"],
+                state,
+                images_done=data.get("images_done"),
+                bytes_done=data.get("bytes_done"),
+            )
             status = (
                 "FINISH_SKIPPED"
                 if state == JobState.SKIPPED_ARCHIVE
@@ -623,8 +634,104 @@ class DownloadManager:
             if action:
                 self._adjust_runtime(action)
 
+    def _preflight_complete_jobs(self) -> None:
+        """Resolve already-downloaded jobs without spawning worker subprocesses."""
+        if self.options.file_range or self.options.repair_file_ranges:
+            return
+        destination = Path(self.options.destination)
+        if not destination.is_dir():
+            return
+
+        queued_jobs = [row for row in self.store.jobs(self.options.run_id) if row["state"] == "queued"]
+        if not queued_jobs:
+            return
+
+        folder_by_url: dict[str, Path] = {}
+        folder_by_nhentai: dict[str, Path] = {}
+        try:
+            for child in destination.iterdir():
+                if not child.is_dir() or child.name in {".mangadl", "_partial"}:
+                    continue
+                if child.name.startswith("nhentai-"):
+                    parts = child.name.split("-")
+                    if len(parts) > 1:
+                        gid_part = parts[1].split(" ")[0]
+                        if gid_part.isdigit():
+                            folder_by_nhentai[gid_part] = child
+                manifest = child / ".mangadl-source.json"
+                if manifest.is_file():
+                    try:
+                        data = json.loads(manifest.read_text(encoding="utf-8"))
+                        url = data.get("canonical_url")
+                        if url:
+                            folder_by_url[url] = child
+                    except Exception:
+                        pass
+        except OSError:
+            return
+
+        for job in queued_jobs:
+            url = job["canonical_url"]
+            folder = folder_by_url.get(url)
+            if folder is None:
+                m = re.search(r"/g/(\d+)", url)
+                if m:
+                    folder = folder_by_nhentai.get(m.group(1))
+            if folder is None or not folder.is_dir():
+                continue
+
+            images, size = tree_stats_without_metadata(folder)
+            if images <= 0:
+                continue
+
+            manifest = folder / ".mangadl-source.json"
+            if not manifest.is_file():
+                try:
+                    write_source_manifest(folder, url, job["backend"])
+                except Exception:
+                    pass
+
+            self.store.complete(job["id"], None, JobState.SKIPPED_ARCHIVE, images_done=images, bytes_done=size)
+            self.completed_bytes += size
+            self.completed_images += images
+
+            event = {
+                "event": "job_complete",
+                "run_id": self.options.run_id,
+                "job_id": job["id"],
+                "attempt_id": None,
+                "url": url,
+                "data": {
+                    "state": "skipped_archive",
+                    "images_done": images,
+                    "images_total": images,
+                    "bytes_done": size,
+                    "bytes_total": size,
+                    "elapsed": 0.0,
+                    "message": f"already complete: {images} images present in library",
+                    "series_path": str(folder),
+                },
+            }
+            with self.events_path.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(event, sort_keys=True) + "\n")
+            self._write_worker_log(
+                0,
+                "FINISH_SKIPPED",
+                f"{plain_identity(url)}  {images} img  {human_bytes(size)}",
+                elapsed=0.0,
+            )
+            self.logger.info(
+                "preflight skipped job=%s url=%s folder=%s images=%d bytes=%d",
+                job["id"],
+                url,
+                folder,
+                images,
+                size,
+            )
+
     def run(self) -> int:
         self.store.recover_expired(self.options.run_id)
+        self._preflight_complete_jobs()
         last_render = 0.0
         try:
             while True:

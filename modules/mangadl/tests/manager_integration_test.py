@@ -238,3 +238,45 @@ def test_manager_coordinates_one_background_auth_refresh_for_same_domain_jobs(
         assert len(refresh_calls) == 1
     finally:
         store.close()
+
+
+def test_manager_preflight_skips_existing_destination_folder(tmp_path: Path, monkeypatch) -> None:
+    destination = tmp_path / "downloads"
+    destination.mkdir()
+    series_folder = destination / "nhentai-685702"
+    series_folder.mkdir()
+    (series_folder / "001.jpg").write_bytes(b"hello")
+    (series_folder / "002.jpg").write_bytes(b"world123")
+
+    store = StateStore(tmp_path / "state.sqlite3")
+    run_id = store.create_run({}, "test-preflight-run")
+    item = InputUrl("685702", "https://nhentai.net/g/685702/", "test", 1)
+    store.add_jobs(run_id, [item], {item.canonical_url: "gallery-dl"})
+    options = RunOptions(
+        run_id=run_id,
+        destination=destination,
+        archive=tmp_path / "archive.sqlite3",
+        state_db=tmp_path / "state.sqlite3",
+        log_dir=tmp_path / "logs",
+        workers=2,
+        retries=0,
+        retry_wait=0.01,
+        ui=False,
+    )
+
+    def fail_worker(*args, **kwargs):
+        raise AssertionError("Worker should not be started for preflight-skipped jobs")
+
+    monkeypatch.setattr(DownloadManager, "_start_worker", fail_worker)
+    try:
+        manager = DownloadManager(options, store)
+        assert manager.run() == 0
+        jobs = store.jobs(run_id)
+        assert len(jobs) == 1
+        assert jobs[0]["state"] == "skipped_archive"
+        assert manager.completed_images == 2
+        assert manager.completed_bytes == 13
+        assert (series_folder / ".mangadl-source.json").is_file()
+    finally:
+        store.close()
+

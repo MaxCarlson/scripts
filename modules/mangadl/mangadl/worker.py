@@ -82,7 +82,6 @@ def _apply_kavita_from_environment(result: CoverResult) -> CoverResult:
 def run(args: argparse.Namespace) -> int:
     destination = Path(args.destination).expanduser().resolve()
     scratch_mode = getattr(args, "scratch_mode", False)
-    before = {} if scratch_mode else snapshot_top_level(destination)
     _core._tree_stats = tree_stats_without_metadata
     _core._identity = identity_without_metadata
     returncode = _core.run(args)
@@ -90,13 +89,18 @@ def run(args: argparse.Namespace) -> int:
         returncode != 0
         or not supports_cover_url(args.url)
         or not _enabled("MANGADL_DOWNLOAD_COVERS", default=True)
+        or getattr(args, "gallery_skipped", False)
     ):
         return returncode
 
     try:
         cookies = Path(args.cookies).expanduser().resolve() if args.cookies else None
-        if scratch_mode:
-            folders = getattr(args, "promoted_folders", ())
+        series_path = getattr(args, "series_path", "")
+        folders = getattr(args, "promoted_folders", ())
+        if not folders and series_path and Path(series_path).is_dir():
+            folders = (Path(series_path),)
+
+        if scratch_mode or folders:
             result = (
                 install_download_cover_candidates(args.url, folders, cookies=cookies)
                 if folders
@@ -106,6 +110,7 @@ def run(args: argparse.Namespace) -> int:
                 )
             )
         else:
+            before = snapshot_top_level(destination)
             result = install_download_cover(args.url, destination, before, cookies=cookies)
         result = _apply_kavita_from_environment(result)
         _log_cover_result(Path(args.raw_log), result)
