@@ -450,3 +450,187 @@ def test_cli_telegram_subcommands(tmp_path: Path, capsys: pytest.CaptureFixture[
         rev = json.loads(capsys.readouterr().out)
         assert rev["revoked"] is True
         assert not secrets_file.exists()
+
+
+# ── 7. HTTP Client & Exception Logging Security Regression Tests ──────────────
+
+
+@pytest.mark.asyncio
+async def test_telegram_http_logging_redacts_token_on_success_and_failures(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify httpx, httpcore, and provider logs never leak bot tokens while preserving method, status, duration, and redacted endpoint."""
+    import logging
+
+    synthetic_token = "901278999:AASyntheticTestTokenSecretValue9876543210"
+    creds = TelegramCredentials(bot_token=synthetic_token, chat_id="987654321")
+
+    caplog.set_level(logging.DEBUG)
+
+    # 1. Successful HTTP 200 request
+    client_200 = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"ok": True, "result": {"message_id": 42}})
+        )
+    )
+    provider_200 = TelegramProvider(credentials=creds, client=client_200, rate_limit_delay=0.0)
+    receipt_200 = await provider_200.send(_dummy_notification())
+    await client_200.aclose()
+
+    assert receipt_200.status == "provider_accepted"
+    assert synthetic_token not in caplog.text
+    for rec in caplog.records:
+        assert synthetic_token not in rec.getMessage()
+        assert synthetic_token not in str(rec.msg)
+        assert synthetic_token not in str(rec.args)
+
+    # Verify useful diagnostics are preserved (method, status, duration, redacted endpoint)
+    assert "POST" in caplog.text
+    assert "https://api.telegram.org/bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+    assert "200" in caplog.text
+    assert "ms" in caplog.text
+
+    caplog.clear()
+
+    # 2. Failed HTTP 401 request with token echoed in server response
+    client_401 = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                401,
+                json={"ok": False, "error_code": 401, "description": f"Unauthorized for {synthetic_token}"},
+            )
+        )
+    )
+    provider_401 = TelegramProvider(credentials=creds, client=client_401, rate_limit_delay=0.0)
+    receipt_401 = await provider_401.send(_dummy_notification())
+    await client_401.aclose()
+
+    assert receipt_401.status == "terminal_error"
+    assert synthetic_token not in caplog.text
+    assert "https://api.telegram.org/bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+    assert "HTTP 401" in caplog.text
+    assert "ms" in caplog.text
+
+    caplog.clear()
+
+    # 3. Failed network transport exception containing raw token URL
+    def _raise_connect_err(req: httpx.Request) -> httpx.Response:
+        raise RuntimeError(f"Transport failure calling {req.url}")
+
+    client_exc = httpx.AsyncClient(transport=httpx.MockTransport(_raise_connect_err))
+    provider_exc = TelegramProvider(credentials=creds, client=client_exc, rate_limit_delay=0.0)
+    receipt_exc = await provider_exc.send(_dummy_notification())
+    await client_exc.aclose()
+
+    assert receipt_exc.status == "retryable_error"
+    assert synthetic_token not in (receipt_exc.error_message or "")
+    assert synthetic_token not in caplog.text
+    assert "https://api.telegram.org/bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+    assert "transport_error" in caplog.text
+
+    caplog.clear()
+
+    # 4. Simulated httpcore.http11 debug trace log and exception traceback log
+    httpcore_logger = logging.getLogger("httpcore.http11")
+    httpcore_logger.debug(
+        "send_request_headers.started request=<Request [b'POST', b'/bot%s/sendMessage']>",
+        synthetic_token,
+    )
+    try:
+        raise ValueError(f"Fatal socket error at https://api.telegram.org/bot{synthetic_token}/sendMessage")
+    except ValueError:
+        logging.getLogger("notifications.delivery.telegram").exception("Unhandled exception during Telegram call")
+
+    assert synthetic_token not in caplog.text
+    for rec in caplog.records:
+        assert synthetic_token not in rec.getMessage()
+        if rec.exc_text:
+            assert synthetic_token not in rec.exc_text
+    assert "bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_outbox_scheduled_dispatch_telegram_logging_redaction(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Verify OutboxWorker scheduled dispatch paths redact Telegram tokens across routine and error logs."""
+    import logging
+    from notifications.lifecycle import IncidentLifecycleEngine
+    from notifications.models import EventEnvelopeV1
+
+    synthetic_token = "888777666:AABotTokenForScheduledOutboxRedactionTest12345"
+    creds = TelegramCredentials(bot_token=synthetic_token, chat_id="987654321")
+
+    db = tmp_path / "events.db"
+    storage = StorageEngine(db)
+    storage.migrate()
+    engine = IncidentLifecycleEngine(storage)
+
+    # Event 1: succeeds with HTTP 200
+    ev1 = EventEnvelopeV1(
+        event_id="00000000-0000-4000-8000-000000000101",
+        schema_version=1,
+        source="system",
+        kind="system.test",
+        incident_key="test.log.200",
+        severity="warning",
+        lifecycle="open",
+        occurred_at="2026-11-11T12:00:00Z",
+        summary="Outbox 200 logging test",
+    )
+    engine.process_event(ev1, providers=["telegram"])
+
+    caplog.set_level(logging.DEBUG)
+    client_ok = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(200, json={"ok": True, "result": {"message_id": 101}})
+        )
+    )
+    worker_ok = OutboxWorker(
+        storage=storage,
+        providers={"telegram": TelegramProvider(credentials=creds, client=client_ok, rate_limit_delay=0.0)},
+    )
+    assert await worker_ok.process_pending_once() == 1
+    await client_ok.aclose()
+
+    assert synthetic_token not in caplog.text
+    assert "https://api.telegram.org/bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+    assert "HTTP 200" in caplog.text
+
+    caplog.clear()
+
+    # Event 2: fails with unhandled transport exception containing full token URL
+    ev2 = EventEnvelopeV1(
+        event_id="00000000-0000-4000-8000-000000000102",
+        schema_version=1,
+        source="system",
+        kind="system.test",
+        incident_key="test.log.500",
+        severity="critical",
+        lifecycle="open",
+        occurred_at="2026-11-11T12:01:00Z",
+        summary="Outbox failure logging test",
+    )
+    engine.process_event(ev2, providers=["telegram"])
+
+    client_fail = httpx.AsyncClient(
+        transport=httpx.MockTransport(
+            lambda req: httpx.Response(
+                502,
+                text=f"Upstream proxy error reaching https://api.telegram.org/bot{synthetic_token}/sendMessage",
+            )
+        )
+    )
+    worker_fail = OutboxWorker(
+        storage=storage,
+        providers={"telegram": TelegramProvider(credentials=creds, client=client_fail, rate_limit_delay=0.0)},
+    )
+    assert await worker_fail.process_pending_once() == 1
+    await client_fail.aclose()
+
+    assert synthetic_token not in caplog.text
+    assert "https://api.telegram.org/bot[REDACTED_TELEGRAM_TOKEN]/sendMessage" in caplog.text
+    assert "HTTP 502" in caplog.text
+
+
