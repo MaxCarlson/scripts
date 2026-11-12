@@ -1,0 +1,27 @@
+# Implementation Checklist
+
+- [x] Stage 1: Fix Output Buffering, Process Spawning, and `gallery_skipped` in `worker_core.py`
+  - [x] Pass `-u` to `sys.executable -m gallery_dl`
+  - [x] Pass `stdin=subprocess.DEVNULL` to `subprocess.Popen` in `worker_core.py`
+  - [x] Set `PYTHONUNBUFFERED=1` in `env`
+  - [x] Call `raw.flush()` immediately after writing process headers
+  - [x] Set `output_root` to `args.destination` for `manga18fx`
+  - [x] Track `seen_archive_match` persistently across all lines in `capture()`
+  - [x] Verify tests pass
+- [x] Stage 2: Eliminate Recursive Full-Disk Scanning in `worker.py` and `covers/files.py`
+  - [x] Skip cover install when `returncode == 0` and `state == "skipped_archive"`
+  - [x] Use `series_path` directly when available instead of whole-disk snapshots
+  - [x] Optimize `snapshot_top_level(root)` to avoid full `rglob("*")`
+  - [x] Verify tests pass
+- [x] Stage 3: Implement Preflight Fast-Path for Already-Downloaded Manga in `manager.py`
+  - [x] Preflight check in `DownloadManager` for destination manifests / archive
+  - [x] Resolve complete jobs immediately as `skipped_archive` with image/byte counts
+  - [x] Pass `stdin=subprocess.DEVNULL` and `PYTHONUNBUFFERED=1` in `_start_worker`
+  - [x] Verify tests pass
+- [x] Stage 4: Verify Transfer & Processing Stats in `ui.py`
+  - [x] Ensure `completed_bytes` and `completed_images` reflect skipped/completed data
+  - [x] Verify stats formatting in `ui.py`
+  - [x] Verify tests pass
+- [x] Stage 5: Verification & End-to-End Testing
+  - [x] Run full test suites in `modules/mangadl` and `modules/cli_tui`
+  - [x] Test live run with `urls37.txt`

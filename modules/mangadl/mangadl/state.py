@@ -180,20 +180,40 @@ class StateStore:
         )
         return True
 
-    def complete(self, job_id: int, attempt_id: str, state: JobState, category: str = "", message: str = "") -> bool:
+    def complete(
+        self,
+        job_id: int,
+        attempt_id: str | None,
+        state: JobState,
+        category: str = "",
+        message: str = "",
+        images_done: int | None = None,
+        bytes_done: int | None = None,
+    ) -> bool:
         now = time.time()
+        assignments = ["state=?", "error_category=?", "error_message=?", "worker=NULL", "lease_deadline=NULL", "updated=?"]
+        params: list[Any] = [state.value, category or None, message or None, now]
+        if images_done is not None:
+            assignments.extend(["images_done=?", "images_total=?"])
+            params.extend([images_done, images_done])
+        if bytes_done is not None:
+            assignments.extend(["bytes_done=?", "bytes_total=?"])
+            params.extend([bytes_done, bytes_done])
+        where = "WHERE id=? AND attempt_id=?" if attempt_id else "WHERE id=?"
+        if attempt_id:
+            params.extend([job_id, attempt_id])
+        else:
+            params.append(job_id)
+
         with self.connection:
-            cursor = self.connection.execute(
-                """UPDATE jobs SET state=?,error_category=?,error_message=?,worker=NULL,lease_deadline=NULL,updated=?
-                   WHERE id=? AND attempt_id=?""",
-                (state.value, category or None, message or None, now, job_id, attempt_id),
-            )
+            cursor = self.connection.execute(f"UPDATE jobs SET {','.join(assignments)} {where}", params)
             if cursor.rowcount != 1:
                 return False
-            self.connection.execute(
-                "UPDATE attempts SET finished=?,status=?,error_category=?,error_message=? WHERE attempt_id=?",
-                (now, state.value, category or None, message or None, attempt_id),
-            )
+            if attempt_id:
+                self.connection.execute(
+                    "UPDATE attempts SET finished=?,status=?,error_category=?,error_message=? WHERE attempt_id=?",
+                    (now, state.value, category or None, message or None, attempt_id),
+                )
             return True
 
     def retry(self, job_id: int, attempt_id: str, delay: float, category: str, message: str) -> bool:

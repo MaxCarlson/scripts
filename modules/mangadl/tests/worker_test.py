@@ -348,3 +348,67 @@ def test_manga18fx_command_uses_native_module_and_partial_root(tmp_path: Path) -
         str(cookies),
         "https://manga18fx.com/manga/example/",
     ]
+
+
+def test_gallery_skipped_with_many_skip_lines_preserves_archive_state_and_resolves_existing(tmp_path: Path, monkeypatch, capsys) -> None:
+    destination = tmp_path / "destination"
+    destination.mkdir()
+    series_dir = destination / "nhentai-685702"
+    series_dir.mkdir()
+    (series_dir / "001.jpg").write_bytes(b"hello")
+    (series_dir / "002.jpg").write_bytes(b"world")
+
+    partial_root = tmp_path / "partial"
+    raw_log = tmp_path / "raw.log"
+    archive = tmp_path / "archive.sqlite3"
+    archive.touch()
+
+    args = Namespace(
+        run_id="run-1",
+        job_id=1,
+        attempt_id="att-1",
+        worker=1,
+        url="https://nhentai.net/g/685702/",
+        backend="gallery-dl",
+        destination=str(destination),
+        archive=str(archive),
+        canonical_archive=None,
+        partial_dir=str(partial_root),
+        raw_log=str(raw_log),
+        gallery_config=None,
+        cookies=None,
+        cookies_browser=None,
+        gallery_user_agent=None,
+        rate=None,
+        hdporncomics_executable=None,
+        hdporncomics_threads=8,
+    )
+
+    # Fake gallery-dl output: first prints archive usage, then 150 skip lines
+    fake_lines = ["[gallery-dl][debug] Using download archive '...'\n"]
+    fake_lines.extend(f"# {destination / '001.jpg'}\n" for _ in range(150))
+
+    class DummyProcess:
+        returncode = 0
+        def __init__(self, *args, **kwargs):
+            import io
+            self.stdout = io.StringIO("".join(fake_lines))
+        def poll(self):
+            return 0
+
+    monkeypatch.setattr(worker_core.subprocess, "Popen", DummyProcess)
+
+    captured_events = []
+    monkeypatch.setattr(worker_core, "_emit", lambda _args, event, **data: captured_events.append((event, data)))
+
+    res = worker_core.run(args)
+    assert res == 0
+    assert getattr(args, "gallery_skipped", False) is True
+    assert getattr(args, "series_path", "") == str(series_dir)
+
+    complete_events = [data for event, data in captured_events if event == "job_complete"]
+    assert len(complete_events) == 1
+    assert complete_events[0]["state"] == "skipped_archive"
+    assert complete_events[0]["images_done"] == 2
+    assert complete_events[0]["bytes_done"] == 10
+

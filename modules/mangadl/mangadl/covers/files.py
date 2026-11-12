@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from pathlib import Path
 from typing import Mapping
 
@@ -70,25 +71,45 @@ def identity_without_metadata(root: Path) -> tuple[str, str]:
     return "", ""
 
 
+def _fast_dir_stats(folder_path: str) -> tuple[int, int]:
+    files = 0
+    newest = 0
+    stack = [folder_path]
+    while stack:
+        curr = stack.pop()
+        try:
+            with os.scandir(curr) as it:
+                for entry in it:
+                    if entry.name == METADATA_DIR_NAME:
+                        continue
+                    try:
+                        if entry.is_file():
+                            files += 1
+                            mtime = entry.stat().st_mtime_ns
+                            if mtime > newest:
+                                newest = mtime
+                        elif entry.is_dir():
+                            stack.append(entry.path)
+                    except OSError:
+                        continue
+        except OSError:
+            continue
+    return files, newest
+
+
 def snapshot_top_level(root: Path) -> dict[Path, tuple[int, int]]:
     snapshot: dict[Path, tuple[int, int]] = {}
     if not root.is_dir():
         return snapshot
-    for folder in root.iterdir():
-        if not folder.is_dir() or folder.name in {"_partial", METADATA_DIR_NAME}:
-            continue
-        files = 0
-        newest = 0
-        try:
-            for path in folder.rglob("*"):
-                if METADATA_DIR_NAME in path.parts or not path.is_file():
+    try:
+        with os.scandir(str(root)) as it:
+            for entry in it:
+                if not entry.is_dir() or entry.name in {"_partial", METADATA_DIR_NAME}:
                     continue
-                stat = path.stat()
-                files += 1
-                newest = max(newest, stat.st_mtime_ns)
-        except OSError:
-            continue
-        snapshot[folder.resolve()] = (files, newest)
+                files, newest = _fast_dir_stats(entry.path)
+                snapshot[Path(entry.path).resolve()] = (files, newest)
+    except OSError:
+        pass
     return snapshot
 
 
