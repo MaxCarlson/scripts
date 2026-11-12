@@ -7,4 +7,4 @@
 - [x] Validate maintenance/restoration, durable state, admission, gateway, supervision, CLI, installation, and lifecycle suites; reproduce/classify the known baseline failure.
 - [x] Integrate Mining H3 and validate package/client compatibility against this exact RC candidate.
 - [x] Complete operational readiness ledger.
-- [ ] Commit and push final integration status; verify clean state and remote SHAs.
+- [x] Commit and push final integration status; verify clean state and remote SHAs.
