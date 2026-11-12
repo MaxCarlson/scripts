@@ -37,11 +37,11 @@
   - [x] `docs/notifications-remote-control/current-state.md` updated
   - [x] Stage E commit created
 
-- [ ] **Stage F: Full Integration Validation**
-  - [ ] Synthetic E2E scenario in `modules/notifications/tests/test_phase09_synthetic_e2e.py` passes
-  - [ ] Full regression suites (`notifications`, `remote_control`, `scheduler`, `scripts_help`, `resource_coordinator`) pass
-  - [ ] Verify zero diff against `modules/resource_coordinator/`
-  - [ ] Stage F commit created
+- [x] **Stage F: Full Integration Validation**
+  - [x] Synthetic E2E scenario in `modules/notifications/tests/test_phase09_synthetic_e2e.py` passes
+  - [x] Full regression suites (`notifications`, `remote_control`, `scheduler`, `scripts_help`, `resource_coordinator`) pass
+  - [x] Verify zero diff against `modules/resource_coordinator/`
+  - [x] Stage F commit created
 
 - [ ] **Stage G: Controlled Operational Acceptance**
   - [ ] Operator acceptance runbooks and verification gates prepared
