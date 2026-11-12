@@ -23,7 +23,10 @@ from ..models_lifecycle import (
 def add_models_parser(actions: Any) -> None:
     """Add 'models' command parser."""
     models_p = actions.add_parser(
-        "models", help="Inspect local model inventory and loaded states"
+        "models", help="Inspect available model configurations",
+        description="Inspect model configurations available from supported providers.",
+        epilog="Examples:\n  agent-benchmark models list\n  agent-benchmark models list --provider lmstudio --format json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     models_actions = models_p.add_subparsers(dest="models_command")
     models_list = models_actions.add_parser(

@@ -94,7 +94,10 @@ def add_task_parser(actions: Any) -> None:
     """Add canonical 'task' command group."""
     task_p = actions.add_parser(
         "task",
-        help="Single-task benchmark planning, execution, status, and verification",
+        help="Execute and inspect one individual task",
+        description="Plan, run, check, or clean up one task. plan applies to the selected task configuration.",
+        epilog="Examples:\n  agent-benchmark task plan -h\n  agent-benchmark task run -h\n  agent-benchmark task status -h",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = task_p.add_subparsers(dest="task_command")
     for name in ("plan", "run", "status", "cleanup", "smoke"):

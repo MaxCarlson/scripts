@@ -27,7 +27,10 @@ def add_external_parser(actions: Any) -> None:
     """Add external Harbor benchmark command group."""
     ext_p = actions.add_parser(
         "external",
-        help="External Harbor-based benchmark evaluation (Aider Polyglot, Terminal-Bench)",
+        help="Compatibility interface for legacy Harbor workflows",
+        description="Compatibility interface for legacy Harbor benchmark workflows.",
+        epilog="Examples:\n  agent-benchmark external list\n  agent-benchmark external plan -d aider/aider-polyglot\n  agent-benchmark external list --format json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     ext_actions = ext_p.add_subparsers(dest="external_command")
 

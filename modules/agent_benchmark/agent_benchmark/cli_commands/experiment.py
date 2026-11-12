@@ -44,7 +44,10 @@ def add_experiment_parser(actions: Any) -> None:
     """Add multi-model experiment subparser."""
     exp_p = actions.add_parser(
         "experiment",
-        help="Multi-model batch experimentation, planning, and reporting",
+        help="Compare agents and models across trials",
+        description="Plan, run, and inspect repeated agent/model comparisons. plan applies to the selected experiment.",
+        epilog="Examples:\n  agent-benchmark experiment plan -m MODEL_ID\n  agent-benchmark experiment run -m MODEL_ID -x\n  agent-benchmark experiment status -h",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     exp_actions = exp_p.add_subparsers(dest="experiment_command")
 
