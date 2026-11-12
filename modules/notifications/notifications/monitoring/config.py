@@ -39,6 +39,28 @@ def redact_ping_url(text: str) -> str:
     return redacted
 
 
+class _PingUrlRedactingFilter(logging.Filter):
+    """Ensure httpx/httpcore logs never emit unredacted Healthchecks ping URLs."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            raw_msg = record.getMessage()
+            sanitized = redact_ping_url(raw_msg)
+            if sanitized != raw_msg:
+                record.msg = sanitized
+                record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+_PING_FILTER = _PingUrlRedactingFilter()
+for _lg_name in ("httpx", "httpcore", "httpcore.http11", "httpcore.connection", "heartbeat-runner"):
+    _lg = logging.getLogger(_lg_name)
+    if _PING_FILTER not in _lg.filters:
+        _lg.addFilter(_PING_FILTER)
+
+
 def default_healthchecks_config_path() -> Path:
     """Default secure path for Healthchecks configuration."""
     override = os.environ.get("NOTIFY_HEALTHCHECKS_SECRETS_FILE")

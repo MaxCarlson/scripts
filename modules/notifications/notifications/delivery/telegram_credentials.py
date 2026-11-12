@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
+import traceback
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
@@ -16,7 +18,12 @@ from notifications.exceptions import SecurityError, ValidationError
 
 _BOT_TOKEN_RE = re.compile(r"^\d{6,12}:[A-Za-z0-9_-]{35,}$")
 _CHAT_ID_RE = re.compile(r"^-?\d{5,16}$")
-_URL_TOKEN_RE = re.compile(r"bot\d{6,12}:[A-Za-z0-9_-]{35,}")
+_URL_TOKEN_RE = re.compile(r"bot\d{6,12}:[A-Za-z0-9_-]{30,}")
+_RAW_TOKEN_RE = re.compile(r"\d{6,12}:[A-Za-z0-9_-]{30,}")
+_PING_URL_UUID_RE = re.compile(
+    r"(https?://[^/\s]+(?:/ping)?/)([a-f0-9-]{16,64}|[A-Za-z0-9_-]{16,64})",
+    re.IGNORECASE,
+)
 
 
 def redact_token(text: str, token: Optional[str] = None) -> str:
@@ -27,7 +34,96 @@ def redact_token(text: str, token: Optional[str] = None) -> str:
     if token:
         redacted = redacted.replace(token, "[REDACTED_TELEGRAM_TOKEN]")
     redacted = _URL_TOKEN_RE.sub("bot[REDACTED_TELEGRAM_TOKEN]", redacted)
+    redacted = _RAW_TOKEN_RE.sub("[REDACTED_TELEGRAM_TOKEN]", redacted)
     return redacted
+
+
+class SecretRedactingFilter(logging.Filter):
+    """Logging filter that redacts Telegram bot tokens and secret URLs from all log records."""
+
+    def __init__(self, name: str = "") -> None:
+        super().__init__(name)
+        self._registered_tokens: set[str] = set()
+
+    def register_token(self, token: Optional[str]) -> None:
+        if token and token.strip():
+            self._registered_tokens.add(token.strip())
+
+    def sanitize_text(self, text: str) -> str:
+        if not text:
+            return text
+        sanitized = text
+        for tok in tuple(self._registered_tokens):
+            sanitized = redact_token(sanitized, tok)
+        sanitized = redact_token(sanitized)
+        sanitized = _PING_URL_UUID_RE.sub(r"\1[REDACTED_PING_UUID]", sanitized)
+        return sanitized
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            raw_msg = record.getMessage()
+            sanitized_msg = self.sanitize_text(raw_msg)
+            record.msg = sanitized_msg
+            record.args = ()
+            if record.exc_info:
+                tb_text = "".join(traceback.format_exception(*record.exc_info))
+                record.exc_text = self.sanitize_text(tb_text).rstrip("\n")
+                record.exc_info = None
+            elif record.exc_text:
+                record.exc_text = self.sanitize_text(record.exc_text)
+        except Exception:
+            pass
+        return True
+
+
+_GLOBAL_REDACTING_FILTER = SecretRedactingFilter()
+
+
+def install_http_log_redaction(token: Optional[str] = None) -> SecretRedactingFilter:
+    """Install token redaction across httpx, httpcore, notifications loggers, and LogRecord factory."""
+    if token:
+        _GLOBAL_REDACTING_FILTER.register_token(token)
+
+    current_factory = logging.getLogRecordFactory()
+    if not getattr(current_factory, "_is_notifications_redacting_factory", False):
+        def _redacting_record_factory(*args: object, **kwargs: object) -> logging.LogRecord:
+            record = current_factory(*args, **kwargs)
+            _GLOBAL_REDACTING_FILTER.filter(record)
+            return record
+
+        setattr(_redacting_record_factory, "_is_notifications_redacting_factory", True)
+        logging.setLogRecordFactory(_redacting_record_factory)
+
+    target_logger_names = [
+        "httpx",
+        "httpcore",
+        "httpcore.http11",
+        "httpcore.http2",
+        "httpcore.connection",
+        "httpcore.proxy",
+        "httpcore.socks",
+        "notifications",
+    ]
+    for name in list(logging.root.manager.loggerDict.keys()):
+        if name.startswith(("httpx", "httpcore", "notifications")):
+            target_logger_names.append(name)
+
+    for logger_name in set(target_logger_names):
+        lg = logging.getLogger(logger_name)
+        if _GLOBAL_REDACTING_FILTER not in lg.filters:
+            lg.addFilter(_GLOBAL_REDACTING_FILTER)
+
+    root_logger = logging.getLogger()
+    if _GLOBAL_REDACTING_FILTER not in root_logger.filters:
+        root_logger.addFilter(_GLOBAL_REDACTING_FILTER)
+    for handler in root_logger.handlers:
+        if _GLOBAL_REDACTING_FILTER not in handler.filters:
+            handler.addFilter(_GLOBAL_REDACTING_FILTER)
+
+    return _GLOBAL_REDACTING_FILTER
+
+
+install_http_log_redaction()
 
 
 def default_telegram_credentials_path() -> Path:
@@ -67,6 +163,8 @@ class TelegramCredentials:
                 raise ValidationError("Dashboard URL must use verified HTTPS scheme.")
             if "@" in parsed.netloc:
                 raise ValidationError("Dashboard URL must not embed user credentials.")
+
+        install_http_log_redaction(token)
 
     def to_dict(self) -> dict[str, str]:
         data = {"bot_token": self.bot_token, "chat_id": self.chat_id}

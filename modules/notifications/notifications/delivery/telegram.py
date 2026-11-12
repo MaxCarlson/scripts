@@ -13,7 +13,11 @@ from typing import Optional
 import httpx
 
 from notifications.delivery.base import DeliveryProvider
-from notifications.delivery.telegram_credentials import TelegramCredentials, redact_token
+from notifications.delivery.telegram_credentials import (
+    TelegramCredentials,
+    install_http_log_redaction,
+    redact_token,
+)
 from notifications.models import DeliveryReceipt, RenderedNotification
 
 logger = logging.getLogger(__name__)
@@ -39,6 +43,7 @@ class TelegramProvider(DeliveryProvider):
         self.rate_limit_delay = rate_limit_delay
         self.quiet_hours = quiet_hours
         self._last_send_monotonic = 0.0
+        install_http_log_redaction(self.credentials.bot_token)
 
     def render(self, notification: RenderedNotification) -> str:
         """Format notification as clean, plain-text message within Telegram limits."""
@@ -120,6 +125,7 @@ class TelegramProvider(DeliveryProvider):
 
         rendered_text = self.render(notification)
         target_url = f"https://api.telegram.org/bot{self.credentials.bot_token}/sendMessage"
+        redacted_url = redact_token(target_url, self.credentials.bot_token)
         payload = {
             "chat_id": self.credentials.chat_id,
             "text": rendered_text,
@@ -127,11 +133,14 @@ class TelegramProvider(DeliveryProvider):
         }
 
         # 3. HTTP Dispatch with strict token redaction and error mapping
+        install_http_log_redaction(self.credentials.bot_token)
         client = self._client or httpx.AsyncClient(timeout=5.0)
         should_close = self._client is None
+        start_mono = time.monotonic()
 
         try:
             response = await client.post(target_url, json=payload)
+            duration_ms = int((time.monotonic() - start_mono) * 1000)
             status_code = response.status_code
 
             # Try parsing JSON body
@@ -142,6 +151,13 @@ class TelegramProvider(DeliveryProvider):
 
             if status_code == 200 and data.get("ok") is True:
                 msg_id = str(data.get("result", {}).get("message_id", ""))
+                logger.info(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms, message_id=%s)",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                    msg_id or "none",
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="provider_accepted",
@@ -150,6 +166,13 @@ class TelegramProvider(DeliveryProvider):
 
             elif status_code == 429:
                 retry_after = data.get("parameters", {}).get("retry_after", 30)
+                logger.warning(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms): rate_limited_429 (retry_after=%ss)",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                    retry_after,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="retryable_error",
@@ -160,6 +183,13 @@ class TelegramProvider(DeliveryProvider):
 
             elif status_code in (401, 403):
                 desc = redact_token(data.get("description", "Unauthorized"), self.credentials.bot_token)
+                logger.warning(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms): unauthorized_credentials (%s)",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                    desc,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="terminal_error",
@@ -169,6 +199,13 @@ class TelegramProvider(DeliveryProvider):
 
             elif status_code == 400:
                 desc = redact_token(data.get("description", "Bad Request"), self.credentials.bot_token)
+                logger.warning(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms): bad_request_400 (%s)",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                    desc,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="terminal_error",
@@ -177,6 +214,12 @@ class TelegramProvider(DeliveryProvider):
                 )
 
             elif 500 <= status_code < 600:
+                logger.warning(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms): server_error_5xx",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="retryable_error",
@@ -187,6 +230,13 @@ class TelegramProvider(DeliveryProvider):
 
             else:
                 desc = redact_token(data.get("description", response.text[:128]), self.credentials.bot_token)
+                logger.warning(
+                    "Telegram HTTP POST %s -> HTTP %d (%dms): unexpected_http_status (%s)",
+                    redacted_url,
+                    status_code,
+                    duration_ms,
+                    desc,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="retryable_error",
@@ -196,6 +246,12 @@ class TelegramProvider(DeliveryProvider):
                 )
 
         except httpx.TimeoutException:
+            duration_ms = int((time.monotonic() - start_mono) * 1000)
+            logger.warning(
+                "Telegram HTTP POST %s failed (%dms): network_timeout",
+                redacted_url,
+                duration_ms,
+            )
             return DeliveryReceipt(
                 provider_id=self.provider_id,
                 status="retryable_error",
@@ -205,7 +261,14 @@ class TelegramProvider(DeliveryProvider):
             )
 
         except ssl.SSLError as exc:
+            duration_ms = int((time.monotonic() - start_mono) * 1000)
             sanitized = redact_token(str(exc), self.credentials.bot_token)
+            logger.warning(
+                "Telegram HTTP POST %s failed (%dms): security_tls_error (%s)",
+                redacted_url,
+                duration_ms,
+                sanitized,
+            )
             return DeliveryReceipt(
                 provider_id=self.provider_id,
                 status="terminal_error",
@@ -214,15 +277,27 @@ class TelegramProvider(DeliveryProvider):
             )
 
         except httpx.ConnectError as exc:
+            duration_ms = int((time.monotonic() - start_mono) * 1000)
             err_str = str(exc).lower()
             if "certificate" in err_str or "ssl" in err_str:
                 sanitized = redact_token(str(exc), self.credentials.bot_token)
+                logger.warning(
+                    "Telegram HTTP POST %s failed (%dms): security_tls_error (%s)",
+                    redacted_url,
+                    duration_ms,
+                    sanitized,
+                )
                 return DeliveryReceipt(
                     provider_id=self.provider_id,
                     status="terminal_error",
                     error_category="security_tls_error",
                     error_message=f"TLS/Certificate verification error: {sanitized}",
                 )
+            logger.warning(
+                "Telegram HTTP POST %s failed (%dms): connection_failure",
+                redacted_url,
+                duration_ms,
+            )
             return DeliveryReceipt(
                 provider_id=self.provider_id,
                 status="retryable_error",
@@ -232,7 +307,14 @@ class TelegramProvider(DeliveryProvider):
             )
 
         except Exception as exc:
+            duration_ms = int((time.monotonic() - start_mono) * 1000)
             sanitized = redact_token(str(exc), self.credentials.bot_token)
+            logger.warning(
+                "Telegram HTTP POST %s failed (%dms): transport_error (%s)",
+                redacted_url,
+                duration_ms,
+                sanitized,
+            )
             return DeliveryReceipt(
                 provider_id=self.provider_id,
                 status="retryable_error",

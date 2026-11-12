@@ -36,8 +36,11 @@ from notifications.storage import StorageEngine
 
 
 def _setup_logging(verbose: bool) -> None:
+    from notifications.delivery.telegram_credentials import install_http_log_redaction
+
     level = logging.DEBUG if verbose else logging.INFO
     logging.basicConfig(level=level, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+    install_http_log_redaction()
 
 
 def _get_storage(db_path_str: Optional[str]) -> StorageEngine:
