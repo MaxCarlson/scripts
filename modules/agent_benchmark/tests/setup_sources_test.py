@@ -285,6 +285,20 @@ def test_failed_publication_restores_previous_target(tmp_path: Path, monkeypatch
     assert (target / "data").read_text(encoding="utf-8") == "old"
 
 
+def test_receipt_failure_rolls_back_new_resource(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    import agent_benchmark.external_sources.manager as manager_module
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "data").write_text("fixture", encoding="utf-8")
+    manager = SourceManager(tmp_path / "store")
+    spec = ResourceSpec("bench", "git", "source", revision="rev1")
+    monkeypatch.setattr(manager_module, "record_receipt", lambda *_args: (_ for _ in ()).throw(OSError("receipt denied")))
+    with pytest.raises(OSError, match="receipt denied"):
+        manager.install_resource(spec, execute=True, mock_source_dir=source)
+    assert not manager.get_target_path(spec).exists()
+
+
 def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     root = str(tmp_path / "store")
     assert main(["setup", "-f", "json", "list", "-A", "--resource-root", root]) == 0

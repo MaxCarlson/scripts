@@ -381,7 +381,12 @@ class SourceManager:
                 file_hashes=file_hashes,
                 metadata={"tx_id": tx_id},
             )
-            record_receipt(self.lock_file, receipt)
+            try:
+                record_receipt(self.lock_file, receipt)
+            except Exception:
+                # Publication is not considered successful until its receipt is durable.
+                shutil.rmtree(target, ignore_errors=True)
+                raise
             return receipt
 
         finally:
