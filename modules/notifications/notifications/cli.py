@@ -104,8 +104,29 @@ def build_parser() -> argparse.ArgumentParser:
     # outbox run
     out_run = out_sub.add_parser("run", help="Dispatch pending outbox notifications to providers.")
     out_run.add_argument("-l", "--limit", type=int, default=50, help="Maximum items to dispatch.")
+    out_run.add_argument("--stale-timeout", type=float, default=300.0, help="Seconds before attempting items are considered stalled (default: 300.0).")
     out_run.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
     out_run.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+
+    # outbox task
+    out_task = out_sub.add_parser("task", help="Manage Windows Scheduled Task for unattended background outbox dispatching.")
+    out_task_sub = out_task.add_subparsers(dest="task_command", required=True)
+
+    out_task_stat = out_task_sub.add_parser("status", help="Inspect Windows Scheduled Task installation and last run state.")
+    out_task_stat.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    out_task_inst = out_task_sub.add_parser("install", help="Register Windows Scheduled Task for periodic outbox dispatching.")
+    out_task_inst.add_argument("-a", "--apply", action="store_true", help="Apply registration (defaults to dry-run).")
+    out_task_inst.add_argument("-i", "--interval-minutes", type=int, default=2, help="Polling interval in minutes (default: 2).")
+    out_task_inst.add_argument("-l", "--limit", type=int, default=50, help="Maximum items to dispatch per run (default: 50).")
+    out_task_inst.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Database path override.")
+    out_task_inst.add_argument("--working-dir", default=None, help="Working directory for the task (default: user home).")
+    out_task_inst.add_argument("--executable", default=None, help="Executable path for the task (default: current python).")
+    out_task_inst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+
+    out_task_uninst = out_task_sub.add_parser("uninstall", help="Unregister Windows Scheduled Task.")
+    out_task_uninst.add_argument("-a", "--apply", action="store_true", help="Apply removal (defaults to dry-run).")
+    out_task_uninst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
     # 4. providers
     prov_parser = subparsers.add_parser("providers", help="Inspect and test delivery providers.")
@@ -389,7 +410,7 @@ def handle_incidents(args: argparse.Namespace) -> int:
 
 
 def handle_outbox(args: argparse.Namespace) -> int:
-    storage = _get_storage(args.db)
+    storage = _get_storage(getattr(args, "db", None))
 
     if args.outbox_command == "list":
         items = storage.list_pending_outbox(limit=args.limit)
@@ -404,12 +425,97 @@ def handle_outbox(args: argparse.Namespace) -> int:
 
     elif args.outbox_command == "run":
         from notifications.delivery.registry import get_registered_providers
+        from notifications.exceptions import LockContentionError
+        from notifications.outbox import OutboxLock, OutboxWorker
 
         providers = get_registered_providers(storage)
         worker = OutboxWorker(storage, providers=providers)
-        count = asyncio.run(worker.process_pending_once(limit=args.limit))
-        res = {"ok": True, "processed": count}
-        print(json.dumps(res, indent=2) if args.json else f"Processed {count} outbox delivery task(s).")
+        stale_timeout = getattr(args, "stale_timeout", 300.0)
+        lock = OutboxLock(storage.db_path.parent / ".outbox_worker.lock")
+
+        try:
+            result = worker.run_dispatch(
+                limit=args.limit,
+                stalled_seconds=stale_timeout,
+                lock=lock,
+            )
+        except LockContentionError as exc:
+            res = {
+                "ok": True,
+                "locked": True,
+                "processed": 0,
+                "recovered_stalled": 0,
+                "status": "skipped_locked",
+                "message": str(exc),
+            }
+            if args.json:
+                print(json.dumps(res, indent=2))
+            else:
+                print(f"Skipped outbox dispatch: {exc}")
+            return 0
+
+        res = {
+            "ok": True,
+            "processed": result["processed"],
+            "recovered_stalled": result["recovered_stalled"],
+        }
+        if args.json:
+            print(json.dumps(res, indent=2))
+        else:
+            print(
+                f"Processed {result['processed']} outbox delivery task(s) "
+                f"(recovered {result['recovered_stalled']} stalled item(s))."
+            )
+        return 0
+
+    elif args.outbox_command == "task":
+        from notifications.outbox import (
+            get_outbox_task_status,
+            install_outbox_task,
+            uninstall_outbox_task,
+        )
+
+        if args.task_command == "status":
+            result = get_outbox_task_status()
+        elif args.task_command == "install":
+            result = install_outbox_task(
+                apply=args.apply,
+                interval_minutes=args.interval_minutes,
+                limit=args.limit,
+                db_path=getattr(args, "db", None),
+                executable=args.executable,
+                working_directory=args.working_dir,
+            )
+        elif args.task_command == "uninstall":
+            result = uninstall_outbox_task(apply=args.apply)
+        else:
+            return 2
+
+        if args.json:
+            print(json.dumps(result, indent=2))
+        else:
+            if result.get("ok"):
+                if args.task_command == "status":
+                    inst = result.get("task_installed", False)
+                    print(f"Task '{result.get('task_name')}': {'Installed' if inst else 'Not Installed'}")
+                    if inst:
+                        print(f"  State:       {result.get('state')}")
+                        print(f"  Last Run:    {result.get('last_run_time')}")
+                        print(f"  Last Result: {result.get('last_task_result')}")
+                elif result.get("dry_run"):
+                    print(f"[DRY-RUN] Task '{result.get('task_name')}' installation preview:")
+                    print(f"  Executable:        {result.get('executable')}")
+                    print(f"  Arguments:         {result.get('arguments')}")
+                    print(f"  Working Directory: {result.get('working_directory')}")
+                    print(f"  Interval:          every {result.get('interval_minutes')} minute(s)")
+                    print(f"  Limit:             {result.get('limit')} items/run")
+                    print("Run with -a/--apply to register the Scheduled Task.")
+                else:
+                    action_verb = "installed" if args.task_command == "install" else "uninstalled"
+                    print(f"Task '{result.get('task_name')}' successfully {action_verb}.")
+            else:
+                print(f"Error: {result.get('error')}", file=sys.stderr)
+                return 1
         return 0
 
     return 2

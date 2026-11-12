@@ -52,12 +52,17 @@ You need your numeric private chat ID:
 Enroll the bot token and chat ID using `scripts-notify`:
 
 ```powershell
-# 1. Preview enrollment (dry-run)
-scripts-notify telegram enroll --token "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ123456789" --chat-id "987654321"
+# 1. Preview enrollment (dry-run, requires no changes)
+scripts-notify telegram enroll -t "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ123456789" -c "987654321"
 
-# 2. Apply enrollment (saves to ACL-restricted local secrets file)
-scripts-notify telegram enroll --token "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ123456789" --chat-id "987654321" --apply
+# 2. Interactive enrollment (recommended: avoids saving token in shell history)
+scripts-notify telegram enroll -c "987654321" -a
+
+# 3. Explicit command-line enrollment with -a/--apply:
+scripts-notify telegram enroll -t "123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ123456789" -c "987654321" -a
 ```
+
+*Note: Flags support both short (`-t`, `-c`, `-a`) and long forms (`--token`, `--chat-id`, `--apply`).*
 
 The credentials are saved to:
 `%LOCALAPPDATA%\scripts\notifications\secrets\telegram.json`

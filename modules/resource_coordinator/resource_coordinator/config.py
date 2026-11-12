@@ -71,12 +71,25 @@ class PolicyConfig:
 
 
 @dataclass
+class MaintenanceVerificationConfig:
+    enabled: bool = False
+    gpu_uuid: str = ""
+    allowed_dimensions: List[str] = field(default_factory=list)
+    known_miner_executables: List[str] = field(default_factory=list)
+    allowed_gpu_processes: List[str] = field(default_factory=list)
+    gpu_process_attribution_confirmed: bool = False
+    observation_timeout_seconds: float = 5.0
+    max_observation_age_seconds: float = 30.0
+
+
+@dataclass
 class CoordinatorConfig:
     version: str = "1.0"
     service: ServiceConfig = field(default_factory=ServiceConfig)
     resources: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     processes: Dict[str, ProcessConfig] = field(default_factory=dict)
     policies: List[PolicyConfig] = field(default_factory=list)
+    maintenance_verification: MaintenanceVerificationConfig = field(default_factory=MaintenanceVerificationConfig)
 
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "CoordinatorConfig":
@@ -111,6 +124,64 @@ class CoordinatorConfig:
             ),
             model_load_timeout_seconds=float(svc_raw.get("model_load_timeout_seconds", 1800.0)),
         )
+
+        verification_raw = data.get("maintenance_verification", {})
+        if not isinstance(verification_raw, dict):
+            raise TypeError("maintenance_verification must be a mapping")
+        enabled = verification_raw.get("enabled", False)
+        if type(enabled) is not bool:
+            raise TypeError("maintenance_verification.enabled must be a boolean")
+        attribution_confirmed = verification_raw.get("gpu_process_attribution_confirmed", False)
+        if type(attribution_confirmed) is not bool:
+            raise TypeError("maintenance_verification.gpu_process_attribution_confirmed must be a boolean")
+        dimensions = verification_raw.get("allowed_dimensions", [])
+        executables = verification_raw.get("known_miner_executables", [])
+        allowed_gpu_processes = verification_raw.get("allowed_gpu_processes", [])
+        gpu_uuid = verification_raw.get("gpu_uuid", "")
+        if not isinstance(gpu_uuid, str):
+            raise TypeError("maintenance_verification.gpu_uuid must be a string")
+        if not isinstance(dimensions, list) or any(not isinstance(item, str) for item in dimensions):
+            raise TypeError("maintenance_verification.allowed_dimensions must be a list of strings")
+        if not isinstance(executables, list) or any(not isinstance(item, str) for item in executables):
+            raise TypeError("maintenance_verification.known_miner_executables must be a list of strings")
+        if not isinstance(allowed_gpu_processes, list) or any(
+            not isinstance(item, str) for item in allowed_gpu_processes
+        ):
+            raise TypeError("maintenance_verification.allowed_gpu_processes must be a list of strings")
+        if any(isinstance(verification_raw.get(key, default), bool) for key, default in (
+            ("observation_timeout_seconds", 5.0), ("max_observation_age_seconds", 30.0)
+        )):
+            raise TypeError("maintenance verification timeouts must be numeric, not boolean")
+        verification = MaintenanceVerificationConfig(
+            enabled=enabled,
+            gpu_uuid=gpu_uuid.strip(),
+            allowed_dimensions=list(dimensions),
+            known_miner_executables=list(executables),
+            allowed_gpu_processes=list(allowed_gpu_processes),
+            gpu_process_attribution_confirmed=attribution_confirmed,
+            observation_timeout_seconds=float(verification_raw.get("observation_timeout_seconds", 5.0)),
+            max_observation_age_seconds=float(verification_raw.get("max_observation_age_seconds", 30.0)),
+        )
+        valid_dimensions = {"power_limit_mw", "graphics_clock_offset_mhz", "memory_clock_offset_mhz"}
+        if len(set(dimensions)) != len(dimensions) or set(dimensions) - valid_dimensions:
+            raise ValueError("maintenance_verification.allowed_dimensions contains duplicate or unsupported values")
+        if len(set(item.casefold() for item in executables)) != len(executables) or any(
+            not item or Path(item).name != item or item in {".", ".."} for item in executables
+        ):
+            raise ValueError("maintenance_verification.known_miner_executables must contain unique executable names")
+        if len(set(item.casefold() for item in allowed_gpu_processes)) != len(allowed_gpu_processes) or any(
+            not item or Path(item).name != item or item in {".", ".."} for item in allowed_gpu_processes
+        ):
+            raise ValueError("maintenance_verification.allowed_gpu_processes must contain executable names")
+        if (
+            not math.isfinite(verification.observation_timeout_seconds)
+            or not 0.1 <= verification.observation_timeout_seconds <= 30.0
+            or not math.isfinite(verification.max_observation_age_seconds)
+            or not 1.0 <= verification.max_observation_age_seconds <= 300.0
+        ):
+            raise ValueError("maintenance verification timeouts are outside their bounded ranges")
+        if enabled and (not verification.gpu_uuid or not dimensions or not executables):
+            raise ValueError("Enabled maintenance verification requires gpu_uuid, allowed_dimensions, and known miners")
 
         processes = {}
         for p_name, p_data in data.get("processes", {}).items():
@@ -214,6 +285,7 @@ class CoordinatorConfig:
             resources=dict(data.get("resources", {})),
             processes=processes,
             policies=policies,
+            maintenance_verification=verification,
         )
 
 

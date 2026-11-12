@@ -91,8 +91,11 @@ The secret UUID in the Ping URL allows anyone possessing it to send pings. The s
 Save the ping URL securely. The CLI supports interactive masked input to prevent exposing secrets in PowerShell command history or process tables:
 
 ```powershell
-# Interactive prompt (recommended):
-scripts-notify heartbeat configure -i 5 -n "Host Alive" -a
+# Interactive prompt (recommended: omits ping URL from shell history):
+scripts-notify heartbeat configure -i 5 -a
+
+# Explicit command-line configuration (-u/--url for URL, -i/--interval for interval in minutes):
+scripts-notify heartbeat configure -u "https://hc-ping.com/b46a1e9c-4f7d-41a2-8e10-912837465abc" -i 5 -a
 
 # Or via environment variable:
 $env:NOTIFY_HEALTHCHECKS_PING_URL = "https://hc-ping.com/b46a1e9c-4f7d-41a2-8e10-912837465abc"
@@ -121,6 +124,9 @@ The Windows Scheduled Task supports two distinct operational modes:
 
 > [!IMPORTANT]
 > Microsoft Windows Task Scheduler strictly prevents `InteractiveToken` tasks from launching without an active user desktop session. To achieve true 24/7 off-host outage detection that alerts you when the host loses power or crashes and does not depend on a user being logged in, always register using `--headless` from an elevated Administrator prompt.
+
+> [!CAUTION] Existing Task Overwrite Precaution
+> Registration uses `Register-ScheduledTask -Force` in PowerShell, which automatically replaces and overwrites any existing task with the same name. Always inspect the currently registered task first via `scripts-notify heartbeat status` or `Get-ScheduledTask -TaskName ScriptsNotificationsHostHeartbeat` before applying changes.
 
 ### 4.2 Install Heartbeat Task
 All mutations default to **dry-run** mode. Pass `-a/--apply` to execute real registrations:
@@ -185,13 +191,16 @@ To verify that the headless host heartbeat operates without an active user logon
      ```
      Confirm the `Last Run Time` timestamp preceded your interactive logon.
 
-### 4.5 Send Test Ping
+### 4.5 Send Test Ping vs Direct Ping
 ```powershell
-# Dry-run:
+# Dry-run test verification (validates configuration and network without external mutation):
 scripts-notify heartbeat test
 
-# Send live external ping:
+# Live test transmission (REQUIRED: sends real external HTTP request to Healthchecks):
 scripts-notify heartbeat test -a
+
+# Direct one-shot ping (invoked by Scheduled Tasks / headless runner; has no -a flag):
+scripts-notify heartbeat ping
 ```
 
 ### 4.6 Run Diagnostic Doctor

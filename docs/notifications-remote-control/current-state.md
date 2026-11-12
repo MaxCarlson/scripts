@@ -478,6 +478,49 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - Zero cloud spending ($0 spend).
   - Public Funnel remains disabled throughout automated verification.
 
+---
+
+## 13. Group 3 Readiness: Reliable Outbox Dispatch and External Provider Preparation
+
+- **Status**: Complete & Verified (Branch `agent/notifications-p10-outbox-dispatcher-20261111`)
+- **Base Checkpoint**: `0c6f4a01eacaf5ef515ed6369b6d20938c9d4992` (`main`)
+- **Accomplishments**:
+  - **Stage A & B — Delivery Architecture & Crash Recovery Verification**:
+    - Confirmed complete delivery flow: `Scheduler/Coordinator event -> SQLite incident/outbox -> dispatcher -> provider receipt`.
+    - Formalized explicit at-least-once delivery semantics; never claims exactly-once.
+    - Implemented `OutboxLock` providing cross-process exclusive advisory locking via `msvcrt.locking` on Windows and `fcntl.flock` on Unix to eliminate concurrent dispatcher races.
+    - Hardened stalled claim recovery in `storage.reset_stalled_outbox_items`:
+      - Queries items in `attempting` exceeding the bounded stale threshold (`stalled_seconds=300.0`).
+      - Records durable audit entry in `delivery_attempts` with `status='stalled_claim_recovered'`, `error_category='worker_interrupted'`, logging the uncertain outcome and potential duplicate delivery.
+      - Increments `retry_count` and enforces `max_retries` transition to `terminal_error`, preventing infinite crash loops on poison payloads.
+      - Resets recoverable items to `pending` with immediate retry eligibility for the recovering worker.
+    - Protected active in-flight worker claims from premature reclamation by respecting the 300s threshold.
+  - **Stage C — Narrow Code Corrections & Comprehensive Tests**:
+    - Updated `modules/notifications/notifications/outbox.py`: added `OutboxLock`, enhanced `OutboxWorker` with `run_dispatch` and `async_run_dispatch` executing locked recovery then dispatch, error message token sanitizer `_sanitize_error_message`, and Scheduled Task lifecycle functions.
+    - Updated `modules/notifications/notifications/storage.py`: transactional stalled item audit and bounded retry recovery.
+    - Updated `modules/notifications/notifications/cli.py`: wired `outbox run` to `run_dispatch` with graceful lock contention handling (`status: skipped_locked`, exit 0), and added `outbox task status|install|uninstall` subcommands with dry-run default.
+    - Updated `modules/notifications/notifications/exceptions.py`: added `LockError`, `LockContentionError`, `LockSetupError`.
+    - Added test suite `modules/notifications/tests/test_outbox_dispatcher.py` (14 tests passing).
+    - Verified full notifications test suite: 187 passed, 1 skipped, 0 failed.
+  - **Stage D — Background Dispatcher Scheduled Task Design**:
+    - Designed proposed `ScriptsNotificationsOutboxDispatcher` Windows Scheduled Task:
+      - Executable: `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`
+      - Arguments: `-m notifications.cli outbox run --limit 50`
+      - Working directory: `C:\Users\mcarls` (decoupled from worktrees)
+      - Cadence: 2-minute interval (`-i 2`)
+      - Settings: `MultipleInstances: IgnoreNew`, `ExecutionTimeLimit: 2 minutes`, `StartWhenAvailable: $true`
+      - Principal: Interactive non-elevated user context (`RunLevel: Limited`)
+    - Previewed dry-run output via `scripts-notify outbox task install -j`. Verified task is NOT installed without explicit operator approval.
+  - **Stage E — Group 3 External Provider Preparation**:
+    - Telegram: Inspected `telegram status -j` (currently unconfigured). Documented required operator inputs (`--bot-token`, `--chat-id`) and verified token redaction across URLs, exceptions, and audit logs.
+    - Healthchecks: Inspected `heartbeat status -j` (currently unconfigured). Documented required operator inputs (`--ping-url`, `-i 5`) and headless service account configuration.
+    - Preserved zero external network transmissions and zero credential mutations.
+- **Strict Invariants Preserved**:
+  - `modules/resource_coordinator/` is 100% clean and unmodified (0 diff against `0c6f4a01`).
+  - Running processes (RC on port 1235, Toast Helper on port 1238, Remote Control on port 8443) preserved and healthy.
+  - Zero cloud spending ($0 spend).
+  - Public Funnel remains disabled.
+
 
 
 

@@ -61,3 +61,15 @@ class ProviderError(NotificationError):
 
 class ProviderNotConfiguredError(ProviderError):
     """Raised when an operation requires an unconfigured provider."""
+
+
+class LockError(NotificationError):
+    """Base exception for advisory file locking errors."""
+
+
+class LockContentionError(LockError):
+    """Raised when another worker currently holds the advisory file lock."""
+
+
+class LockSetupError(LockError):
+    """Raised when lock file creation, directory setup, or filesystem permissions fail."""

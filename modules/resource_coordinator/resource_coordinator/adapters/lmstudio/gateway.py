@@ -298,6 +298,14 @@ class LMStudioGateway:
 
         routes = [
             Route("/_coordinator/status", self.handle_coordinator_status, methods=["GET"]),
+            Route("/_coordinator/maintenance/status", self.handle_maintenance_status, methods=["GET"]),
+            Route("/_coordinator/maintenance/operations/{operation_id:str}", self.handle_maintenance_operation,
+                  methods=["GET"]),
+            Route("/_coordinator/maintenance/acquire", self.handle_maintenance_acquire, methods=["POST"]),
+            Route("/_coordinator/maintenance/heartbeat", self.handle_maintenance_heartbeat, methods=["POST"]),
+            Route("/_coordinator/maintenance/processes/register", self.handle_maintenance_process_register,
+                  methods=["POST"]),
+            Route("/_coordinator/maintenance/release", self.handle_maintenance_release, methods=["POST"]),
             Route("/_coordinator/miner/status", self.handle_coordinator_miner_status, methods=["GET"]),
             Route("/_coordinator/miner/{action:str}", self.handle_coordinator_miner_control, methods=["POST"]),
             Route("/_coordinator/gaming/status", self.handle_coordinator_gaming_status, methods=["GET"]),
@@ -311,6 +319,89 @@ class LMStudioGateway:
         ]
         app = Starlette(routes=routes, lifespan=lifespan)
         return app
+
+    @staticmethod
+    def _maintenance_http_status(result: Dict[str, Any]) -> int:
+        status = result.get("status")
+        if status == "invalid":
+            return 400
+        if status in {"conflict", "recovery_required", "stale", "expired", "not_found"}:
+            return 409 if status != "not_found" else 404
+        if status == "persistence_failed":
+            return 500
+        if status == "unavailable":
+            return 503
+        if status == "pending":
+            return 202
+        return 200
+
+    async def handle_maintenance_status(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        return JSONResponse(service.maintenance_manager.status())
+
+    async def handle_maintenance_operation(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        operation_id = request.path_params.get("operation_id", "")
+        result = service.maintenance_manager.operation_status(operation_id)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
+
+    async def handle_maintenance_acquire(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        if not service.is_ready:
+            return JSONResponse({"error": "Coordinator is not ready for maintenance acquisition"}, status_code=503)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A JSON maintenance request is required"}, status_code=400)
+        result = await service.maintenance_manager.acquire(payload)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
+
+    async def handle_maintenance_heartbeat(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A JSON heartbeat request is required"}, status_code=400)
+        result = await service.maintenance_manager.heartbeat(payload)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
+
+    async def handle_maintenance_release(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A JSON release request is required"}, status_code=400)
+        result = await service.maintenance_manager.release(payload)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
+
+    async def handle_maintenance_process_register(self, request: Request) -> JSONResponse:
+        service = self.admission_controller.service
+        if service is None:
+            return JSONResponse({"error": "No managed service bound to coordinator"}, status_code=503)
+        if not self._operator_authorized(request):
+            return JSONResponse({"error": "Unauthorized"}, status_code=403)
+        try:
+            payload = await request.json()
+        except (ValueError, TypeError):
+            return JSONResponse({"error": "A JSON process-registration request is required"}, status_code=400)
+        result = await service.maintenance_manager.register_process(payload)
+        return JSONResponse(result, status_code=self._maintenance_http_status(result))
 
     def _current_operator_token(self) -> Optional[str]:
         token = os.environ.get("RESOURCE_COORDINATOR_OPERATOR_TOKEN") or self.operator_token
@@ -623,6 +714,7 @@ class LMStudioGateway:
                     "inhibition": inhibition.to_dict() if inhibition else None,
                     "recovery": recovery,
                 },
+                "maintenance": svc.maintenance_manager.status() if svc else {"state": "disabled"},
             }
         )
 
@@ -675,6 +767,13 @@ class LMStudioGateway:
         if not isinstance(operator, str) or not operator.strip() or not isinstance(reason, str) or not reason.strip():
             return JSONResponse({"error": "Operator and reason are required"}, status_code=400)
         service = self.admission_controller.service
+        if service is not None and (
+            service.maintenance_manager.state != "idle"
+            or self.lease_mgr.gpu_maintenance_owner is not None
+        ):
+            return JSONResponse(
+                {"error": "Maintenance ownership or recovery hold must be reconciled separately"}, status_code=409
+            )
         if service is not None and not service.is_ready:
             return JSONResponse(
                 {"error": "Terminal or unready service requires independent reconciliation"}, status_code=409
