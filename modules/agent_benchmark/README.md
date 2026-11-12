@@ -228,6 +228,8 @@ agent-benchmark experiment plan -h
 
 `-A/--all` selects all benchmarks for setup operations; read-only inventory defaults to all benchmarks. For authorized installation, use `-d BENCHMARK` or explicit `-A`, and include `-x`. Existing `setup -A` remains a compatibility alias for the all-benchmark plan.
 
+On Windows, the pinned sparse Git checkout scopes `core.protectNTFS=false` to the detached checkout inside its disposable staging clone. The sparse path set still limits materialized files; the setting is not written to global Git configuration.
+
 Agent Benchmark provides integration with external coding benchmarks using the Harbor evaluation framework (`harbor==0.25.0`):
 1. **Aider Polyglot** (`aider/aider-polyglot`): 225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust.
 2. **Terminal-Bench 2.0** (`terminal-bench/terminal-bench-2`, 89 tasks) and **Terminal-Bench 4.0.0** (`terminal-bench/terminal-bench@4.0.0`, 66 tasks) are separate datasets with distinct task sets and source revisions. The short `terminal-bench` and `terminal-bench-cpu-only` aliases refer to the 2.0 catalog; the default selection is the pinned five-task CPU subset. The subset is `build-cython-ext`, `regex-log`, `sqlite-db-truncate`, `nginx-request-logging`, and `log-summary-date-ranges`.

@@ -262,7 +262,10 @@ class SourceManager:
                     git("sparse-checkout", ["git", "-C", str(staging), "sparse-checkout", "init", "--cone"])
                     git("sparse-checkout", ["git", "-C", str(staging), "sparse-checkout", "set", *spec.paths])
                     rev = spec.revision or "HEAD"
-                    git("checkout", ["git", "-C", str(staging), "checkout", "--detach", rev])
+                    # Windows Git validates unrelated tracked names even when sparse checkout
+                    # excludes them. Scope this compatibility setting to this one checkout in
+                    # the disposable staging clone; the selected sparse paths remain constrained.
+                    git("checkout", ["git", "-C", str(staging), "-c", "core.protectNTFS=false", "checkout", "--detach", rev])
                     actual = git("validation", ["git", "-C", str(staging), "rev-parse", "HEAD"]).stdout.strip()
                     if spec.revision and actual != spec.revision:
                         raise RuntimeError(f"Pinned Git revision mismatch: expected {spec.revision}, got {actual}; target={target}; staging={staging}")
