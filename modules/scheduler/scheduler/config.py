@@ -36,6 +36,7 @@ class SchedulerConfig:
     notify_on_run: bool = True
     notify_on_success: bool = True
     notify_on_failure: bool = True
+    use_notifications_broker: bool = True
     system_log_relative_path: str = "logs/system.log"
     tasks_log_relative_path: str = "logs/tasks"
     output_retention_days: int = 365
@@ -49,6 +50,7 @@ class SchedulerConfig:
             "notify_on_run": self.notify_on_run,
             "notify_on_success": self.notify_on_success,
             "notify_on_failure": self.notify_on_failure,
+            "use_notifications_broker": self.use_notifications_broker,
             "system_log_relative_path": self.system_log_relative_path,
             "tasks_log_relative_path": self.tasks_log_relative_path,
             "output_retention_days": self.output_retention_days,
@@ -66,6 +68,7 @@ class SchedulerConfig:
             notify_on_run=bool(data.get("notify_on_run", True)),
             notify_on_success=bool(data.get("notify_on_success", True)),
             notify_on_failure=bool(data.get("notify_on_failure", True)),
+            use_notifications_broker=bool(data.get("use_notifications_broker", True)),
             system_log_relative_path=data.get("system_log_relative_path", "logs/system.log"),
             tasks_log_relative_path=data.get("tasks_log_relative_path", "logs/tasks"),
             output_retention_days=max(1, int(data.get("output_retention_days", 365))),

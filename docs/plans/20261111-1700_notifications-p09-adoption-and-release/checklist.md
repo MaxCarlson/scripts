@@ -5,15 +5,15 @@
   - [x] 5-level evidence scale applied and verified against codebase
   - [x] Stage A commit created
 
-- [ ] **Stage B: Consumer Adoption (Scheduler)**
-  - [ ] Failing unit tests written in `modules/scheduler/tests/test_notifications_integration.py`
-  - [ ] Configurable `use_notifications_broker` option in `SchedulerConfig`
-  - [ ] Scheduler `Notifier` updated to route Windows notifications via `notifications.publisher.Publisher`
-  - [ ] Safe fallback for Windows without PowerShell string interpolation
-  - [ ] Cross-platform behavior preserved for Termux, Linux, macOS
-  - [ ] Deduplication and automatic incident resolution on task success
-  - [ ] Tests pass (119+ scheduler tests passing)
-  - [ ] Stage B commit created
+- [x] **Stage B: Consumer Adoption (Scheduler)**
+  - [x] Failing unit tests written in `modules/scheduler/tests/test_notifications_integration.py`
+  - [x] Configurable `use_notifications_broker` option in `SchedulerConfig`
+  - [x] Scheduler `Notifier` updated to route Windows notifications via `notifications.publisher.Publisher`
+  - [x] Safe fallback for Windows without PowerShell string interpolation
+  - [x] Cross-platform behavior preserved for Termux, Linux, macOS
+  - [x] Deduplication and automatic incident resolution on task success
+  - [x] Tests pass (126 scheduler tests passing)
+  - [x] Stage B commit created
 
 - [ ] **Stage C: Installation Pathways & Registry Integration**
   - [ ] Version tag `<!-- version: 0.1.0 -->` added to `modules/remote_control/README.md`
