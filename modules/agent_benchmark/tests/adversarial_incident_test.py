@@ -95,7 +95,8 @@ def test_adversarial_secret_scrubbing_in_exceptions_and_receipts():
         mock_proc.pid = 4321
         return mock_proc
 
-    with patch("agent_benchmark.suite_recovery.subprocess.Popen", side_effect=fake_spawn), \
+    with patch("agent_benchmark.suite_recovery.probe_managed_monitor", return_value=(MagicMock(status="not_running", error_code="MONITOR_NOT_RUNNING"), None)), \
+         patch("agent_benchmark.suite_recovery.subprocess.Popen", side_effect=fake_spawn), \
          patch("agent_benchmark.suite_recovery._poll_for_server_ready", return_value=mock_desc), \
          patch("agent_benchmark.suite_recovery.ManagedMonitorClient.acquire_capability_token", return_value=fake_token):
         

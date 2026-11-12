@@ -29,7 +29,10 @@ DEFAULT_RUNS = Path("reports/agent-bench-suite")
 def add_suite_parser(actions: Any) -> None:
     suite = actions.add_parser("suite", help="Plan, execute, resume and report persistent Harbor cohorts")
     commands = suite.add_subparsers(dest="suite_command")
-    list_parser = commands.add_parser("list", help="List verified cohorts")
+    list_parser = commands.add_parser("list", help="List verified cohorts and datasets")
+    list_parser.add_argument(
+        "-f", "--format", choices=("table", "json"), default="json", help="Output format (default: json)"
+    )
     list_parser.add_argument("-F", "--llm-friendly", action="store_true")
 
     def common(parser: argparse.ArgumentParser, *, execution: bool = False) -> None:
@@ -71,6 +74,12 @@ def add_suite_parser(actions: Any) -> None:
             action="store_true",
             help="Authorize bounded start of absent local managed LLM Monitor",
         )
+        parser.add_argument(
+            "--backend",
+            choices=("harbor", "direct_chat", "mock"),
+            default=None,
+            help="Execution backend (auto-resolved from dataset/cohort if not specified)",
+        )
         parser.add_argument("-F", "--llm-friendly", action="store_true")
         if execution:
             parser.add_argument("-x", "--execute", action="store_true", help="Required authorization for inference")
@@ -105,6 +114,24 @@ def add_suite_parser(actions: Any) -> None:
     report.add_argument("-r", "--run-id", required=True)
     report.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     report.add_argument("-F", "--llm-friendly", action="store_true")
+    compare = commands.add_parser("compare", help="Compare two completed or interrupted suite runs on matching tasks")
+    compare.add_argument(
+        "-r",
+        "--runs",
+        nargs=2,
+        required=True,
+        metavar=("RUN_A", "RUN_B"),
+        help="Two run IDs or run directory paths to compare",
+    )
+    compare.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
+    compare.add_argument(
+        "-f",
+        "--format",
+        choices=("table", "json", "markdown"),
+        default="table",
+        help="Output format (default: table)",
+    )
+    compare.add_argument("-F", "--llm-friendly", action="store_true")
     archive = commands.add_parser("archive", help="Archive and verify LLM Monitor evidence for suite runs")
     archive.add_argument(
         "action",
@@ -213,16 +240,34 @@ def handle_suite(args: argparse.Namespace) -> int:
 
             return run_doctor(args)
         if command == "list":
-            rows = [
-                {
-                    "id": key,
-                    "dataset": value["dataset"],
-                    "source_revision": value["revision"],
-                    "tasks": len(value["tasks"]),
-                }
-                for key, value in COHORTS.items()
-            ]
-            emit({"cohorts": rows}, llm_friendly=friendly)
+            from .benchmarks.catalog import get_unified_discovery
+
+            fmt = getattr(args, "format", "json")
+            discovery = get_unified_discovery(include_readiness=True)
+            if fmt == "table":
+                from termdash import Table
+
+                print("\n=== Registered Datasets ===")
+                d_tbl = Table(
+                    headers=["ID", "Benchmark", "Version", "Tasks", "State"],
+                    style="dash",
+                )
+                for d in discovery["datasets"]:
+                    task_count = str(d["total_tasks"]) if d["total_tasks"] else "dynamic"
+                    d_tbl.add_row(d["id"], d.get("benchmark_id") or "-", d["version"], task_count, d.get("install_state", "unknown"))
+                print(d_tbl.render())
+
+                print("\n=== Available Cohorts ===")
+                c_tbl = Table(
+                    headers=["Cohort ID", "Dataset", "Tasks", "Source Revision"],
+                    style="dash",
+                )
+                for c in discovery["cohorts"]:
+                    rev = c["source_revision"][:8] if c.get("source_revision") else "-"
+                    c_tbl.add_row(c["id"], c["dataset"], str(c["tasks"]), rev)
+                print(c_tbl.render())
+            else:
+                emit(discovery, llm_friendly=friendly)
             return 0
         if command in {"plan", "run"}:
             if command == "run" and not args.execute and not args.prepare_only:
@@ -243,6 +288,7 @@ def handle_suite(args: argparse.Namespace) -> int:
                 prompt_policy_file=args.prompt_policy_file,
                 study_repetition=args.study_repetition,
                 study_seed=args.study_seed,
+                backend=getattr(args, "backend", None),
             )
             if command == "run" and args.prepare_only and (not plan.get("study_adapter") or args.background):
                 raise ValueError("prepare-only requires a foreground specification-verification study")
@@ -314,6 +360,7 @@ def handle_suite(args: argparse.Namespace) -> int:
                 planned_manifest=plan,
                 registry_snapshot=registry_snapshot,
                 prompt_policy_file=args.prompt_policy_file,
+                backend=getattr(args, "backend", None),
             )
             store = RunStore(run_dir)
             if args.prepare_only:
@@ -426,6 +473,38 @@ def handle_suite(args: argparse.Namespace) -> int:
             )
             _emit_event("finished", friendly=friendly, **_finished_payload(summary, run_dir))
             return 0 if summary["infrastructure_invalid"] == 0 else 1
+        if command == "compare":
+            from .comparison import (
+                compare_suite_runs,
+                format_comparison_markdown,
+                format_comparison_table,
+            )
+
+            runs = getattr(args, "runs", [])
+            if len(runs) != 2:
+                raise ValueError("suite compare requires exactly two run IDs or paths via -r/--runs")
+
+            def _resolve_run_dir(val: str) -> Path:
+                p = Path(val).expanduser().resolve()
+                if p.is_dir():
+                    return p
+                cand = (args.runs_dir / val).resolve()
+                if cand.is_dir():
+                    return cand
+                raise FileNotFoundError(f"Run directory not found: {val!r}")
+
+            dir_a = _resolve_run_dir(runs[0])
+            dir_b = _resolve_run_dir(runs[1])
+
+            comp_result = compare_suite_runs(dir_a, dir_b)
+            fmt = getattr(args, "format", "table")
+            if fmt == "json":
+                emit(comp_result, llm_friendly=friendly)
+            elif fmt == "markdown":
+                print(format_comparison_markdown(comp_result))
+            else:
+                print(format_comparison_table(comp_result))
+            return 0
         if command == "archive":
             action = getattr(args, "action", "create")
             if getattr(args, "archive", None) and not getattr(args, "run", None):
@@ -443,7 +522,7 @@ def handle_suite(args: argparse.Namespace) -> int:
 
                 return verify_archive(args)
             raise ValueError(f"unknown archive action: {action}")
-        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report, archive")
+        raise ValueError("choose a suite subcommand: list, plan, run, status, resume, report, compare, archive")
     except Exception as error:
         if friendly:
             _emit_event("error", friendly=True, code=_error_code(error), detail=str(error))
