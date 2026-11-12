@@ -56,6 +56,35 @@ llm-monitor web restart -p 8788 -x
 
 The web command binds to `127.0.0.1:8788`, writes an owner-protected instance descriptor, prints a one-time browser login code, and opens the dashboard. It reads LM Studio model inventory through the existing GET-only API client. Use `-n/--no-browser` to keep the browser closed, `-p/--port` to select a port, `-e/--endpoint` to set an HTTP(S) endpoint, and `-i/--refresh-interval` to change the shared inventory poll interval.
 
+### Persistent Configuration & Defaults
+
+`llm-monitor web` supports persistent, user-configurable defaults via a configuration file:
+- **Windows**: `%LOCALAPPDATA%\llm-monitor\config.toml` (or `config.json`)
+- **Linux**: `~/.config/llm-monitor/config.toml` (or `$XDG_CONFIG_HOME/llm-monitor/config.toml`)
+- **macOS**: `~/Library/Application Support/llm-monitor/config.toml`
+- **Custom path**: Via `-c/--config <path>` CLI option or `LLM_MONITOR_CONFIG` environment variable.
+
+An example configuration file is provided in [`examples/config.toml`](file:///C:/Users/mcarls/src/scripts/.worktrees/llm-monitor-web-defaults-20261111/modules/llm_monitor/examples/config.toml).
+
+**Precedence Order:**
+```
+Explicit CLI arguments > User configuration > Built-in defaults
+```
+
+**Backward Compatibility:** Installations without a user configuration file preserve the existing built-in defaults (port 8788, gateway disabled, browser auto-open enabled, recording disabled).
+
+**Explicit Disabling & Flags:**
+All flags have both short and long forms:
+- `-g / --gateway`: Enable gateway; `-G / --no-gateway`: Explicitly disable gateway.
+- `-n / --no-browser`: Suppress browser auto-open; `-b / --browser`: Explicitly enable browser auto-open.
+- `-R / --record-inferences {metadata,content,none,off}`: Set recording mode; `-N / --no-record-inferences`: Explicitly disable recording.
+- `-u / --gateway-upstream <url>`: Specify gateway upstream URL.
+- `-c / --config <path>`: Specify custom configuration file.
+
+**Protected Upstream Safeguard:**
+When a protected upstream is configured (such as Resource Coordinator at `http://127.0.0.1:1235`), if that upstream is down or unreachable, the gateway fails fast with HTTP 502 (`Configured inference upstream is unavailable`). It will **never silently fall back** to direct LM Studio inference (`http://127.0.0.1:1234`), preserving concurrency locks and resource protection.
+
+
 ### Server Lifecycle Management
 
 - **Status (`llm-monitor web status -p PORT`)**: Identifies the server running on the specified port (or auto-discovers if single instance), checks process liveness and creation time, verifies genuine LLM Monitor ownership via loopback zero-knowledge challenge-response, and reports gateway state, recording mode, database path, configuration fingerprint, and recorder health. Never displays login codes, tokens, or private content.

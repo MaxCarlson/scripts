@@ -131,14 +131,18 @@ def build_parser() -> argparse.ArgumentParser:
     web.add_argument("-x", "--execute", action="store_true", help="Execute the stop action (without -x, stop runs in preview dry-run mode)")
     web.add_argument("-f", "--force", action="store_true", help="Force termination if graceful shutdown fails (requires -x/--execute)")
     web.add_argument("-F", "--format", choices=("text", "json"), default="text", help="Output format (text or json)")
-    web.add_argument("-e", "--endpoint", default="http://127.0.0.1:1234", help="LM Studio HTTP base URL")
-    web.add_argument("-i", "--refresh-interval", type=float, default=2.0)
-    web.add_argument("-n", "--no-browser", action="store_true", help="Do not open a browser window")
-    web.add_argument("-g", "--gateway", action="store_true", help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
-    web.add_argument("--gateway-upstream", default="http://127.0.0.1:1234", help="Fixed loopback inference upstream (gateway mode only)")
-    web.add_argument("-T", "--gateway-timing", action="store_true", help="Log gateway timing metadata without request content")
-    web.add_argument("-R", "--record-inferences", choices=("metadata", "content"), help="Record gateway inference history to SQLite")
+    web.add_argument("-e", "--endpoint", default=None, help="LM Studio HTTP base URL (default: http://127.0.0.1:1234)")
+    web.add_argument("-i", "--refresh-interval", type=float, default=None, help="Refresh interval in seconds (default: 2.0)")
+    web.add_argument("-b", "--browser", action="store_false", dest="no_browser", default=None, help="Explicitly enable browser auto-open")
+    web.add_argument("-n", "--no-browser", action="store_true", dest="no_browser", default=None, help="Do not open a browser window")
+    web.add_argument("-g", "--gateway", action="store_true", dest="gateway", default=None, help="Enable opt-in OpenAI-compatible gateway at /v1/chat/completions")
+    web.add_argument("-G", "--no-gateway", action="store_false", dest="gateway", default=None, help="Explicitly disable opt-in OpenAI-compatible gateway")
+    web.add_argument("-u", "--gateway-upstream", default=None, help="Fixed loopback inference upstream (gateway mode only)")
+    web.add_argument("-T", "--gateway-timing", action="store_true", dest="gateway_timing", default=None, help="Log gateway timing metadata without request content")
+    web.add_argument("-R", "--record-inferences", choices=("metadata", "content", "none", "off"), default=None, help="Record gateway inference history to SQLite")
+    web.add_argument("-N", "--no-record-inferences", "--no-record", action="store_const", const="none", dest="record_inferences", help="Explicitly disable inference recording")
     web.add_argument("-d", "--database", type=Path, help="Custom SQLite database file for inference history")
+    web.add_argument("-c", "--config", type=Path, default=None, help="Path to custom user configuration file")
 
     tui = sub.add_parser("tui", help="Open the interactive read-only monitoring dashboard")
     selection = tui.add_mutually_exclusive_group()
@@ -215,6 +219,16 @@ def main(argv: list[str] | None = None) -> int:
                     force=args.force,
                     as_json=as_json,
                 )
+            from .config import ConfigError, get_web_config, load_user_config, resolve_web_options
+
+            try:
+                user_config = get_web_config(load_user_config(args.config))
+            except ConfigError as err:
+                print(f"llm-monitor: web: configuration error: {err}", file=sys.stderr)
+                return 2
+
+            opts = resolve_web_options(args, user_config)
+
             if args.action == "restart":
                 if args.force and not args.execute:
                     print("llm-monitor: web: --force requires -x/--execute", file=sys.stderr)
@@ -226,25 +240,25 @@ def main(argv: list[str] | None = None) -> int:
                     execute=args.execute,
                     force=args.force,
                     as_json=as_json,
-                    endpoint=args.endpoint,
-                    gateway_enabled=args.gateway,
-                    gateway_upstream=args.gateway_upstream,
-                    recording_mode=args.record_inferences,
-                    database_path=str(args.database) if args.database else None,
+                    endpoint=opts["endpoint"],
+                    gateway_enabled=opts["gateway_enabled"],
+                    gateway_upstream=opts["gateway_upstream"],
+                    recording_mode=opts["record_inferences"],
+                    database_path=opts["database"],
                 )
 
             from .web import run_web
 
             return run_web(
-                endpoint=args.endpoint,
-                port=args.port if args.port is not None else 8788,
-                no_browser=args.no_browser,
-                refresh_interval=args.refresh_interval,
-                gateway_enabled=args.gateway,
-                gateway_upstream=args.gateway_upstream,
-                gateway_timing=args.gateway_timing,
-                record_inferences=args.record_inferences,
-                database=str(args.database) if args.database else None,
+                endpoint=opts["endpoint"],
+                port=opts["port"],
+                no_browser=opts["no_browser"],
+                refresh_interval=opts["refresh_interval"],
+                gateway_enabled=opts["gateway_enabled"],
+                gateway_upstream=opts["gateway_upstream"],
+                gateway_timing=opts["gateway_timing"],
+                record_inferences=opts["record_inferences"],
+                database=opts["database"],
             )
         if args.command == "tui":
             return _tui(args)

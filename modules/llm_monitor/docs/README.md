@@ -7,6 +7,7 @@
 ## Core Components
 
 - `llm_monitor.cli`: Primary command-line interface (`llm-monitor`).
+- `llm_monitor.config`: Persistent user configuration discovery, TOML/JSON parsing, and CLI precedence resolution.
 - `llm_monitor.web`: Standalone local browser host and server lifecycle runner.
 - `llm_monitor.server_lifecycle`: Instance registration, cryptographic challenge-response verification, graceful shutdown, and explicit force termination.
 - `llm_monitor.inference_web`: FastAPI/ASGI web application for the browser overview.

@@ -1,0 +1,42 @@
+# LLM Monitor — Example User Configuration
+#
+# Recommended file location:
+#   Windows: %LOCALAPPDATA%\llm-monitor\config.toml
+#   Linux:   ~/.config/llm-monitor/config.toml (or $XDG_CONFIG_HOME/llm-monitor/config.toml)
+#   macOS:   ~/Library/Application Support/llm-monitor/config.toml
+#
+# Precedence: Explicit CLI arguments > user configuration > built-in defaults.
+# Installations without a configuration file preserve built-in defaults.
+
+[web]
+# Web overview port (default: 8788)
+port = 8788
+
+# LM Studio endpoint for model inventory and health monitoring (default: http://127.0.0.1:1234)
+endpoint = "http://127.0.0.1:1234"
+
+# Enable opt-in loopback OpenAI-compatible inference gateway at /v1/chat/completions
+gateway = true
+
+# Loopback upstream destination for gateway forwarding.
+# Set to Resource Coordinator (http://127.0.0.1:1235) to coordinate inference through protected concurrency locks.
+# IMPORTANT: The gateway fails fast with HTTP 502 if this upstream is unavailable;
+# it will NEVER silently fall back to direct LM Studio inference.
+gateway_upstream = "http://127.0.0.1:1235"
+
+# Record gateway inference history to SQLite: "metadata" or "content" ("none" or "off" to disable)
+record_inferences = "metadata"
+
+# Disable automatic browser window launch on server startup (true = suppressed, false = auto-open)
+no_browser = true
+
+# Custom SQLite database file for inference telemetry.
+# Leave commented or empty to use the normal default (%LOCALAPPDATA%\llm-monitor\telemetry.sqlite3 on Windows).
+# Do not configure experiment-specific or workload-specific databases globally.
+# database = ""
+
+# Diagnostic polling interval in seconds (default: 2.0)
+refresh_interval = 2.0
+
+# Log gateway timing metadata without request content (default: false)
+gateway_timing = false
