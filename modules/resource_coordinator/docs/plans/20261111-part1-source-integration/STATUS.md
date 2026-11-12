@@ -54,3 +54,29 @@ The original RC feature worktree is clean at `607067bfe94f92e5b78469ba78571ceb40
 - RC integration branch `integration/rc-v014-h3-baseline-20261111` is pushed; immediately before this final checklist-only commit, both local and remote refs were `f6b7bc2a` (full SHA is in Git history). `origin/main` is `6467edc6e82ce22b18ac3fd869188243af6085f7` and is an ancestor.
 - Pushed Mining integration branch `integration/mining-rc-h3-baseline-20261111`; remote ref and local candidate both resolve to `deea3e019b35615f4d95e6f510450f7f392fb82a`. `origin/master` remains `4b1f2a57b0bac536d250a7018df1f8a20c78e1c5` and is an ancestor.
 - This final status/checklist commit is documentation-only and is published on the same RC integration branch; the completion report records the exact final SHA. Neither `main` nor `master` was modified by this assignment.
+
+## Part 1 final integration closure
+
+This section supersedes the pre-merge recommendation and publication snapshot above.
+
+- RC fast-forwarded `main` from `6467edc6e82ce22b18ac3fd869188243af6085f7` to `0c6f4a01eacaf5ef515ed6369b6d20938c9d4992`. `origin/main` was fetched after the push and matched exactly.
+- Mining fast-forwarded `master` from `4b1f2a57b0bac536d250a7018df1f8a20c78e1c5` to `deea3e019b35615f4d95e6f510450f7f392fb82a`. `origin/master` was fetched after the push and matched exactly.
+- H3 is accepted from the recorded result: 8/8 simulated cross-repository scenarios passed at Mining `9cdaf80d9507c4c91ef5b1e45a9441c93969f45d` and RC `737bc6b2db7b68c041abffb66017164f3c883228`. Mining implementation/tests in `deea3e0` are unchanged from the H3-tested source; only H3 documentation differs. RC implementation, tests, and package metadata in `0c6f4a0` are unchanged from the H3-pinned RC source.
+- Post-merge checks: RC source import resolved to `modules/resource_coordinator/resource_coordinator/__init__.py`, version `0.14.0`, exit 0; `git diff --quiet origin/integration/rc-v014-h3-baseline-20261111..origin/main -- modules/resource_coordinator/resource_coordinator modules/resource_coordinator/tests modules/resource_coordinator/pyproject.toml`, exit 0; `git diff --quiet 9cdaf80d9507c4c91ef5b1e45a9441c93969f45d..origin/master -- mining_optimizer tests`, exit 0. No full regression suite was rerun because both mainline refs are exact fast-forwards to the validated candidates.
+- The finalized V3 roadmap is tracked in RC main. Its SHA-256 remains `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46`; canonical feature-worktree, integration-worktree, and merged-main Git blob IDs all match (`3a1c2f7662a54469bb6dc15ad6462a4295ec93e6`). V3 was not edited during integration.
+- RC and Mining primary worktrees were clean after their respective pushes. The original H2/H3 feature worktrees were preserved. No production service, KRig process, GPU setting, LM Studio operation, WSL state, credential, or Scheduled Task was changed.
+
+### Preserved baseline lifecycle defect
+
+Keep `test_gpu_idle_pause_persists_across_restart_and_resumes_after_complete_window` visible and resolve it in Part 3 reliability work before enabling automatic recovery operationally.
+
+- It failed in isolation and within the RC lifecycle test group at the RC source integration checkpoint `1316dd1674687a75d21782da79220f5742dddea2`; the same test also failed on unchanged pre-integration `main` at `10420e971f4215986c49d2f247cf38a558795e7d`. The test file was byte-identical across those refs.
+- The deterministic fixture uses a fake miner and fake GPU telemetry (5% utilization), a 20% threshold, a 0.06-second sample window, and 0.01-second supervision polling. It persists the GPU-idle pause state, stops the service, and reconstructs the service from the same state file. After the test's one-second restart wait, the fake miner remains stopped; the observed warning is `manual override is active`.
+- In the broader lifecycle/CLI/install group the result was 327 passed, 3 skipped, 1 failed. The three skips are opt-in Windows Task Scheduler/UAC acceptance cases. The isolated baseline reproduction establishes that this is pre-existing, not introduced by the RC maintenance integration; it is not a production-readiness pass.
+
+### Remaining operational gates
+
+- H4 remains open: reproduce and accept the Windows `WinError 206` upgrade/recovery path and elevated Scheduled Task replacement/rollback in a disposable Windows environment; verify installed/running source identity, credential ACLs, and real Windows process ownership.
+- H5 remains open: qualify RTX 5090 identity, Windows/WDDM NVML readbacks and process attribution, real KRig lifecycle, GPU restoration, and cooldown in a separately authorized controlled optimizer run.
+- LM Studio runtime identity, clients that may bypass RC admission, and actual model-load/inference coverage remain unverified. Fixed/locked-clock restoration still requires operator reconciliation where independent readback is unsupported.
+- This closes Part 1 source integration only. Do not infer deployment or unattended-operation readiness from the merged source or simulated H3 evidence.
