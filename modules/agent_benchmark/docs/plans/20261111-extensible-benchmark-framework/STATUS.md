@@ -58,3 +58,18 @@
 - [x] Zero model calls, downloads, or unapproved mutations.
 
 **Status:** Phase 02 is COMPLETE and gate satisfied. Ready to proceed to Phase 03.
+
+
+## 7. Phase 03 Acceptance Gate
+- [x] External source management subsystem implemented (`external_sources/specs.py`, `stores.py`, `receipts.py`, `manager.py`, `__init__.py`).
+- [x] Standard external directory store layout outside Git-tracked repository (`%LOCALAPPDATA%\agent-benchmark` on Windows / `XDG_DATA_HOME` on Linux).
+- [x] Content-addressed atomic installation staging and lock file persistence (`locks/installed-sources.json`).
+- [x] Path traversal prevention and safety checks (`validate_safety`) enforcing clean identifier paths.
+- [x] File and tree SHA-256 hash calculation, verification, and corruption discovery (`verify_resource`).
+- [x] CLI commands implemented and tested: `setup -A`, `setup plan -A`, `setup install -A`, `setup install -A -x`, `setup status -A`, `setup verify -A`, `setup upgrade`.
+- [x] Read-only commands perform zero downloads or mutations; `-x/--execute` required for any external installation or modification.
+- [x] 40 unit and regression tests passing (`setup_sources_test.py`, `cli_refactor_test.py`, `catalog_test.py`, `cli_test.py`).
+- [x] Ruff lint checks 100% clean on all Phase 03 files.
+- [x] Zero live LLM calls, zero model downloads, system Python env untouched.
+
+**Status:** Phase 03 is COMPLETE and gate satisfied. Ready to proceed to Phase 04.

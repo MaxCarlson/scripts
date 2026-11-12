@@ -4,12 +4,14 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 import sys
 from typing import Any
 
 from termdash import Table
 
 from ..benchmarks.catalog import get_default_catalog
+from ..external_sources import ResourceSpec, SourceManager
 
 
 def add_setup_parser(actions: Any) -> None:
@@ -38,6 +40,10 @@ def add_setup_parser(actions: Any) -> None:
         choices=("table", "json"),
         default="table",
         help="Output format (default: table)",
+    )
+    setup_p.add_argument(
+        "--resource-root",
+        help="Override default external resource store directory",
     )
 
     sub = setup_p.add_subparsers(dest="setup_command")
@@ -97,6 +103,10 @@ def _add_setup_common(parser: argparse.ArgumentParser) -> None:
         default="table",
         help="Output format (default: table)",
     )
+    parser.add_argument(
+        "--resource-root",
+        help="Override default external resource store directory",
+    )
 
 
 def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
@@ -106,6 +116,8 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
     target = getattr(args, "target", None)
     fmt = getattr(args, "format", "table")
     execute = bool(getattr(args, "execute", False))
+    custom_root = getattr(args, "resource_root", None)
+    resource_root = Path(custom_root).resolve() if custom_root else None
 
     if target and is_all:
         print("agent-bench setup: cannot specify both --all (-A) and a specific target (-d)", file=sys.stderr)
@@ -136,11 +148,14 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
     else:
         selected_benchmarks = all_benchmarks
 
+    source_manager = SourceManager(resource_root)
+
     if subcmd == "plan":
         plan_rows = []
+        benchmark_rows = []
         for b in selected_benchmarks:
             resources = [r.to_dict() for r in b.resources]
-            plan_rows.append({
+            benchmark_rows.append({
                 "benchmark_id": b.id,
                 "name": b.name,
                 "version": b.version,
@@ -149,11 +164,17 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 "required_resources": resources,
                 "resource_count": len(resources),
             })
+            for decl in b.resources:
+                spec = ResourceSpec.from_declaration(b.id, decl)
+                res_plan = source_manager.plan_resource(spec)
+                plan_rows.append(res_plan)
 
         payload = {
             "mode": "plan",
             "scope": "all" if is_all or not target else target,
-            "benchmarks": plan_rows,
+            "resource_root": str(source_manager.root),
+            "benchmarks": benchmark_rows,
+            "resources": plan_rows,
             "note": "Read-only setup plan; no resources downloaded or installed",
         }
 
@@ -161,85 +182,183 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             print(json.dumps(payload, indent=2))
         else:
             print("\n=== Benchmark Setup Plan ===")
-            tbl = Table(headers=["Benchmark", "Type", "Resources Required", "Default Dataset"], style="dash")
+            print(f"Resource store: {source_manager.root}")
+            tbl = Table(headers=["Benchmark", "Resource", "Type", "Status", "Action"], style="dash")
             for r in plan_rows:
-                res_types = ", ".join(res["type"] for res in r["required_resources"]) or "None (native)"
-                tbl.add_row(r["benchmark_id"], r["implementation_type"], res_types, r["default_dataset"] or "-")
+                status_str = "Installed" if r["installed"] else "Missing"
+                act = r["action"].upper()
+                if r["optional"]:
+                    act += " (OPTIONAL)"
+                tbl.add_row(r["benchmark_id"], r["resource_name"], r["resource_type"], status_str, act)
             print(tbl.render())
             print("\nUse 'agent-benchmark setup install -A' to preview installation.")
         return 0
 
     elif subcmd == "install":
-        install_rows = []
+        # Group specs to install
+        specs_to_install = []
         for b in selected_benchmarks:
-            for r in b.resources:
-                install_rows.append({
-                    "benchmark_id": b.id,
-                    "resource_name": r.name,
-                    "resource_type": r.type,
-                    "target_location": f"<external-root>/sources/{b.id}/{r.revision or 'default'}",
-                    "revision": r.revision,
-                    "action": "install" if not r.optional else "skip_optional",
-                })
+            for decl in b.resources:
+                if not decl.optional:
+                    specs_to_install.append(ResourceSpec.from_declaration(b.id, decl))
 
         if not execute:
+            preview_rows = []
+            for spec in specs_to_install:
+                plan = source_manager.plan_resource(spec)
+                preview_rows.append({
+                    "benchmark_id": spec.benchmark_id,
+                    "resource_name": spec.name,
+                    "resource_type": spec.resource_type,
+                    "target_location": plan["target_location"],
+                    "action": plan["action"],
+                })
+
             payload = {
                 "mode": "install_preview",
                 "scope": "all" if is_all or not target else target,
                 "authorized": False,
-                "actions": install_rows,
-                "note": "Dry-run installation preview. Re-run with -x/--execute to authorize installation (Phase 03).",
+                "resource_root": str(source_manager.root),
+                "actions": preview_rows,
+                "note": "Dry-run installation preview. Re-run with -x/--execute to authorize installation.",
             }
             if fmt == "json":
                 print(json.dumps(payload, indent=2))
             else:
                 print("\n=== Setup Installation Preview (Dry Run) ===")
+                print(f"Resource store: {source_manager.root}")
                 tbl = Table(headers=["Benchmark", "Resource", "Type", "Action"], style="dash")
-                for item in install_rows:
+                for item in preview_rows:
                     tbl.add_row(item["benchmark_id"], item["resource_name"], item["resource_type"], item["action"])
                 print(tbl.render())
                 print("\nAuthorization required: add -x/--execute to authorize external resource installation.")
             return 0
-        else:
-            # Phase 02 stub for authorized execution - will be implemented in Phase 03
-            print(
-                "agent-bench setup install: external resource installer will be available in Phase 03. "
-                "Use 'agent-bench setup install -A' without -x for dry-run preview.",
-                file=sys.stderr,
-            )
-            return 1
 
-    elif subcmd in ("status", "verify"):
+        else:
+            # Authorized execution
+            installed_receipts = []
+            for spec in specs_to_install:
+                try:
+                    receipt = source_manager.install_resource(spec, execute=True)
+                    installed_receipts.append(receipt.to_dict())
+                except Exception as err:
+                    print(f"agent-bench setup install: failed to install {spec.name}: {err}", file=sys.stderr)
+                    return 1
+
+            payload = {
+                "mode": "install_executed",
+                "scope": "all" if is_all or not target else target,
+                "resource_root": str(source_manager.root),
+                "installed": installed_receipts,
+            }
+            if fmt == "json":
+                print(json.dumps(payload, indent=2))
+            else:
+                print("\n=== Setup Installation Succeeded ===")
+                tbl = Table(headers=["Benchmark", "Resource", "Type", "Status"], style="dash")
+                for rc in installed_receipts:
+                    tbl.add_row(rc["benchmark_id"], rc["resource_name"], rc["resource_type"], rc["status"])
+                print(tbl.render())
+            return 0
+
+    elif subcmd == "status":
         status_rows = []
+        benchmark_status = []
         for b in selected_benchmarks:
             ds = catalog.resolve_dataset(b.default_dataset) if b.default_dataset else None
             state = ds.install_state if ds else "registered"
-            status_rows.append({
+            benchmark_status.append({
                 "benchmark_id": b.id,
                 "name": b.name,
                 "state": state,
                 "resources_declared": len(b.resources),
                 "readiness_reason": ds.readiness_reason if ds else None,
             })
+            for decl in b.resources:
+                spec = ResourceSpec.from_declaration(b.id, decl)
+                res_plan = source_manager.plan_resource(spec)
+                r_state = "installed" if res_plan["installed"] else ("optional" if decl.optional else "registered")
+                status_rows.append({
+                    "benchmark_id": b.id,
+                    "resource_name": decl.name,
+                    "resource_type": decl.type,
+                    "state": r_state,
+                    "optional": decl.optional,
+                    "target_location": res_plan["target_location"],
+                })
 
         payload = {
-            "mode": subcmd,
+            "mode": "status",
             "scope": "all" if is_all or not target else target,
-            "benchmarks": status_rows,
+            "resource_root": str(source_manager.root),
+            "benchmarks": benchmark_status,
+            "resources": status_rows,
         }
         if fmt == "json":
             print(json.dumps(payload, indent=2))
         else:
-            print(f"\n=== Benchmark Setup {subcmd.capitalize()} ===")
-            tbl = Table(headers=["Benchmark", "Status", "Resources", "Details"], style="dash")
+            print("\n=== Benchmark Setup Status ===")
+            print(f"Resource store: {source_manager.root}")
+            tbl = Table(headers=["Benchmark", "Resource", "Type", "State"], style="dash")
             for r in status_rows:
-                details = r["readiness_reason"] or "Ready"
-                tbl.add_row(r["benchmark_id"], r["state"], str(r["resources_declared"]), details)
+                tbl.add_row(r["benchmark_id"], r["resource_name"], r["resource_type"], r["state"].upper())
             print(tbl.render())
         return 0
 
+    elif subcmd == "verify":
+        verify_rows = []
+        has_failure = False
+        for b in selected_benchmarks:
+            for decl in b.resources:
+                spec = ResourceSpec.from_declaration(b.id, decl)
+                res_verify = source_manager.verify_resource(spec)
+                verify_rows.append(res_verify)
+                if res_verify.get("status") in ("corrupted", "failed"):
+                    has_failure = True
+
+        payload = {
+            "mode": "verify",
+            "scope": "all" if is_all or not target else target,
+            "resource_root": str(source_manager.root),
+            "results": verify_rows,
+        }
+        if fmt == "json":
+            print(json.dumps(payload, indent=2))
+        else:
+            print("\n=== Benchmark Setup Verification ===")
+            print(f"Resource store: {source_manager.root}")
+            tbl = Table(headers=["Benchmark", "Resource", "Status", "Details"], style="dash")
+            for r in verify_rows:
+                details = r.get("details") or f"{r.get('files_checked', 0)} file(s) checked"
+                tbl.add_row(r["benchmark_id"], r["resource_name"], r["status"].upper(), details)
+            print(tbl.render())
+
+        return 1 if has_failure else 0
+
     elif subcmd == "upgrade":
-        print("agent-bench setup upgrade: upgrade functionality available in Phase 03.", file=sys.stderr)
-        return 1
+        upgrade_rows = []
+        for b in selected_benchmarks:
+            for decl in b.resources:
+                spec = ResourceSpec.from_declaration(b.id, decl)
+                up_res = source_manager.upgrade_resource(spec, execute=execute)
+                upgrade_rows.append(up_res)
+
+        payload = {
+            "mode": "upgrade" if execute else "upgrade_preview",
+            "scope": "all" if is_all or not target else target,
+            "resource_root": str(source_manager.root),
+            "results": upgrade_rows,
+        }
+        if fmt == "json":
+            print(json.dumps(payload, indent=2))
+        else:
+            header = "=== Benchmark Upgrade Succeeded ===" if execute else "=== Benchmark Upgrade Preview ==="
+            print(f"\n{header}")
+            tbl = Table(headers=["Benchmark", "Resource", "Status", "Revision"], style="dash")
+            for r in upgrade_rows:
+                rev = r.get("new_revision") or r.get("target_revision") or "-"
+                tbl.add_row(r["benchmark_id"], r["resource_name"], r["status"], rev)
+            print(tbl.render())
+        return 0
 
     return 0

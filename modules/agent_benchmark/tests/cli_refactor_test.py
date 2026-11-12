@@ -34,12 +34,31 @@ def test_setup_install_preview_without_execute(capsys):
     assert len(data["actions"]) > 0
 
 
-def test_setup_install_with_execute_stub(capsys):
-    """Ensure 'setup install -A -x' fails clearly as not yet implemented until Phase 03."""
-    rc = main(["setup", "install", "-A", "-x"])
-    assert rc != 0
-    captured = capsys.readouterr()
-    assert "Phase 03" in captured.err
+def test_setup_install_with_execute_dispatches_installer(capsys, monkeypatch):
+    """Ensure 'setup install -A -x' triggers authorized installation via SourceManager."""
+    from unittest.mock import MagicMock
+    from agent_benchmark.external_sources import InstallReceipt
+
+    mock_receipt = InstallReceipt(
+        benchmark_id="ifeval",
+        resource_name="mock",
+        resource_type="git_sparse",
+        install_path="C:/mock/path",
+        revision="1234",
+        spec_digest="abcd",
+        installed_at="2026-11-11T00:00:00Z",
+        platform="windows-x86_64",
+        status="installed",
+    )
+    monkeypatch.setattr(
+        "agent_benchmark.cli_commands.setup.SourceManager.install_resource",
+        MagicMock(return_value=mock_receipt),
+    )
+    rc = main(["setup", "install", "-A", "-x", "-f", "json"])
+    assert rc == 0
+    data = json.loads(capsys.readouterr().out)
+    assert data["mode"] == "install_executed"
+    assert len(data["installed"]) > 0
 
 
 def test_setup_conflicting_all_and_dataset_rejected(capsys):

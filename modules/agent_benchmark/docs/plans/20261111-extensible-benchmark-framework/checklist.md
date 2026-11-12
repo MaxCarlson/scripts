@@ -32,14 +32,14 @@
 - [x] Verify help text, JSON formatting, and `-F/--llm-friendly` output
 
 ## Phase 03 — Generic External Benchmark Setup and Source Locks
-- [ ] Implement `external_sources/` (`specs.py`, `manager.py`, `stores.py`, `receipts.py`)
-- [ ] Support resource types: `harbor_registry`, `git_sparse`, `git`, `huggingface_dataset`, `python_environment`, `container_image`
-- [ ] Implement external storage resolution outside tracked git checkout
-- [ ] Implement atomic staging, checksum verification, and `installed-sources.json` lock receipts
-- [ ] Implement `setup install -A -x`, `setup install -d <id> -x`
-- [ ] Implement `setup status -A`, `setup verify -A`
-- [ ] Implement `setup upgrade -d <id> -x` side-by-side versioning
-- [ ] Tests for atomic install, checksum mismatches, path traversal rejection, and lock verification
+- [x] Implement `external_sources/` (`specs.py`, `manager.py`, `stores.py`, `receipts.py`)
+- [x] Support resource types: `harbor_registry`, `git_sparse`, `git`, `huggingface_dataset`, `python_environment`, `container_image`
+- [x] Implement external storage resolution outside tracked git checkout
+- [x] Implement atomic staging, checksum verification, and `installed-sources.json` lock receipts
+- [x] Implement `setup install -A -x`, `setup install -d <id> -x`
+- [x] Implement `setup status -A`, `setup verify -A`
+- [x] Implement `setup upgrade -d <id> -x` side-by-side versioning
+- [x] Tests for atomic install, checksum mismatches, path traversal rejection, and lock verification
 
 ## Phase 04 — Backend-Neutral Persistent Suite Runner and Direct Model Client
 - [ ] Define backend protocols in `execution/contract.py` (`ExecutionBackend`, `ScoringAdapter`, `ResultNormalizer`)
