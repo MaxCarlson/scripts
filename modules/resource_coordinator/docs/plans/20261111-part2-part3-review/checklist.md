@@ -13,4 +13,4 @@
 - [x] Run Mining H3 tests against the exact combined review candidate and record JUnit/JSON evidence.
 - [x] Prepare the H4 operational readiness ledger without host mutations.
 - [x] Run final scoped Ruff, compilation, provenance, diff checks, and the 65-test RC selection after current-main merge.
-- [ ] Publish final review branch and verify its remote tip; leave `main` unchanged.
+- [x] Publish the review branch and verify its remote tip; leave `main` unchanged.

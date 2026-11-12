@@ -12,6 +12,7 @@
 - The Mining repository is read-only for this assignment. Its `master` was verified at `deea3e019b35615f4d95e6f510450f7f392fb82a`.
 - During review, current `main` advanced from `4f4373d2` to `2580fa50`, then to `b45f3950595bec5c9af4b076ea8b2db93711eba0`. GitHub's branch API confirmed the latest published SHA, and a permitted fetch updated local `origin/main` to match it.
 - The first 13 commits added since `4f4373d2` change only `modules/agent_benchmark/` and `modules/benchmark_core/`. Two later commits change only `modules/notifications/`. There is no Resource Coordinator or `scripts_help` overlap. Both updates were merged into this isolated review branch; the latest merge candidate is `af56188dd5a7b132022c80e6a05b0f309b0f8df8`, with current `main` as an ancestor. No protected branch was updated.
+- The review branch was pushed normally and GitHub confirmed its published tip after the latest-main merge. The final documentation closeout remains on this same review branch; `main` remains at `b45f3950595bec5c9af4b076ea8b2db93711eba0`.
 
 ## Confirmed defect and correction
 
