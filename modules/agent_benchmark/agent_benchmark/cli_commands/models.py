@@ -88,11 +88,22 @@ def handle_models(args: argparse.Namespace) -> int:
             return downloaded, loaded, gemini_list, codex_list
 
         try:
-            # Model inventory may use HTTP clients backed by socketpair; a selector loop avoids
-            # the Windows Proactor loop's pipe initialization stall in CLI and pytest contexts.
-            downloaded, loaded, gemini_list, codex_list = asyncio.run(
-                _fetch(), loop_factory=asyncio.SelectorEventLoop
-            )
+            needs = []
+            if prov in ("all", "lmstudio"):
+                needs.extend((fetch_downloaded, fetch_loaded))
+            if prov in ("all", "gemini"):
+                needs.append(fetch_gemini)
+            if prov in ("all", "codex"):
+                needs.append(fetch_codex)
+            if not any(inspect.iscoroutinefunction(fn) for fn in needs):
+                downloaded = fetch_downloaded() if prov in ("all", "lmstudio") else []
+                loaded = fetch_loaded() if prov in ("all", "lmstudio") else []
+                gemini_list = fetch_gemini() if prov in ("all", "gemini") else []
+                codex_list = fetch_codex() if prov in ("all", "codex") else []
+            else:
+                downloaded, loaded, gemini_list, codex_list = asyncio.run(
+                    _fetch(), loop_factory=asyncio.SelectorEventLoop
+                )
         except Exception as exc:
             print(f"agent-bench: model discovery failed: {exc}", file=sys.stderr)
             return 1

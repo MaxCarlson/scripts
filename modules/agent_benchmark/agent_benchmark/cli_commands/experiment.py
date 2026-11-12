@@ -335,7 +335,7 @@ def handle_experiment(args: argparse.Namespace, exp_parser: argparse.ArgumentPar
             return rows
 
         payload = plan.to_dict()
-        payload["model_readiness"] = asyncio.run(_readiness())
+        payload["model_readiness"] = asyncio.run(_readiness(), loop_factory=asyncio.SelectorEventLoop)
         print(json.dumps(payload, indent=2))
         return 0
 

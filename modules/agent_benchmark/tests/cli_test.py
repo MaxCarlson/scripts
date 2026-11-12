@@ -143,7 +143,7 @@ def test_models_list_table(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "list_downloaded_models", lambda **kw: mock_downloaded)
     monkeypatch.setattr(cli_mod, "get_loaded_models", lambda **kw: [])
 
-    assert main(["models", "list", "--format", "table"]) == 0
+    assert main(["models", "list", "--provider", "lmstudio", "--format", "table"]) == 0
     captured = capsys.readouterr()
     assert "qwen/qwen3-coder-30b" in captured.out
     assert "qwen2" in captured.out
