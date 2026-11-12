@@ -268,3 +268,62 @@ def declared_tool_intervention_error(
 
     return None, {"baseline_condition": base_id, "candidate_condition": candidate_id,
                   "design_id": base_intervention["design_id"]}
+
+
+
+def declared_model_intervention_error(
+    baseline_contract: object,
+    candidate_contract: object,
+    baseline_metadata: object,
+    candidate_metadata: object,
+) -> tuple[str | None, dict[str, str] | None]:
+    """Validate explicit model-identity comparison intervention (declared-model-intervention-v1).
+
+    Ensures that two runs differ ONLY in their declared model identity and model-specific
+    inference settings, while holding tasks, budgets, context, sandbox, and scoring constant.
+    """
+    for contract in (baseline_contract, candidate_contract):
+        error = contract_error(contract)
+        if error:
+            return error, None
+
+    if not isinstance(baseline_contract, dict) or not isinstance(candidate_contract, dict):
+        return "Missing comparison contract", None
+    if not isinstance(baseline_metadata, dict) or not isinstance(candidate_metadata, dict):
+        return "Missing run metadata", None
+
+    base_intervention = baseline_metadata.get("model_intervention")
+    candidate_intervention = candidate_metadata.get("model_intervention")
+
+    # If neither declares model_intervention, verify if contract environments differ only in model_identity
+    if base_intervention is None and candidate_intervention is None:
+        base_clone = json.loads(json.dumps(baseline_contract))
+        cand_clone = json.loads(json.dumps(candidate_contract))
+        base_clone["environment"].pop("model_identity", None)
+        cand_clone["environment"].pop("model_identity", None)
+        base_clone.get("environment", {}).get("runtime", {}).pop("model_settings", None)
+        cand_clone.get("environment", {}).get("runtime", {}).pop("model_settings", None)
+        if base_clone != cand_clone:
+            return "Undeclared comparison conditions differ outside model identity", None
+        return None, {
+            "baseline_condition": str(baseline_contract.get("environment", {}).get("model_identity")),
+            "candidate_condition": str(candidate_contract.get("environment", {}).get("model_identity")),
+            "design_id": "model-intervention-auto-v1",
+        }
+
+    if not isinstance(base_intervention, dict) or not isinstance(candidate_intervention, dict):
+        return "Missing declared model intervention provenance", None
+
+    expected_keys = {"schema", "design_id", "factor", "assignment"}
+    if not expected_keys.issubset(base_intervention) or not expected_keys.issubset(candidate_intervention):
+        return "Model intervention contract fields are missing or unexpected", None
+    if base_intervention.get("schema") != "declared-model-intervention-v1":
+        return "Unsupported model intervention schema", None
+    if base_intervention.get("design_id") != candidate_intervention.get("design_id"):
+        return "Model intervention design IDs differ", None
+
+    return None, {
+        "baseline_condition": base_intervention.get("assignment", "model_a"),
+        "candidate_condition": candidate_intervention.get("assignment", "model_b"),
+        "design_id": base_intervention.get("design_id", "multi-model-evaluation-v1"),
+    }

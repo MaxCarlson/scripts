@@ -104,16 +104,17 @@ def test_opencode_v2_configuration_blockers():
 
 def test_plan_benchmark_opencode_v2():
     """Verify plan_benchmark constructs valid plan for opencode-v2."""
-    plan = plan_benchmark(
-        dataset_name="aider-polyglot",
-        language="python",
-        agent="opencode-v2",
-        base_url="http://host.docker.internal:8788/v1",
-        count=1,
-    )
-    assert plan.agent == "opencode-v2"
-    assert len(plan.selected_tasks) == 1
-    assert plan.readiness.is_runnable
+    with patch("agent_benchmark.harbor.planner.check_docker_readiness", return_value=(True, "OK")):
+        plan = plan_benchmark(
+            dataset_name="aider-polyglot",
+            language="python",
+            agent="opencode-v2",
+            base_url="http://host.docker.internal:8788/v1",
+            count=1,
+        )
+        assert plan.agent == "opencode-v2"
+        assert len(plan.selected_tasks) == 1
+        assert plan.readiness.is_runnable
 
 
 def test_build_harbor_command_maps_opencode_v2_to_dynamic_class():
@@ -132,14 +133,6 @@ def test_build_harbor_command_maps_opencode_v2_to_dynamic_class():
 
 def test_execute_harbor_run_opencode_v2_environment(tmp_path):
     """Verify execute_harbor_run configures PYTHONPATH and default OPENAI_API_KEY."""
-    plan = plan_benchmark(
-        dataset_name="aider-polyglot",
-        language="python",
-        agent="opencode-v2",
-        base_url="http://host.docker.internal:8788/v1",
-        count=1,
-    )
-
     captured_env: dict[str, str] = {}
 
     def fake_subprocess_run(cmd, env, **kwargs):
@@ -152,6 +145,7 @@ def test_execute_harbor_run_opencode_v2_environment(tmp_path):
         return mock_proc
 
     with (
+        patch("agent_benchmark.harbor.planner.check_docker_readiness", return_value=(True, "OK")),
         patch("agent_benchmark.harbor.runner.check_docker_readiness", return_value=(True, "OK")),
         patch("agent_benchmark.harbor.runner.check_harbor_readiness", return_value=(True, "OK")),
         patch("agent_benchmark.harbor.runner.subprocess.run", side_effect=fake_subprocess_run),
@@ -162,6 +156,13 @@ def test_execute_harbor_run_opencode_v2_environment(tmp_path):
             return_value=(tmp_path / "saved", {"completed": 1}),
         ),
     ):
+        plan = plan_benchmark(
+            dataset_name="aider-polyglot",
+            language="python",
+            agent="opencode-v2",
+            base_url="http://host.docker.internal:8788/v1",
+            count=1,
+        )
         execute_harbor_run(
             plan,
             execute=True,

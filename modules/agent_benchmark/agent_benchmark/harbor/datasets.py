@@ -1,10 +1,12 @@
-"""Catalog and task selection for supported external benchmark datasets."""
+"""Catalog and task selection for supported external benchmark datasets (Harbor facade)."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-import random
 from typing import Sequence
+
+from ..benchmarks.catalog import get_default_catalog
+from ..benchmarks.schema import DatasetDescriptor
+from ..benchmarks.selection import select_tasks
 
 # Curated catalog of Aider Polyglot tasks across 6 languages
 # Source: Harbor official aider-polyglot benchmark (225 total exercism tasks)
@@ -155,152 +157,55 @@ retro-console-soc sglang-qwen-burst hof-topology-interpenetration
 """.split())
 
 
-@dataclass(frozen=True)
-class DatasetDescriptor:
-    id: str
-    name: str
-    version: str
-    description: str
-    supported_languages: tuple[str, ...]
-    all_tasks: tuple[str, ...]
-    default_scoring_protocol: str
-    harbor_dataset: str | None = None
-    source_repo: str | None = None
-    source_revision: str | None = None
-    default_tasks: tuple[str, ...] = ()
+class _DatasetsDict(dict):
+    """Backward-compatible dictionary facade providing access to registered datasets."""
+
+    def __getitem__(self, key: str) -> DatasetDescriptor:
+        return get_default_catalog().resolve_dataset(key)
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        try:
+            get_default_catalog().resolve_dataset(key)
+            return True
+        except KeyError:
+            return False
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return get_default_catalog().resolve_dataset(key)
+        except KeyError:
+            return default
+
+    def items(self):  # type: ignore[override]
+        catalog = get_default_catalog()
+        return [(d.id, d) for d in catalog.list_datasets() if d.harbor_dataset is not None]
+
+    def keys(self):  # type: ignore[override]
+        catalog = get_default_catalog()
+        return [d.id for d in catalog.list_datasets() if d.harbor_dataset is not None]
+
+    def values(self):  # type: ignore[override]
+        catalog = get_default_catalog()
+        return [d for d in catalog.list_datasets() if d.harbor_dataset is not None]
 
 
-# Dataset catalog registry
-DATASETS: dict[str, DatasetDescriptor] = {
-    "aider/aider-polyglot": DatasetDescriptor(
-        id="aider/aider-polyglot",
-        name="Aider Polyglot Coding Benchmark",
-        version="1.0.0",
-        description="225 coding exercises across six languages (Harbor official aider-polyglot)",
-        supported_languages=("python", "cpp", "go", "java", "javascript", "rust"),
-        all_tasks=tuple(task for lang in AIDER_POLYGLOT_TASKS.values() for task in lang),
-        default_scoring_protocol="single-attempt-v1",
-        harbor_dataset="aider-polyglot",
-    ),
-    "terminal-bench/terminal-bench@4.0.0": DatasetDescriptor(
-        id="terminal-bench/terminal-bench@4.0.0",
-        name="Terminal-Bench 4.0.0",
-        version="4.0.0",
-        description="Terminal-Bench 4.0.0 release snapshot (66 tasks)",
-        supported_languages=("shell", "python"),
-        all_tasks=TERMINAL_BENCH_4_TASKS,
-        default_scoring_protocol="single-attempt-v1",
-        harbor_dataset="terminal-bench/terminal-bench@4.0.0",
-        source_repo="https://github.com/harbor-framework/terminal-bench.git",
-        source_revision="452bf30",
-    ),
-    "terminal-bench/terminal-bench-2": DatasetDescriptor(
-        id="terminal-bench/terminal-bench-2",
-        name="Terminal-Bench 2.0",
-        version="2.0",
-        description="Terminal-Bench 2.0 Harbor dataset (89 tasks, source commit pinned)",
-        supported_languages=("shell", "python"),
-        all_tasks=TERMINAL_BENCH_2_TASKS,
-        default_scoring_protocol="single-attempt-v1",
-        harbor_dataset="terminal-bench/terminal-bench-2",
-        source_repo="https://github.com/laude-institute/terminal-bench-2.git",
-        source_revision="69671fbaac6d67a7ef0dfec016cc38a64ef7a77c",
-        default_tasks=tuple(TERMINAL_BENCH_CPU_TASKS),
-    ),
-}
-# Aliases
-DATASETS["aider-polyglot"] = DATASETS["aider/aider-polyglot"]
-DATASETS["terminal-bench-2"] = DATASETS["terminal-bench/terminal-bench-2"]
-DATASETS["terminal-bench"] = DATASETS["terminal-bench/terminal-bench-2"]
-DATASETS["terminal-bench-2-cpu-only"] = DATASETS["terminal-bench/terminal-bench-2"]
-DATASETS["terminal-bench-cpu-only"] = DATASETS["terminal-bench/terminal-bench-2"]
+DATASETS: dict[str, DatasetDescriptor] = _DatasetsDict()
 
 
 def resolve_dataset(dataset_name: str) -> DatasetDescriptor:
     """Resolve a dataset identifier or raise a KeyError."""
-    # Normalize input
-    clean = dataset_name.strip()
-    if clean in DATASETS:
-        return DATASETS[clean]
-
-    # Partial match
-    for k, v in DATASETS.items():
-        if clean in (k, v.name, k.split("/")[-1], k.split("@")[0]):
-            return v
-
-    valid_keys = sorted(DATASETS.keys())
-    raise KeyError(f"Unknown dataset {dataset_name!r}. Available datasets: {valid_keys}")
+    return get_default_catalog().resolve_dataset(dataset_name)
 
 
-def select_tasks(
-    descriptor: DatasetDescriptor,
-    *,
-    task_ids: Sequence[str] | None = None,
-    language: str | None = None,
-    count: int | None = None,
-    seed: int | None = None,
-) -> list[str]:
-    """
-    Select and order tasks deterministically.
-
-    - Explicit task_ids are filtered and verified.
-    - Language filters by language prefix.
-    - Deterministic random sampling if seed and count are specified.
-    - Returns sorted list if no seed is specified.
-    """
-    candidates = list(descriptor.all_tasks)
-    if not task_ids and not language and descriptor.default_tasks:
-        candidates = list(descriptor.default_tasks)
-
-    # 1. Filter by language if specified
-    if language:
-        lang_norm = language.lower().strip()
-        candidates = [
-            task
-            for task in candidates
-            if task.startswith(f"polyglot_{lang_norm}_") or task.startswith(f"{lang_norm}/")
-        ]
-        if not candidates:
-            raise ValueError(
-                f"No tasks found for language {language!r} in dataset {descriptor.id}. "
-                f"Supported: {list(descriptor.supported_languages)}"
-            )
-
-    # 2. Filter by explicit task IDs if provided
-    if task_ids:
-        selected: list[str] = []
-        for tid in task_ids:
-            clean_tid = tid.strip()
-            # Match exact, normalized prefix, or suffix
-            matches = [
-                t for t in candidates
-                if t == clean_tid
-                or t == f"polyglot_{clean_tid.replace('/', '_')}"
-                or t.endswith(f"_{clean_tid}")
-                or t.endswith(f"/{clean_tid}")
-            ]
-            if not matches:
-                raise ValueError(f"Task ID {tid!r} not found in dataset {descriptor.id}")
-            selected.extend(matches)
-        candidates = list(dict.fromkeys(selected))  # preserve order, drop duplicates
-
-    # 3. Deterministic sampling or count limit
-    if count is not None and count > 0:
-        if count > len(candidates):
-            count = len(candidates)
-        if seed is not None:
-            rng = random.Random(seed)
-            # Use sample on deterministic sorted list
-            sorted_candidates = sorted(candidates)
-            candidates = sorted(rng.sample(sorted_candidates, count))
-        else:
-            candidates = sorted(candidates)[:count]
-    elif seed is not None:
-        rng = random.Random(seed)
-        shuffled = list(sorted(candidates))
-        rng.shuffle(shuffled)
-        candidates = shuffled
-    elif not task_ids:
-        candidates = sorted(candidates)
-
-    return candidates
+__all__ = [
+    "AIDER_POLYGLOT_TASKS",
+    "DATASETS",
+    "DatasetDescriptor",
+    "TERMINAL_BENCH_2_TASKS",
+    "TERMINAL_BENCH_4_TASKS",
+    "TERMINAL_BENCH_CPU_TASKS",
+    "resolve_dataset",
+    "select_tasks",
+]

@@ -1,4 +1,49 @@
-# Current checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
+# Current checkpoint: Final merge-blocking corrections (2026-11-11)
+
+Same worktree/branch (`fix/agent-benchmark-official-evaluation-20261111`), base `7385df8d`.
+
+- **Verifier trust boundary:** the contestant container now receives ONLY `solution.py` (+ a fixed, secret-free `worker.py` for call-based problems) and ONE test input on stdin. The old design mounted a `runner.py` containing expected outputs and the receipt nonce; that supervisor/nonce scheme is removed. Pass/fail is decided exclusively on the host (`evaluate_problem` in `adapters/livecodebench.py`) by comparing returned output with private expected outputs; the host never imports contestant code. Containers: `--network none`, `--read-only`, tmpfs `/tmp`, `--user 65534`, `--cap-drop ALL`, no-new-privileges, memory/cpu/pids limits, `--pull never`, `docker rm -f` on timeout. Infrastructure failures (daemon down, pinned image absent, corrupt/mismatched test data) are `infrastructure_invalid`.
+- **Safe deserialization:** `pickle.loads` removed. Legacy LiveCodeBench `base64+zlib+pickle` payloads are tokenised with `pickletools.genops` and must be a single bare string (JSON); any other opcode (GLOBAL/REDUCE/...) is rejected without execution; decompression is size-bounded.
+- **Image identity:** one digest-pinned reference (`sandbox_image.py`: `python:3.11-slim@sha256:07d48240...b535`) is used by the catalog resource, `setup install/status/verify` (`manager.image_reference/inspect_image`), and the verifier. Status reports `available` / `missing` / `unavailable`; verify reports `verified` / `not_installed` / `unavailable`; install fails closed and writes no receipt unless the exact pinned image is present (`docker pull <ref>` is an explicit prerequisite).
+- **IFEval parity:** the adapter now matches the upstream evaluator per task for all 541 bundled responses. Finding: upstream itself is RNG-dependent for prompts 1122 and 1129 (`letter='#'` is invalid so upstream picks a random letter); the adapter seeds the RNG per task id (state restored) for repeatable scoring and the parity test compares under the same seeding.
+- **Docker qualification:** Docker Desktop daemon was not running in this environment and was not started; the real-container adversarial/qualification test (`test_adversarial_candidate_isolated_in_real_docker_sandbox`) is skipped here and must be run once with the daemon up and the image pulled.
+# Current checkpoint: Official Benchmark Evaluation Validity & Container Security Repair (2026-11-11)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/agent-benchmark-official-evaluation-20261111`, branch `fix/agent-benchmark-official-evaluation-20261111`, baseline `8bfd06a0`.
+Active plan: [`plans/20261111-official-evaluation-repair/00_implementation-plan.md`](plans/20261111-official-evaluation-repair/00_implementation-plan.md), [`STATUS.md`](plans/20261111-official-evaluation-repair/STATUS.md), and [`checklist.md`](plans/20261111-official-evaluation-repair/checklist.md).
+
+Critical benchmark-validity, installation, and container security defects corrected:
+- **Official Google IFEval Reference Scorer (Defect A):** Replaced heuristic approximations with Google's official reference evaluation engine (`instructions.py`, `instructions_registry.py`, `evaluation_lib.py`). Preserves all 25 instruction classes and kwargs. Enforces exact strict and 8-variant loose evaluation semantics. Unknown/unsupported instruction IDs return `False` and fail, never granting passes. Separates prompt and instruction accuracies. Matched upstream reference evaluation on 541 GPT-4 reference responses (~71.5% strict prompt, ~74.9% loose prompt, ~79.5% strict inst, ~82.1% loose inst).
+- **Authentic LiveCodeBench Verifier & Supervisor Isolation (Defect B):** Replaced dummy loop placeholder (`pass`) with upstream LiveCodeBench code-generation evaluator distinguishing `standard_input` (`stdin`) from `call_based` (`functional`) problems. Implemented line-by-line decimal and stripped comparisons. Separated contestant code into child subprocess (`solution.py`) with piped stdio. Enforced ephemeral `receipt_nonce` verification receipts generated solely by the isolated supervisor (`__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED`), completely eliminating `sys.exit(0)` and stdout marker forgery bypasses. Missing or empty benchmark test data blocks execution with `MISSING_BENCHMARK_DATA` / `infrastructure_invalid`.
+- **Verified Source Revisions & Pinned Datasets (Defect C):** Pinned verified upstream commits in `catalog.py`: `google-research`: `f8d6d14a1fc6eaef606d7d1e1fa4e96ee09afb81`, `LiveCodeBench`: `28fef95ea8c9f7a547c8329f2cd3d32b92c1fa24`, and Hugging Face `code_generation_lite`: `0fe84c3912ea0c4d4a78037083943e8f0c4dd505` (`test6.jsonl`).
+- **Authentic Dataset Materialization & Cohort Prompts (Defect D):** Populated verified task IDs and bundled authentic smoke fixtures (`ifeval-smoke`, `lcb-v6-smoke`). Created `loader.py` to dynamically load and format official prompts (`### Question: ... ### Answer:`) and evaluator metadata. Added pre-dispatch rejection for placeholder (`Solve task: ...`) or empty prompts. Implemented atomic streaming Hugging Face dataset downloader and Windows-safe sparse git checkouts in `external_sources/manager.py`. Added comprehensive test case decoder supporting raw lists, JSON strings, and base64/zlib/pickle compressed private test cases. Enforced strict blockers in `suite.py` preventing full cohorts (`lcb-v6-direct-100`, `lcb-v6-direct-full`) from falling back to smoke data.
+- **External Setup Contract Hardening:** Setup planning is strictly read-only (`get_store_layout` vs `ensure_store_layout`) with zero directory creation on disk. Unified resource resolution through verified receipts (`resolve_installed_path`). Container images classified as `externally_managed_prerequisite` or inspected via Docker, failing closed without writing unprovisioned receipts. Declared `env_requirements=("numpy",)` for `lcb-scorer-env`. Setup verification accurately detects stale, incomplete, and corrupted receipts.
+- **Hardened Container Security (Defect E):** Hardened Docker runner in `execution/container_verify.py` enforcing `--read-only`, tmpfs (`/tmp:rw,noexec,nosuid,size=64m`), unprivileged execution (`--user 65534:65534`), and container termination on timeout.
+- **Validation Matrix:**
+  - 16/16 qualification assertions verified in `tests/official_evaluation_repair_test.py`.
+  - 714 passed, 10 skipped in `agent_benchmark`.
+  - 119 passed, 1 skipped in `benchmark_core`.
+  - 0 Ruff linting errors across all touched and existing benchmark files.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
+
+# Historical checkpoint: Extensible Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench (2026-11-11)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/agent-benchmark-extensible-20261111`, branch `feature/agent-benchmark-extensible-framework-20261111`, baseline `origin/main` at `6467edc6`.
+Active plan: [`plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md`](plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md) and [`STATUS.md`](plans/20261111-extensible-benchmark-framework/STATUS.md).
+
+Platform implementation and qualification completed across all Phases 00 through 08:
+- **Unified Catalog & Discovery:** Canonical registry (`benchmarks/catalog.py`) unifying Aider, Terminal-Bench (v2 & v4), IFEval, LiveCodeBench, and synthetic suites. Backward-compatible facades preserved for `harbor/datasets.py` (`DATASETS`) and `suite.py` (`COHORTS`).
+- **CLI Architecture Refactor:** Modular `cli_commands/` package (`task.py`, `models.py`, `experiment.py`, `external.py`, `setup.py`, `suite.py`, `common.py`) with a lightweight dispatcher in `cli.py`. Flag `-A` cleanly scoped (`--all` in `setup`, `--api-format` in `suite plan`). Root task aliases preserved.
+- **External Source Management:** External checkouts, datasets, and virtual environments managed in `%LOCALAPPDATA%\agent-benchmark` (Windows) / `XDG_DATA_HOME` (Linux), outside tracked Git. Path traversal protection, atomic staging, and SHA-256 verification receipts.
+- **Backend-Neutral Suite Runner:** Persistent execution engine (`execution/`) supporting direct chat and Harbor container workloads with durable checkpointing, token accounting, and LLM Monitor telemetry.
+- **Authoritative IFEval Integration:** Strict and loose prompt/instruction scoring rules matching official Google Research specification across frozen cohorts (`ifeval-smoke`, `ifeval-100`, `ifeval-full`).
+- **Authoritative LiveCodeBench Integration:** Direct Python code extraction, early AST syntax validation, and strict container verifier with fail-closed security when Docker is offline.
+- **Multi-Model Comparison:** Paired task discordance matrix (`both_passed`, `both_failed`, `a_only`, `b_only`, `unpaired`), Wilson 95% confidence intervals, and `suite compare` command with JSON, table, and markdown formatters.
+- **N-Benchmark Extensibility Proof:** Third synthetic benchmark (`SyntheticRegexBench`) and declarative Harbor dataset registration verified offline without modifying shared framework code.
+- **Validation:** 696 passed in `agent_benchmark`, 120 passed in `benchmark_core`, 0 Ruff errors.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
+
+# Historical checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
 baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.
