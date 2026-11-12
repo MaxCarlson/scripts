@@ -17,6 +17,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import time
 from typing import Iterable, Optional, Sequence, Union
 
 from .compare import ExperimentComparison
@@ -60,7 +61,14 @@ def save_run(run_dir: Union[Path, str], run_info: RunInfo, overwrite: bool = Fal
     temp_file = dir_path / "run.json.tmp"
     try:
         temp_file.write_text(run_info.to_json() + "\n", encoding="utf-8")
-        temp_file.replace(target_file)
+        for attempt in range(11):
+            try:
+                temp_file.replace(target_file)
+                break
+            except PermissionError:
+                if attempt == 10:
+                    raise
+                time.sleep(0.05)
     finally:
         if temp_file.exists():
             temp_file.unlink(missing_ok=True)

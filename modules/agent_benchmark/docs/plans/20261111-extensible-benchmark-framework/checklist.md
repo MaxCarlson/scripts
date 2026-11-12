@@ -78,11 +78,11 @@
 - [x] Offline comparison tests with synthetic paired run data
 
 ## Phase 08 — Qualification, Third-Adapter Proof, and Documentation
-- [ ] Run full CLI golden compatibility test suite
-- [ ] Implement third synthetic benchmark adapter proving N-benchmark extensibility without framework edits
-- [ ] Verify source setup integrity, hash verification, and corruption detection
-- [ ] Verify IFEval and LiveCodeBench scorer parity
-- [ ] Verify container sandbox enforcement and fail-closed behavior
-- [ ] Update `docs/README.md`, `docs/HANDOFF.md`, and module documentation
-- [ ] Run complete test suite and linters
-- [ ] Prepare final delivery report and git checkpoint
+- [x] Run full CLI golden compatibility test suite
+- [x] Implement third synthetic benchmark adapter proving N-benchmark extensibility without framework edits
+- [x] Verify source setup integrity, hash verification, and corruption detection
+- [x] Verify IFEval and LiveCodeBench scorer parity
+- [x] Verify container sandbox enforcement and fail-closed behavior
+- [x] Update `docs/README.md`, `docs/HANDOFF.md`, and module documentation
+- [x] Run complete test suite and linters
+- [x] Prepare final delivery report and git checkpoint

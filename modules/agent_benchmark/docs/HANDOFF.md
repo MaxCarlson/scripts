@@ -1,4 +1,21 @@
-# Current checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
+# Current checkpoint: Extensible Benchmark Platform, CLI Refactor, IFEval and LiveCodeBench (2026-11-11)
+
+Worktree `C:/Users/mcarls/src/scripts/.worktrees/agent-benchmark-extensible-20261111`, branch `feature/agent-benchmark-extensible-framework-20261111`, baseline `origin/main` at `6467edc6`.
+Active plan: [`plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md`](plans/20261111-extensible-benchmark-framework/08_qualification_and_delivery.md) and [`STATUS.md`](plans/20261111-extensible-benchmark-framework/STATUS.md).
+
+Platform implementation and qualification completed across all Phases 00 through 08:
+- **Unified Catalog & Discovery:** Canonical registry (`benchmarks/catalog.py`) unifying Aider, Terminal-Bench (v2 & v4), IFEval, LiveCodeBench, and synthetic suites. Backward-compatible facades preserved for `harbor/datasets.py` (`DATASETS`) and `suite.py` (`COHORTS`).
+- **CLI Architecture Refactor:** Modular `cli_commands/` package (`task.py`, `models.py`, `experiment.py`, `external.py`, `setup.py`, `suite.py`, `common.py`) with a lightweight dispatcher in `cli.py`. Flag `-A` cleanly scoped (`--all` in `setup`, `--api-format` in `suite plan`). Root task aliases preserved.
+- **External Source Management:** External checkouts, datasets, and virtual environments managed in `%LOCALAPPDATA%\agent-benchmark` (Windows) / `XDG_DATA_HOME` (Linux), outside tracked Git. Path traversal protection, atomic staging, and SHA-256 verification receipts.
+- **Backend-Neutral Suite Runner:** Persistent execution engine (`execution/`) supporting direct chat and Harbor container workloads with durable checkpointing, token accounting, and LLM Monitor telemetry.
+- **Authoritative IFEval Integration:** Strict and loose prompt/instruction scoring rules matching official Google Research specification across frozen cohorts (`ifeval-smoke`, `ifeval-100`, `ifeval-full`).
+- **Authoritative LiveCodeBench Integration:** Direct Python code extraction, early AST syntax validation, and strict container verifier with fail-closed security when Docker is offline.
+- **Multi-Model Comparison:** Paired task discordance matrix (`both_passed`, `both_failed`, `a_only`, `b_only`, `unpaired`), Wilson 95% confidence intervals, and `suite compare` command with JSON, table, and markdown formatters.
+- **N-Benchmark Extensibility Proof:** Third synthetic benchmark (`SyntheticRegexBench`) and declarative Harbor dataset registration verified offline without modifying shared framework code.
+- **Validation:** 696 passed in `agent_benchmark`, 120 passed in `benchmark_core`, 0 Ruff errors.
+- **Recommendation:** READY TO MERGE into `main` pending explicit user authorization.
+
+# Historical checkpoint: Harbor integration final hardening and merge readiness (2026-11-01)
 
 Worktree `C:/Users/mcarls/src/scripts/.worktrees/harbor-integration-20261029-1755`, branch `harbor-integration-20261029-1755`,
 baseline `origin/main` at `33040f00`. Agent Benchmark is 1.20.0, Benchmark Core is 0.2.0, pinned external runner is `harbor==0.25.0`.

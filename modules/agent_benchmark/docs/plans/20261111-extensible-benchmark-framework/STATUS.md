@@ -128,4 +128,20 @@
 - [x] `declared_model_intervention_error` contract implemented in `benchmark_core.conditions` supporting `declared-model-intervention-v1`.
 - [x] 6 unit tests passing in `comparison_test.py` with 100% clean Ruff checks.
 
-**Status:** Phase 07 is COMPLETE and gate satisfied. Ready to proceed to Phase 08.
+**Status:** Phase 07 is COMPLETE and gate satisfied.
+
+## 12. Phase 08 Acceptance Gate & Final Qualification
+- [x] Full CLI golden compatibility verified across all commands (`setup -A`, `suite list`, `suite compare`, `external list`, `task` commands).
+- [x] Third synthetic benchmark adapter implemented (`tests/synthetic_adapter_test.py`) proving generic N-benchmark extensibility without modifying shared framework, CLI definitions, scheduler, or results storage.
+- [x] Descriptor-only registration of an additional Harbor dataset verified.
+- [x] Source setup integrity, hash calculation, atomic staging, and corruption detection verified.
+- [x] Scorer fidelity verified for IFEval (strict/loose prompt & instruction accuracy) and LiveCodeBench (direct code generation).
+- [x] Runtime isolation verified: Docker container verifier fails closed when daemon is offline; no contestant code runs on host.
+- [x] Full test suite passing:
+  - `benchmark_core`: 120 passed, 1 skipped (100%).
+  - `agent_benchmark`: 696 passed, 10 skipped (100%).
+  - Ruff check: 0 errors (100% clean).
+- [x] Comprehensive delivery report and extensibility guide published in `08_qualification_and_delivery.md`.
+- [x] Zero unapproved live LLM calls, zero model downloads, zero host background daemon modifications.
+
+**Final Status:** All Phases 00 through 08 are COMPLETE. The extensible benchmark platform is fully qualified and READY TO MERGE pending explicit user authorization.
