@@ -49,3 +49,8 @@ The original RC feature worktree remains on `agent/resource-coordinator-v013-int
 ## Integration decision
 
 **READY WITH DOCUMENTED LIMITATIONS** for source integration review. RC source matches the validated v0.14.0/H3-pinned source, targeted tests pass, and the one lifecycle failure reproduces on current main. Mining H3 candidate and its 190 optimizer / 13 shared-package regressions pass. Elevated Windows upgrade, target hardware qualification, and first controlled optimizer acceptance remain open. This is not production readiness.
+## Publication
+
+- Pushed RC integration branch `integration/rc-v014-h3-baseline-20261111`; remote ref verified at `0469b86c224632151351f2676f8739ed5af5a1a9` before this final publication-record commit. `origin/main` is `6467edc6e82ce22b18ac3fd869188243af6085f7` and is an ancestor of the candidate.
+- Pushed Mining integration branch `integration/mining-rc-h3-baseline-20261111`; remote ref and local candidate both resolve to `deea3e019b35615f4d95e6f510450f7f392fb82a`. `origin/master` remains `4b1f2a57b0bac536d250a7018df1f8a20c78e1c5` and is an ancestor.
+- The final status/checklist update is documentation-only and will be pushed to the same RC integration branch. Neither `main` nor `master` was changed by this assignment.
