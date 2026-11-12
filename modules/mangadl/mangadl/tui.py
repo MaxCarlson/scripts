@@ -9,7 +9,7 @@ from .cli import build_parser
 
 def build_tui_app() -> CliTuiApp:
     """Build a configured CliTuiApp for MangaDL."""
-    parser = build_parser()
+    parser = build_parser(["run", "config"])
     root_cmd = introspect_parser(parser)
 
     # Exclude 'tui' subcommand from the interactive menu

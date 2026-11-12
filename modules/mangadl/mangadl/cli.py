@@ -94,11 +94,7 @@ def _add_run_cover_arguments(parser: argparse.ArgumentParser, *, advanced: bool)
 
 def build_parser(argv_hint: Sequence[str] | None = None) -> argparse.ArgumentParser:
     raw = list(argv_hint or ())
-    shape = _core.normalize_command_shape(raw)
-    parser = _core.build_parser(raw)
-    _add_covers_command(parser)
-    _add_run_cover_arguments(parser, advanced=bool(shape.advanced_config))
-    return parser
+    return _core.build_parser(raw)
 
 
 def _configure_run_cover_environment(args: argparse.Namespace) -> None:

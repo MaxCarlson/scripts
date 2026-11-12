@@ -14,6 +14,7 @@ class CommandShape:
     run_mode: RunMode = "normal"
     advanced_config: bool = False
     archive_config: bool = False
+    legacy_command: str | None = None
 
 
 def normalize_command_shape(argv: Sequence[str]) -> CommandShape:
@@ -21,6 +22,7 @@ def normalize_command_shape(argv: Sequence[str]) -> CommandShape:
     run_mode: RunMode = "normal"
     advanced = False
     archive_config = False
+    legacy_command: str | None = None
 
     if values and values[0] == "run":
         if len(values) > 1 and values[1] in {"optimize", "benchmark", "config"}:
@@ -32,11 +34,61 @@ def normalize_command_shape(argv: Sequence[str]) -> CommandShape:
                 if len(values) > 1 and values[1] == "config":
                     values.pop(1)
                     advanced = True
+        if "--optimize" in values[1:]:
+            values.remove("--optimize")
+            run_mode = "optimize"
+        elif "--benchmark" in values[1:]:
+            values.remove("--benchmark")
+            run_mode = "benchmark"
+        if "--advanced" in values[1:]:
+            values.remove("--advanced")
+            advanced = True
     elif len(values) > 1 and values[0] == "archive" and values[1] == "config":
         values.pop(1)
         archive_config = True
+    elif values and values[0] == "audit-destinations":
+        legacy_command = "audit-destinations"
+        values[0] = "audit"
+    elif values and values[0] == "partials":
+        if len(values) > 1 and values[1] in {"clean", "cleanup"}:
+            legacy_command = f"partials {values[1]}"
+            values[:2] = ["clean"]
+        else:
+            legacy_command = "partials"
+            values[0] = "clean"
+    elif values and values[0] == "cleanup":
+        legacy_command = "cleanup"
+        values[0] = "clean"
+    elif values and values[0] in {"repair-loose", "repair-pages", "patch-hdporncomics"}:
+        legacy_command = values[0]
+        sub_map = {
+            "repair-loose": "loose",
+            "repair-pages": "pages",
+            "patch-hdporncomics": "hdporncomics",
+        }
+        values[:1] = ["repair", sub_map[legacy_command]]
+    elif values and values[0] == "repair":
+        if len(values) > 1:
+            if values[1] == "patch":
+                values[1] = "hdporncomics"
+            elif values[1] not in {"batch", "pages", "loose", "hdporncomics", "-h", "--help"}:
+                rest = values[1:]
+                if any(tok in {"-u", "--url"} or tok.startswith("--url=") for tok in rest):
+                    values.insert(1, "pages")
+                elif any(tok in {"-r", "--report"} or tok.startswith("--report=") for tok in rest):
+                    values.insert(1, "batch")
+                elif any(tok in {"-n", "--dry-run"} for tok in rest):
+                    values.insert(1, "loose")
+                else:
+                    values.insert(1, "batch")
+    elif len(values) > 1 and values[0] == "kavita" and values[1] in {"assign-file", "assign-name", "assign-pattern"}:
+        legacy_command = values[1]
+        values[1] = "assign"
+    elif values and values[0] == "inspect":
+        legacy_command = "inspect"
+        values[0] = "status"
 
-    return CommandShape(tuple(values), run_mode, advanced, archive_config)
+    return CommandShape(tuple(values), run_mode, advanced, archive_config, legacy_command)
 
 
 def _help(value: str, visible: bool) -> str:
@@ -75,7 +127,8 @@ def add_run_arguments(
     parser.add_argument("-d", "--destination", type=path_type, required=True, help="Destination library root.")
     if mode == "normal":
         parser.add_argument(
-            "-sd" if advanced else "-S",
+            "-S",
+            "-sd",
             "--scratch",
             "--scratch-dir",
             dest="scratch_dir",
@@ -152,7 +205,9 @@ def add_run_arguments(
     if mode == "normal":
         parser.add_argument(
             "-M",
+            "--collection",
             "--collections",
+            dest="collections",
             action="append",
             default=[],
             help="Associate successful downloads with this Kavita collection; repeatable.",
@@ -172,7 +227,7 @@ def add_run_arguments(
         default=5.0,
         help=_help("Initial transient retry delay in seconds.", expert),
     )
-    parser.add_argument("-x", "--max-rate", help=_help("Per-worker gallery-dl rate limit, such as 2M.", expert))
+    parser.add_argument("-x", "--max-rate", "--rate", dest="max_rate", help=_help("Per-worker gallery-dl rate limit, such as 2M.", expert))
     parser.add_argument("-C", "--cookies", type=path_type, help=_help("Netscape/Mozilla cookies file.", expert))
     parser.add_argument(
         "-B",
@@ -182,6 +237,8 @@ def add_run_arguments(
     parser.add_argument(
         "-k",
         "--gallery-user-agent",
+        "--user-agent",
+        dest="gallery_user_agent",
         help=_help("Explicit gallery-dl User-Agent; takes precedence over managed auth.", expert),
     )
     parser.add_argument(
@@ -270,7 +327,7 @@ def add_run_arguments(
         parser.add_argument("-Y", "--tune-image-workers", help=argparse.SUPPRESS)
         parser.add_argument("-D", "--tune-seconds", type=float, default=8.0, help=argparse.SUPPRESS)
         parser.add_argument("-Q", "--tune-rounds", type=int, default=2, help=argparse.SUPPRESS)
-        parser.add_argument("-K", "--tune-sample-images", type=int, default=24, help=argparse.SUPPRESS)
+        parser.add_argument("--tune-sample-images", type=int, default=24, help=argparse.SUPPRESS)
         parser.add_argument("-O", "--tune-report", type=path_type, help=argparse.SUPPRESS)
     else:
         parser.set_defaults(

@@ -15,6 +15,8 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-U",
         "--urls-folder",
+        "--url-directory",
+        dest="urls_folder",
         type=Path,
         required=True,
         help="Folder scanned recursively for every url*.txt file.",
@@ -43,7 +45,9 @@ def configure_parser(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-K", "--apply-kavita", action="store_true", help="Upload and lock matched covers in Kavita.")
     parser.add_argument(
         "-M",
+        "-P",
         "--kavita-path-map",
+        dest="kavita_path_map",
         action="append",
         default=[],
         metavar="LOCAL=KAVITA",

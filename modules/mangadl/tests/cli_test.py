@@ -19,8 +19,14 @@ from mangadl.repair_pages import PageRepairPlan
 def test_all_public_options_have_short_and_long_forms() -> None:
     parser = build_parser()
     parsers = [parser]
-    subparsers = next(action for action in parser._actions if isinstance(action, argparse._SubParsersAction))
-    parsers.extend(subparsers.choices.values())
+    queue = [parser]
+    while queue:
+        item = queue.pop(0)
+        for action in item._actions:
+            if isinstance(action, argparse._SubParsersAction):
+                for child in action.choices.values():
+                    parsers.append(child)
+                    queue.append(child)
     for current in parsers:
         for action in current._actions:
             if not action.option_strings or action.dest == "help" or action.help == argparse.SUPPRESS:
