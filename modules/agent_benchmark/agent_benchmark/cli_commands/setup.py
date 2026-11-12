@@ -53,6 +53,7 @@ def add_setup_parser(actions: Any) -> None:
 
     inventory = sub.add_parser("list", help="List registered benchmarks and current setup readiness")
     _add_setup_common(inventory)
+    inventory.add_argument("--state", choices=("ready", "missing", "installed", "registered"), help="Filter by current benchmark resource state")
 
     # setup plan
     plan_p = sub.add_parser("plan", help="Inspect setup requirements and download plans without execution")
@@ -171,6 +172,11 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
             next_step = ("Provision Harbor tasks with the Harbor workflow" if state == "REGISTERED" and harbor_only
                          else ("suite plan -c " + str(benchmark.default_dataset) if ready else "setup install -d " + benchmark.id))
             rows.append({"benchmark_id": benchmark.id, "name": benchmark.name, "type": benchmark.implementation_type, "resources": f"{installed}/{len(states)}", "state": state, "next": next_step})
+        state_filter = getattr(args, "state", None)
+        if state_filter:
+            rows = [row for row in rows if (row["state"].lower() == state_filter if state_filter in ("ready", "registered") else
+                    (int(row["resources"].split("/")[0]) == int(row["resources"].split("/")[1]) if state_filter == "installed" else
+                     int(row["resources"].split("/")[0]) < int(row["resources"].split("/")[1])))]
         if fmt == "json":
             print(json.dumps({"mode": "list", "benchmarks": rows}, indent=2))
         else:

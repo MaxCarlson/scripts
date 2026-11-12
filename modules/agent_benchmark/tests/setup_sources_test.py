@@ -308,3 +308,7 @@ def test_setup_inventory_and_flag_order(tmp_path: Path, capsys: pytest.CaptureFi
     assert main(["setup", "list", "-d", "ifeval", "-f", "json", "--resource-root", root]) == 0
     filtered = json.loads(capsys.readouterr().out)
     assert [row["benchmark_id"] for row in filtered["benchmarks"]] == ["ifeval"]
+    assert main(["setup", "list", "--state", "missing", "-f", "json", "--resource-root", root]) == 0
+    missing = json.loads(capsys.readouterr().out)
+    assert missing["benchmarks"]
+    assert all(row["state"] == "MISSING" for row in missing["benchmarks"])
