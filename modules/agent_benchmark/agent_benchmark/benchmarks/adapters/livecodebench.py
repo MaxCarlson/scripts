@@ -7,6 +7,7 @@ from dataclasses import asdict, dataclass
 from decimal import Decimal
 import json
 import re
+import secrets
 from typing import Any
 
 from ...execution.container_verify import ContainerVerifier, SandboxUnavailableError
@@ -146,18 +147,21 @@ def format_lcb_prompt(problem: LCBProblem) -> str:
     return prompt
 
 
-def build_test_harness(problem: LCBProblem) -> str:
+def build_test_harness(problem: LCBProblem, receipt_nonce: str | None = None) -> str:
     """
-    Generate the authentic Python test evaluation harness for a LiveCodeBench problem.
+    Generate the authentic isolated Python test evaluation supervisor for a LiveCodeBench problem.
 
-    Supports both standard_input (I/O) and functional (call-based) problems.
-    Enforces anti-bypass canary verification so premature exit (e.g. sys.exit(0))
-    cannot register as a passing score.
+    Executes candidate solution strictly in a child subprocess with piped stdio.
+    Contestant stdout/stderr never connects directly to container stdout, preventing
+    forgery of verification receipts.
+    Enforces ephemeral receipt_nonce verification so premature exit (e.g. sys.exit(0))
+    or marker forgery cannot register as a passing score.
     """
     io_data = problem.input_output
     inputs = io_data.get("inputs", [])
     outputs = io_data.get("outputs", [])
     fn_name = io_data.get("fn_name")
+    nonce = receipt_nonce or secrets.token_hex(16)
 
     # Serialize test data cleanly into harness
     inputs_json = json.dumps(inputs)
@@ -166,34 +170,55 @@ def build_test_harness(problem: LCBProblem) -> str:
     if fn_name:
         # Call-based / functional problem harness
         harness = f"""
-# --- LiveCodeBench Call-Based Test Harness ---
+# --- LiveCodeBench Call-Based Test Supervisor ---
 import json
+import os
+import subprocess
 import sys
-from decimal import Decimal
 
 _INPUTS = {inputs_json}
 _OUTPUTS = {outputs_json}
 _FN_NAME = {json.dumps(fn_name)}
+_RECEIPT_NONCE = {json.dumps(nonce)}
+
+_WORKER_CODE = '''
+import sys, json, os
+try:
+    import solution
+    target_fn = None
+    if hasattr(solution, "Solution"):
+        target_fn = getattr(solution.Solution(), sys.argv[1], None)
+    if target_fn is None:
+        target_fn = getattr(solution, sys.argv[1], None)
+    if target_fn is None:
+        print(json.dumps({{"error": f"Function '{{sys.argv[1]}}' not found in solution"}}))
+        sys.exit(1)
+
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        args = json.loads(line)
+        res = target_fn(*args)
+        if isinstance(res, tuple):
+            res = list(res)
+        print(json.dumps({{"result": res}}))
+        sys.stdout.flush()
+except SystemExit:
+    sys.exit(2)
+except Exception as exc:
+    print(json.dumps({{"error": str(exc)}}))
+    sys.exit(1)
+'''
 
 def _run_tests():
     total_tests = len(_INPUTS)
     if total_tests == 0:
-        print("{CANARY_FAILED_MARKER}: No test cases provided")
+        print("__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/0: No test cases provided")
         sys.exit(1)
 
-    # Locate solution function or class
-    target_fn = None
-    if "Solution" in globals():
-        sol_inst = globals()["Solution"]()
-        target_fn = getattr(sol_inst, _FN_NAME, None)
-    if target_fn is None:
-        target_fn = globals().get(_FN_NAME)
-
-    if target_fn is None:
-        print(f"{CANARY_FAILED_MARKER}: Function '{{_FN_NAME}}' not found in candidate solution")
-        sys.exit(1)
-
+    sol_dir = os.path.dirname(os.path.abspath(__file__))
     passed_count = 0
+
     for idx, (inp_raw, exp_raw) in enumerate(zip(_INPUTS, _OUTPUTS)):
         try:
             if isinstance(inp_raw, str):
@@ -203,7 +228,7 @@ def _run_tests():
             else:
                 inp_args = [inp_raw]
         except Exception as exc:
-            print(f"{CANARY_FAILED_MARKER}: Failed to decode input for test {{idx}}: {{exc}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Failed to decode input for test {{idx}}: {{exc}}")
             sys.exit(1)
 
         try:
@@ -212,27 +237,53 @@ def _run_tests():
             exp_val = exp_raw
 
         try:
-            result = target_fn(*inp_args)
-            if isinstance(result, tuple):
-                result = list(result)
-        except SystemExit:
-            print(f"{CANARY_FAILED_MARKER}: Premature clean exit during test {{idx}}")
-            sys.exit(1)
+            proc = subprocess.Popen(
+                [sys.executable, "-u", "-c", _WORKER_CODE, _FN_NAME],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=sol_dir,
+                env={{"PYTHONPATH": sol_dir}},
+            )
+            payload = json.dumps(inp_args) + "\\n"
+            try:
+                stdout, stderr = proc.communicate(input=payload, timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Test {{idx}} timed out")
+                sys.exit(1)
         except Exception as exc:
-            print(f"{CANARY_FAILED_MARKER}: Runtime exception during test {{idx}}: {{exc}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Error executing worker for test {{idx}}: {{exc}}")
             sys.exit(1)
 
+        if proc.returncode != 0:
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit or error (code {{proc.returncode}}) on test {{idx}}")
+            sys.exit(1)
+
+        try:
+            response_obj = json.loads(stdout.strip())
+        except Exception:
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Malformed worker output on test {{idx}}: {{stdout[:200]}}")
+            sys.exit(1)
+
+        if "error" in response_obj:
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Runtime error on test {{idx}}: {{response_obj['error']}}")
+            sys.exit(1)
+
+        result = response_obj.get("result")
         if result == exp_val:
             passed_count += 1
         else:
-            print(f"{CANARY_FAILED_MARKER}: Test {{idx}} failed: expected {{exp_val!r}}, got {{result!r}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Wrong answer on test {{idx}}: expected {{exp_val!r}}, got {{result!r}}")
             sys.exit(1)
 
     if passed_count == total_tests:
-        print(f"{CANARY_SUCCESS_MARKER}: {{passed_count}}/{{total_tests}}")
+        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED {{passed_count}}/{{total_tests}}")
         sys.exit(0)
     else:
-        print(f"{CANARY_FAILED_MARKER}: Only {{passed_count}}/{{total_tests}} passed")
+        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}")
         sys.exit(1)
 
 if __name__ == '__main__':
@@ -241,14 +292,16 @@ if __name__ == '__main__':
     else:
         # Standard input / output problem harness
         harness = f"""
-# --- LiveCodeBench Standard Input/Output Test Harness ---
-import io
+# --- LiveCodeBench Standard Input/Output Test Supervisor ---
 import json
+import os
+import subprocess
 import sys
 from decimal import Decimal
 
 _INPUTS = {inputs_json}
 _OUTPUTS = {outputs_json}
+_RECEIPT_NONCE = {json.dumps(nonce)}
 
 def _convert_decimals(line):
     try:
@@ -259,48 +312,55 @@ def _convert_decimals(line):
 def _run_tests():
     total_tests = len(_INPUTS)
     if total_tests == 0:
-        print("{CANARY_FAILED_MARKER}: No test cases provided")
+        print("__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/0: No test cases provided")
         sys.exit(1)
 
-    target_fn = globals().get("wrapped_function")
-    if target_fn is None:
-        print("{CANARY_FAILED_MARKER}: wrapped_function entrypoint not found")
-        sys.exit(1)
+    sol_dir = os.path.dirname(os.path.abspath(__file__))
+    sol_path = os.path.join(sol_dir, "solution.py")
+    if not os.path.isfile(sol_path):
+        sol_path = "solution.py"
 
     passed_count = 0
     for idx, (inp_val, exp_val) in enumerate(zip(_INPUTS, _OUTPUTS)):
         inp_str = str(inp_val) if not isinstance(inp_val, str) else inp_val
         exp_str = str(exp_val) if not isinstance(exp_val, str) else exp_val
+        if not inp_str.endswith("\\n"):
+            inp_str += "\\n"
 
-        old_stdin = sys.stdin
-        old_stdout = sys.stdout
-        sys.stdin = io.StringIO(inp_str + ("\\n" if not inp_str.endswith("\\n") else ""))
-        sys.stdout = io.StringIO()
-
-        premature_exit = False
         try:
-            target_fn()
-        except SystemExit:
-            premature_exit = True
+            proc = subprocess.Popen(
+                [sys.executable, "-u", sol_path],
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                cwd=sol_dir,
+                env={{"PYTHONPATH": sol_dir}},
+            )
+            try:
+                stdout, stderr = proc.communicate(input=inp_str, timeout=5.0)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+                proc.communicate()
+                print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Test {{idx}} timed out")
+                sys.exit(1)
         except Exception as exc:
-            sys.stdin = old_stdin
-            sys.stdout = old_stdout
-            print(f"{CANARY_FAILED_MARKER}: Runtime error during test {{idx}}: {{exc}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Runtime exception on test {{idx}}: {{exc}}")
             sys.exit(1)
-        finally:
-            captured = sys.stdout.getvalue()
-            sys.stdin = old_stdin
-            sys.stdout = old_stdout
 
-        actual_lines = [l.strip() for l in captured.strip().splitlines() if l.strip()]
+        if proc.returncode != 0 and not stdout.strip():
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit or process crash with code {{proc.returncode}} on test {{idx}}")
+            sys.exit(1)
+
+        actual_lines = [l.strip() for l in stdout.strip().splitlines() if l.strip()]
         exp_lines = [l.strip() for l in exp_str.strip().splitlines() if l.strip()]
 
-        if premature_exit and not actual_lines:
-            print(f"{CANARY_FAILED_MARKER}: Premature clean exit during test {{idx}} without output")
+        if not actual_lines:
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Premature clean exit without output on test {{idx}}")
             sys.exit(1)
 
         if len(actual_lines) != len(exp_lines):
-            print(f"{CANARY_FAILED_MARKER}: Test {{idx}} line count mismatch: expected {{len(exp_lines)}}, got {{len(actual_lines)}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Line count mismatch on test {{idx}}: expected {{len(exp_lines)}}, got {{len(actual_lines)}}")
             sys.exit(1)
 
         match = True
@@ -317,19 +377,20 @@ def _run_tests():
         if match:
             passed_count += 1
         else:
-            print(f"{CANARY_FAILED_MARKER}: Test {{idx}} wrong answer: expected {{exp_lines!r}}, got {{actual_lines!r}}")
+            print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}: Wrong answer on test {{idx}}: expected {{exp_lines!r}}, got {{actual_lines!r}}")
             sys.exit(1)
 
     if passed_count == total_tests:
-        print(f"{CANARY_SUCCESS_MARKER}: {{passed_count}}/{{total_tests}}")
+        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED {{passed_count}}/{{total_tests}}")
         sys.exit(0)
     else:
-        print(f"{CANARY_FAILED_MARKER}: Only {{passed_count}}/{{total_tests}} passed")
+        print(f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED {{passed_count}}/{{total_tests}}")
         sys.exit(1)
 
 if __name__ == '__main__':
     _run_tests()
 """
+    return harness
     return harness
 
 
@@ -448,18 +509,12 @@ class LCBScoringAdapter:
                 error_detail="Problem has empty or missing test inputs/outputs in input_output specification",
             )
 
-        is_functional = bool(io_data.get("fn_name"))
-        prepared_code = extracted_code
-        if not is_functional:
-            # Wrap standard I/O solution into wrapped_function
-            cleaned = clean_if_name(extracted_code)
-            prepared_code = wrap_code_in_function(cleaned)
-
-        test_code = build_test_harness(problem)
+        receipt_nonce = secrets.token_hex(16)
+        test_code = build_test_harness(problem, receipt_nonce=receipt_nonce)
 
         # 3. Secure Containerized Verification
         try:
-            res = self.verifier.execute_code(prepared_code, test_code)
+            res = self.verifier.execute_code(extracted_code, test_code)
         except SandboxUnavailableError as exc:
             return ScoredAttempt(
                 task_id=task_id,
@@ -470,11 +525,11 @@ class LCBScoringAdapter:
                 error_detail=str(exc),
             )
 
-        # Enforce canary receipt verification
-        canary_present = CANARY_SUCCESS_MARKER in res.stdout
-        failed_marker_present = CANARY_FAILED_MARKER in res.stdout
+        # Enforce trusted supervisor receipt verification
+        expected_success_marker = f"__LCB_SUPERVISOR_RECEIPT_{receipt_nonce}__: PASSED"
+        passed = expected_success_marker in res.stdout and res.exit_code == 0
 
-        if res.success and canary_present and res.exit_code == 0:
+        if passed:
             status = "passed"
             score = 1.0
             error_code = None
@@ -482,19 +537,25 @@ class LCBScoringAdapter:
         else:
             status = "failed"
             score = 0.0
-            if failed_marker_present:
-                error_code = "TEST_FAILED"
-                error_detail = "Verification harness reported test failure"
-            elif res.exit_code == 0 and not canary_present:
+            if "Premature" in res.stdout:
                 error_code = "PREMATURE_EXIT"
-                error_detail = "Process exited with code 0 without reaching test completion receipt"
-            elif res.status == "timed_out":
+                error_detail = "Candidate code terminated prematurely without producing verified test output"
+            elif "Wrong answer" in res.stdout or "Line count mismatch" in res.stdout:
+                error_code = "WRONG_ANSWER"
+                error_detail = "Code ran but output did not match expected problem output"
+            elif "Runtime exception" in res.stdout or "Runtime error" in res.stdout:
+                error_code = "RUNTIME_ERROR"
+                error_detail = "Candidate code raised an unhandled exception during execution"
+            elif "timed out" in res.stdout.lower() or res.status == "timed_out":
                 status = "timed_out"
                 error_code = "TIMED_OUT"
                 error_detail = "Execution timed out in container sandbox"
+            elif CANARY_SUCCESS_MARKER in res.stdout and not passed:
+                error_code = "MARKER_FORGERY_DETECTED"
+                error_detail = "Candidate attempted marker forgery without trusted supervisor receipt"
             else:
-                error_code = res.error_code or "EXECUTION_ERROR"
-                error_detail = res.error_detail or "Execution failed inside container sandbox"
+                error_code = res.error_code or "TEST_FAILED"
+                error_detail = res.error_detail or "Failed isolated verification"
 
         metrics = {
             "pass@1": score,
@@ -506,7 +567,7 @@ class LCBScoringAdapter:
         details = {
             "exit_code": res.exit_code,
             "status": status,
-            "canary_verified": canary_present,
+            "receipt_verified": passed,
             "stdout_preview": res.stdout[:500],
             "stderr_preview": res.stderr[:500],
         }

@@ -439,6 +439,7 @@ def _init_default_catalog(catalog: BenchmarkCatalog) -> None:
                 ResourceDeclaration(
                     type="python_environment",
                     name="lcb-scorer-env",
+                    env_requirements=("numpy",),
                     description="Isolated Python runtime with LiveCodeBench dependencies",
                 ),
                 ResourceDeclaration(

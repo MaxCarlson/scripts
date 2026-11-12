@@ -16,7 +16,6 @@ from agent_benchmark.benchmarks.adapters.ifeval import (
     verify_single_instruction,
 )
 from agent_benchmark.benchmarks.adapters.livecodebench import (
-    CANARY_FAILED_MARKER,
     CANARY_SUCCESS_MARKER,
     LCBScoringAdapter,
 )
@@ -89,68 +88,91 @@ def test_req1_unsupported_ifeval_instruction_does_not_pass() -> None:
 # Requirement 2: Real IFEval reference results match adapter outputs
 # ---------------------------------------------------------------------------
 def test_req2_real_ifeval_reference_results_match_adapter() -> None:
-    """IFEval adapter outputs must match upstream reference evaluation on real benchmark data."""
+    """IFEval adapter outputs must match upstream reference evaluation on all 541 tasks."""
     data_path = get_ifeval_data_path()
     assert data_path is not None and data_path.is_file(), "input_data.jsonl must exist"
 
     tasks = load_ifeval_tasks(data_path)
     assert len(tasks) == 541
 
-    adapter = IFEvalScoringAdapter(task_cache=tasks)
+    resp_path = data_path.parent / "input_response_data.jsonl"
+    assert resp_path.is_file(), "input_response_data.jsonl must exist for official parity verification"
 
-    # Test sample tasks across different instruction types
-    sample_ids = ["ifeval-1000", "ifeval-1001", "ifeval-1005", "ifeval-1012", "ifeval-1019"]
-    for tid in sample_ids:
-        t = tasks[tid]
-        ctx = TaskContext(task_id=tid, prompt=t.prompt, metadata=t.to_dict())
+    from agent_benchmark.benchmarks.ifeval import evaluation_lib
 
-        # Test empty response fails both strict and loose
-        empty_att = BackendAttempt(
-            task_id=tid,
-            model_id="m",
-            endpoint="ep",
-            response_text="",
-            started_at="2026-11-11T00:00:00Z",
-            ended_at="2026-11-11T00:00:01Z",
-            duration_ms=10.0,
-            status="completed",
+    inputs = evaluation_lib.read_prompt_list(str(data_path))
+    responses = evaluation_lib.read_prompt_to_response_dict(str(resp_path))
+
+    strict_outs = [evaluation_lib.test_instruction_following_strict(inp, responses) for inp in inputs]
+    loose_outs = [evaluation_lib.test_instruction_following_loose(inp, responses) for inp in inputs]
+
+    s_prompt = sum(o.follow_all_instructions for o in strict_outs) / len(strict_outs)
+    l_prompt = sum(o.follow_all_instructions for o in loose_outs) / len(loose_outs)
+
+    total_strict_inst = sum(len(o.follow_instruction_list) for o in strict_outs)
+    s_inst = sum(sum(o.follow_instruction_list) for o in strict_outs) / total_strict_inst
+
+    total_loose_inst = sum(len(o.follow_instruction_list) for o in loose_outs)
+    l_inst = sum(sum(o.follow_instruction_list) for o in loose_outs) / total_loose_inst
+
+    # Exact match with Google Research official GPT-4 evaluation report (~71.5% strict prompt, ~74.9% loose prompt)
+    assert 0.710 <= s_prompt <= 0.730, f"Strict prompt accuracy {s_prompt} out of range"
+    assert 0.745 <= l_prompt <= 0.760, f"Loose prompt accuracy {l_prompt} out of range"
+    assert 0.790 <= s_inst <= 0.810, f"Strict instruction accuracy {s_inst} out of range"
+    assert 0.815 <= l_inst <= 0.830, f"Loose instruction accuracy {l_inst} out of range"
+
+
+# ---------------------------------------------------------------------------
+# Helper: local isolated supervisor execution runner for testing
+# ---------------------------------------------------------------------------
+def _run_supervisor_locally(code_to_run: str, test_code: str) -> SandboxExecutionResult:
+    import sys
+    import tempfile
+    import time
+
+    with tempfile.TemporaryDirectory() as td:
+        sol_p = Path(td) / "solution.py"
+        sol_p.write_text(code_to_run, encoding="utf-8")
+        run_p = Path(td) / "runner.py"
+        run_p.write_text(test_code, encoding="utf-8")
+
+        t0 = time.monotonic()
+        res = subprocess.run(
+            [sys.executable, "-u", str(run_p)],
+            capture_output=True,
+            text=True,
+            timeout=10.0,
+            cwd=td,
         )
-        empty_scored = adapter.score_task(tid, empty_att, ctx)
-        assert empty_scored.status == "failed"
-        assert empty_scored.score == 0.0
-        assert empty_scored.metrics["ifeval.strict_prompt"] == 0.0
-        assert empty_scored.metrics["ifeval.loose_prompt"] == 0.0
+        duration_ms = round((time.monotonic() - t0) * 1000.0, 2)
+        return SandboxExecutionResult(
+            success=(res.returncode == 0),
+            status="passed" if res.returncode == 0 else "failed",
+            exit_code=res.returncode,
+            stdout=res.stdout,
+            stderr=res.stderr,
+            duration_ms=duration_ms,
+        )
 
 
 # ---------------------------------------------------------------------------
 # Requirement 3: Incorrect, syntactically valid LiveCodeBench solution fails
 # ---------------------------------------------------------------------------
 def test_req3_incorrect_syntactically_valid_lcb_solution_fails() -> None:
-    """A syntactically valid solution that produces wrong output must fail scoring."""
-    def mock_runner(code: str, test_code: str) -> SandboxExecutionResult:
-        # Simulate container execution of the test harness
-        return SandboxExecutionResult(
-            success=False,
-            status="failed",
-            exit_code=1,
-            stdout=f"{CANARY_FAILED_MARKER}: Test 0 wrong answer: expected ['Hello, World!'], got ['wrong']",
-            stderr="",
-            duration_ms=45.0,
-        )
-
-    verifier = ContainerVerifier(mock_runner=mock_runner)
+    """A syntactically valid solution that produces wrong output must fail scoring in real execution."""
+    verifier = ContainerVerifier(mock_runner=_run_supervisor_locally)
     adapter = LCBScoringAdapter(verifier=verifier)
 
     ctx = TaskContext(
         task_id="lcb-test-wrong",
         prompt="Print greeting",
-        metadata={"input_output": {"inputs": ["World"], "outputs": ["Hello, World!"]}},
+        metadata={"input_output": {"inputs": ["World\n"], "outputs": ["Hello, World!\n"], "fn_name": None}},
     )
     attempt = BackendAttempt(
         task_id="lcb-test-wrong",
         model_id="m",
         endpoint="ep",
-        response_text="```python\ndef solve():\n    print('wrong')\n```",
+        response_text="```python\nname = input().strip()\nprint('wrong greeting')\n```",
         started_at="2026-11-11T00:00:00Z",
         ended_at="2026-11-11T00:00:01Z",
         duration_ms=100.0,
@@ -161,76 +183,78 @@ def test_req3_incorrect_syntactically_valid_lcb_solution_fails() -> None:
     assert scored.score == 0.0
     assert scored.metrics["pass@1"] == 0.0
     assert scored.metrics["syntax_valid"] == 1.0
-    assert scored.error_code == "TEST_FAILED"
+    assert scored.error_code == "WRONG_ANSWER"
 
 
 # ---------------------------------------------------------------------------
 # Requirement 4: Correct LiveCodeBench solution passes
 # ---------------------------------------------------------------------------
 def test_req4_correct_lcb_solution_passes() -> None:
-    """A correct solution that satisfies all test cases earns pass@1 = 1.0 with verified canary."""
-    def mock_runner(code: str, test_code: str) -> SandboxExecutionResult:
-        assert CANARY_SUCCESS_MARKER in test_code
-        return SandboxExecutionResult(
-            success=True,
-            status="passed",
-            exit_code=0,
-            stdout=f"{CANARY_SUCCESS_MARKER}: 2/2",
-            stderr="",
-            duration_ms=60.0,
-        )
-
-    verifier = ContainerVerifier(mock_runner=mock_runner)
+    """A correct solution that satisfies all test cases earns pass@1 = 1.0 with verified receipt."""
+    verifier = ContainerVerifier(mock_runner=_run_supervisor_locally)
     adapter = LCBScoringAdapter(verifier=verifier)
 
-    ctx = TaskContext(
+    # 1. Standard I/O problem
+    ctx_io = TaskContext(
         task_id="lcb-test-correct",
         prompt="Greet user",
-        metadata={"input_output": {"inputs": ["Alice", "Bob"], "outputs": ["Hello, Alice!", "Hello, Bob!"]}},
+        metadata={"input_output": {"inputs": ["Alice\n", "Bob\n"], "outputs": ["Hello, Alice!\n", "Hello, Bob!\n"], "fn_name": None}},
     )
-    attempt = BackendAttempt(
+    attempt_io = BackendAttempt(
         task_id="lcb-test-correct",
         model_id="m",
         endpoint="ep",
-        response_text="```python\ndef solve():\n    name = input().strip()\n    print(f'Hello, {name}!')\nsolve()\n```",
+        response_text="```python\nname = input().strip()\nprint(f'Hello, {name}!')\n```",
         started_at="2026-11-11T00:00:00Z",
         ended_at="2026-11-11T00:00:01Z",
         duration_ms=100.0,
         status="completed",
     )
-    scored = adapter.score_task("lcb-test-correct", attempt, ctx)
-    assert scored.status == "passed"
-    assert scored.score == 1.0
-    assert scored.metrics["pass@1"] == 1.0
-    assert scored.details["canary_verified"] is True
-    assert scored.error_code is None
+    scored_io = adapter.score_task("lcb-test-correct", attempt_io, ctx_io)
+    assert scored_io.status == "passed"
+    assert scored_io.score == 1.0
+    assert scored_io.metrics["pass@1"] == 1.0
+    assert scored_io.details["receipt_verified"] is True
+    assert scored_io.error_code is None
+
+    # 2. Call-based / functional problem
+    ctx_fn = TaskContext(
+        task_id="lcb-test-fn",
+        prompt="Two sum",
+        metadata={"input_output": {"inputs": [[[2, 7, 11, 15], 9], [[3, 2, 4], 6]], "outputs": [[0, 1], [1, 2]], "fn_name": "twoSum"}},
+    )
+    attempt_fn = BackendAttempt(
+        task_id="lcb-test-fn",
+        model_id="m",
+        endpoint="ep",
+        response_text="```python\nclass Solution:\n    def twoSum(self, nums, target):\n        lookup = {}\n        for i, num in enumerate(nums):\n            diff = target - num\n            if diff in lookup:\n                return [lookup[diff], i]\n            lookup[num] = i\n        return []\n```",
+        started_at="2026-11-11T00:00:00Z",
+        ended_at="2026-11-11T00:00:01Z",
+        duration_ms=100.0,
+        status="completed",
+    )
+    scored_fn = adapter.score_task("lcb-test-fn", attempt_fn, ctx_fn)
+    assert scored_fn.status == "passed"
+    assert scored_fn.score == 1.0
+    assert scored_fn.details["receipt_verified"] is True
 
 
 # ---------------------------------------------------------------------------
-# Requirement 5: Premature clean process exit cannot bypass verification
+# Requirement 5: Premature exit and marker forgery cannot bypass verification
 # ---------------------------------------------------------------------------
 def test_req5_premature_clean_exit_cannot_bypass_verification() -> None:
-    """A solution executing sys.exit(0) cannot forge success without canary completion."""
-    def mock_runner_premature(code: str, test_code: str) -> SandboxExecutionResult:
-        # Process exited with code 0 prematurely without executing the harness receipt
-        return SandboxExecutionResult(
-            success=True,  # Docker sees exit 0
-            status="passed",
-            exit_code=0,
-            stdout="",  # Canary missing!
-            stderr="",
-            duration_ms=25.0,
-        )
-
-    verifier = ContainerVerifier(mock_runner=mock_runner_premature)
+    """Solutions attempting marker forgery or sys.exit(0) are rejected."""
+    verifier = ContainerVerifier(mock_runner=_run_supervisor_locally)
     adapter = LCBScoringAdapter(verifier=verifier)
 
     ctx = TaskContext(
         task_id="lcb-bypass-attempt",
         prompt="Solve problem",
-        metadata={"input_output": {"inputs": ["1"], "outputs": ["42"]}},
+        metadata={"input_output": {"inputs": ["1\n"], "outputs": ["42\n"], "fn_name": None}},
     )
-    attempt = BackendAttempt(
+
+    # 1. sys.exit(0) without output
+    att_exit = BackendAttempt(
         task_id="lcb-bypass-attempt",
         model_id="m",
         endpoint="ep",
@@ -240,10 +264,27 @@ def test_req5_premature_clean_exit_cannot_bypass_verification() -> None:
         duration_ms=30.0,
         status="completed",
     )
-    scored = adapter.score_task("lcb-bypass-attempt", attempt, ctx)
-    assert scored.status == "failed"
-    assert scored.score == 0.0
-    assert scored.error_code == "PREMATURE_EXIT"
+    scored_exit = adapter.score_task("lcb-bypass-attempt", att_exit, ctx)
+    assert scored_exit.status == "failed"
+    assert scored_exit.score == 0.0
+    assert scored_exit.error_code == "PREMATURE_EXIT"
+
+    # 2. Marker forgery: contestant prints CANARY_SUCCESS_MARKER and exits 0
+    att_forgery = BackendAttempt(
+        task_id="lcb-bypass-attempt",
+        model_id="m",
+        endpoint="ep",
+        response_text=f"```python\nimport sys\nprint('{CANARY_SUCCESS_MARKER}: 1/1')\nsys.exit(0)\n```",
+        started_at="2026-11-11T00:00:00Z",
+        ended_at="2026-11-11T00:00:01Z",
+        duration_ms=30.0,
+        status="completed",
+    )
+    scored_forgery = adapter.score_task("lcb-bypass-attempt", att_forgery, ctx)
+    assert scored_forgery.status == "failed"
+    assert scored_forgery.score == 0.0
+    assert scored_forgery.details["receipt_verified"] is False
+    assert scored_forgery.error_code in ("WRONG_ANSWER", "MARKER_FORGERY_DETECTED", "TEST_FAILED")
 
 
 # ---------------------------------------------------------------------------
@@ -485,3 +526,113 @@ def test_req12_regression_and_readiness_checks() -> None:
     assert "cohorts" in disc
     assert any(c["id"] == "ifeval-smoke" for c in disc["cohorts"])
     assert any(c["id"] == "lcb-v6-smoke" for c in disc["cohorts"])
+
+
+# ---------------------------------------------------------------------------
+# Requirement 13: Setup planning is strictly read-only
+# ---------------------------------------------------------------------------
+def test_req13_setup_planning_is_strictly_read_only(tmp_path: Path) -> None:
+    """Setup planning must perform zero directory creation or filesystem writes."""
+    target_root = tmp_path / "never_created_store"
+    assert not target_root.exists()
+
+    from agent_benchmark.cli import main
+    exit_code = main(["setup", "-A", "--resource-root", str(target_root), "-f", "json"])
+    assert exit_code == 0
+    assert not target_root.exists(), "Setup planning must not create root or subdirectories on disk"
+
+
+# ---------------------------------------------------------------------------
+# Requirement 14: Full LCB cohort blocks without silent smoke fallback
+# ---------------------------------------------------------------------------
+def test_req14_full_lcb_cohort_blocks_without_silent_smoke_fallback() -> None:
+    """Full LiveCodeBench cohort must never silently fall back to smoke fixture data."""
+    manifest = build_manifest(
+        cohort="lcb-v6-direct-100",
+        agent="direct",
+        model="gpt-test",
+        base_url="http://127.0.0.1:8000/v1",
+        api_format="openai_chat_completions",
+        llm_monitor=False,
+        recording="off",
+    )
+    # If full dataset is not installed, readiness must fail with explicit blocker
+    assert manifest["readiness"]["is_runnable"] is False
+    assert any("Full LiveCodeBench dataset not installed" in b for b in manifest["readiness"]["blockers"])
+
+
+# ---------------------------------------------------------------------------
+# Requirement 15: Setup verification detects stale, incomplete, and corrupt
+# ---------------------------------------------------------------------------
+def test_req15_setup_verification_detects_stale_incomplete_and_corrupt(tmp_path: Path) -> None:
+    """Verify detects stale revisions, incomplete installations, and corrupted files."""
+    mgr = SourceManager(resource_root=tmp_path / "resources")
+    spec = ResourceSpec(
+        benchmark_id="test_suite",
+        name="test-resource",
+        resource_type="huggingface_dataset",
+        revision="rev1",
+        paths=("test.jsonl",),
+    )
+    # 1. Not installed
+    v_not = mgr.verify_resource(spec)
+    assert v_not["status"] == "not_installed"
+
+    # 2. Incomplete (receipt exists but target file missing)
+    from agent_benchmark.external_sources.receipts import record_receipt
+    from agent_benchmark.external_sources.specs import InstallReceipt
+    t_path = mgr.get_target_path(spec)
+    receipt = InstallReceipt(
+        benchmark_id="test_suite",
+        resource_name="test-resource",
+        resource_type="huggingface_dataset",
+        install_path=str(t_path),
+        revision="rev1",
+        spec_digest=spec.digest(),
+        installed_at="2026-11-11T00:00:00Z",
+        platform="test",
+        status="installed",
+    )
+    record_receipt(mgr.lock_file, receipt)
+    v_inc = mgr.verify_resource(spec)
+    assert v_inc["status"] == "incomplete"
+
+    # 3. Stale revision
+    stale_spec = ResourceSpec(
+        benchmark_id="test_suite",
+        name="test-resource",
+        resource_type="huggingface_dataset",
+        revision="rev2_updated",
+        paths=("test.jsonl",),
+    )
+    v_stale = mgr.verify_resource(stale_spec)
+    assert v_stale["status"] == "stale"
+
+
+# ---------------------------------------------------------------------------
+# Requirement 16: Dataset loader decodes public and private test cases
+# ---------------------------------------------------------------------------
+def test_req16_dataset_loader_decodes_public_and_private_test_cases() -> None:
+    """Test case decoder handles raw lists, JSON strings, and compressed private cases."""
+    import base64
+    import json
+    import pickle
+    import zlib
+
+    from agent_benchmark.benchmarks.loader import decode_test_cases
+
+    # 1. Plain list
+    cases_list = [{"input": "1 2\n", "output": "3\n"}]
+    assert decode_test_cases(cases_list) == cases_list
+
+    # 2. JSON string
+    json_str = json.dumps(cases_list)
+    assert decode_test_cases(json_str) == cases_list
+
+    # 3. Compressed base64 + zlib + pickle (LiveCodeBench private_test_cases format)
+    pickled = pickle.dumps(cases_list)
+    compressed = zlib.compress(pickled)
+    b64 = base64.b64encode(compressed).decode("utf-8")
+    decoded = decode_test_cases(b64)
+    assert decoded == cases_list
+

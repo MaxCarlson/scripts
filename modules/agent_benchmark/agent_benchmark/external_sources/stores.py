@@ -34,9 +34,9 @@ def get_default_resource_root() -> Path:
     return root.resolve()
 
 
-def ensure_store_layout(root: Path) -> dict[str, Path]:
-    """Ensure standard external directories exist and return mapping."""
-    dirs = {
+def get_store_layout(root: Path) -> dict[str, Path]:
+    """Return standard external directory layout mapping without creating directories on disk."""
+    return {
         "root": root,
         "sources": root / "sources",
         "envs": root / "envs",
@@ -44,6 +44,11 @@ def ensure_store_layout(root: Path) -> dict[str, Path]:
         "locks": root / "locks",
         "staging": root / "staging",
     }
+
+
+def ensure_store_layout(root: Path) -> dict[str, Path]:
+    """Ensure standard external directories exist on disk and return mapping."""
+    dirs = get_store_layout(root)
     for p in dirs.values():
         p.mkdir(parents=True, exist_ok=True)
     return dirs

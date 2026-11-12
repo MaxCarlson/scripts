@@ -74,7 +74,12 @@ class ContainerVerifier:
         except (subprocess.SubprocessError, FileNotFoundError, OSError):
             return False
 
-    def build_docker_command(self, script_path: Path, container_name: str | None = None) -> list[str]:
+    def build_docker_command(
+        self,
+        script_path: Path,
+        container_name: str | None = None,
+        work_dir: Path | None = None,
+    ) -> list[str]:
         """Construct the hardened Docker execution command with all security constraints."""
         cname = container_name or f"lcb-sandbox-{uuid4().hex[:12]}"
         cmd = [
@@ -90,11 +95,13 @@ class ContainerVerifier:
         ]
         if self.config.read_only_rootfs:
             cmd.extend(["--read-only", "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m"])
+        app_dir = (work_dir or script_path.parent).resolve().as_posix()
         cmd.extend([
             "--user", "65534:65534",
-            "-v", f"{script_path.resolve().as_posix()}:/app/runner.py:ro",
+            "-v", f"{app_dir}:/app:ro",
+            "-w", "/app",
             self.config.image,
-            "python", "-u", "/app/runner.py",
+            "python", "-u", f"/app/{script_path.name}",
         ])
         return cmd
 
@@ -118,15 +125,15 @@ class ContainerVerifier:
                 "Execution of untrusted model code on host is strictly prohibited."
             )
 
-        # Build runner script that combines candidate code and test code
-        runner_content = f"{code_to_run}\n\n# --- Unit Tests ---\n{test_code}\n"
         temp_dir = scratch_dir or Path(f".tmp_sandbox_{uuid4().hex[:12]}")
         temp_dir.mkdir(parents=True, exist_ok=True)
-        script_file = temp_dir / "runner.py"
-        script_file.write_text(runner_content, encoding="utf-8")
+        solution_file = temp_dir / "solution.py"
+        solution_file.write_text(code_to_run, encoding="utf-8")
+        runner_file = temp_dir / "runner.py"
+        runner_file.write_text(test_code, encoding="utf-8")
 
         container_name = f"lcb-sandbox-{uuid4().hex[:12]}"
-        docker_cmd = self.build_docker_command(script_file, container_name=container_name)
+        docker_cmd = self.build_docker_command(runner_file, container_name=container_name, work_dir=temp_dir)
 
         t0 = time.monotonic()
         try:

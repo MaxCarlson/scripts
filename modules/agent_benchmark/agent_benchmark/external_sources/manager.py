@@ -20,6 +20,7 @@ from .stores import (
     create_staging_dir,
     ensure_store_layout,
     get_default_resource_root,
+    get_store_layout,
     hash_directory_tree,
     hash_file,
 )
@@ -30,8 +31,31 @@ class SourceManager:
 
     def __init__(self, resource_root: Path | None = None) -> None:
         self.root = (resource_root or get_default_resource_root()).resolve()
-        self.layout = ensure_store_layout(self.root)
+        self.layout = get_store_layout(self.root)
         self.lock_file = self.layout["locks"] / "installed-sources.json"
+
+    def resolve_installed_path(self, benchmark_id: str, resource_name: str) -> Path | None:
+        """
+        Resolve the installed directory or file path for a benchmark resource
+        using verified installation receipts or canonical layout.
+        """
+        lock = load_sources_lock(self.lock_file)
+        receipt = lock.get_receipt(benchmark_id, resource_name)
+        if receipt and receipt.status in ("installed", "verified"):
+            p = Path(receipt.install_path)
+            if p.exists():
+                return p.resolve()
+
+        # Fallback check canonical locations under layout
+        for category in ("datasets", "sources", "envs"):
+            parent = self.layout[category] / benchmark_id
+            if parent.is_dir():
+                for child in parent.iterdir():
+                    if child.is_dir():
+                        if category == "sources" and (child / "src").is_dir():
+                            return (child / "src").resolve()
+                        return child.resolve()
+        return None
 
     def get_target_path(self, spec: ResourceSpec) -> Path:
         """Resolve canonical, content-addressed installation directory for a resource."""
@@ -60,7 +84,44 @@ class SourceManager:
         lock = load_sources_lock(self.lock_file)
         receipt = lock.get_receipt(spec.benchmark_id, spec.name)
 
-        is_installed = receipt is not None and target.exists() and receipt.status == "installed"
+        if spec.resource_type == "container_image":
+            docker_cmd = shutil.which("docker")
+            is_present = False
+            image_id = None
+            if docker_cmd:
+                try:
+                    res = subprocess.run(
+                        [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
+                        capture_output=True,
+                        text=True,
+                        timeout=5.0,
+                    )
+                    if res.returncode == 0 and res.stdout.strip():
+                        is_present = True
+                        image_id = res.stdout.strip()
+                except Exception:
+                    pass
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "resource_type": spec.resource_type,
+                "url": spec.url,
+                "revision": spec.revision,
+                "target_location": f"docker://{spec.name}",
+                "installed": is_present,
+                "action": "skip" if is_present else "externally_managed_prerequisite",
+                "optional": spec.optional,
+                "description": spec.description,
+                "image_id": image_id,
+            }
+
+        is_stale = False
+        if receipt is not None and spec.revision and receipt.revision and receipt.revision != spec.revision:
+            is_stale = True
+
+        is_installed = receipt is not None and target.exists() and receipt.status == "installed" and not is_stale
+        action = "skip" if is_installed else ("upgrade" if is_stale else "install")
+
         return {
             "benchmark_id": spec.benchmark_id,
             "resource_name": spec.name,
@@ -69,7 +130,7 @@ class SourceManager:
             "revision": spec.revision,
             "target_location": str(target),
             "installed": is_installed,
-            "action": "skip" if is_installed else "install",
+            "action": action,
             "optional": spec.optional,
             "description": spec.description,
         }
@@ -91,11 +152,49 @@ class SourceManager:
                 f"Installation of {spec.name!r} refused without explicit -x/--execute authorization"
             )
 
-        target = self.get_target_path(spec)
-        tx_id = f"tx_{uuid4().hex[:12]}"
-        staging = create_staging_dir(self.root, tx_id)
+        # Ensure root directory layout exists only when authorized to execute
+        self.layout = ensure_store_layout(self.root)
         now_iso = datetime.now(timezone.utc).isoformat()
         current_platform = f"{platform.system().lower()}-{platform.machine().lower()}"
+        tx_id = f"tx_{uuid4().hex[:12]}"
+
+        if spec.resource_type == "container_image":
+            docker_cmd = shutil.which("docker")
+            if not docker_cmd:
+                raise RuntimeError(
+                    f"Container image resource '{spec.name}' requires Docker installed and running on the host."
+                )
+            res = subprocess.run(
+                [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
+                capture_output=True,
+                text=True,
+                timeout=10.0,
+            )
+            if res.returncode != 0 or not res.stdout.strip():
+                raise RuntimeError(
+                    f"Container image '{spec.name}' is not present in local Docker daemon. "
+                    f"It is an externally managed prerequisite that must be pulled or built beforehand."
+                )
+            image_id = res.stdout.strip()
+            receipt = InstallReceipt(
+                benchmark_id=spec.benchmark_id,
+                resource_name=spec.name,
+                resource_type=spec.resource_type,
+                install_path=f"docker://{spec.name}",
+                revision=spec.revision,
+                spec_digest=spec.digest(),
+                installed_at=now_iso,
+                platform=current_platform,
+                status="installed",
+                content_hash=image_id,
+                file_hashes={},
+                metadata={"tx_id": tx_id, "docker_image_id": image_id},
+            )
+            record_receipt(self.lock_file, receipt)
+            return receipt
+
+        target = self.get_target_path(spec)
+        staging = create_staging_dir(self.root, tx_id)
 
         try:
             if spec.resource_type == "harbor_registry":
@@ -148,6 +247,10 @@ class SourceManager:
                     capture_output=True,
                     text=True,
                 )
+                py_exe = staging / "Scripts" / "python.exe" if platform.system() == "Windows" else staging / "bin" / "python"
+                if not py_exe.is_file():
+                    raise RuntimeError(f"Virtual environment creation failed: missing python executable at {py_exe}")
+
                 if spec.env_requirements:
                     pip_exe = staging / "Scripts" / "pip.exe" if platform.system() == "Windows" else staging / "bin" / "pip"
                     if pip_exe.is_file():
@@ -183,6 +286,16 @@ class SourceManager:
                             raise RuntimeError(
                                 f"Failed to download Hugging Face dataset resource '{spec.name}' from {dl_url}: {dl_err}"
                             ) from dl_err
+
+                    # Content validation: file must exist, non-empty, and valid JSONL if .jsonl
+                    if not dest_file.is_file() or dest_file.stat().st_size == 0:
+                        raise ValueError(f"Downloaded dataset file {rel_file} is empty or missing")
+                    if rel_file.endswith(".jsonl"):
+                        with dest_file.open("r", encoding="utf-8") as f_check:
+                            first_line = f_check.readline()
+                            if not first_line.strip():
+                                raise ValueError(f"Downloaded JSONL file {rel_file} has empty first line")
+                            json.loads(first_line)
 
                 (staging / "dataset_manifest.json").write_text(
                     json.dumps({
@@ -232,17 +345,88 @@ class SourceManager:
     def verify_resource(self, spec: ResourceSpec) -> dict[str, Any]:
         """Verify presence and file hash integrity of an installed resource."""
         spec.validate_safety()
-        target = self.get_target_path(spec)
         lock = load_sources_lock(self.lock_file)
         receipt = lock.get_receipt(spec.benchmark_id, spec.name)
 
-        if not receipt or not target.exists():
+        if spec.resource_type == "container_image":
+            docker_cmd = shutil.which("docker")
+            if not docker_cmd:
+                return {
+                    "benchmark_id": spec.benchmark_id,
+                    "resource_name": spec.name,
+                    "status": "unavailable",
+                    "details": "Docker executable not found on host",
+                }
+            res = subprocess.run(
+                [docker_cmd, "image", "inspect", spec.name, "--format", "{{.Id}}"],
+                capture_output=True,
+                text=True,
+                timeout=5.0,
+            )
+            if res.returncode != 0:
+                return {
+                    "benchmark_id": spec.benchmark_id,
+                    "resource_name": spec.name,
+                    "status": "not_installed",
+                    "details": f"Container image {spec.name} not found in local Docker daemon",
+                }
+            image_id = res.stdout.strip()
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "status": "verified",
+                "details": f"Container image {spec.name} verified ({image_id[:19]})",
+                "content_hash": image_id,
+            }
+
+        target = self.get_target_path(spec)
+
+        if not receipt:
             return {
                 "benchmark_id": spec.benchmark_id,
                 "resource_name": spec.name,
                 "status": "not_installed",
-                "details": f"Target path {target} does not exist or has no receipt",
+                "details": f"Target path {target} has no recorded receipt in installed-sources.json",
             }
+
+        if spec.revision and receipt.revision and receipt.revision != spec.revision:
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "status": "stale",
+                "installed_revision": receipt.revision,
+                "expected_revision": spec.revision,
+                "details": f"Installed revision {receipt.revision} does not match expected revision {spec.revision}",
+            }
+
+        if not target.exists():
+            return {
+                "benchmark_id": spec.benchmark_id,
+                "resource_name": spec.name,
+                "status": "incomplete",
+                "details": f"Target path {target} does not exist on disk",
+            }
+
+        if spec.resource_type == "python_environment":
+            py_exe = target / "Scripts" / "python.exe" if platform.system() == "Windows" else target / "bin" / "python"
+            if not py_exe.is_file():
+                return {
+                    "benchmark_id": spec.benchmark_id,
+                    "resource_name": spec.name,
+                    "status": "incomplete",
+                    "details": f"Python executable missing in virtual environment at {py_exe}",
+                }
+
+        # Check required paths
+        if spec.paths:
+            for p in spec.paths:
+                if not (target / p).exists():
+                    return {
+                        "benchmark_id": spec.benchmark_id,
+                        "resource_name": spec.name,
+                        "status": "incomplete",
+                        "details": f"Required resource file or directory missing: {p}",
+                    }
 
         # Check file hashes
         corrupted: list[str] = []

@@ -206,6 +206,7 @@ def build_manifest(
                     selected["dataset"],
                     task,
                     custom_manifest_tasks=custom_tasks_map,
+                    cohort_id=selected.get("id"),
                 )
                 if not meta_dict:
                     meta_dict = resolved_meta
@@ -231,6 +232,15 @@ def build_manifest(
                 blockers.append("Direct model execution requires --model")
             if not effective_url:
                 blockers.append("Direct model execution requires --base-url")
+
+        # Explicitly check for uninstalled full datasets: full benchmarks must never silently fall back to smoke data
+        if selected.get("id") in ("lcb-v6-direct-100", "lcb-v6-direct-full"):
+            from .benchmarks.loader import get_lcb_data_path
+            if get_lcb_data_path(allow_smoke=False) is None:
+                is_runnable = False
+                blockers.append(
+                    "Full LiveCodeBench dataset not installed. Smoke data cannot be used for 100-task or full cohorts. Run 'agent-benchmark setup install -d livecodebench -x'."
+                )
 
         # Reject direct model execution if prompts cannot be resolved
         missing_prompts = [t for t in selected["tasks"] if not task_prompts.get(t)]

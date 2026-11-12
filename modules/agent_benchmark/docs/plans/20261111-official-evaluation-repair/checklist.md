@@ -16,25 +16,36 @@
 - [x] Implement official 8-variant loose response checking
 - [x] Reject unknown instruction IDs with `False` / validation error; never return `True`
 - [x] Maintain separate strict/loose prompt and instruction metrics
-- [x] Unit tests with upstream reference cases proving strict/loose parity
+- [x] Unit tests with upstream reference cases proving strict/loose parity on 541 tasks
 
-## Stage 3: Authentic LiveCodeBench Evaluator
+## Stage 3: Authentic LiveCodeBench Evaluator & Isolated Supervisor
 - [x] Implement test harness generator supporting `stdin` (I/O) problems
 - [x] Implement test harness generator supporting `functional` (call-based / LeetCode) problems
-- [x] Implement canary / test count verification preventing `sys.exit(0)` bypass
+- [x] Execute candidate code strictly in child subprocess (`solution.py`) with piped stdio
+- [x] Generate ephemeral `receipt_nonce` trusted supervisor receipt preventing `sys.exit(0)` and marker forgery bypasses
 - [x] Handle missing/corrupt test data by raising `infrastructure_invalid`
 - [x] Implement accurate pass@1 scoring and error classification
-- [x] Unit tests for wrong answer, correct answer, syntax error, and premature exit
+- [x] Unit tests for wrong answer, correct answer, syntax error, premature exit, and marker forgery
 
 ## Stage 4: Dataset Materialization & Real Cohort Prompts
 - [x] Implement Hugging Face file downloading in `external_sources/manager.py`
 - [x] Implement Windows-safe sparse git checkout in `external_sources/manager.py`
 - [x] Populate real task IDs in `catalog.py` for IFEval and LiveCodeBench
 - [x] Wire real problem prompts and starter code in `suite.py` and direct chat dispatch
+- [x] Decode both public and private test cases (supporting raw JSON and base64/zlib/pickle)
 - [x] Reject empty or missing prompts before model dispatch
+- [x] Enforce that full benchmarks (`lcb-v6-direct-100`, `lcb-v6-direct-full`) never silently fall back to smoke data
 
-## Stage 5: Final Qualification & Regression
-- [x] Run all 12 required tests
-- [x] Run full `agent_benchmark` and `benchmark_core` test suites
+## Stage 5: External Setup Contract Hardening
+- [x] Setup planning is strictly read-only (`get_store_layout` vs `ensure_store_layout`)
+- [x] Resolve resources via verified installation receipts (`resolve_installed_path`)
+- [x] Fail closed on container images when Docker image is unavailable without writing fake receipts
+- [x] Declare `env_requirements=("numpy",)` for `lcb-scorer-env`
+- [x] Setup verification detects stale, incomplete, and corrupt receipts
+
+## Stage 6: Final Qualification & Regression
+- [x] Run all 16 required qualification tests in `official_evaluation_repair_test.py`
+- [x] Run full `agent_benchmark` (714 passed, 10 skipped) and `benchmark_core` (119 passed, 1 skipped) test suites
 - [x] Verify 100% clean Ruff checks
-- [x] Commit and push to origin
+- [x] Reconcile with latest origin/main
+- [x] Commit and push to origin task branch

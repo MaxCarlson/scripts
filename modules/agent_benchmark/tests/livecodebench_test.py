@@ -3,13 +3,12 @@
 from __future__ import annotations
 
 from pathlib import Path
+import re
 from typing import Any
 
 import pytest
 
 from agent_benchmark.benchmarks.adapters.livecodebench import (
-    CANARY_FAILED_MARKER,
-    CANARY_SUCCESS_MARKER,
     LCBProblem,
     LCBScoringAdapter,
     extract_python_code,
@@ -123,12 +122,14 @@ def test_lcb_scoring_adapter_sandbox_unavailable_classified_as_infrastructure_in
 def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
     """Test pass and fail with a mock container verifier."""
     def mock_runner(code: str, test_code: str) -> SandboxExecutionResult:
+        nonce_match = re.search(r"__LCB_SUPERVISOR_RECEIPT_([a-f0-9]+)__", test_code)
+        nonce = nonce_match.group(1) if nonce_match else "mocknonce"
         if "return 42" in code:
             return SandboxExecutionResult(
                 success=True,
                 status="passed",
                 exit_code=0,
-                stdout=f"{CANARY_SUCCESS_MARKER}: 1/1",
+                stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED 1/1",
                 stderr="",
                 duration_ms=120.0,
             )
@@ -137,7 +138,7 @@ def test_lcb_scoring_adapter_mock_verifier_pass_and_fail() -> None:
                 success=False,
                 status="failed",
                 exit_code=1,
-                stdout=f"{CANARY_FAILED_MARKER}: wrong answer",
+                stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: FAILED 0/1: wrong answer",
                 stderr="AssertionError",
                 duration_ms=80.0,
                 error_code="VERIFIER_TEST_FAILED",
@@ -237,11 +238,13 @@ def test_e2e_lcb_suite_execution(tmp_path: Path) -> None:
 
     # Custom executor using mock verifier
     def mock_runner(code: str, test: str) -> SandboxExecutionResult:
+        nonce_match = re.search(r"__LCB_SUPERVISOR_RECEIPT_([a-f0-9]+)__", test)
+        nonce = nonce_match.group(1) if nonce_match else "mocknonce"
         return SandboxExecutionResult(
             success=True,
             status="passed",
             exit_code=0,
-            stdout=f"{CANARY_SUCCESS_MARKER}: 1/1",
+            stdout=f"__LCB_SUPERVISOR_RECEIPT_{nonce}__: PASSED 1/1",
             stderr="",
             duration_ms=50.0,
         )
