@@ -10,6 +10,8 @@
 - Only the Part 3 review branch contains review edits. No active competing RC assignment was reported by the agent inventory. Other worktrees were left untouched.
 - The V3 plan is present by ancestry, unchanged: SHA-256 `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46`; Git blob `3a1c2f7662a54469bb6dc15ad6462a4295ec93e6`.
 - The Mining repository is read-only for this assignment. Its `master` was verified at `deea3e019b35615f4d95e6f510450f7f392fb82a`.
+- During review, current `main` advanced to `2580fa504b32eadda87d88743cc4469a3a98211a`, confirmed through GitHub and matching the local `origin/main` ref. A local SSH fetch was blocked by the environment (`NtCreateDirectoryObject ... 0xC0000022`), so GitHub's read-only branch API was used to confirm the published ref.
+- The 13 commits added to `main` since `4f4373d2` change only `modules/agent_benchmark/` and `modules/benchmark_core/`; no Resource Coordinator or `scripts_help` paths overlap. They were merged into this isolated review branch at `576fca5805a308db562768fe762ed60d11f73eff`. Current `main` is now an ancestor of the review candidate. No protected branch was updated.
 
 ## Confirmed defect and correction
 
@@ -30,18 +32,43 @@ Added regressions cover this failure boundary and two simultaneous automatic-rec
 
 ## Validation
 
-Environment: Windows PowerShell, CPython 3.12.10, pytest 9.0.3. RC imports came from the review worktree. Tests used local fake miners and temporary journals. H3 combined-candidate execution is in progress; see checklist and final update.
+Environment: Windows PowerShell, CPython 3.12.10, pytest 9.0.3. RC imports came from the review worktree. Tests used local fake miners and temporary journals. H3 ran against the exact combined review source. The production Coordinator was not contacted.
 
 | Check | Result |
 |---|---|
-| RC durable-state, lease, service lifecycle, and timing test selection | **64 passed**, 0 failed/errors/skipped; JUnit under `modules/resource_coordinator/.pytest_tmp_review_safety_core/junit.xml` |
-| New synchronization and concurrent-recovery regressions | **2 passed** with normal socket permissions; the synchronization-clear regression failed before the correction, as expected |
-| Timing-sensitive acceptance test alone | **3/3 passes** with separate absolute basetemp roots; it also passed in the 64-test selection |
+| RC durable-state, lease, service lifecycle, and timing test selection | **65 passed**, 0 failed/errors/skipped; final JUnit: `modules/resource_coordinator/.pytest_tmp_review_safety_final/junit.xml` |
+| Recovery sync ordering, simultaneous calls, and post-commit cancellation | All **3 new regressions passed**; the synchronization-clear regression failed before correction, as expected |
+| Timing-sensitive acceptance test alone | **3/3 passes** with separate absolute basetemp roots; it also passed in the 65-test selection |
 | v0.14 rollback parser | **Passed** using the actual parser from Git commit `737bc6b`; test snapshot and archive under `.pytest_tmp_rollback_parser_review/case-a017phje` |
-| Changed-code Ruff/compile/diff | **Passed** for the correction before docs were added; final checks to be recorded after documentation and H3 |
-| Combined H3 against review candidate | Pending |
+| Combined Mining/RC H3 against the current integrated candidate | **8 passed, 0 failed/error/skipped** on RC `576fca5805a308db562768fe762ed60d11f73eff` and Mining `deea3e019b35615f4d95e6f510450f7f392fb82a`; JUnit and JSON: `C:\Users\mcarls\AppData\Local\Temp\rc-part23-h3-b996b4ab78a44fe58eeb3d74725b0481\junit.xml` and `summary.json` |
+| Changed-code Ruff, compilation, import provenance, and Git diff integrity | **Passed** on the integrated review branch; RC import resolved from this worktree and reported version `1.0.0` |
+| Focused RC selection after current-main merge | **65 passed**, 0 failed/errors/skipped; JUnit: `modules/resource_coordinator/.pytest_tmp_review_merged_7938bc230d8746999ca77e7033f18596/junit.xml` |
 
-The timing-sensitive test's prior full-suite instability did not reproduce in four focused executions. There is no evidence yet isolating a particular scheduler, cleanup, or state collision cause; it remains covered in the review suite rather than being declared fixed by this sample.
+The timing-sensitive test's prior full-suite instability did not reproduce in four focused executions. There is no evidence yet isolating a particular scheduler, cleanup, or state collision cause; it remains covered in the review suite rather than being declared fixed by this sample. H3 emitted two dependency deprecation warnings (`websockets.legacy` and `WebSocketServerProtocol`), with no product failures. No RC source or test changes followed the H3 run; later commits touch only review tooling and documentation.
+
+H3 ran the unchanged Mining `tests/h3` suite using the production `CoordinatorClient` and `Runner.trial()` against the integrated review candidate's actual RC gateway and manager. RC source and tests were byte-identical to the H3-tested source commit `bef77f29443375b4c96cbeab11f16d350b722f97`; the intervening merge added only unrelated `agent_benchmark` and `benchmark_core` paths. The adapter changed only `h3_support.RC_COMMIT` in memory and asserted exact source imports/commits. It did not edit Mining. The tests used an ephemeral loopback listener, fake GPU observer, fake Coordinator miner, and harmless suspended children.
+
+The merged H3 invocation used the Mining H3 Python `C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe`, RC dependency site-packages `C:\Users\mcarls\src\scripts\.venv\Lib\site-packages`, and a clean detached RC worktree at `576fca5805a308db562768fe762ed60d11f73eff`. It emitted the artifacts above; that temporary validation worktree was subsequently removed after confirming it was clean.
+
+Additional regression command (from `modules/resource_coordinator`, exit 0):
+
+```powershell
+python -m pytest tests/test_durable_state.py tests/test_leases.py tests/test_service_lifecycle.py tests/test_final_acceptance_readiness.py::test_repeatable_acceptance_runs_preserve_evidence -q --basetemp C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-part2-part3-review-20261111\modules\resource_coordinator\.pytest_tmp_review_safety_final --junitxml C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-part2-part3-review-20261111\modules\resource_coordinator\.pytest_tmp_review_safety_final\junit.xml
+```
+
+The original Part 3 full-module evidence remains **849 passed, 7 skipped, 3 deselected, 0 failed**. Its excluded live listener and live-mode tests remain H4/H5 gates; the latter's guard detected running KRig during the earlier attempt, with no process operation. The timing test was excluded from that full run, but passed independently three times and inside the 65-test selection. No full suite rerun was needed after a one-line cleanup-order correction and focused regressions.
+
+The final focused command was run from `modules/resource_coordinator` with `--basetemp` set to the absolute `.pytest_tmp_review_merged_7938bc230d8746999ca77e7033f18596` path and a JUnit report at the path listed above; it exited 0. Ruff checked every changed Python file under `modules/resource_coordinator/`, compilation covered `resource_coordinator/` and `tests/`, import provenance pointed into this review worktree, both committed and working-tree `git diff --check` passed, and a source/test diff against H3 commit `bef77f29` was empty.
+
+An initial sandboxed rerun stalled after 12 cases before producing a failure; it was interrupted. The same isolated fake-backed selection completed under the normal permitted socket context with 65 passed and exit 0. No live Coordinator, KRig, LM Studio, or GPU operation was used.
+
+Exact final H3 invocation (run from the temporary detached RC worktree at the tested commit; the worktree was removed after the clean-state check):
+
+```powershell
+& '.\modules\resource_coordinator\docs\plans\20261111-part2-part3-review\run_combined_h3.ps1' -MiningRoot 'C:\Users\mcarls\src\Mining' -RcRepo 'C:\Users\mcarls\src\scripts\.worktrees\rc-h3-review-576fca5805a308db562768fe762ed60d11f73eff' -ExpectedRcCommit '576fca5805a308db562768fe762ed60d11f73eff' -PythonExe 'C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe' -RcPythonSitePackages 'C:\Users\mcarls\src\scripts\.venv\Lib\site-packages'
+```
+
+Static checks ran with the scripts repository Python `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`: `python -m ruff check @changed` from the RC module directory (where `$changed` was every changed `.py` path under `modules/resource_coordinator/` relative to that directory), `python -m compileall -q <review-worktree>\modules\resource_coordinator\resource_coordinator <review-worktree>\modules\resource_coordinator\tests`, a Python import/version provenance assertion, `git diff --check origin/main...HEAD`, `git diff --check`, and `git diff --exit-code bef77f29443375b4c96cbeab11f16d350b722f97 HEAD -- modules/resource_coordinator/resource_coordinator modules/resource_coordinator/tests`. All exited 0.
 
 ## Integration decision
 
