@@ -554,12 +554,15 @@ class CoordinatorService:
                 )
                 if changed is None:
                     raise RuntimeError("Live recovery holder synchronization did not match durable state")
-            StateCodec.clear_inhibition_holder(state_path, "gpu.inference", sync_holder)
             changed = await manager.clear_inhibition_holder(
                 "gpu.inference", sync_holder, start_cooldown=False
             )
             if changed is None:
                 raise RuntimeError("Live recovery synchronization marker could not be cleared")
+            # Remove the durable marker last. If in-memory synchronization fails, or
+            # the process crashes before this write, startup must still restore a
+            # protective hold from the journal.
+            StateCodec.clear_inhibition_holder(state_path, "gpu.inference", sync_holder)
             await manager.release_gpu_recovery_fence(fence["fence_id"], cooldown_resource="gpu.inference")
             remaining = manager.get_inhibition("gpu.inference")
             return {

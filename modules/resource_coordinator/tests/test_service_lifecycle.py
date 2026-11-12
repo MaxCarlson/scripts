@@ -358,6 +358,113 @@ async def test_automatic_recovery_sync_failure_retains_durable_marker_and_latche
 
 
 @pytest.mark.asyncio
+async def test_automatic_recovery_retains_durable_sync_marker_if_memory_clear_fails(tmp_path, monkeypatch):
+    from resource_coordinator.core.durable_state import CoordinatorState, PersistedRequest, StateCodec
+    from resource_coordinator.core.leases import LeaseManager
+
+    journal = tmp_path / "recovery-clear-sync-failure.json"
+    state = CoordinatorState(
+        requests={"req-safe": PersistedRequest(
+            request_id="req-safe", resource="gpu.inference", phase="reserved", details={"forwarded": False},
+        )},
+        inhibitions={"gpu.inference": {
+            "resource": "gpu.inference", "reason": "uncertain", "holder_id": "req-safe", "inhibited_at": 1.0,
+            "details": {},
+        }},
+    )
+    StateCodec.save_atomic(state, journal)
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(journal)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="inference", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference")],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system)
+    assert await service.start()
+    original = LeaseManager.clear_inhibition_holder
+
+    async def fail_sync_clear(self, resource, holder_id, **kwargs):
+        if holder_id.startswith("recovery_sync:"):
+            raise RuntimeError("injected in-memory recovery marker clear failure")
+        return await original(self, resource, holder_id, **kwargs)
+
+    monkeypatch.setattr(LeaseManager, "clear_inhibition_holder", fail_sync_clear)
+    result = await service.auto_recover()
+
+    durable = StateCodec.load(journal)
+    assert result["status"] == "reconciliation_required"
+    assert service.state == ServiceState.RECONCILIATION_REQUIRED
+    assert system.lease_mgr.restarts_blocked
+    assert any(item.get("holder_id", "").startswith("recovery_sync:")
+               for item in [durable.inhibitions["gpu.inference"],
+                            *durable.inhibitions["gpu.inference"]["details"].get(
+                                "additional_uncertain_holders", [])])
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_concurrent_automatic_recovery_calls_are_serialized_by_recovery_fence(tmp_path, monkeypatch):
+    import threading
+    from resource_coordinator.core.durable_state import CoordinatorState, PersistedRequest, StateCodec
+
+    journal = tmp_path / "concurrent-recovery.json"
+    StateCodec.save_atomic(CoordinatorState(
+        requests={"req-safe": PersistedRequest(
+            request_id="req-safe", resource="gpu.inference", phase="reserved", details={"forwarded": False},
+        )},
+        inhibitions={"gpu.inference": {
+            "resource": "gpu.inference", "reason": "uncertain", "holder_id": "req-safe", "inhibited_at": 1.0,
+            "details": {},
+        }},
+    ), journal)
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(journal)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="inference", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference")],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system)
+    assert await service.start()
+
+    entered = threading.Event()
+    release_observation = threading.Event()
+    original_load = StateCodec.load
+    count = 0
+    count_lock = threading.Lock()
+
+    def block_first_stage_two_load(path):
+        nonlocal count
+        state = original_load(path)
+        if str(path) == str(journal):
+            with count_lock:
+                count += 1
+                observation_number = count
+            if observation_number == 2:
+                entered.set()
+                if not release_observation.wait(timeout=3):
+                    raise TimeoutError("test did not release Stage 2 observation")
+        return state
+
+    monkeypatch.setattr(StateCodec, "load", block_first_stage_two_load)
+    first = asyncio.create_task(service.auto_recover(observation_timeout_seconds=2.0))
+    assert await asyncio.to_thread(entered.wait, 1.0)
+    second = await service.auto_recover(observation_timeout_seconds=2.0)
+    assert second["status"] == "wait"
+    assert system.lease_mgr._gpu_recovery_fence is not None
+
+    release_observation.set()
+    first_result = await first
+    durable = StateCodec.load(journal)
+    assert first_result["status"] == "reconciled"
+    assert durable.requests["req-safe"].phase == "reconciled"
+    assert "gpu.inference" not in durable.inhibitions
+    assert system.lease_mgr._gpu_recovery_fence is None
+    await service.stop()
+
+
+@pytest.mark.asyncio
 async def test_service_startup_fails_closed_when_persisted_process_is_access_denied(tmp_path, monkeypatch):
     import psutil
     from resource_coordinator.core.durable_state import CoordinatorState, PersistedProcess, StateCodec
