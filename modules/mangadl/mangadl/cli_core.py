@@ -74,6 +74,26 @@ def _path(value: str) -> Path:
     return Path(value).expanduser().resolve()
 
 
+class MangaDlArgumentParser(argparse.ArgumentParser):
+    def parse_args(
+        self,
+        args: Sequence[str] | None = None,
+        namespace: argparse.Namespace | None = None,
+    ) -> argparse.Namespace:
+        if args is not None:
+            shape = normalize_command_shape(args)
+            parsed = super().parse_args(list(shape.argv), namespace=namespace)
+            if getattr(parsed, "command", None) == "run":
+                if shape.run_mode != "normal":
+                    parsed.run_mode = shape.run_mode
+                if shape.advanced_config:
+                    parsed.advanced_config = True
+            if shape.legacy_command:
+                parsed.legacy_command = shape.legacy_command
+            return parsed
+        return super().parse_args(args, namespace=namespace)
+
+
 def _add_state(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "-s",
@@ -85,15 +105,68 @@ def _add_state(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("-R", "--run-id", help="Run identifier; defaults to the latest run where applicable.")
 
 
+def _add_run_cover_arguments(run: argparse.ArgumentParser, *, advanced: bool) -> None:
+    hidden = argparse.SUPPRESS
+    normal_run = run.get_default("run_mode") == "normal"
+    show_kavita_config = advanced or normal_run
+    run.add_argument(
+        "-X",
+        "--no-download-covers",
+        "--no-covers",
+        action="store_false",
+        dest="download_covers",
+        default=True,
+        help="Do not download managed source covers after successful supported-site jobs.",
+    )
+    run.add_argument(
+        "-F",
+        "--apply-kavita-covers",
+        action="store_true",
+        help="Upload and lock managed covers in Kavita after successful jobs." if advanced else hidden,
+    )
+    run.add_argument(
+        "-j",
+        "-K",
+        "--kavita-url",
+        dest="kavita_url",
+        help="Kavita base URL, such as http://192.168.50.100:5000." if show_kavita_config else hidden,
+    )
+    run.add_argument(
+        "-KE",
+        "--kavita-api-key-env",
+        default="KAVITA_API_KEY",
+        help="Environment variable containing the Kavita Auth Key." if show_kavita_config else hidden,
+    )
+    run.add_argument(
+        "-L",
+        "--kavita-path-map",
+        action="append",
+        default=[],
+        metavar="LOCAL=KAVITA",
+        help="Translate local paths to Kavita-visible paths; repeatable." if show_kavita_config else hidden,
+    )
+    if normal_run:
+        run.add_argument(
+            "-E",
+            "--apply-kavita",
+            action="store_true",
+            help="Apply collection assignments after downloads; otherwise save them for explicit reconciliation.",
+        )
+
+
 def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argparse.ArgumentParser:
     shape = normalize_command_shape(argv_hint or ())
-    parser = argparse.ArgumentParser(
+    parser = MangaDlArgumentParser(
         prog="mangadl",
         description="Concurrent, resumable manga/gallery download manager.",
     )
     parser.add_argument("-V", "--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("-T", "--tui", action="store_true", help="Launch the interactive terminal user interface.")
-    subparsers = parser.add_subparsers(dest="command", required=True)
+    subparsers = parser.add_subparsers(
+        dest="command",
+        required=True,
+        parser_class=argparse.ArgumentParser,
+    )
 
     mode_descriptions = {
         "normal": "Download URL files with concise concurrency controls.",
@@ -111,104 +184,10 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         advanced=shape.advanced_config,
         path_type=_path,
     )
-
-    inspect = subparsers.add_parser("inspect", help="Inspect URL routing or persisted jobs.")
-    inspect.add_argument("-u", "--url", action="append", default=[], help="URL to probe; repeatable.")
-    inspect.add_argument(
-        "-b",
-        "--backend",
-        choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics", "manga18fx"),
-        default="auto",
-    )
-    _add_state(inspect)
-    inspect.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
-
-    status = subparsers.add_parser("status", help="Show the latest or selected persisted run.")
-    _add_state(status)
-    status.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
-
-    retry = subparsers.add_parser("retry", help="Requeue failed jobs in a persisted run.")
-    _add_state(retry)
-    retry.add_argument("-j", "--job-id", action="append", type=int, default=[], help="Job ID to retry; repeatable.")
-    retry.add_argument("-f", "--all-failed", action="store_true", help="Requeue all failed jobs.")
-
-    kavita = subparsers.add_parser("kavita", help="Preview or reconcile pending Kavita collection assignments.")
-    kavita_subparsers = kavita.add_subparsers(dest="kavita_command", required=True)
-    reconcile = kavita_subparsers.add_parser("reconcile", help="Match pending URLs to scanned Kavita series.")
-    reconcile.add_argument("-d", "--destination", type=_path, required=True, help="MangaDL destination root.")
-    reconcile.add_argument("-Z", "--kavita-url", required=True, help="Kavita base URL.")
-    reconcile.add_argument(
-        "-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key."
-    )
-    reconcile.add_argument(
-        "-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable."
-    )
-    reconcile.add_argument("-f", "--apply", action="store_true", help="Write collection changes; default is preview only.")
-    reconcile.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
-
-    def add_kavita_batch_arguments(command: argparse.ArgumentParser) -> None:
-        command.add_argument("-Z", "--kavita-url", required=True, help="Kavita base URL.")
-        command.add_argument("-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key.")
-        command.add_argument("-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable.")
-        command.add_argument("-c", "--collection", action="append", required=True, help="Collection name; repeatable.")
-        command.add_argument("-f", "--apply", action="store_true", help="Apply the previewed assignment set.")
-        command.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
-
-    assign_file = kavita_subparsers.add_parser("assign-file", help="Assign already-downloaded URL-file manga to collections.")
-    assign_file.add_argument("-i", "--input-file", required=True, type=_path, help="Processed URL file.")
-    assign_file.add_argument("-d", "--destination", required=True, type=_path, help="MangaDL library root.")
-    assign_file.add_argument(
-        "-x", "--no-index-backfill", action="store_true",
-        help="Do not create missing per-folder source indexes while resolving this URL file.",
-    )
-    add_kavita_batch_arguments(assign_file)
-
-    assign_name = kavita_subparsers.add_parser("assign-name", help="Assign a uniquely named scanned Kavita series.")
-    assign_name.add_argument("-n", "--name", action="append", required=True, help="Exact series name; repeatable.")
-    add_kavita_batch_arguments(assign_name)
-
-    assign_pattern = kavita_subparsers.add_parser("assign-pattern", help="Preview a regex-selected set of Kavita series.")
-    assign_pattern.add_argument("-p", "--pattern", required=True, help="Bounded Python regex searched against series names.")
-    assign_pattern.add_argument("-C", "--confirm-matches", help="Match-set token printed by preview; required with --apply.")
-    add_kavita_batch_arguments(assign_pattern)
-
-    archive = subparsers.add_parser(
-        "archive",
-        help="Browse a gallery-dl SQLite archive interactively.",
-        description="Open an interactive archive browser; use `archive config` for JSON/export controls.",
-    )
-    archive.add_argument("-a", "--archive", required=True, type=_path, help="gallery-dl archive path.")
-    archive.add_argument(
-        "-j",
-        "--json",
-        action="store_true",
-        help="Emit all archive records as JSON." if shape.archive_config else argparse.SUPPRESS,
-    )
-    archive.add_argument(
-        "-N",
-        "--no-ui",
-        action="store_true",
-        help="Print a summary instead of opening the browser." if shape.archive_config else argparse.SUPPRESS,
-    )
-    archive.add_argument(
-        "-f",
-        "--filter",
-        default="",
-        help="Initial case-insensitive record filter." if shape.archive_config else argparse.SUPPRESS,
-    )
-    archive.add_argument(
-        "-e",
-        "--export",
-        type=_path,
-        help="Export the filtered view to JSON." if shape.archive_config else argparse.SUPPRESS,
-    )
-
-    patch = subparsers.add_parser("patch-hdporncomics", help="Check or apply the HDPornComics Windows path patch.")
-    patch.add_argument("-f", "--apply", action="store_true", help="Apply the known-safe compatibility patch.")
+    _add_run_cover_arguments(run, advanced=bool(shape.advanced_config))
 
     audit = subparsers.add_parser(
         "audit",
-        aliases=("audit-destinations",),
         help="Audit URL-file identities or every manga folder; URL matches backfill missing source indexes.",
     )
     audit.add_argument(
@@ -216,7 +195,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Optional URL file or glob; repeatable (-u/--url-file is an audit-only alias). Omit for folder-only audit.",
     )
     audit.add_argument(
-        "-F", "--url-directory", action="append", type=_path,
+        "-F", "--url-directory", "--urls-folder", dest="url_directory", action="append", type=_path,
         help="Add every top-level text file whose name starts with 'url' from this directory; repeatable.",
     )
     audit.add_argument(
@@ -252,32 +231,18 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Do not create missing per-folder source indexes; audit reports are still written.",
     )
 
-    repair = subparsers.add_parser("repair-loose", help="Rebuild per-gallery folders from loose nhentai images.")
-    repair.add_argument("-d", "--destination", required=True, type=_path, help="Directory containing loose images.")
-    repair_mode = repair.add_mutually_exclusive_group()
-    repair_mode.add_argument("-n", "--dry-run", action="store_true", help="Validate and preview only (default).")
-    repair_mode.add_argument("-f", "--apply", action="store_true", help="Move files after complete validation.")
-    repair.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
-    repair.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
-
-    repair_pages = subparsers.add_parser(
-        "repair-pages", help="Repair exact missing/corrupt gallery-dl nhentai pages (preview first)."
+    repair = subparsers.add_parser(
+        "repair",
+        help="Repair galleries from an audit report, damaged pages, loose images, or backend patches.",
+        description=(
+            "Unified repair suite: use `batch` (or pass `-r REPORT` directly), `pages` (or pass `-u URL` directly), "
+            "`loose` (rebuild folders from loose images), or `hdporncomics` (apply Windows path patch)."
+        ),
     )
-    repair_pages.add_argument("-u", "--url", required=True, help="One nhentai gallery URL.")
-    repair_pages.add_argument("-d", "--destination", required=True, type=_path, help="MangaDL library root.")
-    repair_pages.add_argument("-S", "--scratch", type=_path, help="Optional scratch volume for the targeted download.")
-    repair_pages.add_argument("-a", "--archive", type=_path, help="gallery-dl archive (default: destination control archive).")
-    repair_pages.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config used for the repair.")
-    repair_pages.add_argument("-c", "--cookies", type=_path, help="Cookie file for the gallery request.")
-    repair_pages.add_argument("-B", "--cookies-browser", help="Browser cookie source.")
-    repair_pages.add_argument("-U", "--user-agent", help="Optional gallery-dl user agent.")
-    repair_pages.add_argument("-x", "--rate", help="Optional gallery-dl transfer-rate limit.")
-    repair_pages.add_argument("-f", "--apply", action="store_true", help="Apply the reviewed targeted repair.")
-    repair_pages.add_argument("-C", "--confirm-plan", help="Preview token required with --apply.")
-    repair_pages.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+    repair_commands = repair.add_subparsers(dest="repair_command", required=True)
 
-    batch_repair = subparsers.add_parser(
-        "repair", help="Build, preview, or apply a guarded batch repair from an audit report."
+    batch_repair = repair_commands.add_parser(
+        "batch", help="Build, preview, or apply a guarded batch repair from an audit report."
     )
     batch_repair.add_argument("-r", "--report", required=True, type=_path, help="Audit report produced by mangadl audit.")
     batch_repair.add_argument(
@@ -285,13 +250,13 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         help="Destination for wholly missing galleries; required when the report contains multiple roots.",
     )
     batch_repair.add_argument("-p", "--plan-output", type=_path, help="Optionally save the displayed repair plan as JSON.")
-    batch_repair.add_argument("-S", "--scratch", type=_path, help="Optional scratch volume for downloads.")
+    batch_repair.add_argument("-S", "--scratch", "--scratch-dir", dest="scratch", type=_path, help="Optional scratch volume for downloads.")
     batch_repair.add_argument("-a", "--archive", type=_path, help="gallery-dl archive (default: destination control archive).")
     batch_repair.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config used for downloads.")
     batch_repair.add_argument("-c", "--cookies", type=_path, help="Cookie file for gallery requests.")
     batch_repair.add_argument("-B", "--cookies-browser", help="Browser cookie source.")
-    batch_repair.add_argument("-U", "--user-agent", help="Optional gallery-dl user agent.")
-    batch_repair.add_argument("-x", "--rate", help="Optional transfer-rate limit.")
+    batch_repair.add_argument("-U", "--user-agent", "--gallery-user-agent", dest="user_agent", help="Optional gallery-dl user agent.")
+    batch_repair.add_argument("-x", "--rate", "--max-rate", dest="rate", help="Optional transfer-rate limit.")
     batch_repair.add_argument("-f", "--apply", action="store_true", help="Apply the exact displayed repair plan.")
     batch_repair.add_argument("-C", "--confirm-plan", help="Exact plan token required with --apply.")
     batch_repair.add_argument("-j", "--json", action="store_true", help="Emit the plan/result as JSON.")
@@ -301,52 +266,80 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     batch_repair.add_argument("-L", "--worker-start-delay", type=float, default=2.0,
                               help="Seconds between worker launches (normal default: 2).")
 
-    partials = subparsers.add_parser("partials", help="Inspect or safely remove resumable partial data.")
-    partial_commands = partials.add_subparsers(dest="partials_command", required=True)
-    partial_clean = partial_commands.add_parser(
-        "clean",
-        aliases=("cleanup",),
-        help="Remove selected partial data and its recorded gallery-dl archive entries.",
+    repair_pages = repair_commands.add_parser(
+        "pages", help="Repair exact missing/corrupt gallery-dl nhentai pages (preview first)."
     )
-    partial_clean.add_argument("-d", "--destination", required=True, type=_path, help="Destination library root.")
-    partial_clean.add_argument(
+    repair_pages.add_argument("-u", "--url", required=True, help="One nhentai gallery URL.")
+    repair_pages.add_argument("-d", "--destination", required=True, type=_path, help="MangaDL library root.")
+    repair_pages.add_argument("-S", "--scratch", "--scratch-dir", dest="scratch", type=_path, help="Optional scratch volume for the targeted download.")
+    repair_pages.add_argument("-a", "--archive", type=_path, help="gallery-dl archive (default: destination control archive).")
+    repair_pages.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config used for the repair.")
+    repair_pages.add_argument("-c", "--cookies", type=_path, help="Cookie file for the gallery request.")
+    repair_pages.add_argument("-B", "--cookies-browser", help="Browser cookie source.")
+    repair_pages.add_argument("-U", "--user-agent", "--gallery-user-agent", dest="user_agent", help="Optional gallery-dl user agent.")
+    repair_pages.add_argument("-x", "--rate", "--max-rate", dest="rate", help="Optional gallery-dl transfer-rate limit.")
+    repair_pages.add_argument("-f", "--apply", action="store_true", help="Apply the reviewed targeted repair.")
+    repair_pages.add_argument("-C", "--confirm-plan", help="Preview token required with --apply.")
+    repair_pages.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    repair_loose = repair_commands.add_parser(
+        "loose", help="Rebuild per-gallery folders from loose nhentai images."
+    )
+    repair_loose.add_argument("-d", "--destination", required=True, type=_path, help="Directory containing loose images.")
+    repair_mode = repair_loose.add_mutually_exclusive_group()
+    repair_mode.add_argument("-n", "--dry-run", action="store_true", help="Validate and preview only (default).")
+    repair_mode.add_argument("-f", "--apply", action="store_true", help="Move files after complete validation.")
+    repair_loose.add_argument("-N", "--no-ui", action="store_true", help="Disable the in-place progress dashboard.")
+    repair_loose.add_argument("-j", "--json", action="store_true", help="Emit JSON repair details.")
+
+    patch = repair_commands.add_parser(
+        "hdporncomics", help="Check or apply the HDPornComics Windows path patch."
+    )
+    patch.add_argument("-f", "--apply", action="store_true", help="Apply the known-safe compatibility patch.")
+
+    clean = subparsers.add_parser(
+        "clean",
+        help="Inspect or safely remove resumable partial data and recorded gallery-dl archive entries.",
+    )
+    clean.add_argument("-d", "--destination", required=True, type=_path, help="Destination library root.")
+    clean.add_argument(
         "-S", "--scratch", "--scratch-dir", dest="scratch_dir", type=_path,
         help="Scratch directory used for the run; inspect staged partials instead of <destination>/_partial.",
     )
-    partial_clean.add_argument(
+    clean.add_argument(
         "-t",
         "--target",
         action="append",
         default=[],
         help="Path beneath <destination>/_partial to remove; repeatable. Omit to open the UI.",
     )
-    partial_clean.add_argument(
+    clean.add_argument(
         "-a",
         "--archive",
         type=_path,
         help="Require tracked partials to use this exact gallery-dl archive.",
     )
-    partial_clean.add_argument("-f", "--apply", action="store_true", help="Apply the cleanup (default: preview only).")
-    partial_clean.add_argument(
+    clean.add_argument("-f", "--apply", action="store_true", help="Apply the cleanup (default: preview only).")
+    clean.add_argument(
         "-y",
         "--yes",
         action="store_true",
         help="Skip the typed DELETE confirmation for interactive apply mode.",
     )
-    partial_clean.add_argument(
+    clean.add_argument(
         "-F",
         "--files-only",
         action="store_true",
         help="Allow legacy cleanup without changing an archive; may leave stale archive entries.",
     )
-    partial_clean.add_argument(
+    clean.add_argument(
         "-B",
         "--no-backup",
         action="store_true",
         help="Do not create a timestamped archive backup before applying tracked cleanup.",
     )
-    partial_clean.add_argument("-j", "--json", action="store_true", help="Emit JSON cleanup details.")
-    partial_clean.add_argument(
+    clean.add_argument("-j", "--json", action="store_true", help="Emit JSON cleanup details.")
+    clean.add_argument(
         "-s",
         "--state-db",
         action="append",
@@ -354,18 +347,93 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
         default=[],
         help="Additional mangadl state database used to recover legacy partial URLs; repeatable.",
     )
-    partial_clean.add_argument(
+    clean.add_argument(
         "-u",
         "--url",
         action="append",
         default=[],
         help="Legacy URL override as URL or PARTIAL_KEY=URL; repeatable.",
     )
-    partial_clean.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config for legacy key recovery.")
-    partial_clean.add_argument("-c", "--cookies", type=_path, help="Cookie file for legacy key recovery.")
-    partial_clean.add_argument("-b", "--cookies-browser", help="Browser cookie source for legacy key recovery.")
-    partial_clean.add_argument("-U", "--user-agent", help="User-Agent for legacy key recovery.")
-    partial_clean.add_argument("-A", "--auth-dir", type=_path, help="Managed-auth directory for legacy key recovery.")
+    clean.add_argument("-g", "--gallery-config", type=_path, help="gallery-dl config for legacy key recovery.")
+    clean.add_argument("-C", "-c", "--cookies", dest="cookies", type=_path, help="Cookie file for legacy key recovery.")
+    clean.add_argument("-b", "--cookies-browser", help="Browser cookie source for legacy key recovery.")
+    clean.add_argument("-U", "--user-agent", help="User-Agent for legacy key recovery.")
+    clean.add_argument("-A", "--auth-dir", type=_path, help="Managed-auth directory for legacy key recovery.")
+
+    covers = subparsers.add_parser(
+        "covers",
+        help="Match URL-folder entries to downloaded series and manage source covers.",
+        description=(
+            "Scan url*.txt files, match each URL to an existing downloaded folder, "
+            "download the source cover, and optionally upload/lock it in Kavita."
+        ),
+    )
+    from .covers import configure_parser as configure_covers_parser
+
+    configure_covers_parser(covers)
+
+    kavita = subparsers.add_parser("kavita", help="Preview, reconcile, or assign Kavita collections.")
+    kavita_subparsers = kavita.add_subparsers(dest="kavita_command", required=True)
+    reconcile = kavita_subparsers.add_parser("reconcile", help="Match pending URLs to scanned Kavita series.")
+    reconcile.add_argument("-d", "--destination", type=_path, required=True, help="MangaDL destination root.")
+    reconcile.add_argument("-K", "-Z", "--kavita-url", dest="kavita_url", required=True, help="Kavita base URL.")
+    reconcile.add_argument(
+        "-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key."
+    )
+    reconcile.add_argument(
+        "-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable."
+    )
+    reconcile.add_argument("-f", "--apply", action="store_true", help="Write collection changes; default is preview only.")
+    reconcile.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    assign = kavita_subparsers.add_parser(
+        "assign",
+        help="Assign Kavita series to collections by URL file (-i), exact name (-n), or regex pattern (-p).",
+    )
+    assign_selector = assign.add_mutually_exclusive_group(required=True)
+    assign_selector.add_argument("-i", "--input-file", type=_path, help="Processed URL file.")
+    assign_selector.add_argument("-n", "--name", action="append", help="Exact series name; repeatable.")
+    assign_selector.add_argument("-p", "--pattern", help="Bounded Python regex searched against series names.")
+    assign.add_argument("-d", "--destination", type=_path, help="MangaDL library root (required with --input-file).")
+    assign.add_argument(
+        "-x", "--no-index-backfill", action="store_true",
+        help="Do not create missing per-folder source indexes while resolving a URL file.",
+    )
+    assign.add_argument("-C", "--confirm-matches", help="Match-set token printed by preview; required with --pattern and --apply.")
+    assign.add_argument("-K", "-Z", "--kavita-url", dest="kavita_url", required=True, help="Kavita base URL.")
+    assign.add_argument("-E", "--kavita-api-key-env", default="KAVITA_API_KEY", help="Environment variable containing the Auth Key.")
+    assign.add_argument("-P", "--kavita-path-map", action="append", default=[], metavar="LOCAL=KAVITA", help="Path mapping; repeatable.")
+    assign.add_argument("-c", "-M", "--collection", "--collections", dest="collection", action="append", required=True, help="Collection name; repeatable.")
+    assign.add_argument("-f", "--apply", action="store_true", help="Apply the previewed assignment set.")
+    assign.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    archive = subparsers.add_parser(
+        "archive",
+        help="Browse, filter, or export a gallery-dl SQLite archive.",
+        description="Open an interactive archive browser or filter/export archive records.",
+    )
+    archive.add_argument("-a", "--archive", required=True, type=_path, help="gallery-dl archive path.")
+    archive.add_argument("-j", "--json", action="store_true", help="Emit all archive records as JSON.")
+    archive.add_argument("-N", "--no-ui", action="store_true", help="Print a summary instead of opening the browser.")
+    archive.add_argument("-f", "--filter", default="", help="Initial case-insensitive record filter.")
+    archive.add_argument("-e", "--export", type=_path, help="Export the filtered view to JSON.")
+
+    status = subparsers.add_parser("status", help="Show the latest/selected persisted run or probe URL routing.")
+    status.add_argument("-u", "--url", action="append", default=[], help="Optional URL to probe backend routing; repeatable.")
+    status.add_argument(
+        "-b",
+        "--backend",
+        choices=("auto", "gallery-dl", "native-nhentai", "hdporncomics", "manga18fx"),
+        default="auto",
+        help="Backend override when probing URLs.",
+    )
+    _add_state(status)
+    status.add_argument("-j", "--json", action="store_true", help="Emit JSON.")
+
+    retry = subparsers.add_parser("retry", help="Requeue failed jobs in a persisted run.")
+    _add_state(retry)
+    retry.add_argument("-j", "-J", "--job-id", dest="job_id", action="append", type=int, default=[], help="Job ID to retry; repeatable.")
+    retry.add_argument("-f", "--all-failed", action="store_true", help="Requeue all failed jobs.")
 
     auth = subparsers.add_parser("auth", help="Manage per-domain gallery-dl browser authentication.")
     auth_commands = auth.add_subparsers(dest="auth_command", required=True)
@@ -397,7 +465,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     auth_refresh.add_argument("-t", "--timeout", type=float, default=180.0, help="Browser verification timeout.")
     auth_refresh.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
     auth_refresh.add_argument(
-        "-c", "--cookie-file", type=_path, help="Write the generated Netscape cookie file here."
+        "-C", "-c", "--cookie-file", "--cookies", dest="cookie_file", type=_path, help="Write the generated Netscape cookie file here."
     )
     auth_refresh.add_argument(
         "-U", "--user-agent", help="Override the captured User-Agent (useful with Firefox)."
@@ -432,7 +500,7 @@ def build_parser(argv_hint: list[str] | tuple[str, ...] | None = None) -> argpar
     favorites.add_argument("-u", "--url", required=True, help="Favorites/listing page URL to scan.")
     favorites.add_argument("-o", "--output", required=True, type=_path, help="Destination UTF-8 URL file.")
     favorites.add_argument("-A", "--auth-dir", type=_path, help="Managed authentication root.")
-    favorites.add_argument("-C", "--cookies", type=_path, help="Explicit Netscape cookie file; overrides managed cookies.")
+    favorites.add_argument("-C", "-c", "--cookies", dest="cookies", type=_path, help="Explicit Netscape cookie file; overrides managed cookies.")
     favorites.add_argument(
         "-B",
         "--cookies-browser",
@@ -1012,14 +1080,26 @@ def _safe_regex(pattern: str) -> re.Pattern[str]:
 
 
 def _kavita_batch(args: argparse.Namespace) -> int:
+    selection_mode = getattr(args, "legacy_command", None)
+    if selection_mode not in {"assign-file", "assign-name", "assign-pattern"}:
+        if getattr(args, "input_file", None):
+            selection_mode = "assign-file"
+        elif getattr(args, "name", None):
+            selection_mode = "assign-name"
+        else:
+            selection_mode = "assign-pattern"
+    if selection_mode == "assign-file" and not getattr(args, "destination", None):
+        raise ValueError("--input-file requires -d/--destination")
+
     client = KavitaClient(KavitaConfig.from_env(args.kavita_url, api_key_env=args.kavita_api_key_env))
     series = client.list_series()
     path_maps = parse_path_maps(args.kavita_path_map)
     selected: dict[int, dict[str, Any]] = {}
     excluded: list[dict[str, Any]] = []
     sources_by_id: dict[int, list[str]] = {}
+    index_backfill = None
 
-    if args.kavita_command == "assign-file":
+    if selection_mode == "assign-file":
         inputs, rejected = collect_inputs([args.input_file], [])
         library = scan_library([args.destination])
         index_backfill = (
@@ -1047,7 +1127,7 @@ def _kavita_batch(args: argparse.Namespace) -> int:
             selected[series_id] = row
             sources_by_id.setdefault(series_id, []).append(item.canonical_url)
         excluded.extend({"url": row.get("value"), "status": "rejected", "reason": row.get("reason")} for row in rejected)
-    elif args.kavita_command == "assign-name":
+    elif selection_mode == "assign-name":
         for requested in args.name:
             matches = [row for row in series if str(row.get("name") or row.get("title") or "").casefold() == requested.casefold()]
             if len(matches) != 1 or not matches[0].get("id"):
@@ -1081,7 +1161,7 @@ def _kavita_batch(args: argparse.Namespace) -> int:
     token_data = json.dumps({"matches": matches, "collections": collections}, sort_keys=True)
     token = hashlib.sha256(token_data.encode("utf-8")).hexdigest()[:16]
     apply = bool(args.apply)
-    if args.kavita_command == "assign-pattern" and apply and args.confirm_matches != token:
+    if selection_mode == "assign-pattern" and apply and args.confirm_matches != token:
         raise ValueError(f"pattern apply requires --confirm-matches {token} from this exact preview")
     operations = []
     if apply:
@@ -1091,12 +1171,12 @@ def _kavita_batch(args: argparse.Namespace) -> int:
                 operations.append(client.add_series_to_collection(collection, ids, apply=True))
     payload = {
         "mode": "apply" if apply else "preview",
-        "selection": args.kavita_command,
+        "selection": selection_mode,
         "collections": collections,
         "matches": matches,
         "excluded": excluded,
         "match_token": token,
-        "index_backfill": index_backfill if args.kavita_command == "assign-file" else None,
+        "index_backfill": index_backfill if selection_mode == "assign-file" else None,
         "operations": operations,
     }
     if args.json:
@@ -1117,10 +1197,10 @@ def _kavita_batch(args: argparse.Namespace) -> int:
             print(f"- {row['id']} | {row['name']} | {row['path']}")
         for row in excluded:
             print(f"! Excluded: {row}")
-        if args.kavita_command == "assign-pattern":
+        if selection_mode == "assign-pattern":
             print(f"Reviewed match token: {token}")
         if not apply:
-            print("Preview only; use --apply to write." + (" Pattern apply also requires --confirm-matches TOKEN." if args.kavita_command == "assign-pattern" else ""))
+            print("Preview only; use --apply to write." + (" Pattern apply also requires --confirm-matches TOKEN." if selection_mode == "assign-pattern" else ""))
     return 0
 
 
@@ -1817,13 +1897,13 @@ def _repair_pages_owned(args: argparse.Namespace) -> int:
         if args.gallery_config:
             run_args.extend(["-g", str(args.gallery_config)])
         if args.cookies:
-            run_args.extend(["-c", str(args.cookies)])
+            run_args.extend(["--cookies", str(args.cookies)])
         if args.cookies_browser:
             run_args.extend(["-B", args.cookies_browser])
         if args.user_agent:
-            run_args.extend(["-U", args.user_agent])
+            run_args.extend(["--gallery-user-agent", args.user_agent])
         if args.rate:
-            run_args.extend(["-r", args.rate])
+            run_args.extend(["--max-rate", args.rate])
         if args.scratch:
             run_args.extend(["-S", str(args.scratch)])
         try:
@@ -2635,11 +2715,24 @@ def _lock(args: argparse.Namespace) -> int:
     return 0
 
 
+def _repair(args: argparse.Namespace) -> int:
+    sub = getattr(args, "repair_command", "batch")
+    if sub == "loose":
+        return _repair_loose(args)
+    if sub == "pages":
+        return _repair_pages(args)
+    if sub == "hdporncomics":
+        return _patch_hdporncomics(args)
+    return _batch_repair(args)
+
+
 def main(argv: list[str] | None = None) -> int:
     raw_argv = list(sys.argv[1:] if argv is None else argv)
     shape = normalize_command_shape(raw_argv)
     parser = build_parser(raw_argv)
     args = parser.parse_args(list(shape.argv))
+    if shape.legacy_command:
+        args.legacy_command = shape.legacy_command
     if args.command == "compress" and not getattr(args, "operation", None):
         for action in parser._actions:
             if isinstance(action, argparse._SubParsersAction) and "compress" in action.choices:
@@ -2649,14 +2742,16 @@ def main(argv: list[str] | None = None) -> int:
         args.run_mode = shape.run_mode
         args.advanced_config = shape.advanced_config
     try:
+        from .covers import run_cli as run_covers_cli
+
         return {
             "run": _run,
             "inspect": _inspect,
-            "status": _show_state,
+            "status": _inspect,
             "retry": _retry,
             "kavita": lambda parsed: (
                 _kavita_batch(parsed)
-                if parsed.kavita_command.startswith("assign-")
+                if parsed.kavita_command == "assign" or str(parsed.kavita_command).startswith("assign-")
                 else _kavita_reconcile(parsed)
             ),
             "archive": _archive,
@@ -2665,8 +2760,10 @@ def main(argv: list[str] | None = None) -> int:
             "audit-destinations": _audit_destinations,
             "repair-loose": _repair_loose,
             "repair-pages": _repair_pages,
-            "repair": _batch_repair,
+            "repair": _repair,
             "partials": _partials,
+            "clean": _partials,
+            "covers": run_covers_cli,
             "auth": _auth,
             "favorites": _favorites,
             "compress": _compress,
