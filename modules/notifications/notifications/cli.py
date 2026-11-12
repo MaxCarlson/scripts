@@ -283,6 +283,12 @@ def build_parser() -> argparse.ArgumentParser:
     task_uninst.add_argument("-a", "--apply", action="store_true", help="Apply removal (defaults to dry-run).")
     task_uninst.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
 
+    # 10. release-check
+    rc_parser = subparsers.add_parser("release-check", help="Run unified read-only release diagnostics across notifications and remote control.")
+    rc_parser.add_argument("-j", "--json", action="store_true", help="Output machine-readable JSON.")
+    rc_parser.add_argument("-d", "--db", default=argparse.SUPPRESS, help="Notifications database path override.")
+    rc_parser.add_argument("--auth-db", default=None, help="Remote Control auth database path override.")
+
     return parser
 
 
@@ -1112,6 +1118,59 @@ def handle_coordinator(args: argparse.Namespace) -> int:
     return 2
 
 
+def handle_release_check(args: argparse.Namespace) -> int:
+    from notifications.diagnostics import collect_release_diagnostics
+
+    db_path = getattr(args, "db", None)
+    auth_db = getattr(args, "auth_db", None)
+    data = collect_release_diagnostics(
+        db_path=Path(db_path) if db_path else None,
+        auth_db_path=Path(auth_db) if auth_db else None,
+    )
+
+    if getattr(args, "json", False):
+        print(json.dumps(data, indent=2))
+        return 0
+
+    print("=== Notifications & Remote Control Release Check ===")
+    storage = data.get("storage", {})
+    print(f"Storage Status:         {storage.get('status', 'unknown')} ({storage.get('path', '')})")
+    if storage.get("status") == "healthy":
+        print(f"  Total Incidents:      {storage.get('total_incidents', 0)}")
+        print(f"  Open Incidents:       {storage.get('open_incidents', 0)}")
+        print(f"  Pending Outbox:       {storage.get('pending_outbox', 0)}")
+        print(f"  Failed Outbox:        {storage.get('failed_outbox', 0)}")
+
+    providers = data.get("providers", {})
+    tg = providers.get("telegram", {})
+    print(f"Telegram Provider:      {'Configured' if tg.get('configured') else 'Not Enrolled'}")
+    win = providers.get("windows_helper", {})
+    print(f"Windows Toast Helper:   {win.get('status', 'unknown')} (port {win.get('listener_port', 1238)})")
+    hc = providers.get("healthchecks", {})
+    print(f"Healthchecks Outage:    {hc.get('status', 'unknown')}")
+    coord = providers.get("coordinator_observer", {})
+    print(f"Coordinator Observer:   {'Installed' if coord.get('task_installed') else 'Not Installed'} (State: {coord.get('task_state', 'Unknown')})")
+
+    rc = data.get("remote_control", {})
+    print(f"Remote Control Auth:    {rc.get('status', 'unknown')} ({rc.get('path', '')})")
+    print(f"  Operator Enrolled:    {rc.get('operator_enrolled', False)}")
+    print(f"  TOTP Enrolled:        {rc.get('totp_enrolled', False)}")
+    print(f"  Listener (8443):      {'Active' if rc.get('listener_active') else 'Offline'}")
+    barriers = rc.get("active_barriers", [])
+    print(f"  Active Barriers:      {len(barriers)}")
+    for b in barriers:
+        print(f"    - Barrier {b.get('barrier_id')}: {b.get('reason')}")
+
+    funnel = data.get("tailscale_funnel", {})
+    print(f"Tailscale Funnel:       {funnel.get('status', 'unknown')}")
+
+    print("\nPending Operator Acceptance Gates:")
+    for gate, desc in data.get("acceptance_gates_pending", {}).items():
+        print(f"  [{gate}] {desc}")
+
+    return 0
+
+
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
@@ -1135,6 +1194,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return handle_heartbeat(args)
     elif args.command == "coordinator":
         return handle_coordinator(args)
+    elif args.command == "release-check":
+        return handle_release_check(args)
 
     return 0
 

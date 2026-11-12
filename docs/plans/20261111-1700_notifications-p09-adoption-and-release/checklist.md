@@ -22,12 +22,12 @@
   - [x] Scheduled task stability tests written and passing
   - [x] Stage C commit created
 
-- [ ] **Stage D: Release Diagnostics and Supportability**
-  - [ ] Read-only release check implementation in `modules/notifications/notifications/diagnostics.py`
-  - [ ] CLI subcommand `scripts-notify release-check` with `-j/--json`
-  - [ ] Diagnostic unit tests in `modules/notifications/tests/test_release_diagnostics.py` pass
-  - [ ] CLI smoke test verified
-  - [ ] Stage D commit created
+- [x] **Stage D: Release Diagnostics and Supportability**
+  - [x] Read-only release check implementation in `modules/notifications/notifications/diagnostics.py`
+  - [x] CLI subcommand `scripts-notify release-check` with `-j/--json`
+  - [x] Diagnostic unit tests in `modules/notifications/tests/test_release_diagnostics.py` pass
+  - [x] CLI smoke test verified
+  - [x] Stage D commit created
 
 - [ ] **Stage E: Documentation and Command Accuracy**
   - [ ] `docs/notifications-remote-control/public-https-setup.md` audited and corrected
