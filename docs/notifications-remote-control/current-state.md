@@ -429,6 +429,49 @@ Inspection of the primary repository checkout (`C:\Users\mcarls\src\scripts`) re
   - No public Funnel was actually activated during testing; simulated client was utilized for all CLI workflows.
   - Zero cloud spending ($0 spend).
 
+---
+
+## 12. Phase 09 Adoption, Release Integration, and Operational Readiness Status
+
+- **Status**: Complete & Verified (Branch `agent/notifications-p09-adoption-release-20261111`)
+- **Base Checkpoint**: `942c096d49a8aee205e6bd595621d8a22def3a9b` (`main`)
+- **Accomplishments**:
+  - **Stage A — Operational Inventory and Release Contract**:
+    - Created `docs/notifications-remote-control/release-readiness.md` cataloging all 8 subsystems.
+    - Formalized 5-level operational evidence standard (L1 Unit to L5 Operator Gate).
+    - Established strict boundary between synthetic passing tests and real-world acceptance.
+  - **Stage B — Consumer Adoption (Scheduler)**:
+    - Replaced vulnerable PowerShell string interpolation in `modules/scheduler/scheduler/notifier.py` with typed Notifications broker routing via `Publisher` API.
+    - Added safe parameterized fallback for Windows balloon notifications eliminating code injection risks.
+    - Configurable `use_notifications_broker` option in `SchedulerConfig`.
+    - Preserved cross-platform support for Termux, Linux, and macOS.
+    - Automated deduplication via `scheduler:task:<name>` incident keys and automatic incident resolution on task success.
+    - Added comprehensive integration test suite `test_notifications_integration.py` (7 tests). Full scheduler suite: 126 tests passing.
+  - **Stage C — Stable Command, Installation Pathways & Registry Integration**:
+    - Registered `remote-control (module)` in `modules/scripts_help/scripts_help/registry/registry.py` under "Process & Task Automation".
+    - Added `<!-- version: 0.1.0 -->` version tag to `modules/remote_control/README.md`.
+    - Verified `scripts_help` test suite: 55 passed.
+    - Verified Scheduled Task definition stability (executable absolute paths, home directory working directory, safe argument vector quoting) in `modules/notifications/tests/test_task_stability.py` (5 tests passing).
+  - **Stage D — Unified Read-Only Release Diagnostics**:
+    - Implemented `notifications.diagnostics.collect_release_diagnostics` providing 100% read-only (`mode=ro`) health inspection across storage, providers, outbox, remote control, barriers, and funnel.
+    - Added `scripts-notify release-check [-j/--json]` CLI subcommand.
+    - Added diagnostic test suite `test_release_diagnostics.py` (3 tests passing).
+  - **Stage E — Documentation Audit and Accuracy Updates**:
+    - Audited and corrected `docs/notifications-remote-control/public-https-setup.md` to remove invalid `--skip-listener-check` with `--apply` instruction.
+    - Created `docs/notifications-remote-control/operator-quickstart.md`.
+    - Created `docs/notifications-remote-control/acceptance-results.md` tracking automated evidence vs pending live gates.
+    - Created `docs/notifications-remote-control/rollback-and-recovery.md` with emergency response procedures.
+  - **Stage F — Full Synthetic E2E & Multi-Module Regression Verification**:
+    - Verified complete synthetic lifecycle from consumer failure to incident resolution.
+    - 545+ tests passing across `remote_control`, `notifications`, `scheduler`, `scripts_help`, and `resource_coordinator`.
+  - **Stage G — Controlled Operational Acceptance Preparation**:
+    - Prepared operator runbooks for local workstation, Telegram, Healthchecks, and Android cellular without premature public activation.
+- **Strict Invariants Preserved**:
+  - `modules/resource_coordinator/` is 100% clean and unmodified.
+  - Zero cloud spending ($0 spend).
+  - Public Funnel remains disabled throughout automated verification.
+
+
 
 
 

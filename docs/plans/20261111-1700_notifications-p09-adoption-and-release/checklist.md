@@ -29,13 +29,13 @@
   - [x] CLI smoke test verified
   - [x] Stage D commit created
 
-- [ ] **Stage E: Documentation and Command Accuracy**
-  - [ ] `docs/notifications-remote-control/public-https-setup.md` audited and corrected
-  - [ ] `docs/notifications-remote-control/operator-quickstart.md` created
-  - [ ] `docs/notifications-remote-control/acceptance-results.md` created
-  - [ ] `docs/notifications-remote-control/rollback-and-recovery.md` created
-  - [ ] `docs/notifications-remote-control/current-state.md` updated
-  - [ ] Stage E commit created
+- [x] **Stage E: Documentation and Command Accuracy**
+  - [x] `docs/notifications-remote-control/public-https-setup.md` audited and corrected
+  - [x] `docs/notifications-remote-control/operator-quickstart.md` created
+  - [x] `docs/notifications-remote-control/acceptance-results.md` created
+  - [x] `docs/notifications-remote-control/rollback-and-recovery.md` created
+  - [x] `docs/notifications-remote-control/current-state.md` updated
+  - [x] Stage E commit created
 
 - [ ] **Stage F: Full Integration Validation**
   - [ ] Synthetic E2E scenario in `modules/notifications/tests/test_phase09_synthetic_e2e.py` passes
