@@ -565,6 +565,13 @@ REGISTRY: dict = {
                 "help_cmd": ["python", "-m", "notifications.cli", "--help"],
                 "version": "0.1.0",
             },
+            {
+                "name": "remote_control (module)",
+                "path": "modules/remote_control",
+                "desc": "Authenticated mobile PWA dashboard, guarded actions, and Tailscale Funnel management",
+                "help_cmd": ["python", "-m", "remote_control.cli", "--help"],
+                "version": "0.1.0",
+            },
         ],
     },
     "Code Analysis": {

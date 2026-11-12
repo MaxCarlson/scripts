@@ -106,11 +106,16 @@ tailscale funnel --bg --https=8443 http://127.0.0.1:8443
 ```
 
 ### Step 4: Operator-Approved Funnel Activation
-Activate the Funnel reverse proxy with explicit approval (`-a / --apply`):
+Start the local Remote Control web application listener on `127.0.0.1:8443` in one console session:
+```powershell
+scripts-remote-control serve --port 8443
+```
+
+Then in an administrative or operator console, activate the Funnel reverse proxy with explicit approval (`-a / --apply`):
 ```powershell
 scripts-remote-control external enable -a --port 8443 --public-port 8443
 ```
-*(If configuring Funnel before starting the application listener, pass `--skip-listener-check` to defer listener readiness validation).*
+> **Fail-Closed Security Gate:** The local application server MUST be actively running and responding on `127.0.0.1:8443` before live enablement. The `--skip-listener-check` option is permitted **only** during dry-run planning/exploration; using `--skip-listener-check` with `-a / --apply` is strictly prohibited by the CLI to prevent exposing dead ports or misaligned proxy targets.
 
 Upon successful execution, the CLI prints the assigned public HTTPS URL (e.g., `https://workstation.tailnet-dev.ts.net:8443`).
 

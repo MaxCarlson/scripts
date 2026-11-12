@@ -1,5 +1,12 @@
 # Repository-Wide Plans Handoff
 
+2026-11-11 active plan: Phase 09 — Adoption, Release Integration, and Operational Readiness
+Location: docs/plans/20261111-1700_notifications-p09-adoption-and-release/
+Branch: agent/notifications-p09-adoption-release-20261111
+Worktree: C:\Users\mcarls\src\scripts-notifications-p09
+Status: Stages A–G Complete; Ready for Integration Review
+Scope: Operational inventory, Scheduler broker adoption, scripts_help registration, read-only release diagnostics, documentation accuracy, synthetic E2E validation, and controlled operational acceptance runbooks.
+
 2026-11-11 active plan: MangaDL / CLI-TUI Interactive, Completion UX, and Windows Path Fixes
 Location: docs/plans/20261111-0825_mangadl-tui-interactive-completion-and-ux/
 Branch: fix/mangadl-tui-interactive-completion-20261111

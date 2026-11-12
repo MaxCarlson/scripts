@@ -1,4 +1,5 @@
 # Remote Control — Authenticated Mobile Dashboard & PWA (Phase 06)
+<!-- version: 0.1.0 -->
 
 ## Overview
 `remote_control` is a dedicated, secure web application providing a responsive mobile PWA dashboard for the `scripts` repository.
