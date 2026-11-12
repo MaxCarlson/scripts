@@ -10,8 +10,8 @@
 - Only the Part 3 review branch contains review edits. No active competing RC assignment was reported by the agent inventory. Other worktrees were left untouched.
 - The V3 plan is present by ancestry, unchanged: SHA-256 `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46`; Git blob `3a1c2f7662a54469bb6dc15ad6462a4295ec93e6`.
 - The Mining repository is read-only for this assignment. Its `master` was verified at `deea3e019b35615f4d95e6f510450f7f392fb82a`.
-- During review, current `main` advanced to `2580fa504b32eadda87d88743cc4469a3a98211a`, confirmed through GitHub and matching the local `origin/main` ref. A local SSH fetch was blocked by the environment (`NtCreateDirectoryObject ... 0xC0000022`), so GitHub's read-only branch API was used to confirm the published ref.
-- The 13 commits added to `main` since `4f4373d2` change only `modules/agent_benchmark/` and `modules/benchmark_core/`; no Resource Coordinator or `scripts_help` paths overlap. They were merged into this isolated review branch at `576fca5805a308db562768fe762ed60d11f73eff`. Current `main` is now an ancestor of the review candidate. No protected branch was updated.
+- During review, current `main` advanced from `4f4373d2` to `2580fa50`, then to `b45f3950595bec5c9af4b076ea8b2db93711eba0`. GitHub's branch API confirmed the latest published SHA, and a permitted fetch updated local `origin/main` to match it.
+- The first 13 commits added since `4f4373d2` change only `modules/agent_benchmark/` and `modules/benchmark_core/`. Two later commits change only `modules/notifications/`. There is no Resource Coordinator or `scripts_help` overlap. Both updates were merged into this isolated review branch; the latest merge candidate is `af56188dd5a7b132022c80e6a05b0f309b0f8df8`, with current `main` as an ancestor. No protected branch was updated.
 
 ## Confirmed defect and correction
 
@@ -40,15 +40,15 @@ Environment: Windows PowerShell, CPython 3.12.10, pytest 9.0.3. RC imports came 
 | Recovery sync ordering, simultaneous calls, and post-commit cancellation | All **3 new regressions passed**; the synchronization-clear regression failed before correction, as expected |
 | Timing-sensitive acceptance test alone | **3/3 passes** with separate absolute basetemp roots; it also passed in the 65-test selection |
 | v0.14 rollback parser | **Passed** using the actual parser from Git commit `737bc6b`; test snapshot and archive under `.pytest_tmp_rollback_parser_review/case-a017phje` |
-| Combined Mining/RC H3 against the current integrated candidate | **8 passed, 0 failed/error/skipped** on RC `576fca5805a308db562768fe762ed60d11f73eff` and Mining `deea3e019b35615f4d95e6f510450f7f392fb82a`; JUnit and JSON: `C:\Users\mcarls\AppData\Local\Temp\rc-part23-h3-b996b4ab78a44fe58eeb3d74725b0481\junit.xml` and `summary.json` |
+| Combined Mining/RC H3 against the current integrated candidate | **8 passed, 0 failed/error/skipped** on RC `af56188dd5a7b132022c80e6a05b0f309b0f8df8` and Mining `deea3e019b35615f4d95e6f510450f7f392fb82a`; JUnit and JSON: `C:\Users\mcarls\AppData\Local\Temp\rc-part23-h3-3be767f586d946149a7b2a5b788c2623\junit.xml` and `summary.json` |
 | Changed-code Ruff, compilation, import provenance, and Git diff integrity | **Passed** on the integrated review branch; RC import resolved from this worktree and reported version `1.0.0` |
-| Focused RC selection after current-main merge | **65 passed**, 0 failed/errors/skipped; JUnit: `modules/resource_coordinator/.pytest_tmp_review_merged_7938bc230d8746999ca77e7033f18596/junit.xml` |
+| Focused RC selection after latest current-main merge | **65 passed**, 0 failed/errors/skipped; JUnit: `modules/resource_coordinator/.pytest_tmp_review_latest_main_3c0a5a94f9b549bbb887d91878db7cd4/junit.xml` |
 
 The timing-sensitive test's prior full-suite instability did not reproduce in four focused executions. There is no evidence yet isolating a particular scheduler, cleanup, or state collision cause; it remains covered in the review suite rather than being declared fixed by this sample. H3 emitted two dependency deprecation warnings (`websockets.legacy` and `WebSocketServerProtocol`), with no product failures. No RC source or test changes followed the H3 run; later commits touch only review tooling and documentation.
 
 H3 ran the unchanged Mining `tests/h3` suite using the production `CoordinatorClient` and `Runner.trial()` against the integrated review candidate's actual RC gateway and manager. RC source and tests were byte-identical to the H3-tested source commit `bef77f29443375b4c96cbeab11f16d350b722f97`; the intervening merge added only unrelated `agent_benchmark` and `benchmark_core` paths. The adapter changed only `h3_support.RC_COMMIT` in memory and asserted exact source imports/commits. It did not edit Mining. The tests used an ephemeral loopback listener, fake GPU observer, fake Coordinator miner, and harmless suspended children.
 
-The merged H3 invocation used the Mining H3 Python `C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe`, RC dependency site-packages `C:\Users\mcarls\src\scripts\.venv\Lib\site-packages`, and a clean detached RC worktree at `576fca5805a308db562768fe762ed60d11f73eff`. It emitted the artifacts above; that temporary validation worktree was subsequently removed after confirming it was clean.
+The merged H3 invocation used the Mining H3 Python `C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe`, RC dependency site-packages `C:\Users\mcarls\src\scripts\.venv\Lib\site-packages`, and a clean detached RC worktree at `af56188dd5a7b132022c80e6a05b0f309b0f8df8`. It emitted the artifacts above; that temporary validation worktree was subsequently removed after confirming it was clean.
 
 Additional regression command (from `modules/resource_coordinator`, exit 0):
 
@@ -65,10 +65,10 @@ An initial sandboxed rerun stalled after 12 cases before producing a failure; it
 Exact final H3 invocation (run from the temporary detached RC worktree at the tested commit; the worktree was removed after the clean-state check):
 
 ```powershell
-& '.\modules\resource_coordinator\docs\plans\20261111-part2-part3-review\run_combined_h3.ps1' -MiningRoot 'C:\Users\mcarls\src\Mining' -RcRepo 'C:\Users\mcarls\src\scripts\.worktrees\rc-h3-review-576fca5805a308db562768fe762ed60d11f73eff' -ExpectedRcCommit '576fca5805a308db562768fe762ed60d11f73eff' -PythonExe 'C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe' -RcPythonSitePackages 'C:\Users\mcarls\src\scripts\.venv\Lib\site-packages'
+& '.\modules\resource_coordinator\docs\plans\20261111-part2-part3-review\run_combined_h3.ps1' -MiningRoot 'C:\Users\mcarls\src\Mining' -RcRepo 'C:\Users\mcarls\src\scripts\.worktrees\rc-h3-review-af56188dd5a7b132022c80e6a05b0f309b0f8df8' -ExpectedRcCommit 'af56188dd5a7b132022c80e6a05b0f309b0f8df8' -PythonExe 'C:\Users\mcarls\src\Mining\.venv\Scripts\python.exe' -RcPythonSitePackages 'C:\Users\mcarls\src\scripts\.venv\Lib\site-packages'
 ```
 
-Static checks ran with the scripts repository Python `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`: `python -m ruff check @changed` from the RC module directory (where `$changed` was every changed `.py` path under `modules/resource_coordinator/` relative to that directory), `python -m compileall -q <review-worktree>\modules\resource_coordinator\resource_coordinator <review-worktree>\modules\resource_coordinator\tests`, a Python import/version provenance assertion, `git diff --check origin/main...HEAD`, `git diff --check`, and `git diff --exit-code bef77f29443375b4c96cbeab11f16d350b722f97 HEAD -- modules/resource_coordinator/resource_coordinator modules/resource_coordinator/tests`. All exited 0.
+Static checks ran after the latest main merge with the scripts repository Python `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`: `python -m ruff check @changed` from the RC module directory (where `$changed` was every changed `.py` path under `modules/resource_coordinator/` relative to that directory), `python -m compileall -q <review-worktree>\modules\resource_coordinator\resource_coordinator <review-worktree>\modules\resource_coordinator\tests`, a Python import/version provenance assertion, `git diff --check origin/main...HEAD`, `git diff --check`, and `git diff --exit-code bef77f29443375b4c96cbeab11f16d350b722f97 HEAD -- modules/resource_coordinator/resource_coordinator modules/resource_coordinator/tests`. All exited 0.
 
 ## Integration decision
 
