@@ -13,6 +13,7 @@ import time
 from typing import Any, Callable
 from uuid import uuid4
 
+from .benchmarks.catalog import get_default_catalog
 from .harbor import execute_harbor_run, plan_benchmark
 from .suite_revision import (
     DatasetRevisionError,
@@ -21,24 +22,51 @@ from .suite_revision import (
 
 FROZEN_REVISION = "f30b14415dd733c83627204bad0af69a89ceb46f"
 DEFAULT_MONITOR_URL = "http://host.docker.internal:8788/v1"
-COHORTS: dict[str, dict[str, Any]] = {
-    "aider-python-10": {
-        "dataset": "aider/aider-polyglot",
-        "revision": FROZEN_REVISION,
-        "tasks": [
-            "polyglot_python_beer-song",
-            "polyglot_python_bottle-song",
-            "polyglot_python_bowling",
-            "polyglot_python_dot-dsl",
-            "polyglot_python_pig-latin",
-            "polyglot_python_react",
-            "polyglot_python_robot-name",
-            "polyglot_python_transpose",
-            "polyglot_python_variable-length-quantity",
-            "polyglot_python_zipper",
-        ],
-    },
-}
+
+
+class _CohortsDict(dict):
+    """Backward-compatible dictionary facade providing access to registered cohorts."""
+
+    def __getitem__(self, key: str) -> dict[str, Any]:
+        c = get_default_catalog().get_cohort(key)
+        return {
+            "dataset": c.dataset_id,
+            "revision": c.source_revision,
+            "tasks": list(c.task_ids),
+        }
+
+    def __contains__(self, key: object) -> bool:
+        if not isinstance(key, str):
+            return False
+        try:
+            get_default_catalog().get_cohort(key)
+            return True
+        except KeyError:
+            return False
+
+    def __iter__(self):
+        return iter(c.id for c in get_default_catalog().list_cohorts())
+
+    def __len__(self) -> int:
+        return len(get_default_catalog().list_cohorts())
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+    def items(self):  # type: ignore[override]
+        return [(c.id, self[c.id]) for c in get_default_catalog().list_cohorts()]
+
+    def keys(self):  # type: ignore[override]
+        return [c.id for c in get_default_catalog().list_cohorts()]
+
+    def values(self):  # type: ignore[override]
+        return [self[c.id] for c in get_default_catalog().list_cohorts()]
+
+
+COHORTS: dict[str, dict[str, Any]] = _CohortsDict()
 _COMPLETED = {"passed", "failed", "timed_out", "infrastructure_invalid"}
 
 

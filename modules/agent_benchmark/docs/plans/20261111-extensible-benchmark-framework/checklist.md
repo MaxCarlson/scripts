@@ -10,15 +10,15 @@
 - [x] Phase 00 deliverable documentation committed to task branch
 
 ## Phase 01 — Unified Benchmark, Dataset, and Cohort Registry
-- [ ] Implement `benchmarks/schema.py` (`BenchmarkDescriptor`, `DatasetDescriptor`, `CohortDescriptor`, `BackendDescriptor`, `ScorerDescriptor`)
-- [ ] Implement `benchmarks/catalog.py` (canonical registry, lookup, alias resolution, validation)
-- [ ] Implement `benchmarks/selection.py` (deterministic subset and cohort selection)
-- [ ] Migrate Harbor `DATASETS` into canonical catalog; provide backward-compatible facades in `harbor/datasets.py`
-- [ ] Migrate `aider-python-10` into canonical cohort catalog; provide backward-compatible `COHORTS` in `suite.py`
-- [ ] Register metadata-only descriptors for IFEval and LiveCodeBench
-- [ ] Update `suite list` and `external list` to read from the authoritative catalog
-- [ ] Unit tests for catalog, descriptors, aliases, collision rejection, and deterministic selection
-- [ ] Acceptance verification: `suite list -f json` includes Harbor datasets and Aider cohort; `external list` preserved
+- [x] Implement `benchmarks/schema.py` (`BenchmarkDescriptor`, `DatasetDescriptor`, `CohortDescriptor`, `BackendDescriptor`, `ScorerDescriptor`)
+- [x] Implement `benchmarks/catalog.py` (canonical registry, lookup, alias resolution, validation)
+- [x] Implement `benchmarks/selection.py` (deterministic subset and cohort selection)
+- [x] Migrate Harbor `DATASETS` into canonical catalog; provide backward-compatible facades in `harbor/datasets.py`
+- [x] Migrate `aider-python-10` into canonical cohort catalog; provide backward-compatible `COHORTS` in `suite.py`
+- [x] Register metadata-only descriptors for IFEval and LiveCodeBench
+- [x] Update `suite list` and `external list` to read from the authoritative catalog
+- [x] Unit tests for catalog, descriptors, aliases, collision rejection, and deterministic selection (`tests/catalog_test.py`)
+- [x] Acceptance verification: `suite list -f json` includes Harbor datasets and Aider cohort; `external list` preserved
 
 ## Phase 02 — CLI Refactor and Backward Compatibility
 - [ ] Create `cli_commands/` module hierarchy (`task.py`, `suite.py`, `setup.py`, `external.py`, `models.py`, `experiment.py`)

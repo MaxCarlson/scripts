@@ -29,7 +29,10 @@ DEFAULT_RUNS = Path("reports/agent-bench-suite")
 def add_suite_parser(actions: Any) -> None:
     suite = actions.add_parser("suite", help="Plan, execute, resume and report persistent Harbor cohorts")
     commands = suite.add_subparsers(dest="suite_command")
-    list_parser = commands.add_parser("list", help="List verified cohorts")
+    list_parser = commands.add_parser("list", help="List verified cohorts and datasets")
+    list_parser.add_argument(
+        "-f", "--format", choices=("table", "json"), default="json", help="Output format (default: json)"
+    )
     list_parser.add_argument("-F", "--llm-friendly", action="store_true")
 
     def common(parser: argparse.ArgumentParser, *, execution: bool = False) -> None:
@@ -213,16 +216,34 @@ def handle_suite(args: argparse.Namespace) -> int:
 
             return run_doctor(args)
         if command == "list":
-            rows = [
-                {
-                    "id": key,
-                    "dataset": value["dataset"],
-                    "source_revision": value["revision"],
-                    "tasks": len(value["tasks"]),
-                }
-                for key, value in COHORTS.items()
-            ]
-            emit({"cohorts": rows}, llm_friendly=friendly)
+            from .benchmarks.catalog import get_unified_discovery
+
+            fmt = getattr(args, "format", "json")
+            discovery = get_unified_discovery(include_readiness=True)
+            if fmt == "table":
+                from termdash import Table
+
+                print("\n=== Registered Datasets ===")
+                d_tbl = Table(
+                    headers=["ID", "Benchmark", "Version", "Tasks", "State"],
+                    style="dash",
+                )
+                for d in discovery["datasets"]:
+                    task_count = str(d["total_tasks"]) if d["total_tasks"] else "dynamic"
+                    d_tbl.add_row(d["id"], d.get("benchmark_id") or "-", d["version"], task_count, d.get("install_state", "unknown"))
+                print(d_tbl.render())
+
+                print("\n=== Available Cohorts ===")
+                c_tbl = Table(
+                    headers=["Cohort ID", "Dataset", "Tasks", "Source Revision"],
+                    style="dash",
+                )
+                for c in discovery["cohorts"]:
+                    rev = c["source_revision"][:8] if c.get("source_revision") else "-"
+                    c_tbl.add_row(c["id"], c["dataset"], str(c["tasks"]), rev)
+                print(c_tbl.render())
+            else:
+                emit(discovery, llm_friendly=friendly)
             return 0
         if command in {"plan", "run"}:
             if command == "run" and not args.execute and not args.prepare_only:

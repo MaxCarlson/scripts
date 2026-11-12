@@ -32,4 +32,16 @@
 - [x] Phase 01–08 roadmap and checklist defined (`plan.md`, `checklist.md`).
 - [x] No LLM inference, model loading, external cloning, or Docker modification occurred.
 
-**Status:** Phase 00 is COMPLETE and gate satisfied. Ready to proceed to Phase 01.
+**Status:** Phase 00 is COMPLETE and gate satisfied.
+
+## 5. Phase 01 Acceptance Gate
+- [x] Unified catalog package implemented (`benchmarks/schema.py`, `benchmarks/catalog.py`, `benchmarks/selection.py`).
+- [x] Backward-compatible facades in `harbor/datasets.py` (`DATASETS`, `resolve_dataset`, `select_tasks`) and `suite.py` (`COHORTS`).
+- [x] Terminal-Bench datasets (`terminal-bench/terminal-bench@4.0.0`, `terminal-bench/terminal-bench-2`) present in unified discovery and visible in `suite list`.
+- [x] Initial registered-but-not-installed descriptors for IFEval (`ifeval/google-2023`, `ifeval-smoke`, `ifeval-100`, `ifeval-full`) and LiveCodeBench (`livecodebench/release_v6`, `lcb-v6-smoke`, `lcb-v6-direct-100`, `lcb-v6-direct-full`).
+- [x] `suite list` supports `-f/--format table|json` while maintaining default JSON payload containing backward-compatible `cohorts` key.
+- [x] 39 tests passed in 7.4s (`catalog_test.py`, `harbor_datasets_test.py`, `suite_test.py`, `harbor_cli_test.py`).
+- [x] Ruff lint checks clean on all Phase 01 files.
+- [x] Zero model calls, downloads, or system runtime mutations.
+
+**Status:** Phase 01 is COMPLETE and gate satisfied. Ready to proceed to Phase 02.
