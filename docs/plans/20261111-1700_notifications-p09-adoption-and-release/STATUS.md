@@ -4,8 +4,8 @@
 - **Branch:** `agent/notifications-p09-adoption-release-20261111`
 - **Worktree:** `C:\Users\mcarls\src\scripts-notifications-p09`
 - **Base Commit:** `942c096d49a8aee205e6bd595621d8a22def3a9b` (`origin/main`)
-- **Active Stage:** Stage G (Controlled Operational Acceptance Preparation)
-- **Status:** Stage F complete (all suites passing, zero RC diff); moving to Stage G.
+- **Active Stage:** Complete (Ready for Final Review & Operator Approval)
+- **Status:** All Stages A–G complete; all suites passing; feature branch ready.
 
 ## Stage Ledger
 
@@ -16,5 +16,5 @@
 | **Stage C** | Installation Pathways & Registry | Complete | 8e1c0a6c | `scripts_help` & stability tests passing |
 | **Stage D** | Release Diagnostics & Supportability | Complete | f9879739 | `scripts-notify release-check` passing |
 | **Stage E** | Documentation & Command Accuracy | Complete | bb893a3 | Audited runbooks & guides |
-| **Stage F** | Full Integration Validation | Complete | checkpoint | Synthetic E2E & regression passing |
-| **Stage G** | Controlled Operational Acceptance | In Progress | - | Runbook & operator gates ready |
+| **Stage F** | Full Integration Validation | Complete | 9242df90 | Synthetic E2E & regression passing |
+| **Stage G** | Controlled Operational Acceptance | Complete | checkpoint | Runbook & operator gates ready |

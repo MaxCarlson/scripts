@@ -57,7 +57,91 @@ The following ledger explicitly tracks which validation steps remain pending for
 
 ---
 
-## 3. Strict Boundary & Non-Goal Adherence
+## 3. Numbered Operator Acceptance Runbook & Evidence Capture Fields
+
+This runbook must be executed manually by the operator when physical hardware, cellular data networks, and production external accounts are ready for testing. **Do not fabricate results for these physical steps.**
+
+### Test Case 1: Windows Toast Notification Interactive Display (L03)
+1. **Pre-check:** Ensure user is logged in to Windows Interactive Session 1+.
+2. **Action:** Start the helper in an interactive PowerShell console:
+   ```powershell
+   powershell.exe -NoProfile -ExecutionPolicy Bypass -File modules/notifications/windows_helper/helper.ps1
+   ```
+3. **Trigger:** In a second console, trigger a test notification:
+   ```powershell
+   scripts-notify windows test -a
+   ```
+4. **Expected Result:** Windows Action Center toast balloon appears in bottom-right corner with title "[INFO] Test Notification" and sound.
+5. **Evidence Field:**
+   - Date / Time Tested: `____________________`
+   - Toast Displayed Successfully (Yes/No): `______`
+   - Click-to-Dismiss / Open Verified (Yes/No): `______`
+   - Operator Signature: `____________________`
+
+### Test Case 2: Production Telegram Bot Delivery (E01)
+1. **Pre-check:** Android phone connected via cellular data (Wi-Fi disabled, VPN disabled).
+2. **Action:** Execute authenticated test transmission:
+   ```powershell
+   scripts-notify telegram test -a
+   ```
+3. **Expected Result:** Instant push notification received on Android lockscreen via Telegram App from enrolled bot within 2 seconds. No secrets visible in message or log.
+4. **Evidence Field:**
+   - Date / Time Delivered: `____________________`
+   - Message Text Received: `____________________`
+   - Lockscreen Banner Verified (Yes/No): `______`
+   - Operator Signature: `____________________`
+
+### Test Case 3: Independent Host Outage Alerting (E02)
+1. **Pre-check:** Healthchecks check configured with 5-minute grace period.
+2. **Action:** Stop heartbeat runner task or disconnect workstation network for 6 minutes.
+3. **Expected Result:** Healthchecks.io independently fires "Host Down" notification to operator's email/SMS.
+4. **Action 2:** Reconnect workstation network and send ping:
+   ```powershell
+   scripts-notify heartbeat ping
+   ```
+5. **Expected Result:** Healthchecks restores to healthy green status without false unresolved holds.
+6. **Evidence Field:**
+   - Outage Alert Received Timestamp: `____________________`
+   - Recovery Notification Timestamp: `____________________`
+   - Operator Signature: `____________________`
+
+### Test Case 4: Android Cellular HTTPS PWA Access (W01–W03)
+1. **Pre-check:** Preflight passed (`scripts-remote-control external doctor`); web service listening on `127.0.0.1:8443`.
+2. **Action:** Enable Funnel with operator authorization:
+   ```powershell
+   scripts-remote-control external enable -a
+   ```
+3. **Action:** Open printed public URL on Android smartphone in Chrome (cellular only, Wi-Fi off, WireGuard off).
+4. **Expected Result:**
+   - Valid Tailscale HTTPS certificate (green padlock, zero TLS warnings).
+   - Login page loads; operator password + TOTP code accepted.
+   - PWA install prompt ("Add to Home screen") functions cleanly.
+   - Incident list loads in read-only mode.
+5. **Evidence Field:**
+   - Public Assigned URL: `____________________`
+   - Handset Model / OS: `____________________`
+   - HTTPS Certificate Subject / Issuer: `____________________`
+   - Login & TOTP Success Verified (Yes/No): `______`
+   - Operator Signature: `____________________`
+
+### Test Case 5: Emergency Funnel Teardown & Isolation (W05)
+1. **Action:** Immediately disable Funnel via operator console:
+   ```powershell
+   scripts-remote-control external disable -a
+   ```
+2. **Expected Result:**
+   - Android phone refreshing the public URL immediately receives connection timed out / network error.
+   - Workstation local loopback service on `127.0.0.1:8443` remains responsive.
+   - Local notifications broker and outbox continue operating without interruption.
+3. **Evidence Field:**
+   - Teardown Execution Timestamp: `____________________`
+   - Phone Refresh Rejection Verified (Yes/No): `______`
+   - Local Loopback Health Confirmed (Yes/No): `______`
+   - Operator Signature: `____________________`
+
+---
+
+## 4. Strict Boundary & Non-Goal Adherence
 
 - **Resource Coordinator Source:** 100% clean and unmodified. `git diff origin/main -- modules/resource_coordinator/` is completely empty.
 - **Production Recovery:** Remains permanently disabled (`capability_disabled`).

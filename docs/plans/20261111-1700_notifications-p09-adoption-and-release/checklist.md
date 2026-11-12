@@ -43,8 +43,8 @@
   - [x] Verify zero diff against `modules/resource_coordinator/`
   - [x] Stage F commit created
 
-- [ ] **Stage G: Controlled Operational Acceptance**
-  - [ ] Operator acceptance runbooks and verification gates prepared
-  - [ ] Final plan status and checklist updated
-  - [ ] Feature branch pushed to `origin`
-  - [ ] Completion report delivered
+- [x] **Stage G: Controlled Operational Acceptance**
+  - [x] Operator acceptance runbooks and verification gates prepared
+  - [x] Final plan status and checklist updated
+  - [x] Feature branch pushed to `origin`
+  - [x] Completion report delivered
