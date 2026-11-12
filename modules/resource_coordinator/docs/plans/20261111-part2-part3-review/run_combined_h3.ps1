@@ -68,7 +68,7 @@ rc = importlib.import_module('resource_coordinator')
 mining = importlib.import_module('mining_optimizer')
 assert rc_source in pathlib.Path(rc.__file__).resolve().parents, rc.__file__
 assert root in pathlib.Path(mining.__file__).resolve().parents, mining.__file__
-assert rc_repo == rc_source.parent
+assert rc_source == (rc_repo / 'modules' / 'resource_coordinator').resolve()
 raise SystemExit(pytest.main([
     '-c', str(tests / 'pytest.ini'), '--rootdir', str(root),
     '--basetemp', os.environ['H3_BASETEMP'], '--junitxml', os.environ['H3_JUNIT'],
