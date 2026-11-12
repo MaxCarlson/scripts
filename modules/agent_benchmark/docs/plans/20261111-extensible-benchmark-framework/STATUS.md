@@ -44,4 +44,17 @@
 - [x] Ruff lint checks clean on all Phase 01 files.
 - [x] Zero model calls, downloads, or system runtime mutations.
 
-**Status:** Phase 01 is COMPLETE and gate satisfied. Ready to proceed to Phase 02.
+**Status:** Phase 01 is COMPLETE and gate satisfied.
+
+## 6. Phase 02 Acceptance Gate
+- [x] Modular `cli_commands/` package implemented (`task.py`, `models.py`, `experiment.py`, `external.py`, `setup.py`, `suite.py`, `common.py`).
+- [x] `cli.py` refactored from ~1,200 lines to a readable 125-line root parser/dispatcher.
+- [x] `setup -A` and `setup plan -A` parse as equivalent read-only plans for all registered default benchmark resources.
+- [x] `setup install -A` produces a non-mutating dry-run preview; `setup install -A -x` stubs Phase 03 without fake success.
+- [x] Flag `-A` scoping verified: `-A` means `--all` in `setup`, but remains `--api-format` in `suite plan`.
+- [x] Root aliases `plan`, `run`, `status`, `cleanup`, `smoke` preserved alongside canonical `task` namespace.
+- [x] All 52 regression and parser tests passed (`cli_refactor_test.py`, `cli_test.py`, `suite_cli_test.py`, `harbor_cli_test.py`, `catalog_test.py`).
+- [x] Ruff lint checks clean on all Phase 02 files.
+- [x] Zero model calls, downloads, or unapproved mutations.
+
+**Status:** Phase 02 is COMPLETE and gate satisfied. Ready to proceed to Phase 03.

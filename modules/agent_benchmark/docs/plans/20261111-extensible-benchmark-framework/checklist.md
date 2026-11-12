@@ -21,15 +21,15 @@
 - [x] Acceptance verification: `suite list -f json` includes Harbor datasets and Aider cohort; `external list` preserved
 
 ## Phase 02 — CLI Refactor and Backward Compatibility
-- [ ] Create `cli_commands/` module hierarchy (`task.py`, `suite.py`, `setup.py`, `external.py`, `models.py`, `experiment.py`)
-- [ ] Refactor `cli.py` to be a lightweight dispatcher
-- [ ] Preserve root task aliases (`plan`, `run`, `status`, `cleanup`, `smoke`)
-- [ ] Implement `setup` namespace parser with `-A/--all`
-- [ ] Wire `setup -A` and `setup plan -A` to dry-run planner; `setup install -A` to preview
-- [ ] Preserve `suite plan -A` as `--api-format`
-- [ ] Preserve `agent-bench`, `agent-benchmark`, and `agent_benchmark` entry points
-- [ ] Add golden parser tests and output compatibility tests
-- [ ] Verify help text, JSON formatting, and `-F/--llm-friendly` output
+- [x] Create `cli_commands/` module hierarchy (`task.py`, `suite.py`, `setup.py`, `external.py`, `models.py`, `experiment.py`, `common.py`)
+- [x] Refactor `cli.py` to be a lightweight dispatcher
+- [x] Preserve root task aliases (`plan`, `run`, `status`, `cleanup`, `smoke`) and add `task` namespace
+- [x] Implement `setup` namespace parser with `-A/--all`
+- [x] Wire `setup -A` and `setup plan -A` to dry-run planner; `setup install -A` to preview
+- [x] Preserve `suite plan -A` as `--api-format`
+- [x] Preserve `agent-bench`, `agent-benchmark`, and `agent_benchmark` entry points
+- [x] Add golden parser tests and output compatibility tests (`tests/cli_refactor_test.py`)
+- [x] Verify help text, JSON formatting, and `-F/--llm-friendly` output
 
 ## Phase 03 — Generic External Benchmark Setup and Source Locks
 - [ ] Implement `external_sources/` (`specs.py`, `manager.py`, `stores.py`, `receipts.py`)
