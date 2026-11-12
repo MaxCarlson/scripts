@@ -10,7 +10,7 @@
 - Package version at base: `0.14.0`; candidate metadata and module version are `1.0.0`.
 - Canonical plan: V3; SHA-256 `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46`; blob `3a1c2f7662a54469bb6dc15ad6462a4295ec93e6` (verified in this worktree)
 - Part 1 baseline lifecycle failure remains assigned to Part 3; Windows/UAC acceptance remains H4.
-- During final review, the locally available `origin/main` advanced three commits to `4f4373d2533e4e0c6bd115eda6623ed65fbadc49`. The three commits touch Notifications and its operator documentation only; no Resource Coordinator or `scripts_help` paths overlap. The Part 2 branch remains based on `c9135582611280e95d387988dfdb2f6cf3eebf3a` pending a safe feature-branch merge of those unrelated mainline commits.
+- During final review, `origin/main` advanced three commits to `4f4373d2533e4e0c6bd115eda6623ed65fbadc49`. The commits touch Notifications and its operator documentation only; no Resource Coordinator or `scripts_help` paths overlap. They were merged into this feature branch after the Part 2 source commit, producing merge checkpoint `74d32468e30f76f7e5897148a975a9aabd228b09`. `main` remains at the upstream commit; the Part 2 diff from current `origin/main` contains only the 22 scoped paths listed in the commit.
 
 ## Progress
 
@@ -25,11 +25,13 @@
 - [x] Added intentional status, telemetry, maintenance, setup, preflight, acceptance, inference, and recovery renderers; explicit doctor/installation result codes; CLI documentation.
 - [x] Added Part 2 plan, checklist, status evidence, and CLI documentation.
 - [x] Reviewed source, security sanitization, recovery boundaries, tests, and changed-file scope.
-- [ ] Incorporate the three reviewed Notifications-only mainline commits into this feature branch, then commit and push the Part 2 work.
+- [x] Merged the three reviewed Notifications-only mainline commits into this feature branch without changing `main`.
+- [x] Committed the Part 2 source and test checkpoint as `43c4bd9884cce7d00324dd0d1316da376bf4a0d7`.
+- [ ] Commit final post-merge evidence, push the feature branch, and verify the remote SHA and clean worktree.
 
 ## Current state
 
-Implementation and focused validation are complete. Final Git synchronization, commit, push, and post-push verification remain. No production operations have been performed.
+Implementation, focused validation, and source checkpoint commit are complete. The current mainline ancestry has been merged into the feature branch; final post-merge evidence commit, feature push, and post-push verification remain. No production operations have been performed.
 
 ### Pre-change validation
 
@@ -44,14 +46,15 @@ Part 2 does not implement automatic recovery mutation or Part 3 durable-state ch
 
 ## Implementation and validation
 
-- **Final focused regression:** From `modules/resource_coordinator`, ran the CLI, architecture, Part 2 CLI/observability, recovery presentation, gateway, factory/gateway integration, admission, maintenance, restoration, durable-state, lease, service lifecycle, installation, operator-credential, and configuration suites with `python -m pytest ... -q --basetemp <absolute module-local temp root> --junitxml <same-root>/junit.xml` under normal Windows socket permissions. **503 tests: 502 passed, 1 failed, 0 errors, 0 skipped; exit 1.** JUnit: `.pytest_tmp_root/part2-final-regression-plus-presentation-20261111220228/junit.xml`.
+- **Final focused regression:** From `modules/resource_coordinator`, ran `python -m pytest tests/test_cli.py tests/test_cli_architecture.py tests/test_part2_cli.py tests/test_part2_observability.py tests/test_recovery_presentation.py tests/test_gateway.py tests/test_factory_gateway_integration.py tests/test_admission.py tests/test_maintenance.py tests/test_restoration.py tests/test_durable_state.py tests/test_leases.py tests/test_service_lifecycle.py tests/test_installation.py tests/test_operator_credentials.py tests/test_config.py -q --basetemp <absolute module-local root> --junitxml <same-root>/junit.xml` under normal Windows socket permissions. **503 tests: 502 passed, 1 failed, 0 errors, 0 skipped; exit 1.** JUnit: `.pytest_tmp_root/part2-final-regression-plus-presentation-20261111220228/junit.xml`.
 - The one failure was `test_gpu_idle_pause_persists_across_restart_and_resumes_after_complete_window`; it remains the Part 1 baseline failure reproduced on unchanged main. Its fake miner stays stopped because `manual override is active`. It was not changed or suppressed.
 - During the new async gateway tests, the restricted sandbox stalled during Windows Proactor socket setup. Those cases were rerun with normal socket permissions and passed. The broad final run used the same verified normal-permission context.
 - New receipt and maintenance-release safety regressions were demonstrated red then green: interrupted receipts remain blocked and sanitized; oversized receipts are rejected before reading; maintenance release does not proceed after a failed status read and does not accept a mismatched disposition; LM Studio observations require a fresh matching runtime identity.
 - Isolated console-script validation: installed the candidate into `modules/resource_coordinator/.pytest_tmp_root/part2-script-venv/venv` with `pip --no-deps --no-build-isolation --ignore-installed`; generated and executed `rc.exe`, `resource-coordinator.exe`, and `gpu-coordinator.exe`. Each printed `resource-coordinator 1.0.0`. Current PowerShell `Get-Command rc` found no conflicting command.
-- The final targeted Part 2 CLI/observability/presentation regression run completed after the receipt-size and unavailable-apply refinements: **19 passed**, exit 0. Changed-file Ruff and the correctly scoped compilation command passed after those code changes. `git diff --check` passed before this final status/checklist edit and will be rerun before commit.
+- The final targeted Part 2 CLI/observability/presentation regression run completed after the receipt-size and unavailable-apply refinements: **19 passed**, exit 0. Changed-file Ruff and the correctly scoped compilation command passed after those code changes. `git diff --check` will be rerun after this final status edit.
+- After merging current `origin/main`, the same focused test set was rerun with normal Windows socket permissions: `python -m pytest tests/test_part2_cli.py tests/test_part2_observability.py tests/test_recovery_presentation.py -q --basetemp C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-part2-cli-observability-20261111\modules\resource_coordinator\.pytest_tmp_root\part2-final-normal-20261111221126`; **19 passed**, exit 0. The sandbox-only rerun stalled during Windows Proactor setup after eight tests and was interrupted; it produced no assertion failure. The Part 2 source paths are unchanged by the merge, and `git diff origin/main...HEAD --name-only` confirms the incoming Part 2 scope is confined to Resource Coordinator and its help registry.
 - Packaging validation caveat: an earlier `pip --prefix` probe unexpectedly uninstalled the pre-existing Resource Coordinator 0.6.0 distribution from the shared development `.venv`. No production installation was touched. The shared `.venv` was restored to 0.6.0 from repository commit `bf6d3be3fc630f7f482086fd55c15b1b047ace21`; `pip show` confirmed version 0.6.0 and its original shared `.venv` location. Later packaging checks used `--ignore-installed` and the isolated venv.
-- Changed-file Ruff and compilation passed before the final small receipt-size/exit-code refinement; rerun them in the final verification below. `git diff --check` passed before the final docs update; it will be rerun after staging.
+- Final static commands after the receipt-size/exit-code refinement: `python -m ruff check` over all changed Python implementation/test files (exit 0); `python -m compileall -q modules/resource_coordinator/resource_coordinator modules/resource_coordinator/tests modules/scripts_help/scripts_help/registry/registry.py` (exit 0); `git diff --check` after this evidence edit (exit 0).
 
 ### Safety and compatibility boundaries
 
