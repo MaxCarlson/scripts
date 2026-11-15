@@ -5,9 +5,11 @@ Durable state persistence, atomic serialization, and PID reconciliation for cras
 from __future__ import annotations
 
 import json
+from functools import wraps
 import logging
 import math
 import os
+import threading
 import time
 import uuid
 from dataclasses import asdict, dataclass, field
@@ -21,6 +23,24 @@ from .leases import LeaseManager
 from .processes import ProcessLifecycleOwner
 
 logger = logging.getLogger(__name__)
+_STATE_TRANSACTION_LOCK = threading.RLock()
+
+
+class ConcurrentJournalUpdateError(RuntimeError):
+    """A durable snapshot was based on an older journal revision."""
+
+
+class LegacyExportError(RuntimeError):
+    """A safe rollback-compatible state copy could not be prepared."""
+
+
+def _serialized_state_mutation(method):
+    """Serialize every in-process journal read-modify-write transaction."""
+    @wraps(method)
+    def wrapped(*args, **kwargs):
+        with _STATE_TRANSACTION_LOCK:
+            return method(*args, **kwargs)
+    return wrapped
 
 
 class ReconciliationOutcome(str, Enum):
@@ -39,6 +59,7 @@ class RequestPhase(str, Enum):
     RESERVED = "reserved"  # Lease reserved, not yet forwarded upstream
     POSSIBLY_FORWARDED = "possibly_forwarded"  # Bytes committed to upstream dispatch
     TERMINAL_VERIFIED = "terminal_verified"  # Stream completed with [DONE] or non-stream completed
+    RECONCILED = "reconciled"  # Exact safe disposition was durably reconciled
     UNCERTAIN = "uncertain"  # Stream ended abruptly, network failure, or error
     OPERATOR_RESOLVED = "operator_resolved"  # Explicitly overridden by authenticated operator recovery
 
@@ -58,33 +79,62 @@ def _remove_inhibition_holder(state: CoordinatorState, resource: str, holder_id:
     current = state.inhibitions.get(resource)
     if current is None:
         return False
-    current = dict(current)
-    details = dict(current.get("details", {}))
-    additional = list(details.get("additional_uncertain_holders", []))
-    if current.get("holder_id") == holder_id:
-        if not additional:
-            state.inhibitions.pop(resource, None)
-            return True
-        promoted = dict(additional.pop(0))
-        promoted_details = dict(promoted.get("details", {}))
-        remaining = list(promoted_details.get("additional_uncertain_holders", [])) + additional
-        if remaining:
-            promoted_details["additional_uncertain_holders"] = remaining
-        else:
-            promoted_details.pop("additional_uncertain_holders", None)
-        promoted["details"] = promoted_details
-        state.inhibitions[resource] = promoted
-        return True
-    retained = [item for item in additional if item.get("holder_id") != holder_id]
-    if len(retained) == len(additional):
+    holders = _all_inhibition_holders(current)
+    retained = [item for item in holders if item.get("holder_id") != holder_id]
+    if len(retained) == len(holders):
         return False
-    if retained:
-        details["additional_uncertain_holders"] = retained
+    if not retained:
+        state.inhibitions.pop(resource, None)
+        return True
+
+    # Flatten legacy nested additional-holder lists when rebuilding the record.
+    # This makes an exact removal complete even for journals written by older
+    # versions that nested promoted holders several levels deep.
+    primary, *additional = retained
+    details = dict(primary.get("details", {}))
+    if additional:
+        details["additional_uncertain_holders"] = additional
     else:
         details.pop("additional_uncertain_holders", None)
-    current["details"] = details
-    state.inhibitions[resource] = current
+    primary["details"] = details
+    state.inhibitions[resource] = primary
     return True
+
+
+def _all_inhibition_holders(current: Optional[Dict[str, Any]]) -> list[Dict[str, Any]]:
+    if current is None:
+        return []
+    result: list[Dict[str, Any]] = []
+    queue = [dict(current)]
+    while queue:
+        item = queue.pop(0)
+        details = dict(item.get("details", {}))
+        children = details.pop("additional_uncertain_holders", [])
+        item["details"] = details
+        result.append(item)
+        if isinstance(children, list):
+            queue.extend(dict(child) for child in children if isinstance(child, dict))
+    return result
+
+
+def _add_inhibition_holder(state: CoordinatorState, hold: Dict[str, Any]) -> None:
+    resource = hold.get("resource")
+    holder_id = hold.get("holder_id")
+    if not isinstance(resource, str) or not resource or not isinstance(holder_id, str) or not holder_id:
+        raise ValueError("Inhibition requires resource and holder identities")
+    existing = state.inhibitions.get(resource)
+    if existing is None:
+        state.inhibitions[resource] = dict(hold)
+        return
+    if any(item.get("holder_id") == holder_id for item in _all_inhibition_holders(existing)):
+        return
+    updated = dict(existing)
+    details = dict(updated.get("details", {}))
+    additional = list(details.get("additional_uncertain_holders", []))
+    additional.append(dict(hold))
+    details["additional_uncertain_holders"] = additional
+    updated["details"] = details
+    state.inhibitions[resource] = updated
 
 
 @dataclass
@@ -168,6 +218,7 @@ class CoordinatorState:
 
     version: str = "1.0"
     updated_at: float = field(default_factory=time.time)
+    revision: int = 0
     inhibitions: Dict[str, Dict[str, Any]] = field(default_factory=dict)
     processes: Dict[str, PersistedProcess] = field(default_factory=dict)
     requests: Dict[str, PersistedRequest] = field(default_factory=dict)
@@ -179,6 +230,7 @@ class CoordinatorState:
         res: Dict[str, Any] = {
             "version": self.version,
             "updated_at": self.updated_at,
+            "revision": self.revision,
             "inhibitions": dict(self.inhibitions),
             "processes": {k: v.to_dict() for k, v in self.processes.items()},
         }
@@ -196,11 +248,14 @@ class CoordinatorState:
     def from_dict(cls, data: Dict[str, Any]) -> CoordinatorState:
         data = _mapping(data, "state")
         required = {"version", "updated_at", "inhibitions", "processes"}
-        allowed = required | {"requests", "gaming_mode", "gpu_idle_condition", "maintenance"}
+        allowed = required | {"revision", "requests", "gaming_mode", "gpu_idle_condition", "maintenance"}
         if not (required.issubset(set(data)) and set(data).issubset(allowed)):
             raise ValueError("Incomplete or unsupported durable state schema")
         if data["version"] != "1.0" or not _valid_time(data["updated_at"]):
             raise ValueError("Incomplete or unsupported durable state schema")
+        revision = data.get("revision", 0)
+        if type(revision) is not int or revision < 0:
+            raise ValueError("Invalid durable state revision")
         holds = _mapping(data["inhibitions"], "inhibitions")
         for resource, raw in holds.items():
             hold = _mapping(raw, "inhibition")
@@ -401,6 +456,7 @@ class CoordinatorState:
         return cls(
             version=data["version"],
             updated_at=data["updated_at"],
+            revision=revision,
             inhibitions=dict(holds),
             processes=procs,
             requests=reqs,
@@ -472,6 +528,7 @@ class StateCodec:
         return CoordinatorState.from_dict(data)
 
     @classmethod
+    @_serialized_state_mutation
     def save_atomic(cls, state: CoordinatorState, target_path: Path | str) -> None:
         """
         Atomically write state to disk via sibling temporary file and replacement.
@@ -480,16 +537,24 @@ class StateCodec:
         transaction or a guarantee of directory/rename durability after power loss.
         """
         path = Path(target_path)
-        payload = cls.serialize(state).encode("utf-8")
-        path.parent.mkdir(parents=True, exist_ok=True)
+        current_revision = cls.load(path).revision if path.exists() else 0
+        if state.revision != current_revision:
+            raise ConcurrentJournalUpdateError(
+                f"Stale durable state revision {state.revision}; current revision is {current_revision}"
+            )
+        state.revision = current_revision + 1
         tmp_path = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
-
         try:
+            payload = cls.serialize(state).encode("utf-8")
+            path.parent.mkdir(parents=True, exist_ok=True)
             with open(tmp_path, "wb") as f:
                 f.write(payload)
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, path)
+        except Exception:
+            state.revision = current_revision
+            raise
         finally:
             if tmp_path.exists():
                 try:
@@ -498,6 +563,7 @@ class StateCodec:
                     pass
 
     @classmethod
+    @_serialized_state_mutation
     def initialize(
         cls,
         target_path: Path | str,
@@ -513,9 +579,11 @@ class StateCodec:
             raise FileExistsError(
                 f"Cannot initialize durable state journal at '{path}': file already exists"
             )
+        current_revision = cls.load(path).revision if path.exists() else 0
         state = CoordinatorState(
             version="1.0",
             updated_at=time.time(),
+            revision=current_revision,
             inhibitions={},
             processes={},
             requests={},
@@ -534,6 +602,69 @@ class StateCodec:
         return cls.deserialize(Path(target_path).read_text(encoding="utf-8"))
 
     @classmethod
+    @_serialized_state_mutation
+    def export_legacy_compatible(cls, source_path: Path | str, target_path: Path | str) -> Path:
+        """Write a rollback copy readable by v0.14 without changing the active journal.
+
+        Reconciled history is preserved in an adjacent archive because the prior schema
+        rejects the new phase and revision fields. All unresolved requests and safety
+        holds remain in the legacy snapshot.
+        """
+        source = Path(source_path).resolve()
+        target = Path(target_path).resolve()
+        if source == target:
+            raise LegacyExportError("Rollback export must not overwrite the active journal")
+        state = cls.load(source)
+        payload = state.to_dict()
+        payload.pop("revision", None)
+        archived: list[Dict[str, Any]] = []
+        requests = payload.get("requests", {})
+        for request_id, request in list(requests.items()):
+            if request.get("phase") == RequestPhase.RECONCILED.value:
+                archived.append(dict(request))
+                del requests[request_id]
+        if not requests:
+            payload.pop("requests", None)
+        if any(request.get("phase") == RequestPhase.RECONCILED.value
+               for request in payload.get("requests", {}).values()):
+            raise LegacyExportError("Rollback copy still contains unsupported request phases")
+        archive_path = target.with_name(target.name + ".part3-recovery-archive.json")
+        if target.exists() or archive_path.exists():
+            raise LegacyExportError("Rollback export target or archive already exists; choose a fresh destination")
+        archive = {
+            "schema_version": 1,
+            "source_revision": state.revision,
+            "source_updated_at": state.updated_at,
+            "archived_requests": archived,
+            "note": "Reconciled request history removed from rollback snapshot for v0.14 schema compatibility.",
+        }
+
+        def write_atomic(path: Path, data: Dict[str, Any]) -> None:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            temporary = path.with_name(f"{path.name}.tmp.{uuid.uuid4().hex}")
+            try:
+                with temporary.open("w", encoding="utf-8", newline="\n") as stream:
+                    json.dump(data, stream, indent=2, sort_keys=True, allow_nan=False)
+                    stream.write("\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.replace(temporary, path)
+            finally:
+                if temporary.exists():
+                    try:
+                        temporary.unlink()
+                    except OSError:
+                        pass
+
+        try:
+            write_atomic(archive_path, archive)
+            write_atomic(target, payload)
+        except (OSError, TypeError, ValueError) as exc:
+            raise LegacyExportError(f"Could not write rollback-compatible state: {exc}") from exc
+        return archive_path
+
+    @classmethod
+    @_serialized_state_mutation
     def record_maintenance(
         cls,
         target_path: Path | str,
@@ -579,6 +710,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def mark_maintenance_recovery_required(cls, target_path: Path | str) -> Optional[CoordinatorState]:
         """Revoke process-local ownership on restart and durably preserve the hold."""
         target = Path(target_path)
@@ -640,6 +772,7 @@ class StateCodec:
         return count
 
     @classmethod
+    @_serialized_state_mutation
     def record_request_phase(
         cls,
         target_path: Path | str,
@@ -685,6 +818,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def record_process_state(
         cls,
         target_path: Path | str,
@@ -717,6 +851,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def record_gaming_mode(
         cls,
         target_path: Path | str,
@@ -756,6 +891,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def record_gpu_idle_condition(
         cls,
         target_path: Path | str,
@@ -779,6 +915,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def record_inhibition(
         cls,
         target_path: Path | str,
@@ -813,6 +950,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def clear_inhibition(
         cls,
         target_path: Path | str,
@@ -827,6 +965,7 @@ class StateCodec:
         return state
 
     @classmethod
+    @_serialized_state_mutation
     def resolve_unresolved_requests(
         cls,
         target_path: Path | str,
@@ -868,12 +1007,86 @@ class StateCodec:
         )
         return state, resolved_ids
 
+    @classmethod
+    @_serialized_state_mutation
+    def reconcile_requests_and_clear_holders(
+        cls,
+        target_path: Path | str,
+        *,
+        expected_revision: int,
+        reconciliations: list[Dict[str, Any]],
+        holder_ids: list[str],
+        sync_hold: Optional[Dict[str, Any]] = None,
+    ) -> CoordinatorState:
+        """Apply verified request dispositions and exact hold removals as one journal transaction."""
+        target = Path(target_path)
+        state = cls.load(target)
+        if state.revision != expected_revision:
+            raise ConcurrentJournalUpdateError(
+                f"Recovery expected journal revision {expected_revision}; found {state.revision}"
+            )
+        if len({item.get("request_id") for item in reconciliations}) != len(reconciliations):
+            raise ValueError("Recovery transaction contains duplicate request identities")
+        now = time.time()
+        allowed_dispositions = {
+            "protocol_terminal_verified", "not_forwarded_verified", "execution_termination_verified"
+        }
+        for item in reconciliations:
+            request_id = item.get("request_id")
+            expected_phase = item.get("expected_phase")
+            disposition = item.get("disposition")
+            evidence = item.get("evidence")
+            request = state.requests.get(request_id)
+            if request is None or request.phase != expected_phase:
+                raise ConcurrentJournalUpdateError("Recovery request identity or phase changed")
+            if disposition not in allowed_dispositions or not isinstance(evidence, dict):
+                raise ValueError("Recovery disposition requires an allowed classification and evidence mapping")
+            if len(json.dumps(evidence, allow_nan=False)) > 4096:
+                raise ValueError("Recovery evidence summary exceeds the durable limit")
+            if disposition == "not_forwarded_verified" and expected_phase != RequestPhase.RESERVED.value:
+                raise ValueError("Only a reserved request can be reconciled as not forwarded")
+            request.details["source_phase"] = request.phase
+            request.details["reconciliation_disposition"] = disposition
+            request.details["reconciliation_evidence"] = dict(evidence)
+            request.details["reconciled_at"] = now
+            request.phase = (
+                RequestPhase.TERMINAL_VERIFIED.value
+                if disposition == "protocol_terminal_verified"
+                else RequestPhase.RECONCILED.value
+            )
+            request.updated_at = now
+        for holder_id in holder_ids:
+            if not isinstance(holder_id, str) or not holder_id:
+                raise ValueError("Recovery holder identity must be a nonempty string")
+            if not _remove_inhibition_holder(state, "gpu.inference", holder_id):
+                raise ConcurrentJournalUpdateError(f"Recovery inhibition holder changed: {holder_id}")
+        if sync_hold is not None:
+            _add_inhibition_holder(state, sync_hold)
+        state.updated_at = now
+        cls.save_atomic(state, target)
+        return state
+
+    @classmethod
+    @_serialized_state_mutation
+    def clear_inhibition_holder(
+        cls, target_path: Path | str, resource: str, holder_id: str
+    ) -> CoordinatorState:
+        """Persist removal of one exact durable hold while retaining all other owners."""
+        state = cls.load(target_path)
+        if not _remove_inhibition_holder(state, resource, holder_id):
+            raise ConcurrentJournalUpdateError(f"Durable inhibition holder not found: {holder_id}")
+        state.updated_at = time.time()
+        cls.save_atomic(state, target_path)
+        return state
+
 
 async def reconcile_startup_state(
     state: CoordinatorState,
     lease_manager: LeaseManager,
     supervisors: Optional[Dict[str, Any]] = None,
     query_fn: Optional[Callable[[int], Optional[float]]] = None,
+    *,
+    state_path: Optional[Path | str] = None,
 ) -> Dict[str, Any]:
     """
     Reconcile loaded durable state during coordinator startup.
@@ -887,7 +1100,114 @@ async def reconcile_startup_state(
         "unresolved_request_holds": [],
         "reconciled_processes": {},
     }
-    # 1. Restore prior inhibitions
+    # Always canonicalize the latest on-disk snapshot, because earlier startup steps
+    # (notably maintenance recovery) may have committed after the caller loaded state.
+    if state_path is not None:
+        state = StateCodec.load(state_path)
+    changed = False
+    unresolved = {
+        request.request_id: request
+        for request in state.requests.values()
+        if request.phase in {
+            RequestPhase.RESERVED.value,
+            RequestPhase.POSSIBLY_FORWARDED.value,
+            RequestPhase.UNCERTAIN.value,
+        }
+    }
+
+    def request_identity(holder_id: Any, resource: str) -> Optional[str]:
+        if not isinstance(holder_id, str):
+            return None
+        candidate = holder_id
+        while True:
+            request = unresolved.get(candidate)
+            if request is not None and request.resource == resource:
+                return candidate
+            if candidate.startswith("crash_recovery:"):
+                candidate = candidate[len("crash_recovery:"):]
+            elif candidate.startswith("coord-"):
+                candidate = candidate[len("coord-"):]
+            else:
+                break
+        return None
+
+    # Flatten and rebuild all holders so request aliases converge to one canonical ID.
+    for resource, current in list(state.inhibitions.items()):
+        holders = _all_inhibition_holders(current)
+        normalized: list[Dict[str, Any]] = []
+        seen: set[str] = set()
+        for holder in holders:
+            original_id = holder.get("holder_id")
+            details = dict(holder.get("details", {}))
+            details.pop("additional_uncertain_holders", None)
+            identity = request_identity(holder.get("holder_id"), resource)
+            if identity is not None:
+                holder["holder_id"] = identity
+                request = unresolved[identity]
+                if original_id != identity:
+                    details["migrated_from_holder_id"] = original_id
+                holder.setdefault("reason", f"unresolved_request:{request.phase}")
+                holder.setdefault("inhibited_at", request.updated_at)
+                details.update({
+                    "request_id": identity, "phase": request.phase,
+                    "model": request.model, "path": request.path,
+                    "persisted_at": request.updated_at,
+                })
+                holder["resource"] = resource
+                holder["details"] = details
+            holder_id = holder.get("holder_id")
+            if not isinstance(holder_id, str) or not holder_id:
+                raise ValueError("Persisted inhibition has no canonical holder identity")
+            if holder_id in seen:
+                changed = True
+                continue
+            seen.add(holder_id)
+            normalized.append(holder)
+            if holder.get("holder_id") != original_id:
+                changed = True
+        if normalized:
+            primary = normalized[0]
+            primary_details = dict(primary.get("details", {}))
+            if len(normalized) > 1:
+                primary_details["additional_uncertain_holders"] = normalized[1:]
+            else:
+                primary_details.pop("additional_uncertain_holders", None)
+            primary["details"] = primary_details
+            if primary != current:
+                state.inhibitions[resource] = primary
+                changed = True
+
+    # Materialize any request hold lost between reservation and hold persistence.
+    for req_id, req in unresolved.items():
+        if req.resource == "gpu.inference" and not any(
+            holder.get("holder_id") == req_id
+            for holder in _all_inhibition_holders(state.inhibitions.get(req.resource))
+        ):
+            new_hold = {
+                "resource": req.resource,
+                "reason": f"unresolved_request:{req.phase}",
+                "holder_id": req_id,
+                "inhibited_at": req.updated_at,
+                "details": {
+                    "request_id": req_id, "phase": req.phase, "model": req.model,
+                    "path": req.path, "persisted_at": req.updated_at,
+                },
+            }
+            existing = state.inhibitions.get(req.resource)
+            if existing is None:
+                state.inhibitions[req.resource] = new_hold
+            else:
+                details = dict(existing.get("details", {}))
+                additional = list(details.get("additional_uncertain_holders", []))
+                additional.append(new_hold)
+                details["additional_uncertain_holders"] = additional
+                existing["details"] = details
+            changed = True
+    if changed and state_path is not None:
+        state.updated_at = time.time()
+        StateCodec.save_atomic(state, state_path)
+
+    # 1. Restore the persisted canonical holder set before returning to admission.
     for resource, data in state.inhibitions.items():
         await lease_manager.inhibit_restart(
             resource=resource,
@@ -901,35 +1221,15 @@ async def reconcile_startup_state(
         )
         audit["restored_inhibitions"].append(resource)
 
-    # 2. Replay unresolved requests
-    UNRESOLVED_PHASES = {
-        RequestPhase.RESERVED.value,
-        RequestPhase.POSSIBLY_FORWARDED.value,
-        RequestPhase.UNCERTAIN.value,
-    }
-    for req_id, req in state.requests.items():
-        if req.phase in UNRESOLVED_PHASES:
-            logger.warning(
-                "Unresolved request %s in phase %s on resource %s; imposing restart inhibition",
-                req_id,
-                req.phase,
-                req.resource,
-            )
-            await lease_manager.inhibit_restart(
-                resource=req.resource,
-                reason=f"unresolved_request:{req.phase}",
-                holder_id=f"crash_recovery:{req_id}",
-                details={
-                    "request_id": req.request_id,
-                    "phase": req.phase,
-                    "model": req.model,
-                    "path": req.path,
-                    "persisted_at": req.updated_at,
-                },
-            )
-            audit["unresolved_request_holds"].append(
-                {"request_id": req_id, "phase": req.phase, "resource": req.resource}
-            )
+    # 2. Report unresolved requests; their canonical holds were persisted above.
+    for req_id, req in unresolved.items():
+        logger.warning(
+            "Unresolved request %s in phase %s on resource %s; restart inhibition restored",
+            req_id, req.phase, req.resource,
+        )
+        audit["unresolved_request_holds"].append(
+            {"request_id": req_id, "phase": req.phase, "resource": req.resource}
+        )
 
     # 3. Reconcile persisted process table
     if query_fn is None:
@@ -938,7 +1238,7 @@ async def reconcile_startup_state(
             try:
                 p = psutil.Process(pid)
                 return p.create_time()
-            except (psutil.NoSuchProcess, psutil.AccessDenied):
+            except psutil.NoSuchProcess:
                 return None
 
         query_fn = _default_query

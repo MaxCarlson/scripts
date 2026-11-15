@@ -2,7 +2,7 @@ import asyncio
 import pytest
 
 from resource_coordinator.core.events import EventDispatcher
-from resource_coordinator.core.leases import LeaseManager, LeaseType
+from resource_coordinator.core.leases import LeaseManager, LeaseType, MaintenanceAdmissionBlocked
 
 
 class FakeClock:
@@ -191,3 +191,81 @@ async def test_cooldown_uses_monotonic_clock_and_resets_deterministically():
     assert len(idle_events) == 1
     assert mgr.is_cooling_down("gpu.inference") is False
     assert backend.running is True
+
+
+@pytest.mark.asyncio
+async def test_recovery_fence_closes_gpu_admission_and_revalidates_generation():
+    mgr = LeaseManager()
+    fence = await mgr.acquire_gpu_recovery_fence("recovery-op", target_holders=["req-a"], ttl_seconds=5)
+    assert fence is not None
+    assert fence["post_fence_generation"] == mgr.state_generation
+
+    with pytest.raises(RuntimeError, match="recovery"):
+        async with mgr.reserve("gpu.inference", holder_id="new-request"):
+            pass
+
+    assert await mgr.validate_gpu_recovery_fence(fence["fence_id"], fence["post_fence_generation"])
+    await mgr.release_gpu_recovery_fence(fence["fence_id"])
+    async with mgr.reserve("gpu.inference", holder_id="after-recovery"):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_recovery_fence_cancels_cooldown_idle_event_and_restarts_cooldown_after_release():
+    from resource_coordinator.core.events import EventDispatcher
+
+    dispatcher = EventDispatcher()
+    manager = LeaseManager(default_cooldown_seconds=0.02, event_dispatcher=dispatcher)
+    idle_events = []
+    idle_signal = asyncio.Event()
+
+    async def on_idle(event):
+        idle_events.append(event.data)
+        idle_signal.set()
+
+    dispatcher.on("resource.idle", on_idle)
+    async with manager.acquire("gpu.inference", holder_id="prior-work"):
+        pass
+    assert manager.is_cooling_down("gpu.inference")
+
+    fence = await manager.acquire_gpu_recovery_fence("recovery-op", target_holders=["req-a"], ttl_seconds=2)
+    assert fence is not None
+    await asyncio.sleep(0.04)
+    assert idle_events == []
+    assert not manager.is_cooling_down("gpu.inference")
+    with pytest.raises(MaintenanceAdmissionBlocked):
+        async with manager.reserve("gpu.inference", holder_id="blocked-by-recovery"):
+            pytest.fail("cooldown callback reopened GPU admission during recovery")
+
+    assert await manager.release_gpu_recovery_fence(fence["fence_id"], cooldown_resource="gpu.inference")
+    await asyncio.wait_for(idle_signal.wait(), timeout=0.2)
+    assert len(idle_events) == 1
+
+
+@pytest.mark.asyncio
+async def test_recovery_fence_refuses_conflicting_claims_and_maintenance():
+    mgr = LeaseManager(default_cooldown_seconds=0)
+    async with mgr.acquire("gpu.inference", holder_id="active"):
+        assert await mgr.acquire_gpu_recovery_fence("recovery-op", target_holders=["req-a"]) is None
+    maintenance_mgr = LeaseManager()
+    assert await maintenance_mgr.begin_gpu_maintenance("maintenance-op")
+    assert await maintenance_mgr.acquire_gpu_recovery_fence("recovery-op", target_holders=["req-a"]) is None
+
+
+
+
+@pytest.mark.asyncio
+async def test_expired_recovery_fence_reopens_admission_but_keeps_restart_hold():
+    clock = FakeClock()
+    mgr = LeaseManager(monotonic_clock=clock.monotonic, sleep=clock.sleep)
+    await mgr.inhibit_restart("gpu.inference", "uncertain", "req-a")
+    fence = await mgr.acquire_gpu_recovery_fence("recovery-op", target_holders=["req-a"], ttl_seconds=2)
+    assert fence is not None
+
+    clock.advance(3)
+
+    assert not await mgr.validate_gpu_recovery_fence(fence["fence_id"], fence["post_fence_generation"])
+    assert mgr._gpu_recovery_fence is None
+    assert mgr.is_restart_inhibited("gpu.inference")
+    async with mgr.reserve("gpu.inference", holder_id="new-work"):
+        pass

@@ -489,6 +489,13 @@ REGISTRY: dict = {
         "desc": "Monitor resources, manage processes/services, SSH hosts, terminal dashboards",
         "items": [
             {
+                "name": "resource_coordinator (module)",
+                "path": "modules/resource_coordinator",
+                "desc": "Unified rc CLI and service for safe GPU, miner, inference, and maintenance coordination",
+                "help_cmd": ["python", "-m", "resource_coordinator.cli", "--help"],
+                "version": "1.0.0",
+            },
+            {
                 "name": "monitor-disks.py",
                 "path": "pyscripts/monitor-disks.py",
                 "desc": "Real-time disk usage monitoring with interactive Rich terminal UI",

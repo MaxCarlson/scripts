@@ -499,6 +499,16 @@ def render_coordinator_status(
     else:
         rows.append(("Inference", "Unavailable"))
     rows.extend([("Cooldown", cooldown), ("Safety inhibition", safety)])
+    gaming = data.get("gaming") if isinstance(data.get("gaming"), Mapping) else {}
+    maintenance = data.get("maintenance") if isinstance(data.get("maintenance"), Mapping) else {}
+    inference = data.get("inference") if isinstance(data.get("inference"), Mapping) else {}
+    if gaming:
+        rows.append(("Gaming", str(gaming.get("state") or "unavailable").replace("_", " ").title()))
+    if maintenance:
+        rows.append(("Maintenance", str(maintenance.get("state") or "unavailable").replace("_", " ").title()))
+    if inference:
+        rows.append(("Inference evidence", f"{inference.get('classification', 'unavailable')} / "
+                     f"coverage {inference.get('coverage', 'unknown')}"))
     _table("Service", rows, console=console)
 
     processes = data.get("processes") or {}
@@ -520,3 +530,204 @@ def render_coordinator_status(
                 ownership,
             )
         console.print(table)
+
+    recovery = gpu.get("recovery") if isinstance(gpu.get("recovery"), Mapping) else {}
+    hold = recovery.get("inhibition") if isinstance(recovery.get("inhibition"), Mapping) else {}
+    details = hold.get("details") if isinstance(hold.get("details"), Mapping) else {}
+    extra_holders = details.get("additional_uncertain_holders") or []
+    if extra_holders:
+        console.print(Text("Additional safety holders", style="bold yellow"))
+        for item in extra_holders:
+            if isinstance(item, Mapping):
+                console.print(Text(f"  {item.get('holder_id', 'unknown')}: {item.get('reason', 'unknown reason')}"))
+    unresolved = recovery.get("requests") or []
+    if unresolved:
+        table = Table(title="Unresolved Inference Requests", box=box.SIMPLE, pad_edge=False, expand=True)
+        for name in ("Request", "Phase", "Model", "Elapsed", "Failure", "Recommendation"):
+            table.add_column(name, overflow="fold")
+        for item in unresolved:
+            if not isinstance(item, Mapping):
+                continue
+            details = item.get("details") if isinstance(item.get("details"), Mapping) else {}
+            table.add_row(str(item.get("request_id") or "—"), str(item.get("phase") or "unknown"),
+                          str(item.get("model") or "—"), str(details.get("elapsed_seconds") or "—"),
+                          str(details.get("failure_kind") or "—"),
+                          str(details.get("recovery_recommendation") or "Verify upstream termination"))
+        console.print(table)
+
+
+def render_inference_status(data: Mapping[str, Any], *, as_json: bool = False,
+                            stream: Optional[TextIO] = None, color: Optional[str] = None,
+                            width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    classification = str(safe.get("classification", "unavailable"))
+    heading = Text("Inference Activity  ")
+    heading.append(classification.upper(), style=_status_style(classification))
+    console.print(heading)
+    _table("Coverage", [("Evidence", safe.get("coverage", "unknown")),
+                         ("Managed active / pending", f"{safe.get('active_count', '—')} / {safe.get('pending_count', '—')}"),
+                         ("Physical GPU idle proven", safe.get("physical_gpu_idle_proven", False)),
+                         ("Reason codes", ", ".join(safe.get("reason_codes") or []) or "None")], console=console)
+    requests = safe.get("unresolved_requests") or []
+    if requests:
+        table = Table(title="Unresolved Requests", box=box.SIMPLE, pad_edge=False, expand=True)
+        for col in ("Request", "Phase", "Model", "Updated"):
+            table.add_column(col, overflow="fold")
+        for item in requests:
+            table.add_row(str(item.get("request_id", "—")), str(item.get("phase", "unknown")),
+                          str(item.get("model") or "—"), str(item.get("updated_at") or "—"))
+        console.print(table)
+
+
+def render_maintenance_status(data: Mapping[str, Any], *, as_json: bool = False,
+                              stream: Optional[TextIO] = None, color: Optional[str] = None,
+                              width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    state = str(safe.get("state", "unavailable"))
+    heading = Text("GPU Maintenance  ")
+    heading.append(state.replace("_", " ").upper(), style=_status_style(state))
+    console.print(heading)
+    _table("Session", [(key.replace("_", " ").title(), safe.get(key, "—")) for key in
+                        ("owner", "operation_id", "session_id", "expires_at", "registered_process_count",
+                         "recovery_required_reason") if key in safe], console=console)
+    restoration = safe.get("restoration")
+    if isinstance(restoration, Mapping):
+        _table("Restoration Evidence", [(str(key).replace("_", " ").title(), value)
+                                          for key, value in restoration.items()], console=console)
+    if state == "recovery_required":
+        console.print(Text('Verify external process termination and GPU restoration, then use '
+                           '"rc maintenance reconcile -f -r \"reason\"".', style="bold yellow"))
+
+
+def render_maintenance_reconcile_result(data: Mapping[str, Any], *, as_json: bool = False,
+                                        stream: Optional[TextIO] = None, color: Optional[str] = None,
+                                        width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    result = str(safe.get("status") or safe.get("classification") or "unknown")
+    title = Text("Maintenance Reconciliation  ")
+    title.append(result.upper(), style=_status_style(result))
+    console.print(title)
+    disposition = safe.get("disposition") if isinstance(safe.get("disposition"), Mapping) else {}
+    rows = [(key.replace("_", " ").title(), value) for key, value in safe.items()
+            if key in {"operation_id", "session_id", "reason", "exit_code", "miner_restart_eligible"}]
+    rows.extend((key.replace("_", " ").title(), value) for key, value in disposition.items()
+                if key in {"operation_id", "session_id", "miner_restart_eligible", "restart_not_before"})
+    _table("Disposition", rows, console=console)
+
+
+def render_recovery_assessment(data: Mapping[str, Any], *, as_json: bool = False,
+                               stream: Optional[TextIO] = None, color: Optional[str] = None,
+                               width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    classification = str(safe.get("classification", "blocked"))
+    heading = Text("Recovery Assessment  ")
+    heading.append(classification.upper(), style=_status_style(classification))
+    console.print(heading)
+    _table("Evidence", [("Mode", safe.get("assessment_mode", "unknown")),
+                         ("Coordinator reachable", safe.get("service_reachable", False)),
+                         ("Automatic recovery available", safe.get("automatic_recovery_available", False)),
+                         ("Reason codes", ", ".join(safe.get("reason_codes") or []) or "None")], console=console)
+    for action in safe.get("recommended_actions") or []:
+        console.print(Text(f"Next  {action}", style="bold cyan"))
+    inference = safe.get("inference")
+    if isinstance(inference, Mapping):
+        console.print(Text(f"Inference evidence: {inference.get('classification')} / coverage {inference.get('coverage')}"))
+
+
+def render_telemetry_result(data: Mapping[str, Any], *, as_json: bool = False,
+                            stream: Optional[TextIO] = None, color: Optional[str] = None,
+                            width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    console.print(Text("Resource Telemetry", style="bold"))
+    _table("System", [("CPU utilization", f"{safe.get('cpu_utilization_pct', 'Unavailable')}%"),
+                       ("Gateway", "Online" if safe.get("gateway", {}).get("online") else "Offline")], console=console)
+    gpus = safe.get("gpus") or []
+    if gpus:
+        table = Table(title="GPU", box=box.SIMPLE, pad_edge=False, expand=True)
+        for column in ("Device", "Utilization %", "VRAM Used / Total MiB", "Power W"):
+            table.add_column(column, overflow="fold")
+        for gpu in gpus:
+            table.add_row(str(gpu.get("device_id", "—")), str(gpu.get("utilization_pct", "—")),
+                          f"{gpu.get('memory_used_mb', '—')} / {gpu.get('memory_total_mb', '—')}",
+                          str(gpu.get("power_draw_w", "—")))
+        console.print(table)
+    miner = safe.get("managed_miner")
+    if isinstance(miner, Mapping):
+        _table("Managed Miner", [("State", miner.get("state", "unknown")),
+                                  ("PID", miner.get("pid", "—")),
+                                  ("Ownership", "Verified" if miner.get("ownership_verified") else
+                                   miner.get("ownership_note", "Unverified"))], console=console)
+
+
+def render_setup_result(data: Mapping[str, Any], *, as_json: bool = False,
+                        stream: Optional[TextIO] = None, color: Optional[str] = None,
+                        width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    status = str(safe.get("status") or "unknown")
+    console.print(Text(f"Resource Coordinator Setup  {status.upper()}", style=_status_style(status)))
+    _table("Result", [(str(key).replace("_", " ").title(), value)
+                       for key, value in safe.items()
+                       if key in {"mode", "startup_mode", "applied", "authoritative", "receipt"}], console=console)
+    blockers = safe.get("blockers") or safe.get("errors") or []
+    if blockers:
+        console.print(Text("Blockers", style="bold red"))
+        for blocker in blockers:
+            console.print(Text(f"  {blocker}", style="red"))
+    changes = safe.get("changes") or []
+    if changes:
+        console.print(Text("Changes", style="bold cyan"))
+        for change in changes:
+            console.print(Text(f"  {change}"))
+
+
+def render_preflight_result(data: Mapping[str, Any], *, as_json: bool = False,
+                            stream: Optional[TextIO] = None, color: Optional[str] = None,
+                            width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    status = str(safe.get("status") or ("passed" if safe.get("passed") else "blocked"))
+    console.print(Text(f"Preflight  {status.upper()}", style=_status_style(status)))
+    for message in safe.get("errors", safe.get("messages", [])) or []:
+        console.print(Text(f"  {message}", style="red" if str(message).startswith("ERROR") else "yellow"))
+
+
+def render_acceptance_result(data: Mapping[str, Any], *, as_json: bool = False,
+                             stream: Optional[TextIO] = None, color: Optional[str] = None,
+                             width: Optional[int] = None) -> None:
+    if as_json:
+        emit_json(data, stream=stream)
+        return
+    safe = _redact(data)
+    console = make_console(color=color, stream=stream, width=width)
+    summary = safe.get("summary") if isinstance(safe.get("summary"), Mapping) else {}
+    status = "passed" if summary.get("all_passed") else "failed"
+    console.print(Text(f"Acceptance  {status.upper()}", style=_status_style(status)))
+    _table("Trials", [("Passed", summary.get("passed", "—")), ("Failed", summary.get("failed", "—")),
+                       ("Mode", safe.get("mode", "unknown"))], console=console)

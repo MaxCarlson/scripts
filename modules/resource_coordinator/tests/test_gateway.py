@@ -802,7 +802,11 @@ async def test_real_httpx_model_load_read_timeout_and_runtime_measurements(tmp_p
         assert record.details["upstream_elapsed_seconds"] >= 0.18
         assert recovery_events == []
 
-        await asyncio.sleep(0.05)
+        restart_deadline = asyncio.get_running_loop().time() + 1.0
+        while asyncio.get_running_loop().time() < restart_deadline:
+            if (await system.supervisors["krig"].status()).state == ProcessState.RUNNING:
+                break
+            await asyncio.sleep(0.01)
         assert (await system.supervisors["krig"].status()).state == ProcessState.RUNNING
         assert backend.generation == 2
     finally:
@@ -1283,6 +1287,198 @@ async def test_gateway_coordinator_status_endpoint(mock_gateway):
     data = resp.json()
     assert data["status"] == "online"
     assert "gpu_inference" in data
+
+
+@pytest.mark.asyncio
+async def test_status_preserves_safe_diagnostics_and_all_sanitized_inhibition_holders(tmp_path):
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+
+    journal = tmp_path / "coordinator-state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(
+        journal, "request-safe-fields", "gpu.inference", RequestPhase.UNCERTAIN,
+        details={"outcome": "timeout", "upstream_elapsed_seconds": 121.2,
+                 "timeout_semantics": "read inactivity", "prompt": "must not leak"},
+    )
+    gateway = LMStudioGateway(state_persistence_path=str(journal))
+    await gateway.lease_mgr.inhibit_restart(
+        "gpu.inference", "primary uncertain request", "primary-holder",
+        {"request_id": "request-safe-fields", "secret_payload": "nope"},
+    )
+    await gateway.lease_mgr.inhibit_restart(
+        "gpu.inference", "secondary uncertain request", "secondary-holder",
+        {"request_id": "secondary", "token": "nope"},
+    )
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gateway.create_app()), base_url="http://gateway"
+    ) as client:
+        response = await client.get("/_coordinator/status")
+    assert response.status_code == 200
+    body = response.json()
+    inhibition = body["gpu_inference"]["inhibition"]
+    assert inhibition["holder_id"] == "primary-holder"
+    assert inhibition["details"]["additional_uncertain_holders"][0]["holder_id"] == "secondary-holder"
+    request_details = body["gpu_inference"]["recovery"]["requests"][0]["details"]
+    assert request_details["outcome"] == "timeout"
+    assert request_details["upstream_elapsed_seconds"] == 121.2
+    assert request_details["timeout_semantics"] == "read inactivity"
+    assert "prompt" not in response.text and "secret_payload" not in response.text and "nope" not in response.text
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_inference_and_recovery_read_only_routes_are_available_without_managed_service():
+    gateway = LMStudioGateway(standalone=True)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gateway.create_app()), base_url="http://gateway"
+    ) as client:
+        inference = await client.get("/_coordinator/inference/status")
+        recovery = await client.get("/_coordinator/recovery/assessment")
+    assert inference.status_code == recovery.status_code == 200
+    assert inference.json()["classification"] == "unavailable"
+    assert inference.json()["coverage"] == "unknown"
+    assert recovery.json()["assessment_mode"] == "offline_diagnostic_only"
+    assert recovery.json()["classification"] == "blocked"
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_recovery_route_requires_operator_authentication(tmp_path):
+    from resource_coordinator.config import CoordinatorConfig, PolicyConfig, ProcessConfig, ServiceConfig, build_system
+    from resource_coordinator.core.durable_state import StateCodec
+    from resource_coordinator.core.service import CoordinatorService
+
+    journal = tmp_path / "state.json"
+    StateCodec.initialize(journal)
+    StateCodec.record_request_phase(journal, "req-auto", "gpu.inference", "reserved",
+                                    details={"forwarded": False})
+    StateCodec.record_inhibition(journal, "gpu.inference", "uncertain", "req-auto")
+    config = CoordinatorConfig(
+        service=ServiceConfig(state_persistence_path=str(journal)),
+        processes={"krig": ProcessConfig(name="krig", backend="fake")},
+        policies=[PolicyConfig(name="inference", trigger_event="lmstudio.inference_requested",
+                               target_process="krig", resource="gpu.inference")],
+    )
+    system = build_system(config, use_fake_processes=True)
+    service = CoordinatorService(system)
+    assert await service.start()
+    system.gateway.recovery_token = "test-recovery-token"
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=system.gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        rejected = await client.post("/_coordinator/recovery/auto", json={})
+        accepted = await client.post(
+            "/_coordinator/recovery/auto", json={},
+            headers={"Authorization": "Bearer test-recovery-token"},
+        )
+    assert rejected.status_code == 403
+    assert accepted.status_code == 200
+    assert accepted.json()["status"] == "reconciled"
+    await service.stop()
+
+
+@pytest.mark.asyncio
+async def test_pre_dispatch_cancellation_is_not_falsely_recorded_as_protocol_terminal(tmp_path):
+    from resource_coordinator.core.durable_state import RequestPhase, StateCodec
+
+    journal = tmp_path / "cancelled-before-send.json"
+    StateCodec.initialize(journal)
+    gateway = LMStudioGateway(state_persistence_path=str(journal), standalone=True)
+
+    async def veto_before_dispatch(*_args, **_kwargs):
+        raise VetoOperation("test cancellation before dispatch")
+
+    gateway.dispatcher.emit_blocking = veto_before_dispatch
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gateway.create_app(), raise_app_exceptions=False),
+        base_url="http://gateway",
+    ) as client:
+        await client.post("/v1/chat/completions", json={"model": "test", "messages": []})
+
+    request = next(iter(StateCodec.load(journal).requests.values()))
+    assert request.phase == RequestPhase.RECONCILED.value
+    assert request.details["reconciliation_disposition"] == "not_forwarded_verified"
+    assert request.details["source_phase"] == RequestPhase.RESERVED.value
+    assert not gateway.lease_mgr.is_restart_inhibited("gpu.inference")
+    await gateway.close()
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_observation_from_wrong_runtime_is_not_counted_as_coverage():
+    from types import SimpleNamespace
+
+    class Observer:
+        async def observe(self, *, runtime_identity):
+            return {"status": "available", "coverage": "complete", "observed_at": time.time(),
+                    "runtime_identity": {"runtime_revision": "other-instance"}}
+
+    service = SimpleNamespace(runtime_identity={"runtime_revision": "configured-instance"},
+                               lmstudio_activity_observer=Observer())
+
+    result = await LMStudioGateway._lmstudio_activity_observation(service)
+
+    assert result == {"status": "unavailable", "reason_code": "observer_runtime_identity_mismatch"}
+
+
+@pytest.mark.asyncio
+async def test_lmstudio_observation_requires_valid_coverage_and_timestamp():
+    from types import SimpleNamespace
+
+    class Observer:
+        async def observe(self, *, runtime_identity):
+            return {"status": "available", "coverage": "complete", "runtime_identity": runtime_identity}
+
+    service = SimpleNamespace(runtime_identity={"runtime_revision": "configured-instance"},
+                               lmstudio_activity_observer=Observer())
+
+    result = await LMStudioGateway._lmstudio_activity_observation(service)
+
+    assert result == {"status": "unavailable", "reason_code": "observer_observation_metadata_missing"}
+
+
+@pytest.mark.asyncio
+async def test_stale_lmstudio_observation_is_not_counted_as_coverage():
+    from types import SimpleNamespace
+
+    class Observer:
+        async def observe(self, *, runtime_identity):
+            return {"status": "available", "coverage": "complete", "observed_at": time.time() - 60,
+                    "runtime_identity": runtime_identity}
+
+    service = SimpleNamespace(runtime_identity={"runtime_revision": "configured-instance"},
+                               lmstudio_activity_observer=Observer())
+
+    result = await LMStudioGateway._lmstudio_activity_observation(service)
+
+    assert result == {"status": "unavailable", "reason_code": "observer_observation_stale"}
+
+
+@pytest.mark.asyncio
+async def test_system_status_reports_corrupt_gaming_journal_as_unavailable_not_500(tmp_path):
+    from types import SimpleNamespace
+
+    journal = tmp_path / "corrupt-state.json"
+    journal.write_text("not-json", encoding="utf-8")
+    gateway = LMStudioGateway(state_persistence_path=str(journal))
+    service = SimpleNamespace(
+        system=SimpleNamespace(
+            supervisors={},
+            config=SimpleNamespace(service=SimpleNamespace(state_persistence_path=str(journal))),
+            lease_mgr=gateway.lease_mgr,
+        ),
+        state=SimpleNamespace(value="ready"), is_ready=True, runtime_identity={},
+        stop_miner_on_shutdown=False,
+        maintenance_manager=SimpleNamespace(status=lambda: {"state": "idle"}),
+    )
+    gateway.set_service(service)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=gateway.create_app(service)), base_url="http://gateway"
+    ) as client:
+        response = await client.get("/_coordinator/status")
+    assert response.status_code == 200
+    assert response.json()["gaming"]["state"] == "unavailable"
+    assert response.json()["gaming"]["status"] == "unavailable"
+    await gateway.close()
 
 
 @pytest.mark.asyncio

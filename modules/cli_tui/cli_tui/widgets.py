@@ -1,8 +1,14 @@
 from __future__ import annotations
 
 import curses
-from typing import Any, List, Sequence, Tuple
+from pathlib import Path
+from typing import Any, List, Optional, Sequence, Tuple
 
+from .completion import (
+    complete_path_prefix,
+    extract_token_at_cursor,
+    format_completed_token,
+)
 from .schema import CliArgument
 
 
@@ -96,7 +102,12 @@ class ChoiceWidget(BaseWidget):
 class TextWidget(BaseWidget):
     """Single-line text input field."""
 
-    def __init__(self, arg: CliArgument, value: Any) -> None:
+    def __init__(
+        self,
+        arg: CliArgument,
+        value: Any,
+        working_dir: Optional[Path | str] = None,
+    ) -> None:
         if isinstance(value, (list, tuple)) and not value:
             display_val = ""
         elif value is None or str(value) == "[]":
@@ -104,8 +115,74 @@ class TextWidget(BaseWidget):
         else:
             display_val = str(value)
         super().__init__(arg, display_val)
+        self.working_dir: Optional[Path | str] = working_dir
         self.cursor_pos: int = len(self.value)
         self._scroll_start: int = 0
+        self._completion_matches: List[str] = []
+        self._completion_index: int = -1
+        self._completion_span: Tuple[int, int] = (0, 0)
+        self._completion_quote: Optional[str] = None
+        self._completion_empty: bool = False
+
+    @property
+    def _is_multi_token(self) -> bool:
+        return (
+            self.arg.action_type in ("append", "extend")
+            or self.arg.nargs in ("+", "*")
+            or isinstance(self.arg.nargs, int)
+        )
+
+    @property
+    def completion_status(self) -> str:
+        """Return compact status of the active tab-completion cycle."""
+        if self._completion_matches and self._completion_index >= 0:
+            return f"{self._completion_index + 1}/{len(self._completion_matches)}"
+        if self._completion_empty:
+            return "No matches"
+        return ""
+
+    def _reset_completion(self) -> None:
+        self._completion_matches = []
+        self._completion_index = -1
+        self._completion_span = (0, 0)
+        self._completion_quote = None
+        self._completion_empty = False
+
+    def _apply_tab_completion(self, *, reverse: bool = False) -> bool:
+        multi = self._is_multi_token
+        if not self._completion_matches:
+            start, end, prefix, quote_char = extract_token_at_cursor(
+                self.value,
+                self.cursor_pos,
+                is_multi_token=multi,
+            )
+            matches = complete_path_prefix(prefix, working_dir=self.working_dir)
+            if not matches:
+                self._completion_empty = True
+                return True
+            self._completion_matches = matches
+            self._completion_span = (start, end)
+            self._completion_quote = quote_char
+            self._completion_index = len(matches) - 1 if reverse else 0
+            self._completion_empty = False
+        else:
+            step = -1 if reverse else 1
+            self._completion_index = (
+                self._completion_index + step
+            ) % len(self._completion_matches)
+
+        candidate = self._completion_matches[self._completion_index]
+        formatted = format_completed_token(
+            candidate,
+            is_multi_token=multi,
+            quote_char=self._completion_quote,
+        )
+        start, end = self._completion_span
+        self.value = self.value[:start] + formatted + self.value[end:]
+        new_end = start + len(formatted)
+        self._completion_span = (start, new_end)
+        self.cursor_pos = new_end
+        return True
 
     def set_cursor_from_click(self, char_offset: int) -> None:
         """Position cursor based on a mouse click within the text brackets."""
@@ -129,6 +206,14 @@ class TextWidget(BaseWidget):
             return False
 
         # In editing mode:
+        btab_key = getattr(curses, "KEY_BTAB", 353)
+        if key == 9:  # Tab
+            return self._apply_tab_completion(reverse=False)
+        elif key in (btab_key, 353):  # Shift+Tab
+            return self._apply_tab_completion(reverse=True)
+
+        self._reset_completion()
+
         if key in (10, 13, 27):  # Enter or Esc ends editing mode
             self.is_editing = False
             return True
@@ -340,7 +425,12 @@ class MultiChoiceWidget(BaseWidget):
         return "\n".join(self.render_lines(width, is_focused))
 
 
-def create_widget_for_arg(arg: CliArgument, value: Any) -> BaseWidget:
+def create_widget_for_arg(
+    arg: CliArgument,
+    value: Any,
+    *,
+    working_dir: Optional[Path | str] = None,
+) -> BaseWidget:
     """Factory creating appropriate widget for given CliArgument."""
     if arg.action_type in ("store_true", "store_false", "boolean_optional"):
         return BooleanWidget(arg, value)
@@ -351,4 +441,4 @@ def create_widget_for_arg(arg: CliArgument, value: Any) -> BaseWidget:
             return MultiChoiceWidget(arg, options=arg.choices, value=value)
         return ChoiceWidget(arg, value)
     else:
-        return TextWidget(arg, value)
+        return TextWidget(arg, value, working_dir=working_dir)

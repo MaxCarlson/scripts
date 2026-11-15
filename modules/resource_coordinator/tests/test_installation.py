@@ -1046,6 +1046,53 @@ def test_task_restore_rejects_untrusted_xml_and_accepts_owned_launcher(tmp_path,
     assert len(calls) == 1
 
 
+@pytest.mark.parametrize(("status", "expected"), [("healthy", 0), ("degraded", 1), ("blocked", 2),
+                                                    ("failed", 2), ("error", 2)])
+def test_doctor_exit_codes_follow_health_classification(monkeypatch, status, expected):
+    from types import SimpleNamespace
+    import resource_coordinator.installation as mod
+
+    class Manager:
+        def __init__(self, *_args):
+            pass
+
+        def doctor(self):
+            return {"status": status}
+
+    monkeypatch.setattr(mod.InstallationPaths, "discover", staticmethod(lambda: object()))
+    monkeypatch.setattr(mod, "_powershell_backend", lambda _paths: object())
+    monkeypatch.setattr(mod, "ManagedInstallation", Manager)
+    args = SimpleNamespace(command="doctor", json=True)
+    assert mod.handle_installation_command(args) == expected
+
+
+@pytest.mark.parametrize("command", ["setup", "repair", "teardown", "startup"])
+@pytest.mark.parametrize("status", ["blocked", "recovery-required", "failed", "error"])
+def test_installation_mutation_reports_blocked_results_as_failure(monkeypatch, command, status):
+    from types import SimpleNamespace
+    import resource_coordinator.installation as mod
+
+    class Manager:
+        def __init__(self, *_args):
+            pass
+
+        def setup(self, **_kwargs):
+            return {"status": status}
+
+        def teardown(self, **_kwargs):
+            return {"status": status}
+
+        def startup(self, *_args, **_kwargs):
+            return {"status": status}
+
+    monkeypatch.setattr(mod.InstallationPaths, "discover", staticmethod(lambda: object()))
+    monkeypatch.setattr(mod, "_powershell_backend", lambda _paths: object())
+    monkeypatch.setattr(mod, "ManagedInstallation", Manager)
+    args = SimpleNamespace(command=command, json=True, apply=False, non_interactive=True,
+                           startup_mode="logon", startup_command="enable")
+    assert mod.handle_installation_command(args) == 1
+
+
 def test_windows_task_transport_keeps_large_payload_out_of_process_command_line(tmp_path, monkeypatch):
     import subprocess
     import resource_coordinator.installation as mod

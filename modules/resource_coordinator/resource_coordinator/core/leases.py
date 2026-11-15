@@ -173,12 +173,106 @@ class LeaseManager:
         self._condition = asyncio.Condition(self._lock)
         self.restarts_blocked = False
         self._gpu_maintenance_owner: Optional[str] = None
+        self._gpu_recovery_fence: Optional[Dict[str, Any]] = None
+        self._state_generation = 0
         self._monotonic_clock = monotonic_clock
         self._sleep = sleep
 
     def set_resource_cooldown(self, resource: str, cooldown_seconds: float) -> None:
         """Set a specific cooldown duration for a named resource."""
         self._resource_cooldowns[resource] = max(0.0, cooldown_seconds)
+
+    @property
+    def state_generation(self) -> int:
+        return self._state_generation
+
+    def _recovery_fence_active_locked(self) -> bool:
+        fence = self._gpu_recovery_fence
+        if fence is None:
+            return False
+        if fence["expires_at"] <= self._monotonic_clock():
+            self._gpu_recovery_fence = None
+            self._state_generation += 1
+            self._condition.notify_all()
+            return False
+        return True
+
+    async def acquire_gpu_recovery_fence(
+        self, operation_id: str, *, target_holders: list[str], ttl_seconds: float = 15.0
+    ) -> Optional[Dict[str, Any]]:
+        """Close GPU admission for a bounded recovery transaction without holding the lock during probes."""
+        if not operation_id or not target_holders or len(target_holders) > 128:
+            raise ValueError("Recovery operation and bounded holder identities are required")
+        if not math.isfinite(ttl_seconds) or not 0 < ttl_seconds <= 60:
+            raise ValueError("Recovery fence lifetime must be between 0 and 60 seconds")
+        async with self._condition:
+            if self._recovery_fence_active_locked() or self._gpu_maintenance_owner is not None or self.restarts_blocked:
+                return None
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            if any(self.active_count(name) or self.pending_count(name) for name in resources if _is_gpu_resource(name)):
+                return None
+            fence_id = uuid.uuid4().hex
+            self._state_generation += 1
+            fence = {
+                "fence_id": fence_id,
+                "operation_id": operation_id,
+                "target_holders": list(dict.fromkeys(target_holders)),
+                "expires_at": self._monotonic_clock() + ttl_seconds,
+                "post_fence_generation": self._state_generation,
+            }
+            self._gpu_recovery_fence = fence
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            for resource in resources:
+                if _is_gpu_resource(resource):
+                    self._cancel_cooldown_locked(resource)
+            self._condition.notify_all()
+            return dict(fence)
+
+    async def validate_gpu_recovery_fence(self, fence_id: str, generation: int) -> bool:
+        async with self._condition:
+            fence = self._gpu_recovery_fence
+            if self._recovery_fence_active_locked() is False or fence is None:
+                return False
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            return bool(
+                fence["fence_id"] == fence_id
+                and fence["post_fence_generation"] == generation
+                and self._state_generation == generation
+                and self._gpu_maintenance_owner is None
+                and not any(self.active_count(name) or self.pending_count(name)
+                            for name in resources if _is_gpu_resource(name))
+            )
+
+    async def commit_under_gpu_recovery_fence(
+        self, fence_id: str, generation: int, commit: Callable[[], Any]
+    ) -> Any:
+        """Run the short durable commit under arbitration lock after final fence validation."""
+        async with self._condition:
+            fence = self._gpu_recovery_fence
+            if fence is None or not self._recovery_fence_active_locked():
+                raise RuntimeError("Recovery fence expired before commit")
+            if (fence["fence_id"] != fence_id or self._state_generation != generation
+                    or fence["post_fence_generation"] != generation or self._gpu_maintenance_owner is not None):
+                raise RuntimeError("Recovery fence changed before commit")
+            resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
+            if any(self.active_count(name) or self.pending_count(name)
+                   for name in resources if _is_gpu_resource(name)):
+                raise RuntimeError("GPU claims appeared before recovery commit")
+            return commit()
+
+    async def release_gpu_recovery_fence(
+        self, fence_id: str, *, cooldown_resource: Optional[str] = None
+    ) -> bool:
+        async with self._condition:
+            if self._gpu_recovery_fence is None or self._gpu_recovery_fence["fence_id"] != fence_id:
+                return False
+            self._gpu_recovery_fence = None
+            self._state_generation += 1
+            if cooldown_resource is not None and not self.is_restart_inhibited(cooldown_resource) \
+                    and not self.active_count(cooldown_resource) and not self.pending_count(cooldown_resource):
+                self._start_cooldown_locked(cooldown_resource)
+            self._condition.notify_all()
+            return True
 
     def get_resource_cooldown(self, resource: str) -> float:
         """Get the configured cooldown duration for a resource."""
@@ -191,6 +285,7 @@ class LeaseManager:
         by operator inhibition recovery; a terminal service needs reconciliation.
         """
         self.restarts_blocked = True
+        self._state_generation += 1
         tasks = list(self._cooldown_tasks.values())
         resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
         for resource in resources:
@@ -227,7 +322,8 @@ class LeaseManager:
         if not holder_id:
             raise ValueError("Maintenance holder identity is required")
         async with self._condition:
-            if self._gpu_maintenance_owner is not None or self.restarts_blocked:
+            if (self._gpu_maintenance_owner is not None or self.restarts_blocked
+                    or self._recovery_fence_active_locked()):
                 return False
             resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
             gpu_resources = {resource for resource in resources if _is_gpu_resource(resource)}
@@ -242,6 +338,7 @@ class LeaseManager:
             if precondition is not None and not precondition():
                 return False
             self._gpu_maintenance_owner = holder_id
+            self._state_generation += 1
             for resource in gpu_resources:
                 self._cancel_cooldown_locked(resource)
             self._condition.notify_all()
@@ -256,6 +353,7 @@ class LeaseManager:
                 if self.active_count(cooldown_resource) or self.pending_count(cooldown_resource):
                     raise RuntimeError("Cannot finish GPU maintenance while protected claims remain")
             self._gpu_maintenance_owner = None
+            self._state_generation += 1
             if cooldown_resource is not None:
                 self._start_cooldown_locked(cooldown_resource)
             self._condition.notify_all()
@@ -268,6 +366,7 @@ class LeaseManager:
             if self._gpu_maintenance_owner not in {None, holder_id}:
                 raise RuntimeError("A different maintenance owner already holds the GPU fence")
             self._gpu_maintenance_owner = holder_id
+            self._state_generation += 1
             resources = self.tracked_resources() | {"gpu.inference", "gpu.model_loading"}
             for resource in resources:
                 if _is_gpu_resource(resource):
@@ -315,7 +414,9 @@ class LeaseManager:
     ) -> bool:
         """Run one idle action while reservations cannot cross the final safety check."""
         async with self._condition:
-            if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
+            if _is_gpu_resource(resource) and (
+                self._gpu_maintenance_owner is not None or self._recovery_fence_active_locked()
+            ):
                 return False
             resources = (
                 self.tracked_resources()
@@ -361,8 +462,10 @@ class LeaseManager:
                 additional = previous.details.setdefault("additional_uncertain_holders", [])
                 if not any(item.get("holder_id") == holder_id for item in additional):
                     additional.append(inhibition.to_dict())
+                    self._state_generation += 1
                 return previous
             self._inhibitions[resource] = inhibition
+            self._state_generation += 1
 
         logger.warning(
             "Restart inhibited for resource '%s' (holder=%s): %s",
@@ -397,6 +500,7 @@ class LeaseManager:
                 before_clear()
             removed = self._inhibitions.pop(resource, None)
             if removed is not None:
+                self._state_generation += 1
                 logger.info(
                     "Restart inhibition cleared for resource '%s' via %s (previous reason: %s)",
                     resource,
@@ -467,6 +571,7 @@ class LeaseManager:
                     inhibited_at=current.inhibited_at,
                     details=details,
                 )
+            self._state_generation += 1
             if (
                 start_cooldown
                 and resource not in self._inhibitions
@@ -606,9 +711,12 @@ class LeaseManager:
         async with self._lock:
             if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
                 raise MaintenanceAdmissionBlocked("GPU admission is closed by an active maintenance session")
+            if _is_gpu_resource(resource) and self._recovery_fence_active_locked():
+                raise MaintenanceAdmissionBlocked("GPU admission is closed by an active recovery transaction")
             self._cancel_cooldown_locked(resource)
             self._pending[resource] = self._pending.get(resource, 0) + 1
             self._pending_reservations.setdefault(resource, []).append(reservation)
+            self._state_generation += 1
         try:
             await self.dispatcher.emit(
                 "resource.lease_requested",
@@ -631,6 +739,8 @@ class LeaseManager:
         async with self._condition:
             if _is_gpu_resource(resource) and self._gpu_maintenance_owner is not None:
                 raise MaintenanceAdmissionBlocked("GPU admission closed before lease activation")
+            if _is_gpu_resource(resource) and self._recovery_fence_active_locked():
+                raise MaintenanceAdmissionBlocked("GPU admission closed before recovery fence activation")
             while not self._can_grant_locked(resource, lease_type, reservation):
                 if reservation._is_closed:
                     raise RuntimeError("Reservation closed while waiting")
@@ -662,6 +772,7 @@ class LeaseManager:
                 metadata=reservation.metadata,
             )
             self._active.setdefault(resource, []).append(lease)
+            self._state_generation += 1
             # Publish ownership before callbacks can suspend or cancel promotion.
             reservation._lease = lease
             reservation._is_active = True
@@ -685,6 +796,7 @@ class LeaseManager:
                 else:
                     self._pending[resource] = current_pending
                 self._remove_pending_reservation_locked(reservation)
+                self._state_generation += 1
 
                 if not self._active.get(resource) and not self._pending.get(resource):
                     self._start_cooldown_locked(resource)
@@ -731,6 +843,7 @@ class LeaseManager:
             if lease not in active_list:
                 return
             active_list.remove(lease)
+            self._state_generation += 1
             if not active_list:
                 self._active.pop(resource, None)
 

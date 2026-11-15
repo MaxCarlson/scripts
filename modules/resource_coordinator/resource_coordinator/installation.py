@@ -2991,7 +2991,7 @@ def _powershell_backend(paths: InstallationPaths) -> WindowsStartupTaskBackend:
 def handle_installation_command(args: Any) -> int:
     """CLI entry point; command execution remains separate from core logic for testing."""
     from resource_coordinator.presentation import (
-        emit_json, render_health_result, render_recovery_result, render_result, render_startup_status,
+        emit_json, render_health_result, render_recovery_result, render_startup_status,
         render_upgrade_result,
     )
 
@@ -3004,7 +3004,7 @@ def handle_installation_command(args: Any) -> int:
             emit_json(result)
         else:
             render_upgrade_result(result)
-        return 1 if result.get("status") in {"blocked", "recovery-required"} else 0
+        return 1 if result.get("status") in {"blocked", "recovery-required", "failed", "error"} else 0
     if args.command == "recovery":
         result = manager.recovery(args.recovery_command, apply=getattr(args, "apply", False),
                                   non_interactive=getattr(args, "non_interactive", False))
@@ -3046,5 +3046,10 @@ def handle_installation_command(args: Any) -> int:
         elif args.command == "startup" and getattr(args, "startup_command", None) == "status":
             render_startup_status(result)
         else:
-            render_result(f"Resource Coordinator {args.command.title()}", result)
-    return 0
+            from resource_coordinator.presentation import render_setup_result
+            render_setup_result(result)
+    if args.command == "doctor":
+        return {"healthy": 0, "degraded": 1}.get(result.get("status"), 2)
+    if args.command in {"setup", "repair", "teardown", "startup"}:
+        return 1 if result.get("status") in {"blocked", "recovery-required", "failed", "error"} else 0
+    return 1 if result.get("status") in {"blocked", "failed", "error"} else 0

@@ -21,6 +21,7 @@
 
 ## Documentation Index
 
+- [CLI.md](CLI.md): Canonical `rc` command catalog, read-only assessment behavior, and operator reconciliation boundaries.
 - [HANDOFF.md](HANDOFF.md): Immediate state, branch info, active plans, risks, and next steps.
 - [MAINTENANCE_SESSIONS.md](MAINTENANCE_SESSIONS.md): Authenticated, durable external GPU maintenance protocol and Mining compatibility.
 - [plans/HANDOFF.md](plans/HANDOFF.md): Plan index and history.
