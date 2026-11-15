@@ -13,7 +13,11 @@ Describe 'vm_lab module' {
     New-Item -ItemType Directory -Path $testTemp -Force | Out-Null
 
     It 'parses module files cleanly with zero syntax errors' {
-        foreach ($file in @('vm_lab.psm1', 'Invoke-VmLab.ps1')) {
+        $filesToParse = @('vm_lab.psm1', 'Invoke-VmLab.ps1') + @(
+            Get-ChildItem -Path (Join-Path $PSScriptRoot '..\src') -Filter '*.ps1' -ErrorAction SilentlyContinue |
+                ForEach-Object { "src\$($_.Name)" }
+        )
+        foreach ($file in $filesToParse) {
             $full = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\$file"))
             $tokens = $null
             $errors = $null
@@ -482,13 +486,24 @@ Describe 'vm_lab module' {
             $singleRaw.TrimStart().StartsWith('[') | Should Be $true
         }
 
-        It 'detects existing VM name collision and propagates Get-VM permission errors' {
+        It 'detects existing VM name collision, unsafe existing VM paths, and propagates Get-VM permission errors' {
             $cfg = Get-VmLabTemplate -TemplateName 'windows11-h4'
             $cfg.vm_name = 'Managed-VM'
             $cfg.vm_root = Join-Path $testTemp 'collide_vm'
             $err1 = $null
             try { $null = Test-VmLabPlan -Config $cfg -ManifestRoot $Global:vmLabManifestRoot } catch { $err1 = $_.Exception.Message }
             $err1 | Should Match 'already exists'
+
+            # Unsafe/uninspectable ConfigurationLocation on an existing VM must block rather than silently pass
+            $Global:vmLabUnsafeVm = $Global:vmLabVms[0] | Select-Object *
+            $Global:vmLabUnsafeVm.ConfigurationLocation = '\\unc-server\share\unsafe-vm'
+            Mock -ModuleName vm_lab Get-VM { return @($Global:vmLabUnsafeVm) }
+            $cfg2 = Get-VmLabTemplate -TemplateName 'windows11-h4'
+            $cfg2.vm_name = 'Brand-New-VM'
+            $cfg2.vm_root = Join-Path $testTemp 'brand_new_vm'
+            $errUnsafe = $null
+            try { $null = Test-VmLabPlan -Config $cfg2 -ManifestRoot $Global:vmLabManifestRoot } catch { $errUnsafe = $_.Exception.Message }
+            $errUnsafe | Should Match 'Cannot safely verify path non-conflict'
 
             Mock -ModuleName vm_lab Get-VM { throw 'Access denied to Hyper-V' }
             $err2 = $null
