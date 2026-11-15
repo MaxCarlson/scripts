@@ -58,3 +58,17 @@ Result: **14 passed, exit 0**. JUnit output was generated in the ignored module-
 | WinError 206 actual upgrade cause | PARTIAL | Earlier harmless argument/path probes reproduced code 206; file-backed payload regression passed. | Root cause remains unverified until actual isolated upgrade path is run. |
 | Supervised H5 | NOT READY | Current status endpoint reports 0.11.3; merged source is 1.0.0. | Disposable acceptance, separately authorized deployment, runtime identity, safe preflight, abort/restoration plan, explicit one-run authorization. |
 | Unattended recovery | BLOCKED | Repeated known-process correlation is not complete attribution. | Keep disabled until authoritative execution-boundary evidence and separate approval. |
+
+## 2026-11-15 H4.5 implementation checkpoint
+
+| Gate | Result | New evidence | Remaining |
+|---|---|---|---|
+| Guest-only installer seam | PARTIAL | `InstallationRuntime`, isolated paths, test task identities, credential provider, observers, and mutation/fault hooks retain production defaults; installer/runtime regression tests passed. | Real guest ACL, Task Scheduler, service and UAC behavior remains untested. |
+| Lifecycle runner | PARTIAL | `install`, `upgrade`, `rollback`, `full`, and exact-manifest `cleanup`; source trees are version checked and hashed; five upgrade fault points are selectable; cleanup is verified per phase. | No actual Task Scheduler/service lifecycle execution. |
+| H4 runner/installer regression | PASS (focused) | Combined H4 runner, runtime injection, installation, and Windows helper transport selection: 134 passed, 3 skipped, 0 failed, exit 0. | Three opt-in task-mutation tests were skipped; pytest cache provider was disabled. |
+| Static checks | PASS (focused) | Ruff on changed implementation/tests, compileall, and `git diff --check` exited 0. | None for this focused selection. |
+| Isolated loopback listener ownership | PASS (fake-backed) | Runner probe is bounded and scoped to `127.0.0.1` plus the exact non-production phase port; tests reject unavailable inventory and unknown PID/create-time/executable owners. | Actual guest listener inventory remains unexecuted. |
+| WDDM regression | UNAVAILABLE | Historical 3/3 known-process PID/create-time/executable correlation retained unchanged. | Current test collection failed because `_ctypes` DLL initialization failed; no resampling was done. |
+| Actual guest lifecycle | NOT_TESTED | No separately identified and authorized disposable Windows guest was available. | Execute only on a separately authorized guest with checkpoint and exact cleanup manifest. |
+| H5 supervised maintenance | NOT READY | No production state was touched. | Requires guest acceptance, separately authorized deployment, exact running v1.0.0 identity, safe preflight, and one-run authorization. |
+| Unattended recovery | BLOCKED | Complete WDDM/execution-boundary attribution remains unproven. | Keep disabled; do not use idle or elapsed-time evidence as a substitute. |

@@ -2,6 +2,20 @@
 
 Date: 2026-11-12 (Pacific)
 
+## H4.5 full lifecycle acceptance infrastructure (2026-11-15)
+
+- [x] Verify the assigned H4 source checkpoint and V3 checksum in the isolated implementation worktree.
+- [x] Add an installation runtime seam for isolated paths, task identities, listener identity, credentials, process observations, clocks, and injected failures; production defaults and CLI construction remain unchanged.
+- [x] Add tests for production-identity fallthrough, guard requirements, isolated paths, task-name payloads, observer binding, and helper-root containment.
+- [x] Extend the H4 runner with install, upgrade, rollback, full lifecycle, and exact-manifest cleanup profiles; preflight remains the default and every guest mutation requires revalidated guest authorization/inventory.
+- [ ] Execute the real guest lifecycle against Task Scheduler/service processes; no separately authorized disposable Windows guest was available.
+- [x] Add a source-bundle and guest execution procedure; the runner records source-tree SHA-256 values and rejects source reparse points.
+- [ ] Complete installer-runtime pytest, WDDM pytest, Ruff, and full changed-code checks; collection/launcher failures are recorded in `STATUS.md`.
+- [x] `compileall` passed for changed installer, runner, and test files; runner acceptance tests passed 12/12; fake-module runtime isolation probe passed.
+- [ ] Execute actual guest lifecycle only if an independently identified guest and its scoped mutation authorization are available; otherwise record `NOT_TESTED`.
+- [x] Preserve WDDM 3/3 known-process correlation as historical evidence; do not repeat samples absent new evidence or claim complete attribution.
+- [ ] Commit and publish the H4.5 branch; Git exits `0xC0000142` before status/commit/push can run. Do not merge to `main`.
+
 ## Source merge
 
 - [x] Parts 2–3 candidate fast-forwarded to `main` at `0f983428c2a5e0ae02517f94dec6a38b1a4cec4b`.
@@ -51,6 +65,21 @@ Date: 2026-11-12 (Pacific)
 - [ ] Reproduce WinError 206 through the actual upgrade orchestration in that guest.
 - [ ] Demonstrate complete WDDM process coverage before enabling Case C or unattended recovery.
 - [x] Kept production installation, host task state, GPU settings, KRig, LM Studio, and WSL unchanged.
+
+## H4.5 guest-only installer lifecycle infrastructure (2026-11-15)
+
+- [x] Added guarded installation runtime injection for isolated task names, listener, test credentials, paths, observation callbacks, clocks, and fault injection while retaining production defaults.
+- [x] Preserved legacy installer call seams for production defaults after running the existing installation regressions.
+- [x] Added guest lifecycle runner profiles `install`, `upgrade`, `rollback`, `full`, and exact-manifest `cleanup`; default remains read-only preflight.
+- [x] Exposed five bounded existing upgrade fault checkpoints for rollback/full profiles.
+- [x] Added bounded exact-port listener ownership inventory; unknown listeners and unavailable inventory block installer mutation.
+- [x] Focused H4/installer/helper regression: 134 passed, 3 skipped, exit 0.
+- [x] Ruff, compilation, and scoped diff checks passed.
+- [ ] Run actual fresh install, upgrade, interruption, task/UAC and rollback scenarios on an independently authorized disposable Windows guest.
+- [ ] Identify the historical WinError 206 failing operation through the actual upgrade orchestration.
+- [ ] Confirm complete WDDM process attribution before enabling trusted Case C recovery.
+- [x] No production installation, task, process, GPU, LM Studio, or WSL state was modified.
+- [ ] Publish H4.5 branch after `.git` metadata access and intended remote ref can be verified; current sandbox blocks `FETCH_HEAD` writes and worktree upstream is stale.
 
 ## Follow-up disposition
 

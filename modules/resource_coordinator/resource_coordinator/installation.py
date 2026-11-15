@@ -20,9 +20,11 @@ import sys
 import tempfile
 import time
 import xml.etree.ElementTree as ET
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Any, Dict, List, Optional, Protocol
+from types import MappingProxyType
+from typing import Any, Callable, Dict, List, Mapping, Optional, Protocol
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -55,6 +57,104 @@ class InstallationError(RuntimeError):
 
 class ElevationRequired(InstallationError):
     """A Windows operation needs approval through UAC."""
+
+
+class InstallationCredentialProvider(Protocol):
+    """Credential operations scoped to one installation root."""
+
+    def ensure(self, token_path: Path) -> None: ...
+
+    def doctor(self, token_path: Path) -> Dict[str, Any]: ...
+
+    def load(self, token_path: Path) -> str: ...
+
+
+def _copy_task_names(value: Mapping[str, str]) -> Dict[str, str]:
+    expected = {"boot", "logon", "viewer"}
+    if set(value) != expected or any(not isinstance(name, str) or not name.strip() for name in value.values()):
+        raise InstallationError("Installation task identities are incomplete or invalid")
+    names = {key: value[key].strip() for key in expected}
+    if len(set(names.values())) != len(names):
+        raise InstallationError("Installation task identities must be unique")
+    return names
+
+
+@dataclass(frozen=True)
+class InstallationRuntime:
+    """Runtime dependencies for the installer; production callers use fixed defaults.
+
+    Non-production listener/task/credential identities require a guard callback.
+    The H4 runner supplies one that re-queries guest identity and ownership before
+    each mutation. The production CLI never accepts these values from arguments.
+    """
+
+    task_names: Mapping[str, str] = field(default_factory=lambda: dict(TASK_NAMES))
+    coordinator_url: str = COORDINATOR_URL
+    listen_host: str = "127.0.0.1"
+    listen_port: int = 1235
+    guest_mutation_guard: Optional[Callable[[], None]] = None
+    credential_provider: Optional[InstallationCredentialProvider] = None
+    process_is_alive: Optional[Callable[[int, float], Optional[bool]]] = None
+    listener_observer: Optional[Callable[[int, str], Dict[str, Any]]] = None
+    gpu_settings_observer: Optional[Callable[[], Optional[Dict[str, Optional[float]]]]] = None
+    fault_injector: Optional[Callable[[str], None]] = None
+    monotonic: Callable[[], float] = time.monotonic
+    sleep: Callable[[float], None] = time.sleep
+
+    def __post_init__(self) -> None:
+        names = _copy_task_names(self.task_names)
+        object.__setattr__(self, "task_names", MappingProxyType(names))
+        parts = urlsplit(self.coordinator_url)
+        if parts.scheme != "http" or parts.hostname not in {"127.0.0.1", "localhost"}:
+            raise InstallationError("Installer coordinator URL must be loopback HTTP")
+        url_port = parts.port or 80
+        if type(self.listen_port) is not int or not 1024 <= self.listen_port <= 65535:
+            raise InstallationError("Installer listener port must be in the non-privileged range")
+        if url_port != self.listen_port or self.listen_host not in {"127.0.0.1", "localhost"}:
+            raise InstallationError("Installer URL and listener identity do not match")
+        custom = (names != TASK_NAMES or self.coordinator_url != COORDINATOR_URL or
+                  self.listen_host != "127.0.0.1" or self.listen_port != 1235 or
+                  self.credential_provider is not None)
+        if custom and self.guest_mutation_guard is None:
+            raise InstallationError("Non-production installer identities require a guest mutation guard")
+        if custom and self.credential_provider is None:
+            raise InstallationError("Non-production installer identities require a test-scoped credential provider")
+        if custom and names == TASK_NAMES:
+            raise InstallationError("Non-production installer runtime must use H4-scoped task identities")
+        if custom and self.listen_port == 1235:
+            raise InstallationError("Disposable installer listener must not use the production Coordinator port")
+        if names != TASK_NAMES and any(not name.startswith("ResourceCoordinator-H4-") for name in names.values()):
+            raise InstallationError("Disposable task identities must use the H4-owned namespace")
+        if self.fault_injector is not None and self.guest_mutation_guard is None:
+            raise InstallationError("Installer fault injection requires a guest mutation guard")
+
+    def check_mutation(self) -> None:
+        if self.guest_mutation_guard is not None:
+            self.guest_mutation_guard()
+
+    def process_alive(self, pid: int, create_time: float) -> Optional[bool]:
+        observer = self.process_is_alive or _exact_process_is_alive
+        return observer(pid, create_time)
+
+    def listener_details(self) -> Dict[str, Any]:
+        if self.listener_observer is not None:
+            return self.listener_observer(self.listen_port, self.listen_host)
+        if self.listen_port == 1235 and self.listen_host == "127.0.0.1":
+            # Preserve the established no-argument patch seam used by existing
+            # installation callers and tests for the production listener.
+            return _listener_identity_details()
+        return _listener_identity_details(self.listen_port, self.listen_host)
+
+    def listener_identity(self) -> Optional[Dict[str, Any]]:
+        if self.listener_observer is None and self.listen_port == 1235 and self.listen_host == "127.0.0.1":
+            return _listener_identity()
+        details = self.listener_details()
+        identity = details.get("identity")
+        return identity if details.get("verified") and isinstance(identity, dict) else None
+
+    def gpu_settings(self) -> Optional[Dict[str, Optional[float]]]:
+        observer = self.gpu_settings_observer or _effective_gpu_settings
+        return observer()
 
 
 @dataclass(frozen=True)
@@ -97,6 +197,28 @@ class InstallationPaths:
             upgrade_policy=root / "upgrade-start-policy.json",
         )
 
+    @classmethod
+    def isolated(cls, *, root: Path, repository: Path, python: Path) -> "InstallationPaths":
+        """Build explicit test paths; unlike discover(), this never consults user-home config."""
+        base = root.expanduser().absolute()
+        repo = repository.expanduser().resolve()
+        py = python.expanduser().resolve()
+        return cls(
+            home=base,
+            repository=repo,
+            python=py,
+            root=base,
+            config=base / "config.yaml",
+            state=base / "coordinator_state.json",
+            token=base / "operator.token",
+            logs=base / "logs",
+            launcher=base / "start-coordinator-managed.ps1",
+            viewer=base / "view-krig-managed.ps1",
+            coordinator_log=base / "coordinator.log",
+            upgrade_receipt=base / "upgrade-receipt.json",
+            upgrade_policy=base / "upgrade-start-policy.json",
+        )
+
 
 @dataclass(frozen=True)
 class StartupTask:
@@ -134,6 +256,11 @@ def _is_reparse_point(path: Path) -> bool:
     except FileNotFoundError:
         return False
     return bool(attributes & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400))
+
+
+def _has_reparse_component(path: Path) -> bool:
+    candidate = Path(path).absolute()
+    return any(_is_reparse_point(part) for part in (candidate, *candidate.parents))
 
 
 def _clean_powershell_error(value: str) -> str:
@@ -308,8 +435,13 @@ def verify_legacy_evidence(evidence: Dict[str, Any], miner_name: Optional[str]) 
     return {"verified": True, "shutdown_verified": bool(miner_name), "reason": "Task engine and service ancestry verified"}
 
 
+def _is_coordinator_task_name(name: str, task_names: Mapping[str, str] = TASK_NAMES) -> bool:
+    return name in {task_names["boot"], task_names["logon"]}
+
+
 def _legacy_attribution(task: Optional[StartupTask], listener: Dict[str, Any], paths: InstallationPaths,
-                        miner_name: Optional[str]) -> Dict[str, Any]:
+                        miner_name: Optional[str],
+                        task_names: Mapping[str, str] = TASK_NAMES) -> Dict[str, Any]:
     if not task or not task.owned or not task.enabled or not _task_identity_valid(asdict(task)):
         return {"verified": False, "reason": "Scheduled Task ownership or principal is unverified"}
     if ";" in task.action:
@@ -320,7 +452,7 @@ def _legacy_attribution(task: Optional[StartupTask], listener: Dict[str, Any], p
     launcher = Path(match.group(1) or match.group(2))
     if not launcher.is_file():
         return {"verified": False, "reason": "Scheduled Task launcher is unavailable"}
-    if task.name not in {TASK_NAMES["boot"], TASK_NAMES["logon"]}:
+    if not _is_coordinator_task_name(task.name, task_names):
         return {"verified": False, "reason": "Scheduled Task name is not an owned coordinator task"}
     script = ("$ErrorActionPreference='Stop'; $s=New-Object -ComObject Schedule.Service; $s.Connect(); "
               f"$i=$s.GetFolder('\\').GetTask('{task.name}').GetInstances(0); "
@@ -422,7 +554,8 @@ def _task_identity_valid(task: Dict[str, Any]) -> bool:
     return identity == username or identity.endswith("\\" + username)
 
 
-def _validate_restore_task_definition(task: StartupTask, definition: str, managed_root: Path) -> None:
+def _validate_restore_task_definition(task: StartupTask, definition: str, managed_root: Path,
+                                      task_names: Mapping[str, str] = TASK_NAMES) -> None:
     """Reject task snapshots that do not point to a managed RC PowerShell launcher."""
     try:
         root = ET.fromstring(definition)
@@ -441,7 +574,7 @@ def _validate_restore_task_definition(task: StartupTask, definition: str, manage
     principal = principals[0]
     principal_values = {node.tag.rsplit("}", 1)[-1]: (node.text or "").strip()
                         for node in list(principal)}
-    if (task.name != TASK_NAMES.get(task.mode) or principal_values.get("RunLevel") != "HighestAvailable" or
+    if (task.name != task_names.get(task.mode) or principal_values.get("RunLevel") != "HighestAvailable" or
             (task.mode == "boot" and principal_values.get("LogonType") != "ServiceAccount") or
             (task.mode == "logon" and principal_values.get("LogonType") not in {"InteractiveToken", "Interactive"} ) or
             task.mode not in {"boot", "logon"}):
@@ -483,8 +616,9 @@ def _validate_restore_task_definition(task: StartupTask, definition: str, manage
         raise InstallationError("Task recovery launcher is missing its Resource Coordinator ownership marker")
 
 
-def render_launcher(paths: InstallationPaths) -> str:
+def render_launcher(paths: InstallationPaths, runtime: Optional[InstallationRuntime] = None) -> str:
     """Render the managed launcher while keeping all values as quoted literals."""
+    listener_port = (runtime or InstallationRuntime()).listen_port
     modules = paths.repository / "modules"
     python_path = os.pathsep.join(
         str(modules / part) for part in ("resource_coordinator", "llm_monitor")
@@ -514,7 +648,7 @@ def render_launcher(paths: InstallationPaths) -> str:
             f"$log = {_ps_single_quote(paths.coordinator_log)}",
             "foreach ($path in @($config, $python)) { if (-not (Test-Path -LiteralPath $path)) { throw \"Required RC path missing: $path\" } }",
             "$probe = [System.Net.Sockets.TcpClient]::new()",
-            "try { $connect = $probe.BeginConnect('127.0.0.1', 1235, $null, $null); if ($connect.AsyncWaitHandle.WaitOne(1000) -and $probe.Connected) { exit 0 } } finally { $probe.Dispose() }",
+            f"try {{ $connect = $probe.BeginConnect('127.0.0.1', {listener_port}, $null, $null); if ($connect.AsyncWaitHandle.WaitOne(1000) -and $probe.Connected) {{ exit 0 }} }} finally {{ $probe.Dispose() }}",
             f"$env:PYTHONPATH = {_ps_single_quote(python_path)}",
             "$env:RESOURCE_COORDINATOR_TOKEN_FILE = $token",
             "$env:RESOURCE_COORDINATOR_STATE_PATH = $state",
@@ -627,10 +761,24 @@ class WindowsStartupTaskBackend:
     """Manage only the named RC tasks, using the built-in ScheduledTasks module."""
 
     def __init__(self, *, powershell: Optional[str] = None, managed_root: Optional[Path] = None,
-                 interactive_user: Optional[str] = None):
+                 interactive_user: Optional[str] = None,
+                 task_names: Optional[Mapping[str, str]] = None,
+                 guest_mutation_guard: Optional[Callable[[], None]] = None):
         self.powershell = powershell or shutil.which("pwsh.exe") or shutil.which("powershell.exe") or "powershell.exe"
         self.managed_root_source = Path(managed_root or (Path.home() / ".resource_coordinator")).absolute()
         self.managed_root = self.managed_root_source.resolve()
+        self.task_names = _copy_task_names(TASK_NAMES if task_names is None else task_names)
+        self.guest_mutation_guard = guest_mutation_guard
+        if self.task_names != TASK_NAMES and guest_mutation_guard is None:
+            raise InstallationError("Non-production installer task identities require a guest mutation guard")
+        if guest_mutation_guard is not None and self.task_names == TASK_NAMES:
+            raise InstallationError("Guest installer mutations require H4-scoped task identities")
+        if self.task_names != TASK_NAMES and managed_root is None:
+            raise InstallationError("Non-production task identities require an explicit test-owned helper directory")
+        if self.task_names != TASK_NAMES and any(
+            not name.startswith("ResourceCoordinator-H4-") for name in self.task_names.values()
+        ):
+            raise InstallationError("Disposable task identities must use the H4-owned namespace")
         default_user = os.environ.get("USERDOMAIN", "")
         username = os.environ.get("USERNAME") or getpass.getuser()
         self.interactive_user = interactive_user or (f"{default_user}\\{username}" if default_user else username)
@@ -742,6 +890,10 @@ class WindowsStartupTaskBackend:
 
     def _run(self, payload: Dict[str, Any], *, elevated: bool = False,
              non_interactive: bool = False) -> subprocess.CompletedProcess[str]:
+        if payload.get("operation") not in {"status", "transport_probe"} and self.guest_mutation_guard:
+            self.guest_mutation_guard()
+        if self.task_names != TASK_NAMES and elevated and not self._admin():
+            raise ElevationRequired("Disposable guest task mutation requires an already elevated process; implicit UAC is disabled.")
         if os.name != "nt":
             raise InstallationError("Windows Scheduled Tasks are available only on Windows")
         if elevated and not self._admin() and non_interactive:
@@ -767,6 +919,7 @@ class WindowsStartupTaskBackend:
                 "$payload = Get-Content -LiteralPath $RequestPath -Raw | ConvertFrom-Json",
             )
             request = {**payload, "managed_root": str(self.managed_root), "interactive_user": self.interactive_user,
+                       "task_names": self.task_names,
                        "operation_id": operation_id, "result_path": str(output_path)}
             request_bytes = json.dumps(request, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             request_hash = hashlib.sha256(request_bytes).hexdigest()
@@ -930,7 +1083,7 @@ class WindowsStartupTaskBackend:
         enabled = snapshot.get("enabled")
         if not isinstance(definition, str) or type(enabled) is not bool:
             raise InstallationError("Scheduled Task recovery snapshot is invalid")
-        _validate_restore_task_definition(task, definition, self.managed_root)
+        _validate_restore_task_definition(task, definition, self.managed_root, self.task_names)
         self._run({"operation": "restore", "task_name": task.name,
                    "definition": definition, "enabled": enabled}, elevated=True,
                   non_interactive=non_interactive)
@@ -940,14 +1093,14 @@ class WindowsStartupTaskBackend:
             raise InstallationError(f"Unsupported startup mode: {mode}")
         self._run({"operation": "install", "mode": mode, "launcher": str(launcher)}, elevated=True,
                   non_interactive=non_interactive)
-        result = next((task for task in self.status() if task.name == TASK_NAMES[mode]), None)
+        result = next((task for task in self.status() if task.name == self.task_names[mode]), None)
         if result is None or not result.owned:
-            raise InstallationError(f"Scheduled Task {TASK_NAMES[mode]} was not installed as an RC-owned task")
+            raise InstallationError(f"Scheduled Task {self.task_names[mode]} was not installed as an RC-owned task")
         return result
 
     def install_viewer(self, launcher: Path) -> StartupTask:
         self._run({"operation": "install_viewer", "launcher": str(launcher)})
-        result = next((task for task in self.status() if task.name == TASK_NAMES["viewer"]), None)
+        result = next((task for task in self.status() if task.name == self.task_names["viewer"]), None)
         if result is None or not result.owned:
             raise InstallationError("Optional log viewer task was not installed as an RC-owned task")
         return result
@@ -978,10 +1131,104 @@ class WindowsStartupTaskBackend:
 
 class ManagedInstallation:
     def __init__(self, paths: InstallationPaths, task_backend: StartupTaskBackend,
-                 *, template: Optional[Path] = None):
+                 *, template: Optional[Path] = None, runtime: Optional[InstallationRuntime] = None):
         self.paths = paths
         self.task_backend = task_backend
+        self.runtime = runtime or InstallationRuntime()
         self.template = template or paths.repository / "modules" / "resource_coordinator" / "config.production-template.yaml"
+        if isinstance(task_backend, WindowsStartupTaskBackend):
+            if dict(task_backend.task_names) != dict(self.runtime.task_names):
+                raise InstallationError("Installation runtime and task backend identities do not match")
+        if self.runtime.guest_mutation_guard is not None:
+            self._validate_isolated_paths()
+            if isinstance(task_backend, WindowsStartupTaskBackend):
+                helper_root = task_backend.managed_root.resolve(strict=False)
+                install_root = paths.root.resolve(strict=False)
+                if _has_reparse_component(task_backend.managed_root_source):
+                    raise InstallationError("Disposable helper directory crosses a reparse point")
+                try:
+                    if os.path.commonpath((str(install_root), str(helper_root))) != str(install_root):
+                        raise InstallationError("Disposable helper directory escapes its test root")
+                except ValueError as exc:
+                    raise InstallationError("Disposable helper directory is on an unexpected volume") from exc
+
+    def _validate_isolated_paths(self) -> None:
+        """Require every mutable installation path to remain below the guest test root."""
+        root = self.paths.root.resolve(strict=False)
+        repository = self.paths.repository.resolve()
+        if _has_reparse_component(self.paths.root):
+            raise InstallationError("Disposable installation root crosses a reparse point")
+        try:
+            shared = os.path.commonpath((str(root), str(repository)))
+            if shared in {str(root), str(repository)}:
+                raise InstallationError("Disposable test root overlaps the source checkout")
+        except ValueError as exc:
+            raise InstallationError("Disposable test root and source checkout are on incompatible volumes") from exc
+        mutable = (self.paths.config, self.paths.state, self.paths.token, self.paths.logs,
+                   self.paths.launcher, self.paths.viewer, self.paths.coordinator_log,
+                   self.paths.upgrade_receipt, self.paths.upgrade_policy)
+        for path in mutable:
+            if _has_reparse_component(path):
+                raise InstallationError("Disposable installation path contains a reparse point")
+            resolved = path.resolve(strict=False)
+            try:
+                if os.path.commonpath((str(root), str(resolved))) != str(root):
+                    raise InstallationError("Disposable installation path escapes its test root")
+            except ValueError as exc:
+                raise InstallationError("Disposable installation path is on an unexpected volume") from exc
+
+    def _guard(self) -> None:
+        self.runtime.check_mutation()
+        if self.runtime.guest_mutation_guard is not None:
+            self._validate_isolated_paths()
+
+    def _credential_ensure(self) -> None:
+        provider = self.runtime.credential_provider
+        if provider:
+            provider.ensure(self.paths.token)
+        else:
+            load_or_create_token()
+
+    def _credential_doctor(self) -> Dict[str, Any]:
+        provider = self.runtime.credential_provider
+        return provider.doctor(self.paths.token) if provider else credential_doctor()
+
+    def _credential_load(self) -> str:
+        provider = self.runtime.credential_provider
+        return provider.load(self.paths.token) if provider else load_token()
+
+    def _task_name(self, mode: str) -> str:
+        return self.runtime.task_names[mode]
+
+    def _listener_details(self) -> Dict[str, Any]:
+        return self.runtime.listener_details()
+
+    def _legacy_attribution_for_runtime(self, task: Optional[StartupTask], listener: Dict[str, Any],
+                                        miner_name: Optional[str]) -> Dict[str, Any]:
+        # Keep the historical four-argument call shape for production defaults;
+        # custom H4 task names are passed explicitly for scoped ownership checks.
+        if dict(self.runtime.task_names) == TASK_NAMES:
+            return _legacy_attribution(task, listener, self.paths, miner_name)
+        return _legacy_attribution(task, listener, self.paths, miner_name, self.runtime.task_names)
+
+    def _listener_identity(self) -> Optional[Dict[str, Any]]:
+        return self.runtime.listener_identity()
+
+    def _process_alive(self, pid: int, created: float) -> Optional[bool]:
+        return self.runtime.process_alive(pid, created)
+
+    def _gpu_settings(self) -> Optional[Dict[str, Optional[float]]]:
+        return self.runtime.gpu_settings()
+
+    def _now(self) -> float:
+        return self.runtime.monotonic()
+
+    def _sleep(self, seconds: float) -> None:
+        self.runtime.sleep(seconds)
+
+    def _fault(self, stage: str) -> None:
+        if self.runtime.fault_injector is not None:
+            self.runtime.fault_injector(stage)
 
     def plan_setup(self, mode: str = "logon", *, viewer: bool = False) -> Dict[str, Any]:
         if mode not in {"boot", "logon"}:
@@ -994,7 +1241,7 @@ class ManagedInstallation:
                 {"resource": "configuration", "action": "preserve-or-copy-template", "path": str(self.paths.config)},
                 {"resource": "operator_credential", "action": "load-or-create-securely", "path": str(self.paths.token)},
                 {"resource": "launcher", "action": "write-managed-version", "path": str(self.paths.launcher)},
-                {"resource": "startup_task", "action": "install-or-repair", "name": TASK_NAMES[mode]},
+                {"resource": "startup_task", "action": "install-or-repair", "name": self._task_name(mode)},
             ],
             "preserved": [str(self.paths.state), str(self.paths.logs)],
         }
@@ -1020,6 +1267,7 @@ class ManagedInstallation:
         plan = self.plan_setup(mode, viewer=viewer)
         if not apply:
             return {"status": "planned", **plan}
+        self._guard()
         if not self.template.is_file() and not self.paths.config.is_file():
             raise InstallationError(f"Configuration template is missing: {self.template}")
         created: List[str] = []
@@ -1037,10 +1285,12 @@ class ManagedInstallation:
                 created.append("configuration")
             # Validation is read-only; existing comments and settings are preserved byte-for-byte.
             config = load_config(self.paths.config)
+            if self.runtime.guest_mutation_guard is not None and config.service.listen_port != self.runtime.listen_port:
+                raise InstallationError("Disposable configuration listener does not match its isolated runtime")
             completed.append("configuration")
             stage = "provisioning and checking the shared credential"
-            load_or_create_token()
-            credential = credential_doctor()
+            self._credential_ensure()
+            credential = self._credential_doctor()
             if not (
                 credential.get("credential_file_exists")
                 and credential.get("credential_file_readable")
@@ -1054,7 +1304,7 @@ class ManagedInstallation:
                 )
             completed.append("operator credential")
             stage = "writing the managed launcher"
-            if self._write_managed(self.paths.launcher, render_launcher(self.paths)):
+            if self._write_managed(self.paths.launcher, render_launcher(self.paths, self.runtime)):
                 created.append("launcher")
             completed.append("launcher")
             stage = "installing and enabling the startup task"
@@ -1081,7 +1331,7 @@ class ManagedInstallation:
                 elif service.get("service_state") == "ready":
                     try:
                         with httpx.Client(timeout=2.0) as client:
-                            route = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+                             route = client.get(f"{self.runtime.coordinator_url}/_coordinator/miner/status")
                         if route.status_code != 200:
                             activation = "running-older-api"
                     except httpx.HTTPError:
@@ -1154,7 +1404,7 @@ class ManagedInstallation:
             selected_mode = mode or next((task.mode for task in owned if task.enabled), "logon")
             if not apply:
                 return {"status": "planned", "operation": action, "mode": selected_mode,
-                        "task": TASK_NAMES[selected_mode], "preserves_running_service": True}
+                         "task": self._task_name(selected_mode), "preserves_running_service": True}
             return self.setup(apply=True, mode=selected_mode, non_interactive=non_interactive,
                               activate=False)
         if action not in {"enable", "disable", "uninstall"}:
@@ -1162,6 +1412,7 @@ class ManagedInstallation:
         if not apply:
             return {"status": "planned", "operation": action, "tasks": [task.name for task in owned],
                     "running_coordinator_affected": False}
+        self._guard()
         if action == "uninstall":
             for task in owned:
                 self.task_backend.uninstall(task, non_interactive=non_interactive)
@@ -1189,7 +1440,7 @@ class ManagedInstallation:
         if not source_package.is_file():
             blockers.append(f"current Resource Coordinator source package is missing: {source_package}")
         try:
-            rendered_launcher = render_launcher(self.paths)
+            rendered_launcher = render_launcher(self.paths, self.runtime)
             if TASK_MARKER not in rendered_launcher or str(self.paths.config) not in rendered_launcher:
                 raise ValueError("managed launcher did not contain expected ownership/configuration markers")
         except Exception as exc:
@@ -1208,18 +1459,18 @@ class ManagedInstallation:
             blockers.append(f"startup task {task.name} has an unexpected identity or privilege level")
 
         runtime = (service or {}).get("runtime") or {}
-        listener_details = _listener_identity_details()
+        listener_details = self._listener_details()
         listener = listener_details.get("identity") if listener_details.get("verified") else None
         runtime_pid = runtime.get("pid")
         runtime_create_time = runtime.get("process_create_time")
         if listener is None:
-            blockers.append(_listener_failure_reason(listener_details, "127.0.0.1", 1235))
+            blockers.append(_listener_failure_reason(listener_details, self.runtime.listen_host, self.runtime.listen_port))
         elif runtime_pid is not None and runtime_pid != listener.get("pid"):
-            blockers.append("HTTP runtime PID does not match the process owning port 1235")
+            blockers.append(f"HTTP runtime PID does not match the process owning port {self.runtime.listen_port}")
         legacy_needed = listener is not None and (runtime_pid is None or not runtime.get("revision"))
         if listener and runtime_create_time is not None and not _same_process_creation_time(
                 runtime_create_time, listener["create_time"]):
-            blockers.append("HTTP runtime creation time does not match the process owning port 1235")
+            blockers.append(f"HTTP runtime creation time does not match the process owning port {self.runtime.listen_port}")
 
         config = None
         journal = None
@@ -1235,7 +1486,7 @@ class ManagedInstallation:
             blockers.append(f"configuration or durable journal cannot be verified: {exc}")
 
         if legacy_needed:
-            attribution = _legacy_attribution(task, listener, self.paths, miner_name)
+            attribution = self._legacy_attribution_for_runtime(task, listener, miner_name)
             runtime = {**runtime, "legacy_attribution": attribution}
             if not attribution.get("verified"):
                 blockers.append("Legacy task attribution blocked: " + attribution.get("reason", "identity unavailable"))
@@ -1279,8 +1530,8 @@ class ManagedInstallation:
 
         credential_ok = False
         try:
-            load_token()
-            credential = credential_doctor()
+            self._credential_load()
+            credential = self._credential_doctor()
             credential_ok = bool(credential.get("credential_valid") and credential.get("credential_file_readable")
                                  and credential.get("acl_restricted") is True
                                  and credential.get("environment_override_matches_file") is not False)
@@ -1338,7 +1589,7 @@ class ManagedInstallation:
             "elevation_required": not is_admin,
             "elevation_mode": "non-interactive-blocked" if non_interactive and not is_admin else
                               "uac-required" if not is_admin else "already-elevated",
-            "effective_gpu_settings": _effective_gpu_settings(),
+            "effective_gpu_settings": self._gpu_settings(),
             "blockers": blockers,
         }
 
@@ -1360,7 +1611,8 @@ class ManagedInstallation:
         blockers = list(preflight["blockers"])
         listener_details = preflight.get("listener_discovery") or {}
         if listener_details.get("category") == "not-found":
-            blockers = [item for item in blockers if not item.startswith("No listening endpoint matching 127.0.0.1:1235")]
+            blockers = [item for item in blockers if not item.startswith(
+                f"No listening endpoint matching {self.runtime.listen_host}:{self.runtime.listen_port}")]
         unknown_miner = next((item for item in blockers if item.startswith("configured miner state is unavailable")), None)
         if unknown_miner and preflight.get("miner_name"):
             miner_config = load_config(self.paths.config).processes[preflight["miner_name"]]
@@ -1373,7 +1625,7 @@ class ManagedInstallation:
                                      "a configured miner process is still running"]}
         if set(blockers) - expected_absent:
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED", "blockers": blockers}
-        if self._coordinator_port_open() or _listener_identity() is not None:
+        if self._coordinator_port_open() or self._listener_identity() is not None:
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["a coordinator listener exists; recovery will not start another owner"]}
         old_pid = receipt.get("old_service_pid")
@@ -1381,7 +1633,7 @@ class ManagedInstallation:
         if type(old_pid) is not int or type(old_created) not in (int, float):
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["receipt lacks the old coordinator's exact process identity"]}
-        if _exact_process_is_alive(old_pid, float(old_created)) is not False:
+        if self._process_alive(old_pid, float(old_created)) is not False:
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["old coordinator process has not been proven exited"]}
         old_miner = receipt.get("old_miner") or {}
@@ -1390,7 +1642,7 @@ class ManagedInstallation:
             if type(pid) is not int or type(created) not in (int, float):
                 return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                         "blockers": ["receipt lacks the prior miner's exact process identity"]}
-            if _exact_process_is_alive(pid, float(created)) is not False:
+            if self._process_alive(pid, float(created)) is not False:
                 return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                         "blockers": ["prior miner process has not been proven exited"]}
         config = load_config(self.paths.config)
@@ -1410,12 +1662,12 @@ class ManagedInstallation:
         if task.run_level != "Highest" or not _task_identity_valid(asdict(task)):
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["startup task identity or privilege level is not verified"]}
-        token = load_token()
-        if not credential_doctor().get("acl_restricted"):
+        token = self._credential_load()
+        if not self._credential_doctor().get("acl_restricted"):
             return {"status": "blocked", "phase": "RECOVERY_REQUIRED",
                     "blockers": ["operator credential ACL is not verified"]}
         if not self.paths.launcher.is_file():
-            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+            self._write_managed(self.paths.launcher, render_launcher(self.paths, self.runtime))
         if os.path.normcase(str(self.paths.launcher)) not in os.path.normcase(task.action):
             snapshot = receipt.get("task_snapshot")
             if not isinstance(snapshot, dict):
@@ -1436,7 +1688,7 @@ class ManagedInstallation:
                     "blocker": "Retry started the owned task, but readiness was not verified.",
                     "receipt": str(self.paths.upgrade_receipt)}
         runtime = service.get("runtime") or {}
-        listener = _listener_identity()
+        listener = self._listener_identity()
         if (runtime.get("revision") != preflight["source"]["revision"] or
                 service.get("upstream_url") != preflight.get("configured_upstream_url") or listener is None or
                 listener.get("pid") != runtime.get("pid") or
@@ -1456,12 +1708,12 @@ class ManagedInstallation:
                     "blocker": "Retry runtime creation time could not be matched to its OS listener; mining remains held.",
                     "receipt": str(self.paths.upgrade_receipt)}
         with httpx.Client(timeout=5.0) as client:
-            control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+            control = client.get(f"{self.runtime.coordinator_url}/_coordinator/miner/status")
         if control.status_code != 200:
             return {"status": "recovery-required", "phase": "NEW_READY", "runtime": runtime,
                     "blocker": f"Recovered coordinator miner-control API is unavailable ({control.status_code}).",
                     "receipt": str(self.paths.upgrade_receipt)}
-        effective = _effective_gpu_settings()
+        effective = self._gpu_settings()
         expected_power = (receipt.get("configured_gpu_settings") or {}).get("power_limit_w")
         if receipt.get("miner_resume_allowed") and expected_power is not None and (
                 effective is None or effective.get("power_limit_w") is None or
@@ -1475,7 +1727,7 @@ class ManagedInstallation:
                     "receipt": str(self.paths.upgrade_receipt)}
         if receipt.get("miner_resume_allowed"):
             response = httpx.post(
-                f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                f"{self.runtime.coordinator_url}/_coordinator/miner/resume",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"operator": getpass.getuser(), "reason": "Restore prior miner state after upgrade recovery"},
                 timeout=10.0,
@@ -1523,11 +1775,11 @@ class ManagedInstallation:
             return {"status": "recovery-required", "phase": "NEW_READY",
                     "blocker": "inference is active, pending, or inhibited; leave mining held and retry later"}
         with httpx.Client(timeout=5.0) as client:
-            control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+            control = client.get(f"{self.runtime.coordinator_url}/_coordinator/miner/status")
         if control.status_code != 200:
             return {"status": "recovery-required", "phase": "NEW_READY",
                     "blocker": f"miner-control API is unavailable ({control.status_code})"}
-        effective = _effective_gpu_settings()
+        effective = self._gpu_settings()
         expected_power = (receipt.get("configured_gpu_settings") or {}).get("power_limit_w")
         if expected_power is not None and (
                 effective is None or effective.get("power_limit_w") is None or
@@ -1541,9 +1793,9 @@ class ManagedInstallation:
                     "blocker": "a newer persisted manual mining hold takes precedence over the saved pre-upgrade state"}
         if receipt.get("miner_resume_allowed"):
             if miner.get("state") != "running":
-                token = load_token()
+                token = self._credential_load()
                 response = httpx.post(
-                    f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                    f"{self.runtime.coordinator_url}/_coordinator/miner/resume",
                     headers={"Authorization": f"Bearer {token}"},
                     json={"operator": getpass.getuser(), "reason": "Resume prior mining after GPU policy recovery"},
                     timeout=10.0,
@@ -1587,14 +1839,14 @@ class ManagedInstallation:
         pid, created = runtime.get("pid"), runtime.get("process_create_time")
         if type(pid) is not int or pid <= 0 or type(created) not in (int, float):
             blockers.append("replacement runtime has no exact PID and process creation time")
-        elif _exact_process_is_alive(pid, float(created)) is not True:
+        elif self._process_alive(pid, float(created)) is not True:
             blockers.append("replacement process identity is absent or unverifiable")
 
-        listener_result = _listener_identity_details()
+        listener_result = self._listener_details()
         listener = listener_result.get("identity") if listener_result.get("verified") else None
         if (listener is None or listener.get("pid") != pid or
                 not _same_process_creation_time(listener.get("create_time"), created)):
-            blockers.append("port 1235 listener does not match the exact replacement process identity")
+            blockers.append(f"port {self.runtime.listen_port} listener does not match the exact replacement process identity")
 
         try:
             config = load_config(self.paths.config)
@@ -1631,7 +1883,7 @@ class ManagedInstallation:
 
         attribution: Dict[str, Any] = {"verified": False, "shutdown_verified": False}
         if task is not None and listener is not None:
-            attribution = _legacy_attribution(task, listener, self.paths, miner_name)
+            attribution = self._legacy_attribution_for_runtime(task, listener, miner_name)
             if not attribution.get("verified"):
                 blockers.append("replacement process is not attributed to the unique running startup task: " +
                                 str(attribution.get("reason", "attribution unavailable")))
@@ -1642,7 +1894,7 @@ class ManagedInstallation:
             if miner.get("state") == "running":
                 if (miner.get("is_coordinator_owned") is not True or type(miner.get("pid")) is not int or
                         type(miner.get("create_time")) not in (int, float) or
-                        _exact_process_is_alive(miner["pid"], float(miner["create_time"])) is not True):
+                        self._process_alive(miner["pid"], float(miner["create_time"])) is not True):
                     blockers.append("configured miner is running without verified coordinator ownership")
                 else:
                     miner_identity = {"pid": miner["pid"], "create_time": float(miner["create_time"])}
@@ -1655,7 +1907,7 @@ class ManagedInstallation:
         if blockers:
             return {"status": "blocked", "blockers": blockers}
         try:
-            token = load_token()
+            token = self._credential_load()
         except Exception as exc:
             return {"status": "blocked", "blockers": [f"operator credential is unavailable: {exc}"]}
         try:
@@ -1667,11 +1919,11 @@ class ManagedInstallation:
                 f"replacement coordinator refused graceful shutdown ({response.status_code})"]}
 
         lock_path = Path(config.service.state_persistence_path).expanduser().with_suffix(".lock")
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
-            listener_now = _listener_identity_details()
-            process_gone = _exact_process_is_alive(pid, float(created)) is False
-            miner_gone = (miner_identity is None or _exact_process_is_alive(
+        deadline = self._now() + timeout
+        while self._now() < deadline:
+            listener_now = self._listener_details()
+            process_gone = self._process_alive(pid, float(created)) is False
+            miner_gone = (miner_identity is None or self._process_alive(
                 miner_identity["pid"], miner_identity["create_time"]) is False)
             try:
                 task_rows = self.task_backend.status()
@@ -1688,7 +1940,7 @@ class ManagedInstallation:
                     not task_active and lock_released):
                 return {"status": "stopped", "runtime": runtime, "miner": miner_identity,
                         "attribution": attribution}
-            time.sleep(0.2)
+            self._sleep(0.2)
         return {"status": "recovery-required", "blockers": [
             "graceful shutdown was accepted but replacement process, miner, listener, startup task, or lock "
             "did not fully exit"]}
@@ -1697,7 +1949,10 @@ class ManagedInstallation:
                 timeout: float = 45.0) -> Dict[str, Any]:
         if not apply:
             return self._upgrade_impl(apply=False, non_interactive=non_interactive, timeout=timeout)
+        self._guard()
         if isinstance(self.task_backend, WindowsStartupTaskBackend) and not self.task_backend._admin():
+            if self.runtime.guest_mutation_guard is not None:
+                raise ElevationRequired("Disposable guest lifecycle tests must be started in an already elevated guest; no production CLI re-entry is allowed.")
             if non_interactive:
                 raise ElevationRequired("Administrator approval is required; non-interactive mode will not prompt.")
             self.task_backend.run_elevated_cli()
@@ -1736,8 +1991,12 @@ class ManagedInstallation:
                  non_interactive: bool = False,
                  _transaction_lock_held: bool = False) -> Dict[str, Any]:
         """Inspect and reconcile a failed upgrade without requiring service availability."""
+        if apply:
+            self._guard()
         if (apply and action in {"restore", "resume"} and not _transaction_lock_held and
                 isinstance(self.task_backend, WindowsStartupTaskBackend) and not self.task_backend._admin()):
+            if self.runtime.guest_mutation_guard is not None:
+                raise ElevationRequired("Disposable guest lifecycle tests require an already elevated process; no production CLI re-entry is allowed.")
             if non_interactive:
                 raise ElevationRequired("Administrator approval is required; non-interactive recovery will not prompt.")
             self.task_backend.run_elevated_cli()
@@ -1757,7 +2016,7 @@ class ManagedInstallation:
         except Exception as exc:
             tasks, task_error = [], f"Scheduled Task inspection failed: {exc}"
         service = self._service_status()
-        listener_result = _listener_identity_details()
+        listener_result = self._listener_details()
         listener = listener_result.get("identity") if listener_result.get("verified") else None
         miner_name = None
         try:
@@ -1765,9 +2024,9 @@ class ManagedInstallation:
         except Exception:
             pass
         enabled_tasks = [item for item in tasks if item.owned and item.name in {
-            TASK_NAMES["boot"], TASK_NAMES["logon"]} and item.enabled]
+            self.runtime.task_names["boot"], self.runtime.task_names["logon"]} and item.enabled]
         task = enabled_tasks[0] if len(enabled_tasks) == 1 else None
-        attribution = (_legacy_attribution(task, listener, self.paths, miner_name)
+        attribution = (self._legacy_attribution_for_runtime(task, listener, miner_name)
                        if task and listener else {"verified": False, "reason": "task or listener identity unavailable"})
         processes = (service or {}).get("processes", {})
         miner = processes.get(miner_name, {}) if miner_name else {}
@@ -1804,21 +2063,21 @@ class ManagedInstallation:
                 resume_blockers = [item for item in resume_blockers if not (
                     item == "coordinator status is unavailable; upgrade will not start a replacement owner" or
                     (preflight.get("listener_discovery", {}).get("category") == "not-found" and
-                     item.startswith("No listening endpoint matching 127.0.0.1:1235")))]
+                      item.startswith(f"No listening endpoint matching {self.runtime.listen_host}:{self.runtime.listen_port}")))]
                 if receipt.get("source", {}).get("revision") != preflight.get("source", {}).get("revision"):
                     resume_blockers.append("Source revision differs from the interrupted upgrade receipt")
                 old_pid, old_created = receipt.get("old_service_pid"), receipt.get("old_service_create_time")
                 if (type(old_pid) is not int or type(old_created) not in (int, float) or
-                        _exact_process_is_alive(old_pid, float(old_created)) is not False):
+                        self._process_alive(old_pid, float(old_created)) is not False):
                     resume_blockers.append("Prior coordinator PID and creation time are not proven exited")
                 old_miner = receipt.get("old_miner") or {}
                 if receipt.get("miner_was_running"):
                     pid, created = old_miner.get("pid"), old_miner.get("create_time")
                     if (type(pid) is not int or type(created) not in (int, float) or
-                            _exact_process_is_alive(pid, float(created)) is not False):
+                            self._process_alive(pid, float(created)) is not False):
                         resume_blockers.append("Prior miner PID and creation time are not proven exited")
-                if self._coordinator_port_open() or _listener_identity() is not None:
-                    resume_blockers.append("Port 1235 is not proven free; resume will not start another owner")
+                if self._coordinator_port_open() or self._listener_identity() is not None:
+                    resume_blockers.append(f"Port {self.runtime.listen_port} is not proven free; resume will not start another owner")
                 return {**report, "status": "blocked" if resume_blockers else "planned",
                         "blockers": resume_blockers, "preflight": preflight,
                         "changes": ["reconcile the owned task if needed", "start one coordinator",
@@ -1845,16 +2104,16 @@ class ManagedInstallation:
                 if service is not None:
                     restore_blockers.append("Coordinator is reachable; offline restoration will not start a second owner")
                 if listener_result.get("category") != "not-found":
-                    restore_blockers.append("Port 1235 is not proven free")
+                    restore_blockers.append(f"Port {self.runtime.listen_port} is not proven free")
                 old_pid = receipt.get("old_service_pid")
                 old_created = receipt.get("old_service_create_time")
                 if (type(old_pid) is not int or old_pid <= 0 or type(old_created) not in (int, float) or
-                        _exact_process_is_alive(old_pid, float(old_created)) is not False):
+                        self._process_alive(old_pid, float(old_created)) is not False):
                     restore_blockers.append("Prior coordinator PID and creation time are not proven exited")
                 old_miner = receipt.get("old_miner") or {}
                 if receipt.get("miner_was_running") and miner_name and (type(old_miner.get("pid")) is not int or
                                    type(old_miner.get("create_time")) not in (int, float) or
-                                   _exact_process_is_alive(old_miner["pid"], float(old_miner["create_time"])) is not False):
+                                   self._process_alive(old_miner["pid"], float(old_miner["create_time"])) is not False):
                     restore_blockers.append("Prior miner PID and creation time are not proven exited")
                 try:
                     current_config = load_config(self.paths.config)
@@ -1915,10 +2174,10 @@ class ManagedInstallation:
                 if self._service_status() is not None:
                     return {**report, "status": "blocked", "blockers": [
                         "Coordinator became reachable; refusing to start a second owner"]}
-                current_listener_result = _listener_identity_details()
+                current_listener_result = self._listener_details()
                 if current_listener_result.get("category") != "not-found":
                     return {**report, "status": "blocked", "blockers": [
-                        "Port 1235 is not proven free; no owner will be started"]}
+                        f"Port {self.runtime.listen_port} is not proven free; no owner will be started"]}
                 try:
                     current_tasks = self.task_backend.status()
                 except Exception as exc:
@@ -1974,7 +2233,7 @@ class ManagedInstallation:
                 if type(old_pid) is not int or old_pid <= 0 or type(old_created) not in (int, float):
                     return {**report, "status": "blocked", "blockers": [
                         "Receipt lacks the prior coordinator's exact PID and creation time"]}
-                if _exact_process_is_alive(old_pid, float(old_created)) is not False:
+                if self._process_alive(old_pid, float(old_created)) is not False:
                     return {**report, "status": "blocked", "blockers": [
                         "Prior coordinator identity is still alive or unverifiable"]}
                 old_miner = receipt.get("old_miner") or {}
@@ -1983,10 +2242,10 @@ class ManagedInstallation:
                     if type(miner_pid) is not int or miner_pid <= 0 or type(miner_created) not in (int, float):
                         return {**report, "status": "blocked", "blockers": [
                             "Receipt lacks the prior miner's exact PID and creation time"]}
-                    if _exact_process_is_alive(miner_pid, float(miner_created)) is not False:
+                    if self._process_alive(miner_pid, float(miner_created)) is not False:
                         return {**report, "status": "blocked", "blockers": [
                             "Prior miner identity is still alive or unverifiable"]}
-                expected_task_names = {TASK_NAMES["boot"], TASK_NAMES["logon"]}
+                expected_task_names = {self.runtime.task_names["boot"], self.runtime.task_names["logon"]}
                 snapshot = receipt.get("task_snapshot")
                 if (not prior_task.owned or prior_task.name not in expected_task_names or
                         prior_task.mode not in {"boot", "logon"} or prior_task.run_level != "Highest" or
@@ -2032,7 +2291,7 @@ class ManagedInstallation:
                     raise InstallationError("Prior owned task was not restored as enabled")
                 self.task_backend.start(restored_task, non_interactive=non_interactive)
                 service = self._wait_for_service(timeout=45.0)
-                listener = _listener_identity()
+                listener = self._listener_identity()
                 runtime = (service or {}).get("runtime") or {}
                 if (not service or service.get("service_state") != "ready" or not listener or
                         listener.get("pid") != runtime.get("pid") or
@@ -2093,7 +2352,7 @@ class ManagedInstallation:
                         current_miner.get("is_coordinator_owned") is not True or
                         type(current_miner.get("pid")) is not int or
                         type(current_miner.get("create_time")) not in (int, float) or
-                        _exact_process_is_alive(current_miner["pid"],
+                        self._process_alive(current_miner["pid"],
                                                 float(current_miner["create_time"])) is not True):
                     failures.append("Miner ownership or process identity is not verified")
             try:
@@ -2155,20 +2414,22 @@ class ManagedInstallation:
                 return {**report, "status": "blocked", "blockers": [
                     f"Startup task identity cannot be rechecked before reconciliation: {exc}"]}
             current_enabled = [item for item in current_tasks if item.owned and item.name in {
-                TASK_NAMES["boot"], TASK_NAMES["logon"]} and item.enabled]
+                self.runtime.task_names["boot"], self.runtime.task_names["logon"]} and item.enabled]
             if len(current_enabled) != 1 or task is None or asdict(current_enabled[0]) != asdict(task):
                 return {**report, "status": "blocked", "blockers": [
                     "Enabled coordinator startup task identity changed since diagnosis"]}
             if current_enabled[0].state.casefold() != "running":
                 return {**report, "status": "blocked", "blockers": [
                     "Attributed coordinator startup task is no longer running"]}
-            current_listener_result = _listener_identity_details()
+            current_listener_result = self._listener_details()
             current_listener = current_listener_result.get("identity") if current_listener_result.get("verified") else None
             if (not current_listener or current_listener.get("pid") != listener.get("pid") or
                     not _same_process_creation_time(current_listener.get("create_time"), listener.get("create_time"))):
                 return {**report, "status": "blocked", "blockers": [
                     "Listener identity changed or became unverifiable since diagnosis"]}
-            current_attribution = _legacy_attribution(current_enabled[0], current_listener, self.paths, miner_name)
+            current_attribution = self._legacy_attribution_for_runtime(
+                current_enabled[0], current_listener, miner_name
+            )
             if not current_attribution.get("verified"):
                 return {**report, "status": "blocked", "blockers": [
                     "Startup task attribution no longer verifies before reconciliation"]}
@@ -2269,12 +2530,13 @@ class ManagedInstallation:
         task_update_started = False
         candidate_service: Optional[Dict[str, Any]] = None
         try:
-            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+            self._write_managed(self.paths.launcher, render_launcher(self.paths, self.runtime))
             # The task launch is held from auto-starting mining until this external
             # process verifies the new runtime and GPU policy.
             _write_json_atomic(self.paths.upgrade_policy, {"start_miner": False})
             update_phase("PREPARED", launcher_path=str(self.paths.launcher))
-            token = load_token()
+            self._fault("after_prepared_receipt")
+            token = self._credential_load()
             update_phase("DRAINING")
             response = self._request_graceful_shutdown(token)
             if response.status_code != 202:
@@ -2282,37 +2544,40 @@ class ManagedInstallation:
                     f"Graceful shutdown was not accepted ({response.status_code}); task and service were not replaced."
                 )
 
-            deadline = time.monotonic() + timeout
+            deadline = self._now() + timeout
             lock_path = Path(load_config(self.paths.config).service.state_persistence_path).with_suffix(".lock")
-            while time.monotonic() < deadline:
-                listener_state = _listener_identity_details()
+            while self._now() < deadline:
+                listener_state = self._listener_details()
                 listener_closed = listener_state.get("category") == "not-found"
                 if (self._service_status() is None and not self._coordinator_port_open() and listener_closed):
                     probe = SingleInstanceLock(lock_path)
-                    service_alive = _exact_process_is_alive(
+                    service_alive = self._process_alive(
                         int(preflight["listener"]["pid"]), float(preflight["listener"]["create_time"])
                     )
                     if probe.acquire() and service_alive is False:
                         probe.release()
                         break
                     probe.release()
-                time.sleep(0.25)
+                self._sleep(0.25)
             else:
-                raise InstallationError("Old coordinator did not release port 1235 and its instance lock in time")
+                raise InstallationError(f"Old coordinator did not release port {self.runtime.listen_port} and its instance lock in time")
 
             old_miner = preflight["miner"]
             if preflight["miner_resume_allowed"]:
-                miner_alive = _exact_process_is_alive(int(old_miner["pid"]), float(old_miner["create_time"]))
+                miner_alive = self._process_alive(int(old_miner["pid"]), float(old_miner["create_time"]))
                 if miner_alive is not False:
                     raise InstallationError("Original coordinator-owned miner is still running; replacement refused")
             update_phase("OLD_STOPPED")
+            self._fault("after_old_service_stopped")
 
-            self._write_managed(self.paths.launcher, render_launcher(self.paths))
+            self._write_managed(self.paths.launcher, render_launcher(self.paths, self.runtime))
             task_update_started = True
             # Persist the non-idempotent Task Scheduler boundary before invoking it.
             update_phase("TASK_INSTALLING")
+            self._fault("before_task_replacement")
             task = self.task_backend.install(task.mode, self.paths.launcher, non_interactive=non_interactive)
             update_phase("TASK_UPDATED", task_after=asdict(task))
+            self._fault("after_task_replacement")
             self.task_backend.start(task, non_interactive=non_interactive)
 
             service = self._wait_for_service(timeout=timeout)
@@ -2320,6 +2585,7 @@ class ManagedInstallation:
                 raise InstallationError("Updated startup task did not produce a ready coordinator")
             candidate_service = service
             update_phase("NEW_READY", new_runtime=service.get("runtime"))
+            self._fault("after_new_service_ready")
             runtime = service.get("runtime") or {}
             if runtime.get("revision") != preflight["source"]["revision"]:
                 raise InstallationError("New coordinator is ready but its startup-captured source revision does not match")
@@ -2329,9 +2595,9 @@ class ManagedInstallation:
                 raise InstallationError("New coordinator source path does not match the selected source checkout")
             if runtime.get("pid") == preflight["listener"]["pid"]:
                 raise InstallationError("Coordinator PID did not change across the upgrade")
-            new_listener = _listener_identity()
+            new_listener = self._listener_identity()
             if new_listener is None or new_listener.get("pid") != runtime.get("pid"):
-                raise InstallationError("Ready coordinator PID does not own the port 1235 listener")
+                raise InstallationError(f"Ready coordinator PID does not own the port {self.runtime.listen_port} listener")
             new_create_time = runtime.get("process_create_time")
             if new_create_time is not None and not _same_process_creation_time(
                     new_create_time, new_listener["create_time"]):
@@ -2339,11 +2605,11 @@ class ManagedInstallation:
             if new_create_time is None:
                 raise InstallationError("New coordinator did not report a process creation time for listener verification")
             with httpx.Client(timeout=5.0) as client:
-                control = client.get(f"{COORDINATOR_URL}/_coordinator/miner/status")
+                control = client.get(f"{self.runtime.coordinator_url}/_coordinator/miner/status")
             if control.status_code != 200:
                 raise InstallationError(f"New miner-control API is unavailable ({control.status_code})")
 
-            effective = _effective_gpu_settings()
+            effective = self._gpu_settings()
             expected_power = preflight["configured_gpu_settings"].get("power_limit_w")
             if expected_power is not None and (
                 effective is None or effective.get("power_limit_w") is None or
@@ -2356,7 +2622,7 @@ class ManagedInstallation:
 
             if preflight["miner_resume_allowed"]:
                 response = httpx.post(
-                    f"{COORDINATOR_URL}/_coordinator/miner/resume",
+                    f"{self.runtime.coordinator_url}/_coordinator/miner/resume",
                     headers={"Authorization": f"Bearer {token}"},
                     json={"operator": getpass.getuser(), "reason": "Resume prior mining state after verified upgrade"},
                     timeout=10.0,
@@ -2425,37 +2691,34 @@ class ManagedInstallation:
                 f"Inspect {self.paths.upgrade_receipt} before retrying. Details: {exc}"
             ) from exc
 
-    @staticmethod
-    def _service_status() -> Optional[Dict[str, Any]]:
+    def _service_status(self) -> Optional[Dict[str, Any]]:
         try:
             with httpx.Client(timeout=2.0) as client:
-                response = client.get(f"{COORDINATOR_URL}/_coordinator/status")
+                response = client.get(f"{self.runtime.coordinator_url}/_coordinator/status")
             return response.json() if response.status_code == 200 else None
         except (httpx.HTTPError, ValueError):
             return None
 
     def _wait_for_service(self, timeout: float = 30.0) -> Optional[Dict[str, Any]]:
-        deadline = time.monotonic() + timeout
-        while time.monotonic() < deadline:
+        deadline = self._now() + timeout
+        while self._now() < deadline:
             status = self._service_status()
             if status and status.get("service_state") == "ready":
                 return status
-            time.sleep(0.5)
+            self._sleep(0.5)
         return None
 
-    @staticmethod
-    def _coordinator_port_open() -> bool:
+    def _coordinator_port_open(self) -> bool:
         try:
-            with socket.create_connection(("127.0.0.1", 1235), timeout=0.3):
+            with socket.create_connection((self.runtime.listen_host, self.runtime.listen_port), timeout=0.3):
                 return True
         except OSError:
             return False
 
-    @staticmethod
-    def _request_graceful_shutdown(token: str) -> httpx.Response:
+    def _request_graceful_shutdown(self, token: str) -> httpx.Response:
         with httpx.Client(timeout=60.0) as client:
             return client.post(
-                f"{COORDINATOR_URL}/_coordinator/shutdown",
+                f"{self.runtime.coordinator_url}/_coordinator/shutdown",
                 headers={"Authorization": f"Bearer {token}"},
                 json={"operator": os.environ.get("USERNAME", "operator"),
                       "reason": "Resource Coordinator teardown"},
@@ -2474,7 +2737,7 @@ class ManagedInstallation:
             "python_executable": str(Path(sys.executable).resolve()),
             "config_path": str(self.paths.config),
             "config_valid": False,
-            "credential": credential_doctor(),
+            "credential": self._credential_doctor(),
             "service": self._service_status(),
             "tasks": task_rows,
             "task_inventory_error": task_inventory_error,
@@ -2634,6 +2897,7 @@ class ManagedInstallation:
         plan = self.plan_teardown()
         if not apply:
             return plan
+        self._guard()
         status = self._service_status()
         if status is None:
             return self._offline_teardown(plan, non_interactive=non_interactive)
@@ -2659,7 +2923,7 @@ class ManagedInstallation:
             if proc.get("is_coordinator_owned") and proc.get("pid") and proc.get("create_time")
         ]
         try:
-            token = load_token()
+            token = self._credential_load()
         except Exception as exc:
             raise InstallationError(
                 "Cannot authenticate teardown with the existing operator credential; no resource was changed. "
@@ -2671,11 +2935,11 @@ class ManagedInstallation:
             raise InstallationError(f"Could not request graceful shutdown: {exc}") from exc
         if response.status_code != 202:
             raise InstallationError(f"Graceful coordinator shutdown failed ({response.status_code}).")
-        deadline = time.monotonic() + 30.0
-        while time.monotonic() < deadline:
+        deadline = self._now() + 30.0
+        while self._now() < deadline:
             if not self._coordinator_port_open():
                 break
-            time.sleep(0.5)
+            self._sleep(0.5)
         else:
             raise InstallationError("Coordinator did not release its service port after shutdown.")
         try:
@@ -2691,8 +2955,8 @@ class ManagedInstallation:
             if owned_processes:
                 import psutil
 
-                deadline = time.monotonic() + 15.0
-                while time.monotonic() < deadline:
+                deadline = self._now() + 15.0
+                while self._now() < deadline:
                     running = []
                     for proc in owned_processes:
                         try:
@@ -2703,7 +2967,7 @@ class ManagedInstallation:
                             pass
                     if not running:
                         break
-                    time.sleep(0.25)
+                    self._sleep(0.25)
                 else:
                     raise InstallationError(f"Owned processes did not exit after coordinator shutdown: {running}")
             remaining = []
@@ -2829,8 +3093,12 @@ class ManagedInstallation:
 _TASKS_POWERSHELL = r'''
 $ErrorActionPreference = 'Stop'
 $payload = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('__PAYLOAD__')) | ConvertFrom-Json
+$taskNames = $payload.task_names
+$bootTaskName = [string]$taskNames.boot
+$logonTaskName = [string]$taskNames.logon
+$viewerTaskName = [string]$taskNames.viewer
+$allTaskNames = @($bootTaskName,$logonTaskName,$viewerTaskName)
 $marker = 'ResourceCoordinator:Managed:v1'
-$taskNames = @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon','KRig-Live-Output-Viewer')
 $managedRoot = [IO.Path]::GetFullPath([string]$payload.managed_root)
 $rootPrefix = $managedRoot.TrimEnd('\') + '\'
 function Get-RcSid([string]$identity) {
@@ -2839,7 +3107,7 @@ function Get-RcSid([string]$identity) {
 }
 $interactiveSid = Get-RcSid ([string]$payload.interactive_user)
 function Test-RcRestoreDefinition([string]$definition, [string]$taskName) {
-  if ($taskName -notin @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon')) { return $false }
+  if ($taskName -notin @($bootTaskName,$logonTaskName)) { return $false }
   try {
     $xml = [xml]$definition
     $principal = $xml.SelectSingleNode("//*[local-name()='Principal']")
@@ -2847,7 +3115,7 @@ function Test-RcRestoreDefinition([string]$definition, [string]$taskName) {
     if (-not $principal -or $actions.Count -ne 1 -or $actions[0].LocalName -ne 'Exec') { return $false }
     if ([string]$principal.RunLevel -ne 'HighestAvailable') { return $false }
     $principalSid = Get-RcSid ([string]$principal.UserId)
-    if ($taskName -eq 'ResourceCoordinator-KRig-Boot') {
+    if ($taskName -eq $bootTaskName) {
       if ($principalSid -ne 'S-1-5-18' -or [string]$principal.LogonType -ne 'ServiceAccount') { return $false }
     } elseif ($principalSid -ne $interactiveSid -or [string]$principal.LogonType -notin @('InteractiveToken','Interactive')) { return $false }
     $action = $actions[0]
@@ -2873,7 +3141,7 @@ function Test-RcRestoreDefinition([string]$definition, [string]$taskName) {
 function Test-RcOwned($task) {
     if (-not $task) { return $false }
     try {
-      if ($task.TaskName -eq 'ResourceCoordinator-KRig-Boot') {
+      if ($task.TaskName -eq $bootTaskName) {
         $taskSid = Get-RcSid ([string]$task.Principal.UserId)
         if ($taskSid -ne 'S-1-5-18') { return $false }
       } else {
@@ -2882,10 +3150,10 @@ function Test-RcOwned($task) {
       }
     } catch { return $false }
     foreach ($action in $task.Actions) {
-      if ($task.TaskName -in @('ResourceCoordinator-KRig-Boot','ResourceCoordinator-KRig-UserLogon') -and $action.Arguments -match '-File\s+"?(.+?start-coordinator(?:-managed)?\.ps1)') {
+      if ($task.TaskName -in @($bootTaskName,$logonTaskName) -and $action.Arguments -match '-File\s+"?(.+?start-coordinator(?:-managed)?\.ps1)') {
         try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
       }
-      if ($task.TaskName -eq 'KRig-Live-Output-Viewer' -and $action.Arguments -match '-File\s+"?(.+?view-krig(?:-managed)?\.ps1)') {
+      if ($task.TaskName -eq $viewerTaskName -and $action.Arguments -match '-File\s+"?(.+?view-krig(?:-managed)?\.ps1)') {
         try { if ([IO.Path]::GetFullPath($Matches[1]).StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase)) { return $true } } catch {}
       }
     }
@@ -2904,14 +3172,14 @@ switch ($payload.operation) {
     foreach ($name in $taskNames) {
       $task = $allTasks | Where-Object TaskName -EQ $name | Select-Object -First 1
       if (-not $task) { continue }
-      $mode = if ($name -eq 'ResourceCoordinator-KRig-Boot') {'boot'} elseif ($name -eq 'ResourceCoordinator-KRig-UserLogon') {'logon'} else {'viewer'}
+      $mode = if ($name -eq $bootTaskName) {'boot'} elseif ($name -eq $logonTaskName) {'logon'} else {'viewer'}
       $items += [pscustomobject]@{name=$name;mode=$mode;enabled=[bool]$task.Settings.Enabled;state=[string]$task.State;user_id=[string]$task.Principal.UserId;run_level=[string]$task.Principal.RunLevel;action=[string](($task.Actions|ForEach-Object {$_.Execute+' '+$_.Arguments}) -join ';');owned=(Test-RcOwned $task)}
     }
     ConvertTo-Json -InputObject @($items) -Depth 5 -Compress
   }
   {$_ -in 'validate','install','install_viewer','enable','disable','uninstall','start','snapshot','restore'} {
     if ($payload.operation -eq 'validate') {
-      if ($payload.task_name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
+      if ($payload.task_name -notin $allTaskNames) { throw 'Task name is not managed by Resource Coordinator.' }
       $null = Get-ScheduledTask -TaskName ([string]$payload.task_name) -ErrorAction Stop
       $null = Get-Command Register-ScheduledTask -ErrorAction Stop
       ConvertTo-Json -Compress -InputObject @{status='validated'; task_name=[string]$payload.task_name}
@@ -2919,17 +3187,17 @@ switch ($payload.operation) {
     }
     if ($payload.operation -eq 'install') {
       if ($payload.mode -notin @('boot','logon')) { throw 'Unsupported startup mode.' }
-      $name = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-Boot'} else {'ResourceCoordinator-KRig-UserLogon'}
+      $name = if ($payload.mode -eq 'boot') {$bootTaskName} else {$logonTaskName}
       $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
       if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'start-coordinator-managed.ps1') { throw 'Launcher path is outside the managed installation.' }
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed launcher is missing.' }
     } elseif ($payload.operation -eq 'install_viewer') {
-      $name='KRig-Live-Output-Viewer'
+      $name=$viewerTaskName
       $launcher = [IO.Path]::GetFullPath([string]$payload.launcher)
       if (-not $launcher.StartsWith($rootPrefix,[StringComparison]::OrdinalIgnoreCase) -or (Split-Path $launcher -Leaf) -ne 'view-krig-managed.ps1') { throw 'Viewer path is outside the managed installation.' }
       if (-not (Test-Path -LiteralPath $launcher -PathType Leaf)) { throw 'Managed viewer is missing.' }
     } else { $name=[string]$payload.task_name }
-    if ($name -notin $taskNames) { throw 'Task name is not managed by Resource Coordinator.' }
+    if ($name -notin $allTaskNames) { throw 'Task name is not managed by Resource Coordinator.' }
     $existing = Get-ScheduledTask -TaskName $name -ErrorAction SilentlyContinue
     if ($existing -and -not (Test-RcOwned $existing)) { throw "Refusing to modify unowned task $name." }
     switch ($payload.operation) {
@@ -2947,7 +3215,7 @@ switch ($payload.operation) {
         }
         $settings = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -StartWhenAvailable -ExecutionTimeLimit (New-TimeSpan -Seconds 0) -RestartCount 3 -RestartInterval (New-TimeSpan -Minutes 1)
         Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Principal $principal -Settings $settings -Description $marker -Force | Out-Null
-        $other = if ($payload.mode -eq 'boot') {'ResourceCoordinator-KRig-UserLogon'} else {'ResourceCoordinator-KRig-Boot'}
+        $other = if ($payload.mode -eq 'boot') {$logonTaskName} else {$bootTaskName}
         $otherTask = Get-ScheduledTask -TaskName $other -ErrorAction SilentlyContinue
         if ($otherTask -and (Test-RcOwned $otherTask)) { Disable-ScheduledTask -TaskName $other | Out-Null }
       }

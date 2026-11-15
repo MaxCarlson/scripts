@@ -1,5 +1,14 @@
 # H4 Windows Qualification — Read-Only Status
 
+## H4.5 implementation status (2026-11-15)
+
+- Starting candidate: `agent/rc-h4-disposable-windows-wddm-20261114` at `a618d6b0edcdb9e15f019a9e5109914643c20e99`; current `origin/main` at start: `04835a8c93c90881614d55651688800d5f646cad`.
+- Implementation worktree: `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115`, branch `agent/rc-h4-full-windows-lifecycle-20261114`.
+- V3 is tracked and matches SHA-256 `BA842936C9DE945EE8463FD41C3E60491A5714DCA1CF481064DC915DBF516F46` and blob `3a1c2f7662a54469bb6dc15ad6462a4295ec93e6`.
+- Work is limited to guest-only installer isolation, H4 acceptance runner/tests, and this qualification record. Production CLI defaults, production task identities, and `main` remain unchanged.
+- Existing H4 observation says no suitable authorized guest was available; no virtualization inventory or WDDM resampling is planned without new evidence.
+- Status: offline implementation checkpoint is ready for review; actual guest acceptance is `NOT_TESTED`. No guest or production mutation has been attempted.
+
 ## Scope and safety
 
 This record captures the authorized source merge and the initial, read-only H4 host inventory. No RC package was installed or upgraded; no service or Scheduled Task was changed or restarted; no miner, LM Studio backend, or WSL instance was started, stopped, or controlled; no GPU setting or credential was changed. A localhost status request was attempted as a read-only GET but the execution sandbox denied socket access before a response was received.
@@ -198,9 +207,106 @@ python -m compileall -q tools\h4_qualification\wddm_probe.py tools\h4_qualificat
 | Disposable VM selection | UNAVAILABLE | No local VM; Sandbox disabled; separate idle authorized Windows VM/host needed. |
 | Harness preflight and offline profile | PASS | Fail-closed runner, isolated artifacts, and 110-test offline profile. |
 | Real task profile | NOT_TESTED | Requires a separately authorized guest; primary host correctly refused. |
-| Actual install/upgrade/rollback | NOT_TESTED | Full guest procedure exists; runner does not yet isolate the production installation interface. |
+| Actual install/upgrade/rollback | NOT_TESTED | Guest-only runtime injection and lifecycle profiles now exist; execution still requires an independently identified and authorized disposable Windows guest. |
 | Historical WinError 206 upgrade cause | PARTIAL | Long command/path boundaries were reproduced earlier; actual upgrade path still untested. |
 | RTX 5090 read-only compute/graphics PID correlation | PARTIAL | Known KRig PID matched compute + Windows identity in three snapshots; graphics API did not list it. |
 | Complete WDDM attribution / Case C | BLOCKED | No authoritative proof of complete process coverage; keep configuration false. |
 | H5 supervised maintenance | NOT READY | Runtime still reports 0.11.3 vs source 1.0.0; disposable acceptance, approved deployment, and bounded preflight remain. |
 | Unattended recovery | BLOCKED | Keep disabled pending execution-boundary qualification and separate approval. |
+
+## H4.5 lifecycle acceptance infrastructure checkpoint (2026-11-15)
+
+The implementation adds an explicit `InstallationRuntime` seam for guest-only task identities, loopback listener/port, dummy credentials, process/listener/GPU observations, clocks, and fault injection. `InstallationPaths.isolated()` confines mutable artifacts to a guest test root. `ManagedInstallation` rechecks containment and mutation authorization; the production CLI continues to construct the unchanged production-default runtime. The Windows task helper receives task identities through its protected request payload and does not accept arbitrary identity overrides through the production CLI.
+
+Source review caught and fixed one remaining production-only assumption in `_legacy_attribution()`: the guest upgrade preflight used to accept only production task names. It now receives the injected runtime task-name mapping, with production names retained as the default for unchanged callers. A focused helper regression was added. The first validation attempt could not import `_ssl`; that historical failure is superseded by the successful focused run documented in the continuation below.
+
+`windows_acceptance.py` now offers read-only `preflight` by default and explicit `offline`, `task`, `install`, `upgrade`, `rollback`, `full`, and `cleanup` profiles. Guest profiles require `--apply`, explicit authorization, a matching guest-authorization environment value, independently observed virtual-guest identity, readable task/service/process inventories, isolated absolute paths, and an exact test-owned resource manifest. Source bundles are version-checked and hashed before use. Full runs keep a phase manifest and verify task, listener, and process cleanup after each phase; interrupted runs retain exact manifest evidence for the scoped cleanup profile.
+
+### Fresh validation in the H4.5 worktree
+
+| Check | Result |
+|---|---|
+| `compileall` for changed installer, runner, and tests | PASS, exit 0 |
+| `tests/test_h4_windows_acceptance.py` | 12 passed, exit 0; pytest warned that `asyncio_mode` is unknown because plugin autoload was disabled |
+| Fake-module installer runtime isolation probe | PASS, exit 0; this does not import or exercise the RC async stack |
+| Combined H4 runner + WDDM tests | BLOCKED during WDDM collection: `_ctypes` DLL initialization failure |
+| Installer runtime tests | BLOCKED during collection: `_ssl` DLL initialization failure through `anyio` |
+| Ruff | NOT RUN: the Ruff launcher failed to initialize in this execution environment |
+| Actual guest install/upgrade/rollback | NOT TESTED: no authorized disposable guest was available |
+
+The isolated Python 3.12 executable runs, but importing `_ctypes` and `_ssl` fails with “DLL initialization routine failed”. Those failures occurred during test collection before product assertions. The runner-only test file does not import either extension and ran successfully. A separate fake-module probe exercised runtime construction, guest guard requirements, task identity injection, and listener selection. This is limited evidence, not a replacement for the blocked installer tests or real guest acceptance.
+
+The worktree's Git client also failed to initialize (`0xC0000142`) during status inspection. Consequently this checkpoint has not been committed or pushed, and no current cleanliness or remote-tip claim is made. Once Git is available, inspect the exact worktree diff/status, rerun the focused checks, then commit and push the isolated H4.5 branch. Do not merge it to `main`.
+
+### Guest execution procedure
+
+Prepare separate, read-only source bundles for RC `0.14.0` and `1.0.0`; record their source tree SHA-256 values. Create a new guest-local directory whose name begins `h4-rc-`, ensure it is outside the source trees and protected installation directories, and run the preflight without `--apply`. Only a separately authorized guest operator may set `RC_H4_DISPOSABLE_GUEST_AUTHORIZED` to the documented phrase and run a mutating profile. Use the new-source root for `--source-root`; provide the separately staged 0.14.0 root for `--old-source-root` on upgrade/rollback/full. Keep the authorization environment scoped to the guest process. Preserve `environment.json`, `preflight.json`, `test-results.json`, `junit.xml`, per-phase `upgrade-receipts/`, `task-snapshots/`, `process-identity.json`, `cleanup-result.json`, and `cleanup-manifest.json`. If a profile fails or is interrupted, do not rerun over the same phase root; inspect the exact manifest and use the explicit cleanup profile only after the guest is re-preflighted. A cleanup uncertainty requires guest checkpoint restoration or operator inspection.
+
+The current worktree cannot claim this procedure has been exercised on Windows Task Scheduler, UAC, real service processes, or rollback. The earlier WinError 206 probes remain candidate reproductions only; the historical production upgrade failure site is still unknown. WDDM remains incomplete despite the preserved 3/3 known-process correlation. H5 remains blocked by disposable acceptance and the installed-versus-running RC version mismatch; unattended recovery remains disabled.
+
+### Exact fresh commands
+
+Commands ran from `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115\modules\resource_coordinator` using Python 3.12.10 at `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`:
+
+```cmd
+"C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m compileall -q resource_coordinator\installation.py tools\h4_qualification\windows_acceptance.py tests\test_h4_windows_acceptance.py tests\test_h4_installation_runtime.py
+```
+
+Exit 0.
+
+```cmd
+set PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 && "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests\test_h4_windows_acceptance.py -q --basetemp "C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115\modules\resource_coordinator\.pytest_tmp_root\h45-runner-current-3"
+```
+
+Exit 0; **12 passed**. Pytest warned that `asyncio_mode` is unknown because plugin autoload was explicitly disabled.
+
+```cmd
+set PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 && "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests\test_h4_windows_acceptance.py tests\test_h4_wddm_probe.py -q --basetemp "C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115\modules\resource_coordinator\.pytest_tmp_root\h45-offline-final"
+```
+
+Exit 2 at `test_h4_wddm_probe.py` collection: `_ctypes` DLL initialization failed. The runner-only test had already passed independently.
+
+```cmd
+set PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 && "C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe" -m pytest tests\test_h4_installation_runtime.py -q --basetemp "C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115\modules\resource_coordinator\.pytest_tmp_root\h45-runtime-final"
+```
+
+Exit 2 at collection through `resource_coordinator.__init__` → `anyio` → `ssl`: `_ssl` DLL initialization failed. Ruff's launcher and `git status` also exited `-1073741502` (`0xC0000142`) before producing output. No commit or push was attempted after that failure.
+
+### H4.5 continuation validation (2026-11-15)
+
+The first combined regression run exposed compatibility issues in the new injection boundary: existing installer tests replace `_legacy_attribution` with its historical four-argument signature and patch no-argument listener helpers. The initial injected-runtime calls changed those seams. A new helper test also used a pytest temporary root beneath the source checkout, correctly triggering the source-overlap guard. The implementation now retains legacy call signatures for production defaults and uses the system temporary directory for that isolated-path rejection test. Existing assertions were preserved.
+
+The lifecycle runner now exposes the installer's existing failure checkpoints as explicit `--fault-stage` choices: `after_prepared_receipt`, `after_old_service_stopped`, `before_task_replacement`, `after_task_replacement`, and `after_new_service_ready`. Rollback still requires a recognized fault point and an independently verified automatic rollback result. The guest mutation guard also inventories the selected loopback port and fails closed if its listener is not absent or owned by the exact recorded test process (PID, creation time, executable). This adds selectable guest scenarios; no actual guest lifecycle execution is claimed.
+
+Validation ran in the H4.5 worktree from `C:\Users\mcarls\src\scripts\.worktrees\resource-coordinator-h4-full-windows-lifecycle-20261115\modules\resource_coordinator`, using Python 3.12.10 at `C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe`:
+
+```powershell
+$py = 'C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe'
+$base = Join-Path $PWD.Path '.pytest_tmp_root\h45-final'
+& $py -m pytest tests\test_h4_windows_acceptance.py tests\test_h4_installation_runtime.py tests\test_installation.py tests\test_windows_task_transport_integration.py -q -p no:cacheprovider --basetemp $base --junitxml (Join-Path $base 'junit.xml')
+```
+
+Exit 0; JUnit reported **134 tests, 0 failures, 0 errors, 3 skipped**. The skips are opt-in Windows task-mutation tests. No guest mutation was attempted.
+
+```powershell
+$py = 'C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe'
+& $py -m ruff check resource_coordinator\installation.py tools\h4_qualification\windows_acceptance.py tests\test_h4_installation_runtime.py tests\test_h4_windows_acceptance.py
+& $py -m compileall -q resource_coordinator\installation.py tools\h4_qualification\windows_acceptance.py tests\test_h4_installation_runtime.py tests\test_h4_windows_acceptance.py
+git diff --check
+```
+
+All three checks exited 0. JUnit is at `.pytest_tmp_root\h45-final\junit.xml`. An intermediate pytest invocation used a doubled module path for `--basetemp` and failed during fixture setup; it did not run product assertions and is excluded from the passing result.
+
+The existing runner's offline profile was also executed directly with a unique module-local artifact root:
+
+```powershell
+$run = Join-Path $PWD.Path ('.pytest_tmp_root\h4-rc-offline-h45-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $run | Out-Null
+& 'C:\Users\mcarls\src\scripts\.venv\Scripts\python.exe' tools\h4_qualification\windows_acceptance.py --test-root $run --apply --profile offline --json
+```
+
+Exit 0; **110 tests, 0 failures, 0 errors, 1 skipped**. The skip is the pre-existing opt-in Windows task integration case. The offline profile ran no Task Scheduler or service mutation.
+
+Git publication is still pending. `git fetch origin` cannot write the shared `.git/FETCH_HEAD` in this sandbox (`Permission denied`), and this worktree's upstream still points to the earlier H4 documentation branch. No commit or push has been attempted. When repository metadata access is available, confirm the intended H4.5 remote ref and publish explicitly; do not push to the stale upstream.
+
+The current cached `origin/main` and local primary `main` are `be15c705c56c14762f2d534441340ba9c8f12f7c`; the H4.5 worktree remains at base `a618d6b0edcdb9e15f019a9e5109914643c20e99`, with merge base `04835a8c93c90881614d55651688800d5f646cad`. The intervening mainline diff is limited to four `modules/cli_tui/` paths for path completion UI and tests, with no RC overlap. The task branch remains isolated; it was not merged with that unrelated work. Remote refs could not be refreshed because `FETCH_HEAD` is unwritable here. Actual guest installation, upgrade, UAC/task, rollback, and historical WinError 206 path remain `NOT_TESTED`. H5 remains blocked and unattended recovery disabled.

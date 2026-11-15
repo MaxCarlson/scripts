@@ -35,6 +35,41 @@ The source currently has safe mock-backed setup/upgrade/rollback tests and an op
 
 In the authorized VM, take a clean checkpoint, use a dedicated guest account and test-only package copies, set an isolated config/state/credential root, and use no miner executable or upstream model service. Capture the installed distribution and source revision before and after. Exercise setup, v1.0.0 upgrade, receipt/task snapshot, task replacement, process identity/readiness, every interruption boundary, legacy journal export/parser load, old launcher/task restoration, and blocked rollback. At each failure, retain the receipt and prove the old and new launchers cannot both own the journal. Cleanup only task/process/path identities recorded by the run manifest; restore the VM checkpoint if scoped cleanup cannot be proven.
 
+## H4.5 guest-only installation lifecycle profiles
+
+The 2026-11-12 H4 implementation did not call the real mutating `ManagedInstallation` lifecycle because production task names, global credentials, fixed listener identity, and host process/task discovery were not isolated. H4.5 adds a guarded `InstallationRuntime`, isolated installation paths, and test-scoped task/helper/credential dependencies. That source-level seam does not establish Windows operational acceptance. Do not run `rc system setup --apply` or `rc system upgrade --apply` against the primary host.
+
+The runner now recognizes `install`, `upgrade`, `rollback`, `full`, and `cleanup`. All are read-only preflight unless `--apply` is supplied. A mutating run additionally requires `--authorize-guest-mutation`, the exact phrase below, `RC_H4_DISPOSABLE_GUEST_AUTHORIZED` set to that phrase, WMI-confirmed virtual hardware, readable task/service/process inventories, no unrelated RC installation, and a fresh exact-resource guard before each installer mutation. The phrase authorizes one scoped guest run; it does not prove the environment is disposable or owned.
+
+The runner expects two separately staged source trees: current RC `1.0.0` and legacy RC `0.14.0`. The tree hashes are recorded before execution; the old and new roots must differ, package versions must match, and reparse points under module source are rejected. `upgrade` and `rollback` require `--old-source-root`. `rollback` injects a test failure at a selected supported checkpoint and requires the installer to report a verified rollback. `full` runs fresh setup, upgrade, and the rollback exercise in separate phase roots and verifies exact task, listener, and process cleanup after each phase. Before installer mutations, the guard also checks that the phase's non-production loopback port is unbound or owned by the exact recorded test process (PID, creation time, and executable path). Failure retains the run manifest and requires inspection before the separate `cleanup` profile is used.
+
+PowerShell 7 command shape (run only inside a separately authorized disposable guest; the variables must point to staged source copies and a new guest-local root):
+
+```powershell
+$module = 'C:\h4-source\current\modules\resource_coordinator'
+$source = 'C:\h4-source\current'
+$oldSource = 'C:\h4-source\rc-0.14.0'
+$run = Join-Path $env:TEMP ('h4-rc-' + [guid]::NewGuid().ToString('N'))
+New-Item -ItemType Directory -Path $run | Out-Null
+Set-Location $module
+python tools\h4_qualification\windows_acceptance.py --test-root $run --json
+
+# Only after the guest owner separately authorizes these guest mutations:
+$env:RC_H4_DISPOSABLE_GUEST_AUTHORIZED = 'I AUTHORIZE DISPOSABLE H4 WINDOWS MUTATION'
+python tools\h4_qualification\windows_acceptance.py --test-root $run --apply --profile full `
+  --authorization 'I AUTHORIZE DISPOSABLE H4 WINDOWS MUTATION' --authorize-guest-mutation `
+  --source-root $source --old-source-root $oldSource --timeout-seconds 900 --json
+
+# After interruption, re-run preflight and inspect the manifest before scoped cleanup:
+python tools\h4_qualification\windows_acceptance.py --test-root $run --apply --profile cleanup `
+  --authorization 'I AUTHORIZE DISPOSABLE H4 WINDOWS MUTATION' --authorize-guest-mutation `
+  --source-root $source --json
+```
+
+The `--fault-stage` option can target `after_prepared_receipt`, `after_old_service_stopped`, `before_task_replacement`, `after_task_replacement`, or `after_new_service_ready`. The `rollback` and `full` profiles exercise the selected point in an isolated source-backed lifecycle and require a verified rollback result. These fault points are implemented but have not been exercised against actual Task Scheduler/service state. No H4.5 guest lifecycle profile has been executed; Task Scheduler/UAC/service/upgrade/rollback remains `NOT_TESTED` until the named guest and mutation permission are recorded.
+
+The latest H4.5 focused combined regression passed 134 tests with 3 opt-in Windows task tests skipped. Ruff, compilation, and `git diff --check` passed on the changed Python paths. An earlier environment attempt failed to load `_ssl`/`_ctypes`; that result is historical and superseded for the focused installer/runner suites by the later successful run. WDDM tests were not repeated. Refer to `STATUS.md` for exact commands and outcomes.
+
 ## WinError 206 status
 
 Prior harmless native Windows probes reproduced error 206 with oversized command arguments and an overlong executable path. This demonstrates that both boundaries can produce the code; it does not identify the historical failing upgrade operation. The existing file-backed helper transport has offline tests proving large task XML stays out of the process command line. The actual RC upgrade orchestration has not been executed in an isolated Windows guest, so the historical issue is not declared fixed.
