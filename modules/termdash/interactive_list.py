@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-import curses
+try:
+    import curses
+except ImportError:
+    curses = None  # type: ignore[assignment]
 import os
 import shutil
 import sys

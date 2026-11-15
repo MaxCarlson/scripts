@@ -12,7 +12,15 @@ A comprehensive cross-platform system management CLI that exposes and extends th
 
 ## Installation
 
+Standard repository setup (`setup.py` / `modules/setup.py`) installs `system_manager[tui]` automatically on Python 3.9+, providing both the CLI and the interactive Textual `proc-stats` / `sm proc watch` interface.
+
+For standalone installations:
+
 ```bash
+# Full installation with interactive Textual TUI (Python 3.9+)
+pip install -e "modules/system_manager[tui]"
+
+# Minimal / headless / Python 3.8+ installation (noninteractive Rich/JSON/CSV modes)
 pip install -e modules/system_manager
 ```
 

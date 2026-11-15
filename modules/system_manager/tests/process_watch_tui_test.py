@@ -232,9 +232,10 @@ async def test_tui_tree_preserves_expansion_and_selection_across_updates():
         zeta_ident = zeta_node.data
         zeta_node.collapse()
         app._tree_expanded[zeta_ident] = False
-        beta_ident = alpha_node.children[0].data
-        app._tree_selected_identity = beta_ident
-        app.selected_identity = beta_ident
+        beta_node = alpha_node.children[0]
+        beta_ident = beta_node.data
+        tree.select_node(beta_node)
+        await pilot.pause()
 
         # Trigger update with a birth (103), exit (gamma 102), and CPU reorder
         clock[0] += 1.0

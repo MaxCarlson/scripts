@@ -539,7 +539,10 @@ def _install_module(module_name: str, module_dir: Path, *, editable: bool, logs_
         cmd.insert(4, "-q")
     if editable:
         cmd.append("-e")
-    cmd.append(str(module_dir.resolve()))
+    target = str(module_dir.resolve())
+    if module_name == "system_manager" and sys.version_info >= (3, 9):
+        target = f"{target}[tui]"
+    cmd.append(target)
     rc = _run_with_log(cmd, log_file, verbose=verbose)
     if rc == 0:
         _prune_stale_editable_metadata(_pkg_name_from_source(module_dir, verbose), _project_version_from_source(module_dir, verbose), verbose)

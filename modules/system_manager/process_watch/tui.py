@@ -706,8 +706,9 @@ class ProcessWatchApp(App[None]):
         target = self._tree_selected_identity or self.selected_identity
         if target is not None and target in node_by_identity:
             target_node = node_by_identity[target]
+            if hasattr(tree, "_build"):
+                tree._build()
             tree.select_node(target_node)
-            tree.call_after_refresh(tree.select_node, target_node)
 
     def _update_pinned_view(self, snap: MonitoringSnapshot) -> None:
         summary = self.query_one("#pinned-summary", Static)

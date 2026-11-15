@@ -65,3 +65,33 @@ def test_unique_nested_command_without_args_prints_command_help(capsys):
     assert stderr == ""
     assert "usage: sm id sid" in stdout
     assert "-h, --help" in stdout
+
+
+def test_cli_help_and_ui_fallback_without_termdash(monkeypatch, capsys):
+    import subprocess
+    import sys
+
+    code = (
+        "import sys; "
+        "sys.modules['termdash'] = None; "
+        "sys.modules['termdash.interactive_list'] = None; "
+        "from system_manager.cli import main; "
+        "main(['--help'])"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert proc.returncode == 0
+    assert "System Manager CLI" in proc.stdout
+
+    from system_manager import ui
+
+    monkeypatch.setattr(ui, "InteractiveList", None)
+    ui.show_list([{"pid": 123, "name": "demo"}], title="Demo")
+    table_out = capsys.readouterr().out
+    assert "Demo" in table_out
+    assert "123" in table_out
+    assert "demo" in table_out

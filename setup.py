@@ -874,9 +874,14 @@ def _is_package_importable(module_dir: Path, verbose: bool) -> bool:
     pkg = _get_pkg_name_from_source(module_dir, verbose)
     modules = _expected_import_modules(module_dir, pkg)
     code = (
-        "import importlib.util, sys; "
-        "missing = [m for m in sys.argv[1:] if importlib.util.find_spec(m) is None]; "
-        "sys.exit(1 if missing else 0)"
+        "import importlib, sys\n"
+        "failed = []\n"
+        "for m in sys.argv[1:]:\n"
+        "    try:\n"
+        "        importlib.import_module(m)\n"
+        "    except Exception:\n"
+        "        failed.append(m)\n"
+        "sys.exit(1 if failed else 0)\n"
     )
     try:
         res = subprocess.run(

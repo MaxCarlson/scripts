@@ -11,7 +11,6 @@ from typing import List, Optional, Any
 
 from .manager import SystemManager
 from .process_watch.cli import add_watch_arguments, run_from_args
-from .ui import show_list
 
 mgr = SystemManager()
 
@@ -65,6 +64,8 @@ def output_result(data: Any, format: str = "table", title: str = "System Manager
             print(data)
     else: # Default: table (TUI if list)
         if isinstance(data, list) and data and isinstance(data[0], dict):
+            from .ui import show_list
+
             show_list(data, title=title, sort_field=sort_field)
         elif isinstance(data, dict):
             # Print simple vertical table for single dict
