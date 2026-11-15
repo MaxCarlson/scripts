@@ -1,5 +1,7 @@
 # Notifications and Remote Control — Repository Current State & Baseline
 
+> **Current deployment decision (2026-11-15):** Existing WireGuard is the selected private remote-access path. Telegram Group 3A is accepted. Healthchecks Group 3B is operator-deferred and is not a release blocker. Public Tailscale Funnel is not selected for this deployment. The historical phase/status material below predates this decision and must not be used as current rollout authority. See [WireGuard private HTTPS access](wireguard-private-access.md).
+
 **Baseline Date:** 2026-11-11  
 **Repository:** `MaxCarlson/scripts`  
 **Base Commit:** `9102815920eff843c724f4f98a7957d94d46fbb2` (`main` / `origin/main`)  

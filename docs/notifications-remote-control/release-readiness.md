@@ -1,5 +1,7 @@
 # Release Readiness & Subsystem Operational Inventory (Phase 09)
 
+> **Current deployment decision (2026-11-15):** Telegram Group 3A accepted; Healthchecks Group 3B operator-deferred and not a blocker. Existing WireGuard is the selected private access path. Public Tailscale Funnel is not selected. This legacy checklist's Funnel and live Healthchecks gates do not apply to the current rollout; see [WireGuard private HTTPS access](wireguard-private-access.md).
+
 **Document Version:** 1.0.0  
 **Phase:** Phase 09 — Adoption, Release Integration, and Operational Readiness  
 **Repository:** `MaxCarlson/scripts`  

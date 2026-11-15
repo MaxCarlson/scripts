@@ -149,6 +149,44 @@ def test_origin_header_validation_external(tmp_path: Path) -> None:
     assert res_good.status_code == 200
 
 
+def test_wireguard_https_proxy_origin_uses_forwarded_https_port(tmp_path: Path) -> None:
+    """Loopback proxy must forward the external HTTPS port for exact Origin checks."""
+    origin = "https://192.168.50.100:8444"
+    client, _, incident_id, csrf_token = _setup_app(
+        tmp_path,
+        allowed_hosts=["192.168.50.100", "testserver"],
+        allowed_origins=[origin],
+        cookie_secure=True,
+    )
+    headers = {
+        "Host": "192.168.50.100:8444",
+        "X-Forwarded-Host": "192.168.50.100:8444",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Port": "8444",
+        "Origin": origin,
+        "X-CSRF-Token": csrf_token,
+    }
+
+    accepted = client.post(
+        "/api/v1/actions/notifications.acknowledge_incident/prepare",
+        headers=headers,
+        json={"parameters": {"incident_id": incident_id, "reason": "Test ack"}},
+    )
+    assert accepted.status_code == 200
+    assert "__Host-rc_session" in client.cookies.keys()
+    session_cookie = next(cookie for cookie in client.cookies.jar if cookie.name == "__Host-rc_session")
+    assert session_cookie.secure is True
+    assert session_cookie.path == "/"
+
+    rejected = client.post(
+        "/api/v1/actions/notifications.acknowledge_incident/prepare",
+        headers={**headers, "Origin": "https://192.168.50.100:8443"},
+        json={"parameters": {"incident_id": incident_id, "reason": "Test ack"}},
+    )
+    assert rejected.status_code == 403
+    assert rejected.json()["error"] == "forbidden_origin"
+
+
 def test_security_headers_and_hsts(tmp_path: Path) -> None:
     """HSTS, CSP, and Cache-Control headers must be present."""
     client, cfg, _, _ = _setup_app(

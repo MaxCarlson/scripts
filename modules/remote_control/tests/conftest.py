@@ -24,6 +24,35 @@ def temp_dir(tmp_path: Path) -> Path:
     return tmp_path
 
 
+@pytest.fixture(autouse=True)
+def isolate_production_state(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    """Prevent tests from reading or using production Telegram/Healthchecks secrets."""
+    monkeypatch.setenv(
+        "NOTIFICATIONS_TELEGRAM_SECRETS_FILE",
+        str(tmp_path / "test-telegram-secrets.json"),
+    )
+    monkeypatch.setenv(
+        "NOTIFY_HEALTHCHECKS_SECRETS_FILE",
+        str(tmp_path / "test-healthchecks-secrets.json"),
+    )
+    monkeypatch.setenv("REMOTE_CONTROL_AUTH_DB_PATH", str(tmp_path / "test-auth.db"))
+    monkeypatch.setenv("NOTIFICATIONS_DB_PATH", str(tmp_path / "notifications.db"))
+    monkeypatch.setenv("REMOTE_CONTROL_EXTERNAL_EXPOSURE", "0")
+    monkeypatch.delenv("REMOTE_CONTROL_PUBLIC_ORIGIN", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_ALLOWED_HOSTS", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_ALLOWED_ORIGINS", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_TRUSTED_PROXIES", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_TRUSTED_PROXY_PEERS", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_COOKIE_SECURE", raising=False)
+    monkeypatch.delenv("REMOTE_CONTROL_ENV", raising=False)
+    monkeypatch.delenv("NOTIFY_TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("NOTIFY_TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("NOTIFY_TELEGRAM_DASHBOARD_URL", raising=False)
+    monkeypatch.delenv("NOTIFY_HEALTHCHECKS_PING_URL", raising=False)
+    monkeypatch.delenv("NOTIFY_HEALTHCHECKS_INTERVAL", raising=False)
+    monkeypatch.delenv("NOTIFY_HEALTHCHECKS_CHECK_NAME", raising=False)
+
+
 @pytest.fixture
 def test_config(tmp_path: Path) -> RemoteControlConfig:
     auth_db = tmp_path / "auth.db"

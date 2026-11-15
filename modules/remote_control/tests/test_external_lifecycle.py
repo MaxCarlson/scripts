@@ -115,9 +115,15 @@ def test_enable_and_disable_lifecycle(tmp_path: Path) -> None:
     assert client.get_status().funnel_active is False
 
 
-def test_reconcile_barrier_requires_apply_and_evidence(tmp_path: Path) -> None:
+def test_reconcile_barrier_requires_apply_and_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """Dedicated reconciliation requires -a/--apply and authoritative source evidence (Stage E)."""
     auth_db = tmp_path / "auth.db"
+    notif_db = tmp_path / "events.db"
+    monkeypatch.setenv("NOTIFICATIONS_DB_PATH", str(notif_db))
+    from notifications.storage import StorageEngine
+    StorageEngine(notif_db).migrate()
     store = ActionStorage(auth_db)
     cfg = RemoteControlConfig(auth_db_path=auth_db)
     client = SimulatedTailscaleClient(state_file=tmp_path / ".simulated_tailscale.json")
@@ -141,10 +147,7 @@ def test_reconcile_barrier_requires_apply_and_evidence(tmp_path: Path) -> None:
 
     # Now create the incident as acknowledged in notifications DB
     from notifications.models import Incident
-    from notifications.storage import StorageEngine
-    notif_db = tmp_path / "events.db"
     notif_engine = StorageEngine(notif_db)
-    notif_engine.migrate()
     notif_engine.save_incident(Incident(
         incident_id="202",
         source="system",

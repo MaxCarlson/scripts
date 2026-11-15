@@ -1,5 +1,7 @@
 # Telegram Android Delivery Setup & Enrollment Guide (Phase 02)
 
+> **Group 3A status (2026-11-15): Accepted.** Healthchecks Group 3B remains operator-deferred and is not a release blocker. Remote Control transport uses existing WireGuard; public Tailscale Funnel is not selected. This status note does not authorize additional live Telegram messages. See [WireGuard private HTTPS access](wireguard-private-access.md) for the private dashboard path.
+
 This document provides operator instructions for enrolling, verifying, and managing the Telegram delivery provider for the `scripts` repository notification system.
 
 ---

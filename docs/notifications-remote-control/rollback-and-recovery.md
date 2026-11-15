@@ -1,5 +1,7 @@
 # Operational Rollback, Incident Reconciliation & Disaster Recovery (Phase 09)
 
+> **Current deployment path:** Existing WireGuard with the private HTTPS proxy described in [WireGuard private HTTPS access](wireguard-private-access.md). Public Tailscale Funnel is not selected; its procedures below are historical. For this deployment, remove only the approved Caddy service/task, its TCP 8444 firewall rule and any matching WireGuard gateway ACL, then remove the Android-installed public CA certificate if no longer needed. Restore the previous Remote Control environment and verify the app remains on `127.0.0.1:8443`. Do not disable WireGuard or alter Telegram, Resource Coordinator, or Mining services.
+
 **Document Version:** 1.0.0  
 **Phase:** Phase 09 — Adoption, Release Integration, and Operational Readiness  
 **Target Audience:** Workstation Operator / Incident Responder  

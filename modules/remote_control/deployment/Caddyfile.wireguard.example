@@ -1,0 +1,26 @@
+# Unapplied template for private WireGuard access.
+# This template is deliberately fail-closed: the TEST-NET-1 address below
+# matches no real client. Replace it only after confirming the workstation has
+# a stable DHCP reservation and the VPN peer source address is known.
+# Never substitute 0.0.0.0 or a broad LAN range for the matcher or bind.
+
+{
+	# Keep certificate trust changes explicit; install the public root on Android
+	# only after operator approval.
+	skip_install_trust
+}
+
+https://192.168.50.100:8444 {
+	bind 192.168.50.100
+	tls internal
+
+	@wireguard_clients remote_ip 192.0.2.1/32
+	handle @wireguard_clients {
+		reverse_proxy 127.0.0.1:8443 {
+			# The app validates the browser's effective HTTPS origin port.
+			header_up X-Forwarded-Port 8444
+		}
+	}
+
+	respond 403
+}

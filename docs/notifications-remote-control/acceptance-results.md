@@ -1,5 +1,7 @@
 # Operational Acceptance Results & Gate Ledger (Phase 09)
 
+> **Current release decision (2026-11-15):** Telegram Group 3A is accepted. Healthchecks Group 3B is operator-deferred (check creation and private ping URL enrollment remain operator actions) and is not a blocker for this release. Existing WireGuard is selected for private Remote Control access; public Tailscale Funnel is not selected. The legacy E01/E02 and Funnel rows below record earlier acceptance gates and do not override this decision. See [WireGuard private HTTPS access](wireguard-private-access.md).
+
 **Document Version:** 1.0.0  
 **Phase:** Phase 09 — Adoption, Release Integration, and Operational Readiness  
 **Target Repository:** `MaxCarlson/scripts`  

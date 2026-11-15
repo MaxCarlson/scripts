@@ -1,5 +1,7 @@
 # Tailscale Funnel Public HTTPS Setup Guide (Phase 08)
 
+> **Historical, not selected for the current deployment.** The operator selected existing WireGuard for private Remote Control access. Do not use this Funnel guide as the current deployment procedure or run `external enable`. Use [WireGuard private HTTPS access](wireguard-private-access.md). The Funnel implementation remains in the repository for historical/other authorized use.
+
 **Document Version:** 1.0.0  
 **Phase:** Phase 08 — Public HTTPS Readiness, Funnel Lifecycle, and Final Action-Safety Gates  
 **Module:** `modules/remote_control`  
