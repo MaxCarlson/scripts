@@ -572,8 +572,8 @@ try {
         }
 
         # Resolve and re-verify the exact setup-receipted bundle for this OperationId
-        $resolvedBundle = Invoke-H4GuestScript -Session $session -ArgumentList @($OperationId, $ExpectedBundleSha256) -ScriptBlock {
-            param($opId, $expBundle)
+        $resolvedBundle = Invoke-H4GuestScript -Session $session -ArgumentList @($OperationId, $ExpectedBundleSha256, $guestVenvPy) -ScriptBlock {
+            param($opId, $expBundle, $pyExe)
             $ErrorActionPreference = 'Stop'
             $receiptPath = "C:\H4-Guest-Work\receipts\setup-$opId.json"
             if (-not (Test-Path -LiteralPath $receiptPath -PathType Leaf)) {
@@ -596,11 +596,15 @@ try {
                 throw "Bundle verification script missing at '$verifyScript'."
             }
             $pwshExe = 'C:\Program Files\PowerShell\7\pwsh.exe'
-            & $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyScript -BundleRoot $bundleDir
+            $verifyOutput = @(& $pwshExe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File $verifyScript -BundleRoot $bundleDir -Python $pyExe *>&1)
             if ($LASTEXITCODE -ne 0) {
-                throw "Verify-H4GuestBundle.ps1 failed for '$bundleDir' with exit $LASTEXITCODE"
+                $detail = ($verifyOutput | ForEach-Object { [string]$_ }) -join "`n"
+                throw "Verify-H4GuestBundle.ps1 failed for '$bundleDir' with exit ${LASTEXITCODE}: $detail"
             }
-            return $bundleDir
+            return [string]$bundleDir
+        }
+        if ($resolvedBundle -is [array] -or [string]::IsNullOrWhiteSpace([string]$resolvedBundle)) {
+            throw "Expected a single verified bundle directory path, got: $($resolvedBundle | ConvertTo-Json -Compress)"
         }
         $guestBundleRoot = [string]$resolvedBundle
         $guestManifest = "$guestBundleRoot\manifest.json"

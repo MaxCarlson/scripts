@@ -174,6 +174,8 @@ Describe 'Invoke-H4GuestQualification.ps1' {
                 }
             }
             if ($text -match 'Verify-H4GuestBundle\.ps1') {
+                $Global:qVerifyScriptBlock = $ScriptBlock
+                $Global:qVerifyArgs = $ArgumentList
                 if ($Global:qMissingReceipt) {
                     throw "Setup receipt not found for OperationId '$($ArgumentList[0])'."
                 }
@@ -402,5 +404,65 @@ Describe 'Invoke-H4GuestQualification.ps1' {
         (Test-Path -LiteralPath (Join-Path $extractRoot 'harness\windows_acceptance.py') -PathType Leaf) | Should Be $true
         (Test-Path -LiteralPath (Join-Path $extractRoot 'sources\rc-1.0.0') -PathType Container) | Should Be $true
         (Test-Path -LiteralPath (Join-Path $extractRoot 'sources\rc-0.14.0') -PathType Container) | Should Be $true
+    }
+
+    It 'resumed Acceptance verification passes guest venv Python, captures stdout without polluting return value, and throws on nonzero exit' {
+        Initialize-QualMocks
+        $rAcc = Invoke-Qual -Extra @{ Stage = 'Acceptance'; Apply = $true; AuthorizeGuestMutation = $true }
+        $rAcc.ExitCode | Should Be 0
+        $Global:qVerifyArgs[2] | Should Be 'C:\H4-Guest-Work\venv\Scripts\python.exe'
+
+        $vRoot = Join-Path $testTemp 'verify_stdout_test'
+        $vReceipts = Join-Path $vRoot 'receipts'
+        $vBundle = Join-Path $vRoot 'bundle'
+        $vScripts = Join-Path $vBundle 'scripts'
+        New-Item -ItemType Directory -Path $vReceipts, $vScripts -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $vBundle 'manifest.json') -Value '{}' -Encoding UTF8
+
+        $pyRecordFile = Join-Path $vRoot 'recorded_python.txt'
+        $fakeVerifyScript = Join-Path $vScripts 'Verify-H4GuestBundle.ps1'
+        @"
+param([string]`$BundleRoot, [string]`$Python)
+Set-Content -LiteralPath '$pyRecordFile' -Value `$Python -NoNewline -Encoding UTF8
+Write-Output 'Verify-H4GuestBundle stdout line 1'
+Write-Output 'Verify-H4GuestBundle stdout line 2'
+exit 0
+"@ | Set-Content -LiteralPath $fakeVerifyScript -Encoding UTF8
+
+        $opId = 'optest01'
+        @{
+            operation_id  = $opId
+            bundle_sha256 = $bundleSha.ToLowerInvariant()
+            bundle_dest   = $vBundle
+        } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $vReceipts "setup-$opId.json") -Encoding UTF8
+
+        $pwshPath = (Get-Command pwsh).Source
+        $adaptedCode = $Global:qVerifyScriptBlock.ToString().
+            Replace('C:\H4-Guest-Work\receipts', $vReceipts).
+            Replace('C:\Program Files\PowerShell\7\pwsh.exe', $pwshPath)
+        $adaptedSb = [scriptblock]::Create($adaptedCode)
+
+        $resolved = & $adaptedSb $Global:qVerifyArgs[0] $Global:qVerifyArgs[1] $Global:qVerifyArgs[2]
+        ($resolved -is [string]) | Should Be $true
+        (@($resolved).Count) | Should Be 1
+        $resolved | Should Be $vBundle
+        (Get-Content -LiteralPath $pyRecordFile -Raw) | Should Be 'C:\H4-Guest-Work\venv\Scripts\python.exe'
+
+        @"
+param([string]`$BundleRoot, [string]`$Python)
+Write-Output 'Simulated verification failure output'
+exit 4
+"@ | Set-Content -LiteralPath $fakeVerifyScript -Encoding UTF8
+
+        $threw = $false
+        $errText = ''
+        try {
+            $null = & $adaptedSb $Global:qVerifyArgs[0] $Global:qVerifyArgs[1] $Global:qVerifyArgs[2]
+        } catch {
+            $threw = $true
+            $errText = $_.Exception.Message
+        }
+        $threw | Should Be $true
+        $errText | Should Match 'exit 4'
     }
 }
