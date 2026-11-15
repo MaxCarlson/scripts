@@ -32,40 +32,22 @@ def configure_parser(
         "-o",
         "--output",
         type=Path,
-        default=Path("combined_urls.txt"),
-        help="Output URL file (default: combined_urls.txt in the input folder).",
+        default=Path("all-url-files.txt"),
+        help="Output URL file (default: all-url-files.txt in the input folder).",
     )
-    mode = parser.add_mutually_exclusive_group()
-    mode.add_argument(
-        "-n",
-        "--dry-run",
-        dest="dry_run",
-        action="store_true",
-        default=True,
-        help="List matched files and preview the merge without writing (default).",
-    )
-    mode.add_argument(
+    parser.add_argument(
         "-f",
         "--apply",
-        dest="dry_run",
-        action="store_false",
-        help="Write the combined URL file.",
-    )
-    duplicate_action = parser.add_mutually_exclusive_group()
-    duplicate_action.add_argument(
-        "-N",
-        "--no-duplicates",
-        dest="no_duplicates",
         action="store_true",
-        default=True,
-        help="Keep only the first copy of each URL (default).",
+        default=False,
+        help="Write or update the output URL file (default: dry-run preview).",
     )
-    duplicate_action.add_argument(
+    parser.add_argument(
         "-K",
         "--keep-duplicates",
-        dest="no_duplicates",
-        action="store_false",
-        help="Keep repeated URL rows in the output.",
+        action="store_true",
+        default=False,
+        help="Keep repeated URL rows in the output (default: deduplicate).",
     )
 
 
@@ -98,25 +80,41 @@ def _matching_files(directory: Path, patterns: list[str]) -> list[Path]:
     return matches
 
 
-def _collect_urls(
-    source_files: list[Path], *, no_duplicates: bool
-) -> tuple[list[str], int]:
+def _read_url_lines(path: Path) -> list[str]:
     urls: list[str] = []
-    seen: set[str] = set()
+    for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+        url = line.strip()
+        if not url or url.startswith(("#", ";")):
+            continue
+        urls.append(url)
+    return urls
+
+
+def _collect_urls(
+    source_files: list[Path],
+    *,
+    keep_duplicates: bool,
+    existing_urls: list[str] | None = None,
+) -> tuple[list[str], int, int]:
+    urls: list[str] = list(existing_urls or [])
+    existing_seen: set[str] = set(urls)
+    seen: set[str] = set(urls)
     duplicate_count = 0
+    new_count = 0
     for path in source_files:
-        for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
-            url = line.strip()
-            if not url or url.startswith(("#", ";")):
+        for url in _read_url_lines(path):
+            if existing_urls is not None and keep_duplicates and url in existing_seen:
+                duplicate_count += 1
                 continue
             if url in seen:
                 duplicate_count += 1
-                if no_duplicates:
+                if not keep_duplicates:
                     continue
             else:
                 seen.add(url)
             urls.append(url)
-    return urls, duplicate_count
+            new_count += 1
+    return urls, duplicate_count, new_count
 
 
 def _write_urls(path: Path, urls: list[str]) -> None:
@@ -149,23 +147,30 @@ def run_cli(args: argparse.Namespace) -> int:
             f"The output file is also matched as an input: {output}. Choose a different output path or pattern."
         )
 
-    urls, duplicate_count = _collect_urls(
-        source_files, no_duplicates=args.no_duplicates
+    existing_urls = _read_url_lines(output) if output.is_file() else None
+    urls, duplicate_count, new_count = _collect_urls(
+        source_files,
+        keep_duplicates=args.keep_duplicates,
+        existing_urls=existing_urls,
     )
-    print(f"Mode: {'Dry run' if args.dry_run else 'Apply'}")
+    print(f"Mode: {'Apply' if args.apply else 'Dry run'}")
     print("Matched files:")
     for path in source_files:
         print(f"  {path}")
     print(f"Output: {output}")
+    if existing_urls is not None:
+        print(f"Existing URLs in output: {len(existing_urls)}")
+        print(f"New URLs to add: {new_count}")
     print(f"URLs in output: {len(urls)}")
     duplicate_label = (
-        "Duplicates removed" if args.no_duplicates else "Duplicate rows found"
+        "Duplicate rows found" if args.keep_duplicates else "Duplicates removed"
     )
     print(f"{duplicate_label}: {duplicate_count}")
 
-    if not args.dry_run:
+    if args.apply:
         _write_urls(output, urls)
-        print("Combined URL file written.")
+        action_verb = "updated" if existing_urls is not None else "written"
+        print(f"Combined URL file {action_verb}.")
     else:
         print("Dry run only; no files were written.")
     return 0
