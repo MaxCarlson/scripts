@@ -25,3 +25,35 @@ function Test-VmLabAdministrator {
     }
     return $false
 }
+
+function Test-VmLabInteractiveDesktop {
+    if ($env:VM_LAB_NONINTERACTIVE -eq '1') {
+        return $false
+    }
+    return [Environment]::UserInteractive
+}
+
+function Resolve-VmLabVmConnectPath {
+    $candidates = @()
+    if (-not [string]::IsNullOrWhiteSpace($env:SystemRoot)) {
+        $candidates += (Join-Path $env:SystemRoot 'System32\vmconnect.exe')
+    }
+    $cmd = Get-Command -Name 'vmconnect.exe' -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source) {
+        $candidates += $cmd.Source
+    }
+    foreach ($cand in $candidates) {
+        if (-not [string]::IsNullOrWhiteSpace($cand) -and (Test-Path -LiteralPath $cand -PathType Leaf)) {
+            return $cand
+        }
+    }
+    throw 'vmconnect.exe was not found. Ensure Hyper-V Management Tools are installed on this Windows host.'
+}
+
+function Start-VmLabProcess {
+    param(
+        [Parameter(Mandatory)][string]$FilePath,
+        [Parameter(Mandatory)][string[]]$ArgumentList
+    )
+    return (Start-Process -FilePath $FilePath -ArgumentList $ArgumentList -PassThru -ErrorAction Stop)
+}

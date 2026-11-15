@@ -8,6 +8,7 @@ $srcFiles = @(
     'Provisioning.ps1',
     'Lifecycle.ps1',
     'Checkpoints.ps1',
+    'Wizard.ps1',
     'Output.ps1'
 )
 
@@ -21,6 +22,8 @@ foreach ($srcFile in $srcFiles) {
 Set-Alias -Name 'vm-lab' -Value 'Invoke-VmLab'
 Export-ModuleMember -Function @(
     'Get-VmLabTemplate',
+    'Get-VmLabTemplates',
+    'Get-VmLabTemplateInfo',
     'Test-VmLabConfig',
     'Get-VmLabOwnershipManifest',
     'Test-VmLabOwnership',
@@ -28,8 +31,13 @@ Export-ModuleMember -Function @(
     'Get-VmLabStatus',
     'Test-VmLabPlan',
     'New-VmLabMachine',
+    'Invoke-VmLabQuickstart',
+    'Invoke-VmLabWizard',
     'Start-VmLabMachine',
     'Stop-VmLabMachine',
+    'Connect-VmLabMachine',
+    'Start-AndConnectVmLabMachine',
+    'Get-VmLabBootDiagnostics',
     'New-VmLabCheckpoint',
     'Get-VmLabCheckpoint',
     'Invoke-VmLab'

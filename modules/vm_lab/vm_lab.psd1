@@ -7,6 +7,8 @@
     PowerShellVersion = '7.0'
     FunctionsToExport = @(
         'Get-VmLabTemplate',
+        'Get-VmLabTemplates',
+        'Get-VmLabTemplateInfo',
         'Test-VmLabConfig',
         'Get-VmLabOwnershipManifest',
         'Test-VmLabOwnership',
@@ -14,8 +16,13 @@
         'Get-VmLabStatus',
         'Test-VmLabPlan',
         'New-VmLabMachine',
+        'Invoke-VmLabQuickstart',
+        'Invoke-VmLabWizard',
         'Start-VmLabMachine',
         'Stop-VmLabMachine',
+        'Connect-VmLabMachine',
+        'Start-AndConnectVmLabMachine',
+        'Get-VmLabBootDiagnostics',
         'New-VmLabCheckpoint',
         'Get-VmLabCheckpoint',
         'Invoke-VmLab'

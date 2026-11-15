@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "template_id": "windows11-empty",
+  "description": "Minimal reusable Generation 2 VM template with Secure Boot, vTPM, and ISO selection, making no post-install assumptions.",
+  "guest_os": "Windows 11",
+  "vm_name": "Lab-Gen2-01",
+  "vm_root": "C:\\VMs\\Lab-Gen2-01",
+  "generation": 2,
+  "cpu_count": 2,
+  "memory_startup_bytes": 4294967296,
+  "memory_minimum_bytes": 4294967296,
+  "memory_maximum_bytes": 6442450944,
+  "vhdx_size_bytes": 68719476736,
+  "vhdx_format": "Dynamic",
+  "iso_path": "",
+  "secure_boot": {
+    "enabled": true,
+    "template": "MicrosoftWindows"
+  },
+  "vtpm_enabled": true,
+  "switch_name": "",
+  "checkpoint_type": "Standard",
+  "automatic_checkpoints_enabled": false,
+  "automatic_start_action": "Nothing",
+  "owner_namespace": "vm_lab.lab",
+  "prerequisites": [
+    "Bootable Generation 2 x64 installation ISO",
+    "Administrator or Hyper-V Administrators privileges"
+  ]
+}

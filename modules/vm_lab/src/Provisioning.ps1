@@ -263,3 +263,136 @@ function New-VmLabMachine {
         }
     }
 }
+
+function Invoke-VmLabQuickstart {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][psobject]$Config,
+        [Alias('a')][switch]$Apply,
+        [switch]$Start,
+        [switch]$Connect,
+        [int64]$MinHostReserveBytes = 4GB,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $null = Test-VmLabConfig -Config $Config
+    $vmHost = Get-VMHost -ErrorAction Stop
+    $hostName = if ($vmHost.ComputerName) { [string]$vmHost.ComputerName } else { $env:COMPUTERNAME }
+    $netState = if ([string]::IsNullOrWhiteSpace($Config.switch_name)) { 'Disconnected (no virtual switch)' } else { "Connected ($($Config.switch_name))" }
+
+    $existingVm = Get-VM -ErrorAction Stop | Where-Object { $_.Name -eq $Config.vm_name } | Select-Object -First 1
+    if ($existingVm) {
+        $own = Test-VmLabOwnership -Vm $existingVm -ManifestRoot $ManifestRoot
+        if (-not $own.owned) {
+            throw "VM '$($Config.vm_name)' already exists in Hyper-V and is not owned by vm_lab ($($own.reason)). Refusing to adopt or recreate."
+        }
+        $vmState = [string]$existingVm.State
+        $startRes = $null
+        if ($Start -and $Apply -and -not $WhatIfPreference -and $vmState -ne 'Running') {
+            $startRes = Start-VmLabMachine -Name $existingVm.Name -MinHostReserveBytes $MinHostReserveBytes -Apply -ManifestRoot $ManifestRoot
+            $vmState = $startRes.state
+        }
+        $connectRes = $null
+        if ($Connect -and -not $WhatIfPreference) {
+            if (Test-VmLabInteractiveDesktop) {
+                $connectRes = Connect-VmLabMachine -Name $existingVm.Name -ManifestRoot $ManifestRoot
+            } else {
+                $connectRes = [pscustomobject]@{ status = 'skipped_noninteractive'; reason = 'Interactive desktop session required for VMConnect.' }
+            }
+        }
+        $nextAction = if ($vmState -ne 'Running') {
+            "Start the existing owned VM with: vm-lab -o start -n '$($existingVm.Name)' -Apply"
+        } elseif (-not [string]::IsNullOrWhiteSpace($Config.iso_path)) {
+            "Connect via VMConnect (vm-lab -o connect -n '$($existingVm.Name)') and complete Windows Setup, then run: vm-lab -o guest-status -n '$($existingVm.Name)'"
+        } else {
+            "Verify guest readiness with: vm-lab -o guest-status -n '$($existingVm.Name)'"
+        }
+        return [pscustomobject]@{
+            status               = if ($startRes) { $startRes.status } else { 'existing_owned' }
+            operation            = 'quickstart'
+            vm_name              = $existingVm.Name
+            vm_id                = [string]$existingVm.Id
+            host_name            = $hostName
+            vm_config_path       = $own.manifest.vm_config_path
+            vhdx_path            = $own.manifest.vhdx_path
+            vhdx_size_bytes      = [int64]$Config.vhdx_size_bytes
+            iso_path             = $Config.iso_path
+            network_state        = $netState
+            cpu_count            = [int]$existingVm.ProcessorCount
+            memory_startup_bytes = [int64]$existingVm.MemoryStartup
+            ownership_status     = 'owned'
+            vm_state             = $vmState
+            connect              = $connectRes
+            next_action          = $nextAction
+        }
+    }
+
+    $plan = Test-VmLabPlan -Config $Config -ManifestRoot $ManifestRoot
+    if (-not $Apply -or $WhatIfPreference) {
+        if ($WhatIfPreference) {
+            $null = $PSCmdlet.ShouldProcess($Config.vm_name, "Quickstart lab VM at '$($plan.vm_root)'")
+        }
+        return [pscustomobject]@{
+            status               = 'planned'
+            operation            = 'quickstart'
+            vm_name              = $Config.vm_name
+            vm_id                = $null
+            host_name            = $hostName
+            vm_config_path       = $plan.vm_config_path
+            vhdx_path            = $plan.vhdx_path
+            vhdx_size_bytes      = $plan.vhdx_size_bytes
+            iso_path             = $Config.iso_path
+            network_state        = $netState
+            cpu_count            = [int]$Config.cpu_count
+            memory_startup_bytes = [int64]$Config.memory_startup_bytes
+            ownership_status     = 'planned'
+            vm_state             = 'NotCreated'
+            free_disk_bytes      = $plan.free_disk_bytes
+            free_ram_bytes       = $plan.free_ram_bytes
+            next_action          = "Re-run with -Apply (-a) to create '$($Config.vm_name)'."
+        }
+    }
+
+    $created = New-VmLabMachine -Config $Config -Apply -ManifestRoot $ManifestRoot
+    $vmState = 'Off'
+    $startRes = $null
+    if ($Start) {
+        $startRes = Start-VmLabMachine -Name $Config.vm_name -MinHostReserveBytes $MinHostReserveBytes -Apply -ManifestRoot $ManifestRoot
+        $vmState = $startRes.state
+    }
+    $connectRes = $null
+    if ($Connect) {
+        if (Test-VmLabInteractiveDesktop) {
+            $connectRes = Connect-VmLabMachine -Name $Config.vm_name -ManifestRoot $ManifestRoot
+        } else {
+            $connectRes = [pscustomobject]@{ status = 'skipped_noninteractive'; reason = 'Interactive desktop session required for VMConnect.' }
+        }
+    }
+
+    $nextAction = if (-not $Start) {
+        "VM created. Start it with: vm-lab -o start -n '$($Config.vm_name)' -Apply (or -o start-connect -n '$($Config.vm_name)' -Apply)."
+    } elseif (-not [string]::IsNullOrWhiteSpace($Config.iso_path)) {
+        "VM started. Open VMConnect (vm-lab -o connect -n '$($Config.vm_name)') and press any key promptly when prompted to boot from DVD."
+    } else {
+        "VM started. Check guest readiness with: vm-lab -o guest-status -n '$($Config.vm_name)'"
+    }
+
+    return [pscustomobject]@{
+        status               = if ($startRes) { 'created_and_started' } else { 'created' }
+        operation            = 'quickstart'
+        vm_name              = $Config.vm_name
+        vm_id                = $created.vm_id
+        host_name            = $hostName
+        vm_config_path       = $created.manifest.vm_config_path
+        vhdx_path            = $created.manifest.vhdx_path
+        vhdx_size_bytes      = [int64]$Config.vhdx_size_bytes
+        iso_path             = $Config.iso_path
+        network_state        = $netState
+        cpu_count            = [int]$Config.cpu_count
+        memory_startup_bytes = [int64]$Config.memory_startup_bytes
+        ownership_status     = 'owned'
+        vm_state             = $vmState
+        manifest_path        = $created.manifest_path
+        connect              = $connectRes
+        next_action          = $nextAction
+    }
+}

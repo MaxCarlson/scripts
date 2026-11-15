@@ -180,3 +180,105 @@ function Stop-VmLabMachine {
         graceful  = $true
     }
 }
+
+function Get-VmLabBootDiagnostics {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $owned = Assert-VmLabOwnedVm -Name $Name -ManifestRoot $ManifestRoot
+    $vm = $owned.vm
+    $dvds = @(Get-VMDvdDrive -VMName $Name -ErrorAction SilentlyContinue)
+    $attachedIso = @($dvds | Where-Object { -not [string]::IsNullOrWhiteSpace($_.Path) } | Select-Object -ExpandProperty Path)
+    $fw = Get-VMFirmware -VMName $Name -ErrorAction SilentlyContinue
+    $secureBoot = if ($fw) { [string]$fw.SecureBoot } else { 'Unknown' }
+    $firstBootDevice = if ($fw -and $fw.BootOrder -and $fw.BootOrder.Count -gt 0) { [string]$fw.BootOrder[0].BootType } else { 'Unknown' }
+
+    $guidance = @(
+        'If UEFI shows "SCSI DVD (0,1): The boot loader failed.", the "Press any key to boot from CD or DVD..." prompt likely timed out.',
+        'Open VMConnect first, then perform a controlled restart (stop/start) and press any key immediately when prompted.',
+        'Do not disable Secure Boot for standard Windows 11 installation media.'
+    )
+
+    return [pscustomobject]@{
+        vm_name           = $Name
+        vm_id             = [string]$vm.Id
+        state             = [string]$vm.State
+        attached_isos     = @($attachedIso)
+        secure_boot       = $secureBoot
+        first_boot_device = $firstBootDevice
+        guidance          = $guidance
+    }
+}
+
+function Connect-VmLabMachine {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $owned = Assert-VmLabOwnedVm -Name $Name -ManifestRoot $ManifestRoot
+    $vm = $owned.vm
+    if (-not (Test-VmLabInteractiveDesktop)) {
+        throw 'VMConnect requires an interactive Windows desktop session (non-interactive/headless session detected).'
+    }
+    $vmconnectExe = Resolve-VmLabVmConnectPath
+
+    if ($WhatIfPreference) {
+        $null = $PSCmdlet.ShouldProcess($Name, "Launch VMConnect ($vmconnectExe localhost '$Name')")
+        return [pscustomobject]@{
+            status         = 'planned'
+            operation      = 'connect'
+            vm_name        = $Name
+            vm_id          = [string]$vm.Id
+            vm_state       = [string]$vm.State
+            vmconnect_path = $vmconnectExe
+            arguments      = @('localhost', $Name)
+        }
+    }
+    if (-not $PSCmdlet.ShouldProcess($Name, "Launch VMConnect ($vmconnectExe localhost '$Name')")) {
+        return [pscustomobject]@{ status = 'declined'; operation = 'connect'; vm_name = $Name }
+    }
+
+    $proc = Start-VmLabProcess -FilePath $vmconnectExe -ArgumentList @('localhost', $vm.Name)
+    return [pscustomobject]@{
+        status         = 'connected'
+        operation      = 'connect'
+        vm_name        = $vm.Name
+        vm_id          = [string]$vm.Id
+        vm_state       = [string]$vm.State
+        vmconnect_path = $vmconnectExe
+        process_id     = if ($proc -and $proc.Id) { [int]$proc.Id } else { $null }
+        boot_hint      = 'If booting from Windows Setup ISO, click inside VMConnect and press any key promptly when prompted to boot from DVD.'
+    }
+}
+
+function Start-AndConnectVmLabMachine {
+    [CmdletBinding(SupportsShouldProcess = $true)]
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [int64]$MinHostReserveBytes = 4GB,
+        [Alias('a')][switch]$Apply,
+        [string]$ManifestRoot = (Get-VmLabDefaultManifestRoot)
+    )
+    $startRes = Start-VmLabMachine -Name $Name -MinHostReserveBytes $MinHostReserveBytes -Apply:$Apply -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+    if (-not $Apply -or $WhatIfPreference) {
+        return [pscustomobject]@{
+            status    = 'planned'
+            operation = 'start-connect'
+            vm_name   = $Name
+            start     = $startRes
+            connect   = [pscustomobject]@{ status = 'planned'; interactive_desktop = (Test-VmLabInteractiveDesktop) }
+        }
+    }
+    $connectRes = Connect-VmLabMachine -Name $Name -WhatIf:$WhatIfPreference -ManifestRoot $ManifestRoot
+    return [pscustomobject]@{
+        status    = 'started_and_connected'
+        operation = 'start-connect'
+        vm_name   = $Name
+        vm_id     = $startRes.vm_id
+        start     = $startRes
+        connect   = $connectRes
+    }
+}

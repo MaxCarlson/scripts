@@ -44,7 +44,7 @@
 param(
     [Parameter(Mandatory, Position = 0)]
     [Alias('o')]
-    [ValidateSet('list', 'status', 'plan', 'create', 'start', 'stop', 'checkpoint', 'checkpoints')]
+    [ValidateSet('list', 'status', 'plan', 'quickstart', 'wizard', 'templates', 'template-info', 'create', 'start', 'stop', 'connect', 'start-connect', 'boot-diagnostics', 'checkpoint', 'checkpoints')]
     [string]$Operation,
 
     [Alias('n')][string]$Name,
@@ -59,7 +59,9 @@ param(
     [Alias('oo')][switch]$OwnedOnly,
     [Alias('rb')][int64]$MinReserveBytes = 4GB,
     [Alias('st')][int]$ShutdownTimeoutSeconds = 30,
-    [Alias('mr')][string]$ManifestRoot
+    [Alias('mr')][string]$ManifestRoot,
+    [switch]$Start,
+    [switch]$Connect
 )
 
 $ErrorActionPreference = 'Stop'

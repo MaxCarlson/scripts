@@ -510,6 +510,104 @@ Describe 'vm_lab module' {
             try { $null = Get-VmLabList -ManifestRoot $Global:vmLabManifestRoot } catch { $err2 = $_.Exception.Message }
             $err2 | Should Match 'Access denied'
         }
+
+        It 'lists and validates all built-in templates via templates and template-info' {
+            $tpls = Invoke-VmLab -Operation templates -Json | ConvertFrom-Json
+            $tplIds = @($tpls | ForEach-Object { $_.template_id })
+            ($tplIds -contains 'windows11-h4') | Should Be $true
+            ($tplIds -contains 'windows11-dev') | Should Be $true
+            ($tplIds -contains 'windows11-light') | Should Be $true
+            ($tplIds -contains 'windows11-empty') | Should Be $true
+
+            $info = Invoke-VmLab -Operation template-info -TemplateName 'windows11-dev' -Json | ConvertFrom-Json
+            $info.valid | Should Be $true
+            $info.config.generation | Should Be 2
+        }
+
+        It 'runs quickstart dry-run, separate create/start boundaries, and resumable existing-VM inspection' {
+            $qsRoot = Join-Path $testTemp 'qs_dev_vm'
+            $plan = Invoke-VmLab -Operation quickstart -TemplateName 'windows11-dev' -Name 'QS-Dev-01' -VmRoot $qsRoot -ManifestRoot $Global:vmLabManifestRoot -Json | ConvertFrom-Json
+            $plan.status | Should Be 'planned'
+            $plan.vm_state | Should Be 'NotCreated'
+            $Global:vmLabLog.Count | Should Be 0
+
+            # -Apply without -Start creates VM only
+            $created = Invoke-VmLab -Operation quickstart -TemplateName 'windows11-dev' -Name 'QS-Dev-01' -VmRoot $qsRoot -Apply -ManifestRoot $Global:vmLabManifestRoot
+            $created.status | Should Be 'created'
+            $created.vm_state | Should Be 'Off'
+            ($Global:vmLabLog -contains 'New-VM:QS-Dev-01') | Should Be $true
+            ($Global:vmLabLog -contains 'Start-VM:QS-Dev-01') | Should Be $false
+
+            # Re-running quickstart on existing owned VM inspects it and starts when -Start -Apply is passed
+            $resumed = Invoke-VmLab -Operation quickstart -TemplateName 'windows11-dev' -Name 'QS-Dev-01' -VmRoot $qsRoot -Apply -Start -ManifestRoot $Global:vmLabManifestRoot
+            $resumed.status | Should Be 'started'
+            $resumed.vm_state | Should Be 'Running'
+
+            # Refuses to adopt unmanaged VM
+            $errUnm = $null
+            try {
+                $null = Invoke-VmLab -Operation quickstart -TemplateName 'windows11-dev' -Name 'Unmanaged-VM' -VmRoot (Join-Path $testTemp 'qs_unm') -ManifestRoot $Global:vmLabManifestRoot
+            } catch {
+                $errUnm = $_.Exception.Message
+            }
+            $errUnm | Should Match 'not owned'
+        }
+
+        It 'handles VMConnect, start-connect, boot-diagnostics, and non-interactive rejection' {
+            Mock -ModuleName vm_lab Test-VmLabInteractiveDesktop { return $true }
+            Mock -ModuleName vm_lab Resolve-VmLabVmConnectPath { return 'C:\Windows\System32\vmconnect.exe' }
+            Mock -ModuleName vm_lab Start-VmLabProcess {
+                param($FilePath, $ArgumentList)
+                $Global:vmLabLog.Add("VMConnect:$($ArgumentList -join ' ')")
+                return [pscustomobject]@{ Id = 9999 }
+            }
+            Mock -ModuleName vm_lab Get-VMDvdDrive { return @([pscustomobject]@{ Path = 'C:\ISOs\Win11.iso' }) }
+            Mock -ModuleName vm_lab Get-VMFirmware { return [pscustomobject]@{ SecureBoot = 'On'; BootOrder = @([pscustomobject]@{ BootType = 'Drive' }) } }
+
+            $conn = Invoke-VmLab -Operation connect -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $conn.status | Should Be 'connected'
+            ($Global:vmLabLog -contains 'VMConnect:localhost Managed-VM') | Should Be $true
+
+            $scPlan = Invoke-VmLab -Operation start-connect -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $scPlan.status | Should Be 'planned'
+
+            $diag = Invoke-VmLab -Operation boot-diagnostics -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot
+            $diag.secure_boot | Should Be 'On'
+            $diag.attached_isos[0] | Should Be 'C:\ISOs\Win11.iso'
+
+            Mock -ModuleName vm_lab Test-VmLabInteractiveDesktop { return $false }
+            $errHeadless = $null
+            try { $null = Invoke-VmLab -Operation connect -Name 'Managed-VM' -ManifestRoot $Global:vmLabManifestRoot } catch { $errHeadless = $_.Exception.Message }
+            $errHeadless | Should Match 'interactive Windows desktop'
+        }
+
+        It 'runs interactive setup wizard with mocked prompts and blocks wizard in -Json mode' {
+            $errJson = $null
+            try { $null = Invoke-VmLab -Operation wizard -Json -ManifestRoot $Global:vmLabManifestRoot } catch { $errJson = $_.Exception.Message }
+            $errJson | Should Match '-Json mode'
+
+            Mock -ModuleName vm_lab Test-VmLabInteractiveDesktop { return $true }
+            $Global:vmLabWizardQueue = [System.Collections.Queue]::new(@(
+                'windows11-light',
+                'Wizard-VM-01',
+                (Join-Path $testTemp 'wizard_vm_01'),
+                '',
+                '2',
+                '4',
+                '64',
+                'Dynamic',
+                '',
+                'n'
+            ))
+            Mock -ModuleName vm_lab Read-Host {
+                if ($Global:vmLabWizardQueue.Count -gt 0) { return $Global:vmLabWizardQueue.Dequeue() }
+                return ''
+            }
+            $wizRes = Invoke-VmLab -Operation wizard -ManifestRoot $Global:vmLabManifestRoot
+            $wizRes.status | Should Be 'cancelled'
+            $wizRes.plan.vm_name | Should Be 'Wizard-VM-01'
+            $Global:vmLabLog.Count | Should Be 0
+        }
     }
 
     It 'imports and invokes cleanly from an isolated PowerShell session with accurate exit codes' {

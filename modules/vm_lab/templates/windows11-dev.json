@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "template_id": "windows11-dev",
+  "description": "General-purpose Windows 11 developer VM (4 vCPU, 4-8 GiB Dynamic RAM, 80 GiB Dynamic VHDX, Secure Boot, vTPM, disconnected network).",
+  "guest_os": "Windows 11",
+  "vm_name": "Dev-Win11-01",
+  "vm_root": "C:\\VMs\\Dev-Win11-01",
+  "generation": 2,
+  "cpu_count": 4,
+  "memory_startup_bytes": 6442450944,
+  "memory_minimum_bytes": 4294967296,
+  "memory_maximum_bytes": 8589934592,
+  "vhdx_size_bytes": 85899345920,
+  "vhdx_format": "Dynamic",
+  "iso_path": "",
+  "secure_boot": {
+    "enabled": true,
+    "template": "MicrosoftWindows"
+  },
+  "vtpm_enabled": true,
+  "switch_name": "",
+  "checkpoint_type": "Standard",
+  "automatic_checkpoints_enabled": false,
+  "automatic_start_action": "Nothing",
+  "owner_namespace": "vm_lab.dev",
+  "prerequisites": [
+    "Windows 11 x64 installation ISO",
+    "Administrator or Hyper-V Administrators privileges",
+    "At least 10 GiB free host RAM (6 GiB startup + 4 GiB reserve) to start"
+  ]
+}

@@ -1,0 +1,31 @@
+{
+  "schema_version": 1,
+  "template_id": "windows11-light",
+  "description": "Lower-resource Windows 11 test VM meeting Windows 11 minimum hardware requirements (2 vCPU, 4 GiB RAM, 64 GiB Dynamic VHDX, Secure Boot, vTPM).",
+  "guest_os": "Windows 11",
+  "vm_name": "Light-Win11-01",
+  "vm_root": "C:\\VMs\\Light-Win11-01",
+  "generation": 2,
+  "cpu_count": 2,
+  "memory_startup_bytes": 4294967296,
+  "memory_minimum_bytes": 4294967296,
+  "memory_maximum_bytes": 4294967296,
+  "vhdx_size_bytes": 68719476736,
+  "vhdx_format": "Dynamic",
+  "iso_path": "",
+  "secure_boot": {
+    "enabled": true,
+    "template": "MicrosoftWindows"
+  },
+  "vtpm_enabled": true,
+  "switch_name": "",
+  "checkpoint_type": "Standard",
+  "automatic_checkpoints_enabled": false,
+  "automatic_start_action": "Nothing",
+  "owner_namespace": "vm_lab.light",
+  "prerequisites": [
+    "Windows 11 x64 installation ISO",
+    "Administrator or Hyper-V Administrators privileges",
+    "At least 8 GiB free host RAM (4 GiB startup + 4 GiB reserve) to start"
+  ]
+}

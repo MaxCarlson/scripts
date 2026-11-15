@@ -109,6 +109,50 @@ function Get-VmLabModuleRoot {
     return (Split-Path -Parent $PSScriptRoot)
 }
 
+function Get-VmLabTemplates {
+    [CmdletBinding()]
+    param()
+    $modRoot = Get-VmLabModuleRoot
+    $templatesDir = Join-Path $modRoot 'templates'
+    if (-not (Test-Path -LiteralPath $templatesDir -PathType Container)) {
+        return @()
+    }
+    $files = @(Get-ChildItem -LiteralPath $templatesDir -Filter '*.json' -File | Sort-Object Name)
+    $list = foreach ($f in $files) {
+        $t = Get-VmLabTemplate -ConfigPath $f.FullName
+        [pscustomobject]@{
+            template_id         = if ($t.template_id) { [string]$t.template_id } else { $f.BaseName }
+            guest_os            = [string]$t.guest_os
+            description         = if ($t.description) { [string]$t.description } else { "VM template '$($f.BaseName)'" }
+            cpu_count           = [int]$t.cpu_count
+            memory_startup_gib  = [math]::Round(([int64]$t.memory_startup_bytes) / 1GB, 2)
+            vhdx_size_gib       = [math]::Round(([int64]$t.vhdx_size_bytes) / 1GB, 2)
+            vhdx_format         = [string]$t.vhdx_format
+            secure_boot_enabled = [bool]$t.secure_boot.enabled
+            vtpm_enabled        = [bool]$t.vtpm_enabled
+            prerequisites       = if ($t.prerequisites) { @($t.prerequisites) } else { @() }
+            path                = $f.FullName
+        }
+    }
+    return @($list)
+}
+
+function Get-VmLabTemplateInfo {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TemplateName
+    )
+    $cfg = Get-VmLabTemplate -TemplateName $TemplateName
+    $validation = Test-VmLabConfig -Config $cfg
+    return [pscustomobject]@{
+        template_id   = if ($cfg.template_id) { [string]$cfg.template_id } else { $TemplateName }
+        description   = if ($cfg.description) { [string]$cfg.description } else { "VM template '$TemplateName'" }
+        valid         = $validation.valid
+        prerequisites = if ($cfg.prerequisites) { @($cfg.prerequisites) } else { @() }
+        config        = $cfg
+    }
+}
+
 function Get-VmLabTemplate {
     [CmdletBinding()]
     param(
