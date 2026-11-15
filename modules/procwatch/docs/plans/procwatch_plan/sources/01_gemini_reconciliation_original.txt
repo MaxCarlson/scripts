@@ -1,0 +1,249 @@
+````
+ChatGPT’s second review is accurate on Windows internals and data reliability, and incorporating its structural fixes produces a solid implementation blueprint. The one place where its recommendation needs practical balancing is `procwatch guard`: it suggests stripping out `WS_EX_NOACTIVATE` and off-screen positioning, whereas your live test proved that the exact combination of **`MsgWaitForMultipleObjects` (<1 ms wakeup) + `EVENT_OBJECT_CREATE`/`SHOW` + `LockSetForegroundWindow` + `WS_EX_NOACTIVATE` + off-screen `SetWindowPos` + `SW_SHOWMINNOACTIVE` + `AttachThreadInput` focus restoration** is what actually prevents Windows Terminal from stealing your typing and clicking focus.
+
+### 1. Reconciling ChatGPT’s Critique with Your Working Setup
+
+* **Preserving the Working Suppression Pipeline (with Smarter Targeting):** We keep your proven `NeutralizeEngine` verbatim as the suppression backend. To address ChatGPT’s valid concern about accidentally minimizing a terminal you *intentionally* open via Start Menu or taskbar, `procwatch guard` will snapshot existing HWNDs at startup and default to **`smart` mode**—suppressing new console/terminal windows whose initial title or spawning process matches background automation (`.venv\Scripts\python.exe`, `python.exe`, `pwsh.exe -Command`, `cmd.exe /c`, agent/scheduler parents) while leaving user-launched interactive terminals untouched. An explicit `-m, --mode all-consoles` flag reproduces the exact broad behavior of `minimize_popups.py`.
+* **Adopting ChatGPT’s Forensic Hardening:**
+* **Transactional Event Bookmarks:** Commit `EvtSubscribe` XML bookmarks inside the same SQLite `BEGIN IMMEDIATE` transaction that writes deduplicated events, with automatic recovery for stale bookmarks or cleared logs.
+* **Provisional-to-Canonical Process Reconciliation:** Processes arriving from fast WMI trace events and slower Sysmon logs are initially keyed provisionally `(boot_id, pid, time_bucket)` and merged into a canonical `(boot_id, sysmon_guid)` or `(boot_id, pid, kernel_create_time_100ns)` identity via a `supersedes` edge.
+* **Explicit Capability Flags & Typed Graph Edges:** Instead of assuming every collector captures exit codes or window visibility, each process tracks boolean capability flags (`exit_code_known`, `window_observed`, `command_line_captured`, `ancestry_complete`), and causal links live in a normalized `evidence_edges` table (`parent_of`, `triggered_by`, `hosted_by`, `correlated_with`, `supersedes`).
+* **Pre-Persistence Secret Redaction & Single-Collector Mutex:** Scrub bearer tokens, API keys, and sensitive environment values *before* writing to SQLite, and enforce a per-user named Mutex (`Local\ProcWatchCollectorMutex`) so multiple CLI commands query the shared SQLite store rather than spawning duplicate OS hooks.
+* **Clean 10-Command CLI & Safe Mutations:** Fix the CLI list to 10 distinct commands (keeping baseline comparison inside `analyze`, keeping `doctor` strictly read-only, using `git worktree list --porcelain` in `scan`, and requiring explicit `--apply` flags before modifying any source file or Scheduled Task).
+
+
+
+---
+
+### 2. Finalized Engineering Specification (`procwatch`)
+
+#### A. Runtime Architecture & Privilege Boundaries
+
+```text
+┌───────────────────────────────────────────────────────────────────────────┐
+│                         UNPRIVILEGED USER SESSION                         │
+│                                                                           │
+│  [WinEventHook (CREATE/SHOW/FG)] ──► [NeutralizeEngine (Opt-in Guard)]    │
+│               │                                                           │
+│               ▼                                                           │
+│  [WMI ProcessStart/StopTrace] ────► [Bounded Ingest Queue + Drop Counter] │
+│               ▲                                 │                         │
+│  [TaskScheduler Operational Log] ───────────────┤                         │
+│               ▲                                 ▼                         │
+│  [Sysmon / Security EvtSubscribe] ─► [Redactor & Identity Reconciler]     │
+│  (Degrades gracefully if unprivileged)          │                         │
+│                                                 ▼                         │
+│                                    [Correlator & Causal Edge Scorer]      │
+│                                                 │                         │
+│                                                 ▼                         │
+│                                    [SQLite WAL Flight Recorder]           │
+│                                    (~/.procwatch/events.db)               │
+│                                                 │                         │
+│          ┌──────────────────────────────────────┼────────────────┐        │
+│          ▼                                      ▼                ▼        │
+│  [Forensic CLI Views]                   [Static Auditors]  [Supervisor]   │
+│  watch · history · explain · mark       scan · audit       exec · doctor  │
+└───────────────────────────────────────────────────────────────────────────┘
+
+```
+
+* **Collector Ownership:** A background daemon (`procwatch watch` or `procwatch guard` started via an opt-in per-user Scheduled Task / Startup entry) acquires `Local\ProcWatchCollectorMutex` and owns the live OS subscriptions and SQLite writer. Concurrent read commands (`history`, `explain`, `analyze`, `mark`, `doctor`) read/write directly against SQLite in WAL mode without duplicating hooks.
+
+---
+
+#### B. SQLite Schema & Data Model (`~/.procwatch/events.db`)
+
+* **`schema_meta`:** `version` (`int`), `applied_at_utc` (`text`).
+* **`collector_state`:** `source` (PK: `sysmon` | `wmi_trace` | `winevent` | `task_log`), `status` (`active` | `degraded` | `unavailable`), `evt_bookmark_xml` (`text`), `events_ingested` (`int`), `events_dropped` (`int`), `last_error` (`text`).
+* **`raw_events`:** `raw_id` (PK), `boot_id` (`text`), `source` (`text`), `provider_event_id` (`int`), `source_record_id` (`text`), `event_ts_utc` (`text`), `monotonic_ns` (`int`), `payload_redacted_json` (`text`), `UNIQUE(boot_id, source, source_record_id)`.
+* **`processes`:**
+* Identity: `proc_key` (PK), `boot_id`, `pid`, `ppid`, `sysmon_guid`, `kernel_create_100ns`, `is_provisional` (`bool`).
+* Execution: `image_path`, `cmdline_redacted`, `decoded_payload`, `cwd`, `git_repo`, `git_worktree`, `git_branch`, `pe_subsystem` (`CUI` | `GUI` | `UNKNOWN`), `startup_flags` (`int | null`).
+* Attribution & Timing: `agent_context_json` (parsed `PROCWATCH_CONTEXT` with `trust_level`: `instrumented` | `inherited_heuristic`), `start_ts_utc`, `exit_ts_utc`, `duration_ms`, `exit_code`.
+* Capability Flags: `process_created` (`bool`), `process_terminated` (`bool`), `exit_code_known` (`bool`), `window_observed` (`bool`), `command_line_captured` (`bool`), `ancestry_complete` (`bool`).
+
+
+* **`windows`:** `window_instance_id` (PK: `boot_id:hwnd:create_monotonic_ns`), `hwnd` (`int`), `owner_pid` (`int`), `window_class` (`text`), `initial_title` (`text`), `title_history_json` (`text`), `became_visible` (`bool`), `stole_foreground` (`bool`), `guard_action` (`none` | `minimized` | `hidden`), `create_ts_utc`, `destroy_ts_utc`.
+* **`evidence_edges`:** `edge_id` (PK), `from_node_id` (`text`), `to_node_id` (`text`), `relation` (`parent_of` | `triggered_by` | `hosted_by` | `correlated_with` | `supersedes`), `source` (`text`), `method` (`text`), `confidence` (`high` | `medium` | `low`), `notes` (`text`).
+* **`incidents`:** `incident_id` (PK), `created_ts_utc`, `category` (`visible_popup` | `suppressed_popup` | `burst_loop` | `user_mark`), `primary_proc_key`, `collapsed_shim_key`, `root_initiator_key`, `window_instance_id`, `confidence`, `summary_text`.
+* **`bookmarks`:** `bookmark_id` (PK), `ts_utc`, `label`, `matched_incident_ids_json`.
+
+---
+
+#### C. Proven Window Suppression Engine (`procwatch/guard/window_guard.py`)
+
+Retains the exact sub-millisecond suppression pipeline from your working `minimize_popups.py` script, wrapped in configurable targeting rules:
+
+1. **Event Loop:** Dedicated thread running `MsgWaitForMultipleObjects(0, None, False, 50, QS_ALLINPUT)` + `PeekMessageW` loop with `SetWinEventHook(EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_SHOW, ..., WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS)`.
+2. **Baseline Allowlist:** Snapshots all existing HWNDs via `EnumWindows` on startup so open terminals are never touched.
+3. **Neutralization Sequence (`_neutralize_window`):**
+* `LockSetForegroundWindow(LSFW_LOCK)`
+* Apply `WS_EX_NOACTIVATE` via `SetWindowLongW(hwnd, GWL_EXSTYLE, orig_ex | WS_EX_NOACTIVATE)`
+* Relocate off-screen via `SetWindowPos(hwnd, None, -32000, -32000, 0, 0, SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE)`
+* Minimize without activation via `ShowWindowAsync(hwnd, SW_SHOWMINNOACTIVE)`
+* Re-enforce during the 0.6s initialization window and restore `orig_ex` on `EVENT_OBJECT_SHOW` so clicking the minimized taskbar icon later restores the window normally
+* Restore foreground focus to `last_valid_fg` via `AttachThreadInput` + `SetForegroundWindow` (skipping if `GetAsyncKeyState(VK_LBUTTON) < 0`).
+
+
+4. **Targeting Modes:**
+* `smart` (default): Suppresses new `CASCADIA_HOSTING_WINDOW_CLASS` and `ConsoleWindowClass` windows whose initial title or correlated process indicates non-interactive automation (`\.venv\\Scripts\\python\.exe`, `pythonw?\.exe`, `pwsh\.exe.*-Command`, `cmd\.exe\s+/c`, or background agent/service ancestry), while allowing interactive terminals launched directly from `explorer.exe`.
+* `all-consoles`: Suppresses all non-baseline `CASCADIA_HOSTING_WINDOW_CLASS` and `ConsoleWindowClass` windows (identical to your standalone script).
+* `observe`: Records window lifecycle and foreground-theft telemetry without modifying window state.
+
+
+
+---
+
+#### D. Complete 10-Command CLI Contract
+
+All options enforce single-dash short flags and double-dash hyphenated long flags (`-x, --long-name`):
+
+1. **`procwatch watch`** — Live forensic stream with optional active popup suppression.
+* `-p, --popups-only`: Show only events that produced a visible window or matched popup heuristics.
+* `-g, --guard-windows`: Enable active `NeutralizeEngine` window suppression while watching.
+* `-m, --guard-mode <smart|all-consoles|observe>`: Guard targeting policy (default: `smart`).
+* `-c, --collapse-bursts`: Group repetitive polling spawns into rolling counters.
+* `-s, --show-headless`: Include `conhost.exe 0x4` suppressed spawns.
+* `-f, --filter-regex <pattern>`: Filter by command line, worktree path, or ancestor name.
+* `-o, --output-file <path>`: Stream redacted JSONL events to disk.
+
+
+2. **`procwatch guard`** — Standalone low-overhead window guard daemon.
+* `-m, --mode <smart|all-consoles|observe>`: Suppression policy (default: `smart`).
+* `-n, --no-focus-restore`: Minimize without forcing foreground focus back.
+* `-t, --title-pattern <regex>`: Custom regex of window titles to suppress.
+* `-e, --exclude-pattern <regex>`: Regex of window titles or process names to never suppress.
+* `-q, --quiet`: Suppress stdout logging (for `pythonw.exe` background runs).
+
+
+3. **`procwatch history`** — Query, replay, or export recorded SQLite history.
+* `-t, --time-window <duration>`: Lookback window (e.g., `15m`, `2h`, `7d`).
+* `-p, --popups-only`: Return only incidents with confirmed or suppressed popup windows.
+* `-a, --agent-filter <name>`: Filter by initiator tag (`codex`, `claude`, `task`, `docker`).
+* `-r, --replay-timeline`: Render events chronologically with inter-event millisecond deltas.
+* `-e, --export-bundle <path>`: Export a redacted JSON evidence bundle for an AI agent.
+
+
+4. **`procwatch explain`** — Causal breakdown of a recorded incident or live PID.
+* `-i, --incident-id <id>`: Explain a stored incident (ancestry, typed `evidence_edges`, confidence, alternative candidates, and remediation).
+* `-p, --pid <int>`: Inspect a currently running PID (PEB `CWD`, Git worktree, parent chain, open HWNDs).
+* `-j, --json-output`: Emit structured JSON.
+
+
+5. **`procwatch mark`** — Drop an instant user bookmark when a sub-second window flashes.
+* `-l, --label <text>`: Note describing what you were doing when the flash occurred.
+* `-w, --window-seconds <float>`: Correlation radius around the mark (default: `3.0`).
+
+
+6. **`procwatch analyze`** — Detect periodicity loops and compare before/after remediation baselines.
+* `-p, --periodicity`: Cluster recurring spawns and compute inter-arrival intervals.
+* `-b, --baseline-window <duration>`: Compare recent popup rates against an earlier baseline period.
+* `-w, --window-seconds <int>`: Analysis lookback window in seconds (default: `3600`).
+* `-j, --json-output`: Emit structured JSON.
+
+
+7. **`procwatch scan`** — Static AST/parser scanner for unguarded subprocess calls in Python & PowerShell.
+* `-d, --directory <path>`: Target directory or repository (default: `.`).
+* `-w, --include-worktrees`: Discover and scan all active worktrees via `git worktree list --porcelain`.
+* `-u, --unified-diff`: Print reviewable unified diffs adding `CREATE_NO_WINDOW` on `win32` (default output mode).
+* `-a, --apply-fixes`: Apply vetted `libcst` fixes in place (refuses dirty files unless `-f, --force` is passed).
+* `-j, --json-output`: Emit structured findings for agent remediation.
+
+
+8. **`procwatch audit`** — Read-only audit and opt-in remediation for Scheduled Tasks, Startup entries, and Windows Terminal delegation.
+* `-t, --target-type <all|tasks|startup|defterm>`: Scope of audit (default: `all`).
+* `-n, --task-name <name>`: Filter to a specific Scheduled Task path/name.
+* `-a, --apply-task-fix`: Wrap a culprit Scheduled Task in `procwatch exec` or `pythonw.exe` after saving an XML backup to `~/.procwatch/backups/`.
+
+
+9. **`procwatch exec`** — Supervised headless command runner with captured output and exit codes.
+* `-c, --command <cmd...>`: Command and arguments to execute with `CREATE_NO_WINDOW`.
+* `-w, --working-dir <path>`: Working directory for the child process.
+* `-t, --timeout-seconds <int>`: Terminate child process tree if timeout is exceeded.
+* `-k, --keep-console-on-error`: Emit desktop/console alert only on non-zero exit code.
+
+
+10. **`procwatch doctor`** — Read-only diagnostic check of collectors, Sysmon status, privileges, and storage health.
+* `-v, --verbose`: Show detailed capability matrix (Windows build, `Console\%%Startup` delegation GUIDs, Event Log permissions, DB size, and drop counters).
+* `-j, --json-output`: Emit machine-readable health report.
+
+
+
+---
+
+#### E. Finalized Package Tree
+
+```text
+procwatch/
+├── pyproject.toml
+├── README.md
+├── procwatch/
+│   ├── __init__.py
+│   ├── __main__.py
+│   ├── cli.py                      # 10-command argparse router (-x, --long-name)
+│   ├── config.py                   # Retention (age + MB), redaction rules, guard policies
+│   ├── models.py                   # Dataclasses & capability flags
+│   ├── storage.py                  # SQLite WAL store, transactional bookmarks, migrations
+│   ├── redactor.py                 # Pre-storage secret/token scrubber
+│   ├── collectors/
+│   │   ├── __init__.py
+│   │   ├── sysmon_evt.py           # EvtSubscribe reader with XML bookmarks & rollover recovery
+│   │   ├── wmi_trace.py            # Win32_ProcessStartTrace / StopTrace collector
+│   │   ├── win_event.py            # MsgWaitForMultipleObjects SetWinEventHook stream
+│   │   └── task_events.py          # TaskScheduler/Operational log reader
+│   ├── correlator/
+│   │   ├── __init__.py
+│   │   ├── engine.py               # Async event bus, provisional->canonical reconciliation
+│   │   ├── ancestry.py             # Parent chain walker + UI .venv shim collapser
+│   │   ├── terminal_session.py     # Windows Terminal / ConPTY / Console\%%Startup correlator
+│   │   ├── peb_git.py              # PEB CWD/flags reader + Git worktree resolver
+│   │   ├── decoders.py             # Base64 -EncodedCommand, cmd /c, and wsl -e unwrapper
+│   │   └── scorer.py               # Typed evidence_edges builder & confidence scorer
+│   ├── guard/
+│   │   ├── __init__.py
+│   │   └── window_guard.py         # NeutralizeEngine (CREATE/SHOW hook + smart/all-consoles)
+│   ├── analyzers/
+│   │   ├── __init__.py
+│   │   ├── ast_scanner.py          # Python (ast/libcst) & PowerShell subprocess scanner
+│   │   ├── task_auditor.py         # Scheduled Tasks, Startup, Run keys, and DefTerm auditor
+│   │   └── patterns.py             # Periodicity detector & baseline comparator
+│   ├── runner/
+│   │   ├── __init__.py
+│   │   └── supervisor.py           # Job-Object CREATE_NO_WINDOW runner + log capture
+│   └── renderers/
+│       ├── __init__.py
+│       ├── console.py              # Rich incident trees, evidence tables, and timeline replay
+│       └── doctor_view.py          # Capability matrix & collector health renderer
+└── tests/
+    ├── ancestry_test.py
+    ├── ast_scanner_test.py
+    ├── correlator_test.py
+    ├── decoders_test.py
+    ├── integration_win32_test.py   # Controlled ground-truth Windows process/popup harness
+    ├── patterns_test.py
+    ├── redactor_test.py
+    ├── storage_test.py
+    ├── supervisor_test.py
+    └── window_guard_test.py
+
+```
+
+---
+
+#### F. Phased Implementation & Acceptance Criteria
+
+* **Phase 1 — Storage, Collectors & `doctor` (P0):** Implement `storage.py` (SQLite WAL, migrations, size/age pruning, transactional bookmarks), `redactor.py`, `sysmon_evt.py`, `wmi_trace.py`, `win_event.py`, `watch`, and `doctor`.
+* *Acceptance Criterion:* Against the synthetic ground-truth launcher (`tests/integration_win32_test.py`), verify $\ge 95\%$ capture rate for 20 ms processes with and without Sysmon installed, zero leaked secret fixtures in SQLite, atomic bookmark recovery across simulated restarts, and accurate capability flags when parent metadata expires early.
+
+
+* **Phase 2 — `guard`, Causal Attribution & Agent Context (P0):** Build `window_guard.py` (`NeutralizeEngine`), `correlator/engine.py`, `terminal_session.py`, `peb_git.py`, `scorer.py`, `PROCWATCH_CONTEXT` ingestion, `explain`, `history`, and `mark`.
+* *Acceptance Criterion:* Reproducing a background `.venv\Scripts\python.exe` Windows Terminal popup results in automatic minimization without foreground focus loss (`0%` false-positive suppression on newly opened user `wt.exe` terminals in `smart` mode) and generates an `Incident` linking the popup to the initiating agent/task and Git worktree with explicit `evidence_edges`.
+
+
+* **Phase 3 — Static Scanning, Task Auditing & Pattern Analysis (P1):** Add `ast_scanner.py` (`scan`), `task_auditor.py` (`audit`), and `patterns.py` (`analyze`).
+* *Acceptance Criterion:* `procwatch scan -w` discovers all active Git worktrees, flags unguarded `subprocess` launches without touching interactive calls, emits valid unified diffs, and `procwatch analyze -b` quantifies before/after popup reduction following remediation.
+
+
+* **Phase 4 — Headless Supervisor (`exec`) & Orchestrator Integration (P1):** Implement `runner/supervisor.py` with Windows Job Objects, bounded output capture, and native `PROCWATCH_CONTEXT` propagation for `local_agent_bridge` and `scheduler`.
+* *Acceptance Criterion:* Running noisy background workers through `procwatch exec` produces zero visible windows while preserving full `stdout`/`stderr`, non-zero exit codes, and clean tree termination on timeout.
+````

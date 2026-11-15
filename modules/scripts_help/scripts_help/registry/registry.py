@@ -517,6 +517,13 @@ REGISTRY: dict = {
                 "version": "0.1.0",
             },
             {
+                "name": "procwatch (module)",
+                "path": "modules/procwatch",
+                "desc": "Windows 11 live console/terminal popup guard, process catcher, and causal CLI",
+                "help_cmd": ["python", "-m", "procwatch", "--help"],
+                "version": "0.1.0",
+            },
+            {
                 "name": "system_manager (module)",
                 "path": "modules/system_manager",
                 "desc": "Manage system services, processes, and scheduled tasks cross-platform",
