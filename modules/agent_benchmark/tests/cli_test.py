@@ -58,9 +58,9 @@ def test_experiment_run_short_aliases_match_long_inference_options():
 
 def test_plan_and_status_are_read_only(tmp_path, capsys):
     state = tmp_path / "state"
-    assert main(["plan", "-s", str(state)]) == 0
+    assert main(["plan", "-s", str(state), "-f", "json"]) == 0
     assert "py-grep-smoke" in capsys.readouterr().out
-    assert main(["status", "-s", str(state)]) == 0
+    assert main(["status", "-s", str(state), "-f", "json"]) == 0
     assert not state.exists()
 
 
@@ -116,7 +116,7 @@ def test_models_list_json(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "list_downloaded_models", lambda **kw: mock_downloaded)
     monkeypatch.setattr(cli_mod, "get_loaded_models", lambda **kw: mock_loaded)
 
-    assert main(["models", "list", "--format", "json"]) == 0
+    assert main(["models", "list", "--provider", "lmstudio", "--format", "json"]) == 0
     captured = capsys.readouterr()
     data = json.loads(captured.out)
     assert len(data["downloaded_models"]) == 1
@@ -143,7 +143,7 @@ def test_models_list_table(monkeypatch, capsys):
     monkeypatch.setattr(cli_mod, "list_downloaded_models", lambda **kw: mock_downloaded)
     monkeypatch.setattr(cli_mod, "get_loaded_models", lambda **kw: [])
 
-    assert main(["models", "list", "--format", "table"]) == 0
+    assert main(["models", "list", "--provider", "lmstudio", "--format", "table"]) == 0
     captured = capsys.readouterr()
     assert "qwen/qwen3-coder-30b" in captured.out
     assert "qwen2" in captured.out
@@ -170,7 +170,11 @@ def test_experiment_plan_output(capsys, monkeypatch):
 
     monkeypatch.setattr(cli, "list_downloaded_models", local_models)
     monkeypatch.setattr(cli, "get_effective_lmstudio_model_ids", effective_ids)
-    ret = main(["experiment", "plan", "-m", "meta/muse-glimmer", "-m", "qwen38_23GB", "-r", "2"])
+    args = ["experiment", "plan", "-m", "meta/muse-glimmer", "-m", "qwen38_23GB", "-r", "2"]
+    assert main(args) == 0
+    human = capsys.readouterr().out
+    assert "model_readiness" in human and not human.lstrip().startswith("{")
+    ret = main([*args, "-f", "json"])
     assert ret == 0
     captured = capsys.readouterr()
     plan_data = json.loads(captured.out)
@@ -196,7 +200,7 @@ def test_experiment_plan_accepts_budget_and_context_short_flags(capsys, monkeypa
 
     monkeypatch.setattr(cli, "list_downloaded_models", local_models)
     monkeypatch.setattr(cli, "get_effective_lmstudio_model_ids", effective_ids)
-    assert main(["experiment", "plan", "-m", "local-model", "-b", "canonical-60s", "-c", "8192"]) == 0
+    assert main(["experiment", "plan", "-m", "local-model", "-b", "canonical-60s", "-c", "8192", "-f", "json"]) == 0
     data = json.loads(capsys.readouterr().out)
     assert data["config"]["budget_profile"] == "canonical-60s"
     assert data["config"]["metadata"]["requested_context_length"] == 8192

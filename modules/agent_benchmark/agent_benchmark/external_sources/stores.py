@@ -67,32 +67,25 @@ def commit_staging_dir(staging_path: Path, target_path: Path) -> Path:
     Atomically commit staged content into its target location with retries for Windows locks.
     """
     target_path.parent.mkdir(parents=True, exist_ok=True)
-    if target_path.exists():
-        # Remove or backup target if it already exists
-        temp_backup = target_path.with_name(f".{target_path.name}.old.{uuid4().hex[:8]}")
-        try:
-            os.replace(target_path, temp_backup)
-            shutil.rmtree(temp_backup, ignore_errors=True)
-        except OSError:
-            shutil.rmtree(target_path, ignore_errors=True)
-
-    # Move staging to target
+    if not target_path.exists():
+        os.replace(staging_path, target_path)
+        return target_path
+    temp_backup = target_path.with_name(f".{target_path.name}.old.{uuid4().hex[:8]}")
+    os.replace(target_path, temp_backup)
     last_err: Exception | None = None
     for attempt in range(10):
         try:
             os.replace(staging_path, target_path)
+            shutil.rmtree(temp_backup, ignore_errors=True)
             return target_path
         except (PermissionError, OSError) as err:
             last_err = err
             time.sleep(0.05)
-
-    # Fallback to copytree if replace failed
     try:
-        shutil.copytree(staging_path, target_path, dirs_exist_ok=True)
-        shutil.rmtree(staging_path, ignore_errors=True)
-        return target_path
+        os.replace(temp_backup, target_path)
     except Exception as copy_err:
-        raise OSError(f"Failed to commit staging {staging_path} to {target_path}: {last_err or copy_err}") from copy_err
+        raise OSError(f"Failed to publish {staging_path} to {target_path}; backup remains at {temp_backup}: {last_err or copy_err}") from copy_err
+    raise OSError(f"Failed to publish {staging_path} to {target_path}; previous target restored: {last_err}")
 
 
 def hash_file(path: Path) -> str:

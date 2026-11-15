@@ -85,17 +85,52 @@ def test_root_task_and_task_namespace_equivalence(tmp_path, capsys):
     """Ensure 'plan' and 'task plan' produce identical JSON output."""
     state = tmp_path / "state"
 
-    rc1 = main(["plan", "-s", str(state)])
+    rc1 = main(["plan", "-s", str(state), "-f", "json"])
     assert rc1 == 0
     out1 = json.loads(capsys.readouterr().out)
 
-    rc2 = main(["task", "plan", "-s", str(state)])
+    rc2 = main(["task", "plan", "-s", str(state), "-f", "json"])
     assert rc2 == 0
     out2 = json.loads(capsys.readouterr().out)
 
     assert out1["task_id"] == out2["task_id"]
     assert out1["budget_profile"] == out2["budget_profile"]
     assert not state.exists()
+
+
+def test_task_plan_defaults_to_table_and_json_is_explicit(capsys, tmp_path):
+    assert main(["task", "plan", "-s", str(tmp_path / "state")]) == 0
+    output = capsys.readouterr().out
+    assert "Setting" in output and "task_id" in output
+    assert not output.lstrip().startswith("{")
+    assert main(["task", "plan", "-s", str(tmp_path / "state"), "-f", "json"]) == 0
+    assert json.loads(capsys.readouterr().out)["task_id"]
+    assert main(["task", "status", "-s", str(tmp_path / "state")]) == 0
+    assert "pending_worker" in capsys.readouterr().out
+    assert main(["task", "status", "-s", str(tmp_path / "state"), "-f", "json"]) == 0
+    assert "pending_worker" in json.loads(capsys.readouterr().out)
+
+
+def test_primary_executable_aliases_and_group_help_examples():
+    from pathlib import Path
+    scripts = Path(__file__).parents[1] / "pyproject.toml"
+    pyproject = scripts.read_text(encoding="utf-8")
+    assert 'agent-bench = "agent_benchmark.cli:main"' in pyproject
+    assert 'agent-benchmark = "agent_benchmark.cli:main"' in pyproject
+    root_help = parser().format_help()
+    assert root_help.startswith("usage: agent-benchmark")
+    assert "Legacy root aliases" in root_help
+    root_parser = parser()
+    commands = next(action for action in root_parser._actions if getattr(action, "choices", None))
+    for command, expected in (
+        ("setup", "agent-benchmark setup install -d ifeval -x"),
+        ("suite", "agent-benchmark suite status -r RUN_ID"),
+        ("task", "agent-benchmark task plan -h"),
+        ("experiment", "agent-benchmark experiment plan -m MODEL_ID"),
+        ("models", "agent-benchmark models list"),
+        ("external", "agent-benchmark external list"),
+    ):
+        assert expected in commands.choices[command].format_help()
 
 
 def test_task_run_requires_execute(capsys):
@@ -114,6 +149,6 @@ def test_setup_status_and_verify(capsys):
     assert len(data1["benchmarks"]) >= 4
 
     rc2 = main(["setup", "verify", "-A", "-f", "json"])
-    assert rc2 == 0
     data2 = json.loads(capsys.readouterr().out)
     assert data2["mode"] == "verify"
+    assert rc2 == (0 if all(row["status"] == "verified" for row in data2["results"]) else 1)

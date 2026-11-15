@@ -18,8 +18,8 @@ def load_sources_lock(lock_file: Path) -> InstalledSourcesLock:
     try:
         data = json.loads(lock_file.read_text(encoding="utf-8"))
         return InstalledSourcesLock.from_dict(data)
-    except Exception:
-        return InstalledSourcesLock()
+    except Exception as exc:
+        raise ValueError(f"Installation receipt database is corrupt: {lock_file}: {exc}") from exc
 
 
 def save_sources_lock(lock_file: Path, lock: InstalledSourcesLock) -> None:
@@ -36,12 +36,8 @@ def save_sources_lock(lock_file: Path, lock: InstalledSourcesLock) -> None:
         except (PermissionError, OSError):
             time.sleep(0.02)
 
-    # Fallback
-    try:
-        lock_file.write_text(temp.read_text(encoding="utf-8"), encoding="utf-8")
-        temp.unlink(missing_ok=True)
-    except Exception:
-        pass
+    temp.unlink(missing_ok=True)
+    raise OSError(f"Unable to atomically write installation receipt database: {lock_file}")
 
 
 def record_receipt(lock_file: Path, receipt: InstallReceipt) -> None:

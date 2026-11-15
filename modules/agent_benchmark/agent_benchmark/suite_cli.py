@@ -26,12 +26,34 @@ from .suite_revision import DatasetRevisionError, include_registry_resolution, r
 DEFAULT_RUNS = Path("reports/agent-bench-suite")
 
 
+def _emit_readable(payload: dict[str, Any], *, fmt: str, friendly: bool) -> None:
+    if friendly or fmt == "json":
+        emit(payload, llm_friendly=friendly)
+        return
+    from termdash import Table
+
+    table = Table(headers=["Field", "Value"], style="dash")
+    for key, value in payload.items():
+        if isinstance(value, (dict, list)):
+            rendered = json.dumps(value, ensure_ascii=False)
+        else:
+            rendered = str(value)
+        table.add_row(key, rendered)
+    print(table.render())
+
+
 def add_suite_parser(actions: Any) -> None:
-    suite = actions.add_parser("suite", help="Plan, execute, resume and report persistent Harbor cohorts")
+    suite = actions.add_parser(
+        "suite",
+        help="Select benchmark cohorts, execute evaluations, and inspect runs",
+        description="Select cohorts, plan or execute evaluations, and inspect saved suite runs. plan applies to the selected cohort.",
+        epilog="Examples:\n  agent-benchmark suite list\n  agent-benchmark suite plan -c ifeval-smoke\n  agent-benchmark suite status\n  agent-benchmark suite status -r RUN_ID",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = suite.add_subparsers(dest="suite_command")
     list_parser = commands.add_parser("list", help="List verified cohorts and datasets")
     list_parser.add_argument(
-        "-f", "--format", choices=("table", "json"), default="json", help="Output format (default: json)"
+        "-f", "--format", choices=("table", "json"), default="table", help="Output format (default: table)"
     )
     list_parser.add_argument("-F", "--llm-friendly", action="store_true")
 
@@ -86,6 +108,7 @@ def add_suite_parser(actions: Any) -> None:
 
     plan = commands.add_parser("plan", help="Inspect cohort resolution and route readiness without execution")
     common(plan)
+    plan.add_argument("-f", "--format", choices=("table", "json"), default="table")
     run = commands.add_parser("run", help="Execute an authorized cohort")
     common(run, execution=True)
     run.add_argument(
@@ -97,9 +120,10 @@ def add_suite_parser(actions: Any) -> None:
     run.add_argument("-B", "--background", action="store_true")
     run.add_argument("-o", "--output-root", type=Path, default=DEFAULT_RUNS)
     lookup = commands.add_parser("status", help="Show one run checkpoint")
-    lookup.add_argument("-r", "--run-id", required=True)
+    lookup.add_argument("-r", "--run-id")
     lookup.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     lookup.add_argument("-F", "--llm-friendly", action="store_true")
+    lookup.add_argument("-f", "--format", choices=("table", "json"), default="table")
     resume = commands.add_parser("resume", help="Resume pending or explicitly retried infrastructure attempts")
     resume.add_argument("-r", "--run-id", required=True)
     resume.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
@@ -114,6 +138,7 @@ def add_suite_parser(actions: Any) -> None:
     report.add_argument("-r", "--run-id", required=True)
     report.add_argument("-d", "--runs-dir", type=Path, default=DEFAULT_RUNS)
     report.add_argument("-F", "--llm-friendly", action="store_true")
+    report.add_argument("-f", "--format", choices=("table", "json"), default="table")
     compare = commands.add_parser("compare", help="Compare two completed or interrupted suite runs on matching tasks")
     compare.add_argument(
         "-r",
@@ -241,20 +266,39 @@ def handle_suite(args: argparse.Namespace) -> int:
             return run_doctor(args)
         if command == "list":
             from .benchmarks.catalog import get_unified_discovery
+            from .benchmarks.catalog import get_default_catalog
+            from .cli_commands.setup import benchmark_resource_snapshot
+            from .external_sources import SourceManager
 
-            fmt = getattr(args, "format", "json")
+            fmt = getattr(args, "format", "table")
             discovery = get_unified_discovery(include_readiness=True)
+            catalog = get_default_catalog()
+            manager = SourceManager()
+            for dataset in discovery["datasets"]:
+                benchmark_id = dataset.get("benchmark_id")
+                if benchmark_id:
+                    benchmark = next((item for item in catalog.list_benchmarks() if item.id == benchmark_id), None)
+                    if benchmark:
+                        snapshot = benchmark_resource_snapshot(benchmark, manager)
+                        dataset["install_state"] = snapshot["state"].lower()
+                        dataset["readiness_reason"] = f"{snapshot['installed']}/{snapshot['required']} required resources verified"
+                        dataset["execution_readiness"] = (
+                            "tasks_not_provisioned"
+                            if snapshot["state"] == "REGISTERED" and benchmark.resources
+                            and all(decl.type == "harbor_registry" for decl in benchmark.resources)
+                            else "not_probed"
+                        )
             if fmt == "table":
                 from termdash import Table
 
                 print("\n=== Registered Datasets ===")
                 d_tbl = Table(
-                    headers=["ID", "Benchmark", "Version", "Tasks", "State"],
+                    headers=["ID", "Benchmark", "Version", "Tasks", "Resources", "Execution"],
                     style="dash",
                 )
                 for d in discovery["datasets"]:
                     task_count = str(d["total_tasks"]) if d["total_tasks"] else "dynamic"
-                    d_tbl.add_row(d["id"], d.get("benchmark_id") or "-", d["version"], task_count, d.get("install_state", "unknown"))
+                    d_tbl.add_row(d["id"], d.get("benchmark_id") or "-", d["version"], task_count, d.get("install_state", "unknown"), d.get("execution_readiness", "not_probed"))
                 print(d_tbl.render())
 
                 print("\n=== Available Cohorts ===")
@@ -327,7 +371,8 @@ def handle_suite(args: argparse.Namespace) -> int:
                     )
                     route["recovery"] = rec
                     plan["monitor_preflight"] = route
-                emit({"event": "plan_ready", "plan": plan} if friendly else plan, llm_friendly=friendly)
+                _emit_readable({"event": "plan_ready", "plan": plan} if friendly else plan,
+                               fmt=getattr(args, "format", "table"), friendly=friendly)
                 return 0 if plan["readiness"].get("is_runnable") else 1
             if not plan["readiness"].get("is_runnable"):
                 raise RuntimeError("suite readiness blocked: " + "; ".join(plan["readiness"].get("blockers", [])))
@@ -414,9 +459,31 @@ def handle_suite(args: argparse.Namespace) -> int:
             _emit_event("finished", friendly=friendly, **_finished_payload(summary, run_dir))
             return 0 if summary["infrastructure_invalid"] == 0 else 1
         if command in {"status", "report"}:
+            if command == "status" and not args.run_id:
+                root = args.runs_dir.expanduser().resolve()
+                rows = []
+                if root.is_dir():
+                    for manifest_path in sorted(root.glob("*/manifest.json"), key=lambda p: p.stat().st_mtime, reverse=True):
+                        try:
+                            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                            state = status_run(manifest_path.parent)
+                            rows.append({"run_id": manifest.get("run_id", manifest_path.parent.name), "state": state.get("state", "unknown"), "cohort": manifest.get("cohort", "-"), "run_dir": str(manifest_path.parent)})
+                        except (OSError, ValueError):
+                            continue
+                if friendly:
+                    emit({"runs": rows}, llm_friendly=True)
+                elif getattr(args, "format", "table") == "json":
+                    print(json.dumps({"runs": rows}, indent=2))
+                else:
+                    from termdash import Table
+                    table = Table(headers=["Run ID", "State", "Cohort", "Directory"], style="dash")
+                    for row in rows:
+                        table.add_row(row["run_id"], row["state"], row["cohort"], row["run_dir"])
+                    print(table.render() if rows else "No saved suite runs.")
+                return 0
             run_dir = _run_dir(args.runs_dir, args.run_id)
             result = status_run(run_dir) if command == "status" else summarize_run(RunStore(run_dir).read())
-            emit(result, llm_friendly=friendly)
+            _emit_readable(result, fmt=getattr(args, "format", "table"), friendly=friendly)
             return 0
         if command == "resume":
             if not args.execute:

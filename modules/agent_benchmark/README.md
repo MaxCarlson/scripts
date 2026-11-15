@@ -1,4 +1,4 @@
-# agent_benchmark — 1.20.0
+# agent_benchmark — 1.28.0
 
 Trial output shows code correctness, scope compliance, budget compliance, and confirmed termination separately, followed by specific violations, verifier/provider errors, uncertainty reasons, and an evidence path. Final output also counts functional code passes with an explicit measured denominator and unavailable count. Strict scoring remains the combined contract; correct code with a scope violation is reported as a functional pass and a strict failure. The same diagnostics are written to `benchmark.log`; trial JSON retains bounded verifier diagnostics.
 
@@ -204,6 +204,32 @@ comparison contract.
 
 
 ## External Benchmark Evaluation — Harbor Integration
+
+### Benchmark setup and CLI navigation
+
+Use `agent-benchmark` as the primary executable name. `agent-bench` remains a compatible alias. The root `plan`, `run`, `status`, `cleanup`, and `smoke` commands are legacy task aliases; prefer the explicit `task` group.
+
+- `setup` discovers benchmark definitions, installs dependencies, and verifies local resources. `setup list` inventories benchmark readiness; `setup status` shows per-resource state; `setup plan` previews requirements; `setup install` is dry-run unless `-x` is supplied; `setup verify` returns 0 only when selected required resources verify, 1 when a requirement is missing/unavailable/invalid, and 2 for invalid arguments; `setup upgrade` is the explicit version transition path.
+- A Harbor registry receipt means that benchmark metadata is registered. It does not mean Harbor task files are downloaded or provisioned locally.
+- Setup readiness reports local resource state. `execution_readiness=not_probed` means model/provider and run-time readiness still require `suite plan`; Harbor registry-only entries report `tasks_not_provisioned`.
+- `suite` selects cohorts, runs evaluations, and inspects saved runs. `suite plan` concerns the selected cohort; `suite list` lists cohorts/datasets; `suite status` lists recent runs and `suite status -r RUN_ID` inspects one checkpoint.
+- Inventory, status, plan, and report commands use readable output by default where supported. Request structured output explicitly with `-f json` or `--format json`. Task and experiment plans/status retain JSON schemas when JSON is requested. `-F/--llm-friendly` remains the compact automation output switch where supported; `-j` remains the suite jobs count.
+
+```powershell
+agent-benchmark setup list
+agent-benchmark setup install -d ifeval -x
+agent-benchmark setup install -A -x
+agent-benchmark suite list
+agent-benchmark suite plan -c ifeval-smoke
+agent-benchmark suite status
+agent-benchmark suite status -r RUN_ID
+agent-benchmark task plan -h
+agent-benchmark experiment plan -h
+```
+
+`-A/--all` selects all benchmarks for setup operations; read-only inventory defaults to all benchmarks. For authorized installation, use `-d BENCHMARK` or explicit `-A`, and include `-x`. Existing `setup -A` remains a compatibility alias for the all-benchmark plan.
+
+On Windows, the pinned sparse Git checkout scopes `core.protectNTFS=false` to the detached checkout inside its disposable staging clone. The sparse path set still limits materialized files; the setting is not written to global Git configuration.
 
 Agent Benchmark provides integration with external coding benchmarks using the Harbor evaluation framework (`harbor==0.25.0`):
 1. **Aider Polyglot** (`aider/aider-polyglot`): 225 coding exercises across Python, C++, Go, Java, JavaScript, and Rust.

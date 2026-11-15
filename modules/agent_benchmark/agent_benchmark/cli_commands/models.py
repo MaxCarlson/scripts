@@ -23,7 +23,10 @@ from ..models_lifecycle import (
 def add_models_parser(actions: Any) -> None:
     """Add 'models' command parser."""
     models_p = actions.add_parser(
-        "models", help="Inspect local model inventory and loaded states"
+        "models", help="Inspect available model configurations",
+        description="Inspect model configurations available from supported providers.",
+        epilog="Examples:\n  agent-benchmark models list\n  agent-benchmark models list --provider lmstudio --format json",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     models_actions = models_p.add_subparsers(dest="models_command")
     models_list = models_actions.add_parser(
@@ -88,7 +91,22 @@ def handle_models(args: argparse.Namespace) -> int:
             return downloaded, loaded, gemini_list, codex_list
 
         try:
-            downloaded, loaded, gemini_list, codex_list = asyncio.run(_fetch())
+            needs = []
+            if prov in ("all", "lmstudio"):
+                needs.extend((fetch_downloaded, fetch_loaded))
+            if prov in ("all", "gemini"):
+                needs.append(fetch_gemini)
+            if prov in ("all", "codex"):
+                needs.append(fetch_codex)
+            if not any(inspect.iscoroutinefunction(fn) for fn in needs):
+                downloaded = fetch_downloaded() if prov in ("all", "lmstudio") else []
+                loaded = fetch_loaded() if prov in ("all", "lmstudio") else []
+                gemini_list = fetch_gemini() if prov in ("all", "gemini") else []
+                codex_list = fetch_codex() if prov in ("all", "codex") else []
+            else:
+                downloaded, loaded, gemini_list, codex_list = asyncio.run(
+                    _fetch(), loop_factory=asyncio.SelectorEventLoop
+                )
         except Exception as exc:
             print(f"agent-bench: model discovery failed: {exc}", file=sys.stderr)
             return 1

@@ -14,11 +14,33 @@ from ..benchmarks.catalog import get_default_catalog
 from ..external_sources import ResourceSpec, SourceManager
 
 
+def benchmark_resource_snapshot(benchmark: Any, source_manager: SourceManager) -> dict[str, Any]:
+    """Derive resource readiness from current receipts/content, not static catalog metadata."""
+    required = [decl for decl in benchmark.resources if not decl.optional]
+    results = [source_manager.verify_resource(ResourceSpec.from_declaration(benchmark.id, decl)) for decl in required]
+    installed = sum(item.get("status") == "verified" for item in results)
+    all_verified = bool(results) and installed == len(results)
+    harbor_marker = any(decl.type == "harbor_registry" for decl in required)
+    harbor_only = bool(required) and all(decl.type == "harbor_registry" for decl in required)
+    if harbor_only and all_verified:
+        state = "REGISTERED"
+    elif all_verified:
+        state = "READY"
+    elif harbor_marker and installed:
+        state = "REGISTERED"
+    else:
+        state = "MISSING"
+    return {"state": state, "installed": installed, "required": len(required), "results": results}
+
+
 def add_setup_parser(actions: Any) -> None:
     """Add 'setup' command group with scoped -A/--all support."""
     setup_p = actions.add_parser(
         "setup",
         help="Plan, install, verify, and inspect external benchmark suites and dependencies",
+        description="Discover benchmark definitions, install dependencies, and verify local resource integrity. -A is a compatibility alias for all-benchmark selection; install remains a dry run without -x.",
+        epilog="Examples:\n  agent-benchmark setup list\n  agent-benchmark setup install -d ifeval -x\n  agent-benchmark setup install -A -x\n  agent-benchmark setup verify -d ifeval",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     # Support setup -A / --all directly on the root setup command
     setup_p.add_argument(
@@ -47,6 +69,10 @@ def add_setup_parser(actions: Any) -> None:
     )
 
     sub = setup_p.add_subparsers(dest="setup_command")
+
+    inventory = sub.add_parser("list", help="List registered benchmarks and current setup readiness")
+    _add_setup_common(inventory)
+    inventory.add_argument("--state", choices=("ready", "missing", "installed", "registered"), help="Filter by current benchmark resource state")
 
     # setup plan
     plan_p = sub.add_parser("plan", help="Inspect setup requirements and download plans without execution")
@@ -87,6 +113,7 @@ def _add_setup_common(parser: argparse.ArgumentParser) -> None:
         "-A",
         "--all",
         action="store_true",
+        default=argparse.SUPPRESS,
         help="Apply action to all registered default benchmark resources",
     )
     group.add_argument(
@@ -94,18 +121,20 @@ def _add_setup_common(parser: argparse.ArgumentParser) -> None:
         "--dataset",
         "--benchmark",
         dest="target",
+        default=argparse.SUPPRESS,
         help="Specific benchmark or dataset identifier",
     )
     parser.add_argument(
         "-f",
         "--format",
         choices=("table", "json"),
-        default="table",
+        default=argparse.SUPPRESS,
         help="Output format (default: table)",
     )
     parser.add_argument(
         "--resource-root",
         help="Override default external resource store directory",
+        default=argparse.SUPPRESS,
     )
 
 
@@ -149,6 +178,31 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         selected_benchmarks = all_benchmarks
 
     source_manager = SourceManager(resource_root)
+
+    if subcmd == "list":
+        rows = []
+        cohorts = catalog.list_cohorts()
+        for benchmark in selected_benchmarks:
+            snapshot = benchmark_resource_snapshot(benchmark, source_manager)
+            cohort = next((item.id for item in cohorts if item.dataset_id == benchmark.default_dataset), None)
+            next_step = ("Provision Harbor tasks with the Harbor workflow" if snapshot["state"] == "REGISTERED" and benchmark.resources and all(decl.type == "harbor_registry" for decl in benchmark.resources)
+                         else (f"suite plan -c {cohort}" if snapshot["state"] == "READY" and cohort else "suite list" if snapshot["state"] == "READY" else f"setup install -d {benchmark.id}"))
+            harbor_only = bool(benchmark.resources) and all(decl.type == "harbor_registry" for decl in benchmark.resources)
+            execution_readiness = "tasks_not_provisioned" if snapshot["state"] == "REGISTERED" and harbor_only else "not_probed"
+            rows.append({"benchmark_id": benchmark.id, "name": benchmark.name, "type": benchmark.implementation_type, "resources": f"{snapshot['installed']}/{snapshot['required']}", "state": snapshot["state"], "execution_readiness": execution_readiness, "next": next_step})
+        state_filter = getattr(args, "state", None)
+        if state_filter:
+            rows = [row for row in rows if (row["state"].lower() == state_filter if state_filter in ("ready", "registered") else
+                    (int(row["resources"].split("/")[0]) == int(row["resources"].split("/")[1]) if state_filter == "installed" else
+                     int(row["resources"].split("/")[0]) < int(row["resources"].split("/")[1])))]
+        if fmt == "json":
+            print(json.dumps({"mode": "list", "benchmarks": rows}, indent=2))
+        else:
+            table = Table(headers=["Benchmark", "Name", "Type", "Resources", "State", "Execution", "Next"], style="dash")
+            for row in rows:
+                table.add_row(row["benchmark_id"], row["name"], row["type"], row["resources"], row["state"], row["execution_readiness"], row["next"])
+            print(table.render())
+        return 0
 
     if subcmd == "plan":
         plan_rows = []
@@ -237,19 +291,25 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
         else:
             # Authorized execution
             installed_receipts = []
+            failures = []
             for spec in specs_to_install:
                 try:
+                    plan = source_manager.plan_resource(spec)
+                    if plan["action"] == "skip":
+                        installed_receipts.append({"benchmark_id": spec.benchmark_id, "resource_name": spec.name, "resource_type": spec.resource_type, "status": "skipped"})
+                        continue
                     receipt = source_manager.install_resource(spec, execute=True)
                     installed_receipts.append(receipt.to_dict())
                 except Exception as err:
                     print(f"agent-bench setup install: failed to install {spec.name}: {err}", file=sys.stderr)
-                    return 1
+                    failures.append({"benchmark_id": spec.benchmark_id, "resource_name": spec.name, "error": str(err)})
 
             payload = {
                 "mode": "install_executed",
                 "scope": "all" if is_all or not target else target,
                 "resource_root": str(source_manager.root),
                 "installed": installed_receipts,
+                "failures": failures,
             }
             if fmt == "json":
                 print(json.dumps(payload, indent=2))
@@ -259,20 +319,23 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 for rc in installed_receipts:
                     tbl.add_row(rc["benchmark_id"], rc["resource_name"], rc["resource_type"], rc["status"])
                 print(tbl.render())
-            return 0
+            return 1 if failures else 0
 
     elif subcmd == "status":
         status_rows = []
         benchmark_status = []
         for b in selected_benchmarks:
             ds = catalog.resolve_dataset(b.default_dataset) if b.default_dataset else None
-            state = ds.install_state if ds else "registered"
+            snapshot = benchmark_resource_snapshot(b, source_manager)
+            state = snapshot["state"].lower()
             benchmark_status.append({
                 "benchmark_id": b.id,
                 "name": b.name,
                 "state": state,
-                "resources_declared": len(b.resources),
-                "readiness_reason": ds.readiness_reason if ds else None,
+                "resources_declared": snapshot["required"],
+                "resources_verified": snapshot["installed"],
+                "execution_readiness": "tasks_not_provisioned" if state == "registered" and b.resources and all(r.type == "harbor_registry" for r in b.resources) else "not_probed",
+                "readiness_reason": f"{snapshot['installed']}/{snapshot['required']} required resources verified",
             })
             for decl in b.resources:
                 spec = ResourceSpec.from_declaration(b.id, decl)
@@ -319,7 +382,7 @@ def handle_setup(args: argparse.Namespace, parser: argparse.ArgumentParser) -> i
                 spec = ResourceSpec.from_declaration(b.id, decl)
                 res_verify = source_manager.verify_resource(spec)
                 verify_rows.append(res_verify)
-                if res_verify.get("status") in ("corrupted", "failed"):
+                if res_verify.get("status") != "verified":
                     has_failure = True
 
         payload = {

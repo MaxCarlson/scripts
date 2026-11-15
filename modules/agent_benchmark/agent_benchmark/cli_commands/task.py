@@ -11,6 +11,7 @@ import sys
 from typing import Any
 
 from benchmark_core import load_run
+from termdash import Table
 
 from ..diagnostic import run_diagnostic
 from ..evidence import EVIDENCE_LIMITS, load_task
@@ -30,6 +31,9 @@ def setup_task_action_args(action: argparse.ArgumentParser, name: str) -> None:
         default=Path.home() / ".local/share/agent-benchmark",
         help="Persistent dispatch receipts, shared across output locations",
     )
+    if name in ("plan", "status"):
+        action.add_argument("-f", "--format", choices=("table", "json"), default="table")
+        action.add_argument("-F", "--llm-friendly", action="store_true", help="Emit compact JSON for automation")
     if name in ("plan", "run"):
         action.add_argument(
             "-t",
@@ -94,7 +98,10 @@ def add_task_parser(actions: Any) -> None:
     """Add canonical 'task' command group."""
     task_p = actions.add_parser(
         "task",
-        help="Single-task benchmark planning, execution, status, and verification",
+        help="Execute and inspect one individual task",
+        description="Plan, run, check, or clean up one task. plan applies to the selected task configuration.",
+        epilog="Examples:\n  agent-benchmark task plan -h\n  agent-benchmark task run -h\n  agent-benchmark task status -h",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     sub = task_p.add_subparsers(dest="task_command")
     for name in ("plan", "run", "status", "cleanup", "smoke"):
@@ -117,9 +124,7 @@ def handle_task(args: argparse.Namespace, cmd: str | None = None) -> int:
 
     if command == "plan":
         task = load_task(args.task)
-        print(
-            json.dumps(
-                {
+        payload = {
                     "task_id": task.task_id,
                     "category": task.category,
                     "suite_version": task.suite_version,
@@ -139,10 +144,14 @@ def handle_task(args: argparse.Namespace, cmd: str | None = None) -> int:
                     },
                     "evidence_limits": asdict(EVIDENCE_LIMITS),
                     "pending_worker": read_pending(args.state_dir),
-                },
-                indent=2,
-            )
-        )
+                }
+        if args.format == "json" or args.llm_friendly:
+            print(json.dumps(payload, separators=(",", ":")) if args.llm_friendly else json.dumps(payload, indent=2))
+        else:
+            table = Table(headers=["Setting", "Value"], style="dash")
+            for key, value in payload.items():
+                table.add_row(key, json.dumps(value, ensure_ascii=False) if isinstance(value, (dict, list)) else str(value))
+            print(table.render())
         return 0
     elif command == "status":
         value: dict[str, Any] = {"pending_worker": read_pending(args.state_dir)}
@@ -155,7 +164,15 @@ def handle_task(args: argparse.Namespace, cmd: str | None = None) -> int:
                     for t in trials
                 ],
             )
-        print(json.dumps(value, indent=2))
+        if args.format == "json" or args.llm_friendly:
+            print(json.dumps(value, separators=(",", ":")) if args.llm_friendly else json.dumps(value, indent=2))
+        else:
+            table = Table(headers=["Field", "Value"], style="dash")
+            table.add_row("pending_worker", json.dumps(value["pending_worker"], ensure_ascii=False))
+            if args.run_dir:
+                table.add_row("run_id", str(value["run_id"]))
+                table.add_row("trials", json.dumps(value["trials"], ensure_ascii=False))
+            print(table.render())
         return 0
     elif command == "smoke":
         smoke_provider, smoke_model = resolve_model_provider_and_key(args.model, default_provider=args.provider)
@@ -196,6 +213,11 @@ def handle_task(args: argparse.Namespace, cmd: str | None = None) -> int:
         _, trials = load_run(directory)
         return 0 if trials and all(t.status == "passed" for t in trials) else 1
     elif command == "cleanup":
+        if not getattr(args, "execute", False) and not getattr(args, "run_dir", None):
+            pending = read_pending(args.state_dir)
+            if pending is None:
+                print(json.dumps({"removed": False, "diagnostic": "No pending worker; specify --run-dir for completed workspace cleanup"}, indent=2))
+                return 0
         result = asyncio.run(
             cleanup_trial(
                 state=args.state_dir,
