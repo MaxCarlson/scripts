@@ -1,6 +1,6 @@
 # mangadl
 
-## Compression workspace, estimates and saved reports (3.2.0)
+## Compression workspace, estimates and saved reports (3.3.0)
 
 Compression now uses explicit operation subcommands. `inventory` refreshes the
 descriptive snapshot, `analyze` measures one recipe, `compare` benchmarks named
@@ -515,6 +515,30 @@ directly from a browser using gallery-dl's browser syntax (for example,
 overrides the stored User-Agent. The crawler does not visit the extracted gallery URLs, so it
 avoids the request burst caused by simulating every favorite gallery merely to
 discover its URL.
+
+## Merge matching URL files
+
+`mangadl urls` combines URL files selected by one or more glob patterns. It
+removes repeated URLs by default, preserving the first occurrence and its order.
+Blank lines and comment lines beginning with `#` or `;` are skipped. Matching
+and output are previewed by default; use `-f/--apply` to write the combined
+file.
+
+Repeated rows can be preserved with `-K/--keep-duplicates`; `-N/--no-duplicates`
+explicitly selects the default deduplicating behavior. The output file cannot
+also match an input pattern; choose a different path or narrower pattern to
+avoid replacing a source URL file.
+
+```powershell
+mangadl urls -p "urls*.txt" -d .\hent1imageperpage\ -o combined_urls.txt
+mangadl urls -p "urls*.txt" -d .\hent1imageperpage\ -o combined_urls.txt -f
+```
+
+Repeat `-p/--pattern` to combine different filename patterns. A filename-only
+`-o/--output` is placed in the input folder; a relative output path containing
+folders is resolved from the current working directory, and an absolute path is
+used as given. The command refuses to write when the output path matches an
+input file, protecting source URLs from accidental replacement.
 
 ## Safe partial cleanup
 
